@@ -2077,8 +2077,8 @@ static JSValue js_host_read_file(JSContext *ctx, JSValueConst this_val,
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    /* Limit to 1MB for safety */
-    if (size > 1024 * 1024) {
+    /* Limit to 4MB for safety (Song.abl can exceed 1MB) */
+    if (size > 4 * 1024 * 1024) {
         fprintf(stderr, "host_read_file: file too large: %s\n", path);
         fclose(f);
         JS_FreeCString(ctx, path);
