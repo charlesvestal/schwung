@@ -7124,6 +7124,30 @@ function drawHierarchyEditor() {
             const nameX = Math.floor((SCREEN_WIDTH - name.length * 5) / 2);
             print(nameX, centerY + 4, name, 1);
 
+            /* Check for load error and display if present */
+            const loadError = getSlotParam(hierEditorSlot, `${prefix}:load_error`);
+            if (loadError && loadError.length > 0) {
+                /* Word-wrap error into lines of ~20 chars */
+                const maxChars = 20;
+                const words = loadError.split(' ');
+                const lines = [];
+                let line = '';
+                for (const word of words) {
+                    if (line.length + word.length + 1 > maxChars && line.length > 0) {
+                        lines.push(line);
+                        line = word;
+                    } else {
+                        line = line.length > 0 ? line + ' ' + word : word;
+                    }
+                }
+                if (line.length > 0) lines.push(line);
+                const errY = centerY + 16;
+                for (let i = 0; i < Math.min(lines.length, 2); i++) {
+                    const errX = Math.floor((SCREEN_WIDTH - lines[i].length * 5) / 2);
+                    print(errX, errY + i * 10, lines[i], 1);
+                }
+            }
+
             /* Draw navigation arrows */
             print(4, centerY - 2, "<", 1);
             print(SCREEN_WIDTH - 10, centerY - 2, ">", 1);
