@@ -54,7 +54,6 @@
 #include "host/shadow_fd_trace.h"
 #include "host/shadow_state.h"
 #include "host/shadow_midi.h"
-#include "host/pfx_track_shm.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
@@ -154,7 +153,6 @@ static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+
 static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
 
 /* PFX per-track audio shared memory (shim → PFX DSP plugin) */
-static pfx_track_audio_shm_t *pfx_track_shm = NULL;
 
 static void load_feature_config(void);
 
@@ -986,21 +984,6 @@ static void shadow_inprocess_mix_audio(void) {
         }
     }
 
-    /* Write per-track audio to PFX shared memory (for Performance FX module) */
-    if (pfx_track_shm && link_audio.enabled && link_audio.move_channel_count > 0) {
-        int ch = link_audio.move_channel_count;
-        if (ch > PFX_TRACK_SHM_CHANNELS) ch = PFX_TRACK_SHM_CHANNELS;
-        pfx_track_shm->channel_count = ch;
-        for (int t = 0; t < ch; t++) {
-            int16_t tbuf[FRAMES_PER_BLOCK * 2];
-            if (link_audio_read_channel(t, tbuf, FRAMES_PER_BLOCK)) {
-                memcpy(pfx_track_shm->audio[t], tbuf, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
-            }
-        }
-        __sync_synchronize();
-        pfx_track_shm->sequence++;
-    }
-
     /* Subtract Move track audio from mix to avoid doubling.
      * Link Audio per-track streams are pre-fader; mailbox is post-fader.
      * When MFX active: mailbox was prescaled to unity, subtract at unity.
@@ -1402,17 +1385,23 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
+    /* Cache Link Audio reads to avoid redundant ring buffer access + barriers */
+    int16_t la_cache[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
+    int la_cache_valid[SHADOW_CHAIN_INSTANCES];
+    memset(la_cache_valid, 0, sizeof(la_cache_valid));
+
     if (rebuild_from_la) {
         /* Zero the mailbox — all audio reconstructed from Link Audio */
         memset(mailbox_audio, 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
 
+        /* Read all Link Audio channels once upfront */
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < link_audio.move_channel_count; s++) {
+            la_cache_valid[s] = link_audio_read_channel(s, la_cache[s], FRAMES_PER_BLOCK);
+        }
+
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-            /* Read Link Audio for this track (pre-fader, same frame as mailbox) */
-            int16_t move_track[FRAMES_PER_BLOCK * 2];
-            int have_move_track = 0;
-            if (s < link_audio.move_channel_count) {
-                have_move_track = link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK);
-            }
+            int16_t *move_track = la_cache[s];
+            int have_move_track = la_cache_valid[s];
 
             int slot_active = (shadow_chain_slots[s].active &&
                                shadow_chain_slots[s].instance &&
@@ -1506,6 +1495,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
             }
         }
+
     } else if (shadow_chain_process_fx) {
         /* Fallback: no Link Audio — just process deferred synth through FX */
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
@@ -2067,24 +2057,6 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create pub audio shm\n");
-    }
-
-    /* Create PFX per-track audio shared memory */
-    int shm_pfx_fd = shm_open(PFX_TRACK_SHM_NAME, O_CREAT | O_RDWR, 0666);
-    if (shm_pfx_fd >= 0) {
-        ftruncate(shm_pfx_fd, sizeof(pfx_track_audio_shm_t));
-        pfx_track_shm = (pfx_track_audio_shm_t *)mmap(NULL,
-            sizeof(pfx_track_audio_shm_t),
-            PROT_READ | PROT_WRITE, MAP_SHARED, shm_pfx_fd, 0);
-        close(shm_pfx_fd);
-        if (pfx_track_shm == MAP_FAILED) {
-            pfx_track_shm = NULL;
-            printf("Shadow: Failed to mmap PFX track shm\n");
-        } else {
-            memset(pfx_track_shm, 0, sizeof(pfx_track_audio_shm_t));
-            printf("Shadow: PFX track audio shm initialized (%zu bytes)\n",
-                   sizeof(pfx_track_audio_shm_t));
-        }
     }
 
     /* Initialize Link Audio state */
