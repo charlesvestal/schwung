@@ -51,6 +51,7 @@ const defaultState = {
     patchInBank: 1,
     octaveTranspose: 0,
     polyphony: 0,
+    loadError: '',
     shiftHeld: false,
     needsRedraw: true,
     tickCount: 0,
@@ -186,6 +187,15 @@ export function createSoundGeneratorUI(config) {
                 state.octaveTranspose = o;
                 state.needsRedraw = true;
             }
+        }
+
+        /* Check for load errors from DSP */
+        const loadErr = host_module_get_param('load_error');
+        const newErr = loadErr || '';
+        if (newErr !== state.loadError) {
+            console.log(`[synth_ui] load_error changed: "${newErr}"`);
+            state.loadError = newErr;
+            state.needsRedraw = true;
         }
     }
 
@@ -337,6 +347,30 @@ export function createSoundGeneratorUI(config) {
         /* Preset name */
         print(2, y, state.presetName.substring(0, 20), 1);
         y += 12;
+
+        /* Show load error if present */
+        if (state.loadError) {
+            /* Draw warning box */
+            fill_rect(0, y, SCREEN_WIDTH, 1, 1);
+            y += 3;
+            /* Word-wrap error message into ~20 char lines */
+            const words = state.loadError.split(' ');
+            let line = '';
+            for (const word of words) {
+                const test = line ? `${line} ${word}` : word;
+                if (test.length > 21 && line) {
+                    print(2, y, line, 1);
+                    y += 9;
+                    line = word;
+                } else {
+                    line = test;
+                }
+            }
+            if (line) {
+                print(2, y, line, 1);
+                y += 9;
+            }
+        }
 
         /* Module-specific custom content */
         if (drawCustom) {

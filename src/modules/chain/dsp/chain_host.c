@@ -3869,7 +3869,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         snprintf(buf, buf_len, "%s", g_current_synth_module);
         return 0;
     }
-    if (strcmp(key, "synth_error") == 0) {
+    if (strcmp(key, "synth_error") == 0 || strcmp(key, "load_error") == 0) {
         return synth_get_error(buf, buf_len);
     }
     if (strcmp(key, "midi_source_module") == 0) {
@@ -7357,7 +7357,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "synth_module") == 0) {
         return snprintf(buf, buf_len, "%s", inst->current_synth_module);
     }
-    if (strcmp(key, "synth_error") == 0) {
+    if (strcmp(key, "synth_error") == 0 || strcmp(key, "load_error") == 0) {
         return v2_synth_get_error(inst, buf, buf_len);
     }
     if (strcmp(key, "fx1_module") == 0) {

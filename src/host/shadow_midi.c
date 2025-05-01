@@ -193,7 +193,12 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
 
 /* Forward CC, pitch bend, aftertouch from external MIDI (MIDI_IN cable 2) to MIDI_OUT.
  * Move echoes notes but not these message types, so we inject them into MIDI_OUT
- * so the DSP routing can pick them up alongside the echoed notes. */
+ * so the DSP routing can pick them up alongside the echoed notes.
+ *
+ * Note: Move may remap note channels via its track auto-mapping, but CCs here
+ * preserve the original controller channel. For CC routing to work, the external
+ * controller, Move track, and shadow slot receive channel must all be set to the
+ * same explicit channel (don't rely on Move's auto channel mapping). */
 void shadow_forward_external_cc_to_out(void)
 {
     if (!*host_shadow_inprocess_ready || !*host_global_mmap_addr) return;
