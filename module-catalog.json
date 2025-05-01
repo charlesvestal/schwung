@@ -425,7 +425,7 @@
     },
     {
       "id": "stems",
-      "name": "Stem Separation",
+      "name": "Stems",
       "description": "Separate audio into stems: drums, vocals, accompaniment (0.5x realtime)",
       "author": "charlesvestal",
       "component_type": "tool",
@@ -455,6 +455,17 @@
       "default_branch": "main",
       "asset_name": "boris-granular-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "performance-fx",
+      "name": "Performance FX",
+      "description": "32 punch-in audio FX with pressure control, latch, and tempo sync",
+      "author": "charlesvestal",
+      "component_type": "overtake",
+      "github_repo": "charlesvestal/move-anything-performance-fx",
+      "default_branch": "main",
+      "asset_name": "performance-fx-module.tar.gz",
+      "min_host_version": "0.7.0"
     },
     {
       "id": "dj",
