@@ -37,11 +37,12 @@ globalThis.onMidiMessageExternal = function (data) {
 
 let jogwheelValue = 0;
 
+let noteDown = new Set();
 
 globalThis.onMidiMessageInternal = function (data) {
     console.log(`onMidiMessageInternal ${data[0].toString(16)} ${data[1].toString(16)} ${data[2].toString(16)}`);
 
-    let isNote = data[0] === 0x80 || data[0] === 0x90;
+    let isNote = (data[0] & 0xF0) === 0x80 || (data[0] & 0xF0) === 0x90;
 
     let ignoreCapacitiveTouch = isNote && data[1] < 10;
 
@@ -60,6 +61,16 @@ globalThis.onMidiMessageInternal = function (data) {
     move_midi_external_send([2 << 4 | (data[0] / 16), data[0], data[1], data[2]]);
 
     if (isNote) {
+        if ((data[0] & 0xF0) === 0x90) {
+            console.log(`Adding note ${data[1]}`);
+            noteDown.add(data[1])
+        }
+
+        if ((data[0] & 0xF0) === 0x80) {
+            console.log(`Deleting note ${data[1]}`);
+            noteDown.delete(data[1]);
+        }
+
         move_midi_internal_send([0 << 4 | (data[0] / 16), data[0], data[1], 23]);
         return;
     }
@@ -95,9 +106,6 @@ globalThis.onMidiMessageInternal = function (data) {
 // CC 16-31 icons
 // 40-43 track selectors
 // 71 - 78 knob LEDs
-globalThis.init = function () {
-        print(0,0,"Move Anything Audio");
-}
 
 let displayWidth = 128;
 let displayHeight = 64;
@@ -113,7 +121,7 @@ let sampleBuffer = new Int16Array(numSamples);
 
 let outputFrame = 0;
 let pitch = 0.05;
-function doAudio() {
+function playNote(note) {
     let audioInOffset = 2048 + 256;
     for (let frame = 0; frame < 512 / 4; frame++) {
         let inputL = get_int16(audioInOffset + frame * 4);
@@ -122,16 +130,18 @@ function doAudio() {
         inputL /= 32767.0;
         inputR /= 32767.0;
 
-        // input is not being used.
+        // input is not being used.        
+        const frequency = 440 * Math.pow(2, (note - 69) / 12);
+        const step = (2 * Math.PI * frequency) / sampleRate;
 
-        let outputL = Math.sin(outputFrame)/10;
-        let outputR = Math.sin(outputFrame)/10;
+        let outputL = Math.sin(outputFrame * step)/10;
+        let outputR = Math.sin(outputFrame * step)/10;
+        outputFrame++;
 
-        outputFrame+= pitch;
-        pitch += 0.000001;
-        if (pitch > 0.5) {
-            pitch = 0.1
-        }
+        // pitch += 0.000001;
+        // if (pitch > 0.5) {
+        //     pitch = 0.1
+        // }
        
         // do stuff
 
@@ -140,32 +150,33 @@ function doAudio() {
     }
 }
 
+function playSilence() {
+    let audioInOffset = 2048 + 256;
+    for (let frame = 0; frame < 512 / 4; frame++) {
+        set_int16(256 + frame * 4 + 0, 0 * 32767 & 0xFFFF);
+        set_int16(256 + frame * 4 + 2, 0 * 32767 & 0xFFFF);
+    }
+}
+
+globalThis.init = function () {
+        clear_screen();
+        print(0, 0, "Move Anything", 1);
+        print(0, 18, "Audio sample", 1);
+}
+
+
 globalThis.tick = function (deltaTime) {
 
-    doAudio();
+    let notes = [...noteDown];
 
-    // clear_screen();
-    // set_pixel(Math.round(positionX), Math.round(positionY));
+    if (notes.length) {
+        playNote(notes[0]);
+        clear_screen();
+        print(0, 0, "Move Anything", 1);
+        print(0, 18, "Audio sample", 1);
+        print(0,36,"Note:" + notes[0], 1);
 
-    // positionX += speedX;
-    // if (positionX > displayWidth-1) {
-    //     positionX = displayWidth-1;
-    //     speedX = -speedX;
-    // }
-
-    // if (positionX < 0) {
-    //     positionX = 0;
-    //     speedX = - speedX;
-    // }
-
-    // positionY += speedY;
-    // if (positionY > displayHeight-1) {
-    //     positionY = displayHeight-1;
-    //     speedY = -speedY;
-    // }
-
-    // if (positionY < 0) {
-    //     positionY = 0;
-    //     speedY = - speedY;
-    // }
+    } else {
+        playSilence();
+    }
 }

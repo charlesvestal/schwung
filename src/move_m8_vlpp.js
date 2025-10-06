@@ -502,6 +502,10 @@ function initLPP() {
     console.log("Sending M8 LPP init");
     move_midi_external_send(LPPInitSysex);
     showingTop = true;
+
+    clear_screen();
+    print(0, 0, "Move Anything", 1);
+    print(0, 18, "M8 connected", 1);
 }
 
 function updatePLAYLed() {
@@ -513,6 +517,12 @@ function updatePLAYLed() {
 
 globalThis.init = function () {
     console.log("Move control surface script staring...");
+
+
+    clear_screen();
+    print(0, 0, "Move Anything", 1);
+    print(0, 18, "Waiting for", 1);
+    print(0, 36, "M8 to connect", 1);
 }
 
 // globalThis.tick = function () {
