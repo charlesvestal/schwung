@@ -35,7 +35,9 @@ globalThis.onMidiMessageExternal = function (data) {
     move_midi_internal_send([0 << 4 | (data[0] / 16), data[0], data[1], data[2]]);
 }
 
-let value = 0;
+let jogwheelValue = 0;
+
+
 globalThis.onMidiMessageInternal = function (data) {
     console.log(`onMidiMessageInternal ${data[0].toString(16)} ${data[1].toString(16)} ${data[2].toString(16)}`);
 
@@ -66,8 +68,8 @@ globalThis.onMidiMessageInternal = function (data) {
     if (isCC) {
         let ccNumber = data[1];
         if (ccNumber === 14) {
-            value += (data[2] === 1 ? 1 : -1);
-            console.log(value);
+            jogwheelValue += (data[2] === 1 ? 1 : -1);
+            console.log(jogwheelValue);
         }
 
 
@@ -94,6 +96,7 @@ globalThis.onMidiMessageInternal = function (data) {
 // 40-43 track selectors
 // 71 - 78 knob LEDs
 globalThis.init = function () {
+        print(0,0,"Move Anything Audio");
 }
 
 let displayWidth = 128;
@@ -104,7 +107,12 @@ let speedX = 0.5;
 let speedY = 0.3;
 // let failCounter = 0;
 
+let sampleRate = 44100;
+let numSamples = 1 * sampleRate;
+let sampleBuffer = new Int16Array(numSamples);
 
+let outputFrame = 0;
+let pitch = 0.05;
 function doAudio() {
     let audioInOffset = 2048 + 256;
     for (let frame = 0; frame < 512 / 4; frame++) {
@@ -114,9 +122,17 @@ function doAudio() {
         inputL /= 32767.0;
         inputR /= 32767.0;
 
-        let outputL = inputL;
-        let outputR = inputR;
+        // input is not being used.
 
+        let outputL = Math.sin(outputFrame)/10;
+        let outputR = Math.sin(outputFrame)/10;
+
+        outputFrame+= pitch;
+        pitch += 0.000001;
+        if (pitch > 0.5) {
+            pitch = 0.1
+        }
+       
         // do stuff
 
         set_int16(256 + frame * 4 + 0, outputL * 32767 & 0xFFFF);
