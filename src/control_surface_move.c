@@ -58,6 +58,80 @@ struct USB_MIDI_Packet
     unsigned char midi_2;
 };
 
+
+
+void set_int16(int byte, int16_t value) {
+  if(byte >= 0 && byte < 4095) {
+    mapped_memory[byte] = value & 0xFF;
+    mapped_memory[byte+1] = (value >> 8) & 0xFF;
+  }
+}
+
+int16_t get_int16(int byte) {
+  if(byte >= 0 && byte < 4095) {
+    int16_t ret = mapped_memory[byte];
+    ret |= mapped_memory[byte+1] << 8;
+    return ret;
+  }
+  return 0;
+}
+
+static JSValue js_set_int16(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  if(argc != 2) {
+    JS_ThrowTypeError(ctx, "set_int16() expects 2, got %d", argc);
+    return JS_EXCEPTION;
+  }
+
+  int byte,value;
+  if(JS_ToInt32(ctx, &byte, argv[0])) {
+    JS_ThrowTypeError(ctx, "set_int16() invalid arg for `byte`");
+    return JS_EXCEPTION;
+  }
+  if(JS_ToInt32(ctx, &value, argv[1])) {
+    JS_ThrowTypeError(ctx, "set_int16() invalid arg for `value`");
+    return JS_EXCEPTION;
+  }
+  set_int16(byte, (int16_t)value);
+}
+
+static JSValue js_get_int16(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  if(argc != 1) {
+    JS_ThrowTypeError(ctx, "get_int16() expects 1, got %d", argc);
+    return JS_EXCEPTION;
+  }
+
+  int byte;
+  if(JS_ToInt32(ctx, &byte, argv[0])) {
+    JS_ThrowTypeError(ctx, "get_int16() invalid arg for `byte`");
+    return JS_EXCEPTION;
+  }
+  int16_t val = get_int16(byte);
+  JSValue js_val = JS_NewInt32(ctx, val);
+  return js_val;
+}
+
+
+
+// void set_audio_out_L(int index, int16_t value) {
+//   if (index >= 512/4) {
+//     return;
+//   }
+
+//   int out256+index*4+0
+// }
+
+// void set_audio_out_R(int index, int16_t value) {
+
+// }
+
+// void get_audio_in_L() {
+
+// }
+
+// void get_audio_in_R() {
+
+// }
+
 void dirty_screen() {
   if(screen_dirty == 0) {
     screen_dirty = 1;
@@ -748,6 +822,12 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue clear_screen_func = JS_NewCFunction(ctx, js_clear_screen, "clear_screen", 0);
     JS_SetPropertyStr(ctx, global_obj, "clear_screen", clear_screen_func);
+
+    JSValue get_int16_func = JS_NewCFunction(ctx, js_get_int16, "get_int16", 0);
+    JS_SetPropertyStr(ctx, global_obj, "get_int16", get_int16_func);
+
+    JSValue set_int16_func = JS_NewCFunction(ctx, js_set_int16, "set_int16", 0);
+    JS_SetPropertyStr(ctx, global_obj, "set_int16", set_int16_func);
 
     JSValue print_func = JS_NewCFunction(ctx, js_print, "print", 1);
     JS_SetPropertyStr(ctx, global_obj, "print", print_func);
