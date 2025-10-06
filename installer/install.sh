@@ -83,6 +83,13 @@ if yes_or_no "Install 'Pages of Sets'?"; then
   else
     echo "Pages of Sets already installed!"
   fi
+
+  echo
+  echo "Pages of Sets usage:"
+  echo " - To change pages, hold Shift and press the left (<) or right (>) arrow on the Move."
+  echo " - Changing pages restarts the current Live session."
+  echo " - Sets are per page; Samples/Recordings/Track Presets/Audio Effects are shared."
+  echo " - The web UI at http://move.local shows Sets for the current page."
 else
     echo "Not installing Pages of Sets"
 fi
