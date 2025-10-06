@@ -134,15 +134,15 @@ function playNote(note) {
         const frequency = 440 * Math.pow(2, (note - 69) / 12);
         const step = (2 * Math.PI * frequency) / sampleRate;
 
-        let outputL = Math.sin(outputFrame * step)/10;
-        let outputR = Math.sin(outputFrame * step)/10;
+        let outputL = Math.sin(outputFrame * step) / 10;
+        let outputR = Math.sin(outputFrame * step) / 10;
         outputFrame++;
 
         // pitch += 0.000001;
         // if (pitch > 0.5) {
         //     pitch = 0.1
         // }
-       
+
         // do stuff
 
         set_int16(256 + frame * 4 + 0, outputL * 32767 & 0xFFFF);
@@ -158,25 +158,27 @@ function playSilence() {
     }
 }
 
-globalThis.init = function () {
-        clear_screen();
-        print(0, 0, "Move Anything", 1);
-        print(0, 18, "Audio sample", 1);
-}
+// globalThis.init = function () {
+// }
 
 
 globalThis.tick = function (deltaTime) {
 
     let notes = [...noteDown];
-
+    
     if (notes.length) {
         playNote(notes[0]);
         clear_screen();
         print(0, 0, "Move Anything", 1);
         print(0, 18, "Audio sample", 1);
-        print(0,36,"Note:" + notes[0], 1);
+        print(0, 36, "Note:" + notes[0], 1);
 
     } else {
         playSilence();
+        clear_screen();
+        print(0, 0, "Move Anything", 1);
+        print(0, 18, "Audio sample", 1);
+        print(0, 36, "Press a key!", 1);
+
     }
 }
