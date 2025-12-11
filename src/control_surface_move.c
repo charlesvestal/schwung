@@ -92,6 +92,7 @@ static JSValue js_set_int16(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_EXCEPTION;
   }
   set_int16(byte, (int16_t)value);
+  return JS_UNDEFINED;
 }
 
 static JSValue js_get_int16(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -339,6 +340,7 @@ int queueMidiSend(int cable, unsigned char *buffer, int length)
         int ioctl_result = ioctl(global_fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
         outgoing_midi_counter = 0;
     }
+    return length;
 }
 
 int queueExternalMidiSend(unsigned char *buffer, int length)
@@ -558,6 +560,7 @@ static JSValue js_set_pixel(JSContext *ctx, JSValueConst this_val, int argc, JSV
     color = 1;
   }
   set_pixel(x,y,color);
+  return JS_UNDEFINED;
 }
 
 static JSValue js_draw_rect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -592,6 +595,7 @@ static JSValue js_draw_rect(JSContext *ctx, JSValueConst this_val, int argc, JSV
     color = 1;
   }
   draw_rect(x,y,w,h,color);
+  return JS_UNDEFINED;
 }
 
 static JSValue js_fill_rect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -626,6 +630,7 @@ static JSValue js_fill_rect(JSContext *ctx, JSValueConst this_val, int argc, JSV
     color = 1;
   }
   fill_rect(x,y,w,h,color);
+  return JS_UNDEFINED;
 }
 
 static JSValue js_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -634,6 +639,7 @@ static JSValue js_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, 
     return JS_EXCEPTION;
   }
   clear_screen();
+  return JS_UNDEFINED;
 }
 
 static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -666,6 +672,7 @@ static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 
   JS_FreeValue(ctx, string_val);
   JS_FreeCString(ctx, string);
+  return JS_UNDEFINED;
 }
 
 // static JSValue js_sum_bytes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -753,6 +760,7 @@ static JSValue js_move_midi_send(int cable, JSContext *ctx, JSValueConst this_va
 
     // flushMidi();
     queueMidiSend(cable, (unsigned char *)js_move_midi_send_buffer, send_buffer_index);
+    return JS_UNDEFINED;
 }
 
 static JSValue js_move_midi_external_send(JSContext *ctx, JSValueConst this_val,
@@ -772,6 +780,7 @@ static JSValue js_exit(JSContext *ctx, JSValueConst this_val,
 {
     printf("Exit...\n");
     global_exit_flag = 1;
+    return JS_UNDEFINED;
 }
 
 void init_javascript(JSRuntime **prt, JSContext **pctx)
