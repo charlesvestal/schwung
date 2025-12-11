@@ -32,7 +32,7 @@ filename=control_surface_move.tar.gz
 hostname=move.local
 username=ableton
 ssh_ableton="ssh -o LogLevel=QUIET -n $username@$hostname"
-
+scp_ableton="scp -o ConnectTimeout=1"
 ssh_root="ssh -o LogLevel=QUIET -n root@$hostname"
 
 echo "Downloading build...$url$filename"
@@ -43,14 +43,17 @@ echo "Connecting via ssh to $ssh_ableton..."
 if ! $ssh_ableton -o ConnectTimeout=1 ls &> /dev/null
 then
     echo
-    echo "Error: Could not connect to move.local using SSH."
+    echo "Error: Could not connect to $hostname using SSH."
     echo "Check that your Move is connected to the same network as this device"
     echo "and that you have added your keys at http://move.local/development/ssh"
+    echo
+    echo "If your Move was updated, or its keys changed, you may have to remove"
+    echo "entries for it in your known_hosts file."
     exit
 fi
 
 # $ssh_ableton rm -fr ./control_surface_move
-scp  -o ConnectTimeout=1 $filename ableton@move.local:.
+$scp_ableton "$filename $username@$hostname:."
 $ssh_ableton "tar -xvf ./$filename"
 
 $ssh_ableton "killall MoveLauncher Move MoveOriginal"
