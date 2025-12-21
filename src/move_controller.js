@@ -345,7 +345,7 @@ globalThis.onMidiMessageInternal = function (data) {
                 }
             }
 
-            move_midi_external_send([2 << 4 | (data[0] / 16), data[0], data[1], data[2]]);
+            // move_midi_external_send([2 << 4 | (data[0] / 16), data[0], data[1], data[2]]);
         }
     }
 
