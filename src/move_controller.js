@@ -154,6 +154,9 @@ let noDisplay = false;
 let editMode = false;
 let lastPad = 0;
 let lastCC = 0;
+let pulse8th = 0x08;   // pulsing animation 1/8 note rate
+let pulse4th = 0x09;   // pulsing animation 1/4 note rate
+let pulse2th = 0x0A;   // pulsing animation 1/2 note rate
 let ccOrPadParam = 0;
 let editModeOpt = 0;
 var editParam;
@@ -340,7 +343,8 @@ globalThis.onMidiMessageInternal = function (data) {
                         lastPad = note;
                     }
                     midiInt([0 << 4 | (cn.MidiNoteOn / 16), cn.MidiNoteOn, note, cn.White]);
-                    midiInt([0 << 4 | (0x98 / 16), 0x98, note, padBanks[bank][lastPad][1]]);
+                    midiInt([0 << 4 | ((cn.MidiNoteOn+pulse8th) / 16), (cn.MidiNoteOn+pulse8th), note, padBanks[bank][lastPad][1]]);
+
                 } else if (!editMode) {
                     midiInt([0 << 4 | (cn.MidiNoteOn / 16), cn.MidiNoteOn, note, pad[1]]);
                 }
@@ -360,7 +364,7 @@ globalThis.onMidiMessageInternal = function (data) {
             if (
                 ccNumber >= cn.MoveKnob1 &&
                 ccNumber <= cn.MoveMaster ||
-                ccNumber === 14
+                ccNumber === cn.MoveMainKnob
             ) {
                 // add +++ and --- indicators to knobs
 
@@ -377,7 +381,7 @@ globalThis.onMidiMessageInternal = function (data) {
 
                 if (!noDisplay) {
                     midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveMenu, cn.Black]);
-                    midiInt([0 << 4 | (0xBA / 16), 0xBA, cn.MoveMenu]);
+                    midiInt([0 << 4 | ((cn.MidiCC+pulse2th) / 16), (cn.MidiCC+pulse2th), cn.MoveMenu]);
                     noDisplay = true;
                 } else {
                     midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveMenu, cn.White]);
@@ -389,7 +393,7 @@ globalThis.onMidiMessageInternal = function (data) {
 
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveCapture, cn.Black]);
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveRecord, cn.Black]);
-                midiInt([0 << 4 | (0xBA / 16), 0xBA, cn.MoveRecord, cn.Red]);
+                midiInt([0 << 4 | ((cn.MidiCC+pulse2th) / 16), (cn.MidiCC+pulse2th), cn.MoveRecord, cn.Red]);
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, editModeOpt+cn.MoveRow4, cn.Red]);
                 display(appName, "EDIT MODE", "Select Pad or", "Knob to edit");
                 console.log("Entered EDIT mode");
@@ -524,7 +528,7 @@ globalThis.onMidiMessageInternal = function (data) {
                     `Now: ${currentPad[editModeOpt]}`
                 );
                 midiInt([0 << 4 | (cn.MidiNoteOn / 16), cn.MidiNoteOn, lastPad, cn.White]);
-                midiInt([0 << 4 | (0x98 / 16), 0x98, lastPad, padBanks[bank][lastPad][1]]);
+                midiInt([0 << 4 | ((cn.MidiNoteOn+pulse8th) / 16), (cn.MidiNoteOn+pulse8th), lastPad, padBanks[bank][lastPad][1]]);
             } else if (ccNumber >= cn.MoveMainButton && ccNumber <= cn.MoveDelete) {
                 // flashing led control
                 if (lastPad != 0) {
@@ -532,7 +536,7 @@ globalThis.onMidiMessageInternal = function (data) {
                     lastPad = 0;
                 }
                 if (lastCC != 0) {
-                    midiInt([0 << 4 | (0xB9 / 16), 0xB9, lastCC, cn.White]);
+                    midiInt([0 << 4 | ((cn.MidiCC+pulse4th) / 16), (cn.MidiCC+pulse4th), lastCC, cn.White]);
                 }
                 if (lastCC != ccNumber) {
                     midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, lastCC, cn.Black]);

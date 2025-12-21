@@ -1,5 +1,8 @@
+// See https://github.com/Ableton/push-interface/blob/main/doc/AbletonPush2MIDIDisplayInterface.asc 
+// for Push2 and most the same Move internal MIDI commands
 
-/*
+
+/* from https://github.com/damian-/move-anything/blob/dev/src/move_virtual_knobs.mjs
 ================================================================================
 RGB COLOR PALETTE (INDEXED 0–127)
 ================================================================================
