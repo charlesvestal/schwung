@@ -150,6 +150,7 @@ let paramName = {
 };
 
 let appName = "MOVE CONTROLS";
+let noDisplay = false;
 let editMode = false;
 let lastPad = 0;
 let lastCC = 0;
@@ -371,6 +372,18 @@ globalThis.onMidiMessageInternal = function (data) {
                     valueText = "---";
                 }
 
+            } else if (ccNumber === cn.MoveMenu && value === 127) {
+                // toggle display
+
+                if (!noDisplay) {
+                    midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveMenu, cn.Black]);
+                    midiInt([0 << 4 | (0xBA / 16), 0xBA, cn.MoveMenu]);
+                    noDisplay = true;
+                } else {
+                    midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveMenu, cn.White]);
+                    noDisplay = false;
+                }
+
             } else if (ccNumber === cn.MoveRecord && value === 127) {
                 // enter edit mode
 
@@ -546,6 +559,8 @@ globalThis.init = function () {
     midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveCapture, cn.White]);
     // led for Record (edit)
     midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveRecord, cn.Blue]);
+    // led for Menu (no display mode)
+    midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveMenu, cn.White]);
     // led for first bank
     midiInt([0 << 4 | (cn.MidiNoteOn / 16), cn.MidiNoteOn, cn.MoveStep1, cn.White]);
 
@@ -553,5 +568,7 @@ globalThis.init = function () {
 };
 
 globalThis.tick = function(deltaTime) {
-    updateDisplay();
+    if (!noDisplay) {
+        updateDisplay();
+    }
 };
