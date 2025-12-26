@@ -145,6 +145,7 @@ int (*real_ioctl)(int, unsigned long, char *) = NULL;
 int shiftHeld = 0;
 int volumeTouched = 0;
 int wheelTouched = 0;
+int knob8touched = 0;
 void midi_monitor()
 {
     int startByte = 2048;
@@ -223,6 +224,20 @@ void midi_monitor()
             }
         }
 
+        if (midi_0 == 0x90 && midi_1 == 0x07)
+        {
+            if (midi_2 == 0x7f)
+            {
+                knob8touched = 1;
+                printf("Knob 8 touch start\n");
+            }
+            else
+            {
+                knob8touched = 0;
+                printf("Knob 8 touch stop\n");
+            }
+        }
+
         if (midi_0 == 0x90 && midi_1 == 0x08)
         {
             if (midi_2 == 0x7f)
@@ -245,6 +260,14 @@ void midi_monitor()
             {
                 wheelTouched = 0;
             }
+        }
+
+        if (shiftHeld && volumeTouched && knob8touched)
+        {
+            printf("Launching my control surface!\n");
+            // printf("pid: %d\n", getpid());
+
+            launchChildAndKillThisProcess("/data/UserData/control_surface_move/start_my_control_surface_move.sh", "start_my_control_surface_move.sh", "");
         }
 
         if (shiftHeld && volumeTouched && wheelTouched)
