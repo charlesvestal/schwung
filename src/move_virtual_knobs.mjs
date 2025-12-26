@@ -12,6 +12,8 @@ const white = 120;
 const red = 127;
 
 let itemIndex = 0;
+
+// just some example names to work with, more can be added
 const itemNames = [
     "Main",
     "Prm1",
