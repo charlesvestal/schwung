@@ -297,6 +297,10 @@ export function handleMoveKnobs(data, shiftHeld = false, channel = 3) {
 
     console.log(moveControlNumber, value);
 
+    if (data[0] != 0xb0) {
+        return;
+    }
+
     // touch knob to get value
     if (moveControlNumber >= 0 && moveControlNumber <= 8) {
         knob = moveControlNumber;
