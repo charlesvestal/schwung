@@ -34,7 +34,7 @@ globalThis.onMidiMessageInternal = function (data) {
                 os.exec(["./control_surface_move", "move_controller.js"], {block: false});
             } else if (position === 3) {
                 exit();
-                os.exec(["./control_surface_move", "move_draw.js"], {block: false});
+                os.exec(["./control_surface_move", "move_audio.js"], {block: false});
             }
 
         }
@@ -62,9 +62,9 @@ globalThis.init = function () {
 
     display(
         "MoveAnything",
-        "M8 LPP",
+        "M8 Virt LPP",
         "Controller",
-        "Spare"
+        "Audio test"
     );
 };
 
