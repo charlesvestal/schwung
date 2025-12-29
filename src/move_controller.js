@@ -154,6 +154,8 @@ let noDisplay = false;
 let editMode = false;
 let lastPad = 0;
 let lastCC = 0;
+let shiftHeld = false;
+const _ = undefined;
 let pulse8th = 0x08;   // pulsing animation 1/8 note rate
 let pulse4th = 0x09;   // pulsing animation 1/4 note rate
 let pulse2th = 0x0A;   // pulsing animation 1/2 note rate
@@ -375,7 +377,16 @@ globalThis.onMidiMessageInternal = function (data) {
                     value = 1;
                     valueText = "---";
                 }
-
+            } else if (ccNumber === cn.MoveShift && value === 127) {
+                shiftHeld = true;
+                console.log("Shift Held");
+                display(appName, "Shift", "Press MainDial", "Button to exit", true);
+                return;
+            } else if (ccNumber === cn.MoveShift && value === 0) {
+                console.log("Shift Released");
+                shiftHeld = false;
+                display(_,_,_,_,_, true);  // print previous display
+                return;
             } else if (ccNumber === cn.MoveMenu && value === 127) {
                 // toggle display
 
@@ -391,7 +402,6 @@ globalThis.onMidiMessageInternal = function (data) {
             } else if (ccNumber === cn.MoveRecord && value === 127) {
                 // enter edit mode
 
-                midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveCapture, cn.Black]);
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveRecord, cn.Black]);
                 midiInt([0 << 4 | ((cn.MidiCC+pulse2th) / 16), (cn.MidiCC+pulse2th), cn.MoveRecord, cn.Red]);
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, editModeOpt+cn.MoveRow4, cn.Red]);
@@ -401,9 +411,12 @@ globalThis.onMidiMessageInternal = function (data) {
                 return;
 
             } else if (ccNumber === cn.MoveRecord && value === 0) {
-                return;  // ignore 
-            } else if (ccNumber === cn.MoveCapture) {
-                exit();  // exit to Move interface
+                return;  // ignore
+            } else if (shiftHeld && ccNumber === cn.MoveMainButton) {
+                // if Shift is held, exit if Wheel is pressed
+                console.log("Shift+Wheel - exit");
+                exit();
+                return;
             } else {
                 // maybe find use for the other buttons
             }
@@ -429,7 +442,6 @@ globalThis.onMidiMessageInternal = function (data) {
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveRow3, cn.Black]);
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveRow4, cn.Black]);
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveRecord, cn.Blue]);
-                midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveCapture, cn.White]);
                 midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, lastCC, cn.Black]);
 
                 fillPads(padBanks[bank]);
@@ -559,8 +571,6 @@ globalThis.init = function () {
 
     clearLEDS();
 
-    // led for Capture (exit)
-    midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveCapture, cn.White]);
     // led for Record (edit)
     midiInt([0 << 4 | (cn.MidiCC / 16), cn.MidiCC, cn.MoveRecord, cn.Blue]);
     // led for Menu (no display mode)
