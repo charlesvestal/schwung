@@ -36,7 +36,7 @@ globalThis.onMidiMessageExternal = function (data) {
 }
 
 let jogwheelValue = 0;
-
+let shiftHeld = false;
 let noteDown = new Set();
 
 globalThis.onMidiMessageInternal = function (data) {
@@ -50,9 +50,9 @@ globalThis.onMidiMessageInternal = function (data) {
         return;
     }
 
-    if (handleMoveKnobs(data)) {
-        return;
-    }
+    // if (handleMoveKnobs(data)) {
+    //     return;
+    // }
 
     if (aftertouchToModwheel(data)) {
         return;
@@ -77,17 +77,28 @@ globalThis.onMidiMessageInternal = function (data) {
 
     let isCC = data[0] === 0xb0;
     if (isCC) {
-        let ccNumber = data[1];
-        if (ccNumber === 14) {
-            jogwheelValue += (data[2] === 1 ? 1 : -1);
-            console.log(jogwheelValue);
+        if (data[1] === 49 && data[2] === 127) {
+            shiftHeld = true;
+            console.log("Shift Held");
+        } else if (data[1] === 49 && data[2] === 0) {
+            console.log("Shift Released");
+            shiftHeld = false;
+        } else if (shiftHeld && data[1] === 3) {
+            // if Shift is held, exit if Wheel is pressed
+            console.log("Shift+Wheel - exit");
+            exit();
+            return;
+        } else {
+            let ccNumber = data[1];
+            if (ccNumber === 14) {
+                jogwheelValue += (data[2] === 1 ? 1 : -1);
+                console.log(jogwheelValue);
+            }
+
+            // let controlColor = data[2] === 127 ? 23 : 0;
+            let controlColor = 23;
+            move_midi_internal_send([0 << 4 | (data[0] / 16), data[0], data[1], controlColor]);
         }
-
-
-        // let controlColor = data[2] === 127 ? 23 : 0;
-        let controlColor = 23;
-        move_midi_internal_send([0 << 4 | (data[0] / 16), data[0], data[1], controlColor]);
-
     }
 }
 
