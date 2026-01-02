@@ -308,7 +308,7 @@ export function handleMoveKnobs(data, shiftHeld = false, channel = 3) {
     }
 
     // moveControlNumber to knob number
-    if (moveControlNumber >= 71 && moveControlNumber <= 80 || moveControlNumber === 14) {
+    if (moveControlNumber >= 71 && moveControlNumber <= 80) {
         knob = moveControlNumber - 71;
         ccNumber = mapped.get(moveControlNumber);
 
