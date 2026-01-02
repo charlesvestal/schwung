@@ -168,6 +168,7 @@ const lppColorToMoveMonoMap = new Map([
 const initDone = 1000;
 const stepDelay = 20;
 const _ = undefined;
+let audioThru = false;
 let shiftHeld = false;
 let liveMode = false;
 let isPlaying = false;
@@ -459,6 +460,15 @@ globalThis.onMidiMessageInternal = function (data) {
             return;
         }
 
+        if (shiftHeld && moveControlNumber === 85 && data[2] === 0x7f) {
+            if (audioThru === false) {
+                audioThru = true;
+            } else {
+                audioThru = false;
+            }
+            console.log("Audio thru toggled");
+            return;
+        }
 
         if (!lppNote) {
             console.log(`Move: unmapped control [${moveControlNumber}]`);
@@ -499,6 +509,28 @@ globalThis.onMidiMessageInternal = function (data) {
     console.log(`Unmapped Move message: ${data}`);
 
 };
+
+function playAudio() {
+    let audioInOffset = 2048 + 256;
+    for (let frame = 0; frame < 512 / 4; frame++) {
+        let inputL = get_int16(audioInOffset + frame * 4);
+        let inputR = get_int16(audioInOffset + frame * 4 + 2);
+
+        inputL /= 32767.0;
+        inputR /= 32767.0;
+
+        set_int16(256 + frame * 4 + 0, inputL * 32767 & 0xFFFF);
+        set_int16(256 + frame * 4 + 2, inputR * 32767 & 0xFFFF);
+    }
+}
+
+function playSilence() {
+    let audioInOffset = 2048 + 256;
+    for (let frame = 0; frame < 512 / 4; frame++) {
+        set_int16(256 + frame * 4 + 0, 0 * 32767 & 0xFFFF);
+        set_int16(256 + frame * 4 + 2, 0 * 32767 & 0xFFFF);
+    }
+}
 
 // let lppInitSysex = [0xF0, 126, 0, 6, 2, 0, 32, 41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7];
 
@@ -541,6 +573,11 @@ globalThis.init = function () {
     loadConfig();
 };
 
-globalThis.tick = function () {
+globalThis.tick = function (deltaTime) {
+    if (audioThru) {
+        playAudio();
+    } else {
+        playSilence();
+    }
     updateDisplay();
 };
