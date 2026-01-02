@@ -416,7 +416,7 @@ globalThis.onMidiMessageInternal = function (data) {
             }
         }
 
-        let moveVelocity = data[2] * 2;
+        let moveVelocity = data[2] * 4;
 
         // moveVelocity = moveVelocity * 2;
         if (moveVelocity > 127) {
