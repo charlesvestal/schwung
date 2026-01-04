@@ -28,7 +28,7 @@ globalThis.onMidiMessageInternal = function (data) {
             // do something
             if (position === 1) {
                 exit();
-                os.exec(["./control_surface_move", "move_m8_vlpp.js"], {block: false});
+                os.exec(["./control_surface_move", "move_m8_vlpp2.js"], {block: false});
             } else if (position === 2) {
                 exit();
                 os.exec(["./control_surface_move", "move_controller.js"], {block: false});
@@ -62,7 +62,7 @@ globalThis.init = function () {
 
     display(
         "MoveAnything",
-        "M8 Virt LPP",
+        "M8 LPP Emu",
         "Controller",
         "Audio test"
     );

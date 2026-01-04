@@ -1,5 +1,6 @@
 import { aftertouchToModwheel } from "./aftertouch_to_modwheel.mjs";
-import { handleMoveKnobs } from "./move_virtual_knobs.mjs";
+import { loadConfig, handleMoveKnobs, changeBank, changeSave, updateConfig } from "./move_virtual_knobs.mjs";
+import { updateDisplay, display } from "./move_display.mjs";
 
 // https://github.com/Ableton/push-interface/blob/main/doc/AbletonPush2MIDIDisplayInterface.asc#setting-led-colors
 
@@ -99,7 +100,7 @@ const lppPadToMovePadMapTop = new Map([
     [61, 76], [62, 77], [63, 78], [64, 79], [65, 80], [66, 81], [67, 82], [68, 83],
     [51, 68], [52, 69], [53, 70], [54, 71], [55, 72], [56, 73], [57, 74], [58, 75],
     [101, 16], [102, 18], [103, 20], [104, 22], [105, 24], [106, 26], [107, 28], [108, 30]
-])
+]);
 
 const moveToLppPadMapTop = new Map([...lppPadToMovePadMapTop.entries()].map((a) => [a[1], a[0]]));
 
@@ -110,11 +111,15 @@ const lppPadToMovePadMapBottom = new Map([
     [21, 76], [22, 77], [23, 78], [24, 79], [25, 80], [26, 81], [27, 82], [28, 83],
     [11, 68], [12, 69], [13, 70], [14, 71], [15, 72], [16, 73], [17, 74], [18, 75],
     [101, 16], [102, 18], [103, 20], [104, 22], [105, 24], [106, 26], [107, 28], [108, 30]
-])
+]);
 
 const moveToLppPadMapBottom = new Map([...lppPadToMovePadMapBottom.entries()].map((a) => [a[1], a[0]]));
 
 let showingTop = true;
+
+const movePadToKnobBankMap = new Map([
+    [17, 0], [19, 1], [21, 2], [23, 3], [25, 4], [27, 5], [29, 6], [31, 7]
+]);
 
 const light_grey = 0x7c;
 const dim_grey = 0x10;
@@ -162,6 +167,8 @@ const lppColorToMoveMonoMap = new Map([
 
 const initDone = 1000;
 const stepDelay = 20;
+const _ = undefined;
+let audioThru = false;
 let shiftHeld = false;
 let liveMode = false;
 let isPlaying = false;
@@ -181,7 +188,7 @@ function updateMovePadsToMatchLpp() {
         let data = lppNoteValueMap.get(lppPad);
 
         console.log(lppPad, data);
-        
+
         globalThis.onMidiMessageExternal(data);
     }
 }
@@ -222,14 +229,13 @@ globalThis.onMidiMessageExternal = function (data) {
 
     console.log(`onMidiMessageExternal ${data[0].toString(16)} ${data[1].toString(16)} ${data[2].toString(16)}`);
 
-    
     let value = data[0];
     let maskedValue = (value & 0xf0);
-    
+
     let noteOn = maskedValue === 0x90;
     let noteOff = maskedValue === 0x80;
-    
-    
+
+
     // Better to do this in the C layer, but this is fine for now...
     let sysexStart = value === 0xF0;
     let sysexEnd = data[2] === 0xF7;
@@ -260,18 +266,16 @@ globalThis.onMidiMessageExternal = function (data) {
         return;
     }
 
-
-    
     // console.log(value, maskedValue, noteOn, noteOff);
 
-    
+
     if (!(noteOn || noteOff)) {
         console.log(`Got message from M8 that is not a note: ${data}`);
     }
-    
+
     let lppNoteNumber = data[1];
     let lppVelocity = data[2];
-    
+
     lppNoteValueMap.set(lppNoteNumber, [...data]);
 
     if (lppDebugSuperlog) {
@@ -349,7 +353,7 @@ globalThis.onMidiMessageExternal = function (data) {
 
     console.log(`Unmapped LPP note: ${lppNoteNumber}`);
 
-}
+};
 
 globalThis.onMidiMessageInternal = function (data) {
 
@@ -370,7 +374,6 @@ globalThis.onMidiMessageInternal = function (data) {
     }
 
     let activeMoveToLppPadMap = showingTop ? moveToLppPadMapTop : moveToLppPadMapBottom;
-
 
     if (isNote) {
         let moveNoteNumber = data[1];
@@ -395,12 +398,25 @@ globalThis.onMidiMessageInternal = function (data) {
 
         let lppNote = activeMoveToLppPadMap.get(moveNoteNumber);
 
-        if (!lppNote) {
+        if (!lppNote && !shiftHeld && data[2] == 127) {
+            // check if you're switching knob banks
+            if (movePadToKnobBankMap.has(moveNoteNumber)) {
+                changeBank(movePadToKnobBankMap.get(moveNoteNumber));
+                return;
+            }
+
             console.log(`Move: unmapped note [${moveNoteNumber}]`);
+            handleMoveKnobs(data);
             return;
+        } else if (!lppNote && shiftHeld && data[2] == 127) {
+            // check if you're switching saved banks
+            if (movePadToKnobBankMap.has(moveNoteNumber)) {
+                changeSave(movePadToKnobBankMap.get(moveNoteNumber));
+                return;
+            }
         }
 
-        let moveVelocity = data[2] * 2;
+        let moveVelocity = data[2] * 4;
 
         // moveVelocity = moveVelocity * 2;
         if (moveVelocity > 127) {
@@ -444,10 +460,19 @@ globalThis.onMidiMessageInternal = function (data) {
             return;
         }
 
+        if (shiftHeld && moveControlNumber === 85 && data[2] === 0x7f) {
+            if (audioThru === false) {
+                audioThru = true;
+            } else {
+                audioThru = false;
+            }
+            console.log("Audio thru toggled");
+            return;
+        }
 
         if (!lppNote) {
             console.log(`Move: unmapped control [${moveControlNumber}]`);
-            handleMoveKnobs(data);
+            handleMoveKnobs(data, shiftHeld);
             return;
         }
 
@@ -456,18 +481,20 @@ globalThis.onMidiMessageInternal = function (data) {
         console.log(`Sending Move control ${moveControlNumber} to LPP pad ${lppNote} pressed:${pressed}`);
         if (pressed) {
             // detect and store Shift button state
-            if (moveControlNumber === 49) {
+            if (moveControlNumber === moveSHIFT) {
                 shiftHeld = true;
                 console.log("Shift Held");
+                display("Move Anything", "Shift", _, _, true);
             }
 
             move_midi_external_send([2 << 4 | 0x9, 0x90, lppNote, 100]);
 
         } else {
             // reset Shift state when released
-            if (moveControlNumber === 49) {
+            if (moveControlNumber === moveSHIFT) {
                 console.log("Shift Released");
                 shiftHeld = false;
+                display(_,_,_,_,_, true);  // print previous display
             }
 
             move_midi_external_send([2 << 4 | 0x8, 0x80, lppNote, 0]);
@@ -481,6 +508,28 @@ globalThis.onMidiMessageInternal = function (data) {
 
     console.log(`Unmapped Move message: ${data}`);
 
+};
+
+function playAudio() {
+    let audioInOffset = 2048 + 256;
+    for (let frame = 0; frame < 512 / 4; frame++) {
+        let inputL = get_int16(audioInOffset + frame * 4);
+        let inputR = get_int16(audioInOffset + frame * 4 + 2);
+
+        inputL /= 32767.0;
+        inputR /= 32767.0;
+
+        set_int16(256 + frame * 4 + 0, inputL * 32767 & 0xFFFF);
+        set_int16(256 + frame * 4 + 2, inputR * 32767 & 0xFFFF);
+    }
+}
+
+function playSilence() {
+    let audioInOffset = 2048 + 256;
+    for (let frame = 0; frame < 512 / 4; frame++) {
+        set_int16(256 + frame * 4 + 0, 0 * 32767 & 0xFFFF);
+        set_int16(256 + frame * 4 + 2, 0 * 32767 & 0xFFFF);
+    }
 }
 
 // let lppInitSysex = [0xF0, 126, 0, 6, 2, 0, 32, 41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7];
@@ -503,27 +552,32 @@ function initLPP() {
     move_midi_external_send(LPPInitSysex);
     showingTop = true;
 
-    // clear_screen();
-    // print(0, 0, "Move Anything", 1);
-    // print(0, 18, "M8 connected", 1);
+    // enable knobs (primary bank)
+    loadConfig();
+    updateConfig();
+
+    display("Move Anything", "M8 connected");
 }
 
 function updatePLAYLed() {
-    if (liveMode === false && isPlaying === false) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, light_grey]); };
-    if (liveMode === false && isPlaying === true) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, green]); };
-    if (liveMode === true && isPlaying === false) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, sky]); };
-    if (liveMode === true && isPlaying === true) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, navy]); };
+    if (liveMode === false && isPlaying === false) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, light_grey]); }
+    if (liveMode === false && isPlaying === true) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, green]); }
+    if (liveMode === true && isPlaying === false) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, sky]); }
+    if (liveMode === true && isPlaying === true) { move_midi_internal_send([0 << 4 | 0xb, 0xB0, movePLAY, navy]); }
 }
 
 globalThis.init = function () {
     console.log("Move control surface script staring...");
 
+    display("Move Anything", "Waiting for", "M8 to connect");
+    loadConfig();
+};
 
-    // clear_screen();
-    // print(0, 0, "Move Anything", 1);
-    // print(0, 18, "Waiting for", 1);
-    // print(0, 36, "M8 to connect", 1);
-}
-
-// globalThis.tick = function () {
-// };
+globalThis.tick = function (deltaTime) {
+    if (audioThru) {
+        playAudio();
+    } else {
+        playSilence();
+    }
+    updateDisplay();
+};
