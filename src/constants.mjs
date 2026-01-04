@@ -218,58 +218,15 @@ export const Blue = 125;
 export const Green = 126;
 export const Red = 127;
 
-export const colourNames = {
-  // -- NEUTRALS / GREYS ---
+export const colourNames = {  // for pads, steps and play, rec, and record leds
   0: "Black",
-  117: "Black (dup)",
-  124: "Dark Grey",
-  119: "Dark Grey (dup)",
-  118: "Light Grey",
-  121: "Light Grey (dup)",
-  123: "Light Grey (dup)",
-  120: "White",
-  122: "White (dup)",
-
-  // --- REDS / PINKS / MAGENTAS ---
   1: "Bright Red",
-  27: "Rust Red",
-  65: "Deep Red",
-  66: "Very Dark Red",
-  67: "Brick",
-  20: "Electric Violet",
-  21: "Hot Magenta",
-  23: "Neon Pink",
-  24: "Rose",
-  25: "Bright Pink",
-  26: "Light Magenta",
-  104: "Deep Violet",
-  105: "Muted Violet",
-  107: "Dark Purple",
-  109: "Deep Magenta",
-  111: "Dusty Rose",
-  113: "Mauve",
-  114: "Deep Wine",
-  115: "Dusky Mauve",
-  116: "Shadow Mauve",
-
-  // --- ORANGES / AMBERS / YELLOWS ---
   2: "Orange Red",
   3: "Bright Orange",
   4: "Tan / Muted Orange",
   5: "Light Yellow",
   6: "Ochre",
   7: "Vivid Yellow",
-  28: "Burnt Orange",
-  29: "Mustard",
-  30: "Yellow-Green",
-  73: "Dull Yellow",
-  74: "Very Dark Yellow",
-  75: "Brown-Yellow",
-  76: "Deep Brown-Yellow",
-  77: "Olive",
-  78: "Dark Olive",
-
-  // --- GREENS / TEALS ---
   8: "Bright Green",
   9: "Forest Green",
   10: "Dull Green",
@@ -277,78 +234,143 @@ export const colourNames = {
   12: "Teal Green",
   13: "Muted Teal",
   14: "Cyan",
-  31: "Lime",
-  32: "Deep Green",
-  43: "Pale Green",
-  44: "Mint Green",
-  45: "Olive Green",
-  79: "Dull Green",
-  80: "Very Dark Green",
-  81: "Dull Olive",
-  83: "Dark Olive Green",
-  85: "Dark Grass Green",
-  87: "Dark Teal",
-  89: "Muted Sea Green",
-  90: "Deep Teal",
-
-  // --- CYANS / AQUAS / BLUES ---
   15: "Azure Blue",
   16: "Royal Blue",
   17: "Navy",
+  18: "Blue-Violet",
+  19: "Violet",
+  20: "Electric Violet",
+  21: "Hot Magenta",
+  22: "Purple",
+  23: "Neon Pink",
+  24: "Rose",
+  25: "Bright Pink",
+  26: "Light Magenta",
+  27: "Rust Red",
+  28: "Burnt Orange",
+  29: "Mustard",
+  30: "Yellow-Green",
+  31: "Lime",
+  32: "Deep Green",
   33: "Blue",
+  34: "Lilac",
+  35: "Mauve",
+  36: "",
+  37: "",
+  38: "",
+  39: "",
+  40: "",
+  41: "",
+  42: "",
+  43: "Pale Green",
+  44: "Mint Green",
+  45: "Olive Green",
   46: "Pale Cyan",
   47: "Sky Blue",
   48: "Light Blue",
   49: "Muted Blue",
   50: "Lavender Blue",
+  51: "",
+  52: "",
+  53: "",
+  54: "",
+  55: "",
+  56: "",
+  57: "",
+  58: "",
+  59: "",
+  60: "",
+  61: "",
+  62: "",
+  63: "",
+  64: "",
+  65: "Deep Red",
+  66: "Very Dark Red",
+  67: "Brick",
+  68: "",
+  69: "",
+  70: "",
+  71: "",
+  72: "",
+  73: "Dull Yellow",
+  74: "Very Dark Yellow",
+  75: "Brown-Yellow",
+  76: "Deep Brown-Yellow",
+  77: "Olive",
+  78: "Dark Olive",
+  79: "Dull Green",
+  80: "Very Dark Green",
+  81: "Dull Olive",
+  82: "",
+  83: "Dark Olive Green",
+  84: "",
+  85: "Dark Grass Green",
+  86: "",
+  87: "Dark Teal",
+  88: "",
+  89: "Muted Sea Green",
+  90: "Deep Teal",
+  91: "",
+  92: "",
   93: "Deep Blue",
+  94: "",
   95: "Dark Blue",
+  96: "",
   97: "Cool Blue",
+  98: "",
   99: "Indigo",
   100: "Deep Indigo",
   101: "Purple-Blue",
   102: "Dark Indigo",
-  125: "Pure Blue",
-
-  // --- PURPLES / VIOLETS ---
-  18: "Blue-Violet",
-  19: "Violet",
-  22: "Purple",
-  34: "Lilac",
-  35: "Mauve",
+  104: "Deep Violet",
+  105: "Muted Violet",
   106: "Deep Plum",
+  107: "Dark Purple",
   108: "Dark Violet",
+  109: "Deep Magenta",
   110: "Wine Purple",
+  111: "Dusty Rose",
   112: "Dark Rose",
-
-  // --- PRIMARY COLORS ---
+  113: "Mauve",
+  114: "Deep Wine",
+  115: "Dusky Mauve",
+  116: "Shadow Mauve",
+  117: "Black (dup)",
+  118: "Light Grey",
+  119: "Dark Grey (dup)",
+  120: "White",
+  121: "Light Grey (dup)",
+  122: "White (dup)",
+  123: "Light Grey (dup)",
+  124: "Dark Grey",
   125: "Blue",
   126: "Green",
-  127: "Red"
+  127: "Red",
+  128: ""
 };
 
 export const midiNotes = {
-  0: "",
-  1: "",
-  2: "",
-  3: "",
-  4: "",
-  5: "",
-  6: "",
-  7: "",
-  8: "",
-  9: "",
-  10: "",
-  11: "",
-  12: "",
-  13: "",
-  14: "",
-  15: "",
-  16: "",
-  17: "",
-  18: "",
-  19: "",
-  20: "",
+  0: "C-2",
+  1: "C#-2/Db-2",
+  2: "D-2",
+  3: "D#-2/Eb-2",
+  4: "E-2",
+  5: "F-2",
+  6: "F#-2/Gb-2",
+  7: "G-2",
+  8: "G#-2/Ab-2",
+  9: "A-2",
+  10: "A#-2/Bb-2",
+  11: "B-2",
+  12: "C-1",
+  13: "C#-1/Db-1",
+  14: "D-1",
+  15: "D#-1/Eb-1",
+  16: "E-1",
+  17: "F-1",
+  18: "F#-1/Gb-1",
+  19: "G-1",
+  20: "G#-1/Ab-1",
   21: "A0",
   22: "A#0/Bb0",
   23: "B0",
@@ -471,9 +493,13 @@ export const MidiSysexStart = 0xF0;
 export const MidiSysexEnd = 0xF7;
 export const MidiClock = 0xF8;
 
+export const MidiCCOn = 0x7F;
+export const MidiCCOff = 0x00;
+export const MIDIChannels = Array.from({length: 16}, (x, i) => i+1);
+
 
 // Internal MIDI Notes
-export const MoveKnob1Touch = 0;  // on = 127, off = 0
+export const MoveKnob1Touch = 0;  // on = 127, off = 0-63
 export const MoveKnob2Touch = 1;
 export const MoveKnob3Touch = 2;
 export const MoveKnob4Touch = 3;
@@ -522,10 +548,10 @@ export const MoveStep13UI = 28;   // LED only
 export const MoveStep14UI = 29;   // LED only
 export const MoveStep15UI = 30;   // LED only
 export const MoveStep16UI = 31;   // LED only
-export const MoveRow4 = 40;   // bottom row 
-export const MoveRow3 = 41;
-export const MoveRow2 = 42;
-export const MoveRow1 = 43;
+export const MoveRow4 = 40;   // bottom row    RGB led
+export const MoveRow3 = 41;   // RGB led
+export const MoveRow2 = 42;   // RGB led
+export const MoveRow1 = 43;   // RGB led
 export const MoveShift = 49;
 export const MoveMenu = 50;
 export const MoveBack = 51;
@@ -537,7 +563,7 @@ export const MoveLoop = 58;
 export const MoveCopy = 60;
 export const MoveLeft = 62;
 export const MoveRight = 63;
-export const MoveKnob1 = 71;   // right = 1, left = 127
+export const MoveKnob1 = 71;   // clockwise = 1-63, counter clockwise = 64-127
 export const MoveKnob2 = 72;
 export const MoveKnob3 = 73;
 export const MoveKnob4 = 74;
@@ -549,6 +575,72 @@ export const MoveMaster = 79;   // no LED
 export const MovePlay = 85;
 export const MoveRec = 86;
 export const MoveMute = 88;
-export const MoveRecord = 118;
+export const MoveMicOrAudIn = 114;   // Plug detect - MIC in = 0, Line in = 127
+export const MoveSpkrOrAudOut = 115;   // Plug detect - Spkr out = 0, Line out = 127
+export const MoveRecord = 118;   // RGB LED
 export const MoveDelete = 119;
 
+// Groupings
+export const MovePads = Array.from({length: 32}, (x, i) => i + 68);
+export const MoveSteps = Array.from({length: 16}, (x, i) => i + 16);
+export const MoveCCButtons = [
+  MoveMainButton,
+  MoveBack,
+  MoveMenu,
+  MovePlay,
+  MoveRec,
+  MoveCapture,
+  MoveRecord,
+  MoveLoop,
+  MoveMute,
+  MoveDelete,
+  MoveCopy,
+  MoveUndo,
+  MoveShift,
+  MoveUp,
+  MoveLeft,
+  MoveRight,
+  MoveDown
+];
+export const MoveNoteButtons = [...MoveSteps];
+export const MoveRGBLeds = [
+  ...MovePads,
+  ...MoveSteps,
+  MovePlay,
+  MoveRec,
+  MoveRecord
+];
+export const MoveWhiteLeds = [
+  MoveBack,
+  MoveMenu,
+  MoveCapture,
+  MoveLoop,
+  MoveMute,
+  MoveDelete,
+  MoveCopy,
+  MoveUndo,
+  MoveShift,
+  MoveUp,
+  MoveLeft,
+  MoveRight,
+  MoveDown
+];
+
+
+// LED Animations
+export const NoAnimation = 0x00;
+export const Trans24th = 0x01;   // 24th note based on tempo
+export const Trans16th = 0x02;
+export const Trans8th = 0x03;
+export const Trans4th = 0x04;
+export const Trans2th = 0x05;
+export const Pulse24th = 0x06;
+export const Pulse16th = 0x07;
+export const Pulse8th = 0x08;
+export const Pulse4th = 0x09;
+export const Pulse2th = 0x0A;
+export const Blink24th = 0x0B;
+export const Blink16th = 0x0C;
+export const Blink8th = 0x0D;
+export const Blink4th = 0x0E;
+export const Blink2th = 0x0F;
