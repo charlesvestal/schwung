@@ -351,11 +351,12 @@ export function handleMoveKnobs(data, shiftHeld = false, channel = 3) {
         }
     }
 
-    display(
-        "Move Anything", 
-        `Save ${currentSave} Bank ${bank.bank}`, 
-        `${names[knob]}`, 
-        `CC ${ccNumber} - ${knobs[knob]}`
-    );
-
+    if (ccNumber != -1) {
+        display(
+            "Move Anything", 
+            `Save ${currentSave} Bank ${bank.bank}`, 
+            `${names[knob]}`, 
+            `CC ${ccNumber} - ${knobs[knob]}`
+        );
+    }
 }
