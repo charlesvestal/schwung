@@ -22,7 +22,7 @@ function yes_or_no {
 }
 
 install_pages=true
-url=https://github.com/bobbydigitales/control_surface_move/raw/main/
+url=https://github.com/chaolue/control_surface_move/raw/main/
 
 if [ "$1" = "local" ]; then
   url="file:/Users/rob/OrbStack/debian/home/rob/Projects/control_surface_move/"
