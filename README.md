@@ -112,6 +112,9 @@ An attempt (by @chaolue) to create a menu for switching between Move Anything sc
 <br/>
 
 ## Move M8 Launchpad Pro Emulation v2 (move_m8_vlpp2.js)
+
+[![Move M8 Control Surface](https://img.youtube.com/vi/ko19mGEb6jc/0.jpg)](https://www.youtube.com/watch?v=ko19mGEb6jc)
+
 A modification (by @chaolue) of move_m8_vlpp.js to include working display, 8 additional knob banks (originally added by @damian-), knob naming, persistent (8) save slots and audio pass-through.
 
 ### Usage
@@ -131,6 +134,9 @@ A modification (by @chaolue) of move_m8_vlpp.js to include working display, 8 ad
 <br/>
 
 ## Move Controller (move_controller.js)
+
+[![Move Controller](https://img.youtube.com/vi/fMeFNZnKIUA/0.jpg)](https://www.youtube.com/watch?v=fMeFNZnKIUA)
+
 An attempt (by @chaolue) to create a custom editable MIDI controller. Plug it into a USB Host via USB-C or act as a USB Host and plug in a slave device via USB-A. It has 16 banks to save alternate configurations. You can customise and use all knobs, pads and buttons except the row and step buttons and the Rec button (under the main volume). 
 
 ### Usage
