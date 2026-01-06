@@ -35,7 +35,7 @@ Join us on Discord: https://discord.gg/Zn33eRvTyK
 4. The installer is currently a bash script. On macos (and probably Linux) you can just paste this into a terminal:
 
 ```bash
-curl -L https://raw.githubusercontent.com/chaolue/control_surface_move/main/installer/install.sh | sh
+curl -L https://raw.githubusercontent.com/chaolue/move-anything/main/installer/install.sh | sh
 ```
 
 And it'll download the latest build and install it on your Move.
