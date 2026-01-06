@@ -53,14 +53,21 @@ _**Note that when you change pages your live session is killed and restarted wit
 
 
 ## Installation Windows
-If you're on Windows, you can get bash by installing Git Bash, can you get that by installing Git for Windows): https://git-scm.com/downloads/win. Once you have that, launch Bash and then run the install script as above!
+If you're on Windows, you can get bash by installing Git Bash, can you get that by installing Git for Windows: https://git-scm.com/downloads/win. Once you have that, launch Bash and then run the install script as above!
 
 
 ## After installing a new Move build
 **After an update to a new Move build, you will need to re-run the install script.**
 
 ## Troubleshooting
-If it's not working, you can get help in our Discord server: https://discord.gg/gePd9annTJ
+If it's not working, you can get help in our Discord server: https://discord.gg/gePd9annTJ. If you have previously installed Move Anything (control_surface_move) you can try uninstall.
+
+## Uninstall
+To remove Move Anything and restore the original state, run the below bash script:
+
+```bash
+curl -L https://raw.githubusercontent.com/chaolue/move-anything/main/uninstall.sh | sh
+```
 
 
 ## How do I actually create a script?
