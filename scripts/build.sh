@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -x
+
+# Get repo root (parent of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$REPO_ROOT"
+
+# Clean and prepare
+./scripts/clean.sh
+mkdir -p ./build/
+mkdir -p ./build/host/
+mkdir -p ./build/shared/
+mkdir -p ./build/modules/sf2/
+mkdir -p ./build/modules/m8/
+mkdir -p ./build/modules/controller/
+
+echo "Building host..."
+
+# Build host with module manager
+"${CROSS_PREFIX}gcc" -g -O3 \
+    src/move_anything.c \
+    src/host/module_manager.c \
+    -o build/move-anything \
+    -Isrc -Isrc/lib \
+    -Ilibs/quickjs/quickjs-2025-04-26 \
+    -Llibs/quickjs/quickjs-2025-04-26 \
+    -lquickjs -lm -ldl
+
+# Build shim
+"${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
+    -o build/move-anything-shim.so \
+    src/move_anything_shim.c -ldl
+
+echo "Building SF2 module..."
+
+# Build SF2 DSP plugin
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/sf2/dsp/sf2_plugin.c \
+    -o build/modules/sf2/dsp.so \
+    -Isrc -Isrc/modules/sf2/dsp \
+    -lm
+
+# Copy shared utilities
+cp ./src/shared/*.mjs ./build/shared/
+
+# Copy host files
+cp ./src/host/menu_ui.js ./build/host/
+
+# Copy scripts and assets
+cp ./src/shim-entrypoint.sh ./build/
+cp ./src/start.sh ./build/ 2>/dev/null || true
+cp ./src/stop.sh ./build/ 2>/dev/null || true
+cp ./assets/font.png ./build/
+cp ./assets/font.png.dat ./build/
+
+# Copy SF2 module files
+cp ./src/modules/sf2/module.json ./build/modules/sf2/
+cp ./src/modules/sf2/ui.js ./build/modules/sf2/
+
+# Copy M8 module files
+cp ./src/modules/m8/module.json ./build/modules/m8/
+cp ./src/modules/m8/ui.js ./build/modules/m8/
+
+# Copy Controller module files
+cp ./src/modules/controller/module.json ./build/modules/controller/
+cp ./src/modules/controller/ui.js ./build/modules/controller/
+
+echo "Build complete!"
+echo "Host binary: build/move-anything"
+echo "Modules: build/modules/"

@@ -1,0 +1,9 @@
+{
+    "id": "m8",
+    "name": "M8 LPP Emulator",
+    "version": "1.0.0",
+    "description": "Novation Launchpad Pro emulation for Dirtywave M8",
+    "author": "Move Anything",
+    "ui": "ui.js",
+    "api_version": 1
+}
