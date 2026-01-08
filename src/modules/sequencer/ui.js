@@ -359,6 +359,29 @@ function loadAllSetsFromDisk() {
     return false;
 }
 
+/* Migrate old track data to new format (expand patterns from 8 to 30) */
+function migrateTrackData(trackData) {
+    for (const track of trackData) {
+        /* Add missing patterns if track has fewer than NUM_PATTERNS */
+        while (track.patterns.length < NUM_PATTERNS) {
+            const newPattern = {
+                steps: [],
+                loopStart: 0,
+                loopEnd: NUM_STEPS - 1
+            };
+            for (let s = 0; s < NUM_STEPS; s++) {
+                newPattern.steps.push(createEmptyStep());
+            }
+            track.patterns.push(newPattern);
+        }
+        /* Ensure speedIndex exists (migration from older format) */
+        if (track.speedIndex === undefined) {
+            track.speedIndex = DEFAULT_SPEED_INDEX;
+        }
+    }
+    return trackData;
+}
+
 /* Load a set into current tracks and sync to DSP */
 function loadSetToTracks(setIdx) {
     if (!sets[setIdx]) {
@@ -370,8 +393,11 @@ function loadSetToTracks(setIdx) {
 
     /* Handle both old format (array) and new format ({tracks, bpm}) */
     const setData = sets[setIdx];
-    const setTracks = setData.tracks || setData;
+    let setTracks = setData.tracks || setData;
     const setBpm = setData.bpm || 120;
+
+    /* Migrate old data if needed */
+    setTracks = migrateTrackData(setTracks);
 
     tracks = deepCloneTracks(setTracks);
     bpm = setBpm;
