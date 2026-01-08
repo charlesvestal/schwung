@@ -10,7 +10,9 @@
     "audio_in": false,
     "midi_in": true,
     "midi_out": false,
-    "aftertouch": true
+    "aftertouch": true,
+    "chainable": true,
+    "component_type": "sound_generator"
   },
   "defaults": {
     "syx_path": "/data/UserData/move-anything/modules/dx7/patches.syx",
