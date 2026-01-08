@@ -72,6 +72,7 @@ typedef struct {
     uint8_t length;         /* 1-64 steps (for now max 16) */
     uint8_t current_step;
     uint8_t muted;
+    uint8_t swing;          /* Swing amount 0-100 (50 = no swing, 67 = triplet feel) */
     double speed;           /* Speed multiplier (0.25 to 4.0) */
     double phase;           /* Step phase accumulator */
     double gate_phase;      /* Gate timing */
@@ -262,6 +263,7 @@ static void init_track(track_t *track, int channel) {
     track->current_pattern = 0;
     track->current_step = 0;
     track->muted = 0;
+    track->swing = 50;   /* Default swing (50 = no swing) */
     track->speed = 1.0;  /* Default speed */
     track->phase = 0.0;
     track->gate_phase = 0.0;
@@ -586,6 +588,12 @@ static void plugin_set_param(const char *key, const char *val) {
                         g_tracks[track].speed = spd;
                     }
                 }
+                else if (strcmp(param, "swing") == 0) {
+                    int sw = atoi(val);
+                    if (sw >= 0 && sw <= 100) {
+                        g_tracks[track].swing = sw;
+                    }
+                }
                 else if (strcmp(param, "loop_start") == 0) {
                     int start = atoi(val);
                     if (start >= 0 && start < NUM_STEPS) {
@@ -860,6 +868,9 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
                 else if (strcmp(param, "speed") == 0) {
                     return snprintf(buf, buf_len, "%.4f", g_tracks[track].speed);
                 }
+                else if (strcmp(param, "swing") == 0) {
+                    return snprintf(buf, buf_len, "%d", g_tracks[track].swing);
+                }
                 else if (strcmp(param, "loop_start") == 0) {
                     return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->loop_start);
                 }
@@ -1011,9 +1022,20 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
                 }
             }
 
-            /* Check step advance */
-            if (track->phase >= 1.0) {
-                track->phase -= 1.0;
+            /* Check step advance with swing */
+            /* Swing works by making even steps longer and odd steps shorter */
+            /* swing=50 means no swing, swing=67 gives triplet feel */
+            double swing_ratio = track->swing / 100.0;
+            double threshold;
+            if (track->current_step & 1) {
+                /* Odd step: shorter duration with more swing */
+                threshold = 2.0 * (1.0 - swing_ratio);
+            } else {
+                /* Even step: longer duration with more swing */
+                threshold = 2.0 * swing_ratio;
+            }
+            if (track->phase >= threshold) {
+                track->phase -= threshold;
                 advance_track(track, t);
             }
         }

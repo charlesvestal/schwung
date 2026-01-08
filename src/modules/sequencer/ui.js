@@ -14,7 +14,7 @@ import {
     MovePlay, MoveLoop, MoveSteps, MovePads, MoveTracks, MoveShift, MoveMenu, MoveRec, MoveRecord,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep1UI, MoveMainKnob, MoveCapture
+    MoveStep1UI, MoveMainKnob, MoveMainButton, MoveCapture
 } from "../../shared/constants.mjs";
 
 import {
@@ -87,6 +87,7 @@ let patternViewOffset = 0;      // Which row of patterns to show (0=1-4, 4=5-8, 
 let captureHeld = false;        // Capture button held for spark mode
 let sparkMode = false;          // Spark edit mode (capture + step to enter)
 let sparkSelectedSteps = new Set();  // Steps selected for spark editing
+let swingMode = false;          // Swing edit mode (shift + step 7 to enter)
 
 /* Global BPM (mirrors DSP value) */
 let bpm = 120;
@@ -231,7 +232,8 @@ function createEmptyTracks() {
             currentPattern: 0,
             muted: false,
             channel: t,
-            speedIndex: DEFAULT_SPEED_INDEX
+            speedIndex: DEFAULT_SPEED_INDEX,
+            swing: 50
         });
         for (let p = 0; p < NUM_PATTERNS; p++) {
             newTracks[t].patterns.push({
@@ -257,7 +259,8 @@ function deepCloneTracks(srcTracks) {
             currentPattern: srcTrack.currentPattern,
             muted: srcTrack.muted,
             channel: srcTrack.channel,
-            speedIndex: srcTrack.speedIndex
+            speedIndex: srcTrack.speedIndex,
+            swing: srcTrack.swing !== undefined ? srcTrack.swing : 50
         });
         for (let p = 0; p < NUM_PATTERNS; p++) {
             const srcPattern = srcTrack.patterns[p];
@@ -379,6 +382,10 @@ function migrateTrackData(trackData) {
         if (track.speedIndex === undefined) {
             track.speedIndex = DEFAULT_SPEED_INDEX;
         }
+        /* Ensure swing exists (migration from older format) */
+        if (track.swing === undefined) {
+            track.swing = 50;
+        }
     }
     return trackData;
 }
@@ -416,6 +423,7 @@ function loadSetToTracks(setIdx) {
         host_module_set_param(`track_${t}_channel`, String(track.channel));
         host_module_set_param(`track_${t}_muted`, track.muted ? "1" : "0");
         host_module_set_param(`track_${t}_speed`, String(SPEED_OPTIONS[track.speedIndex].mult));
+        host_module_set_param(`track_${t}_swing`, String(track.swing !== undefined ? track.swing : 50));
 
         /* Sync all patterns by temporarily setting each as current */
         for (let p = 0; p < NUM_PATTERNS; p++) {
@@ -469,7 +477,8 @@ for (let t = 0; t < NUM_TRACKS; t++) {
         currentPattern: 0,
         muted: false,
         channel: t,
-        speedIndex: DEFAULT_SPEED_INDEX  // Index into SPEED_OPTIONS
+        speedIndex: DEFAULT_SPEED_INDEX,  // Index into SPEED_OPTIONS
+        swing: 50  // Swing amount (50 = no swing, 67 = triplet feel)
     });
     /* Initialize 8 patterns per track */
     for (let p = 0; p < NUM_PATTERNS; p++) {
@@ -656,6 +665,15 @@ function updateStepLEDs() {
 
             setLED(MoveSteps[i], color);
         }
+    } else if (swingMode) {
+        /* Swing mode: step 7 bright yellow, others black */
+        for (let i = 0; i < NUM_STEPS; i++) {
+            if (i === 6) {  /* Step 7 (index 6) */
+                setLED(MoveSteps[i], VividYellow);
+            } else {
+                setLED(MoveSteps[i], Black);
+            }
+        }
     } else {
         /* Normal mode: show current track's pattern with playhead */
         const pattern = getCurrentPattern(currentTrack);
@@ -692,6 +710,11 @@ function updateStepLEDs() {
             /* Held step - bright track color */
             if (i === heldStep) {
                 color = trackColor;
+            }
+
+            /* Shift held: show step 7 as available for swing mode */
+            if (shiftHeld && i === 6) {
+                color = VividYellow;
             }
 
             setLED(MoveSteps[i], color);
@@ -921,6 +944,11 @@ function updateKnobLEDs() {
         }
         setButtonLED(MoveKnobLEDs[6], LightGrey);  /* Knob 7 = Comp Spark */
         setButtonLED(MoveKnobLEDs[7], LightGrey);  /* Knob 8 = Param Spark */
+    } else if (swingMode) {
+        /* Swing mode: all knobs off (use jog wheel) */
+        for (let i = 0; i < 8; i++) {
+            setButtonLED(MoveKnobLEDs[i], Black);
+        }
     } else if (heldStep >= 0) {
         /* Holding a step: show parameter status for this step */
         const step = getCurrentPattern(currentTrack).steps[heldStep];
@@ -1350,6 +1378,21 @@ globalThis.onMidiMessageInternal = function(data) {
                 updateTransportLEDs();  /* Update loop button to show custom loop */
             }
             updateStepLEDs();
+            return;
+        }
+
+        /* Swing mode: shift + step 7 enters swing edit mode (track mode only) */
+        if (!patternMode && !setView && !masterMode && shiftHeld && stepIdx === 6 && isNoteOn && velocity > 0) {
+            swingMode = true;
+            const swing = tracks[currentTrack].swing;
+            displayMessage(
+                "SWING MODE",
+                `Track ${currentTrack + 1}`,
+                `Swing: ${swing}%`,
+                "Jog: adjust, Click: exit"
+            );
+            updateStepLEDs();
+            updateKnobLEDs();
             return;
         }
 
@@ -1906,9 +1949,36 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
+    /* Main knob / jog wheel click (note 3) - exit swing mode */
+    if (isNote && note === MoveMainButton && isNoteOn && velocity > 0) {
+        if (swingMode) {
+            swingMode = false;
+            displayMessage("SEQOMD", `Track ${currentTrack + 1}`, "", "");
+            updateStepLEDs();
+            updateKnobLEDs();
+        }
+        return;
+    }
+
     /* Main knob / jog wheel turn (CC 14) */
     if (isCC && note === MoveMainKnob) {
-        if (shiftHeld) {
+        if (swingMode) {
+            /* Swing mode: jog wheel adjusts swing */
+            let swing = tracks[currentTrack].swing;
+            if (velocity >= 1 && velocity <= 63) {
+                swing = Math.min(swing + 1, 100);
+            } else if (velocity >= 65 && velocity <= 127) {
+                swing = Math.max(swing - 1, 0);
+            }
+            tracks[currentTrack].swing = swing;
+            host_module_set_param(`track_${currentTrack}_swing`, String(swing));
+            displayMessage(
+                "SWING MODE",
+                `Track ${currentTrack + 1}`,
+                `Swing: ${swing}%`,
+                "Jog: adjust, Click: exit"
+            );
+        } else if (shiftHeld) {
             /* Shift + jog wheel = BPM control (works in any mode) */
             if (velocity >= 1 && velocity <= 63) {
                 bpm = Math.min(bpm + 1, 300);
