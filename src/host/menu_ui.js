@@ -23,8 +23,8 @@ let statusTimeout = 0;
 
 /* Settings state */
 let settingsVisible = false;
-let settingsIndex = 0;  /* 0=velocity, 1=aftertouch on/off, 2=deadzone */
-const SETTINGS_COUNT = 3;
+let settingsIndex = 0;  /* 0=velocity, 1=aftertouch on/off, 2=deadzone, 3=clock, 4=tempo */
+const SETTINGS_COUNT = 5;
 
 /* Alias constants for clarity */
 const CC_JOG_WHEEL = MoveMainKnob;
@@ -48,6 +48,9 @@ const MAX_VISIBLE_ITEMS = 5;
 /* Velocity curve options */
 const VELOCITY_CURVES = ['linear', 'soft', 'hard', 'full'];
 
+/* Clock mode options */
+const CLOCK_MODES = ['off', 'internal', 'external'];
+
 /* Refresh module list from host */
 function refreshModules() {
     modules = host_list_modules();
@@ -69,7 +72,9 @@ function getSettings() {
     return {
         velocity_curve: host_get_setting('velocity_curve') || 'linear',
         aftertouch_enabled: host_get_setting('aftertouch_enabled') ?? 1,
-        aftertouch_deadzone: host_get_setting('aftertouch_deadzone') ?? 0
+        aftertouch_deadzone: host_get_setting('aftertouch_deadzone') ?? 0,
+        clock_mode: host_get_setting('clock_mode') || 'internal',
+        tempo_bpm: host_get_setting('tempo_bpm') ?? 120
     };
 }
 
@@ -92,25 +97,30 @@ function drawSettings() {
     const items = [
         { label: "Velocity", value: capitalize(settings.velocity_curve) },
         { label: "Aftertouch", value: settings.aftertouch_enabled ? "On" : "Off" },
-        { label: "AT Deadzone", value: String(settings.aftertouch_deadzone) }
+        { label: "AT Deadzone", value: String(settings.aftertouch_deadzone) },
+        { label: "MIDI Clock", value: capitalize(settings.clock_mode) },
+        { label: "Tempo BPM", value: String(settings.tempo_bpm) }
     ];
 
+    /* Use smaller line height for settings to fit all items */
+    const settingsLineHeight = 9;
+
     for (let i = 0; i < items.length; i++) {
-        const y = 16 + i * LINE_HEIGHT;
+        const y = 15 + i * settingsLineHeight;
         const isSelected = (i === settingsIndex);
 
         if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LINE_HEIGHT, 1);
-            print(4, y, `> ${items[i].label}:`, 0);
-            print(80, y, items[i].value, 0);
+            fill_rect(0, y - 1, SCREEN_WIDTH, settingsLineHeight, 1);
+            print(4, y, `>${items[i].label}:`, 0);
+            print(75, y, items[i].value, 0);
         } else {
-            print(4, y, `  ${items[i].label}:`, 1);
-            print(80, y, items[i].value, 1);
+            print(4, y, ` ${items[i].label}:`, 1);
+            print(75, y, items[i].value, 1);
         }
     }
 
-    /* Instructions */
-    print(2, 50, "</>:change  click:save", 1);
+    /* Instructions at bottom */
+    print(2, 56, "</>:change jog:save", 1);
 }
 
 /* Draw the menu screen */
@@ -242,6 +252,19 @@ function changeSettingValue(delta) {
         if (dz < 0) dz = 0;
         if (dz > 50) dz = 50;
         host_set_setting('aftertouch_deadzone', dz);
+    } else if (settingsIndex === 3) {
+        /* Clock mode */
+        let idx = CLOCK_MODES.indexOf(settings.clock_mode);
+        idx = (idx + delta + CLOCK_MODES.length) % CLOCK_MODES.length;
+        host_set_setting('clock_mode', CLOCK_MODES[idx]);
+    } else if (settingsIndex === 4) {
+        /* Tempo BPM */
+        let bpm = settings.tempo_bpm;
+        const step = shiftHeld ? 1 : 5;
+        bpm = bpm + (delta * step);
+        if (bpm < 20) bpm = 20;
+        if (bpm > 300) bpm = 300;
+        host_set_setting('tempo_bpm', bpm);
     }
 }
 

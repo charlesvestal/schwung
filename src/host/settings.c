@@ -15,10 +15,19 @@ static const char *velocity_curve_names[] = {
     "full"
 };
 
+/* Clock mode names for display and parsing */
+static const char *clock_mode_names[] = {
+    "off",
+    "internal",
+    "external"
+};
+
 void settings_init(host_settings_t *s) {
     s->velocity_curve = VELOCITY_CURVE_LINEAR;
     s->aftertouch_enabled = 1;
     s->aftertouch_deadzone = 0;
+    s->clock_mode = CLOCK_MODE_INTERNAL;
+    s->tempo_bpm = 120;
 }
 
 const char* settings_velocity_curve_name(velocity_curve_t curve) {
@@ -74,14 +83,28 @@ void settings_load(host_settings_t *s, const char *path) {
             if (dz < 0) dz = 0;
             if (dz > 50) dz = 50;
             s->aftertouch_deadzone = dz;
+        } else if (strcmp(key, "clock_mode") == 0) {
+            for (int i = 0; i < CLOCK_MODE_COUNT; i++) {
+                if (strcmp(val, clock_mode_names[i]) == 0) {
+                    s->clock_mode = (clock_mode_t)i;
+                    break;
+                }
+            }
+        } else if (strcmp(key, "tempo_bpm") == 0) {
+            int bpm = atoi(val);
+            if (bpm < 20) bpm = 20;
+            if (bpm > 300) bpm = 300;
+            s->tempo_bpm = bpm;
         }
     }
 
     fclose(f);
-    printf("settings: loaded velocity_curve=%s aftertouch=%s deadzone=%d\n",
+    printf("settings: loaded velocity_curve=%s aftertouch=%s deadzone=%d clock=%s tempo=%d\n",
            settings_velocity_curve_name(s->velocity_curve),
            s->aftertouch_enabled ? "on" : "off",
-           s->aftertouch_deadzone);
+           s->aftertouch_deadzone,
+           clock_mode_names[s->clock_mode],
+           s->tempo_bpm);
 }
 
 int settings_save(const host_settings_t *s, const char *path) {
@@ -94,6 +117,8 @@ int settings_save(const host_settings_t *s, const char *path) {
     fprintf(f, "velocity_curve=%s\n", settings_velocity_curve_name(s->velocity_curve));
     fprintf(f, "aftertouch_enabled=%d\n", s->aftertouch_enabled);
     fprintf(f, "aftertouch_deadzone=%d\n", s->aftertouch_deadzone);
+    fprintf(f, "clock_mode=%s\n", clock_mode_names[s->clock_mode]);
+    fprintf(f, "tempo_bpm=%d\n", s->tempo_bpm);
 
     fclose(f);
     printf("settings: saved to %s\n", path);

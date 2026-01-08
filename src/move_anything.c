@@ -40,6 +40,12 @@ int g_module_manager_initialized = 0;
 /* Host settings instance */
 host_settings_t g_settings;
 
+/* MIDI clock state */
+#define SAMPLE_RATE 44100
+#define FRAMES_PER_BLOCK 128
+float g_clock_accumulator = 0.0f;
+int g_clock_started = 0;
+
 /* Flag to refresh JS function references after module UI load */
 int g_js_functions_need_refresh = 0;
 
@@ -391,13 +397,14 @@ int glyph_ttf(Font* font, char c, int sx, int sy, int color) {
   unsigned char* bitmap = malloc(w * h);
   stbtt_MakeCodepointBitmap(&font->ttf_info, bitmap, w, h, w, font->ttf_scale, font->ttf_scale, c);
 
-  /* Render with threshold (no anti-aliasing for 1-bit display) */
+  /* Render with threshold (no anti-aliasing for 1-bit display)
+   * Lower threshold (64) captures more of thin font strokes */
   int draw_x = sx + x0;
   int draw_y = sy + font->ttf_ascent + y0;
 
   for (int yi = 0; yi < h; yi++) {
     for (int xi = 0; xi < w; xi++) {
-      if (bitmap[yi * w + xi] > 127) {
+      if (bitmap[yi * w + xi] > 64) {
         set_pixel(draw_x + xi, draw_y + yi, color);
       }
     }
@@ -1239,6 +1246,11 @@ static JSValue js_host_get_setting(JSContext *ctx, JSValueConst this_val,
         result = JS_NewInt32(ctx, g_settings.aftertouch_enabled);
     } else if (strcmp(key, "aftertouch_deadzone") == 0) {
         result = JS_NewInt32(ctx, g_settings.aftertouch_deadzone);
+    } else if (strcmp(key, "clock_mode") == 0) {
+        const char *mode_names[] = {"off", "internal", "external"};
+        result = JS_NewString(ctx, mode_names[g_settings.clock_mode]);
+    } else if (strcmp(key, "tempo_bpm") == 0) {
+        result = JS_NewInt32(ctx, g_settings.tempo_bpm);
     }
 
     JS_FreeCString(ctx, key);
@@ -1274,6 +1286,24 @@ static JSValue js_host_set_setting(JSContext *ctx, JSValueConst this_val,
             if (val < 0) val = 0;
             if (val > 50) val = 50;
             g_settings.aftertouch_deadzone = val;
+        }
+    } else if (strcmp(key, "clock_mode") == 0) {
+        const char *val = JS_ToCString(ctx, argv[1]);
+        if (val) {
+            if (strcmp(val, "off") == 0) g_settings.clock_mode = CLOCK_MODE_OFF;
+            else if (strcmp(val, "internal") == 0) g_settings.clock_mode = CLOCK_MODE_INTERNAL;
+            else if (strcmp(val, "external") == 0) g_settings.clock_mode = CLOCK_MODE_EXTERNAL;
+            JS_FreeCString(ctx, val);
+            /* Reset clock state when mode changes */
+            g_clock_started = 0;
+            g_clock_accumulator = 0.0f;
+        }
+    } else if (strcmp(key, "tempo_bpm") == 0) {
+        int val;
+        if (!JS_ToInt32(ctx, &val, argv[1])) {
+            if (val < 20) val = 20;
+            if (val > 300) val = 300;
+            g_settings.tempo_bpm = val;
         }
     }
 
@@ -1775,6 +1805,27 @@ int main(int argc, char *argv[])
         /* Render audio from DSP module (if loaded) */
         if (mm_is_module_loaded(&g_module_manager)) {
             mm_render_block(&g_module_manager);
+        }
+
+        /* Generate MIDI clock if enabled */
+        if (g_settings.clock_mode == CLOCK_MODE_INTERNAL && g_settings.tempo_bpm > 0) {
+            /* Send MIDI Start on first block */
+            if (!g_clock_started) {
+                uint8_t start_msg[1] = { 0xFA };  /* MIDI Start */
+                mm_on_midi(&g_module_manager, start_msg, 1, MOVE_MIDI_SOURCE_HOST);
+                g_clock_started = 1;
+                printf("MIDI clock started at %d BPM\n", g_settings.tempo_bpm);
+            }
+
+            /* Generate clock pulses - 24 per quarter note */
+            float samples_per_clock = (float)SAMPLE_RATE * 60.0f / (float)g_settings.tempo_bpm / 24.0f;
+            g_clock_accumulator += (float)FRAMES_PER_BLOCK;
+
+            while (g_clock_accumulator >= samples_per_clock) {
+                g_clock_accumulator -= samples_per_clock;
+                uint8_t clock_msg[1] = { 0xF8 };  /* MIDI Timing Clock */
+                mm_on_midi(&g_module_manager, clock_msg, 1, MOVE_MIDI_SOURCE_HOST);
+            }
         }
 
         ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
