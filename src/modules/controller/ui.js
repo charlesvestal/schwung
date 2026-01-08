@@ -5,38 +5,17 @@
  * Use step buttons to switch banks, pads send configurable notes.
  */
 
-/* Colors */
-const Black = 0x00;
-const White = 0x7a;
-const LightGrey = 0x7c;
-const Red = 0x7f;
-const Blue = 0x5f;
-
-/* MIDI message types */
-const MidiNoteOn = 0x90;
-const MidiNoteOff = 0x80;
-const MidiCC = 0xb0;
-
-/* Move hardware constants */
-const MoveShift = 49;
-const MoveMenu = 50;
-const MoveMainButton = 3;
-const MoveMainKnob = 14;
-const MoveStep1 = 16;
-const MoveStep16 = 31;
-const MovePad1 = 68;
-const MovePad32 = 99;
-const MoveKnob1 = 71;
-const MoveMaster = 79;
-const MoveRecord = 118;
-const MoveRow1 = 43;
-const MoveRow4 = 40;
+import {
+    Black, White, LightGrey,
+    MidiNoteOn, MidiNoteOff, MidiCC,
+    MoveShift, MoveMainButton, MoveMainKnob,
+    MoveStep1, MoveStep16, MovePad1, MovePad32,
+    MoveKnob1, MoveMaster
+} from '../../shared/constants.mjs';
 
 /* State */
 let bank = 0;
 let shiftHeld = false;
-let editMode = false;
-let lastPad = 0;
 
 /* Display state */
 let line1 = "MIDI Controller";
@@ -139,7 +118,6 @@ globalThis.onMidiMessageInternal = function (data) {
     }
 
     let isNoteOn = data[0] === MidiNoteOn;
-    let isNoteOff = data[0] === MidiNoteOff;
     let isCC = data[0] === MidiCC;
 
     if (isNote) {

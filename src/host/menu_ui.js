@@ -5,6 +5,12 @@
  * and loading DSP modules.
  */
 
+import {
+    MoveMainKnob, MoveMainButton, MoveMainTouch,
+    MoveShift, MoveMenu,
+    MoveLeft, MoveRight, MoveUp, MoveDown
+} from '../shared/constants.mjs';
+
 /* State */
 let modules = [];
 let selectedIndex = 0;
@@ -13,16 +19,16 @@ let menuVisible = true;
 let statusMessage = '';
 let statusTimeout = 0;
 
-/* Move hardware constants */
-const CC_JOG_WHEEL = 14;   /* Jog wheel rotation (1=CW, 127/65=CCW) */
-const CC_JOG_CLICK = 3;    /* Jog wheel press/click */
-const CC_SHIFT = 49;
-const CC_MENU = 50;
-const CC_LEFT = 62;
-const CC_RIGHT = 63;
-const CC_UP = 55;
-const CC_DOWN = 54;
-const NOTE_JOG_TOUCH = 9;  /* Jog wheel capacitive touch (not click) */
+/* Alias constants for clarity */
+const CC_JOG_WHEEL = MoveMainKnob;
+const CC_JOG_CLICK = MoveMainButton;
+const CC_SHIFT = MoveShift;
+const CC_MENU = MoveMenu;
+const CC_LEFT = MoveLeft;
+const CC_RIGHT = MoveRight;
+const CC_UP = MoveUp;
+const CC_DOWN = MoveDown;
+const NOTE_JOG_TOUCH = MoveMainTouch;
 
 let shiftHeld = false;
 
