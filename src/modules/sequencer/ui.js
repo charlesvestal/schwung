@@ -14,7 +14,7 @@ import {
     MovePlay, MoveLoop, MoveSteps, MovePads, MoveTracks, MoveShift, MoveMenu, MoveRec, MoveRecord,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep1UI, MoveMainKnob
+    MoveStep1UI, MoveMainKnob, MoveCapture
 } from "../../shared/constants.mjs";
 
 import {
@@ -84,7 +84,8 @@ let loopEditMode = false;       // Loop button held - editing loop points
 let loopEditFirst = -1;         // First step pressed while in loop edit
 let patternMode = false;        // Pattern view mode (Menu without shift)
 let patternViewOffset = 0;      // Which row of patterns to show (0=1-4, 4=5-8, etc.)
-let sparkMode = false;          // Spark edit mode (shift + step to enter, shift to exit)
+let captureHeld = false;        // Capture button held for spark mode
+let sparkMode = false;          // Spark edit mode (capture + step to enter)
 let sparkSelectedSteps = new Set();  // Steps selected for spark editing
 
 /* Global BPM (mirrors DSP value) */
@@ -869,6 +870,17 @@ function updateMasterButtonLED() {
     setButtonLED(MoveMenu, masterMode ? 127 : 0);
 }
 
+function updateCaptureLED() {
+    /* Capture button: bright when in spark mode, dim when in track view, off otherwise */
+    if (sparkMode || captureHeld) {
+        setButtonLED(MoveCapture, Purple);  // Bright purple in spark mode
+    } else if (!setView && !patternMode && !masterMode) {
+        setButtonLED(MoveCapture, 107);  // Dim purple in track view (107 = dark purple)
+    } else {
+        setButtonLED(MoveCapture, Black);  // Off in other modes
+    }
+}
+
 /* Set the indicator LED underneath a trigger button (uses 0xBA channel) */
 function setTriggerIndicator(triggerCC, color) {
     move_midi_internal_send([0x0b, 0xBA, triggerCC, color]);
@@ -935,6 +947,7 @@ function updateAllLEDs() {
     updateTrackLEDs();
     updateTransportLEDs();
     updateMasterButtonLED();
+    updateCaptureLED();
     updateKnobLEDs();
     updateTriggerIndicators();
 }
@@ -1209,24 +1222,30 @@ globalThis.onMidiMessageInternal = function(data) {
 
     /* Shift button (CC 49) */
     if (isCC && note === MoveShift) {
-        if (velocity > 0) {
-            /* Shift pressed */
-            if (sparkMode) {
-                /* Exit spark mode */
-                sparkMode = false;
-                sparkSelectedSteps.clear();
-                displayMessage("SEQOMD", `Track ${currentTrack + 1}`, "", "");
-            }
-            shiftHeld = true;
-        } else {
-            /* Shift released */
-            shiftHeld = false;
-        }
+        shiftHeld = velocity > 0;
         updateTrackLEDs();
         updateStepLEDs();
         updateKnobLEDs();
         updateTriggerIndicators();
         updateDisplay();
+        return;
+    }
+
+    /* Capture button (CC 52) - hold for spark mode */
+    if (isCC && note === MoveCapture) {
+        if (velocity > 0) {
+            captureHeld = true;
+        } else {
+            /* Capture released - exit spark mode */
+            captureHeld = false;
+            if (sparkMode) {
+                sparkMode = false;
+                sparkSelectedSteps.clear();
+                displayMessage("SEQOMD", `Track ${currentTrack + 1}`, "", "");
+                updateStepLEDs();
+            }
+        }
+        updateCaptureLED();
         return;
     }
 
@@ -1323,8 +1342,8 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
 
-        /* Spark mode: shift + step enters/toggles step selection */
-        if (shiftHeld && isNoteOn && velocity > 0) {
+        /* Spark mode: capture + step enters/toggles step selection */
+        if (captureHeld && isNoteOn && velocity > 0) {
             if (!sparkMode) {
                 /* Enter spark mode */
                 sparkMode = true;
@@ -1349,6 +1368,7 @@ globalThis.onMidiMessageInternal = function(data) {
             );
             updateStepLEDs();
             updateKnobLEDs();
+            updateCaptureLED();
             return;
         }
 
