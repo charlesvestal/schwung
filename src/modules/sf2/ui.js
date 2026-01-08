@@ -64,11 +64,17 @@ function drawUI() {
     needsRedraw = false;
 }
 
+/* Send all notes off to DSP */
+function allNotesOff() {
+    host_module_set_param("all_notes_off", "1");
+}
+
 /* Change preset */
 function setPreset(index) {
     if (index < 0) index = presetCount - 1;
     if (index >= presetCount) index = 0;
 
+    allNotesOff();
     currentPreset = index;
     host_module_set_param("preset", String(currentPreset));
 
@@ -86,6 +92,7 @@ function setPreset(index) {
 
 /* Change octave */
 function setOctave(delta) {
+    allNotesOff();
     octaveTranspose += delta;
     if (octaveTranspose < -4) octaveTranspose = -4;
     if (octaveTranspose > 4) octaveTranspose = 4;
