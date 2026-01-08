@@ -33,6 +33,8 @@ const PAD_NOTE_MIN = MovePads[0];
 const PAD_NOTE_MAX = MovePads[MovePads.length - 1];
 
 let needsRedraw = true;
+let tickCount = 0;
+const REDRAW_INTERVAL = 6;  /* Redraw every 6 ticks (~10Hz) */
 
 /* Display constants */
 const SCREEN_WIDTH = 128;
@@ -186,8 +188,13 @@ globalThis.tick = function() {
         polyphony = parseInt(poly) || 0;
     }
 
-    /* Always redraw - native DSP gives us CPU headroom */
-    drawUI();
+    /* Rate-limited redraw */
+    tickCount++;
+    if (needsRedraw || tickCount >= REDRAW_INTERVAL) {
+        drawUI();
+        tickCount = 0;
+        needsRedraw = false;
+    }
 };
 
 globalThis.onMidiMessageInternal = function(data) {

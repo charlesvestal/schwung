@@ -70,6 +70,12 @@ unsigned char screen_buffer[128*64];
 int screen_dirty = 0;
 int frame = 0;
 
+/* Display refresh rate limiting */
+int display_pending = 0;           /* Display has changes waiting to be flushed */
+int display_countdown = 0;         /* Countdown to next allowed refresh */
+int display_refresh_interval = 30; /* Ticks between refreshes (~11Hz at 344Hz loop) */
+int display_force_flush = 0;       /* Force immediate flush */
+
 struct SPI_Memory
 {
     unsigned char outgoing_midi[256];
@@ -169,9 +175,8 @@ static JSValue js_get_int16(JSContext *ctx, JSValueConst this_val, int argc, JSV
 // }
 
 void dirty_screen() {
-  if(screen_dirty == 0) {
-    screen_dirty = 1;
-  }
+  /* Mark that display needs to be pushed */
+  display_pending = 1;
 }
 
 void clear_screen() {
@@ -1290,6 +1295,46 @@ static JSValue js_host_reload_settings(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* host_set_refresh_rate(hz) - set display refresh rate (1-60 Hz) */
+static JSValue js_host_set_refresh_rate(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    int hz;
+    if (JS_ToInt32(ctx, &hz, argv[0])) {
+        return JS_UNDEFINED;
+    }
+
+    /* Clamp to reasonable range */
+    if (hz < 1) hz = 1;
+    if (hz > 60) hz = 60;
+
+    /* Convert Hz to tick interval (assuming ~344 ticks/sec from audio block rate) */
+    display_refresh_interval = 344 / hz;
+    if (display_refresh_interval < 1) display_refresh_interval = 1;
+
+    /* Reset countdown so new rate takes effect immediately */
+    display_countdown = 0;
+
+    return JS_UNDEFINED;
+}
+
+/* host_get_refresh_rate() -> current refresh rate in Hz */
+static JSValue js_host_get_refresh_rate(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    int hz = 344 / display_refresh_interval;
+    return JS_NewInt32(ctx, hz);
+}
+
+/* host_flush_display() - force immediate display update */
+static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    display_force_flush = 1;
+    return JS_UNDEFINED;
+}
+
 void init_javascript(JSRuntime **prt, JSContext **pctx)
 {
 
@@ -1393,6 +1438,15 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_reload_settings_func = JS_NewCFunction(ctx, js_host_reload_settings, "host_reload_settings", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_reload_settings", host_reload_settings_func);
+
+    JSValue host_set_refresh_rate_func = JS_NewCFunction(ctx, js_host_set_refresh_rate, "host_set_refresh_rate", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_set_refresh_rate", host_set_refresh_rate_func);
+
+    JSValue host_get_refresh_rate_func = JS_NewCFunction(ctx, js_host_get_refresh_rate, "host_get_refresh_rate", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_get_refresh_rate", host_get_refresh_rate_func);
+
+    JSValue host_flush_display_func = JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_flush_display", host_flush_display_func);
 
     JS_FreeValue(ctx, global_obj);
 
@@ -1792,6 +1846,13 @@ int main(int argc, char *argv[])
 
         }
 
+        /* Start new display push if pending and not already pushing */
+        if (display_pending && screen_dirty == 0) {
+            screen_dirty = 1;
+            display_pending = 0;
+        }
+
+        /* Continue pushing display if in progress */
         if(screen_dirty >= 1) {
           push_screen(screen_dirty-1);
           if(screen_dirty == 7) {
