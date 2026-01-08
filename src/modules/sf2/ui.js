@@ -94,18 +94,7 @@ function setOctave(delta) {
 
 /* Handle CC messages */
 function handleCC(cc, value) {
-    /* Track shift state */
-    if (cc === CC_SHIFT) {
-        shiftHeld = (value > 0);
-        return true;
-    }
-
-    /* Shift+Jog click exits Move Anything */
-    if (cc === CC_JOG_CLICK && shiftHeld) {
-        console.log("Shift+Wheel - exit");
-        exit();
-        return true;
-    }
+    /* Note: Shift+Wheel exit is handled at host level */
 
     /* Preset navigation with left/right buttons */
     if (cc === CC_LEFT && value > 0) {

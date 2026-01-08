@@ -194,18 +194,14 @@ globalThis.onMidiMessageInternal = function (data) {
         if (ccNumber === MoveShift) {
             shiftHeld = value === 127;
             if (shiftHeld) {
-                displayMessage(undefined, "Shift held", "Wheel to exit", undefined);
+                displayMessage(undefined, "Shift held", "", undefined);
             } else {
                 displayMessage(undefined, `Bank ${bank + 1}`, "", undefined);
             }
             return;
         }
 
-        /* Shift+Wheel exits */
-        if (shiftHeld && ccNumber === MoveMainButton) {
-            exit();
-            return;
-        }
+        /* Note: Shift+Wheel exit is handled at host level */
 
         /* Forward other CCs */
         move_midi_external_send([2 << 4 | 0x0b, MidiCC, ccNumber, value]);

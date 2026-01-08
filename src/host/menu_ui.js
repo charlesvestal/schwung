@@ -151,12 +151,7 @@ function handleCC(cc, value) {
         return;
     }
 
-    /* Shift+Jog click exits Move Anything */
-    if (cc === CC_JOG_CLICK && shiftHeld) {
-        console.log("Shift+Wheel - exit");
-        exit();
-        return;
-    }
+    /* Note: Shift+Wheel exit is handled at host level (C code) */
 
     /* Menu button returns to menu if shift held */
     if (cc === CC_MENU && value > 0 && shiftHeld) {
