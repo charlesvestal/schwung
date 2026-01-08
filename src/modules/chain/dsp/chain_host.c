@@ -700,11 +700,20 @@ static int load_patch(int index) {
 
         /* Build path to new synth module */
         char synth_path[MAX_PATH_LEN];
-        strncpy(synth_path, g_module_dir, sizeof(synth_path) - 1);
-        char *last_slash = strrchr(synth_path, '/');
-        if (last_slash) {
-            snprintf(last_slash + 1, sizeof(synth_path) - (last_slash - synth_path) - 1,
-                     "%s", patch->synth_module);
+
+        /* Check if it's an internal sound generator (in chain/sound_generators/) */
+        if (strcmp(patch->synth_module, "linein") == 0) {
+            /* Internal sound generator - look in chain's sound_generators dir */
+            snprintf(synth_path, sizeof(synth_path), "%s/sound_generators/%s",
+                     g_module_dir, patch->synth_module);
+        } else {
+            /* External module (sf2, dx7, etc.) - look in modules dir */
+            strncpy(synth_path, g_module_dir, sizeof(synth_path) - 1);
+            char *last_slash = strrchr(synth_path, '/');
+            if (last_slash) {
+                snprintf(last_slash + 1, sizeof(synth_path) - (last_slash - synth_path) - 1,
+                         "%s", patch->synth_module);
+            }
         }
 
         /* Load new synth */

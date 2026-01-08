@@ -23,9 +23,9 @@ The chain host runs as a module that orchestrates components:
 
 | Type | Description | Implementation |
 |------|-------------|----------------|
-| `sound_generator` | Takes MIDI, outputs audio | Native DSP plugin (existing: SF2, DX7) |
-| `audio_fx` | Takes audio, outputs audio | Native DSP plugin (new) |
-| `midi_fx` | Takes MIDI, outputs MIDI | JS (simple) or Native (timing-critical) |
+| `sound_generator` | Takes MIDI, outputs audio | Native DSP plugin (SF2, DX7, Line In) |
+| `audio_fx` | Takes audio, outputs audio | Native DSP plugin (Freeverb) |
+| `midi_fx` | Takes MIDI, outputs MIDI | Native (chord generator, arpeggiator) |
 | `input` | Generates MIDI | Hardcoded for V1 (pads, external MIDI) |
 
 ### Module Capabilities
@@ -215,13 +215,22 @@ patches/
 - Chord notes generated for note on/off events
 - **Test:** Chord Piano, Minor Strings, Power Organ patches working
 
-### Phase 5: Native MIDI FX (Arpeggiator)
-- Native MIDI processor interface with tick()
-- Implement basic arpeggiator
-- **Test:** Pads → Arp → SF2 → Reverb (full chain)
+### Phase 5: Native MIDI FX (Arpeggiator) ✅ COMPLETE
+- Arpeggiator integrated directly into chain host with tick-based timing
+- Modes: up, down, updown, random
+- Configurable BPM and note division (quarter/8th/16th)
+- Held notes tracked sorted, note-off on octave change to prevent stuck notes
+- **Test:** Arp Piano, Arp Strings patches working
+
+### Phase 6: Line In Sound Generator ✅ COMPLETE
+- Line In plugin reads audio input and outputs to chain
+- Allows external audio processing through FX chain
+- Internal sound generators stored in chain/sound_generators/
+- **Test:** Line In + Reverb patch working
 
 ## Future Considerations
 
+- **More sound generators:** Noise, test tones, sample players
 - **Input components:** Sequencers, MIDI file players, random generators
 - **Multiple chains:** Parallel signal chains for layering/splits
 - **Live editing:** Connect/disconnect components on screen
