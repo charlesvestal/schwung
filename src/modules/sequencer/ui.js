@@ -4,6 +4,9 @@
  * Move is master - sends MIDI clock to external devices
  */
 
+import * as std from 'std';
+import * as os from 'os';
+
 import {
     Black, White, LightGrey, Navy, BrightGreen, Cyan, BrightRed,
     OrangeRed, VividYellow, RoyalBlue, Purple,
@@ -18,6 +21,10 @@ import {
     isNoiseMessage, isCapacitiveTouchMessage,
     setLED, setButtonLED, clearAllLEDs
 } from "../../shared/input_filter.mjs";
+
+/* Persistent storage path */
+const DATA_DIR = '/data/UserData/move-anything-data/sequencer';
+const SETS_FILE = DATA_DIR + '/sets.json';
 
 /* Knob LED CCs (same as knob input CCs) */
 const MoveKnobLEDs = [MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8];
@@ -79,11 +86,14 @@ let patternMode = false;        // Pattern view mode (Menu without shift)
 let sparkMode = false;          // Spark edit mode (shift + step to enter, shift to exit)
 let sparkSelectedSteps = new Set();  // Steps selected for spark editing
 
-/* Set view mode - 32 sets, each containing 8 tracks with all patterns */
+/* Global BPM (mirrors DSP value) */
+let bpm = 120;
+
+/* Set view mode - 32 sets, each containing tracks + bpm */
 const NUM_SETS = 32;
 let setView = true;             // Start in set view mode
 let currentSet = 0;             // Currently loaded set (0-31)
-let sets = [];                  // Array of 32 sets (populated in init)
+let sets = [];                  // Array of 32 sets: null or {tracks, bpm}
 
 
 /* CC output values for knobs */
@@ -277,7 +287,8 @@ function deepCloneTracks(srcTracks) {
 /* Check if a set has any content */
 function setHasContent(setIdx) {
     if (!sets[setIdx]) return false;
-    for (const track of sets[setIdx]) {
+    const setTracks = sets[setIdx].tracks || sets[setIdx];  /* Handle both old and new format */
+    for (const track of setTracks) {
         for (const pattern of track.patterns) {
             for (const step of pattern.steps) {
                 if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
@@ -289,18 +300,84 @@ function setHasContent(setIdx) {
     return false;
 }
 
-/* Save current tracks to current set */
+/* Save current tracks to current set (in memory) */
 function saveCurrentSet() {
-    sets[currentSet] = deepCloneTracks(tracks);
+    sets[currentSet] = {
+        tracks: deepCloneTracks(tracks),
+        bpm: bpm
+    };
+}
+
+/* Ensure data directory exists */
+function ensureDataDir() {
+    try {
+        os.mkdir(DATA_DIR, 0o755);
+    } catch (e) {
+        /* Directory may already exist, that's fine */
+    }
+    /* Also ensure parent exists */
+    try {
+        os.mkdir('/data/UserData/move-anything-data', 0o755);
+    } catch (e) {
+        /* Directory may already exist */
+    }
+}
+
+/* Save all sets to disk */
+function saveAllSetsToDisk() {
+    ensureDataDir();
+    try {
+        const f = std.open(SETS_FILE, 'w');
+        if (f) {
+            f.puts(JSON.stringify(sets));
+            f.close();
+            console.log('Sets saved to disk');
+            return true;
+        }
+    } catch (e) {
+        console.log('Failed to save sets: ' + e);
+    }
+    return false;
+}
+
+/* Load all sets from disk */
+function loadAllSetsFromDisk() {
+    try {
+        const content = std.loadFile(SETS_FILE);
+        if (content) {
+            const loaded = JSON.parse(content);
+            if (Array.isArray(loaded) && loaded.length === NUM_SETS) {
+                sets = loaded;
+                console.log('Sets loaded from disk');
+                return true;
+            }
+        }
+    } catch (e) {
+        console.log('No saved sets found or failed to load: ' + e);
+    }
+    return false;
 }
 
 /* Load a set into current tracks and sync to DSP */
 function loadSetToTracks(setIdx) {
     if (!sets[setIdx]) {
-        sets[setIdx] = createEmptyTracks();
+        sets[setIdx] = {
+            tracks: createEmptyTracks(),
+            bpm: 120
+        };
     }
-    tracks = deepCloneTracks(sets[setIdx]);
+
+    /* Handle both old format (array) and new format ({tracks, bpm}) */
+    const setData = sets[setIdx];
+    const setTracks = setData.tracks || setData;
+    const setBpm = setData.bpm || 120;
+
+    tracks = deepCloneTracks(setTracks);
+    bpm = setBpm;
     currentSet = setIdx;
+
+    /* Sync BPM to DSP */
+    host_module_set_param("bpm", String(bpm));
 
     /* Sync all track data to DSP
      * DSP only supports step operations on current pattern,
@@ -443,13 +520,13 @@ function updateDisplay() {
             ""
         );
     } else if (patternMode) {
-        /* Pattern view - show which pattern each track is on */
+        /* Pattern view - show which pattern each track is on + BPM */
         const patStr = tracks.map(t => String(t.currentPattern + 1)).join(" ");
 
         displayMessage(
-            "PATTERNS 12345678",
+            `PATTERNS      ${bpm} BPM`,
+            `Track:  12345678`,
             `Pattern: ${patStr}`,
-            "",
             ""
         );
     } else if (shiftHeld) {
@@ -616,10 +693,10 @@ function updatePadLEDs() {
             if (isCurrentSet) {
                 color = Cyan;  // Currently loaded set
             } else if (hasContent) {
-                color = LightGrey;  // Has content
-            } else {
-                color = 124;  // Dark grey for empty
+                /* Use track colors cycling through for sets with content */
+                color = TRACK_COLORS[setIdx % 8];
             }
+            /* Empty sets stay Black */
 
             setLED(padNote, color);
         }
@@ -772,10 +849,11 @@ function updateTriggerIndicators() {
 
 function updateKnobLEDs() {
     if (patternMode) {
-        /* Pattern mode: all 8 knobs lit with a subtle color */
-        for (let i = 0; i < 8; i++) {
+        /* Pattern mode: knobs 1-7 for CC, knob 8 for BPM */
+        for (let i = 0; i < 7; i++) {
             setButtonLED(MoveKnobLEDs[i], Cyan);
         }
+        setButtonLED(MoveKnobLEDs[7], VividYellow);  /* Knob 8 = BPM */
     } else if (masterMode) {
         /* Master mode: each knob shows its track color */
         for (let i = 0; i < 8; i++) {
@@ -930,10 +1008,11 @@ globalThis.init = function() {
     console.log("SEQOMD starting...");
     clearAllLEDs();
 
-    /* Initialize 32 empty sets */
+    /* Initialize 32 empty sets, then try to load from disk */
     for (let i = 0; i < NUM_SETS; i++) {
         sets[i] = null;  // null = empty/unused set
     }
+    loadAllSetsFromDisk();  /* Load saved sets if they exist */
 
     /* Initialize track data with patterns */
     for (let t = 0; t < NUM_TRACKS; t++) {
@@ -1162,6 +1241,7 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Save current set before going to set view */
             if (currentSet >= 0) {
                 saveCurrentSet();
+                saveAllSetsToDisk();
             }
             /* Enter set view */
             setView = true;
@@ -1353,6 +1433,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 /* Save current set if we have one loaded */
                 if (currentSet >= 0) {
                     saveCurrentSet();
+                    saveAllSetsToDisk();
                 }
 
                 /* Load the selected set */
@@ -1612,15 +1693,31 @@ globalThis.onMidiMessageInternal = function(data) {
             );
             updateStepLEDs();
         } else if (patternMode) {
-            /* Pattern mode: all 8 knobs send CCs 1-8 on master channel */
-            const cc = knobIdx + 1;  // CC 1-8
-            const val = updateAndSendCC(patternCCValues, knobIdx, velocity, cc, MASTER_CC_CHANNEL);
-            displayMessage(
-                "PATTERNS",
-                `Knob ${knobIdx + 1}: CC ${cc}`,
-                `Value: ${val}`,
-                ""
-            );
+            if (knobIdx === 7) {
+                /* Knob 8 in pattern mode: BPM control */
+                if (velocity >= 1 && velocity <= 63) {
+                    bpm = Math.min(bpm + 1, 300);
+                } else if (velocity >= 65 && velocity <= 127) {
+                    bpm = Math.max(bpm - 1, 20);
+                }
+                host_module_set_param("bpm", String(bpm));
+                displayMessage(
+                    "PATTERNS",
+                    `BPM: ${bpm}`,
+                    "",
+                    ""
+                );
+            } else {
+                /* Knobs 1-7: send CCs 1-7 on master channel */
+                const cc = knobIdx + 1;  // CC 1-7
+                const val = updateAndSendCC(patternCCValues, knobIdx, velocity, cc, MASTER_CC_CHANNEL);
+                displayMessage(
+                    "PATTERNS",
+                    `Knob ${knobIdx + 1}: CC ${cc}`,
+                    `Value: ${val}`,
+                    ""
+                );
+            }
         } else if (masterMode) {
             /* Master mode: each knob changes MIDI channel for that track */
             /* Knob 1 (leftmost) = track 1, knob 8 (rightmost) = track 8 */
