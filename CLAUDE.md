@@ -146,7 +146,7 @@ On-device layout:
 
 Original Move preserved as `/opt/move/MoveOriginal`.
 
-## Signal Chain Module (WIP)
+## Signal Chain Module
 
 The `chain` module implements a modular signal chain for combining components:
 
@@ -170,9 +170,13 @@ Component types: `sound_generator`, `audio_fx`, `midi_fx`
 
 - Chain host (`modules/chain/dsp/chain_host.c`) loads sub-plugins via dlopen
 - Forwards MIDI to sound generator, routes audio through effects
-- Patch files (future) will define chain configurations
+- Patch files in `modules/chain/patches/*.json` define chain configurations
+- MIDI FX: chord generator, arpeggiator (up, down, up_down, random)
+- Audio FX: freeverb
 
-See `docs/plans/2026-01-08-signal-chain-design.md` for full design.
+### External Modules
+
+External modules (JV-880, OB-Xd) install their own chain presets via their install scripts.
 
 ## Dependencies
 
