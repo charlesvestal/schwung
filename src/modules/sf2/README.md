@@ -1,6 +1,6 @@
 # SF2 Synth Module
 
-Polyphonic SoundFont synthesizer for Move Anything using TinySoundFont.
+Polyphonic SoundFont synthesizer for Move Anything using [TinySoundFont](https://github.com/schellingb/TinySoundFont) by Bernhard Schelling.
 
 ## Features
 
@@ -38,3 +38,7 @@ Free SoundFonts are available from:
 - Sample rate: 44100 Hz
 - Block size: 128 frames
 - Output: Stereo interleaved int16
+
+## Credits
+
+- [TinySoundFont](https://github.com/schellingb/TinySoundFont) by Bernhard Schelling (MIT license)
