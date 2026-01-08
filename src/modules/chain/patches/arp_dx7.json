@@ -1,0 +1,28 @@
+{
+    "name": "Arp DX7",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx": {
+            "arp": "up",
+            "arp_bpm": 120,
+            "arp_division": 4
+        },
+        "synth": {
+            "module": "dx7",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.6,
+                    "wet": 0.25,
+                    "dry": 0.75
+                }
+            }
+        ]
+    }
+}
