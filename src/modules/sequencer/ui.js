@@ -14,7 +14,7 @@ import {
     MovePlay, MoveLoop, MoveSteps, MovePads, MoveTracks, MoveShift, MoveMenu, MoveRec, MoveRecord,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep1UI, MoveMainKnob
+    MoveStep1UI, MoveMainKnob, MoveMasterTouch
 } from "../../shared/constants.mjs";
 
 import {
@@ -83,6 +83,8 @@ let lastRecordedStep = -1;      // Last step we recorded to (avoid double-record
 let loopEditMode = false;       // Loop button held - editing loop points
 let loopEditFirst = -1;         // First step pressed while in loop edit
 let patternMode = false;        // Pattern view mode (Menu without shift)
+let patternViewOffset = 0;      // Which row of patterns to show (0=1-4, 4=5-8, etc.)
+let mainKnobTouched = false;    // Is the main jog wheel being touched
 let sparkMode = false;          // Spark edit mode (shift + step to enter, shift to exit)
 let sparkSelectedSteps = new Set();  // Steps selected for spark editing
 
@@ -522,9 +524,10 @@ function updateDisplay() {
     } else if (patternMode) {
         /* Pattern view - show which pattern each track is on + BPM */
         const patStr = tracks.map(t => String(t.currentPattern + 1)).join(" ");
+        const viewRange = `${patternViewOffset + 1}-${patternViewOffset + 4}`;
 
         displayMessage(
-            `PATTERNS      ${bpm} BPM`,
+            `PATTERNS ${viewRange}  ${bpm} BPM`,
             `Track:  12345678`,
             `Pattern: ${patStr}`,
             ""
@@ -701,16 +704,24 @@ function updatePadLEDs() {
             setLED(padNote, color);
         }
     } else if (patternMode) {
-        /* Pattern mode: 8 columns (tracks) x 4 rows (patterns 1-4)
-         * Row 4 (top, indices 0-7): Pattern 4
-         * Row 3 (indices 8-15): Pattern 3
-         * Row 2 (indices 16-23): Pattern 2
-         * Row 1 (bottom, indices 24-31): Pattern 1
+        /* Pattern mode: 8 columns (tracks) x 4 rows (patterns)
+         * Uses patternViewOffset to show different pattern rows
+         * Row 4 (top, indices 0-7): offset + 3
+         * Row 3 (indices 8-15): offset + 2
+         * Row 2 (indices 16-23): offset + 1
+         * Row 1 (bottom, indices 24-31): offset + 0
          */
         for (let i = 0; i < 32; i++) {
             const padNote = MovePads[i];
             const trackIdx = i % 8;
-            const patternIdx = 3 - Math.floor(i / 8);  // Row 1 = pattern 0, Row 4 = pattern 3
+            const rowIdx = 3 - Math.floor(i / 8);  // 0-3 from bottom
+            const patternIdx = patternViewOffset + rowIdx;
+
+            /* Check if pattern is in valid range */
+            if (patternIdx >= NUM_PATTERNS) {
+                setLED(padNote, Black);
+                continue;
+            }
 
             const isCurrentPattern = tracks[trackIdx].currentPattern === patternIdx;
             const patternHasContent = tracks[trackIdx].patterns[patternIdx].steps.some(s => s.notes.length > 0 || s.cc1 >= 0 || s.cc2 >= 0);
@@ -849,11 +860,10 @@ function updateTriggerIndicators() {
 
 function updateKnobLEDs() {
     if (patternMode) {
-        /* Pattern mode: knobs 1-7 for CC, knob 8 for BPM */
-        for (let i = 0; i < 7; i++) {
+        /* Pattern mode: all 8 knobs for CC */
+        for (let i = 0; i < 8; i++) {
             setButtonLED(MoveKnobLEDs[i], Cyan);
         }
-        setButtonLED(MoveKnobLEDs[7], VividYellow);  /* Knob 8 = BPM */
     } else if (masterMode) {
         /* Master mode: each knob shows its track color */
         for (let i = 0; i < 8; i++) {
@@ -1454,18 +1464,22 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Pattern mode: select pattern for track */
             if (isNoteOn && velocity > 0) {
                 const trackIdx = padIdx % 8;
-                const patternIdx = 3 - Math.floor(padIdx / 8);  // Row 1 = pattern 0, etc.
+                const rowIdx = 3 - Math.floor(padIdx / 8);  // 0-3 from bottom
+                const patternIdx = patternViewOffset + rowIdx;
 
-                tracks[trackIdx].currentPattern = patternIdx;
-                host_module_set_param(`track_${trackIdx}_pattern`, String(patternIdx));
+                /* Only select if pattern is in valid range */
+                if (patternIdx < NUM_PATTERNS) {
+                    tracks[trackIdx].currentPattern = patternIdx;
+                    host_module_set_param(`track_${trackIdx}_pattern`, String(patternIdx));
 
-                displayMessage(
-                    "PATTERNS 12345678",
-                    `Track ${trackIdx + 1} -> Pat ${patternIdx + 1}`,
-                    "",
-                    ""
-                );
-                updatePadLEDs();
+                    displayMessage(
+                        `PATTERNS      ${bpm} BPM`,
+                        `Track ${trackIdx + 1} -> Pat ${patternIdx + 1}`,
+                        "",
+                        ""
+                    );
+                    updatePadLEDs();
+                }
             }
         } else if (masterMode) {
             /* Master mode pad handling (indices 24-31 = row 1 bottom, 16-23 = row 2) */
@@ -1693,31 +1707,15 @@ globalThis.onMidiMessageInternal = function(data) {
             );
             updateStepLEDs();
         } else if (patternMode) {
-            if (knobIdx === 7) {
-                /* Knob 8 in pattern mode: BPM control */
-                if (velocity >= 1 && velocity <= 63) {
-                    bpm = Math.min(bpm + 1, 300);
-                } else if (velocity >= 65 && velocity <= 127) {
-                    bpm = Math.max(bpm - 1, 20);
-                }
-                host_module_set_param("bpm", String(bpm));
-                displayMessage(
-                    "PATTERNS",
-                    `BPM: ${bpm}`,
-                    "",
-                    ""
-                );
-            } else {
-                /* Knobs 1-7: send CCs 1-7 on master channel */
-                const cc = knobIdx + 1;  // CC 1-7
-                const val = updateAndSendCC(patternCCValues, knobIdx, velocity, cc, MASTER_CC_CHANNEL);
-                displayMessage(
-                    "PATTERNS",
-                    `Knob ${knobIdx + 1}: CC ${cc}`,
-                    `Value: ${val}`,
-                    ""
-                );
-            }
+            /* Pattern mode: all 8 knobs send CCs 1-8 on master channel */
+            const cc = knobIdx + 1;  // CC 1-8
+            const val = updateAndSendCC(patternCCValues, knobIdx, velocity, cc, MASTER_CC_CHANNEL);
+            displayMessage(
+                "PATTERNS",
+                `Knob ${knobIdx + 1}: CC ${cc}`,
+                `Value: ${val}`,
+                ""
+            );
         } else if (masterMode) {
             /* Master mode: each knob changes MIDI channel for that track */
             /* Knob 1 (leftmost) = track 1, knob 8 (rightmost) = track 8 */
@@ -1852,34 +1850,36 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Main knob / jog wheel (CC 14) */
+    /* Main knob touch (note 8) */
+    if (isNote && note === MoveMasterTouch) {
+        mainKnobTouched = isNoteOn && velocity > 0;
+        return;
+    }
+
+    /* Main knob / jog wheel turn (CC 14) */
     if (isCC && note === MoveMainKnob) {
         if (patternMode) {
-            /* In pattern mode: scroll through patterns for current track */
-            let patIdx = tracks[currentTrack].currentPattern;
-            if (velocity >= 1 && velocity <= 63) {
-                patIdx = Math.min(patIdx + 1, NUM_PATTERNS - 1);
-            } else if (velocity >= 65 && velocity <= 127) {
-                patIdx = Math.max(patIdx - 1, 0);
-            }
-            tracks[currentTrack].currentPattern = patIdx;
-            host_module_set_param(`track_${currentTrack}_pattern`, String(patIdx));
-            updateDisplay();
-            updatePadLEDs();
-        } else if (setView) {
-            /* In set view: scroll through sets */
-            let newSet = currentSet;
-            if (velocity >= 1 && velocity <= 63) {
-                newSet = Math.min(newSet + 1, NUM_SETS - 1);
-            } else if (velocity >= 65 && velocity <= 127) {
-                newSet = Math.max(newSet - 1, 0);
-            }
-            if (newSet !== currentSet) {
-                /* Save current and load new */
-                if (currentSet >= 0) {
-                    saveCurrentSet();
+            if (mainKnobTouched) {
+                /* Touched + turn = BPM control */
+                if (velocity >= 1 && velocity <= 63) {
+                    bpm = Math.min(bpm + 1, 300);
+                } else if (velocity >= 65 && velocity <= 127) {
+                    bpm = Math.max(bpm - 1, 20);
                 }
-                loadSetToTracks(newSet);
+                host_module_set_param("bpm", String(bpm));
+                displayMessage(
+                    `PATTERNS      ${bpm} BPM`,
+                    `Track:  12345678`,
+                    `Pattern: ${tracks.map(t => String(t.currentPattern + 1)).join(" ")}`,
+                    ""
+                );
+            } else {
+                /* Not touched = scroll pattern view */
+                if (velocity >= 1 && velocity <= 63) {
+                    patternViewOffset = Math.min(patternViewOffset + 4, NUM_PATTERNS - 4);
+                } else if (velocity >= 65 && velocity <= 127) {
+                    patternViewOffset = Math.max(patternViewOffset - 4, 0);
+                }
                 updateDisplay();
                 updatePadLEDs();
             }
