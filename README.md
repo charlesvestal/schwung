@@ -46,6 +46,7 @@ The Signal Chain module lets you combine sound generators, MIDI effects, and aud
 - SF2 (SoundFont synth)
 - DX7 (FM synth)
 - Line In (external audio input)
+- External modules (OB-Xd, JV-880) when installed
 
 **MIDI Effects:**
 - Chord generator (major, minor, power, octave)
@@ -54,7 +55,7 @@ The Signal Chain module lets you combine sound generators, MIDI effects, and aud
 **Audio Effects:**
 - Freeverb (Schroeder-Moorer reverb)
 
-Patches are JSON files in `modules/chain/patches/`. Use the jog wheel to browse, Up/Down buttons for octave control.
+Patches are JSON files in `modules/chain/patches/`. Use the jog wheel to browse, Up/Down buttons for octave control. External modules add their own chain presets when installed.
 
 ## Additional Modules
 
