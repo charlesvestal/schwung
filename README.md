@@ -32,6 +32,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 | Module | Description |
 |--------|-------------|
+| DX7 Synth | 6-operator FM synthesizer (Yamaha DX7), loads .syx patches |
 | SF2 Synth | SoundFont synthesizer with preset/octave control |
 | M8 LPP | Dirtywave M8 Launchpad Pro emulation |
 | Controller | MIDI controller with 16 banks |

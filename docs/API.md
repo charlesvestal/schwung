@@ -71,6 +71,10 @@ host_module_get_param(k)      // Get DSP parameter
 host_is_module_loaded()       // Returns bool
 host_get_current_module()     // Returns {id, name, version, ui_script} or null
 host_rescan_modules()         // Rescan modules directory, returns count
+
+// Host volume control
+host_get_volume()             // Returns volume (0-100)
+host_set_volume(vol)          // Set host output volume (0-100)
 ```
 
 ## Utility Functions
@@ -104,7 +108,7 @@ console.log(msg)              // Log to /data/UserData/move-anything/move-anythi
 | 62  | Left arrow        |                                |
 | 63  | Right arrow       |                                |
 | 71-78 | Knob LEDs       | 8 knobs                        |
-| 79  | Master volume LED |                                |
+| 79  | Master volume     | Relative encoder (1-63 CW, 65-127 CCW) |
 | 85  | Play              |                                |
 | 86  | Record            |                                |
 | 88  | Mute              |                                |
@@ -114,6 +118,16 @@ Notes 0-9 are generated when knobs are touched. Filter these if you don't need t
 ```javascript
 if (data[1] < 10) return;  // Ignore capacitive touch
 ```
+
+## Host Volume Control
+
+The volume knob (CC 79) controls host-level output volume by default:
+- Volume is applied after DSP rendering, before audio output
+- Range: 0-100 (default: 100)
+- Displayed in host menu UI
+- Use `host_get_volume()` and `host_set_volume()` to read/write from JS
+
+Modules can claim the volume knob for their own use by setting `"claims_master_knob": true` in module.json. When claimed, the host passes CC 79 through to the module instead of adjusting volume.
 
 ## Audio (DSP Modules Only)
 

@@ -30,6 +30,31 @@ src/modules/your-module/
 Required fields: `id`, `name`, `version`, `api_version`
 Optional fields: `description`, `author`, `ui`, `dsp`
 
+### Capabilities
+
+Add capability flags to enable special module behaviors:
+
+```json
+{
+    "id": "your-module",
+    "name": "Your Module",
+    "version": "1.0.0",
+    "api_version": 1,
+    "audio_out": true,
+    "midi_in": true,
+    "claims_master_knob": true
+}
+```
+
+| Capability | Description |
+|------------|-------------|
+| `audio_out` | Module produces audio |
+| `audio_in` | Module uses audio input |
+| `midi_in` | Module processes MIDI input |
+| `midi_out` | Module sends MIDI output |
+| `aftertouch` | Module uses aftertouch |
+| `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
+
 ## JavaScript UI (ui.js)
 
 Module UIs are loaded as ES modules, so you can import shared utilities:
@@ -198,6 +223,7 @@ const padIndex = note - MovePads[0];  // 0-31
 
 See these modules for reference:
 
+- **dx7**: DX7 FM synthesizer with native DSP (loads .syx patches)
 - **sf2**: SoundFont synthesizer with native DSP
 - **m8**: MIDI translator (UI-only, no DSP)
 - **controller**: MIDI controller with banks (UI-only)
