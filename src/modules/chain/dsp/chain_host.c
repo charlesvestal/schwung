@@ -2,7 +2,7 @@
  * Signal Chain Host DSP Plugin
  *
  * Orchestrates a signal chain: Input → MIDI FX → Sound Generator → Audio FX → Output
- * Phase 2: Patch files with synth module selection
+ * Phase 3: Audio FX support (Freeverb)
  */
 
 #include <stdio.h>
@@ -12,9 +12,11 @@
 #include <dirent.h>
 
 #include "host/plugin_api_v1.h"
+#include "host/audio_fx_api_v1.h"
 
-/* Maximum patches we can track */
-#define MAX_PATCHES 32
+/* Limits */
+#define MAX_PATCHES 32      /* Max patches to list in browser */
+#define MAX_AUDIO_FX 4      /* Max FX loaded per active chain */
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
@@ -24,6 +26,8 @@ typedef struct {
     char path[MAX_PATH_LEN];
     char synth_module[MAX_NAME_LEN];
     int synth_preset;
+    char audio_fx[MAX_AUDIO_FX][MAX_NAME_LEN];
+    int audio_fx_count;
 } patch_info_t;
 
 /* Host API provided by main host */
@@ -33,6 +37,11 @@ static const host_api_v1_t *g_host = NULL;
 static void *g_synth_handle = NULL;
 static plugin_api_v1_t *g_synth_plugin = NULL;
 static char g_current_synth_module[MAX_NAME_LEN] = "";
+
+/* Audio FX state */
+static void *g_fx_handles[MAX_AUDIO_FX];
+static audio_fx_api_v1_t *g_fx_plugins[MAX_AUDIO_FX];
+static int g_fx_count = 0;
 
 /* Patch state */
 static patch_info_t g_patches[MAX_PATCHES];
@@ -136,6 +145,95 @@ static void unload_synth(void) {
     g_current_synth_module[0] = '\0';
 }
 
+/* Load an audio FX plugin */
+static int load_audio_fx(const char *fx_name) {
+    char msg[256];
+
+    if (g_fx_count >= MAX_AUDIO_FX) {
+        chain_log("Max audio FX reached");
+        return -1;
+    }
+
+    /* Build path to FX .so - look in chain/audio_fx/<name>/<name>.so */
+    char fx_path[MAX_PATH_LEN];
+    snprintf(fx_path, sizeof(fx_path), "%s/audio_fx/%s/%s.so",
+             g_module_dir, fx_name, fx_name);
+
+    snprintf(msg, sizeof(msg), "Loading audio FX: %s", fx_path);
+    chain_log(msg);
+
+    /* Open the shared library */
+    void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
+        chain_log(msg);
+        return -1;
+    }
+
+    /* Get init function */
+    audio_fx_init_v1_fn init_fn = (audio_fx_init_v1_fn)dlsym(handle, AUDIO_FX_INIT_SYMBOL);
+    if (!init_fn) {
+        snprintf(msg, sizeof(msg), "dlsym failed: %s", dlerror());
+        chain_log(msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    /* Initialize FX plugin */
+    audio_fx_api_v1_t *fx = init_fn(&g_subplugin_host_api);
+    if (!fx) {
+        chain_log("FX plugin init returned NULL");
+        dlclose(handle);
+        return -1;
+    }
+
+    /* Verify API version */
+    if (fx->api_version != AUDIO_FX_API_VERSION) {
+        snprintf(msg, sizeof(msg), "FX API version mismatch: %d vs %d",
+                 fx->api_version, AUDIO_FX_API_VERSION);
+        chain_log(msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    /* Call on_load */
+    if (fx->on_load) {
+        char fx_dir[MAX_PATH_LEN];
+        snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", g_module_dir, fx_name);
+        if (fx->on_load(fx_dir, NULL) != 0) {
+            chain_log("FX on_load failed");
+            dlclose(handle);
+            return -1;
+        }
+    }
+
+    /* Store in array */
+    g_fx_handles[g_fx_count] = handle;
+    g_fx_plugins[g_fx_count] = fx;
+    g_fx_count++;
+
+    snprintf(msg, sizeof(msg), "Audio FX loaded: %s (slot %d)", fx_name, g_fx_count - 1);
+    chain_log(msg);
+
+    return 0;
+}
+
+/* Unload all audio FX */
+static void unload_all_audio_fx(void) {
+    for (int i = 0; i < g_fx_count; i++) {
+        if (g_fx_plugins[i] && g_fx_plugins[i]->on_unload) {
+            g_fx_plugins[i]->on_unload();
+        }
+        if (g_fx_handles[i]) {
+            dlclose(g_fx_handles[i]);
+        }
+        g_fx_handles[i] = NULL;
+        g_fx_plugins[i] = NULL;
+    }
+    g_fx_count = 0;
+    chain_log("All audio FX unloaded");
+}
+
 /* Simple JSON string extraction - finds "key": "value" and returns value */
 static int json_get_string(const char *json, const char *key, char *out, int out_len) {
     char search[128];
@@ -229,10 +327,52 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         patch->synth_preset = 0;
     }
 
+    /* Parse audio_fx - look for "audio_fx" and extract FX names */
+    patch->audio_fx_count = 0;
+    const char *fx_pos = strstr(json, "\"audio_fx\"");
+    if (fx_pos) {
+        /* Find opening bracket */
+        const char *bracket = strchr(fx_pos, '[');
+        if (bracket) {
+            bracket++;
+            /* Parse FX entries - look for "type": "name" patterns */
+            while (patch->audio_fx_count < MAX_AUDIO_FX) {
+                const char *type_pos = strstr(bracket, "\"type\"");
+                if (!type_pos) break;
+
+                /* Find closing bracket to make sure we're still in array */
+                const char *end_bracket = strchr(fx_pos, ']');
+                if (end_bracket && type_pos > end_bracket) break;
+
+                /* Extract the type value */
+                const char *colon = strchr(type_pos, ':');
+                if (!colon) break;
+
+                /* Find opening quote */
+                const char *quote1 = strchr(colon, '"');
+                if (!quote1) break;
+                quote1++;
+
+                /* Find closing quote */
+                const char *quote2 = strchr(quote1, '"');
+                if (!quote2) break;
+
+                int len = quote2 - quote1;
+                if (len > 0 && len < MAX_NAME_LEN) {
+                    strncpy(patch->audio_fx[patch->audio_fx_count], quote1, len);
+                    patch->audio_fx[patch->audio_fx_count][len] = '\0';
+                    patch->audio_fx_count++;
+                }
+
+                bracket = quote2 + 1;
+            }
+        }
+    }
+
     free(json);
 
-    snprintf(msg, sizeof(msg), "Parsed patch: %s -> %s preset %d",
-             patch->name, patch->synth_module, patch->synth_preset);
+    snprintf(msg, sizeof(msg), "Parsed patch: %s -> %s preset %d, %d FX",
+             patch->name, patch->synth_module, patch->synth_preset, patch->audio_fx_count);
     chain_log(msg);
 
     return 0;
@@ -341,9 +481,18 @@ static int load_patch(int index) {
         g_synth_plugin->set_param("preset", preset_str);
     }
 
+    /* Unload old audio FX and load new ones */
+    unload_all_audio_fx();
+    for (int i = 0; i < patch->audio_fx_count; i++) {
+        if (load_audio_fx(patch->audio_fx[i]) != 0) {
+            snprintf(msg, sizeof(msg), "Warning: Failed to load FX: %s", patch->audio_fx[i]);
+            chain_log(msg);
+        }
+    }
+
     g_current_patch = index;
 
-    snprintf(msg, sizeof(msg), "Loaded patch %d: %s", index, patch->name);
+    snprintf(msg, sizeof(msg), "Loaded patch %d: %s (%d FX)", index, patch->name, g_fx_count);
     chain_log(msg);
 
     return 0;
@@ -401,6 +550,7 @@ fallback:
 
 static void plugin_on_unload(void) {
     chain_log("Chain host unloading");
+    unload_all_audio_fx();
     unload_synth();
 }
 
@@ -470,7 +620,12 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         /* Get audio from synth */
         g_synth_plugin->render_block(out_interleaved_lr, frames);
 
-        /* TODO Phase 3: Process through audio FX chain here */
+        /* Process through audio FX chain */
+        for (int i = 0; i < g_fx_count; i++) {
+            if (g_fx_plugins[i] && g_fx_plugins[i]->process_block) {
+                g_fx_plugins[i]->process_block(out_interleaved_lr, frames);
+            }
+        }
     } else {
         /* No synth loaded - output silence */
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));

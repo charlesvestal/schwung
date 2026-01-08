@@ -1,0 +1,26 @@
+{
+    "name": "Piano + Reverb",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx_js": [],
+        "midi_fx_native": [],
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.7,
+                    "damping": 0.5,
+                    "wet": 0.35,
+                    "dry": 0.65
+                }
+            }
+        ]
+    }
+}
