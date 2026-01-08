@@ -2,7 +2,7 @@
     "name": "Line In + Reverb",
     "version": 1,
     "chain": {
-        "input": "external",
+        "input": "both",
         "synth": {
             "module": "linein",
             "config": {}

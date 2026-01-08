@@ -2,7 +2,7 @@
     "name": "Minor Strings",
     "version": 1,
     "chain": {
-        "input": "pads",
+        "input": "both",
         "midi_fx": {
             "chord": "minor"
         },

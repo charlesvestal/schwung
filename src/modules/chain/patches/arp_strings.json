@@ -2,7 +2,7 @@
     "name": "Arp Strings",
     "version": 1,
     "chain": {
-        "input": "pads",
+        "input": "both",
         "midi_fx": {
             "arp": "updown",
             "arp_bpm": 140,
