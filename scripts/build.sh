@@ -51,8 +51,7 @@ cp ./src/host/menu_ui.js ./build/host/
 cp ./src/shim-entrypoint.sh ./build/
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
-cp ./assets/font.png ./build/
-cp ./assets/font.png.dat ./build/
+# Font is now loaded from TTF at runtime (/opt/move/Fonts/unifont_jp-14.0.01.ttf)
 
 # Copy SF2 module files
 cp ./src/modules/sf2/module.json ./build/modules/sf2/
