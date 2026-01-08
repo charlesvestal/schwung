@@ -146,6 +146,7 @@ int shiftHeld = 0;
 int volumeTouched = 0;
 int wheelTouched = 0;
 int knob8touched = 0;
+int alreadyLaunched = 0;  /* Prevent multiple launches */
 void midi_monitor()
 {
     if (!global_mmap_addr)
@@ -242,8 +243,9 @@ void midi_monitor()
             }
         }
 
-        if (shiftHeld && volumeTouched && knob8touched)
+        if (shiftHeld && volumeTouched && knob8touched && !alreadyLaunched)
         {
+            alreadyLaunched = 1;
             printf("Launching Move Anything!\n");
             launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
         }

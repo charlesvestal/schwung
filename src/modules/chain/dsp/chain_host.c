@@ -600,7 +600,7 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
             patch->arp_mode = ARP_UP;
         } else if (strcmp(arp_str, "down") == 0) {
             patch->arp_mode = ARP_DOWN;
-        } else if (strcmp(arp_str, "updown") == 0) {
+        } else if (strcmp(arp_str, "up_down") == 0 || strcmp(arp_str, "updown") == 0) {
             patch->arp_mode = ARP_UPDOWN;
         } else if (strcmp(arp_str, "random") == 0) {
             patch->arp_mode = ARP_RANDOM;
