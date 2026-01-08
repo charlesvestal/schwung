@@ -248,6 +248,10 @@ static void plugin_set_param(const char *key, const char *val) {
         g_octave_transpose = atoi(val);
         if (g_octave_transpose < -4) g_octave_transpose = -4;
         if (g_octave_transpose > 4) g_octave_transpose = 4;
+    } else if (strcmp(key, "all_notes_off") == 0) {
+        if (g_tsf) {
+            tsf_note_off_all(g_tsf);
+        }
     }
 }
 

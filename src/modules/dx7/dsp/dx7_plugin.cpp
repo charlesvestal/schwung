@@ -625,6 +625,8 @@ static void plugin_set_param(const char *key, const char *val) {
         g_output_level = atoi(val);
         if (g_output_level < 0) g_output_level = 0;
         if (g_output_level > 100) g_output_level = 100;
+    } else if (strcmp(key, "all_notes_off") == 0) {
+        all_notes_off();
     }
 }
 
