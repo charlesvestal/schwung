@@ -181,10 +181,17 @@ import {
     MoveUp, MoveDown, MoveLeft, MoveRight,
     MoveMainKnob, MoveMainButton,
 
-    // Hardware notes
-    MovePad1, MovePad32,      // Pads 68-99
-    MoveStep1, MoveStep16,    // Steps 16-31
+    // Grouped arrays (preferred)
+    MovePads,         // [68-99] all 32 pads
+    MoveSteps,        // [16-31] all 16 step buttons
+    MoveCCButtons,    // All CC button numbers
+    MoveRGBLeds,      // All RGB LED addresses
+    MoveWhiteLeds,    // All white LED addresses
 } from '../../shared/constants.mjs';
+
+// Usage:
+if (MovePads.includes(note)) { /* handle pad */ }
+const padIndex = note - MovePads[0];  // 0-31
 ```
 
 ## Example Modules
