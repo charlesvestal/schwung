@@ -318,11 +318,7 @@ globalThis.onMidiMessageInternal = function (data) {
             updateMoveViewPulse();
         }
 
-        /* Shift+Wheel exits */
-        if (shiftHeld && moveControlNumber === moveWHEEL) {
-            exit();
-            return;
-        }
+        /* Note: Shift+Wheel exit is handled at host level */
 
         /* Wheel click */
         if (moveControlNumber === moveWHEEL && data[2] === 0x7f) {

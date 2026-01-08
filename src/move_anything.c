@@ -24,6 +24,13 @@
 int global_fd = -1;
 int global_exit_flag = 0;
 
+/* Host-level input state for system shortcuts */
+int host_shift_held = 0;
+
+/* Move MIDI CC constants for system shortcuts */
+#define CC_SHIFT 49
+#define CC_JOG_CLICK 3
+
 /* Module manager instance */
 module_manager_t g_module_manager;
 int g_module_manager_initialized = 0;
@@ -431,6 +438,33 @@ void print(int sx, int sy, const char* string, int color) {
       x += font->charSpacing;
     }
   }
+}
+
+/* Process host-level MIDI for system shortcuts (Shift+Wheel to exit) */
+/* Returns 1 if message was consumed by host, 0 if should pass to module */
+int process_host_midi(unsigned char midi_0, unsigned char midi_1, unsigned char midi_2) {
+  /* Only handle internal MIDI (cable 0) control changes */
+  if ((midi_0 & 0xF0) != 0xB0) {
+    return 0;  /* Not a CC, pass through */
+  }
+
+  unsigned char cc = midi_1;
+  unsigned char value = midi_2;
+
+  /* Track Shift key state */
+  if (cc == CC_SHIFT) {
+    host_shift_held = (value == 127);
+    return 0;  /* Pass through so modules can also track it */
+  }
+
+  /* Shift + Jog Click = Exit Move Anything */
+  if (cc == CC_JOG_CLICK && value == 127 && host_shift_held) {
+    printf("Host: Shift+Wheel detected - exiting\n");
+    global_exit_flag = 1;
+    return 1;  /* Consumed, don't pass to module */
+  }
+
+  return 0;  /* Pass through */
 }
 
 int queueMidiSend(int cable, unsigned char *buffer, int length)
@@ -1552,8 +1586,11 @@ int main(int argc, char *argv[])
 
             if (cable == 0)
             {
-                /* Route to JS handler */
-                if(callGlobalFunction(&ctx, &JSonMidiMessageInternal, &byte[1])) {
+                /* Process host-level shortcuts (Shift+Wheel to exit) */
+                int consumed = process_host_midi(midi_0, midi_1, midi_2);
+
+                /* Route to JS handler (unless consumed by host) */
+                if (!consumed && callGlobalFunction(&ctx, &JSonMidiMessageInternal, &byte[1])) {
                   printf("JS:onMidiMessageInternal failed\n");
                 }
                 /* Route to DSP plugin */
