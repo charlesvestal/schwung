@@ -16,6 +16,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "lib/stb_image.h"
 
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "lib/stb_truetype.h"
+
 #include "host/module_manager.h"
 
 int global_fd = -1;
@@ -40,6 +43,13 @@ typedef struct FontChar {
 typedef struct Font {
   int charSpacing;
   FontChar charData[128];
+  /* TTF font data */
+  int is_ttf;
+  stbtt_fontinfo ttf_info;
+  unsigned char* ttf_buffer;
+  float ttf_scale;
+  int ttf_ascent;
+  int ttf_height;
 } Font;
 
 Font* font = NULL;
@@ -231,8 +241,12 @@ Font* load_font(char* filename, int charSpacing) {
   uint32_t borderColor = data[0];
   uint32_t emptyColor = data[(height-1) * width];
 
-  //printf("borderColor: 0x%08x\n", borderColor);
-  //printf("emptyColor: 0x%08x\n", emptyColor);
+  printf("FONT DEBUG: file=%s, size=%dx%d, numChars=%d\n", filename, width, height, numChars);
+  printf("FONT DEBUG: borderColor=0x%08x, emptyColor=0x%08x\n", borderColor, emptyColor);
+
+  if (borderColor == emptyColor) {
+    printf("FONT ERROR: borderColor == emptyColor, font will not load correctly!\n");
+  }
 
   x = 0;
 
@@ -241,47 +255,44 @@ Font* load_font(char* filename, int charSpacing) {
     fc.width = 0;
     fc.height = 0;
 
-    // find the first non-borderColor pixel on the top row
     while(data[x] == borderColor) {
       x++;
     }
 
-    // calculate size of glyph
-    // grow down until we hit borderColor
     int bx = x;
     int by = y;
     for(int by = 0; by < height; by++) {
         uint32_t color = data[by * width + x];
-        //printf("[%d/%d] scanning y %d color: 0x%08x\n", i, numChars, by, color);
         if(color == borderColor) {
           fc.height = by;
-          //printf("[%d/%d] found border color at Y=%d height = %d\n", i, numChars, by, fc.height);
           break;
         }
     }
     for(int bx = x; bx < width; bx++) {
         uint32_t color = data[bx];
-        //printf("[%d/%d] scanning x %d color: 0x%08x\n", i, numChars, bx, color);
         if(color == borderColor) {
           fc.width = bx - x;
-          //printf("[%d/%d] found border color at X=%d width = %d\n", i, numChars, bx, fc.width);
           break;
         }
     }
 
     if(fc.width == 0 || fc.height == 0) {
-      printf("ERROR [%d/%d] loading char '%c' has zero dimension: %d x %d from %d,%d\n", i, numChars, charList[i], fc.width, fc.height, x, y);
+      printf("FONT ERROR [%d/%d] char '%c' (0x%02x) has zero dimension: %d x %d at x=%d\n",
+             i, numChars, charList[i], (unsigned char)charList[i], fc.width, fc.height, x);
+      printf("FONT DEBUG: x position may have exceeded width (%d)\n", width);
       break;
     }
 
-    // grow right until we hit borderColor
+    if (i < 5 || i == numChars - 1) {
+      printf("FONT DEBUG [%d] char '%c': %dx%d at x=%d\n", i, charList[i], fc.width, fc.height, x);
+    }
+
     fc.data = malloc(fc.width * fc.height);
 
     int setPixels = 0;
 
     for(int yi = 0; yi < fc.height; yi++) {
       for(int xi = 0; xi < fc.width; xi++) {
-        // test if the pixel alpha is 0
         uint32_t color = data[(y + yi) * width + (x + xi)];
         int set = (color != borderColor && color != emptyColor);
         if(set) {
@@ -293,21 +304,95 @@ Font* load_font(char* filename, int charSpacing) {
 
     font->charData[(int)charList[i]] = fc;
 
-    printf("[%d/%d] loaded char '%c' from font at %d,%d, %dx%d, set pixels: %d\n", i, numChars, charList[i], x, y, fc.width, fc.height, setPixels);
-
     x += fc.width+1;
     if(x >= width) {
-      printf("hit width of file, ending, loaded %d/%d glyphs\n", i+1, numChars);
       break;
     }
   }
+
+  printf("Loaded bitmap font: %s (%d chars)\n", filename, numChars);
   return font;
 }
 
+Font* load_ttf_font(const char* filename, int pixel_height) {
+  FILE* fp = fopen(filename, "rb");
+  if (!fp) {
+    printf("ERROR loading TTF font: %s\n", filename);
+    return NULL;
+  }
+
+  fseek(fp, 0, SEEK_END);
+  long size = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+
+  unsigned char* buffer = malloc(size);
+  if (!buffer) {
+    fclose(fp);
+    return NULL;
+  }
+  fread(buffer, 1, size, fp);
+  fclose(fp);
+
+  Font* font = malloc(sizeof(Font));
+  memset(font, 0, sizeof(Font));
+  font->is_ttf = 1;
+  font->ttf_buffer = buffer;
+  font->charSpacing = 1;
+
+  if (!stbtt_InitFont(&font->ttf_info, buffer, 0)) {
+    printf("ERROR: stbtt_InitFont failed for %s\n", filename);
+    free(buffer);
+    free(font);
+    return NULL;
+  }
+
+  font->ttf_scale = stbtt_ScaleForPixelHeight(&font->ttf_info, pixel_height);
+  font->ttf_height = pixel_height;
+
+  int ascent, descent, lineGap;
+  stbtt_GetFontVMetrics(&font->ttf_info, &ascent, &descent, &lineGap);
+  font->ttf_ascent = (int)(ascent * font->ttf_scale);
+
+  printf("Loaded TTF font: %s (height=%d, scale=%.3f)\n", filename, pixel_height, font->ttf_scale);
+  return font;
+}
+
+int glyph_ttf(Font* font, char c, int sx, int sy, int color) {
+  int advance, lsb;
+  stbtt_GetCodepointHMetrics(&font->ttf_info, c, &advance, &lsb);
+
+  int x0, y0, x1, y1;
+  stbtt_GetCodepointBitmapBox(&font->ttf_info, c, font->ttf_scale, font->ttf_scale, &x0, &y0, &x1, &y1);
+
+  int w = x1 - x0;
+  int h = y1 - y0;
+
+  if (w <= 0 || h <= 0) {
+    return sx + (int)(advance * font->ttf_scale);
+  }
+
+  unsigned char* bitmap = malloc(w * h);
+  stbtt_MakeCodepointBitmap(&font->ttf_info, bitmap, w, h, w, font->ttf_scale, font->ttf_scale, c);
+
+  /* Render with threshold (no anti-aliasing for 1-bit display) */
+  int draw_x = sx + x0;
+  int draw_y = sy + font->ttf_ascent + y0;
+
+  for (int yi = 0; yi < h; yi++) {
+    for (int xi = 0; xi < w; xi++) {
+      if (bitmap[yi * w + xi] > 127) {
+        set_pixel(draw_x + xi, draw_y + yi, color);
+      }
+    }
+  }
+
+  free(bitmap);
+  return sx + (int)(advance * font->ttf_scale);
+}
+
 int glyph(Font* font, char c, int sx, int sy, int color) {
-  FontChar fc = font->charData[c];
+  FontChar fc = font->charData[(int)c];
   if(fc.data == NULL) {
-    printf("ERROR cannot print char '%c' not in font\n", c);
     return sx + font->charSpacing;
   }
 
@@ -326,12 +411,25 @@ void print(int sx, int sy, const char* string, int color) {
   int y = sy;
 
   if(font == NULL) {
-    font = load_font("font.png", 2);
+    /* Try TTF font first (unifont from Move's fonts directory) */
+    font = load_ttf_font("/opt/move/Fonts/unifont_jp-14.0.01.ttf", 12);
+    if(font == NULL) {
+      /* Fall back to bitmap font */
+      font = load_font("font.png", 1);
+    }
+  }
+
+  if(font == NULL) {
+    return;
   }
 
   for(int i = 0; i < strlen(string); i++) {
-    x = glyph(font, string[i], x, y, color);
-    x += font->charSpacing;
+    if (font->is_ttf) {
+      x = glyph_ttf(font, string[i], x, y, color);
+    } else {
+      x = glyph(font, string[i], x, y, color);
+      x += font->charSpacing;
+    }
   }
 }
 
