@@ -12,6 +12,7 @@
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
+#include "host/plugin_api_v1.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "lib/stb_image.h"
@@ -51,6 +52,7 @@ int g_clock_started = 0;
 int g_js_functions_need_refresh = 0;
 int g_reload_menu_ui = 0;
 char g_menu_script_path[256] = "";
+int g_silence_blocks = 0;
 
 /* Default modules directory */
 #define DEFAULT_MODULES_DIR "/data/UserData/move-anything/modules"
@@ -1127,6 +1129,7 @@ static JSValue js_host_unload_module(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     if (g_module_manager_initialized) {
         mm_unload_module(&g_module_manager);
+        g_silence_blocks = 8;
     }
     return JS_UNDEFINED;
 }
@@ -1860,6 +1863,7 @@ int main(int argc, char *argv[])
             printf("Host: Back detected - returning to menu\n");
             if (g_module_manager_initialized) {
                 mm_unload_module(&g_module_manager);
+                g_silence_blocks = 8;
             }
             if (g_menu_script_path[0]) {
                 eval_file(ctx, g_menu_script_path, -1);
@@ -1870,6 +1874,11 @@ int main(int argc, char *argv[])
                 }
                 g_js_functions_need_refresh = 1;
             }
+        }
+
+        if (g_silence_blocks > 0) {
+            memset(mapped_memory + MOVE_AUDIO_OUT_OFFSET, 0, MOVE_AUDIO_BYTES_PER_BLOCK);
+            g_silence_blocks--;
         }
         /* Refresh JS function references if a module UI was loaded */
         if (g_js_functions_need_refresh) {
