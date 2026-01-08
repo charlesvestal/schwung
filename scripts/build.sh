@@ -72,6 +72,16 @@ echo "Building Signal Chain module..."
     -Isrc \
     -lm -ldl
 
+echo "Building Audio FX plugins..."
+
+# Build Freeverb audio FX
+mkdir -p ./build/modules/chain/audio_fx/freeverb/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/chain/audio_fx/freeverb/freeverb.c \
+    -o build/modules/chain/audio_fx/freeverb/freeverb.so \
+    -Isrc \
+    -lm
+
 # Copy shared utilities
 cp ./src/shared/*.mjs ./build/shared/
 
