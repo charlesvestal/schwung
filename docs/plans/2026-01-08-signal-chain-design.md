@@ -201,11 +201,12 @@ patches/
 - Dynamic synth module loading (SF2 or DX7)
 - **Test:** Multiple patches, switch between them with jog wheel
 
-### Phase 3: Audio FX
+### Phase 3: Audio FX ✅ COMPLETE
 - Implement `audio_fx_api_v1` interface
-- Port Freeverb as first effect
+- Port Freeverb (Schroeder-Moorer algorithm)
 - Chain host routes synth → FX → output
-- **Test:** SF2 → Reverb working
+- Patch JSON parsing for audio_fx array
+- **Test:** Piano + Reverb patch working
 
 ### Phase 4: JS MIDI FX
 - JS MIDI processor interface
