@@ -10,7 +10,9 @@
     "audio_in": false,
     "midi_in": true,
     "midi_out": true,
-    "aftertouch": true
+    "aftertouch": true,
+    "chainable": true,
+    "component_type": "sound_generator"
   },
   "defaults": {
     "soundfont_path": "/data/UserData/move-anything/modules/sf2/instrument.sf2",
