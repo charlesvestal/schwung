@@ -562,7 +562,7 @@ static void plugin_on_unload(void) {
 }
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
-    /* Forward MIDI to synth */
+    /* Forward MIDI to synth (synth handles octave transpose) */
     if (g_synth_plugin && g_synth_plugin->on_midi) {
         g_synth_plugin->on_midi(msg, len, source);
     }
@@ -586,7 +586,7 @@ static void plugin_set_param(const char *key, const char *val) {
         return;
     }
 
-    /* Forward to synth */
+    /* Forward to synth (includes octave_transpose) */
     if (g_synth_plugin && g_synth_plugin->set_param) {
         g_synth_plugin->set_param(key, val);
     }

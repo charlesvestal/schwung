@@ -13,6 +13,8 @@ let currentPatch = 0;
 let synthModule = "";
 let presetName = "";
 let polyphony = 0;
+let octaveTranspose = -2;
+let octaveInitialized = false;
 
 let needsRedraw = true;
 let tickCount = 0;
@@ -22,8 +24,10 @@ const REDRAW_INTERVAL = 6;
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
 
-/* MIDI CC for jog wheel */
+/* MIDI CCs */
 const CC_JOG = 14;
+const CC_UP = 55;
+const CC_DOWN = 54;
 
 /* Draw the UI */
 function drawUI() {
@@ -52,15 +56,12 @@ function drawUI() {
     }
     print(2, 32, presetName, 1);
 
-    /* Polyphony */
-    print(2, 44, `Voices: ${polyphony}`, 1);
+    /* Octave and polyphony */
+    const octStr = octaveTranspose >= 0 ? `+${octaveTranspose}` : `${octaveTranspose}`;
+    print(2, 44, `Oct:${octStr}  Voices:${polyphony}`, 1);
 
     /* Hint for navigation */
-    if (patchCount > 1) {
-        print(2, 54, "Jog: switch patch", 1);
-    } else {
-        print(2, 54, "No patches loaded", 1);
-    }
+    print(2, 54, "Jog:patch Up/Dn:oct", 1);
 
     needsRedraw = false;
 }
@@ -81,6 +82,11 @@ function updateState() {
 
     const poly = host_module_get_param("polyphony");
     if (poly) polyphony = parseInt(poly) || 0;
+
+    const oct = host_module_get_param("octave_transpose");
+    if (oct !== null && oct !== undefined) {
+        octaveTranspose = parseInt(oct) || 0;
+    }
 }
 
 /* Switch to next/previous patch */
@@ -94,6 +100,23 @@ function prevPatch() {
     needsRedraw = true;
 }
 
+/* Adjust octave */
+function octaveUp() {
+    if (octaveTranspose < 4) {
+        octaveTranspose++;
+        host_module_set_param("octave_transpose", String(octaveTranspose));
+        needsRedraw = true;
+    }
+}
+
+function octaveDown() {
+    if (octaveTranspose > -4) {
+        octaveTranspose--;
+        host_module_set_param("octave_transpose", String(octaveTranspose));
+        needsRedraw = true;
+    }
+}
+
 /* === Required module UI callbacks === */
 
 globalThis.init = function() {
@@ -103,6 +126,13 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
+    /* Set default octave on first tick */
+    if (!octaveInitialized) {
+        host_module_set_param("octave_transpose", "-2");
+        octaveTranspose = -2;
+        octaveInitialized = true;
+    }
+
     /* Update state from DSP */
     updateState();
 
@@ -120,15 +150,31 @@ globalThis.onMidiMessageInternal = function(data) {
 
     const status = data[0] & 0xF0;
 
-    /* Handle jog wheel for patch navigation */
-    if (status === 0xB0 && data[1] === CC_JOG) {
-        const delta = data[2] < 64 ? data[2] : data[2] - 128;
-        if (delta > 0) {
-            nextPatch();
-        } else if (delta < 0) {
-            prevPatch();
+    /* Handle CC messages */
+    if (status === 0xB0) {
+        const cc = data[1];
+        const val = data[2];
+
+        /* Jog wheel for patch navigation */
+        if (cc === CC_JOG) {
+            const delta = val < 64 ? val : val - 128;
+            if (delta > 0) {
+                nextPatch();
+            } else if (delta < 0) {
+                prevPatch();
+            }
+            return;
         }
-        return;
+
+        /* Up/Down for octave (on button press) */
+        if (cc === CC_UP && val === 127) {
+            octaveUp();
+            return;
+        }
+        if (cc === CC_DOWN && val === 127) {
+            octaveDown();
+            return;
+        }
     }
 
     /* Note activity triggers redraw for visual feedback */
