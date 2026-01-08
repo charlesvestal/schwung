@@ -101,6 +101,15 @@ unsigned char *mapped_memory;
 
 int outgoing_midi_counter = 0;
 
+#define LED_MAX_UPDATES_PER_TICK 16
+#define LED_QUEUE_SAFE_BYTES 76
+static int pending_note_color[128];
+static uint8_t pending_note_status[128];
+static uint8_t pending_note_cin[128];
+static int pending_cc_color[128];
+static uint8_t pending_cc_status[128];
+static uint8_t pending_cc_cin[128];
+
 struct USB_MIDI_Packet
 {
     unsigned char cable;
@@ -584,6 +593,69 @@ int queueInternalMidiSend(unsigned char *buffer, int length)
     return queueMidiSend(0, buffer, length);
 }
 
+static void reset_pending_leds(void) {
+    for (int i = 0; i < 128; i++) {
+        pending_note_color[i] = -1;
+        pending_note_status[i] = 0x90;
+        pending_note_cin[i] = 0x09;
+        pending_cc_color[i] = -1;
+        pending_cc_status[i] = 0xB0;
+        pending_cc_cin[i] = 0x0B;
+    }
+}
+
+static void queue_pending_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2) {
+    uint8_t type = status & 0xF0;
+    if (type == 0x90) {
+        pending_note_color[data1] = data2;
+        pending_note_status[data1] = status;
+        pending_note_cin[data1] = cin;
+    } else if (type == 0xB0) {
+        pending_cc_color[data1] = data2;
+        pending_cc_status[data1] = status;
+        pending_cc_cin[data1] = cin;
+    }
+}
+
+static void flush_pending_leds(void) {
+    int available = (LED_QUEUE_SAFE_BYTES - outgoing_midi_counter) / 4;
+    int budget = LED_MAX_UPDATES_PER_TICK;
+    if (available <= 0 || budget <= 0) {
+        return;
+    }
+    if (budget > available) {
+        budget = available;
+    }
+
+    int sent = 0;
+    for (int i = 0; i < 128 && sent < budget; i++) {
+        if (pending_note_color[i] >= 0) {
+            unsigned char msg[4] = {
+                pending_note_cin[i],
+                pending_note_status[i],
+                (unsigned char)i,
+                (unsigned char)pending_note_color[i]
+            };
+            pending_note_color[i] = -1;
+            queueMidiSend(0, msg, 4);
+            sent++;
+        }
+    }
+    for (int i = 0; i < 128 && sent < budget; i++) {
+        if (pending_cc_color[i] >= 0) {
+            unsigned char msg[4] = {
+                pending_cc_cin[i],
+                pending_cc_status[i],
+                (unsigned char)i,
+                (unsigned char)pending_cc_color[i]
+            };
+            pending_cc_color[i] = -1;
+            queueMidiSend(0, msg, 4);
+            sent++;
+        }
+    }
+}
+
 void onExternalMidiMessage(unsigned char midi_message[4])
 {
     // js_on_external_midi_message()
@@ -989,7 +1061,18 @@ static JSValue js_move_midi_send(int cable, JSContext *ctx, JSValueConst this_va
 
     //printf("]\n");
 
-    // flushMidi();
+    if (cable == 0 && send_buffer_index == 4) {
+        uint8_t cin = js_move_midi_send_buffer[0];
+        uint8_t status = js_move_midi_send_buffer[1];
+        uint8_t data1 = js_move_midi_send_buffer[2];
+        uint8_t data2 = js_move_midi_send_buffer[3];
+        uint8_t type = status & 0xF0;
+        if (type == 0x90 || type == 0xB0) {
+            queue_pending_led(cin, status, data1, data2);
+            return JS_UNDEFINED;
+        }
+    }
+
     queueMidiSend(cable, (unsigned char *)js_move_midi_send_buffer, send_buffer_index);
     return JS_UNDEFINED;
 }
@@ -1093,6 +1176,34 @@ static int eval_file_safe(JSContext *ctx, const char *filename, int module)
     return ret;
 }
 
+static int eval_file_no_init(JSContext *ctx, const char *filename, int module)
+{
+    uint8_t *buf;
+    int ret, eval_flags = JS_EVAL_FLAG_STRICT;
+    size_t buf_len;
+
+    printf("Loading module UI script: %s\n", filename);
+    buf = js_load_file(ctx, &buf_len, filename);
+    if (!buf) {
+        printf("Failed to load: %s\n", filename);
+        return -1;
+    }
+
+    if (module)
+        eval_flags |= JS_EVAL_TYPE_MODULE;
+    else
+        eval_flags |= JS_EVAL_TYPE_GLOBAL;
+
+    ret = eval_buf(ctx, buf, buf_len, filename, eval_flags);
+    js_free(ctx, buf);
+
+    if (ret != 0) {
+        printf("Failed to eval: %s\n", filename);
+    }
+
+    return ret;
+}
+
 /* host_load_module(id_or_index) -> bool */
 static JSValue js_host_load_module(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv) {
@@ -1124,6 +1235,22 @@ static JSValue js_host_load_module(JSContext *ctx, JSValueConst this_val,
     return result == 0 ? JS_TRUE : JS_FALSE;
 }
 
+/* host_load_ui_module(path) -> bool */
+static JSValue js_host_load_ui_module(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_FALSE;
+
+    int ret = eval_file_no_init(ctx, path, 1);
+    JS_FreeCString(ctx, path);
+
+    return ret == 0 ? JS_TRUE : JS_FALSE;
+}
+
 /* host_unload_module() */
 static JSValue js_host_unload_module(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
@@ -1131,6 +1258,17 @@ static JSValue js_host_unload_module(JSContext *ctx, JSValueConst this_val,
         mm_unload_module(&g_module_manager);
         g_silence_blocks = 8;
     }
+    return JS_UNDEFINED;
+}
+
+/* host_return_to_menu() */
+static JSValue js_host_return_to_menu(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)ctx;
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    g_reload_menu_ui = 1;
     return JS_UNDEFINED;
 }
 
@@ -1502,8 +1640,14 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     JSValue host_load_module_func = JS_NewCFunction(ctx, js_host_load_module, "host_load_module", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_load_module", host_load_module_func);
 
+    JSValue host_load_ui_module_func = JS_NewCFunction(ctx, js_host_load_ui_module, "host_load_ui_module", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_load_ui_module", host_load_ui_module_func);
+
     JSValue host_unload_module_func = JS_NewCFunction(ctx, js_host_unload_module, "host_unload_module", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_unload_module", host_unload_module_func);
+
+    JSValue host_return_to_menu_func = JS_NewCFunction(ctx, js_host_return_to_menu, "host_return_to_menu", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_return_to_menu", host_return_to_menu_func);
 
     JSValue host_module_set_param_func = JS_NewCFunction(ctx, js_host_module_set_param, "host_module_set_param", 2);
     JS_SetPropertyStr(ctx, global_obj, "host_module_set_param", host_module_set_param_func);
@@ -1759,6 +1903,7 @@ int main(int argc, char *argv[])
     // Clear mapped memory
     printf("Clearing mmapped memory\n");
     memset(mapped_memory, 0, 4096);
+    reset_pending_leds();
 
     /* Initialize module manager */
     printf("Initializing module manager\n");
@@ -1924,6 +2069,8 @@ int main(int argc, char *argv[])
                 mm_on_midi(&g_module_manager, clock_msg, 1, MOVE_MIDI_SOURCE_HOST);
             }
         }
+
+        flush_pending_leds();
 
         ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
         outgoing_midi_counter = 0;

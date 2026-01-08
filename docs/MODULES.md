@@ -55,7 +55,7 @@ Add capability flags to enable special module behaviors:
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
-| `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu |
+| `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 
 ## JavaScript UI (ui.js)
 
@@ -102,6 +102,41 @@ globalThis.onMidiMessageInternal = function(data) {
         console.log("Pad pressed: " + note);
     }
 }
+```
+
+### Signal Chain UI Shims
+
+Modules can expose a full-screen UI when used as a Signal Chain MIDI source by
+adding `ui_chain.js` (or setting `"ui_chain"` in `module.json` to a different
+filename). The file should set `globalThis.chain_ui`:
+
+```javascript
+globalThis.chain_ui = {
+    init,
+    tick,
+    onMidiMessageInternal,
+    onMidiMessageExternal
+};
+```
+
+Do not override `globalThis.init` or `globalThis.tick` in `ui_chain.js`.
+
+Example `ui_chain.js` wrapper:
+
+```javascript
+import {
+    init,
+    tick,
+    onMidiMessageInternal,
+    onMidiMessageExternal
+} from './ui_core.mjs';
+
+globalThis.chain_ui = {
+    init,
+    tick,
+    onMidiMessageInternal,
+    onMidiMessageExternal
+};
 ```
 
 ### Menu Layout Helpers

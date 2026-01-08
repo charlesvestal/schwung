@@ -5,7 +5,7 @@ The Signal Chain module lets you build patchable chains of MIDI FX, a sound gene
 ## Architecture
 
 ```
-[Input] -> [MIDI FX] -> [Sound Generator] -> [Audio FX] -> [Output]
+[Input or MIDI Source] -> [MIDI FX] -> [Sound Generator] -> [Audio FX] -> [Output]
 ```
 
 Components live under `src/modules/chain/`:
@@ -76,6 +76,32 @@ Sound generators can be built-in or external modules. Built-in: `linein`. Extern
 
 Audio FX are loaded by type. `freeverb` is included.
 
+### MIDI Source
+
+Optional MIDI source modules can generate MIDI without external input.
+
+Example:
+
+```json
+{
+    "chain": {
+        "midi_source": {
+            "module": "sequencer"
+        }
+    }
+}
+```
+
+When a MIDI source is active, source-generated MIDI is routed into the chain,
+and external/pads input still follows the `input` filter.
+
+MIDI sources can expose a full-screen UI inside the chain by providing
+`ui_chain.js` (or `ui_chain` in `module.json` to point to a different file). The
+file should set `globalThis.chain_ui = { init, tick, onMidiMessageInternal, onMidiMessageExternal }`
+and must not override `globalThis.init`/`tick`.
+
+Chain will enter the source UI when a patch with a supported source loads. Press
+Back to return to the chain view, and Menu to re-enter the source UI.
 ## Raw MIDI and Knob Touch
 
 By default, the host filters knob-touch notes (0-9) from internal MIDI. To bypass this for Signal Chain, set `"raw_midi": true` in `module.json`.

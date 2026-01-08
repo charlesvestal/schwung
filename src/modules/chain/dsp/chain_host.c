@@ -50,6 +50,10 @@ typedef enum {
 #define MAX_ARP_NOTES 16
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BLOCK 128
+#define MOVE_STEP_NOTE_MIN 16
+#define MOVE_STEP_NOTE_MAX 31
+#define MOVE_PAD_NOTE_MIN 68
+#define MOVE_PAD_NOTE_MAX 99
 
 /* Patch info */
 typedef struct {
@@ -115,6 +119,8 @@ static midi_input_t g_midi_input = MIDI_INPUT_ANY;
 /* Raw MIDI bypass (module-level) */
 static int g_raw_midi = 0;
 
+/* Source UI state (used to suppress pad-thru when editing) */
+static int g_source_ui_active = 0;
 /* Our host API for sub-plugins (forwards to main host) */
 static host_api_v1_t g_subplugin_host_api;
 
@@ -803,6 +809,25 @@ static void synth_panic(void) {
     chain_log("Sent panic (all notes off)");
 }
 
+static void unload_patch(void) {
+    synth_panic();
+    unload_all_audio_fx();
+    unload_synth();
+    unload_midi_source();
+    g_current_patch = -1;
+    g_current_synth_module[0] = '\0';
+    g_current_source_module[0] = '\0';
+    g_chord_type = CHORD_NONE;
+    g_js_midi_fx_enabled = 0;
+    g_midi_input = MIDI_INPUT_ANY;
+    g_arp_mode = ARP_OFF;
+    arp_reset();
+    g_arp_last_note = -1;
+    g_source_ui_active = 0;
+    g_mute_countdown = 0;
+    chain_log("Unloaded current patch");
+}
+
 /* Load a patch by index */
 static int load_patch(int index) {
     char msg[256];
@@ -880,6 +905,7 @@ static int load_patch(int index) {
 
     /* Set MIDI input filter */
     g_midi_input = patch->midi_input;
+    g_source_ui_active = 0;
 
     /* Set arpeggiator mode and tempo */
     g_arp_mode = patch->arp_mode;
@@ -908,6 +934,7 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
 
     /* Load module-level settings (raw_midi) */
     load_module_settings(module_dir);
+    g_source_ui_active = 0;
 
     /* Scan for patches */
     scan_patches(module_dir);
@@ -985,6 +1012,16 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (g_js_midi_fx_enabled && source != MOVE_MIDI_SOURCE_HOST) return;
 
     uint8_t status = msg[0] & 0xF0;
+    if (source == MOVE_MIDI_SOURCE_INTERNAL && len >= 2 &&
+        (status == 0x90 || status == 0x80)) {
+        uint8_t note = msg[1];
+        if (note >= MOVE_STEP_NOTE_MIN && note <= MOVE_STEP_NOTE_MAX) {
+            return;
+        }
+        if (g_source_ui_active && note >= MOVE_PAD_NOTE_MIN && note <= MOVE_PAD_NOTE_MAX) {
+            return;
+        }
+    }
 
     /* Handle note on/off for arpeggiator */
     if (g_arp_mode != ARP_OFF && len >= 3 && (status == 0x90 || status == 0x80)) {
@@ -1032,9 +1069,25 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
 }
 
 static void plugin_set_param(const char *key, const char *val) {
+    if (strcmp(key, "source_ui_active") == 0) {
+        g_source_ui_active = atoi(val) ? 1 : 0;
+        return;
+    }
+    if (strncmp(key, "source:", 7) == 0) {
+        const char *subkey = key + 7;
+        if (g_source_plugin && g_source_plugin->set_param && subkey[0] != '\0') {
+            g_source_plugin->set_param(subkey, val);
+        }
+        return;
+    }
+
     /* Handle chain-level params */
     if (strcmp(key, "patch") == 0) {
         int index = atoi(val);
+        if (index < 0) {
+            unload_patch();
+            return;
+        }
         load_patch(index);
         return;
     }
@@ -1065,6 +1118,14 @@ static void plugin_set_param(const char *key, const char *val) {
 }
 
 static int plugin_get_param(const char *key, char *buf, int buf_len) {
+    if (strncmp(key, "source:", 7) == 0) {
+        const char *subkey = key + 7;
+        if (g_source_plugin && g_source_plugin->get_param && subkey[0] != '\0') {
+            return g_source_plugin->get_param(subkey, buf, buf_len);
+        }
+        return -1;
+    }
+
     /* Handle chain-level params */
     if (strcmp(key, "patch_count") == 0) {
         snprintf(buf, buf_len, "%d", g_patch_count);
@@ -1081,6 +1142,14 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         }
         snprintf(buf, buf_len, "No Patch");
         return 0;
+    }
+    if (strncmp(key, "patch_name_", 11) == 0) {
+        int index = atoi(key + 11);
+        if (index >= 0 && index < g_patch_count) {
+            snprintf(buf, buf_len, "%s", g_patches[index].name);
+            return 0;
+        }
+        return -1;
     }
     if (strcmp(key, "midi_fx_js") == 0) {
         if (g_current_patch >= 0 && g_current_patch < g_patch_count) {

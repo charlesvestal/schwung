@@ -65,7 +65,9 @@ globalThis.tick = function() {
 ```javascript
 host_list_modules()           // Returns [{id, name, version}, ...]
 host_load_module(id_or_index) // Load a module by ID or index
+host_load_ui_module(path)     // Load a UI module file (for chain UI shims)
 host_unload_module()          // Unload current module
+host_return_to_menu()         // Unload module and return to host menu UI
 host_module_set_param(k, v)   // Set DSP parameter
 host_module_get_param(k)      // Get DSP parameter
 host_module_send_midi(msg, source) // Send MIDI into current DSP module

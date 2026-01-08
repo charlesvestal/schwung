@@ -4,13 +4,19 @@
  * Phase 2: Patch browser with synth display
  */
 
+import * as std from 'std';
 import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
+import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob } from '../../shared/constants.mjs';
+import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../../shared/menu_layout.mjs';
 import { midiFxRegistry } from './midi_fx/index.mjs';
 
 /* State */
 let patchName = "";
 let patchCount = 0;
 let currentPatch = 0;
+let patchNames = [];
+let selectedPatch = 0;
+let viewMode = "list";
 let synthModule = "";
 let presetName = "";
 let polyphony = 0;
@@ -20,6 +26,12 @@ let midiFxJsSpec = "";
 let midiFxJsChain = [];
 let rawMidi = false;
 let midiInput = "both";
+let midiSourceModule = "";
+let midiSourceModuleLoaded = "";
+let sourceUiActive = false;
+let sourceUiReady = false;
+let sourceUi = null;
+let sourceUiLoadError = false;
 
 let needsRedraw = true;
 let tickCount = 0;
@@ -30,30 +42,209 @@ const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
 
 /* MIDI CCs */
-const CC_JOG = 14;
+const CC_JOG = MoveMainKnob;
+const CC_JOG_CLICK = MoveMainButton;
 const CC_UP = 55;
 const CC_DOWN = 54;
+const CC_MENU = MoveMenu;
+const CC_BACK = MoveBack;
+
+const hostFns = {
+    setParam: host_module_set_param,
+    getParam: host_module_get_param,
+    sendMidi: host_module_send_midi
+};
+
+let modulesRoot = "";
+let pendingSourceUi = null;
+
+function sourceKey(key) {
+    if (typeof key !== "string") return key;
+    if (key.startsWith("source:")) return key;
+    return `source:${key}`;
+}
+
+let sourceHostActive = false;
+
+function enableSourceHostRouting() {
+    if (sourceHostActive) return;
+    globalThis.host_module_set_param = (key, val) => hostFns.setParam(sourceKey(key), val);
+    globalThis.host_module_get_param = (key) => hostFns.getParam(sourceKey(key));
+    globalThis.host_module_send_midi = hostFns.sendMidi;
+    sourceHostActive = true;
+}
+
+function disableSourceHostRouting() {
+    if (!sourceHostActive) return;
+    globalThis.host_module_set_param = hostFns.setParam;
+    globalThis.host_module_get_param = hostFns.getParam;
+    globalThis.host_module_send_midi = hostFns.sendMidi;
+    sourceHostActive = false;
+}
+
+function getModulesRoot() {
+    if (modulesRoot) return modulesRoot;
+    const current = host_get_current_module();
+    if (!current || !current.ui_script) return "";
+    const uiPath = current.ui_script;
+    const chainDir = uiPath.slice(0, uiPath.lastIndexOf("/"));
+    const rootIdx = chainDir.lastIndexOf("/");
+    if (rootIdx < 0) return "";
+    modulesRoot = chainDir.slice(0, rootIdx);
+    return modulesRoot;
+}
+
+function getChainUiPath(moduleId) {
+    const root = getModulesRoot();
+    if (!root || !moduleId) return "";
+    const moduleDir = `${root}/${moduleId}`;
+    let chainUiPath = `${moduleDir}/ui_chain.js`;
+
+    let moduleJson = null;
+    try {
+        moduleJson = std.loadFile(`${moduleDir}/module.json`);
+    } catch (e) {
+        moduleJson = null;
+    }
+    if (moduleJson) {
+        const match = moduleJson.match(/\"ui_chain\"\\s*:\\s*\"([^\"]+)\"/);
+        if (match && match[1]) {
+            chainUiPath = `${moduleDir}/${match[1]}`;
+        }
+    }
+
+    return chainUiPath;
+}
+
+function loadSourceUi(moduleId) {
+    if (!moduleId) {
+        sourceUiLoadError = false;
+        return null;
+    }
+    const path = getChainUiPath(moduleId);
+    if (!path) {
+        sourceUiLoadError = true;
+        return null;
+    }
+    globalThis.chain_ui = null;
+    if (typeof host_load_ui_module !== "function") {
+        sourceUiLoadError = true;
+        return null;
+    }
+    const ok = host_load_ui_module(path);
+    if (!ok) {
+        sourceUiLoadError = true;
+        return null;
+    }
+    const ui = globalThis.chain_ui;
+    globalThis.chain_ui = null;
+    if (!ui || typeof ui.init !== "function") return null;
+    sourceUiLoadError = false;
+    return ui;
+}
+
+function refreshSourceUi(patchChanged) {
+    if (midiSourceModule !== midiSourceModuleLoaded) {
+        sourceUi = loadSourceUi(midiSourceModule);
+        midiSourceModuleLoaded = midiSourceModule;
+        sourceUiReady = false;
+        sourceUiActive = false;
+        disableSourceHostRouting();
+    }
+
+    if (patchChanged) {
+        sourceUiActive = false;
+        hostFns.setParam("source_ui_active", "0");
+        disableSourceHostRouting();
+    }
+}
+
+function enterSourceUi() {
+    if (!sourceUi) return;
+    hostFns.setParam("source_ui_active", "1");
+    enableSourceHostRouting();
+    if (!sourceUiReady && typeof sourceUi.init === "function") {
+        sourceUi.init();
+        sourceUiReady = true;
+    }
+    sourceUiActive = true;
+    needsRedraw = true;
+}
+
+function exitSourceUi() {
+    if (!sourceUiActive) return;
+    sourceUiActive = false;
+    hostFns.setParam("source_ui_active", "0");
+    disableSourceHostRouting();
+    needsRedraw = true;
+}
 
 function handleCC(cc, val) {
+    if (cc === CC_BACK && val === 127) {
+        if (sourceUiActive) {
+            exitSourceUi();
+            return true;
+        }
+        if (viewMode === "patch") {
+            selectedPatch = currentPatch;
+            viewMode = "list";
+            host_module_set_param("patch", "-1");
+            needsRedraw = true;
+            return true;
+        }
+        host_return_to_menu();
+        return true;
+    }
+
+    if (cc === CC_MENU && val === 127) {
+        if (viewMode === "patch" && !sourceUiActive && sourceUi) {
+            enterSourceUi();
+            return true;
+        }
+    }
+
     /* Jog wheel for patch navigation */
     if (cc === CC_JOG) {
-        const delta = val < 64 ? val : val - 128;
-        if (delta > 0) {
-            nextPatch();
-        } else if (delta < 0) {
-            prevPatch();
+        if (viewMode === "list") {
+            const delta = val < 64 ? val : val - 128;
+            if (patchCount > 0 && delta !== 0) {
+                const next = selectedPatch + (delta > 0 ? 1 : -1);
+                if (next < 0) {
+                    selectedPatch = patchCount - 1;
+                } else if (next >= patchCount) {
+                    selectedPatch = 0;
+                } else {
+                    selectedPatch = next;
+                }
+                needsRedraw = true;
+            }
+            return true;
         }
-        return true;
+        return false;
+    }
+
+    if (cc === CC_JOG_CLICK && val === 127) {
+        if (viewMode === "list" && patchCount > 0) {
+            host_module_set_param("patch", String(selectedPatch));
+            viewMode = "patch";
+            needsRedraw = true;
+            return true;
+        }
+        return false;
     }
 
     /* Up/Down for octave (on button press) */
     if (cc === CC_UP && val === 127) {
-        octaveUp();
-        return true;
+        if (viewMode === "patch") {
+            octaveUp();
+            return true;
+        }
     }
     if (cc === CC_DOWN && val === 127) {
-        octaveDown();
-        return true;
+        if (viewMode === "patch") {
+            octaveDown();
+            return true;
+        }
     }
 
     return false;
@@ -117,17 +308,26 @@ function midiSourceAllowed(source) {
 function drawUI() {
     clear_screen();
 
+    if (viewMode === "list") {
+        drawMenuHeader("Signal Chain");
+        drawMenuList({
+            items: patchNames,
+            selectedIndex: selectedPatch,
+            listArea: {
+                topY: menuLayoutDefaults.listTopY,
+                bottomY: menuLayoutDefaults.listBottomWithFooter
+            },
+            getLabel: (name) => name
+        });
+        drawMenuFooter("Click:load Back:menu");
+        needsRedraw = false;
+        return;
+    }
+
     /* Title bar with patch name */
     const title = patchName || "Signal Chain";
     print(2, 2, title, 1);
     fill_rect(0, 14, SCREEN_WIDTH, 1, 1);
-
-    /* Patch navigation indicator */
-    if (patchCount > 1) {
-        const navText = `< ${currentPatch + 1}/${patchCount} >`;
-        const navWidth = navText.length * 6;
-        print(SCREEN_WIDTH - navWidth - 2, 2, navText, 1);
-    }
 
     /* Synth module info */
     print(2, 20, "Synth:", 1);
@@ -145,24 +345,55 @@ function drawUI() {
     print(2, 44, `Oct:${octStr}  Voices:${polyphony}`, 1);
 
     /* Hint for navigation */
-    print(2, 54, "Jog:patch Up/Dn:oct", 1);
+    const hint = sourceUi ? "Menu:src Back:list" : "Up/Dn:oct Back:list";
+    if (sourceUiLoadError) {
+        print(2, 54, "No ui_chain.js", 1);
+    } else {
+        print(2, 54, hint, 1);
+    }
 
     needsRedraw = false;
 }
 
 /* Update state from DSP */
 function updateState() {
+    let patchChanged = false;
     const pc = host_module_get_param("patch_count");
-    if (pc) patchCount = parseInt(pc) || 0;
+    if (pc) {
+        const nextCount = parseInt(pc) || 0;
+        if (nextCount !== patchCount) {
+            patchCount = nextCount;
+            patchNames = [];
+            for (let i = 0; i < patchCount; i++) {
+                const name = host_module_get_param(`patch_name_${i}`);
+                patchNames.push(name || `Patch ${i + 1}`);
+            }
+            if (selectedPatch >= patchCount) {
+                selectedPatch = Math.max(0, patchCount - 1);
+            }
+        }
+    }
 
     const cp = host_module_get_param("current_patch");
-    if (cp) currentPatch = parseInt(cp) || 0;
+    if (cp) {
+        const nextPatch = parseInt(cp) || 0;
+        patchChanged = nextPatch !== currentPatch;
+        currentPatch = nextPatch;
+        if (patchChanged && viewMode === "list") {
+            selectedPatch = currentPatch;
+        }
+    }
 
     const pn = host_module_get_param("patch_name");
     if (pn) patchName = pn;
 
     const sm = host_module_get_param("synth_module");
     if (sm) synthModule = sm;
+
+    const ms = host_module_get_param("midi_source_module");
+    if (ms !== null && ms !== undefined) {
+        midiSourceModule = ms;
+    }
 
     const poly = host_module_get_param("polyphony");
     if (poly) polyphony = parseInt(poly) || 0;
@@ -184,17 +415,12 @@ function updateState() {
     if (fxSpec !== midiFxJsSpec) {
         loadMidiFxChain(fxSpec);
     }
-}
 
-/* Switch to next/previous patch */
-function nextPatch() {
-    host_module_set_param("next_patch", "1");
-    needsRedraw = true;
-}
+    refreshSourceUi(patchChanged);
 
-function prevPatch() {
-    host_module_set_param("prev_patch", "1");
-    needsRedraw = true;
+    if (patchChanged && viewMode === "patch" && sourceUi && !sourceUiActive) {
+        enterSourceUi();
+    }
 }
 
 /* Adjust octave */
@@ -223,6 +449,13 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
+    if (sourceUiActive) {
+        if (typeof sourceUi.tick === "function") {
+            sourceUi.tick();
+        }
+        return;
+    }
+
     /* Set default octave on first tick */
     if (!octaveInitialized) {
         host_module_set_param("octave_transpose", "-2");
@@ -245,10 +478,22 @@ globalThis.tick = function() {
 globalThis.onMidiMessageInternal = function(data) {
     const useJsMidiFx = midiFxJsChain.length > 0;
     const isCap = isCapacitiveTouchMessage(data);
+    const status = data[0] & 0xF0;
+    if (status === 0xB0 && data[1] === CC_BACK && data[2] === 127) {
+        handleCC(data[1], data[2]);
+        return;
+    }
+    if (sourceUiActive) {
+        if (typeof sourceUi.onMidiMessageInternal === "function") {
+            sourceUi.onMidiMessageInternal(data);
+        }
+        return;
+    }
+    if ((status === 0x90 || status === 0x80) && MoveSteps.includes(data[1])) {
+        return;
+    }
     if (!useJsMidiFx && isCap) return;
     if (useJsMidiFx && isCap && !rawMidi) return;
-
-    const status = data[0] & 0xF0;
 
     if (status === 0xB0) {
         handleCC(data[1], data[2]);
@@ -268,6 +513,13 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
+    if (sourceUiActive) {
+        if (typeof sourceUi.onMidiMessageExternal === "function") {
+            sourceUi.onMidiMessageExternal(data);
+        }
+        return;
+    }
+
     if (midiFxJsChain.length === 0) return;
     if (!midiSourceAllowed("external")) return;
     processMidiFx([data[0], data[1], data[2]], "external");
