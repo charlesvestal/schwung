@@ -913,6 +913,14 @@ function updateKnobLEDs() {
         }
         setButtonLED(MoveKnobLEDs[6], VividYellow);  /* Knob 7 = speed */
         setButtonLED(MoveKnobLEDs[7], Cyan);         /* Knob 8 = channel */
+    } else if (sparkMode) {
+        /* Spark mode: knobs 1, 7, 8 available (jump, comp spark, param spark) */
+        setButtonLED(MoveKnobLEDs[0], LightGrey);  /* Knob 1 = Jump */
+        for (let i = 1; i < 6; i++) {
+            setButtonLED(MoveKnobLEDs[i], Black);
+        }
+        setButtonLED(MoveKnobLEDs[6], LightGrey);  /* Knob 7 = Comp Spark */
+        setButtonLED(MoveKnobLEDs[7], LightGrey);  /* Knob 8 = Param Spark */
     } else if (heldStep >= 0) {
         /* Holding a step: show parameter status for this step */
         const step = getCurrentPattern(currentTrack).steps[heldStep];
