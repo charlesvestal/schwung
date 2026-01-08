@@ -146,6 +146,34 @@ On-device layout:
 
 Original Move preserved as `/opt/move/MoveOriginal`.
 
+## Signal Chain Module (WIP)
+
+The `chain` module implements a modular signal chain for combining components:
+
+```
+[Input] → [MIDI FX] → [Sound Generator] → [Audio FX] → [Output]
+```
+
+### Module Capabilities for Chaining
+
+Modules declare chainability in module.json:
+```json
+"capabilities": {
+    "chainable": true,
+    "component_type": "sound_generator"
+}
+```
+
+Component types: `sound_generator`, `audio_fx`, `midi_fx`
+
+### Chain Architecture
+
+- Chain host (`modules/chain/dsp/chain_host.c`) loads sub-plugins via dlopen
+- Forwards MIDI to sound generator, routes audio through effects
+- Patch files (future) will define chain configurations
+
+See `docs/plans/2026-01-08-signal-chain-design.md` for full design.
+
 ## Dependencies
 
 - QuickJS: libs/quickjs/
