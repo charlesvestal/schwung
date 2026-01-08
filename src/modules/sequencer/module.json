@@ -1,6 +1,6 @@
 {
   "id": "sequencer",
-  "name": "Step Sequencer",
+  "name": "SEQOMD",
   "version": "0.1.0",
   "ui": "ui.js",
   "dsp": "dsp.so",

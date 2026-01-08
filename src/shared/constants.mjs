@@ -583,6 +583,7 @@ export const MoveDelete = 119;
 // Groupings
 export const MovePads = Array.from({length: 32}, (x, i) => i + 68);
 export const MoveSteps = Array.from({length: 16}, (x, i) => i + 16);
+export const MoveTracks = [MoveRow4, MoveRow3, MoveRow2, MoveRow1];  // Track buttons 1-4
 export const MoveCCButtons = [
   MoveMainButton,
   MoveBack,

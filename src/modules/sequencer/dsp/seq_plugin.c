@@ -1,5 +1,5 @@
 /*
- * Multi-Track Step Sequencer DSP Plugin
+ * SEQOMD DSP Plugin
  *
  * 8-track sequencer with per-track timing, MIDI output, and master clock.
  * Inspired by OP-Z architecture.
@@ -38,7 +38,14 @@ typedef struct {
     uint8_t num_notes;                   /* Number of active notes */
     uint8_t velocity;                    /* 1-127 */
     uint8_t gate;                        /* Gate length as % of step (1-100) */
-    /* Future: length, probability, ratchet, condition */
+    int8_t cc1;                          /* CC1 value (-1 = not set, 0-127 = value) */
+    int8_t cc2;                          /* CC2 value (-1 = not set, 0-127 = value) */
+    uint8_t probability;                 /* 1-100% chance to trigger */
+    int8_t condition_n;                  /* Condition cycle length (0=none, -1=PRE, -2=FILL, >0=every N) */
+    int8_t condition_m;                  /* Which iteration to play (1 to N) */
+    uint8_t condition_not;               /* If true, negate condition (play all EXCEPT m) */
+    uint8_t ratchet;                     /* Number of sub-triggers (1, 2, 3, 4, 6, 8) */
+    uint8_t length;                      /* Note length in steps (1-16) */
 } step_t;
 
 /* Pattern data - contains steps and loop points */
@@ -56,11 +63,21 @@ typedef struct {
     uint8_t length;         /* 1-64 steps (for now max 16) */
     uint8_t current_step;
     uint8_t muted;
+    double speed;           /* Speed multiplier (0.25 to 4.0) */
     double phase;           /* Step phase accumulator */
     double gate_phase;      /* Gate timing */
     int8_t last_notes[MAX_NOTES_PER_STEP];  /* Last triggered notes (-1 = none) */
     uint8_t num_last_notes;                  /* Number of active notes */
     uint8_t note_on_active;
+    uint32_t loop_count;    /* Number of times pattern has looped (for conditions) */
+    /* Ratchet state */
+    uint8_t ratchet_count;  /* Current ratchet sub-trigger index */
+    uint8_t ratchet_total;  /* Total ratchets for current step */
+    double ratchet_phase;   /* Phase accumulator for ratchet timing */
+    /* Note length tracking */
+    uint8_t note_length_total;   /* Total length of current note in steps */
+    uint8_t note_gate;           /* Gate % of the note that triggered (stored at trigger time) */
+    double note_length_phase;    /* Phase accumulator for note length */
 } track_t;
 
 /* Pending note for overlapping long notes */
@@ -91,6 +108,25 @@ static double g_global_phase = 0.0;  /* For pending note timing */
 
 /* ============ Helpers ============ */
 
+/* Simple PRNG for probability (xorshift32) */
+static uint32_t g_random_state = 1;
+
+static uint32_t random_next(void) {
+    uint32_t x = g_random_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    g_random_state = x;
+    return x;
+}
+
+/* Returns true with probability (percent/100) */
+static int random_check(int percent) {
+    if (percent >= 100) return 1;
+    if (percent <= 0) return 0;
+    return (random_next() % 100) < (uint32_t)percent;
+}
+
 static void plugin_log(const char *msg) {
     if (g_host && g_host->log) {
         g_host->log(msg);
@@ -117,6 +153,18 @@ static void send_note_off(int note, int channel) {
         (uint8_t)(0x80 | (channel & 0x0F)),
         (uint8_t)(note & 0x7F),
         0x00
+    };
+    g_host->midi_send_external(msg, 4);
+}
+
+static void send_cc(int cc, int value, int channel) {
+    if (!g_host || !g_host->midi_send_external) return;
+
+    uint8_t msg[4] = {
+        0x2B,                           /* Cable 2, CIN 0xB (Control Change) */
+        (uint8_t)(0xB0 | (channel & 0x0F)),
+        (uint8_t)(cc & 0x7F),
+        (uint8_t)(value & 0x7F)
     };
     g_host->midi_send_external(msg, 4);
 }
@@ -179,6 +227,14 @@ static void init_pattern(pattern_t *pattern) {
         pattern->steps[i].num_notes = 0;
         pattern->steps[i].velocity = DEFAULT_VELOCITY;
         pattern->steps[i].gate = DEFAULT_GATE;
+        pattern->steps[i].cc1 = -1;  /* Not set */
+        pattern->steps[i].cc2 = -1;  /* Not set */
+        pattern->steps[i].probability = 100;    /* Always trigger */
+        pattern->steps[i].condition_n = 0;      /* No condition */
+        pattern->steps[i].condition_m = 0;
+        pattern->steps[i].condition_not = 0;    /* Normal (not negated) */
+        pattern->steps[i].ratchet = 1;          /* Single trigger (no ratchet) */
+        pattern->steps[i].length = 1;           /* Single step length */
     }
 }
 
@@ -187,6 +243,20 @@ static void init_track(track_t *track, int channel) {
     track->midi_channel = channel;
     track->length = NUM_STEPS;
     track->current_pattern = 0;
+    track->current_step = 0;
+    track->muted = 0;
+    track->speed = 1.0;  /* Default speed */
+    track->phase = 0.0;
+    track->gate_phase = 0.0;
+    track->num_last_notes = 0;
+    track->note_on_active = 0;
+    track->loop_count = 0;
+    track->ratchet_count = 0;
+    track->ratchet_total = 1;
+    track->ratchet_phase = 0.0;
+    track->note_length_total = 1;
+    track->note_gate = DEFAULT_GATE;
+    track->note_length_phase = 0.0;
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -203,26 +273,33 @@ static inline pattern_t* get_current_pattern(track_t *track) {
     return &track->patterns[track->current_pattern];
 }
 
-static void trigger_track_step(track_t *track) {
-    /* Send note off for previous notes if still on */
-    for (int i = 0; i < track->num_last_notes; i++) {
-        if (track->last_notes[i] >= 0) {
-            send_note_off(track->last_notes[i], track->midi_channel);
-            track->last_notes[i] = -1;
+/* Check if step should trigger based on probability and conditions */
+static int should_step_trigger(step_t *step, track_t *track) {
+    /* Check condition first */
+    if (step->condition_n > 0) {
+        /* Regular condition: play on iteration m of every n loops */
+        /* loop_count is 0-indexed, condition_m is 1-indexed */
+        int iteration = (track->loop_count % step->condition_n) + 1;
+        int should_play = (iteration == step->condition_m);
+
+        /* Negate if condition_not is set */
+        if (step->condition_not) {
+            should_play = !should_play;
         }
+
+        if (!should_play) return 0;
     }
-    track->num_last_notes = 0;
-    track->note_on_active = 0;
-    track->gate_phase = 0.0;
 
-    /* Skip if muted or step is empty */
-    if (track->muted) return;
+    /* Check probability (only if no condition or condition passed) */
+    if (step->probability < 100) {
+        if (!random_check(step->probability)) return 0;
+    }
 
-    pattern_t *pattern = get_current_pattern(track);
-    step_t *step = &pattern->steps[track->current_step];
-    if (step->num_notes == 0) return;
+    return 1;
+}
 
-    /* Trigger all notes in step */
+/* Send notes for a step (used for main trigger and ratchets) */
+static void send_step_notes(track_t *track, step_t *step) {
     for (int i = 0; i < step->num_notes && i < MAX_NOTES_PER_STEP; i++) {
         if (step->notes[i] > 0) {
             send_note_on(step->notes[i], step->velocity, track->midi_channel);
@@ -235,22 +312,76 @@ static void trigger_track_step(track_t *track) {
     }
 }
 
-static void advance_track(track_t *track) {
+static void trigger_track_step(track_t *track, int track_idx) {
+    pattern_t *pattern = get_current_pattern(track);
+    step_t *step = &pattern->steps[track->current_step];
+
+    /* Reset ratchet state */
+    track->ratchet_count = 0;
+    track->ratchet_total = 1;
+
+    /* Skip if muted */
+    if (track->muted) return;
+
+    /* Send CC values if set (before notes) - always send regardless of prob/cond */
+    if (step->cc1 >= 0) {
+        int cc = 20 + (track_idx * 2);
+        send_cc(cc, step->cc1, track->midi_channel);
+    }
+    if (step->cc2 >= 0) {
+        int cc = 20 + (track_idx * 2) + 1;
+        send_cc(cc, step->cc2, track->midi_channel);
+    }
+
+    /* Skip notes if step has none */
+    if (step->num_notes == 0) return;
+
+    /* Check if this step should trigger (probability + conditions) */
+    if (!should_step_trigger(step, track)) return;
+
+    /* If we have notes still playing from previous step, cut them off */
+    if (track->note_on_active) {
+        for (int i = 0; i < track->num_last_notes; i++) {
+            if (track->last_notes[i] >= 0) {
+                send_note_off(track->last_notes[i], track->midi_channel);
+                track->last_notes[i] = -1;
+            }
+        }
+        track->num_last_notes = 0;
+        track->note_on_active = 0;
+    }
+
+    /* Set up note length tracking - store values at trigger time */
+    track->note_length_total = step->length > 0 ? step->length : 1;
+    track->note_gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
+    track->note_length_phase = 0.0;
+    track->gate_phase = 0.0;
+
+    /* Set up ratchet state */
+    track->ratchet_total = step->ratchet > 0 ? step->ratchet : 1;
+    track->ratchet_count = 1;  /* First trigger happens now */
+
+    /* Trigger first note(s) */
+    send_step_notes(track, step);
+}
+
+static void advance_track(track_t *track, int track_idx) {
     /* Advance step, respecting loop points from current pattern */
     pattern_t *pattern = get_current_pattern(track);
     if (track->current_step >= pattern->loop_end) {
         track->current_step = pattern->loop_start;
+        track->loop_count++;  /* Increment loop count when pattern loops */
     } else {
         track->current_step++;
     }
-    trigger_track_step(track);
+    trigger_track_step(track, track_idx);
 }
 
 /* ============ Plugin Callbacks ============ */
 
 static int plugin_on_load(const char *module_dir, const char *json_defaults) {
     char msg[256];
-    snprintf(msg, sizeof(msg), "Multi-track sequencer loading from: %s", module_dir);
+    snprintf(msg, sizeof(msg), "SEQOMD loading from: %s", module_dir);
     plugin_log(msg);
 
     /* Initialize all tracks with default MIDI channels */
@@ -274,14 +405,14 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
         }
     }
 
-    snprintf(msg, sizeof(msg), "Sequencer ready: %d tracks, BPM: %d", NUM_TRACKS, g_bpm);
+    snprintf(msg, sizeof(msg), "SEQOMD ready: %d tracks, BPM: %d", NUM_TRACKS, g_bpm);
     plugin_log(msg);
 
     return 0;
 }
 
 static void plugin_on_unload(void) {
-    plugin_log("Sequencer unloading");
+    plugin_log("SEQOMD unloading");
     all_notes_off();
 }
 
@@ -309,12 +440,23 @@ static void plugin_set_param(const char *key, const char *val) {
                 g_tracks[t].gate_phase = 0.0;
                 g_tracks[t].note_on_active = 0;
                 g_tracks[t].num_last_notes = 0;
+                g_tracks[t].loop_count = 0;      /* Reset loop count for conditions */
+                g_tracks[t].ratchet_count = 0;   /* Reset ratchet state */
+                g_tracks[t].ratchet_total = 1;
+                g_tracks[t].ratchet_phase = 0.0;
+                g_tracks[t].note_length_total = 1;  /* Reset note length state */
+                g_tracks[t].note_gate = DEFAULT_GATE;
+                g_tracks[t].note_length_phase = 0.0;
                 for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
                     g_tracks[t].last_notes[n] = -1;
                 }
             }
             g_clock_phase = 0.0;
             g_global_phase = 0.0;
+
+            /* Seed PRNG with a bit of entropy */
+            g_random_state = (uint32_t)(g_global_phase * 1000000.0 + 12345);
+            if (g_random_state == 0) g_random_state = 1;
 
             if (g_send_clock) {
                 send_midi_start();
@@ -323,7 +465,7 @@ static void plugin_set_param(const char *key, const char *val) {
 
             /* Trigger first step on all tracks */
             for (int t = 0; t < NUM_TRACKS; t++) {
-                trigger_track_step(&g_tracks[t]);
+                trigger_track_step(&g_tracks[t], t);
             }
         } else if (!new_playing && g_playing) {
             /* Stopping playback */
@@ -336,6 +478,19 @@ static void plugin_set_param(const char *key, const char *val) {
     }
     else if (strcmp(key, "send_clock") == 0) {
         g_send_clock = atoi(val);
+    }
+    /* Send CC externally: send_cc_CHANNEL_CC = VALUE */
+    else if (strncmp(key, "send_cc_", 8) == 0) {
+        /* Parse: send_cc_15_1 for channel 15, CC 1 */
+        int channel = atoi(key + 8);
+        const char *cc_part = strchr(key + 8, '_');
+        if (cc_part) {
+            int cc = atoi(cc_part + 1);
+            int value = atoi(val);
+            if (channel >= 0 && channel <= 15 && cc >= 0 && cc <= 127) {
+                send_cc(cc, value, channel);
+            }
+        }
     }
     /* Track-specific parameters: track_T_step_S_note, track_T_step_S_vel, etc. */
     else if (strncmp(key, "track_", 6) == 0) {
@@ -359,6 +514,12 @@ static void plugin_set_param(const char *key, const char *val) {
                     int len = atoi(val);
                     if (len >= 1 && len <= NUM_STEPS) {
                         g_tracks[track].length = len;
+                    }
+                }
+                else if (strcmp(param, "speed") == 0) {
+                    double spd = atof(val);
+                    if (spd >= 0.1 && spd <= 8.0) {
+                        g_tracks[track].speed = spd;
                     }
                 }
                 else if (strcmp(param, "loop_start") == 0) {
@@ -456,13 +617,21 @@ static void plugin_set_param(const char *key, const char *val) {
                                     }
                                 }
                             }
-                            /* Clear all notes from step */
+                            /* Clear all notes, CCs, and parameters from step */
                             else if (strcmp(step_param, "clear") == 0) {
                                 step_t *s = &get_current_pattern(&g_tracks[track])->steps[step];
                                 s->num_notes = 0;
                                 for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
                                     s->notes[n] = 0;
                                 }
+                                s->cc1 = -1;
+                                s->cc2 = -1;
+                                s->probability = 100;
+                                s->condition_n = 0;
+                                s->condition_m = 0;
+                                s->condition_not = 0;
+                                s->ratchet = 1;
+                                s->length = 1;
                             }
                             else if (strcmp(step_param, "vel") == 0) {
                                 int vel = atoi(val);
@@ -474,6 +643,53 @@ static void plugin_set_param(const char *key, const char *val) {
                                 int gate = atoi(val);
                                 if (gate >= 1 && gate <= 100) {
                                     get_current_pattern(&g_tracks[track])->steps[step].gate = gate;
+                                }
+                            }
+                            /* Per-step CC values */
+                            else if (strcmp(step_param, "cc1") == 0) {
+                                int cc_val = atoi(val);
+                                if (cc_val >= -1 && cc_val <= 127) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].cc1 = cc_val;
+                                }
+                            }
+                            else if (strcmp(step_param, "cc2") == 0) {
+                                int cc_val = atoi(val);
+                                if (cc_val >= -1 && cc_val <= 127) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].cc2 = cc_val;
+                                }
+                            }
+                            /* Probability */
+                            else if (strcmp(step_param, "probability") == 0) {
+                                int prob = atoi(val);
+                                if (prob >= 1 && prob <= 100) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].probability = prob;
+                                }
+                            }
+                            /* Condition parameters */
+                            else if (strcmp(step_param, "condition_n") == 0) {
+                                int n = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].condition_n = n;
+                            }
+                            else if (strcmp(step_param, "condition_m") == 0) {
+                                int m = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].condition_m = m;
+                            }
+                            else if (strcmp(step_param, "condition_not") == 0) {
+                                int not_flag = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].condition_not = not_flag ? 1 : 0;
+                            }
+                            /* Ratchet */
+                            else if (strcmp(step_param, "ratchet") == 0) {
+                                int ratch = atoi(val);
+                                if (ratch >= 1 && ratch <= 8) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].ratchet = ratch;
+                                }
+                            }
+                            /* Note length in steps */
+                            else if (strcmp(step_param, "length") == 0) {
+                                int len = atoi(val);
+                                if (len >= 1 && len <= 16) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].length = len;
                                 }
                             }
                         }
@@ -535,6 +751,9 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
                 }
                 else if (strcmp(param, "length") == 0) {
                     return snprintf(buf, buf_len, "%d", g_tracks[track].length);
+                }
+                else if (strcmp(param, "speed") == 0) {
+                    return snprintf(buf, buf_len, "%.4f", g_tracks[track].speed);
                 }
                 else if (strcmp(param, "loop_start") == 0) {
                     return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->loop_start);
@@ -628,29 +847,69 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         for (int t = 0; t < NUM_TRACKS; t++) {
             track_t *track = &g_tracks[t];
 
-            track->phase += step_inc;
+            /* Per-track step increment with speed multiplier */
+            double track_step_inc = step_inc * track->speed;
+            track->phase += track_step_inc;
 
-            /* Check gate off */
+            /* Track note length and handle note-off */
             if (track->note_on_active) {
-                track->gate_phase += step_inc;
-                double gate_length = (double)get_current_pattern(track)->steps[track->current_step].gate / 100.0;
-                if (track->gate_phase >= gate_length) {
-                    /* Send note off for all active notes */
-                    for (int n = 0; n < track->num_last_notes; n++) {
-                        if (track->last_notes[n] >= 0) {
-                            send_note_off(track->last_notes[n], track->midi_channel);
-                            track->last_notes[n] = -1;
+                track->note_length_phase += track_step_inc;
+                track->gate_phase += track_step_inc;
+
+                /* Use stored gate value (captured at trigger time) */
+                double gate_pct = (double)track->note_gate / 100.0;
+                double total_note_length = (double)track->note_length_total;
+
+                if (track->ratchet_total > 1) {
+                    /* Ratchets: gate applies per ratchet subdivision */
+                    double ratchet_gate = gate_pct / track->ratchet_total;
+                    if (track->gate_phase >= ratchet_gate) {
+                        /* Send note off for all active notes */
+                        for (int n = 0; n < track->num_last_notes; n++) {
+                            if (track->last_notes[n] >= 0) {
+                                send_note_off(track->last_notes[n], track->midi_channel);
+                                track->last_notes[n] = -1;
+                            }
                         }
+                        track->num_last_notes = 0;
+                        track->note_on_active = 0;
                     }
-                    track->num_last_notes = 0;
-                    track->note_on_active = 0;
+                } else {
+                    /* Normal notes: gate applies to total note length */
+                    double note_off_point = total_note_length * gate_pct;
+                    if (track->note_length_phase >= note_off_point) {
+                        /* Send note off for all active notes */
+                        for (int n = 0; n < track->num_last_notes; n++) {
+                            if (track->last_notes[n] >= 0) {
+                                send_note_off(track->last_notes[n], track->midi_channel);
+                                track->last_notes[n] = -1;
+                            }
+                        }
+                        track->num_last_notes = 0;
+                        track->note_on_active = 0;
+                    }
+                }
+            }
+
+            /* Check ratchet sub-trigger timing (use track->phase as position within step) */
+            if (track->ratchet_count > 0 && track->ratchet_count < track->ratchet_total) {
+                /* Each ratchet trigger point: 1/N, 2/N, etc. of the step */
+                double next_trigger_point = (double)track->ratchet_count / (double)track->ratchet_total;
+                if (track->phase >= next_trigger_point) {
+                    /* Time for next ratchet trigger - bounds check first */
+                    if (track->current_step < NUM_STEPS) {
+                        step_t *step = &get_current_pattern(track)->steps[track->current_step];
+                        track->gate_phase = 0.0;  /* Reset gate for this ratchet */
+                        send_step_notes(track, step);
+                    }
+                    track->ratchet_count++;
                 }
             }
 
             /* Check step advance */
             if (track->phase >= 1.0) {
                 track->phase -= 1.0;
-                advance_track(track);
+                advance_track(track, t);
             }
         }
     }
@@ -680,7 +939,7 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
     g_plugin_api.get_param = plugin_get_param;
     g_plugin_api.render_block = plugin_render_block;
 
-    plugin_log("Multi-track sequencer initialized");
+    plugin_log("SEQOMD initialized");
 
     return &g_plugin_api;
 }

@@ -1573,7 +1573,7 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            //printf("%x %x %x %x\n", byte[0], byte[1], byte[2], byte[3]);
+            //printf("MIDI: cable=%d %02x %02x %02x\n", cable, byte[1], byte[2], byte[3]);
 
             if (cable == 2)
             {
