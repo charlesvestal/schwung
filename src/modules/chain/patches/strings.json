@@ -1,0 +1,16 @@
+{
+    "name": "Strings",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx_js": [],
+        "midi_fx_native": [],
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 48
+            }
+        },
+        "audio_fx": []
+    }
+}
