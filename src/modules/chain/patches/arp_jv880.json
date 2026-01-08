@@ -1,0 +1,28 @@
+{
+    "name": "Arp JV-880",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx": {
+            "arp": "up",
+            "arp_bpm": 120,
+            "arp_division": 4
+        },
+        "synth": {
+            "module": "jv880",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.5,
+                    "wet": 0.2,
+                    "dry": 0.8
+                }
+            }
+        ]
+    }
+}
