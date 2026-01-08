@@ -12,6 +12,8 @@ This builds everything and creates `move-anything.tar.gz`.
 
 Requirements: Docker Desktop (macOS/Windows) or Docker Engine (Linux)
 
+> **OrbStack Users**: The build script uses `docker cp` instead of volume mounts to avoid file corruption issues with OrbStack on macOS.
+
 ## Manual Build
 
 ### Ubuntu/Debian
@@ -70,10 +72,12 @@ build/
   shared/                    # Shared JS utilities
   modules/
     sf2/                     # SF2 synth module
+    dx7/                     # DX7 FM synth module
+    sequencer/               # Step sequencer module
     m8/                      # M8 LPP emulator
     controller/              # MIDI controller
 
-move-anything.tar.gz         # Deployable package
+move-anything.tar.gz         # Deployable package (~588KB)
 ```
 
 ## Troubleshooting

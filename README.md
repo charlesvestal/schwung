@@ -2,6 +2,8 @@
 
 A framework for writing custom modules for the Ableton Move hardware.
 
+> **Fork Note**: This is a fork of [charlesvestal/move-anything](https://github.com/charlesvestal/move-anything) with additional modules and build improvements. See [Changes from Upstream](#changes-from-upstream) for details.
+
 ## Features
 
 - **Pads**: Note, velocity, polyphonic aftertouch
@@ -20,7 +22,7 @@ A framework for writing custom modules for the Ableton Move hardware.
 3. Run:
 
 ```bash
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
+curl -L https://raw.githubusercontent.com/ahlstrominfo/move-anything/main/scripts/install.sh | sh
 ```
 
 ## Usage
@@ -33,13 +35,15 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 | Module | Description |
 |--------|-------------|
 | SF2 Synth | SoundFont synthesizer with preset/octave control |
+| DX7 | Yamaha DX7 FM synthesizer emulation |
+| Step Sequencer | 16-step MIDI sequencer with external output |
 | M8 LPP | Dirtywave M8 Launchpad Pro emulation |
 | Controller | MIDI controller with 16 banks |
 
 ## Uninstall
 
 ```bash
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
+curl -L https://raw.githubusercontent.com/ahlstrominfo/move-anything/main/scripts/uninstall.sh | sh
 ```
 
 ## Building
@@ -64,6 +68,22 @@ move-anything/
   libs/             # Vendored libraries (QuickJS)
   docs/             # Documentation
 ```
+
+## Changes from Upstream
+
+This fork differs from [charlesvestal/move-anything](https://github.com/charlesvestal/move-anything):
+
+**Added modules:**
+- **DX7** - Yamaha DX7 FM synthesizer emulation
+- **Step Sequencer** - 16-step MIDI sequencer that outputs to external devices
+
+**Build improvements:**
+- Docker build uses `docker cp` to avoid OrbStack/Docker volume mount corruption on macOS
+- Binaries are stripped for smaller package size (~588KB vs ~601KB)
+
+**Not included from upstream:**
+- Chain module (instrument + effects chaining)
+- JV-880 module (Roland JV-880 emulation)
 
 ## Community
 

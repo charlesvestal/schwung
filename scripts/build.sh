@@ -104,6 +104,23 @@ echo "Building Sequencer module..."
 cp ./src/modules/sequencer/module.json ./build/modules/sequencer/
 cp ./src/modules/sequencer/ui.js ./build/modules/sequencer/
 
+# Copy sequencer lib and views (if they exist)
+if [ -d ./src/modules/sequencer/lib ]; then
+    mkdir -p ./build/modules/sequencer/lib/
+    cp ./src/modules/sequencer/lib/*.js ./build/modules/sequencer/lib/
+fi
+if [ -d ./src/modules/sequencer/views ]; then
+    cp -r ./src/modules/sequencer/views ./build/modules/sequencer/
+fi
+
+# Strip binaries to reduce size
+echo "Stripping binaries..."
+"${CROSS_PREFIX}strip" build/move-anything
+"${CROSS_PREFIX}strip" build/move-anything-shim.so
+"${CROSS_PREFIX}strip" build/modules/sf2/dsp.so
+"${CROSS_PREFIX}strip" build/modules/dx7/dsp.so
+"${CROSS_PREFIX}strip" build/modules/sequencer/dsp.so
+
 echo "Build complete!"
 echo "Host binary: build/move-anything"
 echo "Modules: build/modules/"
