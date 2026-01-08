@@ -41,11 +41,20 @@ typedef struct {
     int8_t cc1;                          /* CC1 value (-1 = not set, 0-127 = value) */
     int8_t cc2;                          /* CC2 value (-1 = not set, 0-127 = value) */
     uint8_t probability;                 /* 1-100% chance to trigger */
-    int8_t condition_n;                  /* Condition cycle length (0=none, -1=PRE, -2=FILL, >0=every N) */
-    int8_t condition_m;                  /* Which iteration to play (1 to N) */
-    uint8_t condition_not;               /* If true, negate condition (play all EXCEPT m) */
+    int8_t condition_n;                  /* Trigger Spark: cycle length (0=none) */
+    int8_t condition_m;                  /* Trigger Spark: which iteration to play (1 to N) */
+    uint8_t condition_not;               /* Trigger Spark: negate condition */
     uint8_t ratchet;                     /* Number of sub-triggers (1, 2, 3, 4, 6, 8) */
     uint8_t length;                      /* Note length in steps (1-16) */
+    /* Parameter Spark - when CC locks apply */
+    int8_t param_spark_n;                /* 0=always, >0=every N loops */
+    int8_t param_spark_m;                /* Which iteration (1 to N) */
+    uint8_t param_spark_not;             /* Negate condition */
+    /* Component Spark - when ratchet/jump apply */
+    int8_t comp_spark_n;                 /* 0=always, >0=every N loops */
+    int8_t comp_spark_m;                 /* Which iteration (1 to N) */
+    uint8_t comp_spark_not;              /* Negate condition */
+    int8_t jump;                         /* Jump target step (-1 = no jump, 0-15 = step) */
 } step_t;
 
 /* Pattern data - contains steps and loop points */
@@ -235,6 +244,14 @@ static void init_pattern(pattern_t *pattern) {
         pattern->steps[i].condition_not = 0;    /* Normal (not negated) */
         pattern->steps[i].ratchet = 1;          /* Single trigger (no ratchet) */
         pattern->steps[i].length = 1;           /* Single step length */
+        /* Spark fields */
+        pattern->steps[i].param_spark_n = 0;    /* Always apply CC locks */
+        pattern->steps[i].param_spark_m = 0;
+        pattern->steps[i].param_spark_not = 0;
+        pattern->steps[i].comp_spark_n = 0;     /* Always apply ratchet/jump */
+        pattern->steps[i].comp_spark_m = 0;
+        pattern->steps[i].comp_spark_not = 0;
+        pattern->steps[i].jump = -1;            /* No jump */
     }
 }
 
@@ -298,6 +315,23 @@ static int should_step_trigger(step_t *step, track_t *track) {
     return 1;
 }
 
+/* Check if a spark condition passes (param_spark or comp_spark) */
+static int check_spark_condition(int8_t spark_n, int8_t spark_m, uint8_t spark_not, track_t *track) {
+    if (spark_n <= 0) {
+        /* No condition - always passes */
+        return 1;
+    }
+    /* Check iteration within loop cycle */
+    int iteration = (track->loop_count % spark_n) + 1;
+    int should_apply = (iteration == spark_m);
+
+    /* Negate if spark_not is set */
+    if (spark_not) {
+        should_apply = !should_apply;
+    }
+    return should_apply;
+}
+
 /* Send notes for a step (used for main trigger and ratchets) */
 static void send_step_notes(track_t *track, step_t *step) {
     for (int i = 0; i < step->num_notes && i < MAX_NOTES_PER_STEP; i++) {
@@ -323,20 +357,26 @@ static void trigger_track_step(track_t *track, int track_idx) {
     /* Skip if muted */
     if (track->muted) return;
 
-    /* Send CC values if set (before notes) - always send regardless of prob/cond */
-    if (step->cc1 >= 0) {
-        int cc = 20 + (track_idx * 2);
-        send_cc(cc, step->cc1, track->midi_channel);
-    }
-    if (step->cc2 >= 0) {
-        int cc = 20 + (track_idx * 2) + 1;
-        send_cc(cc, step->cc2, track->midi_channel);
+    /* Check param_spark - should CC locks apply this loop? */
+    int param_spark_pass = check_spark_condition(
+        step->param_spark_n, step->param_spark_m, step->param_spark_not, track);
+
+    /* Send CC values if set AND param_spark passes */
+    if (param_spark_pass) {
+        if (step->cc1 >= 0) {
+            int cc = 20 + (track_idx * 2);
+            send_cc(cc, step->cc1, track->midi_channel);
+        }
+        if (step->cc2 >= 0) {
+            int cc = 20 + (track_idx * 2) + 1;
+            send_cc(cc, step->cc2, track->midi_channel);
+        }
     }
 
     /* Skip notes if step has none */
     if (step->num_notes == 0) return;
 
-    /* Check if this step should trigger (probability + conditions) */
+    /* Check if this step should trigger (probability + conditions / trigger spark) */
     if (!should_step_trigger(step, track)) return;
 
     /* If we have notes still playing from previous step, cut them off */
@@ -357,12 +397,36 @@ static void trigger_track_step(track_t *track, int track_idx) {
     track->note_length_phase = 0.0;
     track->gate_phase = 0.0;
 
-    /* Set up ratchet state */
-    track->ratchet_total = step->ratchet > 0 ? step->ratchet : 1;
-    track->ratchet_count = 1;  /* First trigger happens now */
+    /* Check comp_spark - should ratchet/jump apply this loop? */
+    int comp_spark_pass = check_spark_condition(
+        step->comp_spark_n, step->comp_spark_m, step->comp_spark_not, track);
+
+    if (comp_spark_pass) {
+        /* Set up ratchet state (only if comp_spark passes) */
+        track->ratchet_total = step->ratchet > 0 ? step->ratchet : 1;
+        track->ratchet_count = 1;  /* First trigger happens now */
+    } else {
+        /* No ratchet - single trigger */
+        track->ratchet_total = 1;
+        track->ratchet_count = 1;
+    }
 
     /* Trigger first note(s) */
     send_step_notes(track, step);
+
+    /* Handle jump (only if comp_spark passes) */
+    if (comp_spark_pass && step->jump >= 0 && step->jump < NUM_STEPS) {
+        /* Jump to target step on next advance */
+        /* We set current_step to jump-1 because advance_track will increment it */
+        /* But we need to be careful about loop boundaries */
+        if (step->jump <= pattern->loop_end && step->jump >= pattern->loop_start) {
+            /* Jump is within current loop range - will be incremented by advance */
+            track->current_step = step->jump - 1;
+            if (track->current_step < pattern->loop_start) {
+                track->current_step = pattern->loop_end;  /* Wrap to end */
+            }
+        }
+    }
 }
 
 static void advance_track(track_t *track, int track_idx) {
@@ -632,6 +696,14 @@ static void plugin_set_param(const char *key, const char *val) {
                                 s->condition_not = 0;
                                 s->ratchet = 1;
                                 s->length = 1;
+                                /* Clear spark fields */
+                                s->param_spark_n = 0;
+                                s->param_spark_m = 0;
+                                s->param_spark_not = 0;
+                                s->comp_spark_n = 0;
+                                s->comp_spark_m = 0;
+                                s->comp_spark_not = 0;
+                                s->jump = -1;
                             }
                             else if (strcmp(step_param, "vel") == 0) {
                                 int vel = atoi(val);
@@ -677,6 +749,39 @@ static void plugin_set_param(const char *key, const char *val) {
                             else if (strcmp(step_param, "condition_not") == 0) {
                                 int not_flag = atoi(val);
                                 get_current_pattern(&g_tracks[track])->steps[step].condition_not = not_flag ? 1 : 0;
+                            }
+                            /* Parameter Spark (when CC locks apply) */
+                            else if (strcmp(step_param, "param_spark_n") == 0) {
+                                int n = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].param_spark_n = n;
+                            }
+                            else if (strcmp(step_param, "param_spark_m") == 0) {
+                                int m = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].param_spark_m = m;
+                            }
+                            else if (strcmp(step_param, "param_spark_not") == 0) {
+                                int not_flag = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].param_spark_not = not_flag ? 1 : 0;
+                            }
+                            /* Component Spark (when ratchet/jump apply) */
+                            else if (strcmp(step_param, "comp_spark_n") == 0) {
+                                int n = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].comp_spark_n = n;
+                            }
+                            else if (strcmp(step_param, "comp_spark_m") == 0) {
+                                int m = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].comp_spark_m = m;
+                            }
+                            else if (strcmp(step_param, "comp_spark_not") == 0) {
+                                int not_flag = atoi(val);
+                                get_current_pattern(&g_tracks[track])->steps[step].comp_spark_not = not_flag ? 1 : 0;
+                            }
+                            /* Jump target */
+                            else if (strcmp(step_param, "jump") == 0) {
+                                int jump = atoi(val);
+                                if (jump >= -1 && jump < NUM_STEPS) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].jump = jump;
+                                }
                             }
                             /* Ratchet */
                             else if (strcmp(step_param, "ratchet") == 0) {

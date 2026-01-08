@@ -55,6 +55,7 @@ const TRACK_COLORS_DIM = [
     118           // Light Grey (dim white)
 ];
 
+
 /* ============ State ============ */
 
 let playing = false;
@@ -74,6 +75,15 @@ let lastRecordedStep = -1;      // Last step we recorded to (avoid double-record
 let loopEditMode = false;       // Loop button held - editing loop points
 let loopEditFirst = -1;         // First step pressed while in loop edit
 let patternMode = false;        // Pattern view mode (Menu without shift)
+let sparkMode = false;          // Spark edit mode (shift + step to enter, shift to exit)
+let sparkSelectedSteps = new Set();  // Steps selected for spark editing
+
+/* Set view mode - 32 sets, each containing 8 tracks with all patterns */
+const NUM_SETS = 32;
+let setView = true;             // Start in set view mode
+let currentSet = 0;             // Currently loaded set (0-31)
+let sets = [];                  // Array of 32 sets (populated in init)
+
 
 /* CC output values for knobs */
 const MASTER_CC_CHANNEL = 15;   // Channel 16 (0-indexed) for pattern mode CCs
@@ -117,41 +127,70 @@ const RATCHET_VALUES = [1, 2, 3, 4, 6, 8];
  * Example: 2:3 means "play on the 2nd of every 3 loops"
  */
 const CONDITIONS = [
-    { name: "---", n: 0, m: 0 },   // No condition (use probability)
+    { name: "---", n: 0, m: 0, not: false },   // No condition (use probability)
     // Every 2 loops
-    { name: "1:2", n: 2, m: 1 },   // Play on 1st of every 2 loops
-    { name: "2:2", n: 2, m: 2 },
+    { name: "1:2", n: 2, m: 1, not: false },
+    { name: "2:2", n: 2, m: 2, not: false },
     // Every 3 loops
-    { name: "1:3", n: 3, m: 1 },
-    { name: "2:3", n: 3, m: 2 },
-    { name: "3:3", n: 3, m: 3 },
+    { name: "1:3", n: 3, m: 1, not: false },
+    { name: "2:3", n: 3, m: 2, not: false },
+    { name: "3:3", n: 3, m: 3, not: false },
     // Every 4 loops
-    { name: "1:4", n: 4, m: 1 },
-    { name: "2:4", n: 4, m: 2 },
-    { name: "3:4", n: 4, m: 3 },
-    { name: "4:4", n: 4, m: 4 },
+    { name: "1:4", n: 4, m: 1, not: false },
+    { name: "2:4", n: 4, m: 2, not: false },
+    { name: "3:4", n: 4, m: 3, not: false },
+    { name: "4:4", n: 4, m: 4, not: false },
     // Every 5 loops
-    { name: "1:5", n: 5, m: 1 },
-    { name: "2:5", n: 5, m: 2 },
-    { name: "3:5", n: 5, m: 3 },
-    { name: "4:5", n: 5, m: 4 },
-    { name: "5:5", n: 5, m: 5 },
+    { name: "1:5", n: 5, m: 1, not: false },
+    { name: "2:5", n: 5, m: 2, not: false },
+    { name: "3:5", n: 5, m: 3, not: false },
+    { name: "4:5", n: 5, m: 4, not: false },
+    { name: "5:5", n: 5, m: 5, not: false },
     // Every 6 loops
-    { name: "1:6", n: 6, m: 1 },
-    { name: "2:6", n: 6, m: 2 },
-    { name: "3:6", n: 6, m: 3 },
-    { name: "4:6", n: 6, m: 4 },
-    { name: "5:6", n: 6, m: 5 },
-    { name: "6:6", n: 6, m: 6 },
+    { name: "1:6", n: 6, m: 1, not: false },
+    { name: "2:6", n: 6, m: 2, not: false },
+    { name: "3:6", n: 6, m: 3, not: false },
+    { name: "4:6", n: 6, m: 4, not: false },
+    { name: "5:6", n: 6, m: 5, not: false },
+    { name: "6:6", n: 6, m: 6, not: false },
     // Every 8 loops
-    { name: "1:8", n: 8, m: 1 },
-    { name: "2:8", n: 8, m: 2 },
-    { name: "3:8", n: 8, m: 3 },
-    { name: "4:8", n: 8, m: 4 },
-    { name: "5:8", n: 8, m: 5 },
-    { name: "6:8", n: 8, m: 6 },
-    { name: "7:8", n: 8, m: 7 },
-    { name: "8:8", n: 8, m: 8 }
+    { name: "1:8", n: 8, m: 1, not: false },
+    { name: "2:8", n: 8, m: 2, not: false },
+    { name: "3:8", n: 8, m: 3, not: false },
+    { name: "4:8", n: 8, m: 4, not: false },
+    { name: "5:8", n: 8, m: 5, not: false },
+    { name: "6:8", n: 8, m: 6, not: false },
+    { name: "7:8", n: 8, m: 7, not: false },
+    { name: "8:8", n: 8, m: 8, not: false },
+    // Inverted conditions (NOT - play on all EXCEPT this iteration)
+    { name: "!1:2", n: 2, m: 1, not: true },
+    { name: "!2:2", n: 2, m: 2, not: true },
+    { name: "!1:3", n: 3, m: 1, not: true },
+    { name: "!2:3", n: 3, m: 2, not: true },
+    { name: "!3:3", n: 3, m: 3, not: true },
+    { name: "!1:4", n: 4, m: 1, not: true },
+    { name: "!2:4", n: 4, m: 2, not: true },
+    { name: "!3:4", n: 4, m: 3, not: true },
+    { name: "!4:4", n: 4, m: 4, not: true },
+    { name: "!1:5", n: 5, m: 1, not: true },
+    { name: "!2:5", n: 5, m: 2, not: true },
+    { name: "!3:5", n: 5, m: 3, not: true },
+    { name: "!4:5", n: 5, m: 4, not: true },
+    { name: "!5:5", n: 5, m: 5, not: true },
+    { name: "!1:6", n: 6, m: 1, not: true },
+    { name: "!2:6", n: 6, m: 2, not: true },
+    { name: "!3:6", n: 6, m: 3, not: true },
+    { name: "!4:6", n: 6, m: 4, not: true },
+    { name: "!5:6", n: 6, m: 5, not: true },
+    { name: "!6:6", n: 6, m: 6, not: true },
+    { name: "!1:8", n: 8, m: 1, not: true },
+    { name: "!2:8", n: 8, m: 2, not: true },
+    { name: "!3:8", n: 8, m: 3, not: true },
+    { name: "!4:8", n: 8, m: 4, not: true },
+    { name: "!5:8", n: 8, m: 5, not: true },
+    { name: "!6:8", n: 8, m: 6, not: true },
+    { name: "!7:8", n: 8, m: 7, not: true },
+    { name: "!8:8", n: 8, m: 8, not: true }
 ];
 
 /* Create a new empty step */
@@ -161,9 +200,161 @@ function createEmptyStep() {
         cc1: -1,        // CC value for knob 1 (-1 = not set)
         cc2: -1,        // CC value for knob 2 (-1 = not set)
         probability: 100,  // 1-100%
-        condition: 0,      // Index into CONDITIONS (0 = none)
-        ratchet: 0         // Index into RATCHET_VALUES (0 = 1x, no ratchet)
+        condition: 0,      // Index into CONDITIONS (0 = none) - TRIGGER SPARK
+        ratchet: 0,        // Index into RATCHET_VALUES (0 = 1x, no ratchet)
+        length: 1,         // Note length in steps (1-16)
+        paramSpark: 0,     // Index into CONDITIONS - when CC locks apply
+        compSpark: 0,      // Index into CONDITIONS - when ratchet/jump apply
+        jump: -1           // Jump target step (-1 = no jump, 0-15 = step to jump to)
     };
+}
+
+/* Create empty tracks structure */
+function createEmptyTracks() {
+    const newTracks = [];
+    for (let t = 0; t < NUM_TRACKS; t++) {
+        newTracks.push({
+            patterns: [],
+            currentPattern: 0,
+            muted: false,
+            channel: t,
+            speedIndex: DEFAULT_SPEED_INDEX
+        });
+        for (let p = 0; p < NUM_PATTERNS; p++) {
+            newTracks[t].patterns.push({
+                steps: [],
+                loopStart: 0,
+                loopEnd: NUM_STEPS - 1
+            });
+            for (let s = 0; s < NUM_STEPS; s++) {
+                newTracks[t].patterns[p].steps.push(createEmptyStep());
+            }
+        }
+    }
+    return newTracks;
+}
+
+/* Deep clone tracks for saving to a set */
+function deepCloneTracks(srcTracks) {
+    const clone = [];
+    for (let t = 0; t < NUM_TRACKS; t++) {
+        const srcTrack = srcTracks[t];
+        clone.push({
+            patterns: [],
+            currentPattern: srcTrack.currentPattern,
+            muted: srcTrack.muted,
+            channel: srcTrack.channel,
+            speedIndex: srcTrack.speedIndex
+        });
+        for (let p = 0; p < NUM_PATTERNS; p++) {
+            const srcPattern = srcTrack.patterns[p];
+            clone[t].patterns.push({
+                steps: [],
+                loopStart: srcPattern.loopStart,
+                loopEnd: srcPattern.loopEnd
+            });
+            for (let s = 0; s < NUM_STEPS; s++) {
+                const srcStep = srcPattern.steps[s];
+                clone[t].patterns[p].steps.push({
+                    notes: [...srcStep.notes],
+                    cc1: srcStep.cc1,
+                    cc2: srcStep.cc2,
+                    probability: srcStep.probability,
+                    condition: srcStep.condition,
+                    ratchet: srcStep.ratchet,
+                    length: srcStep.length || 1,
+                    paramSpark: srcStep.paramSpark,
+                    compSpark: srcStep.compSpark,
+                    jump: srcStep.jump
+                });
+            }
+        }
+    }
+    return clone;
+}
+
+/* Check if a set has any content */
+function setHasContent(setIdx) {
+    if (!sets[setIdx]) return false;
+    for (const track of sets[setIdx]) {
+        for (const pattern of track.patterns) {
+            for (const step of pattern.steps) {
+                if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/* Save current tracks to current set */
+function saveCurrentSet() {
+    sets[currentSet] = deepCloneTracks(tracks);
+}
+
+/* Load a set into current tracks and sync to DSP */
+function loadSetToTracks(setIdx) {
+    if (!sets[setIdx]) {
+        sets[setIdx] = createEmptyTracks();
+    }
+    tracks = deepCloneTracks(sets[setIdx]);
+    currentSet = setIdx;
+
+    /* Sync all track data to DSP
+     * DSP only supports step operations on current pattern,
+     * so we iterate through each pattern, set it current, sync, then restore
+     */
+    for (let t = 0; t < NUM_TRACKS; t++) {
+        const track = tracks[t];
+        host_module_set_param(`track_${t}_channel`, String(track.channel));
+        host_module_set_param(`track_${t}_muted`, track.muted ? "1" : "0");
+        host_module_set_param(`track_${t}_speed`, String(SPEED_OPTIONS[track.speedIndex].mult));
+
+        /* Sync all patterns by temporarily setting each as current */
+        for (let p = 0; p < NUM_PATTERNS; p++) {
+            /* Set this pattern as current so step commands affect it */
+            host_module_set_param(`track_${t}_pattern`, String(p));
+
+            const pattern = track.patterns[p];
+            host_module_set_param(`track_${t}_loop_start`, String(pattern.loopStart));
+            host_module_set_param(`track_${t}_loop_end`, String(pattern.loopEnd));
+
+            for (let s = 0; s < NUM_STEPS; s++) {
+                const step = pattern.steps[s];
+
+                /* Clear step first, then add notes if any */
+                host_module_set_param(`track_${t}_step_${s}_clear`, "1");
+
+                for (const note of step.notes) {
+                    host_module_set_param(`track_${t}_step_${s}_add_note`, String(note));
+                }
+
+                if (step.cc1 >= 0) {
+                    host_module_set_param(`track_${t}_step_${s}_cc1`, String(step.cc1));
+                }
+                if (step.cc2 >= 0) {
+                    host_module_set_param(`track_${t}_step_${s}_cc2`, String(step.cc2));
+                }
+                host_module_set_param(`track_${t}_step_${s}_probability`, String(step.probability));
+                host_module_set_param(`track_${t}_step_${s}_condition_n`, String(CONDITIONS[step.condition].n));
+                host_module_set_param(`track_${t}_step_${s}_condition_m`, String(CONDITIONS[step.condition].m));
+                host_module_set_param(`track_${t}_step_${s}_condition_not`, CONDITIONS[step.condition].not ? "1" : "0");
+                host_module_set_param(`track_${t}_step_${s}_ratchet`, String(step.ratchet > 0 ? RATCHET_VALUES[step.ratchet] : 1));
+                host_module_set_param(`track_${t}_step_${s}_length`, String(step.length || 1));
+                host_module_set_param(`track_${t}_step_${s}_param_spark_n`, String(CONDITIONS[step.paramSpark].n));
+                host_module_set_param(`track_${t}_step_${s}_param_spark_m`, String(CONDITIONS[step.paramSpark].m));
+                host_module_set_param(`track_${t}_step_${s}_param_spark_not`, CONDITIONS[step.paramSpark].not ? "1" : "0");
+                host_module_set_param(`track_${t}_step_${s}_comp_spark_n`, String(CONDITIONS[step.compSpark].n));
+                host_module_set_param(`track_${t}_step_${s}_comp_spark_m`, String(CONDITIONS[step.compSpark].m));
+                host_module_set_param(`track_${t}_step_${s}_comp_spark_not`, CONDITIONS[step.compSpark].not ? "1" : "0");
+                host_module_set_param(`track_${t}_step_${s}_jump`, String(step.jump));
+            }
+        }
+
+        /* Restore the actual current pattern */
+        host_module_set_param(`track_${t}_pattern`, String(track.currentPattern));
+    }
 }
 
 for (let t = 0; t < NUM_TRACKS; t++) {
@@ -232,7 +423,15 @@ function displayMessage(l1, l2, l3, l4) {
 }
 
 function updateDisplay() {
-    if (masterMode) {
+    if (setView) {
+        /* Set view - show set selection */
+        displayMessage(
+            "SEQOMD - SELECT SET",
+            currentSet >= 0 ? `Current: Set ${currentSet + 1}` : "",
+            "",
+            ""
+        );
+    } else if (masterMode) {
         /* Master view - show channels and sync */
         const chStr = tracks.map(t => String(t.channel + 1).padStart(2)).join("");
 
@@ -249,7 +448,7 @@ function updateDisplay() {
         displayMessage(
             "PATTERNS 12345678",
             `Pattern: ${patStr}`,
-            "Tap pad to select",
+            "",
             ""
         );
     } else if (shiftHeld) {
@@ -262,7 +461,7 @@ function updateDisplay() {
             `Track ${trackNum}`,
             `Channel: ${ch}`,
             `Speed: ${speedName}`,
-            "K7:Speed K8:Channel"
+            ""
         );
     } else {
         /* Normal track view */
@@ -285,7 +484,12 @@ function updateDisplay() {
 /* ============ LEDs ============ */
 
 function updateStepLEDs() {
-    if (patternMode) {
+    if (setView) {
+        /* Set view: steps off - focus is on pads */
+        for (let i = 0; i < NUM_STEPS; i++) {
+            setLED(MoveSteps[i], Black);
+        }
+    } else if (patternMode) {
         /* Pattern mode: steps off - focus is on pads */
         for (let i = 0; i < NUM_STEPS; i++) {
             setLED(MoveSteps[i], Black);
@@ -320,34 +524,42 @@ function updateStepLEDs() {
 
             setLED(MoveSteps[i], color);
         }
+    } else if (sparkMode) {
+        /* Spark mode: show selected steps in purple, others dim */
+        const pattern = getCurrentPattern(currentTrack);
+
+        for (let i = 0; i < NUM_STEPS; i++) {
+            let color = Black;
+            const step = pattern.steps[i];
+
+            /* Steps with content show dim */
+            if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+                color = LightGrey;
+            }
+
+            /* Steps with spark settings show cyan */
+            if (step.paramSpark > 0 || step.compSpark > 0 || step.jump >= 0) {
+                color = Cyan;
+            }
+
+            /* Selected steps in spark mode show purple (bright) */
+            if (sparkSelectedSteps.has(i)) {
+                color = Purple;
+            }
+
+            setLED(MoveSteps[i], color);
+        }
     } else {
         /* Normal mode: show current track's pattern with playhead */
         const pattern = getCurrentPattern(currentTrack);
         const trackColor = TRACK_COLORS[currentTrack];
         const dimColor = TRACK_COLORS_DIM[currentTrack];
 
-        /* Build a map of which steps are "tails" of longer notes */
-        const lengthTails = new Set();
-        for (let s = 0; s < NUM_STEPS; s++) {
-            const step = pattern.steps[s];
-            const stepLength = step.length || 1;  /* Safety: default to 1 */
-            if (stepLength > 1 && step.notes && step.notes.length > 0) {
-                for (let t = 1; t < stepLength && (s + t) < NUM_STEPS; t++) {
-                    lengthTails.add(s + t);
-                }
-            }
-        }
-
         for (let i = 0; i < NUM_STEPS; i++) {
             let color = Black;
 
             /* Steps outside loop range - very dim */
             const inLoop = i >= pattern.loopStart && i <= pattern.loopEnd;
-
-            /* Check if this step is a "tail" of a longer note */
-            if (lengthTails.has(i)) {
-                color = inLoop ? Cyan : Navy;  /* Cyan for length tails */
-            }
 
             /* Step has content (notes or CC values) */
             const step = pattern.steps[i];
@@ -381,7 +593,36 @@ function updateStepLEDs() {
 }
 
 function updatePadLEDs() {
-    if (patternMode) {
+    if (setView) {
+        /* Set view: 32 pads = 32 sets
+         * Layout: 4 rows x 8 columns
+         * Row 4 (top, indices 0-7): Sets 25-32
+         * Row 3 (indices 8-15): Sets 17-24
+         * Row 2 (indices 16-23): Sets 9-16
+         * Row 1 (bottom, indices 24-31): Sets 1-8
+         */
+        for (let i = 0; i < 32; i++) {
+            const padNote = MovePads[i];
+            /* Convert pad index to set index (bottom-left = set 0) */
+            const row = 3 - Math.floor(i / 8);  // Row 0 is bottom
+            const col = i % 8;
+            const setIdx = row * 8 + col;
+
+            const isCurrentSet = currentSet === setIdx;
+            const hasContent = setHasContent(setIdx);
+
+            let color = Black;
+            if (isCurrentSet) {
+                color = Cyan;  // Currently loaded set
+            } else if (hasContent) {
+                color = LightGrey;  // Has content
+            } else {
+                color = 124;  // Dark grey for empty
+            }
+
+            setLED(padNote, color);
+        }
+    } else if (patternMode) {
         /* Pattern mode: 8 columns (tracks) x 4 rows (patterns 1-4)
          * Row 4 (top, indices 0-7): Pattern 4
          * Row 3 (indices 8-15): Pattern 3
@@ -460,6 +701,18 @@ function updateTrackLEDs() {
      * Button order is reversed: MoveTracks[0]=Row4 is rightmost, [3]=Row1 is leftmost
      * So we map: button 0 (leftmost/Row1) -> track 1, button 3 (rightmost/Row4) -> track 4
      */
+
+    /* In pattern mode, show track colors for tracks 1-4 (or 5-8 with shift) */
+    if (patternMode) {
+        for (let i = 0; i < 4; i++) {
+            const btnTrackOffset = 3 - i;
+            const trackIdx = shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
+            setButtonLED(MoveTracks[i], TRACK_COLORS[trackIdx]);
+        }
+        return;
+    }
+
+    /* Normal mode: show track selection */
     for (let i = 0; i < 4; i++) {
         /* Reverse the button index: leftmost button = track 1 */
         const btnTrackOffset = 3 - i;
@@ -500,6 +753,23 @@ function updateTransportLEDs() {
 function updateMasterButtonLED() {
     /* Menu button lights when in master mode (white LED uses brightness 0-127) */
     setButtonLED(MoveMenu, masterMode ? 127 : 0);
+}
+
+/* Set the indicator LED underneath a trigger button (uses 0xBA channel) */
+function setTriggerIndicator(triggerCC, color) {
+    move_midi_internal_send([0x0b, 0xBA, triggerCC, color]);
+}
+
+function updateTriggerIndicators() {
+    /* Step 1 indicator: show in pattern mode when shift is held (to enter set view)
+     * Step 1 = MoveSteps[0] = note 16
+     */
+    const step1Note = MoveSteps[0];  // Note 16 (first step button)
+    if (patternMode && shiftHeld) {
+        setTriggerIndicator(step1Note, Cyan);  // Show indicator to enter set view
+    } else {
+        setTriggerIndicator(step1Note, Black);  // Hide indicator
+    }
 }
 
 function updateKnobLEDs() {
@@ -555,6 +825,7 @@ function updateAllLEDs() {
     updateTransportLEDs();
     updateMasterButtonLED();
     updateKnobLEDs();
+    updateTriggerIndicators();
 }
 
 /* ============ Helpers ============ */
@@ -638,6 +909,9 @@ function clearStep(trackIdx, stepIdx) {
     step.probability = 100;
     step.condition = 0;
     step.ratchet = 0;
+    step.paramSpark = 0;
+    step.compSpark = 0;
+    step.jump = -1;
     host_module_set_param(`track_${trackIdx}_step_${stepIdx}_clear`, "1");
 }
 
@@ -657,6 +931,11 @@ function setStepNote(trackIdx, stepIdx, note) {
 globalThis.init = function() {
     console.log("SEQOMD starting...");
     clearAllLEDs();
+
+    /* Initialize 32 empty sets */
+    for (let i = 0; i < NUM_SETS; i++) {
+        sets[i] = null;  // null = empty/unused set
+    }
 
     /* Initialize track data with patterns */
     for (let t = 0; t < NUM_TRACKS; t++) {
@@ -680,11 +959,17 @@ globalThis.init = function() {
         }
     }
 
+
     /* Enable clock output by default */
     host_module_set_param("send_clock", "1");
     sendClock = 1;
 
     currentTrack = 0;
+
+    /* Start in set view mode */
+    setView = true;
+    currentSet = -1;  // No set loaded yet
+
     updateDisplay();
     updateAllLEDs();
 };
@@ -788,9 +1073,14 @@ globalThis.onMidiMessageInternal = function(data) {
                             host_module_set_param(`track_${currentTrack}_step_${heldStep}_ratchet`, "1");
                             displayMessage(undefined, `Step ${heldStep + 1}`, "Ratchet: 1x", "");
                         } else if (knobIdx === 7) {
-                            /* Tap knob 8: clear the entire step */
-                            clearStep(currentTrack, heldStep);
-                            displayMessage(undefined, `Step ${heldStep + 1}`, "Step cleared", "");
+                            /* Tap knob 8: clear condition and reset probability */
+                            step.condition = 0;
+                            step.probability = 100;
+                            host_module_set_param(`track_${currentTrack}_step_${heldStep}_condition_n`, "0");
+                            host_module_set_param(`track_${currentTrack}_step_${heldStep}_condition_m`, "0");
+                            host_module_set_param(`track_${currentTrack}_step_${heldStep}_condition_not`, "0");
+                            host_module_set_param(`track_${currentTrack}_step_${heldStep}_probability`, "100");
+                            displayMessage(undefined, `Step ${heldStep + 1}`, "Cond/Prob cleared", "");
                         }
                         updateKnobLEDs();
                         updateStepLEDs();
@@ -807,10 +1097,24 @@ globalThis.onMidiMessageInternal = function(data) {
 
     /* Shift button (CC 49) */
     if (isCC && note === MoveShift) {
-        shiftHeld = velocity > 0;
-        updateTrackLEDs();  // Update to show tracks 5-8 when shift held
-        updateKnobLEDs();   // Show knob 7/8 functions
-        updateDisplay();    // Show shift view with channel/speed
+        if (velocity > 0) {
+            /* Shift pressed */
+            if (sparkMode) {
+                /* Exit spark mode */
+                sparkMode = false;
+                sparkSelectedSteps.clear();
+                displayMessage("SEQOMD", `Track ${currentTrack + 1}`, "", "");
+            }
+            shiftHeld = true;
+        } else {
+            /* Shift released */
+            shiftHeld = false;
+        }
+        updateTrackLEDs();
+        updateStepLEDs();
+        updateKnobLEDs();
+        updateTriggerIndicators();
+        updateDisplay();
         return;
     }
 
@@ -832,19 +1136,20 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Track buttons (CC 40-43) */
+    /* Track buttons (CC 40-43) - triggers in pattern mode, track select otherwise */
     if (isCC && MoveTracks.includes(note)) {
         const btnIdx = MoveTracks.indexOf(note);
         /* Reverse the button index: leftmost button = track 1 */
-        const btnTrackOffset = 3 - btnIdx;
+        const trackBtnIdx = 3 - btnIdx;
 
+        /* Normal track selection */
         if (velocity > 0) {
             /* Exit master mode when selecting a track */
             if (masterMode) {
                 masterMode = false;
                 updateMasterButtonLED();
             }
-            const trackIdx = shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
+            const trackIdx = shiftHeld ? triggerIdx + 4 : triggerIdx;
             selectTrack(trackIdx);
         }
         return;
@@ -853,6 +1158,25 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Step buttons (notes 16-31) */
     if (isNote && MoveSteps.includes(note)) {
         const stepIdx = MoveSteps.indexOf(note);
+
+        /* In pattern mode: shift + step 1 = enter set view */
+        if (patternMode && shiftHeld && stepIdx === 0 && isNoteOn && velocity > 0) {
+            /* Save current set before going to set view */
+            if (currentSet >= 0) {
+                saveCurrentSet();
+            }
+            /* Enter set view */
+            setView = true;
+            patternMode = false;
+            displayMessage(
+                "SEQOMD - SELECT SET",
+                currentSet >= 0 ? `Current: Set ${currentSet + 1}` : "",
+                "",
+                ""
+            );
+            updateAllLEDs();
+            return;
+        }
 
         /* Loop edit mode - set loop points */
         if (loopEditMode && isNoteOn && velocity > 0) {
@@ -881,6 +1205,62 @@ globalThis.onMidiMessageInternal = function(data) {
                 );
                 loopEditFirst = -1;  /* Ready for next selection */
                 updateTransportLEDs();  /* Update loop button to show custom loop */
+            }
+            updateStepLEDs();
+            return;
+        }
+
+        /* Spark mode: shift + step enters/toggles step selection */
+        if (shiftHeld && isNoteOn && velocity > 0) {
+            if (!sparkMode) {
+                /* Enter spark mode */
+                sparkMode = true;
+                sparkSelectedSteps.clear();
+            }
+            /* Toggle step selection */
+            if (sparkSelectedSteps.has(stepIdx)) {
+                sparkSelectedSteps.delete(stepIdx);
+            } else {
+                sparkSelectedSteps.add(stepIdx);
+            }
+            /* Show spark mode display */
+            const selectedCount = sparkSelectedSteps.size;
+            const step = getCurrentPattern(currentTrack).steps[stepIdx];
+            const paramCond = CONDITIONS[step.paramSpark || 0];
+            const compCond = CONDITIONS[step.compSpark || 0];
+            displayMessage(
+                `SPARK MODE (${selectedCount})`,
+                `Param: ${paramCond.name}`,
+                `Comp: ${compCond.name}`,
+                step.jump >= 0 ? `Jump: ${step.jump + 1}` : ""
+            );
+            updateStepLEDs();
+            updateKnobLEDs();
+            return;
+        }
+
+        /* Spark mode: tapping step without shift toggles selection */
+        if (sparkMode && isNoteOn && velocity > 0) {
+            if (sparkSelectedSteps.has(stepIdx)) {
+                sparkSelectedSteps.delete(stepIdx);
+            } else {
+                sparkSelectedSteps.add(stepIdx);
+            }
+            const selectedCount = sparkSelectedSteps.size;
+            if (selectedCount > 0) {
+                /* Show first selected step's spark values */
+                const firstStep = [...sparkSelectedSteps][0];
+                const step = getCurrentPattern(currentTrack).steps[firstStep];
+                const paramCond = CONDITIONS[step.paramSpark || 0];
+                const compCond = CONDITIONS[step.compSpark || 0];
+                displayMessage(
+                    `SPARK MODE (${selectedCount})`,
+                    `Param: ${paramCond.name}`,
+                    `Comp: ${compCond.name}`,
+                    step.jump >= 0 ? `Jump: ${step.jump + 1}` : ""
+                );
+            } else {
+                displayMessage("SPARK MODE", "No steps selected", "", "");
             }
             updateStepLEDs();
             return;
@@ -964,7 +1344,34 @@ globalThis.onMidiMessageInternal = function(data) {
     if (isNote && MovePads.includes(note)) {
         const padIdx = MovePads.indexOf(note);
 
-        if (patternMode) {
+        if (setView) {
+            /* Set view: select a set */
+            if (isNoteOn && velocity > 0) {
+                /* Convert pad index to set index (bottom-left = set 0) */
+                const row = 3 - Math.floor(padIdx / 8);  // Row 0 is bottom
+                const col = padIdx % 8;
+                const setIdx = row * 8 + col;
+
+                /* Save current set if we have one loaded */
+                if (currentSet >= 0) {
+                    saveCurrentSet();
+                }
+
+                /* Load the selected set */
+                loadSetToTracks(setIdx);
+
+                /* Exit set view */
+                setView = false;
+
+                displayMessage(
+                    `SEQOMD - Set ${setIdx + 1}`,
+                    `Track ${currentTrack + 1}`,
+                    "",
+                    ""
+                );
+                updateAllLEDs();
+            }
+        } else if (patternMode) {
             /* Pattern mode: select pattern for track */
             if (isNoteOn && velocity > 0) {
                 const trackIdx = padIdx % 8;
@@ -1148,6 +1555,64 @@ globalThis.onMidiMessageInternal = function(data) {
                 host_module_set_param(`track_${currentTrack}_channel`, String(channel));
                 updateDisplay();
             }
+        } else if (sparkMode && sparkSelectedSteps.size > 0 && (knobIdx === 0 || knobIdx === 6 || knobIdx === 7)) {
+            /* Spark mode: knob 1 = jump, knob 7 = comp spark, knob 8 = param spark */
+            const pattern = getCurrentPattern(currentTrack);
+
+            for (const stepIdx of sparkSelectedSteps) {
+                const step = pattern.steps[stepIdx];
+
+                if (knobIdx === 0) {
+                    /* Knob 1: Jump target (0-15, or -1 for off) */
+                    let jump = step.jump;
+                    if (velocity >= 1 && velocity <= 63) {
+                        jump = Math.min(jump + 1, NUM_STEPS - 1);
+                    } else if (velocity >= 65 && velocity <= 127) {
+                        jump = Math.max(jump - 1, -1);
+                    }
+                    step.jump = jump;
+                    host_module_set_param(`track_${currentTrack}_step_${stepIdx}_jump`, String(jump));
+                } else if (knobIdx === 6) {
+                    /* Knob 7: Component Spark (when ratchet/jump apply) */
+                    let compSpark = step.compSpark || 0;
+                    if (velocity >= 1 && velocity <= 63) {
+                        compSpark = Math.min(compSpark + 1, CONDITIONS.length - 1);
+                    } else if (velocity >= 65 && velocity <= 127) {
+                        compSpark = Math.max(compSpark - 1, 0);
+                    }
+                    step.compSpark = compSpark;
+                    const cond = CONDITIONS[compSpark];
+                    host_module_set_param(`track_${currentTrack}_step_${stepIdx}_comp_spark_n`, String(cond.n));
+                    host_module_set_param(`track_${currentTrack}_step_${stepIdx}_comp_spark_m`, String(cond.m));
+                    host_module_set_param(`track_${currentTrack}_step_${stepIdx}_comp_spark_not`, cond.not ? "1" : "0");
+                } else if (knobIdx === 7) {
+                    /* Knob 8: Parameter Spark (when CC locks apply) */
+                    let paramSpark = step.paramSpark || 0;
+                    if (velocity >= 1 && velocity <= 63) {
+                        paramSpark = Math.min(paramSpark + 1, CONDITIONS.length - 1);
+                    } else if (velocity >= 65 && velocity <= 127) {
+                        paramSpark = Math.max(paramSpark - 1, 0);
+                    }
+                    step.paramSpark = paramSpark;
+                    const cond = CONDITIONS[paramSpark];
+                    host_module_set_param(`track_${currentTrack}_step_${stepIdx}_param_spark_n`, String(cond.n));
+                    host_module_set_param(`track_${currentTrack}_step_${stepIdx}_param_spark_m`, String(cond.m));
+                    host_module_set_param(`track_${currentTrack}_step_${stepIdx}_param_spark_not`, cond.not ? "1" : "0");
+                }
+            }
+
+            /* Update display with first selected step */
+            const firstStep = [...sparkSelectedSteps][0];
+            const step = pattern.steps[firstStep];
+            const paramCond = CONDITIONS[step.paramSpark || 0];
+            const compCond = CONDITIONS[step.compSpark || 0];
+            displayMessage(
+                `SPARK MODE (${sparkSelectedSteps.size})`,
+                `Param: ${paramCond.name}`,
+                `Comp: ${compCond.name}`,
+                step.jump >= 0 ? `Jump: ${step.jump + 1}` : "Jump: ---"
+            );
+            updateStepLEDs();
         } else if (patternMode) {
             /* Pattern mode: all 8 knobs send CCs 1-8 on master channel */
             const cc = knobIdx + 1;  // CC 1-8
@@ -1217,7 +1682,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 displayMessage(
                     `Step ${heldStep + 1}`,
                     `Ratchet: ${RATCHET_VALUES[ratchIdx]}x`,
-                    "Tap to reset",
+                    "",
                     ""
                 );
             } else if (knobIdx === 7) {
@@ -1234,11 +1699,11 @@ globalThis.onMidiMessageInternal = function(data) {
                     displayMessage(
                         `Step ${heldStep + 1}`,
                         `Probability: ${step.probability}%`,
-                        "Tap to clear step",
+                        "",
                         ""
                     );
                 } else if (velocity >= 1 && velocity <= 63) {
-                    /* Turning up = cycle through conditions */
+                    /* Turning up = cycle through conditions (including inverted) */
                     step.probability = 100;  /* Reset probability when using condition */
                     step.condition = Math.min(step.condition + 1, CONDITIONS.length - 1);
 
@@ -1247,18 +1712,23 @@ globalThis.onMidiMessageInternal = function(data) {
                     host_module_set_param(`track_${currentTrack}_step_${heldStep}_probability`, "100");
                     host_module_set_param(`track_${currentTrack}_step_${heldStep}_condition_n`, String(cond.n));
                     host_module_set_param(`track_${currentTrack}_step_${heldStep}_condition_m`, String(cond.m));
+                    host_module_set_param(`track_${currentTrack}_step_${heldStep}_condition_not`, cond.not ? "1" : "0");
 
                     /* Format display */
                     let desc = "Always";
                     if (step.condition > 0) {
-                        desc = `Play on loop ${cond.m} of ${cond.n}`;
+                        if (cond.not) {
+                            desc = `Skip loop ${cond.m} of ${cond.n}`;
+                        } else {
+                            desc = `Play on loop ${cond.m} of ${cond.n}`;
+                        }
                     }
 
                     displayMessage(
                         `Step ${heldStep + 1}`,
                         `Condition: ${cond.name}`,
                         desc,
-                        "Tap to clear step"
+                        ""
                     );
                 }
             }
