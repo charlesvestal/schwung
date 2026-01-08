@@ -15,6 +15,7 @@ mkdir -p ./build/modules/sf2/
 mkdir -p ./build/modules/dx7/
 mkdir -p ./build/modules/m8/
 mkdir -p ./build/modules/controller/
+mkdir -p ./build/modules/sequencer/
 
 echo "Building host..."
 
@@ -89,6 +90,19 @@ cp ./src/modules/m8/ui.js ./build/modules/m8/
 # Copy Controller module files
 cp ./src/modules/controller/module.json ./build/modules/controller/
 cp ./src/modules/controller/ui.js ./build/modules/controller/
+
+echo "Building Sequencer module..."
+
+# Build Sequencer DSP plugin
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/sequencer/dsp/seq_plugin.c \
+    -o build/modules/sequencer/dsp.so \
+    -Isrc \
+    -lm
+
+# Copy Sequencer module files
+cp ./src/modules/sequencer/module.json ./build/modules/sequencer/
+cp ./src/modules/sequencer/ui.js ./build/modules/sequencer/
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"
