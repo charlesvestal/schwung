@@ -61,6 +61,7 @@ typedef struct {
     char path[MAX_PATH_LEN];
     char synth_module[MAX_NAME_LEN];
     int synth_preset;
+    char midi_source_module[MAX_NAME_LEN];
     char audio_fx[MAX_AUDIO_FX][MAX_NAME_LEN];
     int audio_fx_count;
     char midi_fx_js[MAX_MIDI_FX_JS][MAX_NAME_LEN];
@@ -79,6 +80,10 @@ static const host_api_v1_t *g_host = NULL;
 static void *g_synth_handle = NULL;
 static plugin_api_v1_t *g_synth_plugin = NULL;
 static char g_current_synth_module[MAX_NAME_LEN] = "";
+
+static void *g_source_handle = NULL;
+static plugin_api_v1_t *g_source_plugin = NULL;
+static char g_current_source_module[MAX_NAME_LEN] = "";
 
 /* Audio FX state */
 static void *g_fx_handles[MAX_AUDIO_FX];
@@ -123,6 +128,10 @@ static int g_raw_midi = 0;
 static int g_source_ui_active = 0;
 /* Our host API for sub-plugins (forwards to main host) */
 static host_api_v1_t g_subplugin_host_api;
+static host_api_v1_t g_source_host_api;
+
+static void plugin_on_midi(const uint8_t *msg, int len, int source);
+static int midi_source_send(const uint8_t *msg, int len);
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -430,6 +439,95 @@ static int load_synth(const char *module_path, const char *config_json) {
     return 0;
 }
 
+static int midi_source_send(const uint8_t *msg, int len) {
+    if (!msg || len < 2) return 0;
+
+    uint8_t status = msg[1];
+    if (status == 0) return len;
+
+    int msg_len = 3;
+    uint8_t status_type = status & 0xF0;
+    if (status >= 0xF8) {
+        msg_len = 1;
+    } else if (status_type == 0xC0 || status_type == 0xD0) {
+        msg_len = 2;
+    }
+
+    plugin_on_midi(&msg[1], msg_len, MOVE_MIDI_SOURCE_HOST);
+    return len;
+}
+
+static int load_midi_source(const char *module_path, const char *config_json) {
+    char msg[256];
+
+    char dsp_path[512];
+    snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", module_path);
+
+    snprintf(msg, sizeof(msg), "Loading MIDI source from: %s", dsp_path);
+    chain_log(msg);
+
+    g_source_handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
+    if (!g_source_handle) {
+        snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
+        chain_log(msg);
+        return -1;
+    }
+
+    move_plugin_init_v1_fn init_fn = (move_plugin_init_v1_fn)dlsym(g_source_handle, MOVE_PLUGIN_INIT_SYMBOL);
+    if (!init_fn) {
+        snprintf(msg, sizeof(msg), "dlsym failed: %s", dlerror());
+        chain_log(msg);
+        dlclose(g_source_handle);
+        g_source_handle = NULL;
+        return -1;
+    }
+
+    g_source_plugin = init_fn(&g_source_host_api);
+    if (!g_source_plugin) {
+        chain_log("MIDI source plugin init returned NULL");
+        dlclose(g_source_handle);
+        g_source_handle = NULL;
+        return -1;
+    }
+
+    if (g_source_plugin->api_version != MOVE_PLUGIN_API_VERSION) {
+        snprintf(msg, sizeof(msg), "MIDI source API version mismatch: %d vs %d",
+                 g_source_plugin->api_version, MOVE_PLUGIN_API_VERSION);
+        chain_log(msg);
+        dlclose(g_source_handle);
+        g_source_handle = NULL;
+        g_source_plugin = NULL;
+        return -1;
+    }
+
+    if (g_source_plugin->on_load) {
+        int ret = g_source_plugin->on_load(module_path, config_json);
+        if (ret != 0) {
+            snprintf(msg, sizeof(msg), "MIDI source on_load failed: %d", ret);
+            chain_log(msg);
+            dlclose(g_source_handle);
+            g_source_handle = NULL;
+            g_source_plugin = NULL;
+            return -1;
+        }
+    }
+
+    chain_log("MIDI source loaded successfully");
+    return 0;
+}
+
+static void unload_midi_source(void) {
+    if (g_source_plugin && g_source_plugin->on_unload) {
+        g_source_plugin->on_unload();
+    }
+    if (g_source_handle) {
+        dlclose(g_source_handle);
+        g_source_handle = NULL;
+    }
+    g_source_plugin = NULL;
+    g_current_source_module[0] = '\0';
+}
+
 /* Unload synth sub-plugin */
 static void unload_synth(void) {
     if (g_synth_plugin && g_synth_plugin->on_unload) {
@@ -578,6 +676,76 @@ static int json_get_int(const char *json, const char *key, int *out) {
     return 0;
 }
 
+static int json_get_section_bounds(const char *json, const char *section_key,
+                                   const char **out_start, const char **out_end) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", section_key);
+
+    const char *pos = strstr(json, search);
+    if (!pos) return -1;
+
+    const char *start = strchr(pos, '{');
+    if (!start) return -1;
+
+    int depth = 0;
+    const char *end = NULL;
+    for (const char *p = start; *p; p++) {
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) {
+                end = p;
+                break;
+            }
+        }
+    }
+    if (!end) return -1;
+
+    *out_start = start;
+    *out_end = end;
+    return 0;
+}
+
+static int json_get_string_in_section(const char *json, const char *section_key,
+                                      const char *key, char *out, int out_len) {
+    const char *start = NULL;
+    const char *end = NULL;
+    if (json_get_section_bounds(json, section_key, &start, &end) != 0) {
+        return -1;
+    }
+
+    int len = (int)(end - start + 1);
+    char *section = malloc((size_t)len + 1);
+    if (!section) return -1;
+
+    memcpy(section, start, (size_t)len);
+    section[len] = '\0';
+
+    int ret = json_get_string(section, key, out, out_len);
+    free(section);
+    return ret;
+}
+
+static int json_get_int_in_section(const char *json, const char *section_key,
+                                   const char *key, int *out) {
+    const char *start = NULL;
+    const char *end = NULL;
+    if (json_get_section_bounds(json, section_key, &start, &end) != 0) {
+        return -1;
+    }
+
+    int len = (int)(end - start + 1);
+    char *section = malloc((size_t)len + 1);
+    if (!section) return -1;
+
+    memcpy(section, start, (size_t)len);
+    section[len] = '\0';
+
+    int ret = json_get_int(section, key, out);
+    free(section);
+    return ret;
+}
 /* Parse a patch file and populate patch_info */
 static int parse_patch_file(const char *path, patch_info_t *patch) {
     char msg[256];
@@ -617,12 +785,19 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         strcpy(patch->name, "Unnamed");
     }
 
-    if (json_get_string(json, "module", patch->synth_module, MAX_NAME_LEN) != 0) {
+    if (json_get_string_in_section(json, "synth", "module",
+                                   patch->synth_module, MAX_NAME_LEN) != 0) {
         strcpy(patch->synth_module, "sf2");  /* Default to SF2 */
     }
 
-    if (json_get_int(json, "preset", &patch->synth_preset) != 0) {
+    if (json_get_int_in_section(json, "synth", "preset", &patch->synth_preset) != 0) {
         patch->synth_preset = 0;
+    }
+
+    patch->midi_source_module[0] = '\0';
+    if (json_get_string_in_section(json, "midi_source", "module",
+                                   patch->midi_source_module, MAX_NAME_LEN) != 0) {
+        json_get_string(json, "midi_source", patch->midi_source_module, MAX_NAME_LEN);
     }
 
     /* Parse MIDI input filter */
@@ -747,8 +922,10 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
 
     free(json);
 
-    snprintf(msg, sizeof(msg), "Parsed patch: %s -> %s preset %d, %d FX, chord=%d, arp=%d",
+    snprintf(msg, sizeof(msg),
+             "Parsed patch: %s -> %s preset %d, source=%s, %d FX, chord=%d, arp=%d",
              patch->name, patch->synth_module, patch->synth_preset,
+             patch->midi_source_module[0] ? patch->midi_source_module : "none",
              patch->audio_fx_count, patch->chord_type, patch->arp_mode);
     chain_log(msg);
 
@@ -879,6 +1056,31 @@ static int load_patch(int index) {
         strncpy(g_current_synth_module, patch->synth_module, MAX_NAME_LEN - 1);
     }
 
+    /* Check if we need to switch MIDI source modules */
+    if (strcmp(g_current_source_module, patch->midi_source_module) != 0) {
+        unload_midi_source();
+
+        if (patch->midi_source_module[0] != '\0') {
+            char source_path[MAX_PATH_LEN];
+
+            strncpy(source_path, g_module_dir, sizeof(source_path) - 1);
+            char *last_slash = strrchr(source_path, '/');
+            if (last_slash) {
+                snprintf(last_slash + 1, sizeof(source_path) - (last_slash - source_path) - 1,
+                         "%s", patch->midi_source_module);
+            }
+
+            if (load_midi_source(source_path, NULL) != 0) {
+                snprintf(msg, sizeof(msg), "Failed to load MIDI source: %s",
+                         patch->midi_source_module);
+                chain_log(msg);
+                return -1;
+            }
+
+            strncpy(g_current_source_module, patch->midi_source_module, MAX_NAME_LEN - 1);
+        }
+    }
+
     /* Set preset on synth */
     if (g_synth_plugin && g_synth_plugin->set_param) {
         char preset_str[16];
@@ -980,6 +1182,7 @@ static void plugin_on_unload(void) {
     chain_log("Chain host unloading");
     unload_all_audio_fx();
     unload_synth();
+    unload_midi_source();
 }
 
 /* Send a note message to synth with optional interval offset */
@@ -1006,6 +1209,10 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
     if (len < 1) return;
+
+    if (g_source_plugin && g_source_plugin->on_midi && source != MOVE_MIDI_SOURCE_HOST) {
+        g_source_plugin->on_midi(msg, len, source);
+    }
 
     if (!midi_source_allowed(source)) return;
 
@@ -1170,6 +1377,10 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         snprintf(buf, buf_len, "%s", g_current_synth_module);
         return 0;
     }
+    if (strcmp(key, "midi_source_module") == 0) {
+        snprintf(buf, buf_len, "%s", g_current_source_module);
+        return 0;
+    }
     if (strcmp(key, "raw_midi") == 0) {
         snprintf(buf, buf_len, "%d", g_raw_midi);
         return 0;
@@ -1193,6 +1404,12 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
 }
 
 static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
+    int16_t scratch[FRAMES_PER_BLOCK * 2];
+
+    if (g_source_plugin && g_source_plugin->render_block) {
+        g_source_plugin->render_block(scratch, frames);
+    }
+
     /* Mute output briefly after patch switch to drain old synth audio */
     if (g_mute_countdown > 0) {
         g_mute_countdown--;
@@ -1235,6 +1452,9 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
 
     /* Set up host API for sub-plugins (forward everything to main host) */
     memcpy(&g_subplugin_host_api, host, sizeof(host_api_v1_t));
+    memcpy(&g_source_host_api, host, sizeof(host_api_v1_t));
+    g_source_host_api.midi_send_internal = midi_source_send;
+    g_source_host_api.midi_send_external = midi_source_send;
 
     /* Initialize our plugin API struct */
     memset(&g_plugin_api, 0, sizeof(g_plugin_api));

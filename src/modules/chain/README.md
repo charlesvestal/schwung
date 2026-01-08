@@ -54,6 +54,8 @@ Example:
 - `external`: external USB MIDI only
 - `both`/`all`: allow both sources
 
+If no `midi_source` is specified, the chain uses `input` for MIDI as before.
+
 ### MIDI FX
 
 Native MIDI FX supported today:
