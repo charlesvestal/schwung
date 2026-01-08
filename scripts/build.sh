@@ -15,6 +15,7 @@ mkdir -p ./build/modules/sf2/
 mkdir -p ./build/modules/dx7/
 mkdir -p ./build/modules/m8/
 mkdir -p ./build/modules/controller/
+mkdir -p ./build/modules/chain/
 
 echo "Building host..."
 
@@ -62,6 +63,15 @@ echo "Building DX7 module..."
     -Isrc -Isrc/modules/dx7/dsp \
     -lm
 
+echo "Building Signal Chain module..."
+
+# Build Signal Chain DSP plugin
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/chain/dsp/chain_host.c \
+    -o build/modules/chain/dsp.so \
+    -Isrc \
+    -lm -ldl
+
 # Copy shared utilities
 cp ./src/shared/*.mjs ./build/shared/
 
@@ -90,6 +100,10 @@ cp ./src/modules/m8/ui.js ./build/modules/m8/
 # Copy Controller module files
 cp ./src/modules/controller/module.json ./build/modules/controller/
 cp ./src/modules/controller/ui.js ./build/modules/controller/
+
+# Copy Signal Chain module files
+cp ./src/modules/chain/module.json ./build/modules/chain/
+cp ./src/modules/chain/ui.js ./build/modules/chain/
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"
