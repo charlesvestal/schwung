@@ -60,7 +60,11 @@ static Lfo g_lfo;
 static Dx7Note* g_voices[MAX_VOICES];
 static int g_voice_note[MAX_VOICES];  /* MIDI note for each voice, -1 = free */
 static int g_voice_age[MAX_VOICES];   /* Age counter for voice stealing */
+static bool g_voice_sustained[MAX_VOICES];  /* True if held by sustain pedal */
 static int g_age_counter = 0;
+
+/* Sustain pedal state */
+static bool g_sustain_pedal = false;
 
 /* Current patch data (unpacked 156 bytes) */
 static uint8_t g_current_patch[DX7_PATCH_SIZE];
@@ -359,6 +363,7 @@ static void note_on(int note, int velocity) {
     g_voices[voice]->init(g_current_patch, note, velocity, 0, &g_controllers);
     g_voice_note[voice] = note;
     g_voice_age[voice] = g_age_counter++;
+    g_voice_sustained[voice] = false;
 
     /* Only trigger LFO sync on first voice, not subsequent voices */
     if (active_before == 0) {
@@ -370,8 +375,24 @@ static void note_on(int note, int velocity) {
 static void note_off(int note) {
     for (int i = 0; i < MAX_VOICES; i++) {
         if (g_voice_note[i] == note) {
-            g_voices[i]->keyup();
+            if (g_sustain_pedal) {
+                /* Mark as sustained - will release when pedal is lifted */
+                g_voice_sustained[i] = true;
+            } else {
+                g_voices[i]->keyup();
+                g_voice_sustained[i] = false;
+            }
             /* Don't clear note yet - let release phase play */
+        }
+    }
+}
+
+/* Release all sustained notes (called when sustain pedal is lifted) */
+static void release_sustained_notes() {
+    for (int i = 0; i < MAX_VOICES; i++) {
+        if (g_voice_sustained[i]) {
+            g_voices[i]->keyup();
+            g_voice_sustained[i] = false;
         }
     }
 }
@@ -382,7 +403,9 @@ static void all_notes_off() {
         if (g_voice_note[i] >= 0) {
             g_voices[i]->keyup();
         }
+        g_voice_sustained[i] = false;
     }
+    g_sustain_pedal = false;
 }
 
 /* === Plugin API callbacks === */
@@ -450,7 +473,9 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
         g_voices[i] = new Dx7Note(g_tuning, nullptr);
         g_voice_note[i] = -1;
         g_voice_age[i] = 0;
+        g_voice_sustained[i] = false;
     }
+    g_sustain_pedal = false;
 
     /* Initialize with default patch */
     init_default_patch();
@@ -559,7 +584,10 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
                     g_controllers.refresh();
                     break;
                 case 64: /* Sustain pedal */
-                    /* TODO: implement sustain */
+                    g_sustain_pedal = (data2 >= 64);
+                    if (!g_sustain_pedal) {
+                        release_sustained_notes();
+                    }
                     break;
                 case 123: /* All notes off */
                     all_notes_off();
