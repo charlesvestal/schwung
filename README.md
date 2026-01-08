@@ -56,6 +56,15 @@ The Signal Chain module lets you combine sound generators, MIDI effects, and aud
 
 Patches are JSON files in `modules/chain/patches/`. Use the jog wheel to browse, Up/Down buttons for octave control.
 
+## Additional Modules
+
+These modules are maintained in separate repositories:
+
+| Module | Description | Repository |
+|--------|-------------|------------|
+| **OB-Xd** | Oberheim OB-X synthesizer emulator | [move-anything-obxd](https://github.com/charlesvestal/move-anything-obxd) |
+| **JV-880** | Roland JV-880 rompler emulator | [move-anything-jv880](https://github.com/charlesvestal/move-anything-jv880) |
+
 ## Uninstall
 
 ```bash
