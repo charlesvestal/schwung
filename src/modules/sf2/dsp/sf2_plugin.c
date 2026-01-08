@@ -64,8 +64,9 @@ static int load_soundfont(const char *path) {
         return -1;
     }
 
-    /* Set output mode: stereo interleaved, 44100 Hz */
-    tsf_set_output(g_tsf, TSF_STEREO_INTERLEAVED, MOVE_SAMPLE_RATE, 0.0f);
+    /* Set output mode: stereo interleaved, 44100 Hz
+     * Use -12dB global gain to provide headroom for polyphony */
+    tsf_set_output(g_tsf, TSF_STEREO_INTERLEAVED, MOVE_SAMPLE_RATE, -12.0f);
 
     /* Get preset count */
     g_preset_count = tsf_get_presetcount(g_tsf);
