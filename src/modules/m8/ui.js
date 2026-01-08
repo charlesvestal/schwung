@@ -9,8 +9,10 @@ import {
     MoveMenu, MoveBack, MoveCapture, MoveShift,
     MoveMainButton, MoveMainTouch,
     MovePlay, MoveRec, MoveLoop, MoveMute, MoveUndo,
-    MovePad32
+    MovePad32, MidiClock
 } from '../../shared/constants.mjs';
+
+import { isCapacitiveTouch } from '../../shared/input_filter.mjs';
 
 /* LPP note layout (10x10 grid) */
 const lppNotes = [
@@ -186,7 +188,7 @@ function initLPP() {
 
 /* External MIDI handler (from M8) */
 globalThis.onMidiMessageExternal = function (data) {
-    if (data[0] == 0xf8) return; /* Ignore MIDI clock */
+    if (data[0] === MidiClock) return;
 
     let value = data[0];
     let maskedValue = (value & 0xf0);
@@ -266,12 +268,12 @@ globalThis.onMidiMessageExternal = function (data) {
 
 /* Internal MIDI handler (from Move) */
 globalThis.onMidiMessageInternal = function (data) {
-    let isNote = data[0] === 0x80 || data[0] === 0x90;
-    let isCC = data[0] === 0xb0;
-    let isAt = data[0] === 0xa0;
+    const isNote = data[0] === 0x80 || data[0] === 0x90;
+    const isCC = data[0] === 0xb0;
+    const isAt = data[0] === 0xa0;
 
-    /* Filter capacitive touch (notes < 10, except wheel touch) */
-    if (isNote && data[1] < 10 && data[1] !== moveWHEELTouch) {
+    /* Filter capacitive touch (notes < 10, except wheel touch for navigation) */
+    if (isNote && isCapacitiveTouch(data[1]) && data[1] !== moveWHEELTouch) {
         return;
     }
 

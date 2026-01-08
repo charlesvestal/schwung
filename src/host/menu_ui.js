@@ -11,6 +11,8 @@ import {
     MoveLeft, MoveRight, MoveUp, MoveDown
 } from '../shared/constants.mjs';
 
+import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
+
 /* State */
 let modules = [];
 let selectedIndex = 0;
@@ -236,14 +238,10 @@ globalThis.tick = function() {
 };
 
 globalThis.onMidiMessageInternal = function(data) {
-    const status = data[0] & 0xF0;
-    const channel = data[0] & 0x0F;
-    const isNote = status === 0x90 || status === 0x80;
+    if (isCapacitiveTouchMessage(data)) return;
 
-    /* Filter capacitive touch events from knobs (notes 0-9) */
-    if (isNote && data[1] < 10) {
-        return; /* Ignore capacitive touch */
-    }
+    const status = data[0] & 0xF0;
+    const isNote = status === 0x90 || status === 0x80;
 
     if (status === 0xB0) {
         /* Control Change */
