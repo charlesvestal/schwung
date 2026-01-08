@@ -1231,19 +1231,22 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Capture button (CC 52) - hold for spark mode */
+    /* Capture button (CC 52) - toggle spark mode */
     if (isCC && note === MoveCapture) {
         if (velocity > 0) {
-            captureHeld = true;
-        } else {
-            /* Capture released - exit spark mode */
-            captureHeld = false;
             if (sparkMode) {
+                /* Already in spark mode - exit */
                 sparkMode = false;
                 sparkSelectedSteps.clear();
                 displayMessage("SEQOMD", `Track ${currentTrack + 1}`, "", "");
                 updateStepLEDs();
+            } else {
+                /* Not in spark mode - hold to select steps */
+                captureHeld = true;
             }
+        } else {
+            /* Capture released - just clear held state */
+            captureHeld = false;
         }
         updateCaptureLED();
         return;
