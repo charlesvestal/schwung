@@ -68,6 +68,7 @@ host_load_module(id_or_index) // Load a module by ID or index
 host_unload_module()          // Unload current module
 host_module_set_param(k, v)   // Set DSP parameter
 host_module_get_param(k)      // Get DSP parameter
+host_module_send_midi(msg, source) // Send MIDI into current DSP module
 host_is_module_loaded()       // Returns bool
 host_get_current_module()     // Returns {id, name, version, ui_script} or null
 host_rescan_modules()         // Rescan modules directory, returns count
@@ -82,6 +83,8 @@ host_set_setting(key, val)    // Set setting value
 host_save_settings()          // Save settings to disk
 host_reload_settings()        // Reload settings from disk
 ```
+
+`host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
 
 ## Utility Functions
 
@@ -124,6 +127,7 @@ Notes 0-9 are generated when knobs are touched. Filter these if you don't need t
 ```javascript
 if (data[1] < 10) return;  // Ignore capacitive touch
 ```
+When `raw_midi` is false, the host filters knob-touch notes from internal MIDI before modules receive them.
 
 ## Host Volume Control
 
@@ -173,7 +177,8 @@ host_save_settings();  // Persist to disk
 
 ### Raw MIDI Mode
 
-Modules that need unprocessed MIDI input can opt out of transforms by setting `"raw_midi": true` in module.json.
+Modules that need unprocessed MIDI input can opt out of transforms by setting `"raw_midi": true` in module.json (this also disables the host knob-touch filter).
+Some modules (like Signal Chain) also use `raw_midi` to bypass their own MIDI filters (for example, allowing knob-touch notes through).
 
 ## Audio (DSP Modules Only)
 

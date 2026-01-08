@@ -1172,6 +1172,60 @@ static JSValue js_host_module_get_param(JSContext *ctx, JSValueConst this_val,
     return JS_NewString(ctx, buf);
 }
 
+/* host_module_send_midi([status, data1, data2], source) */
+static JSValue js_host_module_send_midi(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    if (argc < 1 || !g_module_manager_initialized) {
+        return JS_UNDEFINED;
+    }
+
+    if (!JS_IsArray(ctx, argv[0])) {
+        return JS_UNDEFINED;
+    }
+
+    uint32_t len = 0;
+    JSValue len_val = JS_GetPropertyStr(ctx, argv[0], "length");
+    if (JS_IsException(len_val) || JS_ToUint32(ctx, &len, len_val) < 0) {
+        JS_FreeValue(ctx, len_val);
+        return JS_UNDEFINED;
+    }
+    JS_FreeValue(ctx, len_val);
+    if (len < 3) {
+        return JS_UNDEFINED;
+    }
+
+    uint8_t msg[3];
+    for (uint32_t i = 0; i < 3; i++) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[0], i);
+        int32_t val = 0;
+        JS_ToInt32(ctx, &val, v);
+        JS_FreeValue(ctx, v);
+        msg[i] = (uint8_t)val;
+    }
+
+    int source = MOVE_MIDI_SOURCE_INTERNAL;
+    if (argc >= 2) {
+        if (JS_IsNumber(argv[1])) {
+            JS_ToInt32(ctx, &source, argv[1]);
+        } else {
+            const char *src = JS_ToCString(ctx, argv[1]);
+            if (src) {
+                if (strcmp(src, "external") == 0) {
+                    source = MOVE_MIDI_SOURCE_EXTERNAL;
+                } else if (strcmp(src, "host") == 0) {
+                    source = MOVE_MIDI_SOURCE_HOST;
+                } else {
+                    source = MOVE_MIDI_SOURCE_INTERNAL;
+                }
+                JS_FreeCString(ctx, src);
+            }
+        }
+    }
+
+    mm_on_midi(&g_module_manager, msg, 3, source);
+    return JS_UNDEFINED;
+}
+
 /* host_is_module_loaded() -> bool */
 static JSValue js_host_is_module_loaded(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv) {
@@ -1453,6 +1507,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_module_get_param_func = JS_NewCFunction(ctx, js_host_module_get_param, "host_module_get_param", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_module_get_param", host_module_get_param_func);
+
+    JSValue host_module_send_midi_func = JS_NewCFunction(ctx, js_host_module_send_midi, "host_module_send_midi", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_module_send_midi", host_module_send_midi_func);
 
     JSValue host_is_module_loaded_func = JS_NewCFunction(ctx, js_host_is_module_loaded, "host_is_module_loaded", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_is_module_loaded", host_is_module_loaded_func);
