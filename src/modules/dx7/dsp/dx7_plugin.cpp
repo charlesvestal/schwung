@@ -647,7 +647,7 @@ static void plugin_set_param(const char *key, const char *val) {
 }
 
 static int plugin_get_param(const char *key, char *buf, int buf_len) {
-    if (strcmp(key, "patch_name") == 0) {
+    if (strcmp(key, "patch_name") == 0 || strcmp(key, "preset_name") == 0) {
         strncpy(buf, g_patch_name, buf_len - 1);
         return strlen(buf);
     } else if (strcmp(key, "syx_path") == 0) {
