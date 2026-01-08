@@ -5,5 +5,8 @@
     "description": "Novation Launchpad Pro emulation for Dirtywave M8",
     "author": "Move Anything",
     "ui": "ui.js",
-    "api_version": 1
+    "api_version": 1,
+    "capabilities": {
+        "raw_midi": true
+    }
 }
