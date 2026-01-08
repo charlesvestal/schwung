@@ -1,0 +1,11 @@
+{
+  "id": "jv880",
+  "name": "JV-880",
+  "version": "0.1.0",
+  "description": "Roland JV-880 emulator (mini-jv880)",
+  "author": "nukeykt/giulioz",
+  "capabilities": {
+    "has_dsp": true,
+    "midi_channels": 16
+  }
+}
