@@ -49,6 +49,10 @@ static int g_patch_count = 0;
 static int g_current_patch = 0;
 static char g_module_dir[MAX_PATH_LEN] = "";
 
+/* Mute countdown after patch switch (in blocks) to drain old audio */
+static int g_mute_countdown = 0;
+#define MUTE_BLOCKS_AFTER_SWITCH 8  /* ~23ms at 44100Hz, 128 frames/block */
+
 /* Our host API for sub-plugins (forwards to main host) */
 static host_api_v1_t g_subplugin_host_api;
 
@@ -492,6 +496,9 @@ static int load_patch(int index) {
 
     g_current_patch = index;
 
+    /* Mute briefly to drain any old synth audio before FX process it */
+    g_mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
+
     snprintf(msg, sizeof(msg), "Loaded patch %d: %s (%d FX)", index, patch->name, g_fx_count);
     chain_log(msg);
 
@@ -616,6 +623,13 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
 }
 
 static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
+    /* Mute output briefly after patch switch to drain old synth audio */
+    if (g_mute_countdown > 0) {
+        g_mute_countdown--;
+        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+        return;
+    }
+
     if (g_synth_plugin && g_synth_plugin->render_block) {
         /* Get audio from synth */
         g_synth_plugin->render_block(out_interleaved_lr, frames);

@@ -170,6 +170,10 @@ static void fx_process_block(int16_t *audio_inout, int frames) {
             out_r += comb_process(&g_comb_r[c], input);
         }
 
+        /* Scale down comb output (8 filters summed) */
+        out_l *= 0.125f;
+        out_r *= 0.125f;
+
         /* Pass through allpass filters in series */
         for (int a = 0; a < NUM_ALLPASSES; a++) {
             out_l = allpass_process(&g_allpass_l[a], out_l);
