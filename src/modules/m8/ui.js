@@ -5,6 +5,15 @@
  * Maps Move pads/buttons to LPP protocol and handles bidirectional MIDI.
  */
 
+import {
+    MoveMenu, MoveBack, MoveCapture, MoveShift,
+    MoveMainButton, MoveMainTouch,
+    MovePlay, MoveRec, MoveLoop, MoveMute, MoveUndo,
+    MovePad32, MidiClock
+} from '../../shared/constants.mjs';
+
+import { isCapacitiveTouch } from '../../shared/input_filter.mjs';
+
 /* LPP note layout (10x10 grid) */
 const lppNotes = [
     90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
@@ -66,35 +75,32 @@ const lppPadToMovePadMapBottom = new Map([
 
 const moveToLppPadMapBottom = new Map([...lppPadToMovePadMapBottom.entries()].map((a) => [a[1], a[0]]));
 
-/* Colors */
+/* M8-specific colors for LPP color translation */
 const light_grey = 0x7c;
 const dim_grey = 0x10;
 const green = 0x7e;
 const navy = 0x7d;
 const sky = 0x5f;
-const red = 0x7f;
-const blue = 0x5f;
-const white = 0x7a;
 const black = 0x00;
 
-/* Move hardware constants */
-const moveLOGO = 99;
-const moveMENU = 50;
-const moveBACK = 51;
-const moveCAP = 52;
-const moveSHIFT = 49;
-const moveWHEEL = 3;
-const movePLAY = 85;
-const moveREC = 86;
-const moveLOOP = 58;
-const moveMUTE = 88;
-const moveUNDO = 56;
-const moveWHEELTouch = 9;
+/* Alias imported constants for local usage */
+const moveLOGO = MovePad32;
+const moveMENU = MoveMenu;
+const moveBACK = MoveBack;
+const moveCAP = MoveCapture;
+const moveSHIFT = MoveShift;
+const moveWHEEL = MoveMainButton;
+const movePLAY = MovePlay;
+const moveREC = MoveRec;
+const moveLOOP = MoveLoop;
+const moveMUTE = MoveMute;
+const moveUNDO = MoveUndo;
+const moveWHEELTouch = MoveMainTouch;
 
 /* Color mapping */
 const lppColorToMoveColorMap = new Map([
-    [0x15, green], [0x17, 0x20], [0x1, light_grey], [0x05, red], [0x03, white], [0x4e, blue],
-    [0x47, 0x6d], [0x13, 0x5a], [0x27, blue], [0x2b, 0x63], [0x16, 0x55]
+    [0x15, green], [0x17, 0x20], [0x1, light_grey], [0x05, 0x7f], [0x03, 0x7a], [0x4e, 0x5f],
+    [0x47, 0x6d], [0x13, 0x5a], [0x27, 0x5f], [0x2b, 0x63], [0x16, 0x55]
 ]);
 
 const lppColorToMoveMonoMap = new Map([
@@ -182,7 +188,7 @@ function initLPP() {
 
 /* External MIDI handler (from M8) */
 globalThis.onMidiMessageExternal = function (data) {
-    if (data[0] == 0xf8) return; /* Ignore MIDI clock */
+    if (data[0] === MidiClock) return;
 
     let value = data[0];
     let maskedValue = (value & 0xf0);
@@ -262,12 +268,12 @@ globalThis.onMidiMessageExternal = function (data) {
 
 /* Internal MIDI handler (from Move) */
 globalThis.onMidiMessageInternal = function (data) {
-    let isNote = data[0] === 0x80 || data[0] === 0x90;
-    let isCC = data[0] === 0xb0;
-    let isAt = data[0] === 0xa0;
+    const isNote = data[0] === 0x80 || data[0] === 0x90;
+    const isCC = data[0] === 0xb0;
+    const isAt = data[0] === 0xa0;
 
-    /* Filter capacitive touch (notes < 10, except wheel touch) */
-    if (isNote && data[1] < 10 && data[1] !== moveWHEELTouch) {
+    /* Filter capacitive touch (notes < 10, except wheel touch for navigation) */
+    if (isNote && isCapacitiveTouch(data[1]) && data[1] !== moveWHEELTouch) {
         return;
     }
 
@@ -318,11 +324,7 @@ globalThis.onMidiMessageInternal = function (data) {
             updateMoveViewPulse();
         }
 
-        /* Shift+Wheel exits */
-        if (shiftHeld && moveControlNumber === moveWHEEL) {
-            exit();
-            return;
-        }
+        /* Note: Shift+Wheel exit is handled at host level */
 
         /* Wheel click */
         if (moveControlNumber === moveWHEEL && data[2] === 0x7f) {

@@ -5,6 +5,14 @@
  * Handles preset selection, octave transpose, and display updates.
  */
 
+import {
+    MoveMainKnob, MoveMainButton,
+    MoveLeft, MoveRight, MoveUp, MoveDown,
+    MovePads
+} from '../../shared/constants.mjs';
+
+import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
+
 /* State */
 let currentPreset = 0;
 let presetCount = 128;  /* Will be updated from DSP */
@@ -13,21 +21,18 @@ let soundfontName = "instrument.sf2";
 let octaveTranspose = 0;
 let polyphony = 0;
 
-/* Move hardware constants */
-const CC_JOG_WHEEL = 14;
-const CC_JOG_CLICK = 3;  /* Jog wheel click (as CC) */
-const CC_SHIFT = 49;
-const CC_MENU = 50;
-const CC_LEFT = 62;
-const CC_RIGHT = 63;
-const CC_PLUS = 55;  /* Plus button for octave up */
-const CC_MINUS = 54; /* Minus button for octave down */
+/* Alias constants for clarity */
+const CC_JOG_WHEEL = MoveMainKnob;
+const CC_JOG_CLICK = MoveMainButton;
+const CC_LEFT = MoveLeft;
+const CC_RIGHT = MoveRight;
+const CC_PLUS = MoveUp;
+const CC_MINUS = MoveDown;
 
 /* Note range for Move pads */
-const PAD_NOTE_MIN = 68;
-const PAD_NOTE_MAX = 99;
+const PAD_NOTE_MIN = MovePads[0];
+const PAD_NOTE_MAX = MovePads[MovePads.length - 1];
 
-let shiftHeld = false;
 let needsRedraw = true;
 
 /* Display constants */
@@ -94,18 +99,7 @@ function setOctave(delta) {
 
 /* Handle CC messages */
 function handleCC(cc, value) {
-    /* Track shift state */
-    if (cc === CC_SHIFT) {
-        shiftHeld = (value > 0);
-        return true;
-    }
-
-    /* Shift+Jog click exits Move Anything */
-    if (cc === CC_JOG_CLICK && shiftHeld) {
-        console.log("Shift+Wheel - exit");
-        exit();
-        return true;
-    }
+    /* Note: Shift+Wheel exit is handled at host level */
 
     /* Preset navigation with left/right buttons */
     if (cc === CC_LEFT && value > 0) {
@@ -207,13 +201,10 @@ globalThis.tick = function() {
 };
 
 globalThis.onMidiMessageInternal = function(data) {
+    if (isCapacitiveTouchMessage(data)) return;
+
     const status = data[0] & 0xF0;
     const isNote = status === 0x90 || status === 0x80;
-
-    /* Filter capacitive touch events from knobs (notes with data[1] < 10) */
-    if (isNote && data[1] < 10) {
-        return; /* Ignore capacitive touch */
-    }
 
     if (status === 0xB0) {
         /* CC - handle UI controls */

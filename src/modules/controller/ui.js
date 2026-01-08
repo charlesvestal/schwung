@@ -5,38 +5,22 @@
  * Use step buttons to switch banks, pads send configurable notes.
  */
 
-/* Colors */
-const Black = 0x00;
-const White = 0x7a;
-const LightGrey = 0x7c;
-const Red = 0x7f;
-const Blue = 0x5f;
+import {
+    Black, White, LightGrey,
+    MidiNoteOn, MidiNoteOff, MidiCC,
+    MoveShift, MoveMainKnob,
+    MovePads, MoveSteps,
+    MoveKnob1, MoveMaster
+} from '../../shared/constants.mjs';
 
-/* MIDI message types */
-const MidiNoteOn = 0x90;
-const MidiNoteOff = 0x80;
-const MidiCC = 0xb0;
-
-/* Move hardware constants */
-const MoveShift = 49;
-const MoveMenu = 50;
-const MoveMainButton = 3;
-const MoveMainKnob = 14;
-const MoveStep1 = 16;
-const MoveStep16 = 31;
-const MovePad1 = 68;
-const MovePad32 = 99;
-const MoveKnob1 = 71;
-const MoveMaster = 79;
-const MoveRecord = 118;
-const MoveRow1 = 43;
-const MoveRow4 = 40;
+import {
+    isNoiseMessage, isCapacitiveTouchMessage,
+    setLED, clearAllLEDs
+} from '../../shared/input_filter.mjs';
 
 /* State */
 let bank = 0;
 let shiftHeld = false;
-let editMode = false;
-let lastPad = 0;
 
 /* Display state */
 let line1 = "MIDI Controller";
@@ -100,60 +84,44 @@ function displayMessage(l1, l2, l3, l4) {
 }
 
 function clearLEDs() {
-    for (let i = 0; i < 127; i++) {
-        move_midi_internal_send([0x09, MidiNoteOn, i, Black]);
-        move_midi_internal_send([0x0b, MidiCC, i, Black]);
-    }
+    clearAllLEDs();
 }
 
 function fillPads(pads) {
-    for (let i = MovePad1; i <= MovePad32; i++) {
-        if (pads[i]) {
-            move_midi_internal_send([0x09, MidiNoteOn, i, pads[i][1]]);
+    for (const pad of MovePads) {
+        if (pads[pad]) {
+            setLED(pad, pads[pad][1]);
         }
     }
 }
 
 globalThis.onMidiMessageExternal = function (data) {
-    /* Filter unwanted messages */
-    if (data[0] === 0xf8 || data[0] === 0xd0 || data[0] === 0xa0 ||
-        data[0] === 0xf0 || data[0] === 0xf7) {
-        return;
-    }
+    if (isNoiseMessage(data)) return;
 
     /* Pass through to Move LEDs */
     move_midi_internal_send([data[0] / 16, data[0], data[1], data[2]]);
 };
 
 globalThis.onMidiMessageInternal = function (data) {
-    /* Filter unwanted messages */
-    if (data[0] === 0xf8 || data[0] === 0xd0 || data[0] === 0xa0 ||
-        data[0] === 0xf0 || data[0] === 0xf7) {
-        return;
-    }
+    if (isNoiseMessage(data)) return;
+    if (isCapacitiveTouchMessage(data)) return;
 
-    /* Filter capacitive touch (notes < 10) */
-    let isNote = data[0] === MidiNoteOn || data[0] === MidiNoteOff;
-    if (isNote && data[1] < 10) {
-        return;
-    }
-
-    let isNoteOn = data[0] === MidiNoteOn;
-    let isNoteOff = data[0] === MidiNoteOff;
-    let isCC = data[0] === MidiCC;
+    const isNote = data[0] === MidiNoteOn || data[0] === MidiNoteOff;
+    const isNoteOn = data[0] === MidiNoteOn;
+    const isCC = data[0] === MidiCC;
 
     if (isNote) {
         let note = data[1];
         let velocity = data[2];
 
         /* Bank switching via step buttons */
-        if (note >= MoveStep1 && note <= MoveStep16 && velocity === 127) {
+        if (MoveSteps.includes(note) && velocity === 127) {
             /* Clear previous bank LED */
-            move_midi_internal_send([0x09, MidiNoteOn, bank + MoveStep1, Black]);
+            setLED(MoveSteps[bank], Black);
             /* Light new bank LED */
-            move_midi_internal_send([0x09, MidiNoteOn, note, White]);
+            setLED(note, White);
 
-            bank = note - MoveStep1;
+            bank = MoveSteps.indexOf(note);
 
             /* Create bank if doesn't exist */
             if (!padBanks[bank]) {
@@ -166,7 +134,7 @@ globalThis.onMidiMessageInternal = function (data) {
         }
 
         /* Handle pads */
-        if (note >= MovePad1 && note <= MovePad32) {
+        if (MovePads.includes(note)) {
             let pad = padBanks[bank][note];
             if (!pad) return;
 
@@ -174,13 +142,13 @@ globalThis.onMidiMessageInternal = function (data) {
             move_midi_external_send([2 << 4 | (data[0] / 16), data[0], pad[0], velocity]);
 
             if (isNoteOn && velocity > 0) {
-                move_midi_internal_send([0x09, MidiNoteOn, note, White]);
+                setLED(note, White);
                 displayMessage("MIDI Controller",
                     `Note ${pad[0]} (${pad[2]})`,
                     `Velocity ${velocity}`,
                     `Bank ${bank + 1}`);
             } else {
-                move_midi_internal_send([0x09, MidiNoteOn, note, pad[1]]);
+                setLED(note, pad[1]);
             }
             return;
         }
@@ -194,18 +162,14 @@ globalThis.onMidiMessageInternal = function (data) {
         if (ccNumber === MoveShift) {
             shiftHeld = value === 127;
             if (shiftHeld) {
-                displayMessage(undefined, "Shift held", "Wheel to exit", undefined);
+                displayMessage(undefined, "Shift held", "", undefined);
             } else {
                 displayMessage(undefined, `Bank ${bank + 1}`, "", undefined);
             }
             return;
         }
 
-        /* Shift+Wheel exits */
-        if (shiftHeld && ccNumber === MoveMainButton) {
-            exit();
-            return;
-        }
+        /* Note: Shift+Wheel exit is handled at host level */
 
         /* Forward other CCs */
         move_midi_external_send([2 << 4 | 0x0b, MidiCC, ccNumber, value]);
@@ -228,7 +192,7 @@ globalThis.init = function () {
     clearLEDs();
 
     /* Light first bank */
-    move_midi_internal_send([0x09, MidiNoteOn, MoveStep1, White]);
+    setLED(MoveSteps[0], White);
 
     fillPads(padBanks[bank]);
 };
