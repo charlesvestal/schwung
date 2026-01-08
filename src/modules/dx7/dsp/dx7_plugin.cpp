@@ -26,6 +26,7 @@ extern "C" {
 #include "msfa/sin.h"
 #include "msfa/freqlut.h"
 #include "msfa/pitchenv.h"
+#include "msfa/porta.h"
 #include "msfa/tuning.h"
 
 /* Constants */
@@ -91,6 +92,7 @@ static void init_tables() {
     Lfo::init(MOVE_SAMPLE_RATE);
     PitchEnv::init(MOVE_SAMPLE_RATE);
     Env::init_sr(MOVE_SAMPLE_RATE);
+    Porta::init_sr(MOVE_SAMPLE_RATE);
 }
 
 /* Initialize the default "Init" patch */
@@ -166,10 +168,10 @@ static void init_default_patch() {
 
 /* Unpack a 128-byte packed DX7 voice to 156-byte format */
 static void unpack_patch(const uint8_t *packed, uint8_t *unpacked) {
-    /* Operators 1-6 */
+    /* Operators 1-6 - same order as Dexed (no reversal) */
     for (int op = 0; op < 6; op++) {
         int p = op * 17;  /* packed offset */
-        int u = (5 - op) * 21;  /* unpacked offset (reversed order) */
+        int u = op * 21;  /* unpacked offset - same order as packed */
 
         /* EG rates */
         unpacked[u + 0] = packed[p + 0] & 0x7f;
@@ -227,8 +229,8 @@ static void unpack_patch(const uint8_t *packed, uint8_t *unpacked) {
     unpacked[139] = packed[p + 12] & 0x7f;  /* PMD */
     unpacked[140] = packed[p + 13] & 0x7f;  /* AMD */
     unpacked[141] = (packed[p + 9] >> 1) & 0x01;   /* LFO sync */
-    unpacked[142] = (packed[p + 14] >> 1) & 0x07;  /* LFO wave */
-    unpacked[143] = (packed[p + 14] >> 4) & 0x07;  /* LFO PMS */
+    unpacked[142] = packed[p + 14] & 0x07;         /* LFO wave (bits 0-2) */
+    unpacked[143] = (packed[p + 14] >> 4) & 0x07;  /* LFO PMS (bits 4-6) */
 
     /* Transpose */
     unpacked[144] = packed[p + 15] & 0x7f;
@@ -315,7 +317,8 @@ static void select_preset(int index) {
     g_lfo.reset(g_current_patch + 137);
 
     char msg[128];
-    snprintf(msg, sizeof(msg), "Preset %d: %s", index, g_patch_name);
+    snprintf(msg, sizeof(msg), "Preset %d: %s (alg %d)",
+             index, g_patch_name, g_current_patch[134] + 1);
     plugin_log(msg);
 }
 
@@ -343,11 +346,21 @@ static int allocate_voice() {
 
 /* Note on */
 static void note_on(int note, int velocity) {
-    int voice = allocate_voice();
+    /* Count active voices before adding new one */
+    int active_before = 0;
+    for (int i = 0; i < MAX_VOICES; i++) {
+        if (g_voice_note[i] >= 0) active_before++;
+    }
 
+    int voice = allocate_voice();
     g_voices[voice]->init(g_current_patch, note, velocity, 0, &g_controllers);
     g_voice_note[voice] = note;
     g_voice_age[voice] = g_age_counter++;
+
+    /* Only trigger LFO sync on first voice, not subsequent voices */
+    if (active_before == 0) {
+        g_lfo.keydown();
+    }
 }
 
 /* Note off */
@@ -385,6 +398,23 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
     /* Initialize controllers */
     g_controllers.core = &g_fm_core;
     g_controllers.masterTune = 0;
+
+    /* Initialize all controller values to sane defaults */
+    memset(g_controllers.values_, 0, sizeof(g_controllers.values_));
+    g_controllers.values_[kControllerPitch] = 0x2000;  /* Center pitch bend */
+    g_controllers.values_[kControllerPitchRangeUp] = 2;  /* +/- 2 semitones default */
+    g_controllers.values_[kControllerPitchRangeDn] = 2;
+    g_controllers.values_[kControllerPitchStep] = 0;  /* Continuous pitch bend */
+
+    g_controllers.modwheel_cc = 0;
+    g_controllers.breath_cc = 0;
+    g_controllers.foot_cc = 0;
+    g_controllers.aftertouch_cc = 0;
+    g_controllers.portamento_cc = 0;
+    g_controllers.portamento_enable_cc = false;
+    g_controllers.portamento_gliss_cc = false;
+    g_controllers.mpeEnabled = false;  /* Disable MPE by default */
+
     g_controllers.refresh();
 
     /* Initialize voices */
@@ -552,8 +582,7 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         /* Clear render buffer */
         memset(g_render_buffer, 0, sizeof(g_render_buffer));
 
-        /* Update LFO */
-        g_lfo.keydown();
+        /* Update LFO - don't call keydown() here, it's only for note starts */
         int32_t lfo_val = g_lfo.getsample();
         int32_t lfo_delay = g_lfo.getdelay();
 
@@ -574,8 +603,7 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         /* Convert to stereo int16 output */
         for (int i = 0; i < block_size; i++) {
             /* msfa outputs 32-bit samples in a specific format.
-             * Dexed uses: val >> 4, then clip to 24-bit, then >> 9
-             * Total effective shift is ~13 bits */
+             * Dexed uses: val >> 4, then clip to 24-bit, then >> 9 */
             int32_t val = g_render_buffer[i] >> 4;
 
             /* Clip to 24-bit range and shift to 16-bit */
