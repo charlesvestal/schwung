@@ -20,14 +20,18 @@ public:
     virtual ~TuningState() { }
 
     virtual int32_t midinote_to_logfreq(int midinote) {
-        /* Convert MIDI note to msfa log frequency format */
-        /* The format is roughly: logfreq = (midinote - 69) * (1 << 24) / 12 + (69 << 24) / 12 */
-        /* Simplified: each semitone is (1 << 24) / 12 = 1398101 units */
-        const int32_t logfreq_per_semitone = (1 << 24) / 12;
-        /* A4 (440 Hz) at MIDI 69 corresponds to a specific logfreq */
-        /* We use an offset so that MIDI 69 gives the correct frequency */
-        const int32_t a4_logfreq = 69 * logfreq_per_semitone;
-        return midinote * logfreq_per_semitone;
+        /* Convert MIDI note to msfa log frequency format.
+         * msfa logfreq = log2(frequency) * (1 << 24)
+         *
+         * For standard 12-TET tuning:
+         *   freq = 440 * 2^((midinote - 69) / 12)
+         *   log2(freq) = log2(440) + (midinote - 69) / 12
+         *   logfreq = log2(440) * (1 << 24) + (midinote - 69) * (1 << 24) / 12
+         */
+        const int32_t per_semitone = (1 << 24) / 12;  /* 1,398,101 */
+        /* log2(440) * (1 << 24) = 8.78135... * 16777216 ≈ 147,318,855 */
+        const int32_t a4_logfreq = 147318855;
+        return a4_logfreq + (midinote - 69) * per_semitone;
     }
 
     virtual bool is_standard_tuning() { return true; }
