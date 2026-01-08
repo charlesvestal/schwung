@@ -136,23 +136,23 @@ These are handled by the router before delegating to views:
 ## Implementation Steps
 
 ### Phase 1: Prepare
-- [ ] Update lib/state.js to track current view properly
-- [ ] Create views/ directory
-- [ ] Update build.sh to copy views/
+- [x] Update lib/state.js to track current view properly
+- [x] Create views/ directory
+- [x] Update build.sh to copy views/
 
 ### Phase 2: Extract Views (one at a time)
-- [ ] Extract master.js (simplest, most isolated)
-- [ ] Extract set.js
-- [ ] Extract pattern.js
-- [ ] Extract track.js (most complex, do last)
+- [x] Extract master.js (simplest, most isolated)
+- [x] Extract set.js
+- [x] Extract pattern.js
+- [x] Extract track.js (most complex, do last)
 
 ### Phase 3: Refactor Router
-- [ ] Slim down ui.js to router logic
-- [ ] Move global handlers to router
-- [ ] Test all view transitions
+- [x] Slim down ui.js to router logic
+- [x] Move global handlers to router
+- [x] Test all view transitions
 
 ### Phase 4: Cleanup
-- [ ] Remove dead code from ui.js
+- [x] Remove dead code from ui.js
 - [ ] Verify all functionality works
 - [ ] Test on device
 

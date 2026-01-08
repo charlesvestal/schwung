@@ -118,3 +118,21 @@ export function initializeSets() {
         }
     }
 }
+
+/**
+ * Check if a set has any content (notes or CC values)
+ */
+export function setHasContent(setIdx) {
+    if (!state.sets[setIdx]) return false;
+    const setTracks = state.sets[setIdx].tracks || state.sets[setIdx];
+    for (const track of setTracks) {
+        for (const pattern of track.patterns) {
+            for (const step of pattern.steps) {
+                if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}

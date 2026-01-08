@@ -67,12 +67,30 @@ export const state = {
     tracks: [],
 
     /* Set storage */
-    sets: []
+    sets: [],
+
+    /* Display lines */
+    line1: "SEQOMD",
+    line2: "",
+    line3: "",
+    line4: "",
+
+    /* Playback pad tracking */
+    litPads: []
 };
 
 /* Initialize track CC values */
 for (let t = 0; t < NUM_TRACKS; t++) {
     state.trackCCValues.push(64, 64);
+}
+
+/* ============ Display Helper ============ */
+
+export function displayMessage(l1, l2, l3, l4) {
+    if (l1 !== undefined) state.line1 = l1;
+    if (l2 !== undefined) state.line2 = l2;
+    if (l3 !== undefined) state.line3 = l3;
+    if (l4 !== undefined) state.line4 = l4;
 }
 
 /* ============ Legacy Compatibility ============ */
