@@ -551,11 +551,7 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     uint8_t data1 = msg[1];
     uint8_t data2 = (len > 2) ? msg[2] : 0;
 
-    /* Filter capacitive touch from Move knobs */
     int is_note = (status == 0x90 || status == 0x80);
-    if (is_note && data1 < 10 && source == MOVE_MIDI_SOURCE_INTERNAL) {
-        return;
-    }
 
     /* Apply octave transpose */
     int note = data1;
