@@ -32,7 +32,15 @@ Optional fields: `description`, `author`, `ui`, `dsp`
 
 ## JavaScript UI (ui.js)
 
+Module UIs are loaded as ES modules, so you can import shared utilities:
+
 ```javascript
+import {
+    MoveMainKnob, MoveShift, MoveMenu,
+    MovePad1, MovePad32,
+    MidiNoteOn, MidiCC
+} from '../../shared/constants.mjs';
+
 /* Module state */
 let counter = 0;
 
@@ -146,6 +154,45 @@ let current = host_module_get_param("preset");
 ```
 
 The DSP plugin receives these in `set_param()` and `get_param()`.
+
+## Shared Utilities
+
+Import path from modules: `../../shared/<file>.mjs`
+
+| File | Contents |
+|------|----------|
+| `constants.mjs` | Hardware constants (pads, buttons, knobs), MIDI message types, colors |
+| `input_filter.mjs` | Capacitive touch filtering |
+| `midi_messages.mjs` | MIDI helper functions |
+| `move_display.mjs` | Display utilities |
+
+### Common Imports
+
+```javascript
+import {
+    // Colors
+    Black, White, LightGrey, BrightRed, BrightGreen,
+
+    // MIDI message types
+    MidiNoteOn, MidiNoteOff, MidiCC,
+
+    // Hardware buttons (CC numbers)
+    MoveShift, MoveMenu, MoveBack, MoveCapture,
+    MoveUp, MoveDown, MoveLeft, MoveRight,
+    MoveMainKnob, MoveMainButton,
+
+    // Grouped arrays (preferred)
+    MovePads,         // [68-99] all 32 pads
+    MoveSteps,        // [16-31] all 16 step buttons
+    MoveCCButtons,    // All CC button numbers
+    MoveRGBLeds,      // All RGB LED addresses
+    MoveWhiteLeds,    // All white LED addresses
+} from '../../shared/constants.mjs';
+
+// Usage:
+if (MovePads.includes(note)) { /* handle pad */ }
+const padIndex = note - MovePads[0];  // 0-31
+```
 
 ## Example Modules
 
