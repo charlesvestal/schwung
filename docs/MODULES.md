@@ -32,7 +32,15 @@ Optional fields: `description`, `author`, `ui`, `dsp`
 
 ## JavaScript UI (ui.js)
 
+Module UIs are loaded as ES modules, so you can import shared utilities:
+
 ```javascript
+import {
+    MoveMainKnob, MoveShift, MoveMenu,
+    MovePad1, MovePad32,
+    MidiNoteOn, MidiCC
+} from '../../shared/constants.mjs';
+
 /* Module state */
 let counter = 0;
 
@@ -146,6 +154,38 @@ let current = host_module_get_param("preset");
 ```
 
 The DSP plugin receives these in `set_param()` and `get_param()`.
+
+## Shared Utilities
+
+Import path from modules: `../../shared/<file>.mjs`
+
+| File | Contents |
+|------|----------|
+| `constants.mjs` | Hardware constants (pads, buttons, knobs), MIDI message types, colors |
+| `input_filter.mjs` | Capacitive touch filtering |
+| `midi_messages.mjs` | MIDI helper functions |
+| `move_display.mjs` | Display utilities |
+
+### Common Imports
+
+```javascript
+import {
+    // Colors
+    Black, White, LightGrey, BrightRed, BrightGreen,
+
+    // MIDI message types
+    MidiNoteOn, MidiNoteOff, MidiCC,
+
+    // Hardware buttons (CC numbers)
+    MoveShift, MoveMenu, MoveBack, MoveCapture,
+    MoveUp, MoveDown, MoveLeft, MoveRight,
+    MoveMainKnob, MoveMainButton,
+
+    // Hardware notes
+    MovePad1, MovePad32,      // Pads 68-99
+    MoveStep1, MoveStep16,    // Steps 16-31
+} from '../../shared/constants.mjs';
+```
 
 ## Example Modules
 
