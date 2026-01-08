@@ -278,6 +278,20 @@ static int scan_patches(const char *module_dir) {
     return g_patch_count;
 }
 
+/* Send all-notes-off to synth to prevent stuck notes */
+static void synth_panic(void) {
+    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+
+    /* Send All Sound Off (CC 120) and All Notes Off (CC 123) on all channels */
+    for (int ch = 0; ch < 16; ch++) {
+        uint8_t all_sound_off[] = { (uint8_t)(0xB0 | ch), 120, 0 };
+        uint8_t all_notes_off[] = { (uint8_t)(0xB0 | ch), 123, 0 };
+        g_synth_plugin->on_midi(all_sound_off, 3, 0);
+        g_synth_plugin->on_midi(all_notes_off, 3, 0);
+    }
+    chain_log("Sent panic (all notes off)");
+}
+
 /* Load a patch by index */
 static int load_patch(int index) {
     char msg[256];
@@ -292,6 +306,9 @@ static int load_patch(int index) {
 
     snprintf(msg, sizeof(msg), "Loading patch: %s", patch->name);
     chain_log(msg);
+
+    /* Panic before any changes to prevent stuck notes */
+    synth_panic();
 
     /* Check if we need to switch synth modules */
     if (strcmp(g_current_synth_module, patch->synth_module) != 0) {
