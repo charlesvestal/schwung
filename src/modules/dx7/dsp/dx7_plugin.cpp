@@ -72,6 +72,9 @@ static char g_patch_names[MAX_PATCHES][11];
 /* Rendering buffer */
 static int32_t g_render_buffer[N];
 
+/* Output level (0-100, default 50 to allow polyphony headroom) */
+static int g_output_level = 50;
+
 /* Plugin API */
 static plugin_api_v1_t g_plugin_api;
 
@@ -590,6 +593,10 @@ static void plugin_set_param(const char *key, const char *val) {
         g_octave_transpose = atoi(val);
         if (g_octave_transpose < -4) g_octave_transpose = -4;
         if (g_octave_transpose > 4) g_octave_transpose = 4;
+    } else if (strcmp(key, "output_level") == 0) {
+        g_output_level = atoi(val);
+        if (g_output_level < 0) g_output_level = 0;
+        if (g_output_level > 100) g_output_level = 100;
     }
 }
 
@@ -610,6 +617,8 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         return snprintf(buf, buf_len, "%d", g_octave_transpose);
     } else if (strcmp(key, "algorithm") == 0) {
         return snprintf(buf, buf_len, "%d", g_current_patch[134] + 1);
+    } else if (strcmp(key, "output_level") == 0) {
+        return snprintf(buf, buf_len, "%d", g_output_level);
     }
 
     return -1;
@@ -652,6 +661,9 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
             /* msfa outputs 32-bit samples in a specific format.
              * Dexed uses: val >> 4, then clip to 24-bit, then >> 9 */
             int32_t val = g_render_buffer[i] >> 4;
+
+            /* Apply output level scaling (0-100 -> 0.0-1.0) */
+            val = (val * g_output_level) / 100;
 
             /* Clip to 24-bit range and shift to 16-bit */
             int16_t sample;
