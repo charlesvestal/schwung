@@ -14,7 +14,7 @@ import {
     MovePlay, MoveLoop, MoveSteps, MovePads, MoveTracks, MoveShift, MoveMenu, MoveRec, MoveRecord,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep1UI, MoveMainKnob, MoveMasterTouch
+    MoveStep1UI, MoveMainKnob
 } from "../../shared/constants.mjs";
 
 import {
@@ -84,7 +84,6 @@ let loopEditMode = false;       // Loop button held - editing loop points
 let loopEditFirst = -1;         // First step pressed while in loop edit
 let patternMode = false;        // Pattern view mode (Menu without shift)
 let patternViewOffset = 0;      // Which row of patterns to show (0=1-4, 4=5-8, etc.)
-let mainKnobTouched = false;    // Is the main jog wheel being touched
 let sparkMode = false;          // Spark edit mode (shift + step to enter, shift to exit)
 let sparkSelectedSteps = new Set();  // Steps selected for spark editing
 
@@ -129,7 +128,7 @@ const SPEED_OPTIONS = [
 const DEFAULT_SPEED_INDEX = 4;  // 1x
 
 /* Per-track step data (mirrors DSP state) */
-const NUM_PATTERNS = 8;
+const NUM_PATTERNS = 30;
 let tracks = [];
 
 /* Ratchet options */
@@ -1850,39 +1849,31 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Main knob touch (note 8) */
-    if (isNote && note === MoveMasterTouch) {
-        mainKnobTouched = isNoteOn && velocity > 0;
-        return;
-    }
-
     /* Main knob / jog wheel turn (CC 14) */
     if (isCC && note === MoveMainKnob) {
-        if (patternMode) {
-            if (mainKnobTouched) {
-                /* Touched + turn = BPM control */
-                if (velocity >= 1 && velocity <= 63) {
-                    bpm = Math.min(bpm + 1, 300);
-                } else if (velocity >= 65 && velocity <= 127) {
-                    bpm = Math.max(bpm - 1, 20);
-                }
-                host_module_set_param("bpm", String(bpm));
-                displayMessage(
-                    `PATTERNS      ${bpm} BPM`,
-                    `Track:  12345678`,
-                    `Pattern: ${tracks.map(t => String(t.currentPattern + 1)).join(" ")}`,
-                    ""
-                );
-            } else {
-                /* Not touched = scroll pattern view */
-                if (velocity >= 1 && velocity <= 63) {
-                    patternViewOffset = Math.min(patternViewOffset + 4, NUM_PATTERNS - 4);
-                } else if (velocity >= 65 && velocity <= 127) {
-                    patternViewOffset = Math.max(patternViewOffset - 4, 0);
-                }
-                updateDisplay();
-                updatePadLEDs();
+        if (shiftHeld) {
+            /* Shift + jog wheel = BPM control (works in any mode) */
+            if (velocity >= 1 && velocity <= 63) {
+                bpm = Math.min(bpm + 1, 300);
+            } else if (velocity >= 65 && velocity <= 127) {
+                bpm = Math.max(bpm - 1, 20);
             }
+            host_module_set_param("bpm", String(bpm));
+            displayMessage(
+                "BPM",
+                `${bpm}`,
+                "",
+                ""
+            );
+        } else if (patternMode) {
+            /* In pattern mode: scroll pattern view row by row */
+            if (velocity >= 1 && velocity <= 63) {
+                patternViewOffset = Math.min(patternViewOffset + 1, NUM_PATTERNS - 4);
+            } else if (velocity >= 65 && velocity <= 127) {
+                patternViewOffset = Math.max(patternViewOffset - 1, 0);
+            }
+            updateDisplay();
+            updatePadLEDs();
         }
         return;
     }

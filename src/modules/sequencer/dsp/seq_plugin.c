@@ -17,7 +17,7 @@
 
 #define NUM_TRACKS 8
 #define NUM_STEPS 16
-#define NUM_PATTERNS 8
+#define NUM_PATTERNS 30
 #define MAX_NOTES_PER_STEP 4
 #define MAX_PENDING_NOTES 64
 
