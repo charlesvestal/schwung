@@ -33,6 +33,10 @@ src/modules/your-module/
 Required fields: `id`, `name`, `version`, `api_version`
 Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `capabilities`
 
+Notes:
+- `module.json` is parsed by a minimal JSON reader. Use double quotes for keys, lowercase `true`/`false`, and avoid comments.
+- Keep `module.json` reasonably small (the loader caps it at 8KB).
+
 ### Capabilities
 
 Add capability flags to enable special module behaviors. You can group them under
@@ -149,6 +153,7 @@ globalThis.chain_ui = {
 ```
 
 Do not override `globalThis.init` or `globalThis.tick` in `ui_chain.js`.
+Make sure to ship `ui_chain.js` in your build/install step if you use it.
 
 Example `ui_chain.js` wrapper:
 

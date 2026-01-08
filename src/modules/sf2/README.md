@@ -23,8 +23,9 @@ The module loads `instrument.sf2` from its directory by default.
 
 ## Controls
 
-- **< and >**: Navigate presets
-- **+ and -**: Octave transpose
+- **Jog wheel**: Navigate presets
+- **Left/Right**: Previous/next preset
+- **Up/Down**: Octave transpose
 
 ## SoundFont Sources
 
