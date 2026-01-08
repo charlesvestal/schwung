@@ -573,16 +573,24 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
 
         /* Convert to stereo int16 output */
         for (int i = 0; i < block_size; i++) {
-            /* msfa outputs 32-bit samples, need to scale down */
-            int32_t sample = g_render_buffer[i] >> 8;
+            /* msfa outputs 32-bit samples in a specific format.
+             * Dexed uses: val >> 4, then clip to 24-bit, then >> 9
+             * Total effective shift is ~13 bits */
+            int32_t val = g_render_buffer[i] >> 4;
 
-            /* Clip */
-            if (sample > 32767) sample = 32767;
-            if (sample < -32768) sample = -32768;
+            /* Clip to 24-bit range and shift to 16-bit */
+            int16_t sample;
+            if (val < -(1 << 24)) {
+                sample = -32768;
+            } else if (val >= (1 << 24)) {
+                sample = 32767;
+            } else {
+                sample = (int16_t)(val >> 9);
+            }
 
             /* Mono to stereo */
-            out_interleaved_lr[out_pos * 2] = (int16_t)sample;
-            out_interleaved_lr[out_pos * 2 + 1] = (int16_t)sample;
+            out_interleaved_lr[out_pos * 2] = sample;
+            out_interleaved_lr[out_pos * 2 + 1] = sample;
             out_pos++;
         }
 
