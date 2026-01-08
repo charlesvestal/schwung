@@ -397,7 +397,7 @@ static void release_sustained_notes() {
     }
 }
 
-/* All notes off */
+/* All notes off - just triggers release phase */
 static void all_notes_off() {
     for (int i = 0; i < MAX_VOICES; i++) {
         if (g_voice_note[i] >= 0) {
@@ -406,6 +406,20 @@ static void all_notes_off() {
         g_voice_sustained[i] = false;
     }
     g_sustain_pedal = false;
+}
+
+/* Panic - immediately silence all voices by reinitializing them */
+static void panic() {
+    for (int i = 0; i < MAX_VOICES; i++) {
+        /* Delete and recreate the voice to fully reset it */
+        delete g_voices[i];
+        g_voices[i] = new Dx7Note(g_tuning, nullptr);
+        g_voice_note[i] = -1;
+        g_voice_sustained[i] = false;
+        g_voice_age[i] = 0;
+    }
+    g_sustain_pedal = false;
+    g_active_voices = 0;
 }
 
 /* === Plugin API callbacks === */
@@ -626,7 +640,9 @@ static void plugin_set_param(const char *key, const char *val) {
         if (g_output_level < 0) g_output_level = 0;
         if (g_output_level > 100) g_output_level = 100;
     } else if (strcmp(key, "all_notes_off") == 0) {
-        all_notes_off();
+        all_notes_off();  /* Trigger release phase */
+    } else if (strcmp(key, "panic") == 0) {
+        panic();  /* Full reset - immediately silence */
     }
 }
 

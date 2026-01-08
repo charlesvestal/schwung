@@ -71,9 +71,14 @@ function drawUI() {
     needsRedraw = false;
 }
 
-/* Send all notes off to DSP */
+/* Send all notes off to DSP (triggers release phase) */
 function allNotesOff() {
     host_module_set_param("all_notes_off", "1");
+}
+
+/* Panic - immediately silence all voices (for preset changes) */
+function panic() {
+    host_module_set_param("panic", "1");
 }
 
 /* Change preset */
@@ -81,7 +86,7 @@ function setPreset(index) {
     if (index < 0) index = presetCount - 1;
     if (index >= presetCount) index = 0;
 
-    allNotesOff();
+    panic();  /* Full reset on preset change */
     currentPreset = index;
     host_module_set_param("preset", String(currentPreset));
 
