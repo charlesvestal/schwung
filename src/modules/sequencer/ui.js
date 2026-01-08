@@ -14,7 +14,7 @@ import {
     MovePlay, MoveLoop, MoveSteps, MovePads, MoveTracks, MoveShift, MoveMenu, MoveRec, MoveRecord,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep1UI
+    MoveStep1UI, MoveMainKnob
 } from "../../shared/constants.mjs";
 
 import {
@@ -1847,6 +1847,41 @@ globalThis.onMidiMessageInternal = function(data) {
                     `Value: ${val}  Ch: ${channel + 1}`,
                     ""
                 );
+            }
+        }
+        return;
+    }
+
+    /* Main knob / jog wheel (CC 14) */
+    if (isCC && note === MoveMainKnob) {
+        if (patternMode) {
+            /* In pattern mode: scroll through patterns for current track */
+            let patIdx = tracks[currentTrack].currentPattern;
+            if (velocity >= 1 && velocity <= 63) {
+                patIdx = Math.min(patIdx + 1, NUM_PATTERNS - 1);
+            } else if (velocity >= 65 && velocity <= 127) {
+                patIdx = Math.max(patIdx - 1, 0);
+            }
+            tracks[currentTrack].currentPattern = patIdx;
+            host_module_set_param(`track_${currentTrack}_pattern`, String(patIdx));
+            updateDisplay();
+            updatePadLEDs();
+        } else if (setView) {
+            /* In set view: scroll through sets */
+            let newSet = currentSet;
+            if (velocity >= 1 && velocity <= 63) {
+                newSet = Math.min(newSet + 1, NUM_SETS - 1);
+            } else if (velocity >= 65 && velocity <= 127) {
+                newSet = Math.max(newSet - 1, 0);
+            }
+            if (newSet !== currentSet) {
+                /* Save current and load new */
+                if (currentSet >= 0) {
+                    saveCurrentSet();
+                }
+                loadSetToTracks(newSet);
+                updateDisplay();
+                updatePadLEDs();
             }
         }
         return;
