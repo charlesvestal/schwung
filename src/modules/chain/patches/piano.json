@@ -1,0 +1,16 @@
+{
+    "name": "Piano",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx_js": [],
+        "midi_fx_native": [],
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": []
+    }
+}

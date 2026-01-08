@@ -104,6 +104,8 @@ cp ./src/modules/controller/ui.js ./build/modules/controller/
 # Copy Signal Chain module files
 cp ./src/modules/chain/module.json ./build/modules/chain/
 cp ./src/modules/chain/ui.js ./build/modules/chain/
+mkdir -p ./build/modules/chain/patches/
+cp ./src/modules/chain/patches/*.json ./build/modules/chain/patches/ 2>/dev/null || true
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"
