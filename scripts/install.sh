@@ -32,7 +32,7 @@ if [ "${1:-}" = "local" ]; then
   local_file="$REPO_ROOT/$remote_filename"
   echo "Using local build: $local_file"
   if [ ! -f "$local_file" ]; then
-    fail "Local build not found. Run ./scripts/build-docker.sh first."
+    fail "Local build not found. Run ./scripts/build.sh first."
   fi
 else
   url=https://github.com/charlesvestal/move-anything/raw/main/

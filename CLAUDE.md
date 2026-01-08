@@ -9,11 +9,11 @@ Move Anything is a framework for custom JavaScript and native DSP modules on Abl
 ## Build Commands
 
 ```bash
-./scripts/build-docker.sh    # Build with Docker (recommended)
-./scripts/build.sh           # Build (requires cross-compiler)
+./scripts/build.sh           # Build with Docker (auto-detects, recommended)
 ./scripts/package.sh         # Create move-anything.tar.gz
 ./scripts/clean.sh           # Remove build/ and dist/
-./scripts/install.sh         # Deploy to Move
+./scripts/install.sh         # Deploy from GitHub release
+./scripts/install.sh local   # Deploy from local build
 ./scripts/uninstall.sh       # Restore stock Move
 ```
 

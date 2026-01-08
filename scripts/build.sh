@@ -101,21 +101,25 @@ echo "Building DX7 module..."
     -Isrc -Isrc/modules/dx7/dsp \
     -lm
 
-echo "Building JV-880 module..."
-
-# Build JV-880 DSP plugin (mini-jv880 emulator)
-"${CROSS_PREFIX}g++" -Ofast -shared -fPIC -std=c++11 \
-    -march=armv8-a -mtune=cortex-a72 \
-    -fno-exceptions -fno-rtti \
-    -fomit-frame-pointer -fno-stack-protector \
-    -DNDEBUG \
-    src/modules/jv880/dsp/jv880_plugin.cpp \
-    src/modules/jv880/dsp/mcu.cpp \
-    src/modules/jv880/dsp/mcu_opcodes.cpp \
-    src/modules/jv880/dsp/pcm.cpp \
-    -o build/modules/jv880/dsp.so \
-    -Isrc -Isrc/modules/jv880/dsp \
-    -lm -lpthread
+# JV-880 module is built from separate repo (move-anything-jv880)
+# Skip if source doesn't exist
+if [ -d "src/modules/jv880/dsp" ]; then
+    echo "Building JV-880 module..."
+    "${CROSS_PREFIX}g++" -Ofast -shared -fPIC -std=c++11 \
+        -march=armv8-a -mtune=cortex-a72 \
+        -fno-exceptions -fno-rtti \
+        -fomit-frame-pointer -fno-stack-protector \
+        -DNDEBUG \
+        src/modules/jv880/dsp/jv880_plugin.cpp \
+        src/modules/jv880/dsp/mcu.cpp \
+        src/modules/jv880/dsp/mcu_opcodes.cpp \
+        src/modules/jv880/dsp/pcm.cpp \
+        -o build/modules/jv880/dsp.so \
+        -Isrc -Isrc/modules/jv880/dsp \
+        -lm -lpthread
+else
+    echo "Skipping JV-880 module (external repo)"
+fi
 
 echo "Building Signal Chain module..."
 
@@ -166,9 +170,11 @@ cp ./src/modules/dx7/module.json ./build/modules/dx7/
 cp ./src/modules/dx7/ui.js ./build/modules/dx7/
 [ -f ./src/modules/dx7/patches.syx ] && cp ./src/modules/dx7/patches.syx ./build/modules/dx7/
 
-# Copy JV-880 module files
-cp ./src/modules/jv880/module.json ./build/modules/jv880/
-cp ./src/modules/jv880/ui.js ./build/modules/jv880/
+# Copy JV-880 module files (if present - external repo)
+if [ -d "src/modules/jv880" ]; then
+    cp ./src/modules/jv880/module.json ./build/modules/jv880/
+    cp ./src/modules/jv880/ui.js ./build/modules/jv880/
+fi
 
 # Copy M8 module files
 cp ./src/modules/m8/module.json ./build/modules/m8/

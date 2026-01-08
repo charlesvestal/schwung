@@ -22,6 +22,7 @@
 /* MIDI source identifiers */
 #define MOVE_MIDI_SOURCE_INTERNAL 0
 #define MOVE_MIDI_SOURCE_EXTERNAL 2
+#define MOVE_MIDI_SOURCE_HOST 3  /* Host-generated (clock, etc) */
 
 /*
  * Host API - provided by host to plugin during initialization

@@ -16,11 +16,21 @@ typedef enum {
     VELOCITY_CURVE_COUNT
 } velocity_curve_t;
 
+/* MIDI clock mode options */
+typedef enum {
+    CLOCK_MODE_OFF = 0,
+    CLOCK_MODE_INTERNAL,
+    CLOCK_MODE_EXTERNAL,
+    CLOCK_MODE_COUNT
+} clock_mode_t;
+
 /* Host settings structure */
 typedef struct {
     velocity_curve_t velocity_curve;
     int aftertouch_enabled;
     int aftertouch_deadzone;  /* 0-50 */
+    clock_mode_t clock_mode;  /* off/internal/external */
+    int tempo_bpm;            /* 20-300 BPM */
 } host_settings_t;
 
 /* Default settings path */
