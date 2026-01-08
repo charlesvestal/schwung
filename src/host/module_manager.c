@@ -165,6 +165,7 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     json_get_bool(json, "midi_out", &info->cap_midi_out);
     json_get_bool(json, "aftertouch", &info->cap_aftertouch);
     json_get_bool(json, "claims_master_knob", &info->cap_claims_master_knob);
+    json_get_bool(json, "raw_midi", &info->cap_raw_midi);
 
     /* Defaults */
     json_get_defaults(json, info->defaults_json, sizeof(info->defaults_json));
@@ -414,6 +415,11 @@ int mm_get_host_volume(module_manager_t *mm) {
 int mm_module_claims_master_knob(module_manager_t *mm) {
     if (mm->current_module_index < 0) return 0;
     return mm->modules[mm->current_module_index].cap_claims_master_knob;
+}
+
+int mm_module_wants_raw_midi(module_manager_t *mm) {
+    if (mm->current_module_index < 0) return 0;
+    return mm->modules[mm->current_module_index].cap_raw_midi;
 }
 
 void mm_destroy(module_manager_t *mm) {

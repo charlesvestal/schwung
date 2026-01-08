@@ -20,6 +20,7 @@
 #include "lib/stb_truetype.h"
 
 #include "host/module_manager.h"
+#include "host/settings.h"
 
 int global_fd = -1;
 int global_exit_flag = 0;
@@ -35,6 +36,9 @@ int host_shift_held = 0;
 /* Module manager instance */
 module_manager_t g_module_manager;
 int g_module_manager_initialized = 0;
+
+/* Host settings instance */
+host_settings_t g_settings;
 
 /* Flag to refresh JS function references after module UI load */
 int g_js_functions_need_refresh = 0;
@@ -441,16 +445,44 @@ void print(int sx, int sy, const char* string, int color) {
   }
 }
 
-/* Process host-level MIDI for system shortcuts (Shift+Wheel to exit) */
-/* Returns 1 if message was consumed by host, 0 if should pass to module */
-int process_host_midi(unsigned char midi_0, unsigned char midi_1, unsigned char midi_2) {
-  /* Only handle internal MIDI (cable 0) control changes */
-  if ((midi_0 & 0xF0) != 0xB0) {
-    return 0;  /* Not a CC, pass through */
+/* Process host-level MIDI for system shortcuts and input transforms
+ * Takes pointer to MIDI bytes (status, data1, data2) for in-place modification
+ * Returns 1 if message was consumed by host, 0 if should pass to module */
+int process_host_midi(unsigned char *midi, int apply_transforms) {
+  unsigned char status = midi[0];
+  unsigned char data1 = midi[1];
+  unsigned char data2 = midi[2];
+  unsigned char msg_type = status & 0xF0;
+
+  /* Apply MIDI transforms unless module wants raw MIDI */
+  if (apply_transforms) {
+    /* Velocity curve for Note On */
+    if (msg_type == 0x90 && data2 > 0) {
+      midi[2] = settings_apply_velocity(&g_settings, data2);
+    }
+
+    /* Aftertouch filter */
+    if (msg_type == 0xA0 || msg_type == 0xD0) {
+      uint8_t at_value = (msg_type == 0xA0) ? data2 : data1;
+      if (!settings_apply_aftertouch(&g_settings, &at_value)) {
+        return 1;  /* Aftertouch disabled, drop message */
+      }
+      /* Update the modified value */
+      if (msg_type == 0xA0) {
+        midi[2] = at_value;
+      } else {
+        midi[1] = at_value;
+      }
+    }
   }
 
-  unsigned char cc = midi_1;
-  unsigned char value = midi_2;
+  /* Handle CC messages for host shortcuts */
+  if (msg_type != 0xB0) {
+    return 0;  /* Not a CC, pass through (after transforms) */
+  }
+
+  unsigned char cc = data1;
+  unsigned char value = data2;
 
   /* Track Shift key state */
   if (cc == CC_SHIFT) {
@@ -1182,6 +1214,82 @@ static JSValue js_host_set_volume(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* host_get_setting(key) -> string or undefined */
+static JSValue js_host_get_setting(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) {
+        return JS_UNDEFINED;
+    }
+
+    JSValue result = JS_UNDEFINED;
+
+    if (strcmp(key, "velocity_curve") == 0) {
+        result = JS_NewString(ctx, settings_velocity_curve_name(g_settings.velocity_curve));
+    } else if (strcmp(key, "aftertouch_enabled") == 0) {
+        result = JS_NewInt32(ctx, g_settings.aftertouch_enabled);
+    } else if (strcmp(key, "aftertouch_deadzone") == 0) {
+        result = JS_NewInt32(ctx, g_settings.aftertouch_deadzone);
+    }
+
+    JS_FreeCString(ctx, key);
+    return result;
+}
+
+/* host_set_setting(key, value) -> void */
+static JSValue js_host_set_setting(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 2) {
+        return JS_UNDEFINED;
+    }
+
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) {
+        return JS_UNDEFINED;
+    }
+
+    if (strcmp(key, "velocity_curve") == 0) {
+        const char *val = JS_ToCString(ctx, argv[1]);
+        if (val) {
+            g_settings.velocity_curve = settings_parse_velocity_curve(val);
+            JS_FreeCString(ctx, val);
+        }
+    } else if (strcmp(key, "aftertouch_enabled") == 0) {
+        int val;
+        if (!JS_ToInt32(ctx, &val, argv[1])) {
+            g_settings.aftertouch_enabled = val ? 1 : 0;
+        }
+    } else if (strcmp(key, "aftertouch_deadzone") == 0) {
+        int val;
+        if (!JS_ToInt32(ctx, &val, argv[1])) {
+            if (val < 0) val = 0;
+            if (val > 50) val = 50;
+            g_settings.aftertouch_deadzone = val;
+        }
+    }
+
+    JS_FreeCString(ctx, key);
+    return JS_UNDEFINED;
+}
+
+/* host_save_settings() -> int (0 success, -1 error) */
+static JSValue js_host_save_settings(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    int result = settings_save(&g_settings, SETTINGS_PATH);
+    return JS_NewInt32(ctx, result);
+}
+
+/* host_reload_settings() -> void */
+static JSValue js_host_reload_settings(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    settings_load(&g_settings, SETTINGS_PATH);
+    return JS_UNDEFINED;
+}
+
 void init_javascript(JSRuntime **prt, JSContext **pctx)
 {
 
@@ -1273,6 +1381,18 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_set_volume_func = JS_NewCFunction(ctx, js_host_set_volume, "host_set_volume", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_set_volume", host_set_volume_func);
+
+    JSValue host_get_setting_func = JS_NewCFunction(ctx, js_host_get_setting, "host_get_setting", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_get_setting", host_get_setting_func);
+
+    JSValue host_set_setting_func = JS_NewCFunction(ctx, js_host_set_setting, "host_set_setting", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_set_setting", host_set_setting_func);
+
+    JSValue host_save_settings_func = JS_NewCFunction(ctx, js_host_save_settings, "host_save_settings", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_save_settings", host_save_settings_func);
+
+    JSValue host_reload_settings_func = JS_NewCFunction(ctx, js_host_reload_settings, "host_reload_settings", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_reload_settings", host_reload_settings_func);
 
     JS_FreeValue(ctx, global_obj);
 
@@ -1493,6 +1613,10 @@ int main(int argc, char *argv[])
     int module_count = mm_scan_modules(&g_module_manager, DEFAULT_MODULES_DIR);
     printf("Found %d modules\n", module_count);
 
+    /* Load host settings */
+    printf("Loading host settings\n");
+    settings_load(&g_settings, SETTINGS_PATH);
+
     int padIndex = 0;
 
     /*  // The lighting of white and RGB LEDs is controlled by note-on or control change messages sent to Push 2:
@@ -1634,8 +1758,15 @@ int main(int argc, char *argv[])
 
             //printf("%x %x %x %x\n", byte[0], byte[1], byte[2], byte[3]);
 
+            /* Check if module wants raw MIDI (skip transforms) */
+            int apply_transforms = !mm_module_wants_raw_midi(&g_module_manager);
+
             if (cable == 2)
             {
+                /* Apply transforms to external MIDI */
+                int consumed = process_host_midi(&byte[1], apply_transforms);
+                if (consumed) continue;
+
                 /* Route to JS handler */
                 if(callGlobalFunction(&ctx, &JSonMidiMessageExternal, &byte[1])) {
                   printf("JS:onMidiMessageExternal failed\n");
@@ -1646,15 +1777,17 @@ int main(int argc, char *argv[])
 
             if (cable == 0)
             {
-                /* Process host-level shortcuts (Shift+Wheel to exit) */
-                int consumed = process_host_midi(midi_0, midi_1, midi_2);
+                /* Process host-level shortcuts and apply transforms */
+                int consumed = process_host_midi(&byte[1], apply_transforms);
 
                 /* Route to JS handler (unless consumed by host) */
                 if (!consumed && callGlobalFunction(&ctx, &JSonMidiMessageInternal, &byte[1])) {
                   printf("JS:onMidiMessageInternal failed\n");
                 }
-                /* Route to DSP plugin */
-                mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
+                /* Route to DSP plugin (unless consumed) */
+                if (!consumed) {
+                  mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
+                }
             }
 
         }

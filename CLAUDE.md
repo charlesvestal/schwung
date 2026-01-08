@@ -88,6 +88,12 @@ host_rescan_modules()
 // Host volume control
 host_get_volume()             // -> int (0-100)
 host_set_volume(vol)          // set host volume
+
+// Host input settings
+host_get_setting(key)         // -> value (velocity_curve, aftertouch_enabled, aftertouch_deadzone)
+host_set_setting(key, val)    // set setting
+host_save_settings()          // persist to disk
+host_reload_settings()        // reload from disk
 ```
 
 ### Host Volume Control

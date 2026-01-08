@@ -75,6 +75,12 @@ host_rescan_modules()         // Rescan modules directory, returns count
 // Host volume control
 host_get_volume()             // Returns volume (0-100)
 host_set_volume(vol)          // Set host output volume (0-100)
+
+// Host settings
+host_get_setting(key)         // Get setting value (velocity_curve, aftertouch_enabled, aftertouch_deadzone)
+host_set_setting(key, val)    // Set setting value
+host_save_settings()          // Save settings to disk
+host_reload_settings()        // Reload settings from disk
 ```
 
 ## Utility Functions
@@ -128,6 +134,46 @@ The volume knob (CC 79) controls host-level output volume by default:
 - Use `host_get_volume()` and `host_set_volume()` to read/write from JS
 
 Modules can claim the volume knob for their own use by setting `"claims_master_knob": true` in module.json. When claimed, the host passes CC 79 through to the module instead of adjusting volume.
+
+## Host Input Settings
+
+The host provides MIDI input processing that can be configured from the Settings menu:
+
+### Velocity Curve
+
+Applied to Note On messages before forwarding to modules:
+
+| Curve | Behavior |
+|-------|----------|
+| `linear` | No transform (default) |
+| `soft` | Boost low velocities: `64 + (velocity / 2)` |
+| `hard` | Exponential curve: `(velocity * velocity) / 127` |
+| `full` | Always 127 |
+
+### Aftertouch
+
+- **Enabled/Disabled**: When disabled, aftertouch messages are dropped
+- **Dead Zone (0-50)**: Values below threshold become 0, reducing accidental triggers
+
+### Settings Access
+
+```javascript
+// Get current velocity curve
+let curve = host_get_setting('velocity_curve');  // 'linear', 'soft', 'hard', 'full'
+
+// Get aftertouch settings
+let atEnabled = host_get_setting('aftertouch_enabled');  // 0 or 1
+let atDeadzone = host_get_setting('aftertouch_deadzone');  // 0-50
+
+// Modify settings
+host_set_setting('velocity_curve', 'hard');
+host_set_setting('aftertouch_deadzone', 15);
+host_save_settings();  // Persist to disk
+```
+
+### Raw MIDI Mode
+
+Modules that need unprocessed MIDI input can opt out of transforms by setting `"raw_midi": true` in module.json.
 
 ## Audio (DSP Modules Only)
 

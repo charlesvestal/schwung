@@ -18,10 +18,11 @@ mkdir -p ./build/modules/controller/
 
 echo "Building host..."
 
-# Build host with module manager
+# Build host with module manager and settings
 "${CROSS_PREFIX}gcc" -g -O3 \
     src/move_anything.c \
     src/host/module_manager.c \
+    src/host/settings.c \
     -o build/move-anything \
     -Isrc -Isrc/lib \
     -Ilibs/quickjs/quickjs-2025-04-26 \

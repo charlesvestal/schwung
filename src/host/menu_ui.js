@@ -2,7 +2,7 @@
  * Host Menu UI - Module selection and management
  *
  * This is the main host script that provides a menu for selecting
- * and loading DSP modules.
+ * and loading DSP modules, plus host settings.
  */
 
 import {
@@ -20,6 +20,11 @@ let currentModuleUI = null;
 let menuVisible = true;
 let statusMessage = '';
 let statusTimeout = 0;
+
+/* Settings state */
+let settingsVisible = false;
+let settingsIndex = 0;  /* 0=velocity, 1=aftertouch on/off, 2=deadzone */
+const SETTINGS_COUNT = 3;
 
 /* Alias constants for clarity */
 const CC_JOG_WHEEL = MoveMainKnob;
@@ -40,11 +45,15 @@ const SCREEN_HEIGHT = 64;
 const LINE_HEIGHT = 10;
 const MAX_VISIBLE_ITEMS = 5;
 
+/* Velocity curve options */
+const VELOCITY_CURVES = ['linear', 'soft', 'hard', 'full'];
+
 /* Refresh module list from host */
 function refreshModules() {
     modules = host_list_modules();
-    if (selectedIndex >= modules.length) {
-        selectedIndex = Math.max(0, modules.length - 1);
+    /* Add 1 for Settings entry */
+    if (selectedIndex >= modules.length + 1) {
+        selectedIndex = Math.max(0, modules.length);
     }
     console.log(`Found ${modules.length} modules`);
 }
@@ -53,6 +62,55 @@ function refreshModules() {
 function showStatus(msg, duration = 2000) {
     statusMessage = msg;
     statusTimeout = Date.now() + duration;
+}
+
+/* Get current settings from host */
+function getSettings() {
+    return {
+        velocity_curve: host_get_setting('velocity_curve') || 'linear',
+        aftertouch_enabled: host_get_setting('aftertouch_enabled') ?? 1,
+        aftertouch_deadzone: host_get_setting('aftertouch_deadzone') ?? 0
+    };
+}
+
+/* Capitalize first letter */
+function capitalize(s) {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/* Draw the settings screen */
+function drawSettings() {
+    clear_screen();
+
+    /* Title */
+    print(2, 2, "Settings", 1);
+    fill_rect(0, 12, SCREEN_WIDTH, 1, 1);
+
+    const settings = getSettings();
+
+    /* Draw settings */
+    const items = [
+        { label: "Velocity", value: capitalize(settings.velocity_curve) },
+        { label: "Aftertouch", value: settings.aftertouch_enabled ? "On" : "Off" },
+        { label: "AT Deadzone", value: String(settings.aftertouch_deadzone) }
+    ];
+
+    for (let i = 0; i < items.length; i++) {
+        const y = 16 + i * LINE_HEIGHT;
+        const isSelected = (i === settingsIndex);
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LINE_HEIGHT, 1);
+            print(4, y, `> ${items[i].label}:`, 0);
+            print(80, y, items[i].value, 0);
+        } else {
+            print(4, y, `  ${items[i].label}:`, 1);
+            print(80, y, items[i].value, 1);
+        }
+    }
+
+    /* Instructions */
+    print(2, 50, "</>:change  click:save", 1);
 }
 
 /* Draw the menu screen */
@@ -65,9 +123,13 @@ function drawMenu() {
     print(90, 2, `Vol:${vol}`, 1);
     fill_rect(0, 12, SCREEN_WIDTH, 1, 1);
 
-    if (modules.length === 0) {
+    /* Total items = modules + Settings */
+    const totalItems = modules.length + 1;
+
+    if (totalItems === 1 && modules.length === 0) {
         print(2, 24, "No modules found", 1);
         print(2, 36, "Check modules/ dir", 1);
+        print(2, 48, "> Settings", 1);
         return;
     }
 
@@ -76,19 +138,25 @@ function drawMenu() {
     if (selectedIndex >= MAX_VISIBLE_ITEMS) {
         startIdx = selectedIndex - MAX_VISIBLE_ITEMS + 1;
     }
-    let endIdx = Math.min(startIdx + MAX_VISIBLE_ITEMS, modules.length);
+    let endIdx = Math.min(startIdx + MAX_VISIBLE_ITEMS, totalItems);
 
-    /* Draw module list */
+    /* Draw item list (modules + Settings) */
     for (let i = startIdx; i < endIdx; i++) {
         const y = 16 + (i - startIdx) * LINE_HEIGHT;
-        const mod = modules[i];
         const isSelected = (i === selectedIndex);
+        let itemName;
+
+        if (i < modules.length) {
+            itemName = modules[i].name;
+        } else {
+            itemName = "Settings";
+        }
 
         if (isSelected) {
             fill_rect(0, y - 1, SCREEN_WIDTH, LINE_HEIGHT, 1);
-            print(4, y, `> ${mod.name}`, 0);
+            print(4, y, `> ${itemName}`, 0);
         } else {
-            print(4, y, `  ${mod.name}`, 1);
+            print(4, y, `  ${itemName}`, 1);
         }
     }
 
@@ -96,7 +164,7 @@ function drawMenu() {
     if (startIdx > 0) {
         print(120, 16, "^", 1);
     }
-    if (endIdx < modules.length) {
+    if (endIdx < totalItems) {
         print(120, SCREEN_HEIGHT - 10, "v", 1);
     }
 
@@ -149,8 +217,32 @@ function loadSelectedModule() {
 function returnToMenu() {
     host_unload_module();
     menuVisible = true;
+    settingsVisible = false;
     refreshModules();
     showStatus("Module unloaded");
+}
+
+/* Change a setting value */
+function changeSettingValue(delta) {
+    const settings = getSettings();
+
+    if (settingsIndex === 0) {
+        /* Velocity curve */
+        let idx = VELOCITY_CURVES.indexOf(settings.velocity_curve);
+        idx = (idx + delta + VELOCITY_CURVES.length) % VELOCITY_CURVES.length;
+        host_set_setting('velocity_curve', VELOCITY_CURVES[idx]);
+    } else if (settingsIndex === 1) {
+        /* Aftertouch enabled */
+        host_set_setting('aftertouch_enabled', settings.aftertouch_enabled ? 0 : 1);
+    } else if (settingsIndex === 2) {
+        /* Aftertouch deadzone */
+        let dz = settings.aftertouch_deadzone;
+        const step = shiftHeld ? 1 : 5;
+        dz = dz + (delta * step);
+        if (dz < 0) dz = 0;
+        if (dz > 50) dz = 50;
+        host_set_setting('aftertouch_deadzone', dz);
+    }
 }
 
 /* Handle MIDI CC */
@@ -165,20 +257,69 @@ function handleCC(cc, value) {
 
     /* Menu button returns to menu if shift held */
     if (cc === CC_MENU && value > 0 && shiftHeld) {
-        if (!menuVisible) {
-            returnToMenu();
+        if (!menuVisible || settingsVisible) {
+            if (settingsVisible) {
+                settingsVisible = false;
+            } else {
+                returnToMenu();
+            }
         }
+        return;
+    }
+
+    /* Settings screen navigation */
+    if (settingsVisible) {
+        /* Jog wheel navigation */
+        if (cc === CC_JOG_WHEEL) {
+            if (value === 1) {
+                settingsIndex = Math.min(settingsIndex + 1, SETTINGS_COUNT - 1);
+            } else if (value === 127 || value === 65) {
+                settingsIndex = Math.max(settingsIndex - 1, 0);
+            }
+            return;
+        }
+
+        /* Arrow up/down navigation */
+        if (cc === CC_DOWN && value > 0) {
+            settingsIndex = Math.min(settingsIndex + 1, SETTINGS_COUNT - 1);
+            return;
+        }
+        if (cc === CC_UP && value > 0) {
+            settingsIndex = Math.max(settingsIndex - 1, 0);
+            return;
+        }
+
+        /* Left/right change value */
+        if (cc === CC_LEFT && value > 0) {
+            changeSettingValue(-1);
+            return;
+        }
+        if (cc === CC_RIGHT && value > 0) {
+            changeSettingValue(1);
+            return;
+        }
+
+        /* Jog wheel click saves and exits */
+        if (cc === CC_JOG_CLICK && value > 0) {
+            host_save_settings();
+            settingsVisible = false;
+            showStatus("Settings saved");
+            return;
+        }
+
         return;
     }
 
     /* Menu navigation (only when menu visible) */
     if (!menuVisible) return;
 
+    const totalItems = modules.length + 1;  /* +1 for Settings */
+
     /* Jog wheel navigation */
     if (cc === CC_JOG_WHEEL) {
         if (value === 1) {
             /* Clockwise */
-            selectedIndex = Math.min(selectedIndex + 1, modules.length - 1);
+            selectedIndex = Math.min(selectedIndex + 1, totalItems - 1);
         } else if (value === 127 || value === 65) {
             /* Counter-clockwise */
             selectedIndex = Math.max(selectedIndex - 1, 0);
@@ -188,7 +329,7 @@ function handleCC(cc, value) {
 
     /* Arrow navigation */
     if (cc === CC_DOWN && value > 0) {
-        selectedIndex = Math.min(selectedIndex + 1, modules.length - 1);
+        selectedIndex = Math.min(selectedIndex + 1, totalItems - 1);
         return;
     }
     if (cc === CC_UP && value > 0) {
@@ -196,9 +337,15 @@ function handleCC(cc, value) {
         return;
     }
 
-    /* Jog wheel click (CC 3) selects module */
+    /* Jog wheel click (CC 3) selects item */
     if (cc === CC_JOG_CLICK && value > 0) {
-        loadSelectedModule();
+        if (selectedIndex === modules.length) {
+            /* Settings selected */
+            settingsVisible = true;
+            settingsIndex = 0;
+        } else {
+            loadSelectedModule();
+        }
         return;
     }
 }
@@ -228,7 +375,9 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
-    if (menuVisible) {
+    if (settingsVisible) {
+        drawSettings();
+    } else if (menuVisible) {
         drawMenu();
     } else {
         /* If a module is loaded, its UI should handle drawing.

@@ -30,6 +30,7 @@ typedef struct module_info {
     int cap_midi_out;
     int cap_aftertouch;
     int cap_claims_master_knob;  /* If true, module handles volume knob */
+    int cap_raw_midi;            /* If true, skip host MIDI transforms */
 
     /* Defaults JSON string (for passing to plugin) */
     char defaults_json[1024];
@@ -107,6 +108,9 @@ int mm_get_host_volume(module_manager_t *mm);
 
 /* Check if current module claims the master knob */
 int mm_module_claims_master_knob(module_manager_t *mm);
+
+/* Check if current module wants raw MIDI (skip transforms) */
+int mm_module_wants_raw_midi(module_manager_t *mm);
 
 /* Cleanup */
 void mm_destroy(module_manager_t *mm);
