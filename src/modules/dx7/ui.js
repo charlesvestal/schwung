@@ -5,6 +5,14 @@
  * Handles preset selection, octave transpose, and display updates.
  */
 
+import {
+    MoveMainKnob,
+    MoveLeft, MoveRight, MoveUp, MoveDown,
+    MovePads
+} from '../../shared/constants.mjs';
+
+import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
+
 /* State */
 let currentPreset = 0;
 let presetCount = 32;  /* Standard DX7 bank has 32 presets */
@@ -13,17 +21,17 @@ let algorithm = 1;
 let octaveTranspose = 0;
 let polyphony = 0;
 
-/* Move hardware constants */
-const CC_JOG_WHEEL = 14;
-const CC_JOG_CLICK = 3;
-const CC_SHIFT = 49;
-const CC_MENU = 50;
-const CC_LEFT = 62;
-const CC_RIGHT = 63;
-const CC_PLUS = 55;
-const CC_MINUS = 54;
+/* Alias constants for clarity */
+const CC_JOG_WHEEL = MoveMainKnob;
+const CC_LEFT = MoveLeft;
+const CC_RIGHT = MoveRight;
+const CC_PLUS = MoveUp;
+const CC_MINUS = MoveDown;
 
-let shiftHeld = false;
+/* Note range for Move pads */
+const PAD_NOTE_MIN = MovePads[0];
+const PAD_NOTE_MAX = MovePads[MovePads.length - 1];
+
 let needsRedraw = true;
 
 /* Display constants */
@@ -105,16 +113,7 @@ function setOctave(delta) {
 
 /* Handle CC messages */
 function handleCC(cc, value) {
-    if (cc === CC_SHIFT) {
-        shiftHeld = (value > 0);
-        return true;
-    }
-
-    if (cc === CC_JOG_CLICK && shiftHeld) {
-        console.log("Shift+Wheel - exit");
-        exit();
-        return true;
-    }
+    /* Note: Shift+Wheel exit is handled at host level */
 
     /* Preset navigation */
     if (cc === CC_LEFT && value > 0) {
@@ -193,13 +192,10 @@ globalThis.tick = function() {
 };
 
 globalThis.onMidiMessageInternal = function(data) {
+    if (isCapacitiveTouchMessage(data)) return;
+
     const status = data[0] & 0xF0;
     const isNote = status === 0x90 || status === 0x80;
-
-    /* Filter capacitive touch */
-    if (isNote && data[1] < 10) {
-        return;
-    }
 
     if (status === 0xB0) {
         if (handleCC(data[1], data[2])) {
