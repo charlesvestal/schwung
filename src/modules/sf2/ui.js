@@ -11,6 +11,8 @@ import {
     MovePads
 } from '../../shared/constants.mjs';
 
+import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
+
 /* State */
 let currentPreset = 0;
 let presetCount = 128;  /* Will be updated from DSP */
@@ -199,13 +201,10 @@ globalThis.tick = function() {
 };
 
 globalThis.onMidiMessageInternal = function(data) {
+    if (isCapacitiveTouchMessage(data)) return;
+
     const status = data[0] & 0xF0;
     const isNote = status === 0x90 || status === 0x80;
-
-    /* Filter capacitive touch events from knobs (notes with data[1] < 10) */
-    if (isNote && data[1] < 10) {
-        return; /* Ignore capacitive touch */
-    }
 
     if (status === 0xB0) {
         /* CC - handle UI controls */

@@ -8,10 +8,15 @@
 import {
     Black, White, LightGrey,
     MidiNoteOn, MidiNoteOff, MidiCC,
-    MoveShift, MoveMainButton, MoveMainKnob,
+    MoveShift, MoveMainKnob,
     MovePads, MoveSteps,
     MoveKnob1, MoveMaster
 } from '../../shared/constants.mjs';
+
+import {
+    isNoiseMessage, isCapacitiveTouchMessage,
+    setLED, clearAllLEDs
+} from '../../shared/input_filter.mjs';
 
 /* State */
 let bank = 0;
@@ -79,46 +84,31 @@ function displayMessage(l1, l2, l3, l4) {
 }
 
 function clearLEDs() {
-    for (let i = 0; i < 127; i++) {
-        move_midi_internal_send([0x09, MidiNoteOn, i, Black]);
-        move_midi_internal_send([0x0b, MidiCC, i, Black]);
-    }
+    clearAllLEDs();
 }
 
 function fillPads(pads) {
     for (const pad of MovePads) {
         if (pads[pad]) {
-            move_midi_internal_send([0x09, MidiNoteOn, pad, pads[pad][1]]);
+            setLED(pad, pads[pad][1]);
         }
     }
 }
 
 globalThis.onMidiMessageExternal = function (data) {
-    /* Filter unwanted messages */
-    if (data[0] === 0xf8 || data[0] === 0xd0 || data[0] === 0xa0 ||
-        data[0] === 0xf0 || data[0] === 0xf7) {
-        return;
-    }
+    if (isNoiseMessage(data)) return;
 
     /* Pass through to Move LEDs */
     move_midi_internal_send([data[0] / 16, data[0], data[1], data[2]]);
 };
 
 globalThis.onMidiMessageInternal = function (data) {
-    /* Filter unwanted messages */
-    if (data[0] === 0xf8 || data[0] === 0xd0 || data[0] === 0xa0 ||
-        data[0] === 0xf0 || data[0] === 0xf7) {
-        return;
-    }
+    if (isNoiseMessage(data)) return;
+    if (isCapacitiveTouchMessage(data)) return;
 
-    /* Filter capacitive touch (notes < 10) */
-    let isNote = data[0] === MidiNoteOn || data[0] === MidiNoteOff;
-    if (isNote && data[1] < 10) {
-        return;
-    }
-
-    let isNoteOn = data[0] === MidiNoteOn;
-    let isCC = data[0] === MidiCC;
+    const isNote = data[0] === MidiNoteOn || data[0] === MidiNoteOff;
+    const isNoteOn = data[0] === MidiNoteOn;
+    const isCC = data[0] === MidiCC;
 
     if (isNote) {
         let note = data[1];
@@ -127,9 +117,9 @@ globalThis.onMidiMessageInternal = function (data) {
         /* Bank switching via step buttons */
         if (MoveSteps.includes(note) && velocity === 127) {
             /* Clear previous bank LED */
-            move_midi_internal_send([0x09, MidiNoteOn, MoveSteps[bank], Black]);
+            setLED(MoveSteps[bank], Black);
             /* Light new bank LED */
-            move_midi_internal_send([0x09, MidiNoteOn, note, White]);
+            setLED(note, White);
 
             bank = MoveSteps.indexOf(note);
 
@@ -152,13 +142,13 @@ globalThis.onMidiMessageInternal = function (data) {
             move_midi_external_send([2 << 4 | (data[0] / 16), data[0], pad[0], velocity]);
 
             if (isNoteOn && velocity > 0) {
-                move_midi_internal_send([0x09, MidiNoteOn, note, White]);
+                setLED(note, White);
                 displayMessage("MIDI Controller",
                     `Note ${pad[0]} (${pad[2]})`,
                     `Velocity ${velocity}`,
                     `Bank ${bank + 1}`);
             } else {
-                move_midi_internal_send([0x09, MidiNoteOn, note, pad[1]]);
+                setLED(note, pad[1]);
             }
             return;
         }
@@ -202,7 +192,7 @@ globalThis.init = function () {
     clearLEDs();
 
     /* Light first bank */
-    move_midi_internal_send([0x09, MidiNoteOn, MoveSteps[0], White]);
+    setLED(MoveSteps[0], White);
 
     fillPads(padBanks[bank]);
 };
