@@ -23,10 +23,8 @@ The module loads `instrument.sf2` from its directory by default.
 
 ## Controls
 
-- **Jog wheel**: Navigate presets
-- **Jog click**: Select preset
-- **Knob 1**: Octave transpose
-- **Pads/Keys**: Play notes (external MIDI keyboard recommended)
+- **< and >**: Navigate presets
+- **+ and -**: Octave transpose
 
 ## SoundFont Sources
 
