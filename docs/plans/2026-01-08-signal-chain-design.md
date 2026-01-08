@@ -1,5 +1,9 @@
 # Signal Chain Architecture Design
 
+Note: This design doc captures the 2026-01-08 plan. The implementation has evolved
+since then (MIDI sources, UI shims, menu layout helpers). For current behavior,
+see `docs/MODULES.md` and `src/modules/chain/README.md`.
+
 ## Overview
 
 A modular signal chain system for Move Anything that allows combining input sources, MIDI processors, sound generators, and audio effects into configurable patches. This is the foundation for evolving Move Anything into a groovebox with multiple chains and sequencers.

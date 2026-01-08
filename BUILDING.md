@@ -89,6 +89,23 @@ cd libs/quickjs/quickjs-2025-04-26
 CC=aarch64-linux-gnu-gcc make libquickjs.a
 ```
 
+**Missing font.png/font.png.dat**
+
+The host falls back to the bitmap font when the system TTF isn't available, and `package.sh` expects these files. Generate them with:
+
+```bash
+python3 scripts/generate_font.py build/font.png
+python3 - <<'PY'
+from importlib.util import spec_from_file_location, module_from_spec
+from pathlib import Path
+
+spec = spec_from_file_location("generate_font", "scripts/generate_font.py")
+mod = module_from_spec(spec)
+spec.loader.exec_module(mod)
+Path("build/font.png.dat").write_text(mod.CHARS + "\n")
+PY
+```
+
 **Verify binary architecture**
 ```bash
 file build/move-anything

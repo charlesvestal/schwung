@@ -33,6 +33,7 @@ Host (move-anything):
 Modules (src/modules/<id>/):
   - module.json: metadata
   - ui.js: JavaScript UI (init, tick, onMidiMessage*)
+  - ui_chain.js: optional Signal Chain UI shim
   - dsp.so: optional native DSP plugin
 ```
 
@@ -78,9 +79,12 @@ Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
 // Module management
 host_list_modules()           // -> [{id, name, version}, ...]
 host_load_module(id_or_index)
+host_load_ui_module(path)
 host_unload_module()
+host_return_to_menu()
 host_module_set_param(key, val)
 host_module_get_param(key)
+host_module_send_midi(msg, source)
 host_is_module_loaded()
 host_get_current_module()
 host_rescan_modules()
@@ -109,6 +113,7 @@ Located in `src/shared/`:
 - `input_filter.mjs` - Capacitive touch filtering
 - `midi_messages.mjs` - MIDI helpers
 - `move_display.mjs` - Display utilities
+- `menu_layout.mjs` - Title/list/footer menu layout helpers
 
 ## Move Hardware MIDI
 
@@ -151,16 +156,18 @@ Original Move preserved as `/opt/move/MoveOriginal`.
 The `chain` module implements a modular signal chain for combining components:
 
 ```
-[Input] → [MIDI FX] → [Sound Generator] → [Audio FX] → [Output]
+[Input or MIDI Source] → [MIDI FX] → [Sound Generator] → [Audio FX] → [Output]
 ```
 
 ### Module Capabilities for Chaining
 
 Modules declare chainability in module.json:
 ```json
-"capabilities": {
-    "chainable": true,
-    "component_type": "sound_generator"
+{
+    "capabilities": {
+        "chainable": true,
+        "component_type": "sound_generator"
+    }
 }
 ```
 
@@ -173,6 +180,7 @@ Component types: `sound_generator`, `audio_fx`, `midi_fx`
 - Patch files in `modules/chain/patches/*.json` define chain configurations
 - MIDI FX: chord generator, arpeggiator (up, down, up_down, random)
 - Audio FX: freeverb
+- MIDI sources (optional): DSP modules that generate MIDI; can provide `ui_chain.js` for full-screen chain UI
 
 ### External Modules
 

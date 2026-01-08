@@ -8,6 +8,7 @@ Modules are self-contained packages that extend Move Anything with new functiona
 src/modules/your-module/
   module.json       # Required: module metadata
   ui.js             # Optional: JavaScript UI
+  ui_chain.js       # Optional: Signal Chain UI shim
   dsp.so            # Optional: native DSP plugin
   dsp/              # Optional: DSP source code
     your_plugin.c
@@ -23,16 +24,20 @@ src/modules/your-module/
     "description": "What your module does",
     "author": "Your Name",
     "ui": "ui.js",
+    "ui_chain": "ui_chain.js",
+    "dsp": "dsp.so",
     "api_version": 1
 }
 ```
 
 Required fields: `id`, `name`, `version`, `api_version`
-Optional fields: `description`, `author`, `ui`, `dsp`
+Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `capabilities`
 
 ### Capabilities
 
-Add capability flags to enable special module behaviors:
+Add capability flags to enable special module behaviors. You can group them under
+`capabilities` (recommended) or place them at the top level (the host searches
+for keys anywhere in `module.json`).
 
 ```json
 {
@@ -40,9 +45,11 @@ Add capability flags to enable special module behaviors:
     "name": "Your Module",
     "version": "1.0.0",
     "api_version": 1,
-    "audio_out": true,
-    "midi_in": true,
-    "claims_master_knob": true
+    "capabilities": {
+        "audio_out": true,
+        "midi_in": true,
+        "claims_master_knob": true
+    }
 }
 ```
 
@@ -56,6 +63,28 @@ Add capability flags to enable special module behaviors:
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
+| `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
+| `component_type` | `sound_generator` for chainable synths (other values reserved for future use) |
+
+### Defaults
+
+Use `defaults` to pass initial parameters to DSP plugins at load time:
+
+```json
+{
+    "defaults": {
+        "preset": 0,
+        "output_level": 50
+    }
+}
+```
+
+## Drop-In Modules
+
+Modules are discovered at runtime from `/data/UserData/move-anything/modules`.
+To add a new module, copy a folder with `module.json` (plus `ui.js` and `dsp.so`
+if needed) and either restart Move Anything or call `host_rescan_modules()` in
+your UI. No host recompile is required for new modules or UI updates.
 
 ## JavaScript UI (ui.js)
 
@@ -261,6 +290,7 @@ Import path from modules: `../../shared/<file>.mjs`
 | `input_filter.mjs` | Capacitive touch filtering |
 | `midi_messages.mjs` | MIDI helper functions |
 | `move_display.mjs` | Display utilities |
+| `menu_layout.mjs` | Title/list/footer menu layout helpers |
 
 ### Common Imports
 
@@ -302,7 +332,7 @@ See these modules for reference:
 
 ## Signal Chain Module
 
-The Signal Chain module allows combining sound generators, MIDI effects, and audio effects into configurable patches.
+The Signal Chain module allows combining MIDI sources, MIDI effects, sound generators, and audio effects into configurable patches.
 
 ### Chain Structure
 
@@ -314,6 +344,7 @@ The Signal Chain module allows combining sound generators, MIDI effects, and aud
 
 | Type | Components |
 |------|------------|
+| MIDI Sources | Sequencers or other modules referenced via `midi_source` |
 | Sound Generators | Line In, SF2, DX7, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `jv880`) |
 | MIDI Effects | Chord generator (major, minor, power, octave), Arpeggiator (up, down, updown, random) |
 | Audio Effects | Freeverb (reverb) |
@@ -341,6 +372,9 @@ Patches are stored in `modules/chain/patches/` as JSON:
                 "preset": 0
             }
         },
+        "midi_source": {
+            "module": "sequencer"
+        },
         "audio_fx": [
             {
                 "type": "freeverb",
@@ -352,6 +386,12 @@ Patches are stored in `modules/chain/patches/` as JSON:
         ]
     }
 }
+```
+
+JavaScript MIDI FX can be added per patch:
+
+```json
+"midi_fx_js": ["octave_up", "fifths"]
 ```
 
 ### Line In Sound Generator

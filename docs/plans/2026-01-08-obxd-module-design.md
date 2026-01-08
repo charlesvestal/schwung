@@ -1,5 +1,8 @@
 # OB-Xd Module Design
 
+Note: This design doc captures the 2026-01-08 plan. For current module
+development guidance, see `docs/MODULES.md` and the OB-Xd repo README.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Port OB-Xd virtual analog synthesizer as a separate GPL-licensed module for Move Anything.

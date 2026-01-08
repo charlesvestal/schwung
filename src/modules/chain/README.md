@@ -1,6 +1,6 @@
 # Signal Chain Module
 
-The Signal Chain module lets you build patchable chains of MIDI FX, a sound generator, and audio FX.
+The Signal Chain module lets you build patchable chains of MIDI FX, an optional MIDI source, a sound generator, and audio FX.
 
 ## Architecture
 
@@ -24,6 +24,9 @@ Example:
     "version": 1,
     "chain": {
         "input": "pads",
+        "midi_source": {
+            "module": "sequencer"
+        },
         "midi_fx": {
             "chord": "major"
         },
@@ -104,6 +107,14 @@ and must not override `globalThis.init`/`tick`.
 
 Chain will enter the source UI when a patch with a supported source loads. Press
 Back to return to the chain view, and Menu to re-enter the source UI.
+
+## Patch Browser Controls
+
+- Jog wheel: highlight patches
+- Jog click: load highlighted patch
+- Back: return to list (or exit source UI first)
+- Up/Down: octave transpose in patch view
+
 ## Raw MIDI and Knob Touch
 
 By default, the host filters knob-touch notes (0-9) from internal MIDI. To bypass this for Signal Chain, set `"raw_midi": true` in `module.json`.

@@ -60,6 +60,19 @@ globalThis.tick = function() {
 }
 ```
 
+## Menu Layout Helpers
+
+For list-based screens (title/list/footer), import the shared menu layout helpers:
+
+```javascript
+import {
+    drawMenuHeader,
+    drawMenuList,
+    drawMenuFooter,
+    menuLayoutDefaults
+} from '../../shared/menu_layout.mjs';
+```
+
 ## Host Functions (Module Management)
 
 ```javascript
