@@ -183,6 +183,18 @@ Audio is handled by native DSP plugins (`.so` files). See [MODULES.md](MODULES.m
 - Block size: 128 frames
 - Format: Stereo interleaved int16 (L0, R0, L1, R1, ...)
 
+### Audio Input
+
+Native plugins can access audio input through the host API:
+
+```c
+// In your plugin's render_block function:
+int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
+// audio_in contains 128 stereo samples in interleaved format
+```
+
+Note: Audio input routing depends on the last selected input in the stock Move interface before launching Move Anything.
+
 ## LED Colors
 
 Common color values for pad LEDs:

@@ -32,10 +32,29 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 | Module | Description |
 |--------|-------------|
+| **Signal Chain** | Modular signal chain with synths, MIDI FX, and audio FX |
 | DX7 Synth | 6-operator FM synthesizer (Yamaha DX7), loads .syx patches |
 | SF2 Synth | SoundFont synthesizer with preset/octave control |
 | M8 LPP | Dirtywave M8 Launchpad Pro emulation |
 | Controller | MIDI controller with 16 banks |
+
+### Signal Chain
+
+The Signal Chain module lets you combine sound generators, MIDI effects, and audio effects into patches:
+
+**Sound Generators:**
+- SF2 (SoundFont synth)
+- DX7 (FM synth)
+- Line In (external audio input)
+
+**MIDI Effects:**
+- Chord generator (major, minor, power, octave)
+- Arpeggiator (up, down, up-down, random)
+
+**Audio Effects:**
+- Freeverb (Schroeder-Moorer reverb)
+
+Patches are JSON files in `modules/chain/patches/`. Use the jog wheel to browse, Up/Down buttons for octave control.
 
 ## Uninstall
 

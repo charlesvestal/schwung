@@ -1,9 +1,45 @@
 #!/usr/bin/env bash
-set -x
+# Build Move Anything for Ableton Move (ARM64)
+#
+# Automatically uses Docker for cross-compilation if needed.
+# Set CROSS_PREFIX to skip Docker (e.g., for native ARM builds).
+set -e
 
-# Get repo root (parent of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+IMAGE_NAME="move-anything-builder"
+
+# Check if we need Docker
+if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
+    echo "=== Move Anything Build (via Docker) ==="
+    echo ""
+
+    # Build Docker image if needed
+    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+        echo "Building Docker image (first time only)..."
+        docker build -t "$IMAGE_NAME" "$REPO_ROOT"
+        echo ""
+    fi
+
+    # Run build inside container
+    echo "Running build..."
+    docker run --rm \
+        -v "$REPO_ROOT:/build" \
+        -u "$(id -u):$(id -g)" \
+        "$IMAGE_NAME"
+
+    echo ""
+    echo "=== Done ==="
+    echo "Output: $REPO_ROOT/move-anything.tar.gz"
+    echo ""
+    echo "To install on Move:"
+    echo "  ./scripts/install.sh local"
+    exit 0
+fi
+
+# === Actual build (runs in Docker or with cross-compiler) ===
+set -x
+
 cd "$REPO_ROOT"
 
 # Clean and prepare
@@ -102,7 +138,6 @@ cp ./src/host/menu_ui.js ./build/host/
 cp ./src/shim-entrypoint.sh ./build/
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
-# Font is now loaded from TTF at runtime (/opt/move/Fonts/unifont_jp-14.0.01.ttf)
 
 # Copy SF2 module files
 cp ./src/modules/sf2/module.json ./build/modules/sf2/
