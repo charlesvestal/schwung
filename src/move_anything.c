@@ -31,6 +31,7 @@ int host_shift_held = 0;
 /* Move MIDI CC constants for system shortcuts */
 #define CC_SHIFT 49
 #define CC_JOG_CLICK 3
+#define CC_BACK 51
 #define CC_MASTER_KNOB 79
 
 /* Module manager instance */
@@ -48,6 +49,8 @@ int g_clock_started = 0;
 
 /* Flag to refresh JS function references after module UI load */
 int g_js_functions_need_refresh = 0;
+int g_reload_menu_ui = 0;
+char g_menu_script_path[256] = "";
 
 /* Default modules directory */
 #define DEFAULT_MODULES_DIR "/data/UserData/move-anything/modules"
@@ -507,6 +510,15 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
     printf("Host: Shift+Wheel detected - exiting\n");
     global_exit_flag = 1;
     return 1;  /* Consumed, don't pass to module */
+  }
+
+  /* Back button: return to menu unless module owns UI */
+  if (cc == CC_BACK && value == 127) {
+    if (g_module_manager_initialized && mm_is_module_loaded(&g_module_manager) &&
+        !mm_module_wants_raw_ui(&g_module_manager)) {
+      g_reload_menu_ui = 1;
+      return 1;
+    }
   }
 
   /* Master volume knob - relative encoder */
@@ -1646,6 +1658,9 @@ int main(int argc, char *argv[])
         script_name = default_script_name;
     }
 
+    strncpy(g_menu_script_path, script_name, sizeof(g_menu_script_path) - 1);
+    g_menu_script_path[sizeof(g_menu_script_path) - 1] = '\0';
+
     eval_file(ctx, script_name, -1);
 
     const char *device_path = "/dev/ablspi0.0";
@@ -1783,6 +1798,22 @@ int main(int argc, char *argv[])
 
     while (!global_exit_flag)
     {
+        if (g_reload_menu_ui) {
+            g_reload_menu_ui = 0;
+            printf("Host: Back detected - returning to menu\n");
+            if (g_module_manager_initialized) {
+                mm_unload_module(&g_module_manager);
+            }
+            if (g_menu_script_path[0]) {
+                eval_file(ctx, g_menu_script_path, -1);
+                JSValue JSinit;
+                getGlobalFunction(&ctx, "init", &JSinit);
+                if (callGlobalFunction(&ctx, &JSinit, 0)) {
+                    printf("JS:init failed\n");
+                }
+                g_js_functions_need_refresh = 1;
+            }
+        }
         /* Refresh JS function references if a module UI was loaded */
         if (g_js_functions_need_refresh) {
             g_js_functions_need_refresh = 0;

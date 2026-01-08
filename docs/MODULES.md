@@ -54,7 +54,8 @@ Add capability flags to enable special module behaviors:
 | `midi_out` | Module sends MIDI output |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
-| `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter) |
+| `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
+| `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu |
 
 ## JavaScript UI (ui.js)
 
