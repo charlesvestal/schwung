@@ -173,7 +173,7 @@ function handleCC(cc, value) {
     /* Menu navigation (only when menu visible) */
     if (!menuVisible) return;
 
-    const totalItems = modules.length + 1;  /* +1 for Settings */
+    const totalItems = modules.length + 2;  /* +1 for Settings, +1 for Return to Move */
     const result = handleMainMenuCC({
         cc,
         value,
@@ -185,6 +185,8 @@ function handleCC(cc, value) {
         if (selectedIndex === modules.length) {
             settingsVisible = true;
             settingsIndex = 0;
+        } else if (selectedIndex === modules.length + 1) {
+            exit();
         } else {
             loadSelectedModule();
         }

@@ -9,7 +9,7 @@ const MENU_LABEL = "Move Anything";
 export function drawMainMenu({ modules, selectedIndex, volume }) {
     drawMenuHeader(MENU_LABEL, `Vol:${volume}`);
 
-    const totalItems = modules.length + 1;
+    const totalItems = modules.length + 2;
     if (totalItems === 1 && modules.length === 0) {
         print(2, 24, "No modules found", 1);
         print(2, 36, "Check modules/ dir", 1);
@@ -24,7 +24,11 @@ export function drawMainMenu({ modules, selectedIndex, volume }) {
             topY: menuLayoutDefaults.listTopY,
             bottomY: menuLayoutDefaults.listBottomNoFooter
         },
-        getLabel: (index) => (index < modules.length ? modules[index].name : "Settings"),
+        getLabel: (index) => {
+            if (index < modules.length) return modules[index].name;
+            if (index === modules.length) return "Settings";
+            return "Return to Move";
+        },
         getValue: () => ""
     });
 }
