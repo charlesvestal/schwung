@@ -59,8 +59,10 @@ function showStatus(msg, duration = 2000) {
 function drawMenu() {
     clear_screen();
 
-    /* Title */
+    /* Title and volume */
     print(2, 2, "Move Anything", 1);
+    const vol = host_get_volume();
+    print(90, 2, `Vol:${vol}`, 1);
     fill_rect(0, 12, SCREEN_WIDTH, 1, 1);
 
     if (modules.length === 0) {

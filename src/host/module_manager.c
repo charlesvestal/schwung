@@ -164,6 +164,7 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     json_get_bool(json, "midi_in", &info->cap_midi_in);
     json_get_bool(json, "midi_out", &info->cap_midi_out);
     json_get_bool(json, "aftertouch", &info->cap_aftertouch);
+    json_get_bool(json, "claims_master_knob", &info->cap_claims_master_knob);
 
     /* Defaults */
     json_get_defaults(json, info->defaults_json, sizeof(info->defaults_json));
@@ -181,6 +182,7 @@ void mm_init(module_manager_t *mm, uint8_t *mapped_memory,
     mm->current_module_index = -1;
     mm->dsp_handle = NULL;
     mm->plugin = NULL;
+    mm->host_volume = 100;  /* Default to full volume */
 
     /* Initialize host API */
     mm->host_api.api_version = MOVE_PLUGIN_API_VERSION;
@@ -385,11 +387,33 @@ void mm_render_block(module_manager_t *mm) {
         mm->plugin->render_block(mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
     }
 
+    /* Apply host volume if not at 100% */
+    if (mm->host_volume < 100) {
+        for (int i = 0; i < MOVE_FRAMES_PER_BLOCK * 2; i++) {
+            mm->audio_out_buffer[i] = (int16_t)((mm->audio_out_buffer[i] * mm->host_volume) / 100);
+        }
+    }
+
     /* Write to mailbox */
     if (mm->host_api.mapped_memory) {
         int16_t *dst = (int16_t *)(mm->host_api.mapped_memory + MOVE_AUDIO_OUT_OFFSET);
         memcpy(dst, mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
     }
+}
+
+void mm_set_host_volume(module_manager_t *mm, int volume) {
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    mm->host_volume = volume;
+}
+
+int mm_get_host_volume(module_manager_t *mm) {
+    return mm->host_volume;
+}
+
+int mm_module_claims_master_knob(module_manager_t *mm) {
+    if (mm->current_module_index < 0) return 0;
+    return mm->modules[mm->current_module_index].cap_claims_master_knob;
 }
 
 void mm_destroy(module_manager_t *mm) {

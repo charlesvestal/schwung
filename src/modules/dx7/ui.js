@@ -68,9 +68,6 @@ function drawUI() {
     const octStr = octaveTranspose >= 0 ? `+${octaveTranspose}` : `${octaveTranspose}`;
     print(2, 42, `Oct:${octStr}  Voices:${polyphony}`, 1);
 
-    /* Navigation hint */
-    print(2, 54, "Jog:Preset  +/-:Oct", 1);
-
     needsRedraw = false;
 }
 
@@ -170,25 +167,15 @@ globalThis.init = function() {
     console.log(`DX7 UI ready: ${presetCount} presets`);
 };
 
-let tickCount = 0;
-const REDRAW_INTERVAL = 10;
-
 globalThis.tick = function() {
-    tickCount++;
-
-    /* Update polyphony */
+    /* Update polyphony from DSP */
     const poly = host_module_get_param("polyphony");
     if (poly) {
-        const newPoly = parseInt(poly) || 0;
-        if (newPoly !== polyphony) {
-            polyphony = newPoly;
-            needsRedraw = true;
-        }
+        polyphony = parseInt(poly) || 0;
     }
 
-    if (needsRedraw || (tickCount % REDRAW_INTERVAL === 0)) {
-        drawUI();
-    }
+    /* Always redraw - native DSP gives us CPU headroom */
+    drawUI();
 };
 
 globalThis.onMidiMessageInternal = function(data) {

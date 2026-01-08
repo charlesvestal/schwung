@@ -75,6 +75,7 @@ Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
 ### JS Host Functions
 
 ```javascript
+// Module management
 host_list_modules()           // -> [{id, name, version}, ...]
 host_load_module(id_or_index)
 host_unload_module()
@@ -83,7 +84,17 @@ host_module_get_param(key)
 host_is_module_loaded()
 host_get_current_module()
 host_rescan_modules()
+
+// Host volume control
+host_get_volume()             // -> int (0-100)
+host_set_volume(vol)          // set host volume
 ```
+
+### Host Volume Control
+
+The volume knob (CC 79) controls host-level output volume by default. Volume is applied after module DSP rendering but before audio output.
+
+Modules can claim the volume knob for their own use by setting `"claims_master_knob": true` in their module.json capabilities section. When claimed, the host passes the CC through to the module instead of adjusting volume.
 
 ### Shared JS Utilities
 

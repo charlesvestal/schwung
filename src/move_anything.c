@@ -30,6 +30,7 @@ int host_shift_held = 0;
 /* Move MIDI CC constants for system shortcuts */
 #define CC_SHIFT 49
 #define CC_JOG_CLICK 3
+#define CC_MASTER_KNOB 79
 
 /* Module manager instance */
 module_manager_t g_module_manager;
@@ -462,6 +463,33 @@ int process_host_midi(unsigned char midi_0, unsigned char midi_1, unsigned char 
     printf("Host: Shift+Wheel detected - exiting\n");
     global_exit_flag = 1;
     return 1;  /* Consumed, don't pass to module */
+  }
+
+  /* Master volume knob - relative encoder */
+  /* Only handle if module doesn't claim the knob */
+  if (cc == CC_MASTER_KNOB && g_module_manager_initialized &&
+      !mm_module_claims_master_knob(&g_module_manager)) {
+    int current_vol = mm_get_host_volume(&g_module_manager);
+    int delta;
+
+    /* Relative encoder: 1-63 = clockwise (increment), 65-127 = counter-clockwise (decrement) */
+    if (value >= 1 && value <= 63) {
+      /* Clockwise - apply acceleration curve */
+      delta = (value > 10) ? 5 : (value > 3) ? 2 : 1;
+    } else if (value >= 65 && value <= 127) {
+      /* Counter-clockwise - apply acceleration curve */
+      int speed = 128 - value;  /* Convert to positive: 127->1, 65->63 */
+      delta = (speed > 10) ? -5 : (speed > 3) ? -2 : -1;
+    } else {
+      delta = 0;
+    }
+
+    if (delta != 0) {
+      int new_vol = current_vol + delta;
+      mm_set_host_volume(&g_module_manager, new_vol);
+      printf("Host: Volume %d -> %d\n", current_vol, mm_get_host_volume(&g_module_manager));
+    }
+    return 1;  /* Consumed by host */
   }
 
   return 0;  /* Pass through */
@@ -1129,6 +1157,31 @@ static JSValue js_host_rescan_modules(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, count);
 }
 
+/* host_get_volume() -> int (0-100) */
+static JSValue js_host_get_volume(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (!g_module_manager_initialized) {
+        return JS_NewInt32(ctx, 100);
+    }
+    return JS_NewInt32(ctx, mm_get_host_volume(&g_module_manager));
+}
+
+/* host_set_volume(volume) -> void */
+static JSValue js_host_set_volume(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (argc < 1 || !g_module_manager_initialized) {
+        return JS_UNDEFINED;
+    }
+
+    int volume;
+    if (JS_ToInt32(ctx, &volume, argv[0])) {
+        return JS_UNDEFINED;
+    }
+
+    mm_set_host_volume(&g_module_manager, volume);
+    return JS_UNDEFINED;
+}
+
 void init_javascript(JSRuntime **prt, JSContext **pctx)
 {
 
@@ -1214,6 +1267,12 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_rescan_modules_func = JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", host_rescan_modules_func);
+
+    JSValue host_get_volume_func = JS_NewCFunction(ctx, js_host_get_volume, "host_get_volume", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_get_volume", host_get_volume_func);
+
+    JSValue host_set_volume_func = JS_NewCFunction(ctx, js_host_set_volume, "host_set_volume", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_set_volume", host_set_volume_func);
 
     JS_FreeValue(ctx, global_obj);
 

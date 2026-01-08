@@ -29,6 +29,7 @@ typedef struct module_info {
     int cap_midi_in;
     int cap_midi_out;
     int cap_aftertouch;
+    int cap_claims_master_knob;  /* If true, module handles volume knob */
 
     /* Defaults JSON string (for passing to plugin) */
     char defaults_json[1024];
@@ -50,6 +51,9 @@ typedef struct module_manager {
 
     /* Audio output buffer */
     int16_t audio_out_buffer[MOVE_FRAMES_PER_BLOCK * 2];
+
+    /* Host-level volume (0-100, default 100) */
+    int host_volume;
 
 } module_manager_t;
 
@@ -96,6 +100,13 @@ int mm_get_param(module_manager_t *mm, const char *key, char *buf, int buf_len);
 
 /* Render audio block from current module, writes to mailbox */
 void mm_render_block(module_manager_t *mm);
+
+/* Host volume control (0-100) */
+void mm_set_host_volume(module_manager_t *mm, int volume);
+int mm_get_host_volume(module_manager_t *mm);
+
+/* Check if current module claims the master knob */
+int mm_module_claims_master_knob(module_manager_t *mm);
 
 /* Cleanup */
 void mm_destroy(module_manager_t *mm);
