@@ -10,7 +10,8 @@ import {
     MidiNoteOn, MidiNoteOff, MidiCC,
     MovePlay, MoveLoop, MoveSteps, MovePads, MoveTracks, MoveShift, MoveMenu, MoveRec, MoveRecord,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch
+    MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
+    MoveStep1UI
 } from "../../shared/constants.mjs";
 
 import {
@@ -761,14 +762,11 @@ function setTriggerIndicator(triggerCC, color) {
 }
 
 function updateTriggerIndicators() {
-    /* Step 1 indicator: show in pattern mode when shift is held (to enter set view)
-     * Step 1 = MoveSteps[0] = note 16
-     */
-    const step1Note = MoveSteps[0];  // Note 16 (first step button)
+    /* Step 1 indicator: show in pattern mode when shift is held (to enter set view) */
     if (patternMode && shiftHeld) {
-        setTriggerIndicator(step1Note, Cyan);  // Show indicator to enter set view
+        setTriggerIndicator(MoveStep1UI, Cyan);  // Show indicator to enter set view
     } else {
-        setTriggerIndicator(step1Note, Black);  // Hide indicator
+        setTriggerIndicator(MoveStep1UI, Black);  // Hide indicator
     }
 }
 
