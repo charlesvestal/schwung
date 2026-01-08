@@ -1030,7 +1030,8 @@ static JSValue js_host_load_module(JSContext *ctx, JSValueConst this_val,
     if (result == 0) {
         const module_info_t *info = mm_get_current_module(&g_module_manager);
         if (info && info->ui_script[0]) {
-            eval_file_safe(ctx, info->ui_script, 0);
+            /* Load as ES module to enable imports */
+            eval_file_safe(ctx, info->ui_script, 1);
         }
     }
 

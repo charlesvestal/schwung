@@ -5,6 +5,12 @@
  * Handles preset selection, octave transpose, and display updates.
  */
 
+import {
+    MoveMainKnob, MoveMainButton,
+    MoveLeft, MoveRight, MoveUp, MoveDown,
+    MovePad1, MovePad32
+} from '../../shared/constants.mjs';
+
 /* State */
 let currentPreset = 0;
 let presetCount = 128;  /* Will be updated from DSP */
@@ -13,21 +19,18 @@ let soundfontName = "instrument.sf2";
 let octaveTranspose = 0;
 let polyphony = 0;
 
-/* Move hardware constants */
-const CC_JOG_WHEEL = 14;
-const CC_JOG_CLICK = 3;  /* Jog wheel click (as CC) */
-const CC_SHIFT = 49;
-const CC_MENU = 50;
-const CC_LEFT = 62;
-const CC_RIGHT = 63;
-const CC_PLUS = 55;  /* Plus button for octave up */
-const CC_MINUS = 54; /* Minus button for octave down */
+/* Alias constants for clarity */
+const CC_JOG_WHEEL = MoveMainKnob;
+const CC_JOG_CLICK = MoveMainButton;
+const CC_LEFT = MoveLeft;
+const CC_RIGHT = MoveRight;
+const CC_PLUS = MoveUp;
+const CC_MINUS = MoveDown;
 
 /* Note range for Move pads */
-const PAD_NOTE_MIN = 68;
-const PAD_NOTE_MAX = 99;
+const PAD_NOTE_MIN = MovePad1;
+const PAD_NOTE_MAX = MovePad32;
 
-let shiftHeld = false;
 let needsRedraw = true;
 
 /* Display constants */
