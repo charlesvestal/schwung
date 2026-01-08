@@ -104,6 +104,40 @@ globalThis.onMidiMessageInternal = function(data) {
 }
 ```
 
+### Menu Layout Helpers
+
+For list-based screens (title/list/footer), use the shared menu layout helpers:
+
+```javascript
+import {
+    drawMenuHeader,
+    drawMenuList,
+    drawMenuFooter,
+    menuLayoutDefaults
+} from '../../shared/menu_layout.mjs';
+
+const items = [
+    { label: "Velocity", value: "Hard" },
+    { label: "Aftertouch", value: "On" }
+];
+
+drawMenuHeader("Settings");
+drawMenuList({
+    items,
+    selectedIndex,
+    listArea: {
+        topY: menuLayoutDefaults.listTopY,
+        bottomY: menuLayoutDefaults.listBottomWithFooter
+    },
+    valueAlignRight: true,
+    getLabel: (item) => `${item.label}:`,
+    getValue: (item) => item.value
+});
+drawMenuFooter("Back:back  </>:change");
+```
+
+`drawMenuList` will derive row count from the list area and scroll automatically. When `valueAlignRight` is enabled, labels are truncated with `...` if they would overlap the value.
+
 ## Native DSP Plugin
 
 For audio synthesis/processing, create a native plugin implementing the C API.
