@@ -1,0 +1,17 @@
+{
+    "name": "JS Octave External",
+    "version": 1,
+    "chain": {
+        "input": "both",
+        "midi_fx_js": [
+            "octave_up"
+        ],
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": []
+    }
+}
