@@ -415,6 +415,31 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
     g_controllers.portamento_gliss_cc = false;
     g_controllers.mpeEnabled = false;  /* Disable MPE by default */
 
+    /* Configure modulation sources - DX7-like defaults */
+    /* Mod wheel: controls pitch and amp modulation via LFO */
+    g_controllers.wheel.range = 99;
+    g_controllers.wheel.pitch = true;
+    g_controllers.wheel.amp = true;
+    g_controllers.wheel.eg = false;
+
+    /* Aftertouch: controls pitch and amp modulation */
+    g_controllers.at.range = 99;
+    g_controllers.at.pitch = true;
+    g_controllers.at.amp = true;
+    g_controllers.at.eg = false;
+
+    /* Breath controller: available but typically configured per-patch */
+    g_controllers.breath.range = 99;
+    g_controllers.breath.pitch = false;
+    g_controllers.breath.amp = true;
+    g_controllers.breath.eg = false;
+
+    /* Foot controller: available but typically configured per-patch */
+    g_controllers.foot.range = 99;
+    g_controllers.foot.pitch = false;
+    g_controllers.foot.amp = false;
+    g_controllers.foot.eg = false;
+
     g_controllers.refresh();
 
     /* Initialize voices */
@@ -511,15 +536,37 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
             note_off(note);
             break;
 
+        case 0xA0: /* Polyphonic Aftertouch - use as channel aftertouch */
+            g_controllers.aftertouch_cc = data2;
+            g_controllers.refresh();
+            break;
+
         case 0xB0: /* Control Change */
-            if (data1 == 1) {
-                g_controllers.modwheel_cc = data2;
-                g_controllers.refresh();
-            } else if (data1 == 64) {
-                /* Sustain - TODO */
-            } else if (data1 == 123) {
-                all_notes_off();
+            switch (data1) {
+                case 1:  /* Mod wheel */
+                    g_controllers.modwheel_cc = data2;
+                    g_controllers.refresh();
+                    break;
+                case 2:  /* Breath controller */
+                    g_controllers.breath_cc = data2;
+                    g_controllers.refresh();
+                    break;
+                case 4:  /* Foot controller */
+                    g_controllers.foot_cc = data2;
+                    g_controllers.refresh();
+                    break;
+                case 64: /* Sustain pedal */
+                    /* TODO: implement sustain */
+                    break;
+                case 123: /* All notes off */
+                    all_notes_off();
+                    break;
             }
+            break;
+
+        case 0xD0: /* Channel Aftertouch */
+            g_controllers.aftertouch_cc = data1;
+            g_controllers.refresh();
             break;
 
         case 0xE0: /* Pitch Bend */
