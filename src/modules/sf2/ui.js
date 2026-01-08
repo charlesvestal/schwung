@@ -8,7 +8,7 @@
 import {
     MoveMainKnob, MoveMainButton,
     MoveLeft, MoveRight, MoveUp, MoveDown,
-    MovePad1, MovePad32
+    MovePads
 } from '../../shared/constants.mjs';
 
 /* State */
@@ -28,8 +28,8 @@ const CC_PLUS = MoveUp;
 const CC_MINUS = MoveDown;
 
 /* Note range for Move pads */
-const PAD_NOTE_MIN = MovePad1;
-const PAD_NOTE_MAX = MovePad32;
+const PAD_NOTE_MIN = MovePads[0];
+const PAD_NOTE_MAX = MovePads[MovePads.length - 1];
 
 let needsRedraw = true;
 

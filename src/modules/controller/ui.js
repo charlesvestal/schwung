@@ -9,7 +9,7 @@ import {
     Black, White, LightGrey,
     MidiNoteOn, MidiNoteOff, MidiCC,
     MoveShift, MoveMainButton, MoveMainKnob,
-    MoveStep1, MoveStep16, MovePad1, MovePad32,
+    MovePads, MoveSteps,
     MoveKnob1, MoveMaster
 } from '../../shared/constants.mjs';
 
@@ -86,9 +86,9 @@ function clearLEDs() {
 }
 
 function fillPads(pads) {
-    for (let i = MovePad1; i <= MovePad32; i++) {
-        if (pads[i]) {
-            move_midi_internal_send([0x09, MidiNoteOn, i, pads[i][1]]);
+    for (const pad of MovePads) {
+        if (pads[pad]) {
+            move_midi_internal_send([0x09, MidiNoteOn, pad, pads[pad][1]]);
         }
     }
 }
@@ -125,13 +125,13 @@ globalThis.onMidiMessageInternal = function (data) {
         let velocity = data[2];
 
         /* Bank switching via step buttons */
-        if (note >= MoveStep1 && note <= MoveStep16 && velocity === 127) {
+        if (MoveSteps.includes(note) && velocity === 127) {
             /* Clear previous bank LED */
-            move_midi_internal_send([0x09, MidiNoteOn, bank + MoveStep1, Black]);
+            move_midi_internal_send([0x09, MidiNoteOn, MoveSteps[bank], Black]);
             /* Light new bank LED */
             move_midi_internal_send([0x09, MidiNoteOn, note, White]);
 
-            bank = note - MoveStep1;
+            bank = MoveSteps.indexOf(note);
 
             /* Create bank if doesn't exist */
             if (!padBanks[bank]) {
@@ -144,7 +144,7 @@ globalThis.onMidiMessageInternal = function (data) {
         }
 
         /* Handle pads */
-        if (note >= MovePad1 && note <= MovePad32) {
+        if (MovePads.includes(note)) {
             let pad = padBanks[bank][note];
             if (!pad) return;
 
@@ -202,7 +202,7 @@ globalThis.init = function () {
     clearLEDs();
 
     /* Light first bank */
-    move_midi_internal_send([0x09, MidiNoteOn, MoveStep1, White]);
+    move_midi_internal_send([0x09, MidiNoteOn, MoveSteps[0], White]);
 
     fillPads(padBanks[bank]);
 };
