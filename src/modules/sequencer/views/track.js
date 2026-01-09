@@ -1,7 +1,7 @@
 /*
  * Track View
  * Edit steps, notes, CC values, and step parameters
- * Sub-modes: normal, loop, spark, speed, swing, bpm
+ * Sub-modes: normal, loop, spark, channel, speed, swing, bpm
  */
 
 import {
@@ -10,7 +10,7 @@ import {
     MoveCapture, MovePlay, MoveRec, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep5UI, MoveStep7UI
+    MoveStep2UI, MoveStep5UI, MoveStep7UI
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -24,7 +24,8 @@ import {
 import {
     state, displayMessage,
     enterLoopEdit, exitLoopEdit, enterSparkMode, exitSparkMode,
-    enterSwingMode, exitSwingMode, enterSpeedMode, exitSpeedMode
+    enterSwingMode, exitSwingMode, enterSpeedMode, exitSpeedMode,
+    enterChannelMode, exitChannelMode
 } from '../lib/state.js';
 
 import {
@@ -90,8 +91,15 @@ export function onInput(data) {
         return handleKnob(knobs.indexOf(note), velocity);
     }
 
-    /* Jog wheel click - exit speed/swing mode */
+    /* Jog wheel click - exit channel/speed/swing mode */
     if (isNote && note === MoveMainButton && isNoteOn && velocity > 0) {
+        if (state.trackMode === 'channel') {
+            exitChannelMode();
+            displayMessage("SEQOMD", `Track ${state.currentTrack + 1}`, "", "");
+            updateStepLEDs();
+            updateKnobLEDs();
+            return true;
+        }
         if (state.trackMode === 'speed') {
             exitSpeedMode();
             displayMessage("SEQOMD", `Track ${state.currentTrack + 1}`, "", "");
@@ -108,8 +116,15 @@ export function onInput(data) {
         }
     }
 
-    /* Back button - exit speed/swing mode */
+    /* Back button - exit channel/speed/swing mode */
     if (isCC && note === MoveBack && velocity > 0) {
+        if (state.trackMode === 'channel') {
+            exitChannelMode();
+            displayMessage("SEQOMD", `Track ${state.currentTrack + 1}`, "", "");
+            updateStepLEDs();
+            updateKnobLEDs();
+            return true;
+        }
         if (state.trackMode === 'speed') {
             exitSpeedMode();
             displayMessage("SEQOMD", `Track ${state.currentTrack + 1}`, "", "");
@@ -262,6 +277,21 @@ function handleCaptureButton(velocity) {
 }
 
 function handleStepButton(stepIdx, isNoteOn, velocity) {
+    /* Channel mode: shift + step 2 enters MIDI channel edit mode */
+    if (state.shiftHeld && stepIdx === 1 && isNoteOn && velocity > 0) {
+        enterChannelMode();
+        const ch = state.tracks[state.currentTrack].channel + 1;
+        displayMessage(
+            "CHANNEL MODE",
+            `Track ${state.currentTrack + 1}`,
+            `MIDI Ch: ${ch}`,
+            "Jog: adjust, Click: exit"
+        );
+        updateStepLEDs();
+        updateKnobLEDs();
+        return true;
+    }
+
     /* Speed mode: shift + step 5 enters speed edit mode */
     if (state.shiftHeld && stepIdx === 4 && isNoteOn && velocity > 0) {
         enterSpeedMode();
@@ -707,6 +737,24 @@ function handleStepKnob(knobIdx, velocity) {
 }
 
 function handleJogWheel(velocity) {
+    if (state.trackMode === 'channel') {
+        let ch = state.tracks[state.currentTrack].channel;
+        if (velocity >= 1 && velocity <= 63) {
+            ch = Math.min(ch + 1, 15);
+        } else if (velocity >= 65 && velocity <= 127) {
+            ch = Math.max(ch - 1, 0);
+        }
+        state.tracks[state.currentTrack].channel = ch;
+        setParam(`track_${state.currentTrack}_channel`, String(ch));
+        displayMessage(
+            "CHANNEL MODE",
+            `Track ${state.currentTrack + 1}`,
+            `MIDI Ch: ${ch + 1}`,
+            "Jog: adjust, Click: exit"
+        );
+        return true;
+    }
+
     if (state.trackMode === 'speed') {
         let speedIdx = state.tracks[state.currentTrack].speedIndex;
         if (velocity >= 1 && velocity <= 63) {
@@ -937,6 +985,14 @@ function updateStepLEDs() {
         return;
     }
 
+    if (state.trackMode === 'channel') {
+        for (let i = 0; i < NUM_STEPS; i++) {
+            setLED(MoveSteps[i], i === 1 ? BrightGreen : Black);
+        }
+        setButtonLED(MoveStep2UI, BrightGreen);
+        return;
+    }
+
     if (state.trackMode === 'speed') {
         for (let i = 0; i < NUM_STEPS; i++) {
             setLED(MoveSteps[i], i === 4 ? Cyan : Black);
@@ -980,6 +1036,10 @@ function updateStepLEDs() {
             color = trackColor;
         }
 
+        if (state.shiftHeld && i === 1) {
+            color = BrightGreen;  /* Channel */
+        }
+
         if (state.shiftHeld && i === 4) {
             color = Cyan;  /* Speed */
         }
@@ -992,6 +1052,7 @@ function updateStepLEDs() {
     }
 
     /* Step UI icons - show available shift shortcuts */
+    setButtonLED(MoveStep2UI, state.shiftHeld ? BrightGreen : Black);
     setButtonLED(MoveStep5UI, state.shiftHeld ? Cyan : Black);
     setButtonLED(MoveStep7UI, state.shiftHeld ? VividYellow : Black);
 }

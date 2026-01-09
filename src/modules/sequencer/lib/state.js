@@ -198,3 +198,12 @@ export function enterSpeedMode() {
 export function exitSpeedMode() {
     state.trackMode = 'normal';
 }
+
+export function enterChannelMode() {
+    state.view = 'track';
+    state.trackMode = 'channel';
+}
+
+export function exitChannelMode() {
+    state.trackMode = 'normal';
+}
