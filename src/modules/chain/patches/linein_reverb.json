@@ -1,0 +1,21 @@
+{
+    "name": "Line In + Reverb",
+    "version": 1,
+    "chain": {
+        "input": "external",
+        "synth": {
+            "module": "linein",
+            "config": {}
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.7,
+                    "wet": 0.4,
+                    "dry": 0.6
+                }
+            }
+        ]
+    }
+}

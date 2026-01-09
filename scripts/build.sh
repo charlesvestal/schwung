@@ -82,6 +82,16 @@ mkdir -p ./build/modules/chain/audio_fx/freeverb/
     -Isrc \
     -lm
 
+echo "Building Sound Generator plugins..."
+
+# Build Line In sound generator
+mkdir -p ./build/modules/chain/sound_generators/linein/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/chain/sound_generators/linein/linein.c \
+    -o build/modules/chain/sound_generators/linein/dsp.so \
+    -Isrc \
+    -lm
+
 # Copy shared utilities
 cp ./src/shared/*.mjs ./build/shared/
 
