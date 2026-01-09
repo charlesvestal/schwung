@@ -2,7 +2,7 @@
  * Signal Chain Host DSP Plugin
  *
  * Orchestrates a signal chain: Input → MIDI FX → Sound Generator → Audio FX → Output
- * Phase 3: Audio FX support (Freeverb)
+ * Phase 5: Arpeggiator support
  */
 
 #include <stdio.h>
@@ -29,6 +29,20 @@ typedef enum {
     CHORD_OCTAVE     /* root + octave */
 } chord_type_t;
 
+/* Arpeggiator modes */
+typedef enum {
+    ARP_OFF = 0,
+    ARP_UP,          /* Low to high */
+    ARP_DOWN,        /* High to low */
+    ARP_UPDOWN,      /* Up then down */
+    ARP_RANDOM       /* Random order */
+} arp_mode_t;
+
+/* Arpeggiator constants */
+#define MAX_ARP_NOTES 16
+#define SAMPLE_RATE 44100
+#define FRAMES_PER_BLOCK 128
+
 /* Patch info */
 typedef struct {
     char name[MAX_NAME_LEN];
@@ -38,6 +52,9 @@ typedef struct {
     char audio_fx[MAX_AUDIO_FX][MAX_NAME_LEN];
     int audio_fx_count;
     chord_type_t chord_type;
+    arp_mode_t arp_mode;
+    int arp_tempo_bpm;       /* BPM for arpeggiator */
+    int arp_note_division;   /* 1=quarter, 2=8th, 4=16th */
 } patch_info_t;
 
 /* Host API provided by main host */
@@ -59,8 +76,20 @@ static int g_patch_count = 0;
 static int g_current_patch = 0;
 static char g_module_dir[MAX_PATH_LEN] = "";
 
-/* MIDI FX state */
+/* MIDI FX state - Chords */
 static chord_type_t g_chord_type = CHORD_NONE;
+
+/* MIDI FX state - Arpeggiator */
+static arp_mode_t g_arp_mode = ARP_OFF;
+static uint8_t g_arp_held_notes[MAX_ARP_NOTES];  /* Sorted low to high */
+static uint8_t g_arp_held_velocities[MAX_ARP_NOTES];
+static int g_arp_held_count = 0;
+static int g_arp_step = 0;           /* Current step in arp sequence */
+static int g_arp_direction = 1;      /* 1=up, -1=down (for up-down mode) */
+static int g_arp_sample_counter = 0;
+static int g_arp_samples_per_step = 0;
+static int8_t g_arp_last_note = -1;  /* Currently sounding arp note, -1 if none */
+static uint8_t g_arp_velocity = 100; /* Velocity for arp notes */
 
 /* Mute countdown after patch switch (in blocks) to drain old audio */
 static int g_mute_countdown = 0;
@@ -80,6 +109,165 @@ static void chain_log(const char *msg) {
         g_host->log(buf);
     } else {
         printf("[chain] %s\n", msg);
+    }
+}
+
+/* === Arpeggiator Functions === */
+
+/* Add a note to the held notes array (sorted insertion) */
+static void arp_add_note(uint8_t note, uint8_t velocity) {
+    if (g_arp_held_count >= MAX_ARP_NOTES) return;
+
+    /* Find insertion point to keep sorted */
+    int i;
+    for (i = 0; i < g_arp_held_count; i++) {
+        if (g_arp_held_notes[i] == note) return;  /* Already held */
+        if (g_arp_held_notes[i] > note) break;
+    }
+
+    /* Shift higher notes up */
+    for (int j = g_arp_held_count; j > i; j--) {
+        g_arp_held_notes[j] = g_arp_held_notes[j - 1];
+        g_arp_held_velocities[j] = g_arp_held_velocities[j - 1];
+    }
+
+    /* Insert new note */
+    g_arp_held_notes[i] = note;
+    g_arp_held_velocities[i] = velocity;
+    g_arp_held_count++;
+
+    /* Use first note's velocity for arp */
+    if (g_arp_held_count == 1) {
+        g_arp_velocity = velocity;
+    }
+}
+
+/* Remove a note from the held notes array */
+static void arp_remove_note(uint8_t note) {
+    int found = -1;
+    for (int i = 0; i < g_arp_held_count; i++) {
+        if (g_arp_held_notes[i] == note) {
+            found = i;
+            break;
+        }
+    }
+
+    if (found < 0) return;
+
+    /* Shift remaining notes down */
+    for (int i = found; i < g_arp_held_count - 1; i++) {
+        g_arp_held_notes[i] = g_arp_held_notes[i + 1];
+        g_arp_held_velocities[i] = g_arp_held_velocities[i + 1];
+    }
+    g_arp_held_count--;
+
+    /* Reset step if we removed notes */
+    if (g_arp_step >= g_arp_held_count && g_arp_held_count > 0) {
+        g_arp_step = 0;
+    }
+}
+
+/* Reset arpeggiator state */
+static void arp_reset(void) {
+    g_arp_held_count = 0;
+    g_arp_step = 0;
+    g_arp_direction = 1;
+    g_arp_sample_counter = 0;
+    g_arp_last_note = -1;
+}
+
+/* Calculate samples per step from BPM and division */
+static void arp_set_tempo(int bpm, int division) {
+    /* division: 1=quarter notes, 2=8th notes, 4=16th notes */
+    if (bpm <= 0) bpm = 120;
+    if (division <= 0) division = 4;
+
+    /* beats per second = bpm / 60 */
+    /* notes per second = beats_per_second * division */
+    /* samples per note = sample_rate / notes_per_second */
+    float notes_per_second = (float)bpm / 60.0f * (float)division;
+    g_arp_samples_per_step = (int)(SAMPLE_RATE / notes_per_second);
+}
+
+/* Get the next note in the arp sequence */
+static int arp_get_next_note(void) {
+    if (g_arp_held_count == 0) return -1;
+
+    int note_index = g_arp_step;
+
+    /* Advance step based on mode */
+    switch (g_arp_mode) {
+        case ARP_UP:
+            g_arp_step = (g_arp_step + 1) % g_arp_held_count;
+            break;
+
+        case ARP_DOWN:
+            g_arp_step = g_arp_step - 1;
+            if (g_arp_step < 0) g_arp_step = g_arp_held_count - 1;
+            break;
+
+        case ARP_UPDOWN:
+            g_arp_step += g_arp_direction;
+            if (g_arp_step >= g_arp_held_count) {
+                g_arp_step = g_arp_held_count - 2;
+                if (g_arp_step < 0) g_arp_step = 0;
+                g_arp_direction = -1;
+            } else if (g_arp_step < 0) {
+                g_arp_step = 1;
+                if (g_arp_step >= g_arp_held_count) g_arp_step = 0;
+                g_arp_direction = 1;
+            }
+            break;
+
+        case ARP_RANDOM:
+            g_arp_step = rand() % g_arp_held_count;
+            break;
+
+        default:
+            break;
+    }
+
+    return g_arp_held_notes[note_index];
+}
+
+/* Send note to synth (helper for arp) */
+static void arp_send_note(uint8_t note, uint8_t velocity, int note_on) {
+    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+
+    uint8_t msg[3];
+    msg[0] = note_on ? 0x90 : 0x80;  /* Note on/off, channel 0 */
+    msg[1] = note;
+    msg[2] = velocity;
+    g_synth_plugin->on_midi(msg, 3, 0);
+}
+
+/* Arp tick - called each render block */
+static void arp_tick(int frames) {
+    if (g_arp_mode == ARP_OFF || g_arp_held_count == 0) {
+        /* If arp was playing but now stopped, send note off */
+        if (g_arp_last_note >= 0) {
+            arp_send_note(g_arp_last_note, 0, 0);
+            g_arp_last_note = -1;
+        }
+        return;
+    }
+
+    g_arp_sample_counter += frames;
+
+    if (g_arp_sample_counter >= g_arp_samples_per_step) {
+        g_arp_sample_counter -= g_arp_samples_per_step;
+
+        /* Note off for previous note */
+        if (g_arp_last_note >= 0) {
+            arp_send_note(g_arp_last_note, 0, 0);
+        }
+
+        /* Get next note and play it */
+        int next_note = arp_get_next_note();
+        if (next_note >= 0) {
+            arp_send_note(next_note, g_arp_velocity, 1);
+            g_arp_last_note = next_note;
+        }
     }
 }
 
@@ -401,11 +589,33 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         }
     }
 
+    /* Parse arpeggiator settings from midi_fx section */
+    patch->arp_mode = ARP_OFF;
+    patch->arp_tempo_bpm = 120;
+    patch->arp_note_division = 4;  /* 16th notes default */
+
+    char arp_str[MAX_NAME_LEN] = "";
+    if (json_get_string(json, "arp", arp_str, MAX_NAME_LEN) == 0) {
+        if (strcmp(arp_str, "up") == 0) {
+            patch->arp_mode = ARP_UP;
+        } else if (strcmp(arp_str, "down") == 0) {
+            patch->arp_mode = ARP_DOWN;
+        } else if (strcmp(arp_str, "updown") == 0) {
+            patch->arp_mode = ARP_UPDOWN;
+        } else if (strcmp(arp_str, "random") == 0) {
+            patch->arp_mode = ARP_RANDOM;
+        }
+    }
+
+    /* Parse arp tempo and division */
+    json_get_int(json, "arp_bpm", &patch->arp_tempo_bpm);
+    json_get_int(json, "arp_division", &patch->arp_note_division);
+
     free(json);
 
-    snprintf(msg, sizeof(msg), "Parsed patch: %s -> %s preset %d, %d FX, chord=%d",
+    snprintf(msg, sizeof(msg), "Parsed patch: %s -> %s preset %d, %d FX, chord=%d, arp=%d",
              patch->name, patch->synth_module, patch->synth_preset,
-             patch->audio_fx_count, patch->chord_type);
+             patch->audio_fx_count, patch->chord_type, patch->arp_mode);
     chain_log(msg);
 
     return 0;
@@ -528,10 +738,16 @@ static int load_patch(int index) {
     /* Set MIDI FX chord type */
     g_chord_type = patch->chord_type;
 
+    /* Set arpeggiator mode and tempo */
+    g_arp_mode = patch->arp_mode;
+    arp_reset();
+    arp_set_tempo(patch->arp_tempo_bpm, patch->arp_note_division);
+
     /* Mute briefly to drain any old synth audio before FX process it */
     g_mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
-    snprintf(msg, sizeof(msg), "Loaded patch %d: %s (%d FX)", index, patch->name, g_fx_count);
+    snprintf(msg, sizeof(msg), "Loaded patch %d: %s (%d FX, arp=%d)",
+             index, patch->name, g_fx_count, g_arp_mode);
     chain_log(msg);
 
     return 0;
@@ -616,10 +832,26 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+    if (len < 1) return;
 
     uint8_t status = msg[0] & 0xF0;
 
-    /* Check for note on/off messages */
+    /* Handle note on/off for arpeggiator */
+    if (g_arp_mode != ARP_OFF && len >= 3 && (status == 0x90 || status == 0x80)) {
+        uint8_t note = msg[1];
+        uint8_t velocity = msg[2];
+
+        /* Note on with velocity > 0 */
+        if (status == 0x90 && velocity > 0) {
+            arp_add_note(note, velocity);
+        } else {
+            /* Note off (or note on with velocity 0) */
+            arp_remove_note(note);
+        }
+        return;  /* Arp handles note output in tick */
+    }
+
+    /* Handle chord generation for note on/off */
     if ((status == 0x90 || status == 0x80) && len >= 3 && g_chord_type != CHORD_NONE) {
         /* Send root note */
         send_note_to_synth(msg, len, source, 0);
@@ -644,7 +876,7 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
                 break;
         }
     } else {
-        /* Non-note message or no chord, forward directly */
+        /* Non-note message or no MIDI FX, forward directly */
         g_synth_plugin->on_midi(msg, len, source);
     }
 }
@@ -665,6 +897,15 @@ static void plugin_set_param(const char *key, const char *val) {
         int prev = (g_current_patch - 1 + g_patch_count) % g_patch_count;
         if (g_patch_count > 0) load_patch(prev);
         return;
+    }
+
+    /* Handle octave changes - need to reset arp to avoid stuck notes */
+    if (strcmp(key, "octave_transpose") == 0) {
+        /* Send note-off for current arp note before octave changes */
+        if (g_arp_last_note >= 0) {
+            arp_send_note(g_arp_last_note, 0, 0);
+            g_arp_last_note = -1;
+        }
     }
 
     /* Forward to synth (includes octave_transpose) */
@@ -710,6 +951,9 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         return;
     }
+
+    /* Process arpeggiator timing (sends notes to synth) */
+    arp_tick(frames);
 
     if (g_synth_plugin && g_synth_plugin->render_block) {
         /* Get audio from synth */

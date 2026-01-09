@@ -1,0 +1,28 @@
+{
+    "name": "Arp Strings",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx": {
+            "arp": "updown",
+            "arp_bpm": 140,
+            "arp_division": 4
+        },
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 48
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.8,
+                    "wet": 0.35,
+                    "dry": 0.65
+                }
+            }
+        ]
+    }
+}
