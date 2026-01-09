@@ -7,7 +7,8 @@
 import {
     Black, White, Cyan, BrightGreen, BrightRed, LightGrey,
     MoveSteps, MovePads, MoveTracks, MoveMainKnob, MoveShift,
-    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
+    MoveStep1UI
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -172,6 +173,9 @@ function updateStepLEDs() {
     for (let i = 0; i < NUM_STEPS; i++) {
         setLED(MoveSteps[i], Black);
     }
+
+    /* Step 1 UI icon - shows set view is available when shift held */
+    setButtonLED(MoveStep1UI, state.shiftHeld ? White : Black);
 }
 
 function updatePadLEDs() {
