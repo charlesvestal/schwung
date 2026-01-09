@@ -539,9 +539,9 @@ function updateStepLEDs() {
 
     /* Step UI icons - show available modes when shift held */
     setButtonLED(MoveStep1UI, state.shiftHeld ? White : Black);         /* Set view */
-    setButtonLED(MoveStep2UI, state.shiftHeld ? BrightGreen : Black);   /* Channel */
-    setButtonLED(MoveStep5UI, state.shiftHeld ? Cyan : Black);          /* Speed */
-    setButtonLED(MoveStep7UI, state.shiftHeld ? VividYellow : Black);   /* Swing */
+    setButtonLED(MoveStep2UI, state.shiftHeld ? White : Black);   /* Channel */
+    setButtonLED(MoveStep5UI, state.shiftHeld ? White : Black);          /* Speed */
+    setButtonLED(MoveStep7UI, state.shiftHeld ? White : Black);   /* Swing */
 }
 
 function updatePadLEDs() {
