@@ -307,14 +307,14 @@ The Signal Chain module allows combining sound generators, MIDI effects, and aud
 ### Chain Structure
 
 ```
-[Input] → [MIDI FX] → [Sound Generator] → [Audio FX] → [Output]
+[Input or MIDI Source] → [MIDI FX] → [Sound Generator] → [Audio FX] → [Output]
 ```
 
 ### Available Components
 
 | Type | Components |
 |------|------------|
-| Sound Generators | SF2, DX7, Line In |
+| Sound Generators | Line In, SF2, DX7, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `jv880`) |
 | MIDI Effects | Chord generator (major, minor, power, octave), Arpeggiator (up, down, updown, random) |
 | Audio Effects | Freeverb (reverb) |
 
