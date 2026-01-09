@@ -16,7 +16,8 @@ import {
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, MASTER_CC_CHANNEL,
     MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM
 } from '../lib/constants.js';
-import { state, displayMessage, enterSetView, enterTrackView } from '../lib/state.js';
+import { state, displayMessage, enterSetView } from '../lib/state.js';
+import * as setView from './set.js';
 import { setParam, updateAndSendCC } from '../lib/helpers.js';
 import { saveCurrentSet, saveAllSetsToDisk } from '../lib/persistence.js';
 
@@ -57,8 +58,11 @@ export function onInput(data) {
                 saveCurrentSet();
                 saveAllSetsToDisk();
             }
-            /* Enter set view */
+            /* Transition to set view */
+            onExit();
             enterSetView();
+            setView.onEnter();
+            setView.updateLEDs();
             return true;
         }
         return true;

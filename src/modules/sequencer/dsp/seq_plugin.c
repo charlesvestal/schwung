@@ -75,7 +75,7 @@ typedef struct {
     uint8_t muted;
     uint8_t swing;          /* Swing amount 0-100 (50 = no swing, 67 = triplet feel) */
     double speed;           /* Speed multiplier (0.25 to 4.0) */
-    double phase;           /* Step phase accumulator */
+    double phase;           /* Position within current step (0.0 to 1.0) for gate/ratchet */
     double gate_phase;      /* Gate timing */
     int8_t last_notes[MAX_NOTES_PER_STEP];  /* Last triggered notes (-1 = none) */
     uint8_t num_last_notes;                  /* Number of active notes */
@@ -93,6 +93,7 @@ typedef struct {
     uint8_t trigger_pending;     /* 1 if a step trigger is pending */
     double trigger_at_phase;     /* Phase value when trigger should fire */
     uint8_t pending_step;        /* Which step is pending */
+    double next_step_at;         /* Phase value when next step advance should happen */
 } track_t;
 
 /* Pending note for overlapping long notes */
@@ -285,6 +286,7 @@ static void init_track(track_t *track, int channel) {
     track->trigger_pending = 0;
     track->trigger_at_phase = 0.0;
     track->pending_step = 0;
+    track->next_step_at = 1.0;  /* Default step length */
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -440,12 +442,41 @@ static void trigger_track_step(track_t *track, int track_idx) {
     }
 }
 
-/* Schedule a step trigger with micro-timing offset */
+/* Calculate step length based on swing and global position */
+static double get_step_length_with_swing(int swing) {
+    /* Determine if current global beat is downbeat or upbeat */
+    int global_beat = (int)g_global_phase;
+    int is_upbeat = global_beat & 1;
+    double swing_ratio = swing / 100.0;
+
+    if (is_upbeat) {
+        /* Upbeat: shorter duration */
+        return 2.0 * (1.0 - swing_ratio);
+    } else {
+        /* Downbeat: longer duration */
+        return 2.0 * swing_ratio;
+    }
+}
+
+/* Schedule a step trigger with swing and micro-timing offset */
 static void schedule_step_trigger(track_t *track, int track_idx, int step_idx, double base_phase) {
     pattern_t *pattern = get_current_pattern(track);
     step_t *step = &pattern->steps[step_idx];
 
-    /* Calculate trigger point based on offset
+    /* Calculate step length:
+     * - If step has micro-timing offset, ignore swing (user has manually placed it)
+     * - Otherwise, apply swing based on global grid position
+     */
+    double step_length;
+    if (step->offset != 0) {
+        /* Step has micro-timing - use fixed 1.0 length, ignore swing */
+        step_length = 1.0;
+    } else {
+        /* Apply swing */
+        step_length = get_step_length_with_swing(track->swing);
+    }
+
+    /* Add micro-timing offset
      * offset is -24 to +24, where 48 ticks = 1 step
      * Positive offset = delay trigger, negative = trigger earlier
      */
@@ -455,17 +486,21 @@ static void schedule_step_trigger(track_t *track, int track_idx, int step_idx, d
     /* For negative offsets, trigger immediately if we've already passed the point */
     if (trigger_phase <= 0.0) {
         trigger_track_step(track, track_idx);
+        /* Schedule when the NEXT step should trigger (after this step's duration) */
+        track->next_step_at = step_length + trigger_phase;  /* trigger_phase is negative or zero */
     } else {
         /* Schedule for later */
         track->trigger_pending = 1;
         track->trigger_at_phase = trigger_phase;
         track->pending_step = step_idx;
+        track->next_step_at = step_length;
     }
 }
 
 static void advance_track(track_t *track, int track_idx) {
     /* Advance step, respecting loop points from current pattern */
     pattern_t *pattern = get_current_pattern(track);
+
     if (track->current_step >= pattern->loop_end) {
         track->current_step = pattern->loop_start;
         track->loop_count++;  /* Increment loop count when pattern loops */
@@ -473,7 +508,7 @@ static void advance_track(track_t *track, int track_idx) {
         track->current_step++;
     }
 
-    /* Schedule step trigger with offset (phase just wrapped, so base is ~0) */
+    /* Schedule step trigger with offset (phase is position within step, 0.0-1.0) */
     schedule_step_trigger(track, track_idx, track->current_step, track->phase);
 }
 
@@ -547,6 +582,8 @@ static void plugin_set_param(const char *key, const char *val) {
                 g_tracks[t].note_length_total = 1;  /* Reset note length state */
                 g_tracks[t].note_gate = DEFAULT_GATE;
                 g_tracks[t].note_length_phase = 0.0;
+                g_tracks[t].trigger_pending = 0;
+                g_tracks[t].next_step_at = 1.0;  /* Will be set by schedule_step_trigger */
                 for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
                     g_tracks[t].last_notes[n] = -1;
                 }
@@ -1009,9 +1046,15 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         for (int t = 0; t < NUM_TRACKS; t++) {
             track_t *track = &g_tracks[t];
 
-            /* Per-track step increment with speed multiplier */
+            /* Per-track phase increment (simple accumulator - efficient) */
             double track_step_inc = step_inc * track->speed;
             track->phase += track_step_inc;
+
+            /* Also accumulate note length phase if note is playing */
+            if (track->note_on_active) {
+                track->note_length_phase += track_step_inc;
+                track->gate_phase += track_step_inc;
+            }
 
             /* Check for pending micro-timing trigger */
             if (track->trigger_pending && track->phase >= track->trigger_at_phase) {
@@ -1021,9 +1064,6 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
 
             /* Track note length and handle note-off */
             if (track->note_on_active) {
-                track->note_length_phase += track_step_inc;
-                track->gate_phase += track_step_inc;
-
                 /* Use stored gate value (captured at trigger time) */
                 double gate_pct = (double)track->note_gate / 100.0;
                 double total_note_length = (double)track->note_length_total;
@@ -1059,7 +1099,7 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
                 }
             }
 
-            /* Check ratchet sub-trigger timing (use track->phase as position within step) */
+            /* Check ratchet sub-trigger timing */
             if (track->ratchet_count > 0 && track->ratchet_count < track->ratchet_total) {
                 /* Each ratchet trigger point: 1/N, 2/N, etc. of the step */
                 double next_trigger_point = (double)track->ratchet_count / (double)track->ratchet_total;
@@ -1074,20 +1114,11 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
                 }
             }
 
-            /* Check step advance with swing */
-            /* Swing works by making even steps longer and odd steps shorter */
-            /* swing=50 means no swing, swing=67 gives triplet feel */
-            double swing_ratio = track->swing / 100.0;
-            double threshold;
-            if (track->current_step & 1) {
-                /* Odd step: shorter duration with more swing */
-                threshold = 2.0 * (1.0 - swing_ratio);
-            } else {
-                /* Even step: longer duration with more swing */
-                threshold = 2.0 * swing_ratio;
-            }
-            if (track->phase >= threshold) {
-                track->phase -= threshold;
+            /* Check step advance using scheduled next_step_at
+             * Swing is applied when scheduling via schedule_step_trigger()
+             * which sets next_step_at based on global grid position */
+            if (track->phase >= track->next_step_at) {
+                track->phase -= track->next_step_at;
                 advance_track(track, t);
             }
         }

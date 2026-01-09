@@ -13,6 +13,7 @@ import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, enterTrackView } from '../lib/state.js';
+import * as trackView from './track.js';
 import { setParam, syncAllTracksToDSP } from '../lib/helpers.js';
 import { saveCurrentSet, saveAllSetsToDisk, loadSetToTracks, setHasContent } from '../lib/persistence.js';
 
@@ -65,8 +66,11 @@ export function onInput(data) {
             /* Sync all track data to DSP */
             syncAllTracksToDSP();
 
-            /* Exit set view, go to track view */
+            /* Transition to track view */
+            onExit();
             enterTrackView();
+            trackView.onEnter();
+            trackView.updateLEDs();
 
             displayMessage(
                 `SEQOMD - Set ${setIdx + 1}`,
