@@ -1,0 +1,17 @@
+{
+    "name": "Power Organ",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx": {
+            "chord": "power"
+        },
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 16
+            }
+        },
+        "audio_fx": []
+    }
+}

@@ -1,0 +1,26 @@
+{
+    "name": "Minor Strings",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx": {
+            "chord": "minor"
+        },
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 48
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.8,
+                    "wet": 0.4,
+                    "dry": 0.6
+                }
+            }
+        ]
+    }
+}

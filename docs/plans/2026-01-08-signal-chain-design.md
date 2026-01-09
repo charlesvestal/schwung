@@ -208,11 +208,12 @@ patches/
 - Patch JSON parsing for audio_fx array
 - **Test:** Piano + Reverb patch working
 
-### Phase 4: JS MIDI FX
-- JS MIDI processor interface
-- Implement chord generator
-- Chain host calls JS processMidi() before synth
-- **Test:** Pads → Chord Gen → SF2
+### Phase 4: Native MIDI FX (Chord Generator) ✅ COMPLETE
+- Chord generator integrated directly into chain host
+- Supports major, minor, power, and octave chord types
+- Patch JSON parsing for midi_fx.chord field
+- Chord notes generated for note on/off events
+- **Test:** Chord Piano, Minor Strings, Power Organ patches working
 
 ### Phase 5: Native MIDI FX (Arpeggiator)
 - Native MIDI processor interface with tick()

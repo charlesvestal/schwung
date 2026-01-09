@@ -1,0 +1,26 @@
+{
+    "name": "Chord Piano",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx": {
+            "chord": "major"
+        },
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.6,
+                    "wet": 0.25,
+                    "dry": 0.75
+                }
+            }
+        ]
+    }
+}

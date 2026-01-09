@@ -20,6 +20,15 @@
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
+/* Chord types */
+typedef enum {
+    CHORD_NONE = 0,
+    CHORD_MAJOR,     /* root + major 3rd + 5th */
+    CHORD_MINOR,     /* root + minor 3rd + 5th */
+    CHORD_POWER,     /* root + 5th */
+    CHORD_OCTAVE     /* root + octave */
+} chord_type_t;
+
 /* Patch info */
 typedef struct {
     char name[MAX_NAME_LEN];
@@ -28,6 +37,7 @@ typedef struct {
     int synth_preset;
     char audio_fx[MAX_AUDIO_FX][MAX_NAME_LEN];
     int audio_fx_count;
+    chord_type_t chord_type;
 } patch_info_t;
 
 /* Host API provided by main host */
@@ -48,6 +58,9 @@ static patch_info_t g_patches[MAX_PATCHES];
 static int g_patch_count = 0;
 static int g_current_patch = 0;
 static char g_module_dir[MAX_PATH_LEN] = "";
+
+/* MIDI FX state */
+static chord_type_t g_chord_type = CHORD_NONE;
 
 /* Mute countdown after patch switch (in blocks) to drain old audio */
 static int g_mute_countdown = 0;
@@ -373,10 +386,26 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         }
     }
 
+    /* Parse chord type from midi_fx section */
+    patch->chord_type = CHORD_NONE;
+    char chord_str[MAX_NAME_LEN] = "";
+    if (json_get_string(json, "chord", chord_str, MAX_NAME_LEN) == 0) {
+        if (strcmp(chord_str, "major") == 0) {
+            patch->chord_type = CHORD_MAJOR;
+        } else if (strcmp(chord_str, "minor") == 0) {
+            patch->chord_type = CHORD_MINOR;
+        } else if (strcmp(chord_str, "power") == 0) {
+            patch->chord_type = CHORD_POWER;
+        } else if (strcmp(chord_str, "octave") == 0) {
+            patch->chord_type = CHORD_OCTAVE;
+        }
+    }
+
     free(json);
 
-    snprintf(msg, sizeof(msg), "Parsed patch: %s -> %s preset %d, %d FX",
-             patch->name, patch->synth_module, patch->synth_preset, patch->audio_fx_count);
+    snprintf(msg, sizeof(msg), "Parsed patch: %s -> %s preset %d, %d FX, chord=%d",
+             patch->name, patch->synth_module, patch->synth_preset,
+             patch->audio_fx_count, patch->chord_type);
     chain_log(msg);
 
     return 0;
@@ -496,6 +525,9 @@ static int load_patch(int index) {
 
     g_current_patch = index;
 
+    /* Set MIDI FX chord type */
+    g_chord_type = patch->chord_type;
+
     /* Mute briefly to drain any old synth audio before FX process it */
     g_mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
@@ -561,9 +593,58 @@ static void plugin_on_unload(void) {
     unload_synth();
 }
 
+/* Send a note message to synth with optional interval offset */
+static void send_note_to_synth(const uint8_t *msg, int len, int source, int interval) {
+    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+
+    if (interval == 0) {
+        /* No transposition, send as-is */
+        g_synth_plugin->on_midi(msg, len, source);
+    } else {
+        /* Transpose the note */
+        uint8_t transposed[3];
+        transposed[0] = msg[0];
+        transposed[1] = (uint8_t)(msg[1] + interval);  /* Note number + interval */
+        transposed[2] = msg[2];  /* Velocity */
+
+        /* Only send if note is in valid MIDI range */
+        if (transposed[1] <= 127) {
+            g_synth_plugin->on_midi(transposed, len, source);
+        }
+    }
+}
+
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
-    /* Forward MIDI to synth (synth handles octave transpose) */
-    if (g_synth_plugin && g_synth_plugin->on_midi) {
+    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+
+    uint8_t status = msg[0] & 0xF0;
+
+    /* Check for note on/off messages */
+    if ((status == 0x90 || status == 0x80) && len >= 3 && g_chord_type != CHORD_NONE) {
+        /* Send root note */
+        send_note_to_synth(msg, len, source, 0);
+
+        /* Add chord notes based on type */
+        switch (g_chord_type) {
+            case CHORD_MAJOR:
+                send_note_to_synth(msg, len, source, 4);   /* Major 3rd */
+                send_note_to_synth(msg, len, source, 7);   /* Perfect 5th */
+                break;
+            case CHORD_MINOR:
+                send_note_to_synth(msg, len, source, 3);   /* Minor 3rd */
+                send_note_to_synth(msg, len, source, 7);   /* Perfect 5th */
+                break;
+            case CHORD_POWER:
+                send_note_to_synth(msg, len, source, 7);   /* Perfect 5th */
+                break;
+            case CHORD_OCTAVE:
+                send_note_to_synth(msg, len, source, 12);  /* Octave */
+                break;
+            default:
+                break;
+        }
+    } else {
+        /* Non-note message or no chord, forward directly */
         g_synth_plugin->on_midi(msg, len, source);
     }
 }
