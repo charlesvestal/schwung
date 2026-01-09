@@ -1,0 +1,16 @@
+{
+  "id": "sequencer",
+  "name": "SEQOMD",
+  "version": "0.1.0",
+  "ui": "ui.js",
+  "dsp": "dsp.so",
+  "api_version": 1,
+  "capabilities": {
+    "audio_out": true,
+    "midi_in": true,
+    "midi_out": true
+  },
+  "defaults": {
+    "bpm": 120
+  }
+}

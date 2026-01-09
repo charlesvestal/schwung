@@ -54,6 +54,7 @@ mkdir -p ./build/modules/controller/
 mkdir -p ./build/modules/chain/
 mkdir -p ./build/modules/jv880/
 mkdir -p ./build/modules/jv880/roms/
+mkdir -p ./build/modules/sequencer/
 
 echo "Building host..."
 
@@ -150,11 +151,20 @@ mkdir -p ./build/modules/chain/sound_generators/linein/
     -Isrc \
     -lm
 
+echo "Building Sequencer module..."
+
+# Build Sequencer DSP plugin
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/sequencer/dsp/seq_plugin.c \
+    -o build/modules/sequencer/dsp.so \
+    -Isrc \
+    -lm
+
 # Copy shared utilities
 cp ./src/shared/*.mjs ./build/shared/
 
 # Copy host files
-cp ./src/host/menu_ui.js ./build/host/
+cp ./src/host/menu_ui.js ./build/host/ 2>/dev/null || true
 cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
 
 # Copy scripts and assets
@@ -192,6 +202,33 @@ mkdir -p ./build/modules/chain/midi_fx/
 cp ./src/modules/chain/midi_fx/*.mjs ./build/modules/chain/midi_fx/ 2>/dev/null || true
 mkdir -p ./build/modules/chain/patches/
 cp ./src/modules/chain/patches/*.json ./build/modules/chain/patches/ 2>/dev/null || true
+
+# Copy Sequencer module files
+cp ./src/modules/sequencer/module.json ./build/modules/sequencer/
+cp ./src/modules/sequencer/ui.js ./build/modules/sequencer/
+
+# Copy sequencer lib and views (if they exist)
+if [ -d ./src/modules/sequencer/lib ]; then
+    mkdir -p ./build/modules/sequencer/lib/
+    cp ./src/modules/sequencer/lib/*.js ./build/modules/sequencer/lib/
+fi
+if [ -d ./src/modules/sequencer/views ]; then
+    cp -r ./src/modules/sequencer/views ./build/modules/sequencer/
+fi
+
+# Strip binaries to reduce size
+echo "Stripping binaries..."
+"${CROSS_PREFIX}strip" build/move-anything
+"${CROSS_PREFIX}strip" build/move-anything-shim.so
+"${CROSS_PREFIX}strip" build/modules/sf2/dsp.so
+"${CROSS_PREFIX}strip" build/modules/dx7/dsp.so
+"${CROSS_PREFIX}strip" build/modules/chain/dsp.so
+"${CROSS_PREFIX}strip" build/modules/chain/audio_fx/freeverb/freeverb.so
+"${CROSS_PREFIX}strip" build/modules/chain/sound_generators/linein/dsp.so
+"${CROSS_PREFIX}strip" build/modules/sequencer/dsp.so
+if [ -f build/modules/jv880/dsp.so ]; then
+    "${CROSS_PREFIX}strip" build/modules/jv880/dsp.so
+fi
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"

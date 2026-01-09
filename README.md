@@ -35,6 +35,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 | **Signal Chain** | Modular signal chain with synths, MIDI FX, and audio FX |
 | DX7 Synth | 6-operator FM synthesizer (Yamaha DX7), loads .syx patches |
 | SF2 Synth | SoundFont synthesizer with preset/octave control |
+| Step Sequencer | 16-step MIDI sequencer with external output |
 | M8 LPP | Dirtywave M8 Launchpad Pro emulation |
 | Controller | MIDI controller with 16 banks |
 
@@ -69,7 +70,7 @@ These modules are maintained in separate repositories:
 ## Uninstall
 
 ```bash
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
+curl -L https://raw.githubusercontent.com/ahlstrominfo/move-anything/main/scripts/uninstall.sh | sh
 ```
 
 ## Building

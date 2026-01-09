@@ -1958,7 +1958,7 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            //printf("%x %x %x %x\n", byte[0], byte[1], byte[2], byte[3]);
+            //printf("MIDI: cable=%d %02x %02x %02x\n", cable, byte[1], byte[2], byte[3]);
 
             /* Check if module wants raw MIDI (skip transforms) */
             int apply_transforms = !mm_module_wants_raw_midi(&g_module_manager);

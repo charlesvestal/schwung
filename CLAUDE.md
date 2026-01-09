@@ -112,13 +112,31 @@ Located in `src/shared/`:
 
 ## Move Hardware MIDI
 
-Pads: Notes 68-99
-Steps: Notes 16-31
+Pads: Notes 68-99 (32 pads for notes/sounds)
+Steps/Trigs: Notes 16-31 (16 step buttons for sequencing)
 Tracks: Notes 40-43
 
 Key CCs: 14 (jog), 49 (shift), 50 (menu), 71-78 (knob LEDs)
 
 Notes 0-9: Capacitive touch from knobs (filter if not needed)
+
+## LED Control
+
+Two functions for controlling LEDs (from `input_filter.mjs`):
+
+```javascript
+setLED(note, color)       // Note-based RGB LEDs (pads, steps)
+setButtonLED(cc, color)   // CC-based button LEDs (transport, etc.)
+```
+
+**Button LED mapping (input CC → LED control):**
+```
+Play:   CC 85 (MovePlay) → setButtonLED(MovePlay, color)
+Record: CC 86 (MoveRec)  → setButtonLED(MoveRec, color)
+Loop:   CC 87 (MoveLoop) → setButtonLED(MoveLoop, color)
+```
+
+Note: `MoveRecord` (118) is a separate RGB LED constant, but the record button's LED is controlled via CC 86 (`MoveRec`), not note 118.
 
 ## Audio Mailbox Layout
 
