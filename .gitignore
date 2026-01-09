@@ -3,3 +3,13 @@ build/
 dist/
 libs/
 .vscode/
+
+# macOS
+.DS_Store
+
+# Build artifacts
+*.so
+*.tar.gz
+
+# Local backups
+backups/

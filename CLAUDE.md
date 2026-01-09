@@ -2,6 +2,10 @@
 
 Instructions for Claude Code when working with this repository.
 
+## CRITICAL: Do NOT Build
+
+**NEVER run build commands** (`./scripts/build-docker.sh`, `./scripts/build.sh`, `npm run build`, etc.) unless explicitly requested by the user. The user will build and test manually.
+
 ## Project Overview
 
 Move Anything is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. It provides access to pads, encoders, buttons, display (128x64 1-bit), audio I/O, and MIDI via USB-A.
