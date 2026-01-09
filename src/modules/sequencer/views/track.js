@@ -9,7 +9,8 @@ import {
     MoveSteps, MovePads, MoveTracks, MoveLoop, MoveMainKnob, MoveMainButton,
     MoveCapture, MovePlay, MoveRec, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch
+    MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
+    MoveStep7UI
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -929,6 +930,9 @@ function updateStepLEDs() {
 
         setLED(MoveSteps[i], color);
     }
+
+    /* Step 7 UI icon - shows swing is available when shift held */
+    setButtonLED(MoveStep7UI, state.shiftHeld ? VividYellow : Black);
 }
 
 function updatePadLEDs() {
