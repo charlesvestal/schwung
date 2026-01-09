@@ -56,6 +56,8 @@ static void plugin_log(const char *msg) {
     }
 }
 
+static int load_soundfont(const char *path);
+
 static int soundfont_entry_cmp(const void *a, const void *b) {
     const soundfont_entry_t *sa = (const soundfont_entry_t *)a;
     const soundfont_entry_t *sb = (const soundfont_entry_t *)b;
