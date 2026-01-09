@@ -111,6 +111,7 @@ console.log(msg)              // Log to /data/UserData/move-anything/move-anythi
 | 14  | Jog wheel rotate  | 1 = CW, 127 = CCW              |
 | 49  | Shift             | 127 = held                     |
 | 50  | Menu              |                                |
+| 51  | Back              |                                |
 | 52  | Capture           |                                |
 | 54  | Down arrow        |                                |
 | 55  | Up arrow          |                                |
@@ -178,6 +179,10 @@ host_save_settings();  // Persist to disk
 ### Raw MIDI Mode
 
 Modules that need unprocessed MIDI input can opt out of transforms by setting `"raw_midi": true` in module.json (this also disables the host knob-touch filter).
+
+### Raw UI Mode
+
+Modules that want full control of UI input can opt out of host Back-to-menu handling by setting `"raw_ui": true` in module.json.
 Some modules (like Signal Chain) also use `raw_midi` to bypass their own MIDI filters (for example, allowing knob-touch notes through).
 
 ## Audio (DSP Modules Only)
