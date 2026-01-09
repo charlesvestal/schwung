@@ -2,7 +2,7 @@
     "name": "DX7 E-Piano Reverb",
     "version": 1,
     "chain": {
-        "input": "pads",
+        "input": "both",
         "midi_fx": {},
         "synth": {
             "module": "dx7",
