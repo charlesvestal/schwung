@@ -19,10 +19,15 @@
 #define NUM_STEPS 16
 #define NUM_PATTERNS 30
 #define MAX_NOTES_PER_STEP 4
-#define MAX_PENDING_NOTES 64
+#define MAX_SCHEDULED_NOTES 128
 
 #define DEFAULT_VELOCITY 100
 #define DEFAULT_GATE 50
+
+/* Swing is applied as a delay to upbeat notes.
+ * Swing value 50 = no swing, 67 = triplet feel.
+ * The delay is calculated as: (swing - 50) / 100.0 * 0.5 steps */
+#define SWING_MAX_DELAY 0.5
 
 /* MIDI real-time messages */
 #define MIDI_CLOCK      0xF8
@@ -96,13 +101,22 @@ typedef struct {
     double next_step_at;         /* Phase value when next step advance should happen */
 } track_t;
 
-/* Pending note for overlapping long notes */
+/* ============ Centralized Note Scheduler ============ */
+/* All notes go through this scheduler which:
+ * 1. Applies swing based on global beat position
+ * 2. Handles note conflicts (same note+channel)
+ * 3. Manages note-on and note-off timing
+ */
 typedef struct {
     uint8_t note;
     uint8_t channel;
-    double off_phase;       /* Global phase when note should end */
-    uint8_t active;
-} pending_note_t;
+    uint8_t velocity;
+    double on_phase;        /* Global phase when note-on should fire */
+    double off_phase;       /* Global phase when note-off should fire */
+    uint8_t on_sent;        /* Has note-on been sent? */
+    uint8_t off_sent;       /* Has note-off been sent? */
+    uint8_t active;         /* Is this slot in use? */
+} scheduled_note_t;
 
 /* ============ Plugin State ============ */
 
@@ -112,15 +126,15 @@ static plugin_api_v1_t g_plugin_api;
 /* Tracks */
 static track_t g_tracks[NUM_TRACKS];
 
-/* Pending notes for long/overlapping notes */
-static pending_note_t g_pending_notes[MAX_PENDING_NOTES];
+/* Centralized note scheduler */
+static scheduled_note_t g_scheduled_notes[MAX_SCHEDULED_NOTES];
 
 /* Global playback state */
 static int g_bpm = 120;
 static int g_playing = 0;
 static int g_send_clock = 1;
 static double g_clock_phase = 0.0;
-static double g_global_phase = 0.0;  /* For pending note timing */
+static double g_global_phase = 0.0;  /* Master clock for all timing */
 
 /* ============ Helpers ============ */
 
@@ -208,27 +222,161 @@ static void send_midi_stop(void) {
     plugin_log("MIDI Stop");
 }
 
-/* Send note-off for all active notes */
-static void all_notes_off(void) {
-    /* Stop track notes */
-    for (int t = 0; t < NUM_TRACKS; t++) {
-        for (int i = 0; i < g_tracks[t].num_last_notes; i++) {
-            if (g_tracks[t].last_notes[i] >= 0) {
-                send_note_off(g_tracks[t].last_notes[i], g_tracks[t].midi_channel);
-                g_tracks[t].last_notes[i] = -1;
+/* ============ Centralized Note Scheduler Functions ============ */
+
+/**
+ * Calculate swing delay based on global phase.
+ * Swing is applied to "upbeat" positions (odd global beats).
+ * Returns the delay in steps (0.0 to SWING_MAX_DELAY).
+ */
+static double calculate_swing_delay(int swing, double global_phase) {
+    if (swing <= 50) return 0.0;  /* No swing */
+
+    /* Check if this is an upbeat (odd beat number) */
+    int global_beat = (int)global_phase;
+    int is_upbeat = global_beat & 1;
+
+    if (!is_upbeat) return 0.0;  /* Downbeats don't swing */
+
+    /* Calculate delay: swing 50 = 0, swing 100 = 0.5 steps delay */
+    double swing_amount = (swing - 50) / 100.0;  /* 0.0 to 0.5 */
+    return swing_amount * SWING_MAX_DELAY;
+}
+
+/**
+ * Find an existing scheduled note with the same note+channel that's still active.
+ * Returns the index, or -1 if not found.
+ */
+static int find_conflicting_note(uint8_t note, uint8_t channel) {
+    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
+        if (g_scheduled_notes[i].active &&
+            g_scheduled_notes[i].note == note &&
+            g_scheduled_notes[i].channel == channel &&
+            !g_scheduled_notes[i].off_sent) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Find a free slot in the scheduler.
+ * Returns the index, or -1 if full.
+ */
+static int find_free_slot(void) {
+    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
+        if (!g_scheduled_notes[i].active) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Schedule a note to be played.
+ * Handles swing application and note conflicts automatically.
+ *
+ * @param note      MIDI note number
+ * @param velocity  Note velocity
+ * @param channel   MIDI channel
+ * @param swing     Swing amount (50 = no swing)
+ * @param on_phase  Global phase when note should start (before swing)
+ * @param length    Note length in steps
+ * @param gate      Gate percentage (1-100)
+ */
+static void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
+                          int swing, double on_phase, double length, int gate) {
+    /* Apply swing delay based on global phase */
+    double swing_delay = calculate_swing_delay(swing, on_phase);
+    double swung_on_phase = on_phase + swing_delay;
+
+    /* Calculate note-off time: length adjusted by gate percentage */
+    double gate_mult = gate / 100.0;
+    double note_duration = length * gate_mult;
+    double off_phase = swung_on_phase + note_duration;
+
+    /* Check for conflicting note (same note+channel already playing) */
+    int conflict_idx = find_conflicting_note(note, channel);
+    if (conflict_idx >= 0) {
+        scheduled_note_t *conflict = &g_scheduled_notes[conflict_idx];
+        /* If the new note starts before the old note ends, truncate the old note */
+        if (swung_on_phase < conflict->off_phase) {
+            /* Schedule the old note to end just before the new one starts */
+            double early_off = swung_on_phase - 0.001;  /* Tiny gap to avoid overlap */
+            if (early_off > g_global_phase) {
+                conflict->off_phase = early_off;
+            } else {
+                /* Old note should end now - send immediate note-off if on was sent */
+                if (conflict->on_sent && !conflict->off_sent) {
+                    send_note_off(conflict->note, conflict->channel);
+                    conflict->off_sent = 1;
+                }
             }
         }
-        g_tracks[t].num_last_notes = 0;
-        g_tracks[t].note_on_active = 0;
     }
 
-    /* Stop pending notes */
-    for (int i = 0; i < MAX_PENDING_NOTES; i++) {
-        if (g_pending_notes[i].active) {
-            send_note_off(g_pending_notes[i].note, g_pending_notes[i].channel);
-            g_pending_notes[i].active = 0;
+    /* Find a free slot */
+    int slot = find_free_slot();
+    if (slot < 0) {
+        /* Scheduler full - skip note (shouldn't happen with reasonable settings) */
+        return;
+    }
+
+    /* Schedule the note */
+    scheduled_note_t *sn = &g_scheduled_notes[slot];
+    sn->note = note;
+    sn->channel = channel;
+    sn->velocity = velocity;
+    sn->on_phase = swung_on_phase;
+    sn->off_phase = off_phase;
+    sn->on_sent = 0;
+    sn->off_sent = 0;
+    sn->active = 1;
+}
+
+/**
+ * Process all scheduled notes - send note-on/off at the right time.
+ * Called every sample from render_block.
+ */
+static void process_scheduled_notes(void) {
+    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
+        scheduled_note_t *sn = &g_scheduled_notes[i];
+        if (!sn->active) continue;
+
+        /* Send note-on at the scheduled time */
+        if (!sn->on_sent && g_global_phase >= sn->on_phase) {
+            send_note_on(sn->note, sn->velocity, sn->channel);
+            sn->on_sent = 1;
+        }
+
+        /* Send note-off at the scheduled time */
+        if (sn->on_sent && !sn->off_sent && g_global_phase >= sn->off_phase) {
+            send_note_off(sn->note, sn->channel);
+            sn->off_sent = 1;
+            sn->active = 0;  /* Free the slot */
         }
     }
+}
+
+/**
+ * Clear all scheduled notes and send note-off for any active notes.
+ */
+static void clear_scheduled_notes(void) {
+    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
+        scheduled_note_t *sn = &g_scheduled_notes[i];
+        if (sn->active && sn->on_sent && !sn->off_sent) {
+            send_note_off(sn->note, sn->channel);
+        }
+        sn->active = 0;
+        sn->on_sent = 0;
+        sn->off_sent = 0;
+    }
+}
+
+/* Send note-off for all active notes */
+static void all_notes_off(void) {
+    /* Clear all scheduled notes - this sends note-off for any active notes */
+    clear_scheduled_notes();
 }
 
 /* ============ Track Functions ============ */
@@ -345,27 +493,47 @@ static int check_spark_condition(int8_t spark_n, int8_t spark_m, uint8_t spark_n
     return should_apply;
 }
 
-/* Send notes for a step (used for main trigger and ratchets) */
-static void send_step_notes(track_t *track, step_t *step) {
-    for (int i = 0; i < step->num_notes && i < MAX_NOTES_PER_STEP; i++) {
-        if (step->notes[i] > 0) {
-            send_note_on(step->notes[i], step->velocity, track->midi_channel);
-            track->last_notes[track->num_last_notes] = step->notes[i];
-            track->num_last_notes++;
+/**
+ * Schedule notes for a step via the centralized scheduler.
+ * This handles swing, ratchets, and note conflicts automatically.
+ *
+ * @param track      Track data
+ * @param step       Step data
+ * @param base_phase Global phase when this step starts
+ */
+static void schedule_step_notes(track_t *track, step_t *step, double base_phase) {
+    int note_length = step->length > 0 ? step->length : 1;
+    int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
+    int ratchet_count = step->ratchet > 0 ? step->ratchet : 1;
+
+    /* For ratchets, divide the step into equal parts */
+    double ratchet_step = 1.0 / ratchet_count;
+    /* Ratchet note length is proportional to gate but divided by ratchet count */
+    double ratchet_length = (double)note_length / ratchet_count;
+
+    for (int r = 0; r < ratchet_count; r++) {
+        double note_on_phase = base_phase + (r * ratchet_step);
+
+        /* Schedule each note in the step */
+        for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
+            if (step->notes[n] > 0) {
+                schedule_note(
+                    step->notes[n],
+                    step->velocity,
+                    track->midi_channel,
+                    track->swing,
+                    note_on_phase,
+                    ratchet_length,
+                    gate
+                );
+            }
         }
-    }
-    if (track->num_last_notes > 0) {
-        track->note_on_active = 1;
     }
 }
 
-static void trigger_track_step(track_t *track, int track_idx) {
+static void trigger_track_step(track_t *track, int track_idx, double step_start_phase) {
     pattern_t *pattern = get_current_pattern(track);
     step_t *step = &pattern->steps[track->current_step];
-
-    /* Reset ratchet state */
-    track->ratchet_count = 0;
-    track->ratchet_total = 1;
 
     /* Skip if muted */
     if (track->muted) return;
@@ -375,6 +543,7 @@ static void trigger_track_step(track_t *track, int track_idx) {
         step->param_spark_n, step->param_spark_m, step->param_spark_not, track);
 
     /* Send CC values if set AND param_spark passes */
+    /* Note: CCs are sent immediately, not scheduled (they don't need swing) */
     if (param_spark_pass) {
         if (step->cc1 >= 0) {
             int cc = 20 + (track_idx * 2);
@@ -392,40 +561,37 @@ static void trigger_track_step(track_t *track, int track_idx) {
     /* Check if this step should trigger (probability + conditions / trigger spark) */
     if (!should_step_trigger(step, track)) return;
 
-    /* If we have notes still playing from previous step, cut them off */
-    if (track->note_on_active) {
-        for (int i = 0; i < track->num_last_notes; i++) {
-            if (track->last_notes[i] >= 0) {
-                send_note_off(track->last_notes[i], track->midi_channel);
-                track->last_notes[i] = -1;
-            }
-        }
-        track->num_last_notes = 0;
-        track->note_on_active = 0;
-    }
-
-    /* Set up note length tracking - store values at trigger time */
-    track->note_length_total = step->length > 0 ? step->length : 1;
-    track->note_gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
-    track->note_length_phase = 0.0;
-    track->gate_phase = 0.0;
-
-    /* Check comp_spark - should ratchet/jump apply this loop? */
+    /* Check comp_spark - should ratchet apply this loop? */
     int comp_spark_pass = check_spark_condition(
         step->comp_spark_n, step->comp_spark_m, step->comp_spark_not, track);
 
-    if (comp_spark_pass) {
-        /* Set up ratchet state (only if comp_spark passes) */
-        track->ratchet_total = step->ratchet > 0 ? step->ratchet : 1;
-        track->ratchet_count = 1;  /* First trigger happens now */
-    } else {
-        /* No ratchet - single trigger */
-        track->ratchet_total = 1;
-        track->ratchet_count = 1;
-    }
+    /* Apply micro-timing offset */
+    double offset_phase = (double)step->offset / 48.0;
+    double note_phase = step_start_phase + offset_phase;
 
-    /* Trigger first note(s) */
-    send_step_notes(track, step);
+    /* Schedule notes (with ratchets if comp_spark passes) */
+    if (comp_spark_pass && step->ratchet > 1) {
+        /* Schedule with ratchets */
+        schedule_step_notes(track, step, note_phase);
+    } else {
+        /* Schedule single trigger (no ratchet) */
+        int note_length = step->length > 0 ? step->length : 1;
+        int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
+
+        for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
+            if (step->notes[n] > 0) {
+                schedule_note(
+                    step->notes[n],
+                    step->velocity,
+                    track->midi_channel,
+                    track->swing,
+                    note_phase,
+                    note_length,
+                    gate
+                );
+            }
+        }
+    }
 
     /* Handle jump (only if comp_spark passes) */
     if (comp_spark_pass && step->jump >= 0 && step->jump < NUM_STEPS) {
@@ -442,61 +608,11 @@ static void trigger_track_step(track_t *track, int track_idx) {
     }
 }
 
-/* Calculate step length based on swing and global position */
-static double get_step_length_with_swing(int swing) {
-    /* Determine if current global beat is downbeat or upbeat */
-    int global_beat = (int)g_global_phase;
-    int is_upbeat = global_beat & 1;
-    double swing_ratio = swing / 100.0;
-
-    if (is_upbeat) {
-        /* Upbeat: shorter duration */
-        return 2.0 * (1.0 - swing_ratio);
-    } else {
-        /* Downbeat: longer duration */
-        return 2.0 * swing_ratio;
-    }
-}
-
-/* Schedule a step trigger with swing and micro-timing offset */
-static void schedule_step_trigger(track_t *track, int track_idx, int step_idx, double base_phase) {
-    pattern_t *pattern = get_current_pattern(track);
-    step_t *step = &pattern->steps[step_idx];
-
-    /* Calculate step length:
-     * - If step has micro-timing offset, ignore swing (user has manually placed it)
-     * - Otherwise, apply swing based on global grid position
-     */
-    double step_length;
-    if (step->offset != 0) {
-        /* Step has micro-timing - use fixed 1.0 length, ignore swing */
-        step_length = 1.0;
-    } else {
-        /* Apply swing */
-        step_length = get_step_length_with_swing(track->swing);
-    }
-
-    /* Add micro-timing offset
-     * offset is -24 to +24, where 48 ticks = 1 step
-     * Positive offset = delay trigger, negative = trigger earlier
-     */
-    double offset_phase = (double)step->offset / 48.0;
-    double trigger_phase = base_phase + offset_phase;
-
-    /* For negative offsets, trigger immediately if we've already passed the point */
-    if (trigger_phase <= 0.0) {
-        trigger_track_step(track, track_idx);
-        /* Schedule when the NEXT step should trigger (after this step's duration) */
-        track->next_step_at = step_length + trigger_phase;  /* trigger_phase is negative or zero */
-    } else {
-        /* Schedule for later */
-        track->trigger_pending = 1;
-        track->trigger_at_phase = trigger_phase;
-        track->pending_step = step_idx;
-        track->next_step_at = step_length;
-    }
-}
-
+/**
+ * Advance a track to the next step and schedule its notes.
+ * Step duration is now fixed at 1.0 - swing is applied as a delay on notes,
+ * not as a duration change on steps.
+ */
 static void advance_track(track_t *track, int track_idx) {
     /* Advance step, respecting loop points from current pattern */
     pattern_t *pattern = get_current_pattern(track);
@@ -508,8 +624,15 @@ static void advance_track(track_t *track, int track_idx) {
         track->current_step++;
     }
 
-    /* Schedule step trigger with offset (phase is position within step, 0.0-1.0) */
-    schedule_step_trigger(track, track_idx, track->current_step, track->phase);
+    /* Calculate the global phase when this step starts.
+     * This is used by the scheduler to apply swing based on global position. */
+    double step_start_phase = g_global_phase;
+
+    /* Trigger the step - this schedules notes via the centralized scheduler */
+    trigger_track_step(track, track_idx, step_start_phase);
+
+    /* Fixed step duration - swing is handled as note delay, not step duration */
+    track->next_step_at = 1.0;
 }
 
 /* ============ Plugin Callbacks ============ */
@@ -524,8 +647,8 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
         init_track(&g_tracks[t], t);  /* Track 0 = ch 0, etc. */
     }
 
-    /* Clear pending notes */
-    memset(g_pending_notes, 0, sizeof(g_pending_notes));
+    /* Clear note scheduler */
+    memset(g_scheduled_notes, 0, sizeof(g_scheduled_notes));
 
     /* Parse BPM from defaults if provided */
     if (json_defaults) {
@@ -568,49 +691,33 @@ static void plugin_set_param(const char *key, const char *val) {
     else if (strcmp(key, "playing") == 0) {
         int new_playing = atoi(val);
         if (new_playing && !g_playing) {
-            /* Starting playback - reset all tracks to their loop start */
+            /* Starting playback - clear scheduler and reset all tracks */
+            clear_scheduled_notes();
+
             for (int t = 0; t < NUM_TRACKS; t++) {
                 g_tracks[t].current_step = get_current_pattern(&g_tracks[t])->loop_start;
                 g_tracks[t].phase = 0.0;
-                g_tracks[t].gate_phase = 0.0;
-                g_tracks[t].note_on_active = 0;
-                g_tracks[t].num_last_notes = 0;
-                g_tracks[t].loop_count = 0;      /* Reset loop count for conditions */
-                g_tracks[t].ratchet_count = 0;   /* Reset ratchet state */
-                g_tracks[t].ratchet_total = 1;
-                g_tracks[t].ratchet_phase = 0.0;
-                g_tracks[t].note_length_total = 1;  /* Reset note length state */
-                g_tracks[t].note_gate = DEFAULT_GATE;
-                g_tracks[t].note_length_phase = 0.0;
-                g_tracks[t].trigger_pending = 0;
-                g_tracks[t].next_step_at = 1.0;  /* Will be set by schedule_step_trigger */
-                for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
-                    g_tracks[t].last_notes[n] = -1;
-                }
+                g_tracks[t].loop_count = 0;
+                g_tracks[t].next_step_at = 1.0;
             }
             g_clock_phase = 0.0;
             g_global_phase = 0.0;
 
             /* Seed PRNG with a bit of entropy */
-            g_random_state = (uint32_t)(g_global_phase * 1000000.0 + 12345);
-            if (g_random_state == 0) g_random_state = 1;
+            g_random_state = 12345;
 
             if (g_send_clock) {
                 send_midi_start();
                 send_midi_clock();
             }
 
-            /* Schedule first step on all tracks (with offset support) */
+            /* Schedule first step on all tracks via centralized scheduler */
             for (int t = 0; t < NUM_TRACKS; t++) {
-                schedule_step_trigger(&g_tracks[t], t, g_tracks[t].current_step, 0.0);
+                trigger_track_step(&g_tracks[t], t, 0.0);
             }
         } else if (!new_playing && g_playing) {
             /* Stopping playback */
             all_notes_off();
-            /* Clear any pending triggers */
-            for (int t = 0; t < NUM_TRACKS; t++) {
-                g_tracks[t].trigger_pending = 0;
-            }
             if (g_send_clock) {
                 send_midi_stop();
             }
@@ -1042,81 +1149,18 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
             send_midi_clock();
         }
 
-        /* Process each track */
+        /* Process scheduled notes - handles note-on/off timing for ALL tracks */
+        process_scheduled_notes();
+
+        /* Process each track - advance steps and schedule notes */
         for (int t = 0; t < NUM_TRACKS; t++) {
             track_t *track = &g_tracks[t];
 
-            /* Per-track phase increment (simple accumulator - efficient) */
+            /* Per-track phase increment */
             double track_step_inc = step_inc * track->speed;
             track->phase += track_step_inc;
 
-            /* Also accumulate note length phase if note is playing */
-            if (track->note_on_active) {
-                track->note_length_phase += track_step_inc;
-                track->gate_phase += track_step_inc;
-            }
-
-            /* Check for pending micro-timing trigger */
-            if (track->trigger_pending && track->phase >= track->trigger_at_phase) {
-                track->trigger_pending = 0;
-                trigger_track_step(track, t);
-            }
-
-            /* Track note length and handle note-off */
-            if (track->note_on_active) {
-                /* Use stored gate value (captured at trigger time) */
-                double gate_pct = (double)track->note_gate / 100.0;
-                double total_note_length = (double)track->note_length_total;
-
-                if (track->ratchet_total > 1) {
-                    /* Ratchets: gate applies per ratchet subdivision */
-                    double ratchet_gate = gate_pct / track->ratchet_total;
-                    if (track->gate_phase >= ratchet_gate) {
-                        /* Send note off for all active notes */
-                        for (int n = 0; n < track->num_last_notes; n++) {
-                            if (track->last_notes[n] >= 0) {
-                                send_note_off(track->last_notes[n], track->midi_channel);
-                                track->last_notes[n] = -1;
-                            }
-                        }
-                        track->num_last_notes = 0;
-                        track->note_on_active = 0;
-                    }
-                } else {
-                    /* Normal notes: gate applies to total note length */
-                    double note_off_point = total_note_length * gate_pct;
-                    if (track->note_length_phase >= note_off_point) {
-                        /* Send note off for all active notes */
-                        for (int n = 0; n < track->num_last_notes; n++) {
-                            if (track->last_notes[n] >= 0) {
-                                send_note_off(track->last_notes[n], track->midi_channel);
-                                track->last_notes[n] = -1;
-                            }
-                        }
-                        track->num_last_notes = 0;
-                        track->note_on_active = 0;
-                    }
-                }
-            }
-
-            /* Check ratchet sub-trigger timing */
-            if (track->ratchet_count > 0 && track->ratchet_count < track->ratchet_total) {
-                /* Each ratchet trigger point: 1/N, 2/N, etc. of the step */
-                double next_trigger_point = (double)track->ratchet_count / (double)track->ratchet_total;
-                if (track->phase >= next_trigger_point) {
-                    /* Time for next ratchet trigger - bounds check first */
-                    if (track->current_step < NUM_STEPS) {
-                        step_t *step = &get_current_pattern(track)->steps[track->current_step];
-                        track->gate_phase = 0.0;  /* Reset gate for this ratchet */
-                        send_step_notes(track, step);
-                    }
-                    track->ratchet_count++;
-                }
-            }
-
-            /* Check step advance using scheduled next_step_at
-             * Swing is applied when scheduling via schedule_step_trigger()
-             * which sets next_step_at based on global grid position */
+            /* Check step advance (fixed 1.0 step duration - swing is in note delay) */
             if (track->phase >= track->next_step_at) {
                 track->phase -= track->next_step_at;
                 advance_track(track, t);
