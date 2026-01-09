@@ -2,17 +2,17 @@
 
 Move Anything must be cross-compiled for the Ableton Move's ARM64 processor (aarch64 Linux).
 
-## Quick Start (Docker)
+## Quick Start
 
 ```bash
-./scripts/build-docker.sh
+./scripts/build.sh
 ```
 
-This builds everything and creates `move-anything.tar.gz`.
+This builds everything and creates `move-anything.tar.gz`. The build script automatically uses Docker for cross-compilation if needed.
 
 Requirements: Docker Desktop (macOS/Windows) or Docker Engine (Linux)
 
-## Manual Build
+## Manual Build (without Docker)
 
 ### Ubuntu/Debian
 
@@ -70,8 +70,13 @@ build/
   shared/                    # Shared JS utilities
   modules/
     sf2/                     # SF2 synth module
+    dx7/                     # DX7 FM synth module
     m8/                      # M8 LPP emulator
     controller/              # MIDI controller
+    chain/                   # Signal Chain module
+      audio_fx/              # Audio FX plugins (Freeverb)
+      sound_generators/      # Sound generators (Line In)
+      patches/               # Chain patches
 
 move-anything.tar.gz         # Deployable package
 ```

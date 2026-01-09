@@ -224,10 +224,104 @@ const padIndex = note - MovePads[0];  // 0-31
 
 See these modules for reference:
 
+- **chain**: Signal chain with synths, MIDI FX, and audio FX
 - **dx7**: DX7 FM synthesizer with native DSP (loads .syx patches)
 - **sf2**: SoundFont synthesizer with native DSP
 - **m8**: MIDI translator (UI-only, no DSP)
 - **controller**: MIDI controller with banks (UI-only)
+
+## Signal Chain Module
+
+The Signal Chain module allows combining sound generators, MIDI effects, and audio effects into configurable patches.
+
+### Chain Structure
+
+```
+[Input] → [MIDI FX] → [Sound Generator] → [Audio FX] → [Output]
+```
+
+### Available Components
+
+| Type | Components |
+|------|------------|
+| Sound Generators | SF2, DX7, Line In |
+| MIDI Effects | Chord generator (major, minor, power, octave), Arpeggiator (up, down, updown, random) |
+| Audio Effects | Freeverb (reverb) |
+
+### Patch Files
+
+Patches are stored in `modules/chain/patches/` as JSON:
+
+```json
+{
+    "name": "Arp Piano Verb",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "midi_fx": {
+            "arp": {
+                "mode": "up",
+                "bpm": 120,
+                "division": "8th"
+            }
+        },
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.8,
+                    "wet": 0.3
+                }
+            }
+        ]
+    }
+}
+```
+
+### Line In Sound Generator
+
+The Line In sound generator passes external audio through the chain for processing:
+
+```json
+{
+    "name": "Line In + Reverb",
+    "chain": {
+        "synth": {
+            "module": "linein",
+            "config": {}
+        },
+        "audio_fx": [
+            {"type": "freeverb", "params": {"wet": 0.4}}
+        ]
+    }
+}
+```
+
+Note: Audio input routing depends on the last selected input in the stock Move interface.
+
+## Audio FX Plugin API
+
+Audio effects use a simpler in-place processing API:
+
+```c
+typedef struct audio_fx_api_v1 {
+    uint32_t api_version;
+    int (*on_load)(const char *module_dir, const char *config_json);
+    void (*on_unload)(void);
+    void (*process_block)(int16_t *audio_inout, int frames);  // In-place stereo
+    void (*set_param)(const char *key, const char *val);
+    int (*get_param)(const char *key, char *buf, int buf_len);
+} audio_fx_api_v1_t;
+
+// Entry point
+audio_fx_api_v1_t* move_audio_fx_init_v1(const host_api_v1_t *host);
+```
 
 ## Audio Specifications
 
