@@ -1971,7 +1971,16 @@ int main(int argc, char *argv[])
             if (cable == 0)
             {
                 /* Process host-level shortcuts and apply transforms */
-                int consumed = process_host_midi(&byte[1], apply_transforms);
+                int consumed = 0;
+                if (apply_transforms) {
+                    uint8_t status = byte[1] & 0xF0;
+                    if ((status == 0x90 || status == 0x80) && byte[2] < 10) {
+                        consumed = 1;  /* Filter knob-touch notes from internal MIDI */
+                    }
+                }
+                if (!consumed) {
+                    consumed = process_host_midi(&byte[1], apply_transforms);
+                }
 
                 /* Route to JS handler (unless consumed by host) */
                 if (!consumed && callGlobalFunction(&ctx, &JSonMidiMessageInternal, &byte[1])) {

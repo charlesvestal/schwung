@@ -17,6 +17,7 @@
 /* Limits */
 #define MAX_PATCHES 32      /* Max patches to list in browser */
 #define MAX_AUDIO_FX 4      /* Max FX loaded per active chain */
+#define MAX_MIDI_FX_JS 4    /* Max JS MIDI FX per patch */
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
@@ -38,6 +39,13 @@ typedef enum {
     ARP_RANDOM       /* Random order */
 } arp_mode_t;
 
+/* MIDI input filter */
+typedef enum {
+    MIDI_INPUT_ANY = 0,
+    MIDI_INPUT_PADS,
+    MIDI_INPUT_EXTERNAL
+} midi_input_t;
+
 /* Arpeggiator constants */
 #define MAX_ARP_NOTES 16
 #define SAMPLE_RATE 44100
@@ -51,10 +59,13 @@ typedef struct {
     int synth_preset;
     char audio_fx[MAX_AUDIO_FX][MAX_NAME_LEN];
     int audio_fx_count;
+    char midi_fx_js[MAX_MIDI_FX_JS][MAX_NAME_LEN];
+    int midi_fx_js_count;
     chord_type_t chord_type;
     arp_mode_t arp_mode;
     int arp_tempo_bpm;       /* BPM for arpeggiator */
     int arp_note_division;   /* 1=quarter, 2=8th, 4=16th */
+    midi_input_t midi_input;
 } patch_info_t;
 
 /* Host API provided by main host */
@@ -79,6 +90,9 @@ static char g_module_dir[MAX_PATH_LEN] = "";
 /* MIDI FX state - Chords */
 static chord_type_t g_chord_type = CHORD_NONE;
 
+/* JS MIDI FX state */
+static int g_js_midi_fx_enabled = 0;
+
 /* MIDI FX state - Arpeggiator */
 static arp_mode_t g_arp_mode = ARP_OFF;
 static uint8_t g_arp_held_notes[MAX_ARP_NOTES];  /* Sorted low to high */
@@ -95,6 +109,12 @@ static uint8_t g_arp_velocity = 100; /* Velocity for arp notes */
 static int g_mute_countdown = 0;
 #define MUTE_BLOCKS_AFTER_SWITCH 8  /* ~23ms at 44100Hz, 128 frames/block */
 
+/* MIDI input filter (per patch) */
+static midi_input_t g_midi_input = MIDI_INPUT_ANY;
+
+/* Raw MIDI bypass (module-level) */
+static int g_raw_midi = 0;
+
 /* Our host API for sub-plugins (forwards to main host) */
 static host_api_v1_t g_subplugin_host_api;
 
@@ -110,6 +130,73 @@ static void chain_log(const char *msg) {
     } else {
         printf("[chain] %s\n", msg);
     }
+}
+
+static int json_get_bool(const char *json, const char *key, int *out) {
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+
+    const char *pos = strstr(json, search);
+    if (!pos) return -1;
+
+    pos = strchr(pos + strlen(search), ':');
+    if (!pos) return -1;
+
+    /* Skip whitespace */
+    while (*pos && (*pos == ':' || *pos == ' ' || *pos == '\t' || *pos == '\n')) pos++;
+
+    *out = (strncmp(pos, "true", 4) == 0) ? 1 : 0;
+    return 0;
+}
+
+static void load_module_settings(const char *module_dir) {
+    char path[MAX_PATH_LEN];
+    snprintf(path, sizeof(path), "%s/module.json", module_dir);
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size <= 0 || size > 4096) {
+        fclose(f);
+        return;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return;
+    }
+
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+
+    g_raw_midi = 0;
+    json_get_bool(json, "raw_midi", &g_raw_midi);
+
+    free(json);
+}
+
+static int midi_source_allowed(int source) {
+    if (source == MOVE_MIDI_SOURCE_HOST) {
+        return 1;
+    }
+
+    if (g_midi_input == MIDI_INPUT_PADS) {
+        return source == MOVE_MIDI_SOURCE_INTERNAL;
+    }
+
+    if (g_midi_input == MIDI_INPUT_EXTERNAL) {
+        return source == MOVE_MIDI_SOURCE_EXTERNAL;
+    }
+
+    return 1;
 }
 
 /* === Arpeggiator Functions === */
@@ -532,6 +619,19 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         patch->synth_preset = 0;
     }
 
+    /* Parse MIDI input filter */
+    patch->midi_input = MIDI_INPUT_ANY;
+    char input_str[MAX_NAME_LEN] = "";
+    if (json_get_string(json, "input", input_str, MAX_NAME_LEN) == 0) {
+        if (strcmp(input_str, "pads") == 0) {
+            patch->midi_input = MIDI_INPUT_PADS;
+        } else if (strcmp(input_str, "external") == 0) {
+            patch->midi_input = MIDI_INPUT_EXTERNAL;
+        } else if (strcmp(input_str, "both") == 0 || strcmp(input_str, "all") == 0) {
+            patch->midi_input = MIDI_INPUT_ANY;
+        }
+    }
+
     /* Parse audio_fx - look for "audio_fx" and extract FX names */
     patch->audio_fx_count = 0;
     const char *fx_pos = strstr(json, "\"audio_fx\"");
@@ -567,6 +667,34 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
                     strncpy(patch->audio_fx[patch->audio_fx_count], quote1, len);
                     patch->audio_fx[patch->audio_fx_count][len] = '\0';
                     patch->audio_fx_count++;
+                }
+
+                bracket = quote2 + 1;
+            }
+        }
+    }
+
+    /* Parse JS MIDI FX list */
+    patch->midi_fx_js_count = 0;
+    const char *js_fx_pos = strstr(json, "\"midi_fx_js\"");
+    if (js_fx_pos) {
+        const char *bracket = strchr(js_fx_pos, '[');
+        const char *end_bracket = strchr(js_fx_pos, ']');
+        if (bracket && end_bracket && bracket < end_bracket) {
+            bracket++;
+            while (patch->midi_fx_js_count < MAX_MIDI_FX_JS) {
+                const char *quote1 = strchr(bracket, '"');
+                if (!quote1 || quote1 > end_bracket) break;
+                quote1++;
+
+                const char *quote2 = strchr(quote1, '"');
+                if (!quote2 || quote2 > end_bracket) break;
+
+                int len = quote2 - quote1;
+                if (len > 0 && len < MAX_NAME_LEN) {
+                    strncpy(patch->midi_fx_js[patch->midi_fx_js_count], quote1, len);
+                    patch->midi_fx_js[patch->midi_fx_js_count][len] = '\0';
+                    patch->midi_fx_js_count++;
                 }
 
                 bracket = quote2 + 1;
@@ -747,6 +875,12 @@ static int load_patch(int index) {
     /* Set MIDI FX chord type */
     g_chord_type = patch->chord_type;
 
+    /* Enable JS MIDI FX if patch declares any */
+    g_js_midi_fx_enabled = (patch->midi_fx_js_count > 0);
+
+    /* Set MIDI input filter */
+    g_midi_input = patch->midi_input;
+
     /* Set arpeggiator mode and tempo */
     g_arp_mode = patch->arp_mode;
     arp_reset();
@@ -771,6 +905,9 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
 
     /* Store module directory for later use */
     strncpy(g_module_dir, module_dir, MAX_PATH_LEN - 1);
+
+    /* Load module-level settings (raw_midi) */
+    load_module_settings(module_dir);
 
     /* Scan for patches */
     scan_patches(module_dir);
@@ -842,6 +979,10 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
     if (len < 1) return;
+
+    if (!midi_source_allowed(source)) return;
+
+    if (g_js_midi_fx_enabled && source != MOVE_MIDI_SOURCE_HOST) return;
 
     uint8_t status = msg[0] & 0xF0;
 
@@ -941,8 +1082,37 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         snprintf(buf, buf_len, "No Patch");
         return 0;
     }
+    if (strcmp(key, "midi_fx_js") == 0) {
+        if (g_current_patch >= 0 && g_current_patch < g_patch_count) {
+            buf[0] = '\0';
+            for (int i = 0; i < g_patches[g_current_patch].midi_fx_js_count; i++) {
+                if (i > 0) {
+                    strncat(buf, ",", buf_len - strlen(buf) - 1);
+                }
+                strncat(buf, g_patches[g_current_patch].midi_fx_js[i],
+                        buf_len - strlen(buf) - 1);
+            }
+            return 0;
+        }
+        buf[0] = '\0';
+        return 0;
+    }
     if (strcmp(key, "synth_module") == 0) {
         snprintf(buf, buf_len, "%s", g_current_synth_module);
+        return 0;
+    }
+    if (strcmp(key, "raw_midi") == 0) {
+        snprintf(buf, buf_len, "%d", g_raw_midi);
+        return 0;
+    }
+    if (strcmp(key, "midi_input") == 0) {
+        const char *input = "both";
+        if (g_midi_input == MIDI_INPUT_PADS) {
+            input = "pads";
+        } else if (g_midi_input == MIDI_INPUT_EXTERNAL) {
+            input = "external";
+        }
+        snprintf(buf, buf_len, "%s", input);
         return 0;
     }
 
