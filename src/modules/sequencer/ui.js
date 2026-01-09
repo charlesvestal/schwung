@@ -7,10 +7,10 @@ import * as std from 'std';
 import * as os from 'os';
 
 import {
-    Black, BrightGreen, BrightRed, Cyan, Purple,
+    Black,
     MidiNoteOn, MidiNoteOff, MidiCC,
-    MovePlay, MoveRec, MoveShift, MoveMenu, MoveCapture,
-    MoveTracks, MovePads, MoveSteps
+    MovePlay, MoveRec, MoveShift, MoveMenu, MoveBack,
+    MovePads, MoveSteps
 } from "../../shared/constants.mjs";
 
 import {
@@ -19,9 +19,9 @@ import {
 } from "../../shared/input_filter.mjs";
 
 /* Import lib modules */
-import { NUM_TRACKS, NUM_STEPS, NUM_SETS, TRACK_COLORS, TRACK_COLORS_DIM } from './lib/constants.js';
-import { state, displayMessage, enterSetView, enterTrackView, enterPatternView, enterMasterView } from './lib/state.js';
-import { setParam, getCurrentPattern, updateTransportLEDs, updateCaptureLED, updateTrackLEDs } from './lib/helpers.js';
+import { NUM_STEPS, TRACK_COLORS } from './lib/constants.js';
+import { state, enterSetView, enterTrackView, enterPatternView, enterMasterView } from './lib/state.js';
+import { setParam, getCurrentPattern } from './lib/helpers.js';
 import { createEmptyTracks } from './lib/data.js';
 import { loadAllSetsFromDisk, initializeSets } from './lib/persistence.js';
 
@@ -61,10 +61,7 @@ function updateMenuLED() {
 
 function updateAllLEDs() {
     getCurrentView().updateLEDs();
-    updateTrackLEDs();
-    updateTransportLEDs();
     updateMenuLED();
-    updateCaptureLED();
 }
 
 /* ============ Lifecycle ============ */
@@ -166,16 +163,10 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Filter capacitive touch (except in track view where it's handled) */
     if (state.view !== 'track' && isCapacitiveTouchMessage(data)) return;
 
-    /* Shift button (CC 49) - global */
+    /* Shift button (CC 49) - global modifier */
     if (isCC && note === MoveShift) {
         state.shiftHeld = velocity > 0;
-        updateTrackLEDs();
-        if (state.view === 'track') {
-            trackView.updateLEDs();
-        }
-        if (state.view === 'pattern') {
-            patternView.updateLEDs();
-        }
+        getCurrentView().updateLEDs();
         getCurrentView().updateDisplayContent();
         return;
     }
@@ -188,8 +179,7 @@ globalThis.onMidiMessageInternal = function(data) {
             if (!state.playing) {
                 state.lastRecordedStep = -1;
             }
-            getCurrentView().updateDisplayContent();
-            updateTransportLEDs();
+            getCurrentView().updateLEDs();
         }
         return;
     }
@@ -199,7 +189,7 @@ globalThis.onMidiMessageInternal = function(data) {
         if (velocity > 0) {
             state.recording = !state.recording;
             state.lastRecordedStep = -1;
-            updateAllLEDs();
+            getCurrentView().updateLEDs();
         }
         return;
     }
@@ -232,23 +222,12 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Track buttons (CC 40-43) - track selection */
-    if (isCC && MoveTracks.includes(note)) {
-        const btnIdx = MoveTracks.indexOf(note);
-        const trackBtnIdx = 3 - btnIdx;  /* Reverse: leftmost = track 1 */
-
-        if (velocity > 0) {
-            /* Exit master/set view when selecting a track */
-            if (state.view === 'master' || state.view === 'set') {
-                getCurrentView().onExit();
-                enterTrackView();
-                getCurrentView().onEnter();
-            }
-
-            const trackIdx = state.shiftHeld ? trackBtnIdx + 4 : trackBtnIdx;
-            state.currentTrack = trackIdx;
-
-            getCurrentView().updateDisplayContent();
+    /* Back button (CC 51) - return to track view */
+    if (isCC && note === MoveBack) {
+        if (velocity > 0 && state.view !== 'track') {
+            getCurrentView().onExit();
+            enterTrackView();
+            getCurrentView().onEnter();
             updateAllLEDs();
         }
         return;

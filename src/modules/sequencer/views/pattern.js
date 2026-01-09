@@ -5,8 +5,9 @@
  */
 
 import {
-    Black, Cyan,
-    MoveSteps, MovePads, MoveMainKnob, MoveShift
+    Black, White, Cyan, BrightGreen, BrightRed, LightGrey,
+    MoveSteps, MovePads, MoveTracks, MoveMainKnob, MoveShift,
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -116,6 +117,19 @@ export function onInput(data) {
         return true;
     }
 
+    /* Track buttons - select track */
+    if (isCC && MoveTracks.includes(note)) {
+        if (velocity > 0) {
+            const btnIdx = MoveTracks.indexOf(note);
+            const trackBtnIdx = 3 - btnIdx;
+            const trackIdx = state.shiftHeld ? trackBtnIdx + 4 : trackBtnIdx;
+            state.currentTrack = trackIdx;
+            updateDisplayContent();
+            updateLEDs();
+        }
+        return true;
+    }
+
     return false;  // Let router handle
 }
 
@@ -126,7 +140,10 @@ export function updateLEDs() {
     updateStepLEDs();
     updatePadLEDs();
     updateKnobLEDs();
-    updateTriggerIndicators();
+    updateTrackButtonLEDs();
+    updateTransportLEDs();
+    updateCaptureLED();
+    updateBackLED();
 }
 
 /**
@@ -196,9 +213,32 @@ function updateKnobLEDs() {
     }
 }
 
-function updateTriggerIndicators() {
-    /* Step 1 indicator: show when shift is held (to enter set view) */
-    if (state.shiftHeld) {
-        // Set trigger indicator for step 1 - handled by router
+function updateTrackButtonLEDs() {
+    /* In pattern view, all track buttons show their track color */
+    for (let i = 0; i < 4; i++) {
+        const btnTrackOffset = 3 - i;
+        const trackIdx = state.shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
+        setButtonLED(MoveTracks[i], TRACK_COLORS[trackIdx]);
     }
+}
+
+function updateTransportLEDs() {
+    /* Play button */
+    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+
+    /* Loop button - off in pattern view */
+    setButtonLED(MoveLoop, Black);
+
+    /* Record button */
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
+}
+
+function updateCaptureLED() {
+    /* Capture off in pattern view */
+    setButtonLED(MoveCapture, Black);
+}
+
+function updateBackLED() {
+    /* Back button lit - press to return to track view */
+    setButtonLED(MoveBack, White);
 }

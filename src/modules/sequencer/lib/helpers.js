@@ -3,14 +3,7 @@
  * Shared utility functions used by views and router
  */
 
-import {
-    Black, White, LightGrey, BrightGreen, BrightRed, Cyan, Purple,
-    MovePlay, MoveLoop, MoveRec, MoveMenu, MoveCapture, MoveTracks
-} from "../../../shared/constants.mjs";
-
-import { setButtonLED } from "../../../shared/input_filter.mjs";
-
-import { NUM_STEPS, TRACK_COLORS, TRACK_COLORS_DIM } from './constants.js';
+import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS } from './constants.js';
 import { state } from './state.js';
 
 /* ============ DSP Communication ============ */
@@ -100,78 +93,87 @@ export function toggleTrackMute(trackIdx) {
     }
 }
 
-/* ============ Transport LED Updates ============ */
-
 /**
- * Update transport button LEDs (Play, Loop, Record)
+ * Sync all track data from JS state to DSP
+ * Call this after loading a set
  */
-export function updateTransportLEDs() {
-    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+export function syncAllTracksToDSP() {
+    /* Sync BPM */
+    setParam("bpm", String(state.bpm));
 
-    if (state.view === 'master') {
-        setButtonLED(MoveLoop, state.sendClock ? Cyan : LightGrey);
-    } else if (state.view === 'track' && state.trackMode === 'loop') {
-        setButtonLED(MoveLoop, Cyan);
-    } else {
-        const pattern = getCurrentPattern(state.currentTrack);
-        const hasCustomLoop = pattern.loopStart > 0 || pattern.loopEnd < NUM_STEPS - 1;
-        setButtonLED(MoveLoop, hasCustomLoop ? TRACK_COLORS[state.currentTrack] : Black);
-    }
+    for (let t = 0; t < NUM_TRACKS; t++) {
+        const track = state.tracks[t];
 
-    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
-}
+        /* Sync track-level params */
+        setParam(`track_${t}_channel`, String(track.channel));
+        setParam(`track_${t}_mute`, track.muted ? "1" : "0");
+        setParam(`track_${t}_speed`, String(SPEED_OPTIONS[track.speedIndex || 3].mult));
+        setParam(`track_${t}_swing`, String(track.swing || 50));
+        setParam(`track_${t}_pattern`, String(track.currentPattern));
 
-/**
- * Update menu button LED
- */
-export function updateMenuLED() {
-    setButtonLED(MoveMenu, state.view === 'master' ? 127 : 0);
-}
+        /* Sync current pattern's loop points */
+        const pattern = track.patterns[track.currentPattern];
+        setParam(`track_${t}_loop_start`, String(pattern.loopStart));
+        setParam(`track_${t}_loop_end`, String(pattern.loopEnd));
 
-/**
- * Update capture button LED
- */
-export function updateCaptureLED() {
-    const isSparkMode = state.view === 'track' && state.trackMode === 'spark';
-    if (isSparkMode || state.captureHeld) {
-        setButtonLED(MoveCapture, Purple);
-    } else if (state.view === 'track') {
-        setButtonLED(MoveCapture, 107);  // Dim purple
-    } else {
-        setButtonLED(MoveCapture, Black);
-    }
-}
+        /* Sync all steps in current pattern */
+        for (let s = 0; s < NUM_STEPS; s++) {
+            const step = pattern.steps[s];
 
-/* ============ Track Button LEDs ============ */
+            /* Clear step first, then add notes */
+            setParam(`track_${t}_step_${s}_clear`, "1");
 
-/**
- * Update track button LEDs
- */
-export function updateTrackLEDs() {
-    if (state.view === 'pattern') {
-        for (let i = 0; i < 4; i++) {
-            const btnTrackOffset = 3 - i;
-            const trackIdx = state.shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
-            setButtonLED(MoveTracks[i], TRACK_COLORS[trackIdx]);
+            /* Add each note */
+            for (const note of step.notes) {
+                setParam(`track_${t}_step_${s}_add_note`, String(note));
+            }
+
+            /* Sync other step params */
+            if (step.cc1 >= 0) {
+                setParam(`track_${t}_step_${s}_cc1`, String(step.cc1));
+            }
+            if (step.cc2 >= 0) {
+                setParam(`track_${t}_step_${s}_cc2`, String(step.cc2));
+            }
+            if (step.probability !== undefined && step.probability < 100) {
+                setParam(`track_${t}_step_${s}_probability`, String(step.probability));
+            }
+            if (step.ratchet > 0) {
+                /* ratchet is an index into RATCHET_VALUES */
+                const ratchetVal = RATCHET_VALUES[step.ratchet] || 1;
+                setParam(`track_${t}_step_${s}_ratchet`, String(ratchetVal));
+            }
+            if (step.length > 1) {
+                setParam(`track_${t}_step_${s}_length`, String(step.length));
+            }
+            if (step.offset) {
+                setParam(`track_${t}_step_${s}_offset`, String(step.offset));
+            }
+            /* Sync conditions */
+            if (step.condition > 0) {
+                const cond = CONDITIONS[step.condition];
+                setParam(`track_${t}_step_${s}_condition_n`, String(cond.n));
+                setParam(`track_${t}_step_${s}_condition_m`, String(cond.m));
+                setParam(`track_${t}_step_${s}_condition_not`, cond.not ? "1" : "0");
+            }
+            if (step.paramSpark > 0) {
+                const cond = CONDITIONS[step.paramSpark];
+                setParam(`track_${t}_step_${s}_param_spark_n`, String(cond.n));
+                setParam(`track_${t}_step_${s}_param_spark_m`, String(cond.m));
+                setParam(`track_${t}_step_${s}_param_spark_not`, cond.not ? "1" : "0");
+            }
+            if (step.compSpark > 0) {
+                const cond = CONDITIONS[step.compSpark];
+                setParam(`track_${t}_step_${s}_comp_spark_n`, String(cond.n));
+                setParam(`track_${t}_step_${s}_comp_spark_m`, String(cond.m));
+                setParam(`track_${t}_step_${s}_comp_spark_not`, cond.not ? "1" : "0");
+            }
+            if (step.jump >= 0) {
+                setParam(`track_${t}_step_${s}_jump`, String(step.jump));
+            }
         }
-        return;
     }
 
-    for (let i = 0; i < 4; i++) {
-        const btnTrackOffset = 3 - i;
-        const trackIdx = state.shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
-        let color = Black;
-
-        if (trackIdx === state.currentTrack) {
-            color = TRACK_COLORS[trackIdx];
-        } else if (getCurrentPattern(trackIdx).steps.some(s => s.notes.length > 0 || s.cc1 >= 0 || s.cc2 >= 0)) {
-            color = TRACK_COLORS_DIM[trackIdx];
-        }
-
-        if (state.tracks[trackIdx].muted) {
-            color = BrightRed;
-        }
-
-        setButtonLED(MoveTracks[i], color);
-    }
+    console.log("All tracks synced to DSP");
 }
+

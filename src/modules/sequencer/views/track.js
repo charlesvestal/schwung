@@ -5,8 +5,9 @@
  */
 
 import {
-    Black, White, LightGrey, Navy, Cyan, Purple, VividYellow,
-    MoveSteps, MovePads, MoveLoop, MoveMainKnob, MoveMainButton, MoveCapture,
+    Black, White, LightGrey, Navy, Cyan, Purple, VividYellow, BrightGreen, BrightRed,
+    MoveSteps, MovePads, MoveTracks, MoveLoop, MoveMainKnob, MoveMainButton,
+    MoveCapture, MovePlay, MoveRec, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch
 } from "../../../shared/constants.mjs";
@@ -27,7 +28,7 @@ import {
 
 import {
     setParam, getCurrentPattern, noteToName, notesToString,
-    updateAndSendCC, updateTransportLEDs
+    updateAndSendCC
 } from '../lib/helpers.js';
 
 /* ============ View Interface ============ */
@@ -104,6 +105,11 @@ export function onInput(data) {
         return handleJogWheel(velocity);
     }
 
+    /* Track buttons - select track */
+    if (isCC && MoveTracks.includes(note)) {
+        return handleTrackButton(note, velocity);
+    }
+
     return false;  // Let router handle
 }
 
@@ -114,6 +120,10 @@ export function updateLEDs() {
     updateStepLEDs();
     updatePadLEDs();
     updateKnobLEDs();
+    updateTrackButtonLEDs();
+    updateTransportLEDs();
+    updateCaptureLED();
+    updateBackLED();
 }
 
 /**
@@ -933,4 +943,71 @@ function updateKnobLEDs() {
     for (let i = 2; i < 8; i++) {
         setButtonLED(MoveKnobLEDs[i], Black);
     }
+}
+
+function updateTrackButtonLEDs() {
+    for (let i = 0; i < 4; i++) {
+        const btnTrackOffset = 3 - i;
+        const trackIdx = state.shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
+        let color = Black;
+
+        if (trackIdx === state.currentTrack) {
+            color = TRACK_COLORS[trackIdx];
+        } else if (getCurrentPattern(trackIdx).steps.some(s => s.notes.length > 0 || s.cc1 >= 0 || s.cc2 >= 0)) {
+            color = TRACK_COLORS_DIM[trackIdx];
+        }
+
+        if (state.tracks[trackIdx].muted) {
+            color = BrightRed;
+        }
+
+        setButtonLED(MoveTracks[i], color);
+    }
+}
+
+function updateTransportLEDs() {
+    /* Play button */
+    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+
+    /* Loop button - shows loop edit mode or custom loop indicator */
+    if (state.trackMode === 'loop') {
+        setButtonLED(MoveLoop, Cyan);
+    } else {
+        const pattern = getCurrentPattern(state.currentTrack);
+        const hasCustomLoop = pattern.loopStart > 0 || pattern.loopEnd < NUM_STEPS - 1;
+        setButtonLED(MoveLoop, hasCustomLoop ? TRACK_COLORS[state.currentTrack] : Black);
+    }
+
+    /* Record button */
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
+}
+
+function updateCaptureLED() {
+    const isSparkMode = state.trackMode === 'spark';
+    if (isSparkMode || state.captureHeld) {
+        setButtonLED(MoveCapture, Purple);
+    } else {
+        setButtonLED(MoveCapture, 107);  // Dim purple - available in track view
+    }
+}
+
+function updateBackLED() {
+    /* Back button off in track view - we're already home */
+    setButtonLED(MoveBack, Black);
+}
+
+/* ============ Track Button Handler ============ */
+
+function handleTrackButton(note, velocity) {
+    if (velocity === 0) return true;
+
+    const btnIdx = MoveTracks.indexOf(note);
+    const trackBtnIdx = 3 - btnIdx;  /* Reverse: leftmost = track 1 */
+    const trackIdx = state.shiftHeld ? trackBtnIdx + 4 : trackBtnIdx;
+
+    state.currentTrack = trackIdx;
+    updateDisplayContent();
+    updateLEDs();
+
+    return true;
 }

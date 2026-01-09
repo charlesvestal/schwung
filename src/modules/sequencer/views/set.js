@@ -5,15 +5,15 @@
  */
 
 import {
-    Black, Cyan,
-    MoveSteps, MovePads
+    Black, White, Cyan, BrightGreen, BrightRed,
+    MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
 } from "../../../shared/constants.mjs";
 
-import { setLED } from "../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, enterTrackView } from '../lib/state.js';
-import { setParam } from '../lib/helpers.js';
+import { setParam, syncAllTracksToDSP } from '../lib/helpers.js';
 import { saveCurrentSet, saveAllSetsToDisk, loadSetToTracks, setHasContent } from '../lib/persistence.js';
 
 /* ============ View Interface ============ */
@@ -39,6 +39,7 @@ export function onExit() {
 export function onInput(data) {
     const isNote = data[0] === 0x90 || data[0] === 0x80;
     const isNoteOn = data[0] === 0x90;
+    const isCC = data[0] === 0xB0;
     const note = data[1];
     const velocity = data[2];
 
@@ -61,6 +62,9 @@ export function onInput(data) {
             /* Load the selected set */
             loadSetToTracks(setIdx);
 
+            /* Sync all track data to DSP */
+            syncAllTracksToDSP();
+
             /* Exit set view, go to track view */
             enterTrackView();
 
@@ -76,6 +80,11 @@ export function onInput(data) {
         return true;
     }
 
+    /* Track buttons - inactive in set view, consume but ignore */
+    if (isCC && MoveTracks.includes(note)) {
+        return true;
+    }
+
     return false;  // Let router handle
 }
 
@@ -86,6 +95,10 @@ export function updateLEDs() {
     updateStepLEDs();
     updatePadLEDs();
     updateKnobLEDs();
+    updateTrackButtonLEDs();
+    updateTransportLEDs();
+    updateCaptureLED();
+    updateBackLED();
 }
 
 /**
@@ -143,4 +156,32 @@ function updatePadLEDs() {
 function updateKnobLEDs() {
     /* Knobs off in set view */
     // Knob LEDs handled by router
+}
+
+function updateTrackButtonLEDs() {
+    /* Track buttons off in set view - not active */
+    for (let i = 0; i < 4; i++) {
+        setButtonLED(MoveTracks[i], Black);
+    }
+}
+
+function updateTransportLEDs() {
+    /* Play button */
+    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+
+    /* Loop button - off in set view */
+    setButtonLED(MoveLoop, Black);
+
+    /* Record button */
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
+}
+
+function updateCaptureLED() {
+    /* Capture off in set view */
+    setButtonLED(MoveCapture, Black);
+}
+
+function updateBackLED() {
+    /* Back button lit - press to return to track view */
+    setButtonLED(MoveBack, White);
 }

@@ -5,8 +5,8 @@
  */
 
 import {
-    Black, LightGrey, BrightGreen, Cyan, BrightRed, VividYellow,
-    MoveSteps, MovePads, MoveLoop,
+    Black, White, LightGrey, BrightGreen, Cyan, BrightRed, VividYellow,
+    MoveSteps, MovePads, MoveTracks, MoveLoop, MovePlay, MoveRec, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
 } from "../../../shared/constants.mjs";
 
@@ -14,7 +14,7 @@ import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage } from '../lib/state.js';
-import { setParam, updateTransportLEDs } from '../lib/helpers.js';
+import { setParam } from '../lib/helpers.js';
 
 /* ============ Master-specific Data ============ */
 
@@ -112,8 +112,13 @@ export function onInput(data) {
             state.sendClock = state.sendClock ? 0 : 1;
             setParam("send_clock", String(state.sendClock));
             updateDisplayContent();
-            updateTransportLEDs();
+            updateLEDs();
         }
+        return true;
+    }
+
+    /* Track buttons - inactive in master view, consume but ignore */
+    if (isCC && MoveTracks.includes(note)) {
         return true;
     }
 
@@ -127,6 +132,10 @@ export function updateLEDs() {
     updateStepLEDs();
     updatePadLEDs();
     updateKnobLEDs();
+    updateTrackButtonLEDs();
+    updateTransportLEDs();
+    updateCaptureLED();
+    updateBackLED();
 }
 
 /**
@@ -180,4 +189,32 @@ function updateKnobLEDs() {
     for (let i = 0; i < 8; i++) {
         setButtonLED(MoveKnobLEDs[i], TRACK_COLORS[i]);
     }
+}
+
+function updateTrackButtonLEDs() {
+    /* Track buttons off in master view - not active */
+    for (let i = 0; i < 4; i++) {
+        setButtonLED(MoveTracks[i], Black);
+    }
+}
+
+function updateTransportLEDs() {
+    /* Play button */
+    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+
+    /* Loop button - shows clock sync state in master view */
+    setButtonLED(MoveLoop, state.sendClock ? Cyan : LightGrey);
+
+    /* Record button */
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
+}
+
+function updateCaptureLED() {
+    /* Capture off in master view */
+    setButtonLED(MoveCapture, Black);
+}
+
+function updateBackLED() {
+    /* Back button lit - press to return to track view */
+    setButtonLED(MoveBack, White);
 }
