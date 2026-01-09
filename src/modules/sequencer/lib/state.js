@@ -189,3 +189,12 @@ export function enterBpmMode() {
 export function exitBpmMode() {
     state.trackMode = 'normal';
 }
+
+export function enterSpeedMode() {
+    state.view = 'track';
+    state.trackMode = 'speed';
+}
+
+export function exitSpeedMode() {
+    state.trackMode = 'normal';
+}
