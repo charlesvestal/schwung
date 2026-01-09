@@ -3,7 +3,11 @@
 ## Current State
 - `track.js` is 1071 lines with 5 modes mixed together
 - Modes: normal, loop, spark, swing (bpm is handled via jog wheel in normal/swing)
-- Each mode has its own input handling, LED updates, and display logic scattered throughout
+- Each mode has its own:
+  - Input handling (steps, pads, knobs, jog wheel)
+  - LED updates (steps, pads, knobs)
+  - Display content (4-line screen)
+- All of this is scattered throughout with mode checks everywhere
 
 ## Goal
 Break out each mode into its own file under `views/track/` so each mode is self-contained and easier to maintain.
@@ -98,14 +102,27 @@ Responsibilities:
 
 Each mode file exports:
 ```javascript
+// Input
 export function onInput(data) { ... }      // Returns true if handled
+
+// LEDs - each mode owns its LED state
 export function updateStepLEDs() { ... }
 export function updatePadLEDs() { ... }
 export function updateKnobLEDs() { ... }
+
+// Display - each mode owns its screen content
 export function updateDisplayContent() { ... }
+
+// Lifecycle
 export function onEnter() { ... }          // Optional, mode-specific init
 export function onExit() { ... }           // Optional, mode-specific cleanup
 ```
+
+Mode display examples:
+- **swing**: "SWING MODE" / "Track N" / "Swing: NN%" / "Jog wheel to adjust"
+- **loop**: "LOOP EDIT" / "Track N" / "Loop: X-Y" / "Tap start & end steps"
+- **spark**: Shows selected steps and spark parameters
+- **normal**: Track info, or shift-held shows channel/speed
 
 track.js coordinator:
 ```javascript
