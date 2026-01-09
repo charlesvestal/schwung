@@ -55,6 +55,7 @@ typedef struct {
     int8_t comp_spark_m;                 /* Which iteration (1 to N) */
     uint8_t comp_spark_not;              /* Negate condition */
     int8_t jump;                         /* Jump target step (-1 = no jump, 0-15 = step) */
+    int8_t offset;                       /* Micro-timing offset in ticks (-24 to +24, 48 ticks per step) */
 } step_t;
 
 /* Pattern data - contains steps and loop points */
@@ -88,6 +89,10 @@ typedef struct {
     uint8_t note_length_total;   /* Total length of current note in steps */
     uint8_t note_gate;           /* Gate % of the note that triggered (stored at trigger time) */
     double note_length_phase;    /* Phase accumulator for note length */
+    /* Pending note trigger (for micro-timing offset) */
+    uint8_t trigger_pending;     /* 1 if a step trigger is pending */
+    double trigger_at_phase;     /* Phase value when trigger should fire */
+    uint8_t pending_step;        /* Which step is pending */
 } track_t;
 
 /* Pending note for overlapping long notes */
@@ -253,6 +258,7 @@ static void init_pattern(pattern_t *pattern) {
         pattern->steps[i].comp_spark_m = 0;
         pattern->steps[i].comp_spark_not = 0;
         pattern->steps[i].jump = -1;            /* No jump */
+        pattern->steps[i].offset = 0;           /* No micro-timing offset */
     }
 }
 
@@ -276,6 +282,9 @@ static void init_track(track_t *track, int channel) {
     track->note_length_total = 1;
     track->note_gate = DEFAULT_GATE;
     track->note_length_phase = 0.0;
+    track->trigger_pending = 0;
+    track->trigger_at_phase = 0.0;
+    track->pending_step = 0;
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -431,6 +440,29 @@ static void trigger_track_step(track_t *track, int track_idx) {
     }
 }
 
+/* Schedule a step trigger with micro-timing offset */
+static void schedule_step_trigger(track_t *track, int track_idx, int step_idx, double base_phase) {
+    pattern_t *pattern = get_current_pattern(track);
+    step_t *step = &pattern->steps[step_idx];
+
+    /* Calculate trigger point based on offset
+     * offset is -24 to +24, where 48 ticks = 1 step
+     * Positive offset = delay trigger, negative = trigger earlier
+     */
+    double offset_phase = (double)step->offset / 48.0;
+    double trigger_phase = base_phase + offset_phase;
+
+    /* For negative offsets, trigger immediately if we've already passed the point */
+    if (trigger_phase <= 0.0) {
+        trigger_track_step(track, track_idx);
+    } else {
+        /* Schedule for later */
+        track->trigger_pending = 1;
+        track->trigger_at_phase = trigger_phase;
+        track->pending_step = step_idx;
+    }
+}
+
 static void advance_track(track_t *track, int track_idx) {
     /* Advance step, respecting loop points from current pattern */
     pattern_t *pattern = get_current_pattern(track);
@@ -440,7 +472,9 @@ static void advance_track(track_t *track, int track_idx) {
     } else {
         track->current_step++;
     }
-    trigger_track_step(track, track_idx);
+
+    /* Schedule step trigger with offset (phase just wrapped, so base is ~0) */
+    schedule_step_trigger(track, track_idx, track->current_step, track->phase);
 }
 
 /* ============ Plugin Callbacks ============ */
@@ -529,13 +563,17 @@ static void plugin_set_param(const char *key, const char *val) {
                 send_midi_clock();
             }
 
-            /* Trigger first step on all tracks */
+            /* Schedule first step on all tracks (with offset support) */
             for (int t = 0; t < NUM_TRACKS; t++) {
-                trigger_track_step(&g_tracks[t], t);
+                schedule_step_trigger(&g_tracks[t], t, g_tracks[t].current_step, 0.0);
             }
         } else if (!new_playing && g_playing) {
             /* Stopping playback */
             all_notes_off();
+            /* Clear any pending triggers */
+            for (int t = 0; t < NUM_TRACKS; t++) {
+                g_tracks[t].trigger_pending = 0;
+            }
             if (g_send_clock) {
                 send_midi_stop();
             }
@@ -712,6 +750,7 @@ static void plugin_set_param(const char *key, const char *val) {
                                 s->comp_spark_m = 0;
                                 s->comp_spark_not = 0;
                                 s->jump = -1;
+                                s->offset = 0;
                             }
                             else if (strcmp(step_param, "vel") == 0) {
                                 int vel = atoi(val);
@@ -803,6 +842,13 @@ static void plugin_set_param(const char *key, const char *val) {
                                 int len = atoi(val);
                                 if (len >= 1 && len <= 16) {
                                     get_current_pattern(&g_tracks[track])->steps[step].length = len;
+                                }
+                            }
+                            /* Micro-timing offset */
+                            else if (strcmp(step_param, "offset") == 0) {
+                                int off = atoi(val);
+                                if (off >= -24 && off <= 24) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].offset = off;
                                 }
                             }
                         }
@@ -966,6 +1012,12 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
             /* Per-track step increment with speed multiplier */
             double track_step_inc = step_inc * track->speed;
             track->phase += track_step_inc;
+
+            /* Check for pending micro-timing trigger */
+            if (track->trigger_pending && track->phase >= track->trigger_at_phase) {
+                track->trigger_pending = 0;
+                trigger_track_step(track, t);
+            }
 
             /* Track note length and handle note-off */
             if (track->note_on_active) {

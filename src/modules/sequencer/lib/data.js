@@ -21,7 +21,8 @@ export function createEmptyStep() {
         length: 1,         // Note length in steps (1-16)
         paramSpark: 0,     // Index into CONDITIONS - when CC locks apply
         compSpark: 0,      // Index into CONDITIONS - when ratchet/jump apply
-        jump: -1           // Jump target step (-1 = no jump, 0-15 = step)
+        jump: -1,          // Jump target step (-1 = no jump, 0-15 = step)
+        offset: 0          // Micro-timing offset in ticks (-24 to +24, 48 ticks per step)
     };
 }
 
@@ -39,7 +40,8 @@ export function cloneStep(srcStep) {
         length: srcStep.length || 1,
         paramSpark: srcStep.paramSpark,
         compSpark: srcStep.compSpark,
-        jump: srcStep.jump
+        jump: srcStep.jump,
+        offset: srcStep.offset || 0
     };
 }
 

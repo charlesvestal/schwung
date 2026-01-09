@@ -674,6 +674,64 @@ function handleJogWheel(velocity) {
         return true;
     }
 
+    /* Micro-timing offset when holding step(s) */
+    if (state.heldStep >= 0) {
+        const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
+        let offset = step.offset || 0;
+
+        if (velocity >= 1 && velocity <= 63) {
+            offset = Math.min(offset + 1, 24);
+        } else if (velocity >= 65 && velocity <= 127) {
+            offset = Math.max(offset - 1, -24);
+        }
+
+        step.offset = offset;
+        setParam(`track_${state.currentTrack}_step_${state.heldStep}_offset`, String(offset));
+
+        /* Display offset as percentage of step */
+        const pct = Math.round((offset / 48) * 100);
+        const sign = offset >= 0 ? "+" : "";
+        displayMessage(
+            `Step ${state.heldStep + 1}`,
+            `Offset: ${sign}${offset} ticks`,
+            `(${sign}${pct}% of step)`,
+            offset === 0 ? "On grid" : (offset < 0 ? "Early" : "Late")
+        );
+        state.stepPadPressed[state.heldStep] = true;
+        return true;
+    }
+
+    /* Offset for multiple steps in spark mode */
+    if (state.trackMode === 'spark' && state.sparkSelectedSteps.size > 0) {
+        const pattern = getCurrentPattern(state.currentTrack);
+
+        for (const stepIdx of state.sparkSelectedSteps) {
+            const step = pattern.steps[stepIdx];
+            let offset = step.offset || 0;
+
+            if (velocity >= 1 && velocity <= 63) {
+                offset = Math.min(offset + 1, 24);
+            } else if (velocity >= 65 && velocity <= 127) {
+                offset = Math.max(offset - 1, -24);
+            }
+
+            step.offset = offset;
+            setParam(`track_${state.currentTrack}_step_${stepIdx}_offset`, String(offset));
+        }
+
+        const firstStep = [...state.sparkSelectedSteps][0];
+        const offset = pattern.steps[firstStep].offset;
+        const pct = Math.round((offset / 48) * 100);
+        const sign = offset >= 0 ? "+" : "";
+        displayMessage(
+            `SPARK (${state.sparkSelectedSteps.size})`,
+            `Offset: ${sign}${offset} ticks`,
+            `(${sign}${pct}% of step)`,
+            ""
+        );
+        return true;
+    }
+
     if (state.shiftHeld) {
         /* BPM control */
         if (velocity >= 1 && velocity <= 63) {
@@ -717,9 +775,11 @@ function clearStep(stepIdx) {
     step.probability = 100;
     step.condition = 0;
     step.ratchet = 0;
+    step.length = 1;
     step.paramSpark = 0;
     step.compSpark = 0;
     step.jump = -1;
+    step.offset = 0;
     setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
 }
 
