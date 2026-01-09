@@ -13,18 +13,19 @@ Polyphonic SoundFont synthesizer for Move Anything using [TinySoundFont](https:/
 
 ## Setup
 
-After deploying Move Anything to your Move device, copy a SoundFont file to the module directory:
+After deploying Move Anything to your Move device, copy SoundFonts into the module directory:
 
 ```bash
-scp your-soundfont.sf2 ableton@move.local:/data/UserData/move-anything/modules/sf2/instrument.sf2
+scp your-soundfont.sf2 ableton@move.local:/data/UserData/move-anything/modules/sf2/soundfonts/
 ```
 
-The module loads `instrument.sf2` from its directory by default.
+The module loads the first `.sf2` file in `soundfonts/` by default. If the folder is empty, it falls back to `instrument.sf2` in the module root.
 
 ## Controls
 
 - **Jog wheel**: Navigate presets
 - **Left/Right**: Previous/next preset
+- **Shift + Left/Right**: Switch soundfonts
 - **Up/Down**: Octave transpose
 
 ## SoundFont Sources

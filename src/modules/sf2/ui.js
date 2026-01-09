@@ -8,6 +8,7 @@
 import {
     MoveMainKnob, MoveMainButton,
     MoveLeft, MoveRight, MoveUp, MoveDown,
+    MoveShift,
     MovePads
 } from '../../shared/constants.mjs';
 
@@ -18,8 +19,11 @@ let currentPreset = 0;
 let presetCount = 128;  /* Will be updated from DSP */
 let presetName = "Piano";
 let soundfontName = "instrument.sf2";
+let soundfontCount = 0;
+let soundfontIndex = 0;
 let octaveTranspose = 0;
 let polyphony = 0;
+let shiftHeld = false;
 
 /* Alias constants for clarity */
 const CC_JOG_WHEEL = MoveMainKnob;
@@ -28,6 +32,7 @@ const CC_LEFT = MoveLeft;
 const CC_RIGHT = MoveRight;
 const CC_PLUS = MoveUp;
 const CC_MINUS = MoveDown;
+const CC_SHIFT = MoveShift;
 
 /* Note range for Move pads */
 const PAD_NOTE_MIN = MovePads[0];
@@ -50,7 +55,13 @@ function drawUI() {
     fill_rect(0, 12, SCREEN_WIDTH, 1, 1);
 
     /* Soundfont name */
-    print(2, 16, soundfontName.substring(0, 20), 1);
+    let soundfontLabel = soundfontName;
+    if (soundfontCount > 0) {
+        const suffix = ` ${soundfontIndex + 1}/${soundfontCount}`;
+        const maxNameLen = Math.max(0, 20 - suffix.length);
+        soundfontLabel = `${soundfontName.substring(0, maxNameLen)}${suffix}`;
+    }
+    print(2, 16, soundfontLabel.substring(0, 20), 1);
 
     /* Preset info */
     print(2, 28, `Preset: ${currentPreset}`, 1);
@@ -92,6 +103,18 @@ function setPreset(index) {
     console.log(`SF2: Preset changed to ${currentPreset}: ${presetName}`);
 }
 
+/* Change soundfont */
+function setSoundfont(index) {
+    if (soundfontCount <= 0) return;
+
+    if (index < 0) index = soundfontCount - 1;
+    if (index >= soundfontCount) index = 0;
+
+    soundfontIndex = index;
+    host_module_set_param("soundfont_index", String(soundfontIndex));
+    needsRedraw = true;
+}
+
 /* Change octave */
 function setOctave(delta) {
     allNotesOff();
@@ -109,6 +132,22 @@ function setOctave(delta) {
 /* Handle CC messages */
 function handleCC(cc, value) {
     /* Note: Shift+Wheel exit is handled at host level */
+
+    if (cc === CC_SHIFT) {
+        shiftHeld = value > 0;
+        return false;
+    }
+
+    if (shiftHeld) {
+        if (cc === CC_LEFT && value > 0) {
+            setSoundfont(soundfontIndex - 1);
+            return true;
+        }
+        if (cc === CC_RIGHT && value > 0) {
+            setSoundfont(soundfontIndex + 1);
+            return true;
+        }
+    }
 
     /* Preset navigation with left/right buttons */
     if (cc === CC_LEFT && value > 0) {
@@ -174,6 +213,12 @@ globalThis.init = function() {
     const sf = host_module_get_param("soundfont_name");
     if (sf) soundfontName = sf;
 
+    const sfCount = host_module_get_param("soundfont_count");
+    if (sfCount) soundfontCount = parseInt(sfCount) || 0;
+
+    const sfIndex = host_module_get_param("soundfont_index");
+    if (sfIndex) soundfontIndex = parseInt(sfIndex) || 0;
+
     const pc = host_module_get_param("preset_count");
     if (pc) presetCount = parseInt(pc) || 128;
 
@@ -192,6 +237,30 @@ globalThis.tick = function() {
     const poly = host_module_get_param("polyphony");
     if (poly) {
         polyphony = parseInt(poly) || 0;
+    }
+
+    const sf = host_module_get_param("soundfont_name");
+    if (sf && sf !== soundfontName) {
+        soundfontName = sf;
+        needsRedraw = true;
+    }
+
+    const sfCount = host_module_get_param("soundfont_count");
+    if (sfCount) {
+        const parsed = parseInt(sfCount) || 0;
+        if (parsed !== soundfontCount) {
+            soundfontCount = parsed;
+            needsRedraw = true;
+        }
+    }
+
+    const sfIndex = host_module_get_param("soundfont_index");
+    if (sfIndex) {
+        const parsed = parseInt(sfIndex) || 0;
+        if (parsed !== soundfontIndex) {
+            soundfontIndex = parsed;
+            needsRedraw = true;
+        }
     }
 
     /* Rate-limited redraw */

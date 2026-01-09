@@ -8,7 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
+#include <dirent.h>
 
 /* Include plugin API */
 #include "host/plugin_api_v1.h"
@@ -27,6 +29,17 @@ static char g_soundfont_path[512] = {0};
 static char g_soundfont_name[128] = "No SF2 loaded";
 static char g_preset_name[128] = "";
 static int g_active_voices = 0;
+static int g_soundfont_index = 0;
+static int g_soundfont_count = 0;
+
+#define MAX_SOUNDFONTS 64
+
+typedef struct {
+    char path[512];
+    char name[128];
+} soundfont_entry_t;
+
+static soundfont_entry_t g_soundfonts[MAX_SOUNDFONTS];
 
 /* Rendering buffer (float) */
 static float g_render_buffer[MOVE_FRAMES_PER_BLOCK * 2];
@@ -41,6 +54,60 @@ static void plugin_log(const char *msg) {
     } else {
         printf("[sf2] %s\n", msg);
     }
+}
+
+static int soundfont_entry_cmp(const void *a, const void *b) {
+    const soundfont_entry_t *sa = (const soundfont_entry_t *)a;
+    const soundfont_entry_t *sb = (const soundfont_entry_t *)b;
+    return strcasecmp(sa->name, sb->name);
+}
+
+static void scan_soundfonts(const char *module_dir) {
+    char dir_path[512];
+    snprintf(dir_path, sizeof(dir_path), "%s/soundfonts", module_dir);
+
+    g_soundfont_count = 0;
+
+    DIR *dir = opendir(dir_path);
+    if (!dir) {
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') {
+            continue;
+        }
+        const char *ext = strrchr(entry->d_name, '.');
+        if (!ext || strcasecmp(ext, ".sf2") != 0) {
+            continue;
+        }
+        if (g_soundfont_count >= MAX_SOUNDFONTS) {
+            plugin_log("SF2: soundfont list full, skipping extras");
+            break;
+        }
+
+        soundfont_entry_t *sf = &g_soundfonts[g_soundfont_count++];
+        snprintf(sf->path, sizeof(sf->path), "%s/%s", dir_path, entry->d_name);
+        strncpy(sf->name, entry->d_name, sizeof(sf->name) - 1);
+        sf->name[sizeof(sf->name) - 1] = '\0';
+    }
+
+    closedir(dir);
+
+    if (g_soundfont_count > 1) {
+        qsort(g_soundfonts, g_soundfont_count, sizeof(soundfont_entry_t), soundfont_entry_cmp);
+    }
+}
+
+static void set_soundfont_index(int index) {
+    if (g_soundfont_count <= 0) return;
+
+    if (index < 0) index = g_soundfont_count - 1;
+    if (index >= g_soundfont_count) index = 0;
+
+    g_soundfont_index = index;
+    load_soundfont(g_soundfonts[g_soundfont_index].path);
 }
 
 /* Load a SoundFont file */
@@ -80,6 +147,7 @@ static int load_soundfont(const char *path) {
     }
 
     strncpy(g_soundfont_path, path, sizeof(g_soundfont_path) - 1);
+    g_soundfont_path[sizeof(g_soundfont_path) - 1] = '\0';
 
     snprintf(msg, sizeof(msg), "SF2 loaded: %d presets", g_preset_count);
     plugin_log(msg);
@@ -146,11 +214,26 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
         }
     }
 
-    /* Try to load default soundfont */
-    if (default_sf[0]) {
+    scan_soundfonts(module_dir);
+
+    if (g_soundfont_count > 0) {
+        g_soundfont_index = 0;
+        if (default_sf[0]) {
+            const char *default_name = strrchr(default_sf, '/');
+            default_name = default_name ? default_name + 1 : default_sf;
+            for (int i = 0; i < g_soundfont_count; i++) {
+                if (strcmp(g_soundfonts[i].path, default_sf) == 0 ||
+                    strcmp(g_soundfonts[i].name, default_name) == 0) {
+                    g_soundfont_index = i;
+                    break;
+                }
+            }
+        }
+        load_soundfont(g_soundfonts[g_soundfont_index].path);
+    } else if (default_sf[0]) {
         load_soundfont(default_sf);
     } else {
-        /* Try module directory */
+        /* Try module directory legacy path */
         char sf_path[512];
         snprintf(sf_path, sizeof(sf_path), "%s/instrument.sf2", module_dir);
         load_soundfont(sf_path);
@@ -238,6 +321,23 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
 static void plugin_set_param(const char *key, const char *val) {
     if (strcmp(key, "soundfont_path") == 0) {
         load_soundfont(val);
+        if (g_soundfont_count > 0) {
+            const char *name = strrchr(val, '/');
+            name = name ? name + 1 : val;
+            for (int i = 0; i < g_soundfont_count; i++) {
+                if (strcmp(g_soundfonts[i].path, val) == 0 ||
+                    strcmp(g_soundfonts[i].name, name) == 0) {
+                    g_soundfont_index = i;
+                    break;
+                }
+            }
+        }
+    } else if (strcmp(key, "soundfont_index") == 0) {
+        set_soundfont_index(atoi(val));
+    } else if (strcmp(key, "next_soundfont") == 0) {
+        set_soundfont_index(g_soundfont_index + 1);
+    } else if (strcmp(key, "prev_soundfont") == 0) {
+        set_soundfont_index(g_soundfont_index - 1);
     } else if (strcmp(key, "preset") == 0) {
         int preset = atoi(val);
         select_preset(preset);
@@ -259,6 +359,10 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     } else if (strcmp(key, "soundfont_path") == 0) {
         strncpy(buf, g_soundfont_path, buf_len - 1);
         return strlen(buf);
+    } else if (strcmp(key, "soundfont_count") == 0) {
+        return snprintf(buf, buf_len, "%d", g_soundfont_count);
+    } else if (strcmp(key, "soundfont_index") == 0) {
+        return snprintf(buf, buf_len, "%d", g_soundfont_index);
     } else if (strcmp(key, "preset") == 0) {
         return snprintf(buf, buf_len, "%d", g_current_preset);
     } else if (strcmp(key, "preset_name") == 0) {
