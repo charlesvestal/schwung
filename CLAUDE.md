@@ -8,7 +8,121 @@ Instructions for Claude Code when working with this repository.
 
 ## Project Overview
 
-Move Anything is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. It provides access to pads, encoders, buttons, display (128x64 1-bit), audio I/O, and MIDI via USB-A.
+Move Anything is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. This repo focuses on **SEQOMD** - an OP-Z inspired 8-track MIDI step sequencer.
+
+## SEQOMD Sequencer
+
+### Architecture
+
+```
+src/modules/sequencer/
+  ui.js                    # Main router - delegates to views
+  lib/
+    constants.js           # Colors, speeds, conditions, etc.
+    state.js               # All mutable state + view transitions
+    helpers.js             # Utility functions
+    data.js                # Track/pattern data structures
+    persistence.js         # Save/load sets to disk
+  views/
+    set.js                 # Set selection (32 sets on pads)
+    track.js               # Track view coordinator
+    pattern.js             # Pattern selection grid
+    master.js              # Master settings (channels, sync)
+    track/
+      normal.js            # Main step editing mode
+      loop.js              # Loop start/end editing
+      spark.js             # Spark conditions (param/comp spark, jump)
+      channel.js           # MIDI channel adjustment
+      speed.js             # Track speed multiplier
+      swing.js             # Track swing amount
+      shared.js            # Common re-exports
+```
+
+### View Hierarchy
+
+```
+Set View (startup)
+    ↓ tap pad to select set
+Track View (main editing)
+    ├── Menu → Pattern View (toggle)
+    ├── Shift+Menu → Master View (toggle)
+    ├── Loop button (hold) → Loop Mode
+    ├── Capture + step → Spark Mode
+    └── Shift + step icon → Channel/Speed/Swing modes
+```
+
+### Navigation
+
+| Action | Result |
+|--------|--------|
+| **Pad tap** (set view) | Load set, enter track view |
+| **Menu** | Toggle pattern view |
+| **Shift + Menu** | Toggle master view |
+| **Back** | Return to track view |
+| **Shift + Step 1** (pattern view) | Go to set view |
+| **Loop** (hold) | Enter loop edit mode |
+| **Capture + Step** | Enter spark mode |
+| **Capture** (in spark) | Exit spark mode |
+| **Jog click / Back** (in mode) | Exit channel/speed/swing mode |
+
+### Track Mode Icons (Shift held)
+
+When shift is held in track view, step LEDs clear and show mode entry icons:
+
+| Step | Color | Mode | Jog Wheel Function |
+|------|-------|------|-------------------|
+| Step 2 | BrightGreen | Channel | MIDI channel 1-16 |
+| Step 5 | Cyan | Speed | Track speed (1/4x - 4x) |
+| Step 7 | VividYellow | Swing | Swing 0-100% |
+
+Press the lit step to enter that mode. Use jog wheel to adjust, then jog click or Back to exit.
+
+### Track Colors
+
+| Track | Color | Default Name |
+|-------|-------|--------------|
+| 1 | BrightRed | Kick |
+| 2 | OrangeRed | Snare |
+| 3 | VividYellow | Perc |
+| 4 | BrightGreen | Sample |
+| 5 | Cyan | Bass |
+| 6 | RoyalBlue | Lead |
+| 7 | Purple | Arp |
+| 8 | White | Chord |
+
+Track buttons select tracks 1-4. Shift + track buttons select tracks 5-8.
+
+### Step Parameters
+
+When holding a step in normal track mode:
+
+| Knob | Parameter | Range |
+|------|-----------|-------|
+| Knob 1 | CC1 value | 0-127 (tap to clear) |
+| Knob 2 | CC2 value | 0-127 (tap to clear) |
+| Knob 7 | Ratchet | 1x, 2x, 3x, 4x, 6x, 8x |
+| Knob 8 | Probability/Condition | 5-100% / 1:2, 1:3, etc. |
+| Jog wheel | Micro-timing offset | -24 to +24 ticks |
+| Tap another step | Note length | 1-16 steps |
+| Pads | Toggle notes | Up to 4 per step |
+
+### LED Conventions
+
+- **Bright color**: Selected/active
+- **Dim color**: Has content but not selected
+- **Black**: Empty/inactive
+- **White**: Playhead position
+- **Cyan**: Loop points, speed mode
+- **Purple**: Spark mode selection
+
+### Data Storage
+
+```
+/data/UserData/move-anything-data/sequencer/
+  sets.json              # All 32 sets
+```
+
+Each set contains 8 tracks × 30 patterns × 16 steps with full parameter data.
 
 ## Build Commands
 
@@ -21,11 +135,7 @@ Move Anything is a framework for custom JavaScript and native DSP modules on Abl
 ./scripts/uninstall.sh       # Restore stock Move
 ```
 
-Cross-compilation uses `${CROSS_PREFIX}gcc` for the Move's ARM architecture.
-
-## Architecture
-
-### Host + Module System
+## Host + Module System
 
 ```
 Host (move-anything):
@@ -48,34 +158,6 @@ Modules (src/modules/<id>/):
 - **src/host/module_manager.c**: Module loading
 - **src/host/menu_ui.js**: Host menu for module selection
 
-### Module Structure
-
-```
-src/modules/sf2/
-  module.json       # Required
-  ui.js             # JavaScript UI
-  dsp.so            # Native DSP (built from dsp/)
-  dsp/
-    sf2_plugin.c
-    third_party/tsf.h
-```
-
-### Plugin API (v1)
-
-```c
-typedef struct plugin_api_v1 {
-    uint32_t api_version;
-    int (*on_load)(const char *module_dir, const char *json_defaults);
-    void (*on_unload)(void);
-    void (*on_midi)(const uint8_t *msg, int len, int source);
-    void (*set_param)(const char *key, const char *val);
-    int (*get_param)(const char *key, char *buf, int buf_len);
-    void (*render_block)(int16_t *out_interleaved_lr, int frames);
-} plugin_api_v1_t;
-```
-
-Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
-
 ### JS Host Functions
 
 ```javascript
@@ -92,67 +174,31 @@ host_rescan_modules()
 ### Shared JS Utilities
 
 Located in `src/shared/`:
-- `constants.mjs` - MIDI CC/note mappings
-- `input_filter.mjs` - Capacitive touch filtering
+- `constants.mjs` - MIDI CC/note mappings, colors, button constants
+- `input_filter.mjs` - Capacitive touch filtering, setLED, setButtonLED
 - `midi_messages.mjs` - MIDI helpers
 - `move_display.mjs` - Display utilities
 
 ## Move Hardware MIDI
 
-Pads: Notes 68-99 (32 pads for notes/sounds)
-Steps/Trigs: Notes 16-31 (16 step buttons for sequencing)
-Tracks: Notes 40-43
+Pads: Notes 68-99 (32 pads, 4 rows × 8 columns)
+Steps: Notes 16-31 (16 step buttons)
+Tracks: CCs 40-43 (4 track buttons)
 
-Key CCs: 14 (jog), 49 (shift), 50 (menu), 71-78 (knob LEDs)
+Key CCs: 14 (jog), 49 (shift), 50 (menu), 51 (back), 60 (copy), 85 (play), 86 (rec), 87 (loop)
 
-Notes 0-9: Capacitive touch from knobs (filter if not needed)
+Knobs: CCs 71-78 (endless encoders)
+Knob touch: Notes 0-7 (capacitive sensing)
 
 ## LED Control
 
-Two functions for controlling LEDs (from `input_filter.mjs`):
-
 ```javascript
 setLED(note, color)       // Note-based RGB LEDs (pads, steps)
-setButtonLED(cc, color)   // CC-based button LEDs (transport, etc.)
+setButtonLED(cc, color)   // CC-based button LEDs (transport, knobs, etc.)
 ```
 
-**Button LED mapping (input CC → LED control):**
-```
-Play:   CC 85 (MovePlay) → setButtonLED(MovePlay, color)
-Record: CC 86 (MoveRec)  → setButtonLED(MoveRec, color)
-Loop:   CC 87 (MoveLoop) → setButtonLED(MoveLoop, color)
-```
+## Audio Specs
 
-Note: `MoveRecord` (118) is a separate RGB LED constant, but the record button's LED is controlled via CC 86 (`MoveRec`), not note 118.
-
-## Audio Mailbox Layout
-
-```
-AUDIO_OUT_OFFSET = 256
-AUDIO_IN_OFFSET  = 2304
-AUDIO_BYTES_PER_BLOCK = 512
-FRAMES_PER_BLOCK = 128
-SAMPLE_RATE = 44100
-```
-
-Frame layout: [L0, R0, L1, R1, ..., L127, R127] as int16 little-endian.
-
-## Deployment
-
-On-device layout:
-```
-/data/UserData/move-anything/
-  move-anything               # Host binary
-  move-anything-shim.so       # Shim (also at /usr/lib/)
-  host/menu_ui.js
-  shared/
-  modules/sf2/, m8/, controller/
-```
-
-Original Move preserved as `/opt/move/MoveOriginal`.
-
-## Dependencies
-
-- QuickJS: libs/quickjs/
-- stb_image.h: src/lib/
-- TinySoundFont: src/modules/sf2/dsp/third_party/tsf.h
+- Sample rate: 44100 Hz
+- Block size: 128 frames
+- Format: Stereo interleaved int16
