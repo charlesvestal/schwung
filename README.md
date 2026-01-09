@@ -2,7 +2,11 @@
 
 A framework for writing custom modules for the Ableton Move hardware.
 
-> **Fork Note**: This is a fork of [charlesvestal/move-anything](https://github.com/charlesvestal/move-anything) with additional modules and build improvements. See [Changes from Upstream](#changes-from-upstream) for details.
+## Credits
+
+This project is based on the excellent work by:
+- **[bobbydigitales/move-anything](https://github.com/bobbydigitales/move-anything)** - Original Move Anything framework
+- **[charlesvestal/move-anything](https://github.com/charlesvestal/move-anything)** - Extended version with additional modules
 
 ## Features
 
@@ -30,15 +34,11 @@ curl -L https://raw.githubusercontent.com/ahlstrominfo/move-anything/main/script
 - **Launch**: Hold Shift + touch Volume knob + Knob 8
 - **Exit**: Hold Shift + click Jog wheel
 
-## Included Modules
+## Included Module
 
 | Module | Description |
 |--------|-------------|
-| SF2 Synth | SoundFont synthesizer with preset/octave control |
-| DX7 | Yamaha DX7 FM synthesizer emulation |
-| Step Sequencer | 16-step MIDI sequencer with external output |
-| M8 LPP | Dirtywave M8 Launchpad Pro emulation |
-| Controller | MIDI controller with 16 banks |
+| Sequencer | OP-Z inspired 8-track MIDI step sequencer with per-step parameters |
 
 ## Uninstall
 
@@ -68,22 +68,6 @@ move-anything/
   libs/             # Vendored libraries (QuickJS)
   docs/             # Documentation
 ```
-
-## Changes from Upstream
-
-This fork differs from [charlesvestal/move-anything](https://github.com/charlesvestal/move-anything):
-
-**Added modules:**
-- **DX7** - Yamaha DX7 FM synthesizer emulation
-- **Step Sequencer** - 16-step MIDI sequencer that outputs to external devices
-
-**Build improvements:**
-- Docker build uses `docker cp` to avoid OrbStack/Docker volume mount corruption on macOS
-- Binaries are stripped for smaller package size (~588KB vs ~601KB)
-
-**Not included from upstream:**
-- Chain module (instrument + effects chaining)
-- JV-880 module (Roland JV-880 emulation)
 
 ## Community
 
