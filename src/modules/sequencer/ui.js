@@ -66,6 +66,13 @@ function updateAllLEDs() {
     updateMenuLED();
 }
 
+/* Call this when switching between views to reset all LEDs first */
+function onViewTransition() {
+    clearAllLEDs();
+    getCurrentView().updateLEDs();
+    updateMenuLED();
+}
+
 /* ============ Lifecycle ============ */
 
 globalThis.init = function() {
@@ -222,7 +229,7 @@ globalThis.onMidiMessageInternal = function(data) {
             }
 
             getCurrentView().onEnter();
-            updateAllLEDs();
+            onViewTransition();
         }
         return;
     }
@@ -249,7 +256,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 getCurrentView().onExit();
                 enterTrackView();
                 getCurrentView().onEnter();
-                updateAllLEDs();
+                onViewTransition();
                 return;
             }
             /* In track view - let the view handle it (for swing mode exit etc.) */

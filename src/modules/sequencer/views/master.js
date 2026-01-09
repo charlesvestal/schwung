@@ -7,8 +7,7 @@
 import {
     Black, White, LightGrey, BrightGreen, Cyan, BrightRed, VividYellow,
     MoveSteps, MovePads, MoveTracks, MoveLoop, MovePlay, MoveRec, MoveCapture, MoveBack,
-    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
+    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -158,12 +157,6 @@ function updateStepLEDs() {
     for (let i = 0; i < NUM_STEPS; i++) {
         setLED(MoveSteps[i], LightGrey);
     }
-
-    /* Turn off step UI icons */
-    setButtonLED(MoveStep1UI, Black);
-    setButtonLED(MoveStep2UI, Black);
-    setButtonLED(MoveStep5UI, Black);
-    setButtonLED(MoveStep7UI, Black);
 }
 
 function updatePadLEDs() {

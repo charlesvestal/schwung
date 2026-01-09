@@ -13,6 +13,8 @@ import {
     MoveLoop, MoveCapture, MoveMainButton, MoveBack
 } from "../../../shared/constants.mjs";
 
+import { clearAllLEDs } from "../../../shared/input_filter.mjs";
+
 import {
     state, displayMessage, enterSetView,
     enterLoopEdit, exitLoopEdit,
@@ -79,6 +81,7 @@ export function onInput(data) {
         modes[state.trackMode].onExit();
         enterSetView();
         setView.onEnter();
+        clearAllLEDs();
         setView.updateLEDs();
         return true;
     }
