@@ -80,6 +80,9 @@ See [BUILDING.md](BUILDING.md) for build instructions.
 
 - [Hardware API Reference](docs/API.md)
 - [Module Development Guide](docs/MODULES.md)
+- [Signal Chain Module Notes](src/modules/chain/README.md)
+- [DX7 Module Notes](src/modules/dx7/README.md)
+- [SF2 Module Notes](src/modules/sf2/README.md)
 
 ## Project Structure
 
