@@ -1,1 +1,7 @@
 .DS_Store
+
+# Build artifacts
+/build/
+/dist/
+/libs/quickjs/quickjs-2025-04-26/.obj/
+/libs/quickjs/quickjs-2025-04-26/libquickjs.a
