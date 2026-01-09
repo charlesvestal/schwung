@@ -5,7 +5,7 @@ The Signal Chain module lets you build patchable chains of MIDI FX, a sound gene
 ## Architecture
 
 ```
-[Input] -> [MIDI FX] -> [Sound Generator] -> [Audio FX] -> [Output]
+[Input or MIDI Source] -> [MIDI FX] -> [Sound Generator] -> [Audio FX] -> [Output]
 ```
 
 Components live under `src/modules/chain/`:
@@ -54,6 +54,8 @@ Example:
 - `external`: external USB MIDI only
 - `both`/`all`: allow both sources
 
+If no `midi_source` is specified, the chain uses `input` for MIDI as before.
+
 ### MIDI FX
 
 Native MIDI FX supported today:
@@ -75,6 +77,22 @@ Sound generators can be built-in or external modules. Built-in: `linein`. Extern
 ### Audio FX
 
 Audio FX are loaded by type. `freeverb` is included.
+
+### MIDI Source
+
+Optional MIDI source modules can generate MIDI without external input.
+
+Example:
+
+```json
+"midi_source": {
+    "module": "sequencer"
+}
+```
+
+When a MIDI source is active, it runs headless (no UI). External/pads input
+still follows the `input` filter, and source-generated MIDI is routed into the
+chain.
 
 ## Raw MIDI and Knob Touch
 
