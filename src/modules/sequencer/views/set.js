@@ -9,7 +9,7 @@ import {
     MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
 } from "../../../shared/constants.mjs";
 
-import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
+import { setLED, setButtonLED, clearAllLEDs } from "../../../shared/input_filter.mjs";
 
 import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, enterTrackView } from '../lib/state.js';
@@ -70,6 +70,7 @@ export function onInput(data) {
             onExit();
             enterTrackView();
             trackView.onEnter();
+            clearAllLEDs();
             trackView.updateLEDs();
 
             displayMessage(

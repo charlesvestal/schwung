@@ -90,6 +90,7 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 17 && isNoteOn && velocity > 0) {
         enterChannelMode();
         modes.channel.onEnter();
+        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -98,6 +99,7 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 20 && isNoteOn && velocity > 0) {
         enterSpeedMode();
         modes.speed.onEnter();
+        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -106,6 +108,7 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 22 && isNoteOn && velocity > 0) {
         enterSwingMode();
         modes.swing.onEnter();
+        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -114,6 +117,7 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && isCC && note === MoveLoop && velocity > 0) {
         enterLoopEdit();
         modes.loop.onEnter();
+        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -124,6 +128,7 @@ export function onInput(data) {
         enterSparkMode();
         state.sparkSelectedSteps.add(stepIdx);
         modes.spark.onEnter();
+        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -140,6 +145,7 @@ export function onInput(data) {
             else if (state.trackMode === 'speed') exitSpeedMode();
             else exitSwingMode();
             modes.normal.onEnter();
+            clearAllLEDs();
             updateLEDs();
             return true;
         }
@@ -150,6 +156,7 @@ export function onInput(data) {
         modes.loop.onExit();
         exitLoopEdit();
         modes.normal.onEnter();
+        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -161,6 +168,7 @@ export function onInput(data) {
                 modes.spark.onExit();
                 exitSparkMode();
                 modes.normal.onEnter();
+                clearAllLEDs();
                 updateLEDs();
                 return true;
             } else if (state.trackMode === 'normal') {
