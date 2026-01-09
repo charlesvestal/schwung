@@ -85,14 +85,25 @@ Optional MIDI source modules can generate MIDI without external input.
 Example:
 
 ```json
-"midi_source": {
-    "module": "sequencer"
+{
+    "chain": {
+        "midi_source": {
+            "module": "sequencer"
+        }
+    }
 }
 ```
 
-When a MIDI source is active, it runs headless (no UI). External/pads input
-still follows the `input` filter, and source-generated MIDI is routed into the
-chain.
+When a MIDI source is active, source-generated MIDI is routed into the chain,
+and external/pads input still follows the `input` filter.
+
+MIDI sources can expose a full-screen UI inside the chain by providing
+`ui_chain.js` (or `ui_chain` in `module.json` to point to a different file). The
+file should set `globalThis.chain_ui = { init, tick, onMidiMessageInternal, onMidiMessageExternal }`
+and must not override `globalThis.init`/`tick`.
+
+Chain will enter the source UI when a patch with a supported source loads. Press
+Back to return to the chain view, and Menu to re-enter the source UI.
 
 ## Raw MIDI and Knob Touch
 

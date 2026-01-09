@@ -54,20 +54,31 @@ export function getPadIndex(noteNumber) {
 
 /* ============ LED Control ============ */
 
+const ledCache = new Array(128).fill(-1);
+const buttonCache = new Array(128).fill(-1);
+
 /* Set LED color for a note (pad, step, etc.) */
-export function setLED(note, color) {
+export function setLED(note, color, force = false) {
+    if (!force && ledCache[note] === color) return;
+    ledCache[note] = color;
     move_midi_internal_send([0x09, MidiNoteOn, note, color]);
 }
 
 /* Set LED color via CC (for buttons) */
-export function setButtonLED(cc, color) {
+export function setButtonLED(cc, color, force = false) {
+    if (!force && buttonCache[cc] === color) return;
+    buttonCache[cc] = color;
     move_midi_internal_send([0x0b, MidiCC, cc, color]);
 }
 
 /* Clear all LEDs */
 export function clearAllLEDs() {
+    for (let i = 0; i < 128; i++) {
+        ledCache[i] = -1;
+        buttonCache[i] = -1;
+    }
     for (let i = 0; i < 127; i++) {
-        setLED(i, 0);
-        setButtonLED(i, 0);
+        setLED(i, 0, true);
+        setButtonLED(i, 0, true);
     }
 }
