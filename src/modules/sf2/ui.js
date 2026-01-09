@@ -112,6 +112,8 @@ function setSoundfont(index) {
 
     soundfontIndex = index;
     host_module_set_param("soundfont_index", String(soundfontIndex));
+    currentPreset = 0;
+    host_module_set_param("preset", "0");
     needsRedraw = true;
 }
 
@@ -237,6 +239,30 @@ globalThis.tick = function() {
     const poly = host_module_get_param("polyphony");
     if (poly) {
         polyphony = parseInt(poly) || 0;
+    }
+
+    const preset = host_module_get_param("preset");
+    if (preset) {
+        const parsed = parseInt(preset) || 0;
+        if (parsed !== currentPreset) {
+            currentPreset = parsed;
+            needsRedraw = true;
+        }
+    }
+
+    const presetNameParam = host_module_get_param("preset_name");
+    if (presetNameParam && presetNameParam !== presetName) {
+        presetName = presetNameParam;
+        needsRedraw = true;
+    }
+
+    const presetCountParam = host_module_get_param("preset_count");
+    if (presetCountParam) {
+        const parsed = parseInt(presetCountParam) || 0;
+        if (parsed !== presetCount) {
+            presetCount = parsed;
+            needsRedraw = true;
+        }
     }
 
     const sf = host_module_get_param("soundfont_name");

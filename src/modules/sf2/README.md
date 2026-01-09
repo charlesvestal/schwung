@@ -28,6 +28,8 @@ The module loads the first `.sf2` file in `soundfonts/` by default. If the folde
 - **Shift + Left/Right**: Switch soundfonts
 - **Up/Down**: Octave transpose
 
+Switching soundfonts resets to preset 1 in the new file.
+
 ## SoundFont Sources
 
 Free SoundFonts are available from:
