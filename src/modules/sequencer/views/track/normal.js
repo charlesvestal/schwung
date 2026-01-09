@@ -498,43 +498,43 @@ function updateStepLEDs() {
     const trackColor = TRACK_COLORS[state.currentTrack];
     const dimColor = TRACK_COLORS_DIM[state.currentTrack];
 
-    for (let i = 0; i < NUM_STEPS; i++) {
-        let color = Black;
-        const inLoop = i >= pattern.loopStart && i <= pattern.loopEnd;
-        const step = pattern.steps[i];
-
-        if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
-            color = inLoop ? dimColor : Navy;
+    /* When shift held, only show mode icons - no track pattern */
+    if (state.shiftHeld) {
+        for (let i = 0; i < NUM_STEPS; i++) {
+            setLED(MoveSteps[i], Black);
         }
+    } else {
+        for (let i = 0; i < NUM_STEPS; i++) {
+            let color = Black;
+            const inLoop = i >= pattern.loopStart && i <= pattern.loopEnd;
+            const step = pattern.steps[i];
 
-        /* Length visualization when holding a step */
-        if (state.heldStep >= 0 && state.heldStep !== i) {
-            const heldStepData = pattern.steps[state.heldStep];
-            const heldLength = heldStepData.length || 1;
-            const lengthEnd = state.heldStep + heldLength - 1;
-            if (i > state.heldStep && i <= lengthEnd) {
-                color = Cyan;
+            if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+                color = inLoop ? dimColor : Navy;
             }
-        }
 
-        /* Playhead */
-        if (state.playing && i === state.currentPlayStep && state.heldStep < 0) {
-            color = White;
-        }
+            /* Length visualization when holding a step */
+            if (state.heldStep >= 0 && state.heldStep !== i) {
+                const heldStepData = pattern.steps[state.heldStep];
+                const heldLength = heldStepData.length || 1;
+                const lengthEnd = state.heldStep + heldLength - 1;
+                if (i > state.heldStep && i <= lengthEnd) {
+                    color = Cyan;
+                }
+            }
 
-        /* Currently held step */
-        if (i === state.heldStep) {
-            color = trackColor;
-        }
+            /* Playhead */
+            if (state.playing && i === state.currentPlayStep && state.heldStep < 0) {
+                color = White;
+            }
 
-        /* Mode indicators when shift held */
-        if (state.shiftHeld) {
-            if (i === 1) color = BrightGreen;      /* Channel - step 2 */
-            else if (i === 4) color = Cyan;        /* Speed - step 5 */
-            else if (i === 6) color = VividYellow; /* Swing - step 7 */
-        }
+            /* Currently held step */
+            if (i === state.heldStep) {
+                color = trackColor;
+            }
 
-        setLED(MoveSteps[i], color);
+            setLED(MoveSteps[i], color);
+        }
     }
 
     /* Step UI icons - show available modes when shift held */
