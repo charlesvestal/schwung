@@ -242,15 +242,20 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Back button (CC 51) - return to track view */
+    /* Back button (CC 51) - return to track view, or let track view handle it */
     if (isCC && note === MoveBack) {
-        if (velocity > 0 && state.view !== 'track') {
-            getCurrentView().onExit();
-            enterTrackView();
-            getCurrentView().onEnter();
-            updateAllLEDs();
+        if (velocity > 0) {
+            if (state.view !== 'track') {
+                getCurrentView().onExit();
+                enterTrackView();
+                getCurrentView().onEnter();
+                updateAllLEDs();
+                return;
+            }
+            /* In track view - let the view handle it (for swing mode exit etc.) */
+        } else {
+            return;  /* Ignore button release */
         }
-        return;
     }
 
     /* Delegate to current view */

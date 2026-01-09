@@ -100,6 +100,17 @@ export function onInput(data) {
         }
     }
 
+    /* Back button - exit swing mode */
+    if (isCC && note === MoveBack && velocity > 0) {
+        if (state.trackMode === 'swing') {
+            exitSwingMode();
+            displayMessage("SEQOMD", `Track ${state.currentTrack + 1}`, "", "");
+            updateStepLEDs();
+            updateKnobLEDs();
+            return true;
+        }
+    }
+
     /* Jog wheel turn */
     if (isCC && note === MoveMainKnob) {
         return handleJogWheel(velocity);
