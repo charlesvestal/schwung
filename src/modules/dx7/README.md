@@ -42,7 +42,7 @@ Single-voice VCED dumps are not supported.
 ### Move Hardware
 - **Jog wheel**: Navigate presets (1-32)
 - **Left/Right**: Previous/next preset
-- **+/-**: Octave transpose
+- **Up/Down**: Octave transpose
 - **Pads**: Play notes (velocity sensitive, with aftertouch)
 
 ### External MIDI

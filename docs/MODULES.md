@@ -154,6 +154,8 @@ globalThis.chain_ui = {
 
 Do not override `globalThis.init` or `globalThis.tick` in `ui_chain.js`.
 Make sure to ship `ui_chain.js` in your build/install step if you use it.
+The host itself ignores `ui_chain`; it is consumed by the Signal Chain UI when
+loading a MIDI source module.
 
 Example `ui_chain.js` wrapper:
 

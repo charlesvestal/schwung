@@ -94,6 +94,7 @@ CC=aarch64-linux-gnu-gcc make libquickjs.a
 The host falls back to the bitmap font when the system TTF isn't available, and `package.sh` expects these files. Generate them with:
 
 ```bash
+python3 -m pip install pillow
 python3 scripts/generate_font.py build/font.png
 python3 - <<'PY'
 from importlib.util import spec_from_file_location, module_from_spec

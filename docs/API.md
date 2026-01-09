@@ -100,6 +100,7 @@ host_reload_settings()        // Reload settings from disk
 ```
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
+`host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
 
 ## Utility Functions
 
