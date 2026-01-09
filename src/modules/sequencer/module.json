@@ -3,6 +3,7 @@
   "name": "SEQOMD",
   "version": "0.1.0",
   "ui": "ui.js",
+  "ui_chain": "ui_chain.js",
   "dsp": "dsp.so",
   "api_version": 1,
   "capabilities": {

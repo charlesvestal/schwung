@@ -206,6 +206,8 @@ cp ./src/modules/chain/patches/*.json ./build/modules/chain/patches/ 2>/dev/null
 # Copy Sequencer module files
 cp ./src/modules/sequencer/module.json ./build/modules/sequencer/
 cp ./src/modules/sequencer/ui.js ./build/modules/sequencer/
+cp ./src/modules/sequencer/ui_core.mjs ./build/modules/sequencer/
+cp ./src/modules/sequencer/ui_chain.js ./build/modules/sequencer/
 
 # Copy sequencer lib and views (if they exist)
 if [ -d ./src/modules/sequencer/lib ]; then

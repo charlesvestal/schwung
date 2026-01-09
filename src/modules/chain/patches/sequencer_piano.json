@@ -1,0 +1,17 @@
+{
+    "name": "Sequencer Piano",
+    "version": 1,
+    "chain": {
+        "input": "both",
+        "midi_source": {
+            "module": "sequencer"
+        },
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": []
+    }
+}
