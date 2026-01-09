@@ -10,12 +10,13 @@ import {
     Black,
     MidiNoteOn, MidiNoteOff, MidiCC,
     MovePlay, MoveRec, MoveShift, MoveMenu, MoveBack,
-    MovePads, MoveSteps
+    MovePads, MoveSteps, MoveCopy
 } from "../../shared/constants.mjs";
 
 import {
     isNoiseMessage, isCapacitiveTouchMessage,
-    setLED, setButtonLED, clearAllLEDs
+    setLED, setButtonLED, clearAllLEDs, clearLEDCache,
+    setLedsEnabled, getLedsEnabled
 } from "../../shared/input_filter.mjs";
 
 /* Import lib modules */
@@ -60,6 +61,7 @@ function updateMenuLED() {
 }
 
 function updateAllLEDs() {
+    clearLEDCache();  /* Clear cache so full refresh sends all LEDs */
     getCurrentView().updateLEDs();
     updateMenuLED();
 }
@@ -101,14 +103,15 @@ globalThis.tick = function() {
         const newStep = stepStr ? parseInt(stepStr, 10) : -1;
 
         if (newStep !== state.currentPlayStep) {
+            const oldStep = state.currentPlayStep;
             state.currentPlayStep = newStep;
 
-            /* Update step LEDs */
+            /* Lightweight playhead update - only 2 step LEDs */
             if (state.view === 'track') {
-                trackView.updateLEDs();
+                trackView.updatePlayhead(oldStep, newStep);
             }
 
-            /* Update pad note display */
+            /* Update pad note display - only changed pads */
             if (state.view === 'track' && state.trackMode === 'normal') {
                 /* Clear previously lit pads */
                 for (const padIdx of state.litPads) {
@@ -119,8 +122,8 @@ globalThis.tick = function() {
                 state.litPads = [];
 
                 /* Light up pads for currently playing notes */
-                if (state.currentPlayStep >= 0 && state.currentPlayStep < NUM_STEPS) {
-                    const step = getCurrentPattern(state.currentTrack).steps[state.currentPlayStep];
+                if (newStep >= 0 && newStep < NUM_STEPS) {
+                    const step = getCurrentPattern(state.currentTrack).steps[newStep];
                     const trackColor = TRACK_COLORS[state.currentTrack];
 
                     for (const note of step.notes) {
@@ -134,7 +137,8 @@ globalThis.tick = function() {
             }
         }
     } else if (state.currentPlayStep !== -1 && !state.playing) {
-        /* Stopped - clear playhead and note display */
+        /* Stopped - clear playhead and note display, full refresh needed */
+        const oldStep = state.currentPlayStep;
         state.currentPlayStep = -1;
         state.lastRecordedStep = -1;
         for (const padIdx of state.litPads) {
@@ -144,7 +148,8 @@ globalThis.tick = function() {
         }
         state.litPads = [];
         if (state.view === 'track') {
-            trackView.updateLEDs();
+            /* Restore old playhead step to normal color */
+            trackView.updatePlayhead(oldStep, -1);
         }
     }
 };
@@ -218,6 +223,21 @@ globalThis.onMidiMessageInternal = function(data) {
 
             getCurrentView().onEnter();
             updateAllLEDs();
+        }
+        return;
+    }
+
+    /* Copy button (CC 60) - toggle LED updates for performance testing */
+    if (isCC && note === MoveCopy) {
+        if (velocity > 0) {
+            const newState = !getLedsEnabled();
+            setLedsEnabled(newState);
+            console.log(`LEDs ${newState ? 'ENABLED' : 'DISABLED'}`);
+            /* Show feedback on display */
+            state.line1 = newState ? "LEDs ENABLED" : "LEDs DISABLED";
+            state.line2 = "Press Copy to toggle";
+            state.line3 = "";
+            state.line4 = "";
         }
         return;
     }

@@ -795,6 +795,49 @@ function clearStep(stepIdx) {
 
 /* ============ LED Updates ============ */
 
+/**
+ * Get the color a single step should be (for normal mode only)
+ * Used for lightweight playhead updates during playback
+ */
+function getStepColor(stepIdx) {
+    const pattern = getCurrentPattern(state.currentTrack);
+    const trackColor = TRACK_COLORS[state.currentTrack];
+    const dimColor = TRACK_COLORS_DIM[state.currentTrack];
+
+    let color = Black;
+    const inLoop = stepIdx >= pattern.loopStart && stepIdx <= pattern.loopEnd;
+    const step = pattern.steps[stepIdx];
+
+    if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+        color = inLoop ? dimColor : Navy;
+    }
+
+    if (state.playing && stepIdx === state.currentPlayStep && state.heldStep < 0) {
+        color = White;
+    }
+
+    return color;
+}
+
+/**
+ * Lightweight playhead update - only updates the two step LEDs that changed
+ * Call this from tick() instead of full updateLEDs()
+ */
+export function updatePlayhead(oldStep, newStep) {
+    /* Only works in normal track mode */
+    if (state.trackMode !== 'normal') return;
+
+    /* Restore old step to its normal color */
+    if (oldStep >= 0 && oldStep < NUM_STEPS) {
+        setLED(MoveSteps[oldStep], getStepColor(oldStep));
+    }
+
+    /* Set new step to playhead color */
+    if (newStep >= 0 && newStep < NUM_STEPS) {
+        setLED(MoveSteps[newStep], White);
+    }
+}
+
 function updateStepLEDs() {
     const pattern = getCurrentPattern(state.currentTrack);
     const trackColor = TRACK_COLORS[state.currentTrack];
