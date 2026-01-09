@@ -6,9 +6,8 @@
 
 import {
     Black, White, Cyan, BrightGreen, BrightRed, LightGrey,
-    MoveSteps, MovePads, MoveTracks, MoveMainKnob, MoveShift,
-    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
-    MoveStep1UI
+    MoveSteps, MovePads, MoveTracks, MoveMainKnob,
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -17,10 +16,8 @@ import {
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, MASTER_CC_CHANNEL,
     MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM
 } from '../lib/constants.js';
-import { state, displayMessage, enterSetView } from '../lib/state.js';
-import * as setView from './set.js';
+import { state, displayMessage } from '../lib/state.js';
 import { setParam, updateAndSendCC } from '../lib/helpers.js';
-import { saveCurrentSet, saveAllSetsToDisk } from '../lib/persistence.js';
 
 /* ============ View Interface ============ */
 
@@ -48,26 +45,6 @@ export function onInput(data) {
     const isCC = data[0] === 0xB0;
     const note = data[1];
     const velocity = data[2];
-
-    /* Step buttons - shift + step 1 enters set view */
-    if (isNote && note >= 16 && note <= 31) {
-        const stepIdx = note - 16;
-
-        if (state.shiftHeld && stepIdx === 0 && isNoteOn && velocity > 0) {
-            /* Save current set before going to set view */
-            if (state.currentSet >= 0) {
-                saveCurrentSet();
-                saveAllSetsToDisk();
-            }
-            /* Transition to set view */
-            onExit();
-            enterSetView();
-            setView.onEnter();
-            setView.updateLEDs();
-            return true;
-        }
-        return true;
-    }
 
     /* Pads - select pattern for track */
     if (isNote && note >= 68 && note <= 99) {
@@ -173,9 +150,6 @@ function updateStepLEDs() {
     for (let i = 0; i < NUM_STEPS; i++) {
         setLED(MoveSteps[i], Black);
     }
-
-    /* Step 1 UI icon - shows set view is available when shift held */
-    setButtonLED(MoveStep1UI, state.shiftHeld ? White : Black);
 }
 
 function updatePadLEDs() {
