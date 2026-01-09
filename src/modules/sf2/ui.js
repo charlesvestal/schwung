@@ -64,7 +64,9 @@ function drawUI() {
     print(2, 16, soundfontLabel.substring(0, 20), 1);
 
     /* Preset info */
-    print(2, 28, `Preset: ${currentPreset}`, 1);
+    const presetTotal = presetCount > 0 ? presetCount : 0;
+    const presetNumber = presetTotal > 0 ? currentPreset + 1 : 0;
+    print(2, 28, `Preset: ${presetNumber}/${presetTotal}`, 1);
     print(2, 38, presetName.substring(0, 18), 1);
 
     /* Octave and polyphony */
