@@ -14,13 +14,16 @@ import {
 } from "../../../shared/constants.mjs";
 
 import {
-    state, displayMessage,
+    state, displayMessage, enterSetView,
     enterLoopEdit, exitLoopEdit,
     enterSparkMode, exitSparkMode,
     enterSwingMode, exitSwingMode,
     enterSpeedMode, exitSpeedMode,
     enterChannelMode, exitChannelMode
 } from '../lib/state.js';
+
+import { saveCurrentSet, saveAllSetsToDisk } from '../lib/persistence.js';
+import * as setView from './set.js';
 
 /* Mode modules */
 import * as normal from './track/normal.js';
@@ -64,6 +67,21 @@ export function onInput(data) {
      * Mode ENTRY transitions (from normal mode only)
      * These are handled by coordinator because they change modes
      */
+
+    /* Shift + Step 1 goes to set view */
+    if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 16 && isNoteOn && velocity > 0) {
+        /* Save current set before going to set view */
+        if (state.currentSet >= 0) {
+            saveCurrentSet();
+            saveAllSetsToDisk();
+        }
+        /* Transition to set view */
+        modes[state.trackMode].onExit();
+        enterSetView();
+        setView.onEnter();
+        setView.updateLEDs();
+        return true;
+    }
 
     /* Shift + Step 2 enters channel mode */
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 17 && isNoteOn && velocity > 0) {

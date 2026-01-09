@@ -59,7 +59,7 @@ Track View (main editing)
 | **Menu** | Toggle pattern view |
 | **Shift + Menu** | Toggle master view |
 | **Back** | Return to track view |
-| **Shift + Step 1** (pattern view) | Go to set view |
+| **Shift + Step 1** | Go to set view (saves current set) |
 | **Loop** (hold) | Enter loop edit mode |
 | **Capture + Step** | Enter spark mode |
 | **Capture** (in spark) | Exit spark mode |
@@ -69,13 +69,14 @@ Track View (main editing)
 
 When shift is held in track view, step LEDs clear and show mode entry icons:
 
-| Step | Color | Mode | Jog Wheel Function |
-|------|-------|------|-------------------|
-| Step 2 | BrightGreen | Channel | MIDI channel 1-16 |
-| Step 5 | Cyan | Speed | Track speed (1/4x - 4x) |
-| Step 7 | VividYellow | Swing | Swing 0-100% |
+| Step | Color | Action |
+|------|-------|--------|
+| Step 1 | White | Go to Set view (save & select sets) |
+| Step 2 | BrightGreen | Channel mode (jog: MIDI channel 1-16) |
+| Step 5 | Cyan | Speed mode (jog: 1/4x - 4x) |
+| Step 7 | VividYellow | Swing mode (jog: 0-100%) |
 
-Press the lit step to enter that mode. Use jog wheel to adjust, then jog click or Back to exit.
+Press the lit step to enter that mode. For channel/speed/swing: use jog wheel to adjust, then jog click or Back to exit.
 
 ### Track Colors
 

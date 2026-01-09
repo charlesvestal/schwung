@@ -14,7 +14,7 @@ import {
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep2UI, MoveStep5UI, MoveStep7UI
+    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
@@ -538,9 +538,10 @@ function updateStepLEDs() {
     }
 
     /* Step UI icons - show available modes when shift held */
-    setButtonLED(MoveStep2UI, state.shiftHeld ? BrightGreen : Black);
-    setButtonLED(MoveStep5UI, state.shiftHeld ? Cyan : Black);
-    setButtonLED(MoveStep7UI, state.shiftHeld ? VividYellow : Black);
+    setButtonLED(MoveStep1UI, state.shiftHeld ? White : Black);         /* Set view */
+    setButtonLED(MoveStep2UI, state.shiftHeld ? BrightGreen : Black);   /* Channel */
+    setButtonLED(MoveStep5UI, state.shiftHeld ? Cyan : Black);          /* Speed */
+    setButtonLED(MoveStep7UI, state.shiftHeld ? VividYellow : Black);   /* Swing */
 }
 
 function updatePadLEDs() {
