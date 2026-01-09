@@ -52,6 +52,8 @@ mkdir -p ./build/modules/dx7/
 mkdir -p ./build/modules/m8/
 mkdir -p ./build/modules/controller/
 mkdir -p ./build/modules/chain/
+mkdir -p ./build/modules/jv880/
+mkdir -p ./build/modules/jv880/roms/
 
 echo "Building host..."
 
@@ -98,6 +100,22 @@ echo "Building DX7 module..."
     -o build/modules/dx7/dsp.so \
     -Isrc -Isrc/modules/dx7/dsp \
     -lm
+
+echo "Building JV-880 module..."
+
+# Build JV-880 DSP plugin (mini-jv880 emulator)
+"${CROSS_PREFIX}g++" -Ofast -shared -fPIC -std=c++11 \
+    -march=armv8-a -mtune=cortex-a72 \
+    -fno-exceptions -fno-rtti \
+    -fomit-frame-pointer -fno-stack-protector \
+    -DNDEBUG \
+    src/modules/jv880/dsp/jv880_plugin.cpp \
+    src/modules/jv880/dsp/mcu.cpp \
+    src/modules/jv880/dsp/mcu_opcodes.cpp \
+    src/modules/jv880/dsp/pcm.cpp \
+    -o build/modules/jv880/dsp.so \
+    -Isrc -Isrc/modules/jv880/dsp \
+    -lm -lpthread
 
 echo "Building Signal Chain module..."
 
@@ -147,6 +165,10 @@ cp ./src/modules/sf2/ui.js ./build/modules/sf2/
 cp ./src/modules/dx7/module.json ./build/modules/dx7/
 cp ./src/modules/dx7/ui.js ./build/modules/dx7/
 [ -f ./src/modules/dx7/patches.syx ] && cp ./src/modules/dx7/patches.syx ./build/modules/dx7/
+
+# Copy JV-880 module files
+cp ./src/modules/jv880/module.json ./build/modules/jv880/
+cp ./src/modules/jv880/ui.js ./build/modules/jv880/
 
 # Copy M8 module files
 cp ./src/modules/m8/module.json ./build/modules/m8/
