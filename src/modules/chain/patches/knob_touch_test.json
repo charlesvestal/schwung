@@ -1,0 +1,15 @@
+{
+    "name": "Knob Touch Test",
+    "version": 1,
+    "chain": {
+        "input": "both",
+        "midi_fx_js": [],
+        "synth": {
+            "module": "sf2",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": []
+    }
+}

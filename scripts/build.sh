@@ -155,6 +155,7 @@ cp ./src/shared/*.mjs ./build/shared/
 
 # Copy host files
 cp ./src/host/menu_ui.js ./build/host/
+cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
@@ -187,6 +188,8 @@ cp ./src/modules/controller/ui.js ./build/modules/controller/
 # Copy Signal Chain module files
 cp ./src/modules/chain/module.json ./build/modules/chain/
 cp ./src/modules/chain/ui.js ./build/modules/chain/
+mkdir -p ./build/modules/chain/midi_fx/
+cp ./src/modules/chain/midi_fx/*.mjs ./build/modules/chain/midi_fx/ 2>/dev/null || true
 mkdir -p ./build/modules/chain/patches/
 cp ./src/modules/chain/patches/*.json ./build/modules/chain/patches/ 2>/dev/null || true
 

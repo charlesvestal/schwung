@@ -5,6 +5,7 @@
  */
 
 import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
+import { midiFxRegistry } from './midi_fx/index.mjs';
 
 /* State */
 let patchName = "";
@@ -15,6 +16,10 @@ let presetName = "";
 let polyphony = 0;
 let octaveTranspose = -2;
 let octaveInitialized = false;
+let midiFxJsSpec = "";
+let midiFxJsChain = [];
+let rawMidi = false;
+let midiInput = "both";
 
 let needsRedraw = true;
 let tickCount = 0;
@@ -28,6 +33,85 @@ const SCREEN_HEIGHT = 64;
 const CC_JOG = 14;
 const CC_UP = 55;
 const CC_DOWN = 54;
+
+function handleCC(cc, val) {
+    /* Jog wheel for patch navigation */
+    if (cc === CC_JOG) {
+        const delta = val < 64 ? val : val - 128;
+        if (delta > 0) {
+            nextPatch();
+        } else if (delta < 0) {
+            prevPatch();
+        }
+        return true;
+    }
+
+    /* Up/Down for octave (on button press) */
+    if (cc === CC_UP && val === 127) {
+        octaveUp();
+        return true;
+    }
+    if (cc === CC_DOWN && val === 127) {
+        octaveDown();
+        return true;
+    }
+
+    return false;
+}
+
+function loadMidiFxChain(spec) {
+    midiFxJsSpec = spec || "";
+    midiFxJsChain = [];
+
+    const names = midiFxJsSpec
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0);
+
+    for (const name of names) {
+        const fx = midiFxRegistry[name];
+        if (!fx || typeof fx.processMidi !== "function") {
+            console.log(`Chain UI: unknown MIDI FX '${name}'`);
+            continue;
+        }
+        midiFxJsChain.push(fx);
+    }
+}
+
+function processMidiFx(msg, source) {
+    if (midiFxJsChain.length === 0) return;
+
+    let messages = [msg];
+    for (const fx of midiFxJsChain) {
+        const next = [];
+        for (const current of messages) {
+            const out = fx.processMidi(current, source);
+            if (Array.isArray(out)) {
+                for (const o of out) {
+                    if (o && o.length >= 3) next.push(o);
+                }
+            } else if (out && out.length >= 3) {
+                next.push(out);
+            }
+        }
+        messages = next;
+        if (messages.length === 0) break;
+    }
+
+    for (const out of messages) {
+        host_module_send_midi(out, "host");
+    }
+}
+
+function midiSourceAllowed(source) {
+    if (midiInput === "pads") {
+        return source === "internal";
+    }
+    if (midiInput === "external") {
+        return source === "external";
+    }
+    return true;
+}
 
 /* Draw the UI */
 function drawUI() {
@@ -86,6 +170,19 @@ function updateState() {
     const oct = host_module_get_param("octave_transpose");
     if (oct !== null && oct !== undefined) {
         octaveTranspose = parseInt(oct) || 0;
+    }
+
+    const rm = host_module_get_param("raw_midi");
+    if (rm !== null && rm !== undefined) {
+        rawMidi = parseInt(rm) === 1;
+    }
+
+    const mi = host_module_get_param("midi_input");
+    if (mi) midiInput = mi;
+
+    const fxSpec = host_module_get_param("midi_fx_js") || "";
+    if (fxSpec !== midiFxJsSpec) {
+        loadMidiFxChain(fxSpec);
     }
 }
 
@@ -146,37 +243,24 @@ globalThis.tick = function() {
 };
 
 globalThis.onMidiMessageInternal = function(data) {
-    if (isCapacitiveTouchMessage(data)) return;
+    const useJsMidiFx = midiFxJsChain.length > 0;
+    const isCap = isCapacitiveTouchMessage(data);
+    if (!useJsMidiFx && isCap) return;
+    if (useJsMidiFx && isCap && !rawMidi) return;
 
     const status = data[0] & 0xF0;
 
-    /* Handle CC messages */
     if (status === 0xB0) {
-        const cc = data[1];
-        const val = data[2];
-
-        /* Jog wheel for patch navigation */
-        if (cc === CC_JOG) {
-            const delta = val < 64 ? val : val - 128;
-            if (delta > 0) {
-                nextPatch();
-            } else if (delta < 0) {
-                prevPatch();
-            }
-            return;
-        }
-
-        /* Up/Down for octave (on button press) */
-        if (cc === CC_UP && val === 127) {
-            octaveUp();
-            return;
-        }
-        if (cc === CC_DOWN && val === 127) {
-            octaveDown();
-            return;
-        }
+        handleCC(data[1], data[2]);
+        return;
     }
 
+    if (useJsMidiFx) {
+        if (!midiSourceAllowed("internal")) return;
+        processMidiFx([data[0], data[1], data[2]], "internal");
+    }
+
+    /* Handle CC messages */
     /* Note activity triggers redraw for visual feedback */
     if (status === 0x90 || status === 0x80) {
         needsRedraw = true;
@@ -184,5 +268,7 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
-    /* External MIDI goes to DSP via host */
+    if (midiFxJsChain.length === 0) return;
+    if (!midiSourceAllowed("external")) return;
+    processMidiFx([data[0], data[1], data[2]], "external");
 };
