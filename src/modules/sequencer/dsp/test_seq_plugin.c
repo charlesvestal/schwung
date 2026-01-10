@@ -537,6 +537,300 @@ TEST(multiple_tracks_mixed_chord_follow) {
     set_param("current_transpose", "0");
 }
 
+/* ============ Tests: Trigger Conditions ============ */
+
+/* Helper: Count note-ons for a specific note on a channel */
+static int count_note_ons(uint8_t note, uint8_t channel) {
+    int count = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on &&
+            g_captured_notes[i].note == note &&
+            g_captured_notes[i].channel == channel) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/* Helper: Render enough to complete N pattern loops (16 steps each) */
+static void render_loops(int loops) {
+    render_steps(loops * 16);
+}
+
+TEST(condition_1_of_2) {
+    /* Condition 1:2 - play on 1st of every 2 loops */
+    /* Set a note with condition n=2, m=1 */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_condition_n", "2");
+    set_param("track_0_step_0_condition_m", "1");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(4);  /* Play 4 loops */
+    set_param("playing", "0");
+
+    /* Should trigger on loops 0, 2 (1st of every 2) = 2 times */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+TEST(condition_2_of_2) {
+    /* Condition 2:2 - play on 2nd of every 2 loops */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_condition_n", "2");
+    set_param("track_0_step_0_condition_m", "2");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(4);  /* Play 4 loops */
+    set_param("playing", "0");
+
+    /* Should trigger on loops 1, 3 (2nd of every 2) = 2 times */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+TEST(condition_2_of_3) {
+    /* Condition 2:3 - play on 2nd of every 3 loops */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_condition_n", "3");
+    set_param("track_0_step_0_condition_m", "2");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(6);  /* Play 6 loops */
+    set_param("playing", "0");
+
+    /* Should trigger on loops 1, 4 (2nd of every 3) = 2 times */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+TEST(condition_1_of_4) {
+    /* Condition 1:4 - play on 1st of every 4 loops */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_condition_n", "4");
+    set_param("track_0_step_0_condition_m", "1");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(8);  /* Play 8 loops */
+    set_param("playing", "0");
+
+    /* Should trigger on loops 0, 4 (1st of every 4) = 2 times */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+TEST(condition_negated) {
+    /* Condition NOT 1:2 - play on all loops EXCEPT 1st of every 2 */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_condition_n", "2");
+    set_param("track_0_step_0_condition_m", "1");
+    set_param("track_0_step_0_condition_not", "1");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(4);  /* Play 4 loops */
+    set_param("playing", "0");
+
+    /* Should trigger on loops 1, 3 (NOT 1st of every 2) = 2 times */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+TEST(condition_no_condition) {
+    /* No condition (n=0) - should always play */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_condition_n", "0");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(4);  /* Play 4 loops */
+    set_param("playing", "0");
+
+    /* Should trigger on every loop = 4 times */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 4);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+/* ============ Tests: Ratchet ============ */
+
+TEST(ratchet_2x) {
+    /* Ratchet 2x - should play note twice per step */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_ratchet", "2");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(1);  /* Play 1 loop */
+    set_param("playing", "0");
+
+    /* Should trigger 2 times (ratchet 2x) */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+TEST(ratchet_4x) {
+    /* Ratchet 4x - should play note 4 times per step */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_ratchet", "4");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(1);  /* Play 1 loop */
+    set_param("playing", "0");
+
+    /* Should trigger 4 times (ratchet 4x) */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 4);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+/* ============ Tests: Component Spark (Ratchet Condition) ============ */
+
+TEST(comp_spark_ratchet_conditional) {
+    /* Ratchet 2x with comp_spark 1:2 - ratchet only on 1st of every 2 loops */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_ratchet", "2");
+    set_param("track_0_step_0_comp_spark_n", "2");
+    set_param("track_0_step_0_comp_spark_m", "1");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(4);  /* Play 4 loops */
+    set_param("playing", "0");
+
+    /* Loop 0: ratchet fires (2 notes)
+     * Loop 1: no comp_spark, single note
+     * Loop 2: ratchet fires (2 notes)
+     * Loop 3: no comp_spark, single note
+     * Total: 6 notes
+     */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 6);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+/* ============ Tests: Parameter Spark (CC Lock Condition) ============ */
+
+TEST(param_spark_cc_conditional) {
+    /* CC lock with param_spark 1:2 - CC only sent on 1st of every 2 loops */
+    /* We can't directly capture CCs in the current test setup,
+       but we verify the condition parsing works */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_cc1", "100");
+    set_param("track_0_step_0_param_spark_n", "2");
+    set_param("track_0_step_0_param_spark_m", "1");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(2);
+    set_param("playing", "0");
+
+    /* Notes should still play every loop (param_spark only affects CC) */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+/* ============ Tests: Jump ============ */
+
+TEST(jump_basic) {
+    /* Jump from step 0 to step 8 */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_jump", "8");
+    set_param("track_0_step_8_add_note", "72");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(20);  /* Render enough for jump to happen */
+    set_param("playing", "0");
+
+    /* Should have both notes - step 0 plays, jumps to 8, step 8 plays */
+    int found_60 = 0, found_72 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 60) found_60 = 1;
+            if (g_captured_notes[i].note == 72) found_72 = 1;
+        }
+    }
+    ASSERT(found_60);
+    ASSERT(found_72);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_8_clear", "1");
+}
+
+TEST(jump_with_comp_spark) {
+    /* Jump only on 1st of every 2 loops (comp_spark controls jump) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_jump", "8");
+    set_param("track_0_step_0_comp_spark_n", "2");
+    set_param("track_0_step_0_comp_spark_m", "1");
+    set_param("track_0_step_4_add_note", "64");  /* This step gets skipped on jump */
+    set_param("track_0_step_8_add_note", "72");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_loops(2);
+    set_param("playing", "0");
+
+    /* When we render 2 full loops (32 steps), we get 3 triggers of step 0:
+     * - Initial trigger at play start (loop 0)
+     * - After 16 steps (loop 1)
+     * - After 32 steps (loop 2)
+     *
+     * Loop 0 (initial): step 0 plays, jump (comp_spark passes), step 4 skipped, step 8 plays
+     * Loop 1: step 0 plays, NO jump (comp_spark fails), step 4 plays, step 8 plays
+     * Loop 2 (start only): step 0 plays, jump (comp_spark passes), step 8 plays
+     *
+     * Note 60: 3 times (loops 0, 1, 2)
+     * Note 64: 1 time (loop 1 only, skipped in loops 0 and 2 due to jump)
+     * Note 72: 3 times (loops 0, 1, 2)
+     */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_72 = count_note_ons(72, 0);
+
+    ASSERT_EQ(count_60, 3);
+    ASSERT_EQ(count_64, 1);
+    ASSERT_EQ(count_72, 3);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_4_clear", "1");
+    set_param("track_0_step_8_clear", "1");
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -582,6 +876,28 @@ int main(int argc, char **argv) {
 
     printf("\nMultiple Tracks:\n");
     RUN_TEST(multiple_tracks_mixed_chord_follow);
+
+    printf("\nTrigger Conditions:\n");
+    RUN_TEST(condition_1_of_2);
+    RUN_TEST(condition_2_of_2);
+    RUN_TEST(condition_2_of_3);
+    RUN_TEST(condition_1_of_4);
+    RUN_TEST(condition_negated);
+    RUN_TEST(condition_no_condition);
+
+    printf("\nRatchet:\n");
+    RUN_TEST(ratchet_2x);
+    RUN_TEST(ratchet_4x);
+
+    printf("\nComponent Spark (Ratchet/Jump Conditions):\n");
+    RUN_TEST(comp_spark_ratchet_conditional);
+
+    printf("\nParameter Spark (CC Conditions):\n");
+    RUN_TEST(param_spark_cc_conditional);
+
+    printf("\nJump:\n");
+    RUN_TEST(jump_basic);
+    RUN_TEST(jump_with_comp_spark);
 
     cleanup_plugin();
 
