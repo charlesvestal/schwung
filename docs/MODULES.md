@@ -352,9 +352,19 @@ The Signal Chain module allows combining MIDI sources, MIDI effects, sound gener
 | Type | Components |
 |------|------------|
 | MIDI Sources | Sequencers or other modules referenced via `midi_source` |
-| Sound Generators | Line In, SF2, DX7, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `jv880`) |
+| Sound Generators | Line In, SF2, DX7, CLAP, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `jv880`) |
 | MIDI Effects | Chord generator (major, minor, power, octave), Arpeggiator (up, down, updown, random) |
-| Audio Effects | Freeverb (reverb) |
+| Audio Effects | Freeverb (reverb), CLAP effects |
+
+### CLAP Host Module
+
+The CLAP module (separate repo: `move-anything-clap`) hosts arbitrary CLAP audio plugins:
+
+- Place `.clap` plugin files in `/data/UserData/move-anything/modules/clap/plugins/`
+- Plugins are discovered at load time
+- Use jog wheel to browse plugins, encoders to control parameters
+- CLAP synths work as sound generators in Signal Chain
+- CLAP effects can be used in the audio FX slot
 
 ### Patch Files
 
