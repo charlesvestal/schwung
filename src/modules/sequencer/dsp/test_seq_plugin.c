@@ -987,6 +987,191 @@ TEST(swing_per_track) {
     set_param("track_1_swing", "50");
 }
 
+/* ============ Tests: Swing with Different Loop Lengths ============ */
+
+/*
+ * Swing is applied based on the GLOBAL phase, not the track's local step.
+ * This means a track with a shorter loop will have its swing tied to the
+ * master clock, not its own loop position.
+ *
+ * With a 5-step loop, the SAME local step alternates between swing/no-swing:
+ * - Step 0 plays at global 0, 5, 10... (even, odd, even) - ALTERNATES!
+ * - Step 1 plays at global 1, 6, 11... (odd, even, odd) - ALTERNATES!
+ *
+ * This is different from 4/8/16-step loops where steps always land on the
+ * same parity (step 1 is always odd, step 2 is always even, etc).
+ */
+
+TEST(swing_different_loop_lengths_first_loop) {
+    /* Track 0: 16-step loop, note on step 1
+     * Track 1: 5-step loop, note on step 1
+     *
+     * First loop: both step 1s play at global phase 1 (odd - swing)
+     */
+    set_param("track_0_step_1_add_note", "60");
+    set_param("track_0_swing", "100");
+    set_param("track_0_loop_end", "15");  /* 16 steps */
+
+    set_param("track_1_step_1_add_note", "72");
+    set_param("track_1_swing", "100");
+    set_param("track_1_loop_end", "4");   /* 5 steps */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(4);  /* Render through step 1 */
+    set_param("playing", "0");
+
+    /* Both notes should play */
+    int found_60 = 0, found_72 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 60) found_60 = 1;
+            if (g_captured_notes[i].note == 72) found_72 = 1;
+        }
+    }
+    ASSERT(found_60);
+    ASSERT(found_72);
+
+    /* Clean up */
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_1_step_1_clear", "1");
+    set_param("track_0_swing", "50");
+    set_param("track_1_swing", "50");
+    set_param("track_0_loop_end", "15");
+    set_param("track_1_loop_end", "15");
+}
+
+TEST(swing_short_loop_second_iteration) {
+    /* Track 1 has 5-step loop. Step 1 plays at:
+     * - Global phase 1 (odd - swing)
+     * - Global phase 6 (even - NO swing!)
+     * - Global phase 11 (odd - swing)
+     *
+     * This demonstrates that the SAME local step alternates between
+     * getting swing and not getting swing based on global phase.
+     *
+     * Track 0 has 16-step loop with step 1:
+     * - Global phase 1 (odd - swing) - always the same
+     */
+    set_param("track_0_step_1_add_note", "60");
+    set_param("track_0_swing", "100");
+    set_param("track_0_loop_end", "15");  /* 16 steps */
+
+    set_param("track_1_step_1_add_note", "72");
+    set_param("track_1_swing", "100");
+    set_param("track_1_loop_end", "4");   /* 5 steps */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(12);  /* Render through global step 11 */
+    set_param("playing", "0");
+
+    int count_60 = count_note_ons(60, 0);
+    int count_72 = count_note_ons(72, 1);
+
+    /* Track 0 step 1 plays once (at global 1) */
+    ASSERT_EQ(count_60, 1);
+    /* Track 1 step 1 plays at global 1, 6, 11 = 3 times */
+    ASSERT_EQ(count_72, 3);
+
+    /* Clean up */
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_1_step_1_clear", "1");
+    set_param("track_0_swing", "50");
+    set_param("track_1_swing", "50");
+    set_param("track_0_loop_end", "15");
+    set_param("track_1_loop_end", "15");
+}
+
+TEST(swing_global_phase_determines_swing) {
+    /* Verify that swing is based on global phase, not local step number.
+     *
+     * Track 0 with 5-step loop:
+     * - Step 0 at global phase 0, 5, 10... (even, odd, even) - ALTERNATES!
+     * - Step 1 at global phase 1, 6, 11... (odd, even, odd) - ALTERNATES!
+     * - Step 2 at global phase 2, 7, 12... (even, odd, even) - ALTERNATES!
+     * - Step 3 at global phase 3, 8, 13... (odd, even, odd) - ALTERNATES!
+     * - Step 4 at global phase 4, 9, 14... (even, odd, even) - ALTERNATES!
+     *
+     * This is the key difference from 4/8/16-step loops where steps always
+     * land on the same parity. With 5 steps, each step alternates between
+     * getting swing and not getting swing!
+     */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_1_add_note", "61");
+    set_param("track_0_step_2_add_note", "62");
+    set_param("track_0_step_3_add_note", "63");
+    set_param("track_0_step_4_add_note", "64");
+    set_param("track_0_swing", "100");
+    set_param("track_0_loop_end", "4");  /* 5-step loop */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(10);  /* Two complete loops of 5 steps */
+    set_param("playing", "0");
+
+    /* All notes should play twice (2 loops) */
+    int count_60 = count_note_ons(60, 0);
+    int count_61 = count_note_ons(61, 0);
+    int count_62 = count_note_ons(62, 0);
+    int count_63 = count_note_ons(63, 0);
+    int count_64 = count_note_ons(64, 0);
+
+    ASSERT_EQ(count_60, 2);  /* Step 0: plays at global 0 (no swing), 5 (swing) */
+    ASSERT_EQ(count_61, 2);  /* Step 1: plays at global 1 (swing), 6 (no swing) */
+    ASSERT_EQ(count_62, 2);  /* Step 2: plays at global 2 (no swing), 7 (swing) */
+    ASSERT_EQ(count_63, 2);  /* Step 3: plays at global 3 (swing), 8 (no swing) */
+    ASSERT_EQ(count_64, 2);  /* Step 4: plays at global 4 (no swing), 9 (swing) */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_step_3_clear", "1");
+    set_param("track_0_step_4_clear", "1");
+    set_param("track_0_swing", "50");
+    set_param("track_0_loop_end", "15");
+}
+
+TEST(swing_comparison_5_vs_16_step_loops) {
+    /* Direct comparison: step 1 on a 5-step loop vs 16-step loop.
+     * After 16 global steps:
+     * - 16-step track: step 1 plays once at global 1 (odd - swing)
+     * - 5-step track: step 1 plays at global 1, 6, 11, 16
+     *                 = odd (swing), even (no swing), odd (swing), even (no swing)
+     *
+     * The 5-step loop's step 1 alternates between swung and not swung!
+     */
+    set_param("track_0_step_1_add_note", "60");
+    set_param("track_0_swing", "100");
+    set_param("track_0_loop_end", "15");  /* 16 steps */
+
+    set_param("track_1_step_1_add_note", "72");
+    set_param("track_1_swing", "100");
+    set_param("track_1_loop_end", "4");   /* 5 steps */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(17);  /* Just past one full 16-step loop */
+    set_param("playing", "0");
+
+    int count_60 = count_note_ons(60, 0);
+    int count_72 = count_note_ons(72, 1);
+
+    /* 16-step track plays step 1 once */
+    ASSERT_EQ(count_60, 1);
+    /* 5-step track plays step 1 four times (at global 1, 6, 11, 16) */
+    ASSERT_EQ(count_72, 4);
+
+    /* Clean up */
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_1_step_1_clear", "1");
+    set_param("track_0_swing", "50");
+    set_param("track_1_swing", "50");
+    set_param("track_0_loop_end", "15");
+    set_param("track_1_loop_end", "15");
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -1065,6 +1250,12 @@ int main(int argc, char **argv) {
     RUN_TEST(swing_default_value);
     RUN_TEST(swing_affects_note_scheduling);
     RUN_TEST(swing_per_track);
+
+    printf("\nSwing with Different Loop Lengths:\n");
+    RUN_TEST(swing_different_loop_lengths_first_loop);
+    RUN_TEST(swing_short_loop_second_iteration);
+    RUN_TEST(swing_global_phase_determines_swing);
+    RUN_TEST(swing_comparison_5_vs_16_step_loops);
 
     cleanup_plugin();
 
