@@ -725,7 +725,7 @@ static void plugin_set_param(const char *key, const char *val) {
             g_clock_phase = 0.0;
             g_global_phase = 0.0;
             g_beat_count = 0;
-            g_current_transpose = 0;  /* Reset transpose at start */
+            /* Note: Don't reset g_current_transpose here - it's set by UI */
 
             /* Seed PRNG with a bit of entropy */
             g_random_state = 12345;

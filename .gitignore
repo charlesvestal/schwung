@@ -10,6 +10,8 @@ libs/
 # Build artifacts
 *.so
 *.tar.gz
+test_seq_plugin
+*.dSYM/
 
 # Local backups
 backups/
