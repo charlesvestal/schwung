@@ -110,6 +110,7 @@ export function syncAllTracksToDSP() {
         setParam(`track_${t}_speed`, String(SPEED_OPTIONS[track.speedIndex || 3].mult));
         setParam(`track_${t}_swing`, String(track.swing || 50));
         setParam(`track_${t}_pattern`, String(track.currentPattern));
+        setParam(`track_${t}_chord_follow`, state.chordFollow[t] ? "1" : "0");
 
         /* Sync current pattern's loop points */
         const pattern = track.patterns[track.currentPattern];

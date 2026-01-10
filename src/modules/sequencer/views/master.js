@@ -1,37 +1,52 @@
 /*
  * Master View
- * CC output mode for controlling external gear
- * Each knob controls MIDI channel for its track
+ * Transpose control with piano display and scale detection
  */
 
 import {
-    Black, White, LightGrey, BrightGreen, Cyan, BrightRed, VividYellow,
+    Black, White, LightGrey, DarkGrey, BrightGreen, Cyan, BrightRed, VividYellow,
     MoveSteps, MovePads, MoveTracks, MoveLoop, MovePlay, MoveRec, MoveCapture, MoveBack,
-    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
+    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
+    MoveUp, MoveDown, MoveDelete, MoveMainKnob
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
-import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS } from '../lib/constants.js';
+import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM } from '../lib/constants.js';
 import { state, displayMessage } from '../lib/state.js';
 import { setParam } from '../lib/helpers.js';
+import { detectScale, getScaleDisplayName, isRoot, isInScale, NOTE_NAMES } from '../lib/scale_detection.js';
+import {
+    setTransposeStep, removeTransposeStep, getTransposeStep, adjustTransposeDuration,
+    getCurrentStepIndex, getStepCount, formatDuration, MAX_TRANSPOSE_STEPS
+} from '../lib/transpose_sequence.js';
 
-/* ============ Master-specific Data ============ */
+/* ============ Piano Mapping ============ */
 
-const TRACK_TYPE_DRUM = 0;
-const TRACK_TYPE_NOTE = 1;
-const TRACK_TYPE_ARP = 2;
-const TRACK_TYPE_CHORD = 3;
-const TRACK_TYPE_COLORS = [BrightRed, BrightGreen, Cyan, VividYellow];
+/* Pad index to semitone (within octave) - gaps are null */
+const PAD_TO_SEMITONE = [
+    0,    /* Pad 0: C */
+    2,    /* Pad 1: D */
+    4,    /* Pad 2: E */
+    5,    /* Pad 3: F */
+    7,    /* Pad 4: G */
+    9,    /* Pad 5: A */
+    11,   /* Pad 6: B */
+    12,   /* Pad 7: C+1 (octave) */
+    null, /* Pad 8: gap */
+    1,    /* Pad 9: C# */
+    3,    /* Pad 10: D# */
+    null, /* Pad 11: gap */
+    6,    /* Pad 12: F# */
+    8,    /* Pad 13: G# */
+    10,   /* Pad 14: A# */
+    null  /* Pad 15: gap */
+];
 
-/* Master data stored locally - could move to state if needed */
-const masterData = {
-    followChord: new Array(NUM_TRACKS).fill(false),
-    trackType: [TRACK_TYPE_DRUM, TRACK_TYPE_DRUM, TRACK_TYPE_DRUM, TRACK_TYPE_DRUM,
-                TRACK_TYPE_NOTE, TRACK_TYPE_NOTE, TRACK_TYPE_ARP, TRACK_TYPE_CHORD],
-    rootNote: 0,
-    scale: 0
-};
+/* Which pads are white keys vs black keys */
+const WHITE_KEY_PADS = [0, 1, 2, 3, 4, 5, 6, 7];
+const BLACK_KEY_PADS = [9, 10, 12, 13, 14];
+const GAP_PADS = [8, 11, 15];
 
 /* ============ View Interface ============ */
 
@@ -39,6 +54,9 @@ const masterData = {
  * Called when entering master view
  */
 export function onEnter() {
+    /* Recalculate scale detection */
+    state.detectedScale = detectScale(state.tracks, state.chordFollow);
+    state.heldTransposeStep = -1;
     updateDisplayContent();
 }
 
@@ -46,12 +64,11 @@ export function onEnter() {
  * Called when exiting master view
  */
 export function onExit() {
-    // Nothing special to clean up
+    state.heldTransposeStep = -1;
 }
 
 /**
  * Handle MIDI input for master view
- * Returns true if handled, false to let router handle
  */
 export function onInput(data) {
     const isNote = data[0] === 0x90 || data[0] === 0x80;
@@ -60,49 +77,84 @@ export function onInput(data) {
     const note = data[1];
     const velocity = data[2];
 
-    /* Pads - chord follow (row 1) and track type (row 2) */
+    /* Step buttons - transpose sequence */
+    if (isNote && note >= 16 && note <= 31) {
+        return handleStepButton(note - 16, isNoteOn, velocity);
+    }
+
+    /* Pads - piano (rows 3-4) and chord follow (row 1) */
     if (isNote && note >= 68 && note <= 99) {
         const padIdx = note - 68;
-
         if (isNoteOn && velocity > 0) {
-            if (padIdx >= 24) {
-                /* Row 1 (bottom): Toggle chord follow for track */
-                const trackIdx = padIdx - 24;
-                masterData.followChord[trackIdx] = !masterData.followChord[trackIdx];
-                setParam(`track_${trackIdx}_follow_chord`,
-                    masterData.followChord[trackIdx] ? "1" : "0");
-                updateDisplayContent();
-                updatePadLEDs();
-                return true;
-            } else if (padIdx >= 16) {
-                /* Row 2: Cycle track type */
-                const trackIdx = padIdx - 16;
-                masterData.trackType[trackIdx] = (masterData.trackType[trackIdx] + 1) % 4;
-                setParam(`track_${trackIdx}_type`, String(masterData.trackType[trackIdx]));
-                updateDisplayContent();
-                updatePadLEDs();
-                return true;
+            return handlePadPress(padIdx);
+        } else {
+            return handlePadRelease(padIdx);
+        }
+    }
+
+    /* MoveUp - octave up */
+    if (isCC && note === MoveUp && velocity > 0) {
+        if (state.transposeOctaveOffset < 2) {
+            state.transposeOctaveOffset++;
+            updateDisplayContent();
+            updatePadLEDs();
+        }
+        return true;
+    }
+
+    /* MoveDown - octave down */
+    if (isCC && note === MoveDown && velocity > 0) {
+        if (state.transposeOctaveOffset > -2) {
+            state.transposeOctaveOffset--;
+            updateDisplayContent();
+            updatePadLEDs();
+        }
+        return true;
+    }
+
+    /* MoveDelete + step - handled in step button */
+    if (isCC && note === MoveDelete) {
+        state.deleteHeld = velocity > 0;
+        return true;
+    }
+
+    /* Knob 1 - adjust duration when holding step */
+    if (isCC && note === MoveKnob1 && state.heldTransposeStep >= 0) {
+        const step = getTransposeStep(state.heldTransposeStep);
+        if (step) {
+            let delta = 0;
+            if (velocity >= 1 && velocity <= 63) {
+                delta = 1;
+            } else if (velocity >= 65 && velocity <= 127) {
+                delta = -1;
+            }
+            if (delta !== 0) {
+                const newDur = adjustTransposeDuration(state.heldTransposeStep, delta);
+                if (newDur !== null) {
+                    updateDisplayContent();
+                    updateStepLEDs();
+                }
             }
         }
         return true;
     }
 
-    /* Knobs - change MIDI channel for each track */
-    const knobs = [MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8];
-    if (isCC && knobs.includes(note)) {
-        const knobIdx = knobs.indexOf(note);
-        const trackIdx = knobIdx;
-        let channel = state.tracks[trackIdx].channel;
-
-        if (velocity >= 1 && velocity <= 63) {
-            channel = (channel + 1) % 16;
-        } else if (velocity >= 65 && velocity <= 127) {
-            channel = (channel - 1 + 16) % 16;
+    /* Jog wheel - adjust duration by larger amounts when holding step */
+    if (isCC && note === MoveMainKnob && state.heldTransposeStep >= 0) {
+        const step = getTransposeStep(state.heldTransposeStep);
+        if (step) {
+            let delta = 0;
+            if (velocity >= 1 && velocity <= 63) {
+                delta = 4; /* 1 bar */
+            } else if (velocity >= 65 && velocity <= 127) {
+                delta = -4;
+            }
+            if (delta !== 0) {
+                adjustTransposeDuration(state.heldTransposeStep, delta);
+                updateDisplayContent();
+                updateStepLEDs();
+            }
         }
-
-        state.tracks[trackIdx].channel = channel;
-        setParam(`track_${trackIdx}_channel`, String(channel));
-        updateDisplayContent();
         return true;
     }
 
@@ -117,17 +169,100 @@ export function onInput(data) {
         return true;
     }
 
-    /* Track buttons - inactive in master view, consume but ignore */
+    /* Track buttons - select track for viewing chord follow status */
     if (isCC && MoveTracks.includes(note)) {
+        if (velocity > 0) {
+            const btnIdx = MoveTracks.indexOf(note);
+            const trackBtnIdx = 3 - btnIdx;
+            const trackIdx = state.shiftHeld ? trackBtnIdx + 4 : trackBtnIdx;
+            state.currentTrack = trackIdx;
+            updateDisplayContent();
+            updateTrackButtonLEDs();
+        }
         return true;
     }
 
-    return false;  // Let router handle
+    return false;
 }
 
-/**
- * Update all LEDs for master view
- */
+/* ============ Step Button Handling ============ */
+
+function handleStepButton(stepIdx, isNoteOn, velocity) {
+    if (isNoteOn && velocity > 0) {
+        /* Check for delete */
+        if (state.deleteHeld) {
+            removeTransposeStep(stepIdx);
+            updateDisplayContent();
+            updateStepLEDs();
+            return true;
+        }
+
+        /* Hold step for editing */
+        state.heldTransposeStep = stepIdx;
+        updateDisplayContent();
+        updatePadLEDs();
+        updateStepLEDs();
+    } else {
+        /* Release step */
+        if (state.heldTransposeStep === stepIdx) {
+            state.heldTransposeStep = -1;
+            updateDisplayContent();
+            updatePadLEDs();
+            updateStepLEDs();
+        }
+    }
+    return true;
+}
+
+/* ============ Pad Handling ============ */
+
+function handlePadPress(padIdx) {
+    /* Row 1 (indices 24-31): Chord follow toggle */
+    if (padIdx >= 24) {
+        const trackIdx = padIdx - 24;
+        state.chordFollow[trackIdx] = !state.chordFollow[trackIdx];
+        /* Sync to DSP */
+        setParam(`track_${trackIdx}_chord_follow`, state.chordFollow[trackIdx] ? "1" : "0");
+        /* Recalculate scale when chord follow changes */
+        state.detectedScale = detectScale(state.tracks, state.chordFollow);
+        updateDisplayContent();
+        updatePadLEDs();
+        return true;
+    }
+
+    /* Row 2 (indices 16-23): Reserved - ignore */
+    if (padIdx >= 16) {
+        return true;
+    }
+
+    /* Rows 3-4 (indices 0-15): Piano keys */
+    const semitone = PAD_TO_SEMITONE[padIdx];
+    if (semitone === null) {
+        return true; /* Gap pad */
+    }
+
+    /* Calculate actual transpose value with octave offset */
+    const transpose = semitone + (state.transposeOctaveOffset * 12);
+
+    /* If holding a step, set its transpose */
+    if (state.heldTransposeStep >= 0) {
+        const existingStep = getTransposeStep(state.heldTransposeStep);
+        const duration = existingStep ? existingStep.duration : 4;
+        setTransposeStep(state.heldTransposeStep, transpose, duration);
+        updateDisplayContent();
+        updateStepLEDs();
+        updatePadLEDs();
+    }
+
+    return true;
+}
+
+function handlePadRelease(padIdx) {
+    return true;
+}
+
+/* ============ LED Updates ============ */
+
 export function updateLEDs() {
     updateStepLEDs();
     updatePadLEDs();
@@ -136,85 +271,170 @@ export function updateLEDs() {
     updateTransportLEDs();
     updateCaptureLED();
     updateBackLED();
+    updateOctaveLEDs();
 }
-
-/**
- * Update display content for master view
- */
-export function updateDisplayContent() {
-    const chStr = state.tracks.map(t => String(t.channel + 1).padStart(2)).join("");
-    displayMessage(
-        "Track:  12345678",
-        `Ch: ${chStr}`,
-        `Sync: ${state.sendClock ? "ON" : "OFF"}`,
-        ""
-    );
-}
-
-/* ============ LED Updates ============ */
 
 function updateStepLEDs() {
+    const currentPlayingStep = state.playing ? getCurrentStepIndex(state.currentTransposeBeat) : -1;
+
     for (let i = 0; i < NUM_STEPS; i++) {
-        setLED(MoveSteps[i], LightGrey);
+        const step = getTransposeStep(i);
+        let color = Black;
+
+        if (step) {
+            /* Step exists */
+            if (i === state.heldTransposeStep) {
+                color = White; /* Currently held */
+            } else if (i === currentPlayingStep) {
+                color = BrightGreen; /* Currently playing */
+            } else {
+                color = Cyan; /* Has content */
+            }
+        } else if (i === state.heldTransposeStep) {
+            color = DarkGrey; /* Held but empty */
+        }
+
+        setLED(MoveSteps[i], color);
     }
 }
 
 function updatePadLEDs() {
-    /* Master mode pad layout:
-     * Row 4 (top, indices 0-7): Reserved
-     * Row 3 (indices 8-15): Reserved
-     * Row 2 (indices 16-23): Track type for each track
-     * Row 1 (bottom, indices 24-31): Chord follow toggle for each track
-     */
+    const detected = state.detectedScale;
+    const heldStep = state.heldTransposeStep >= 0 ? getTransposeStep(state.heldTransposeStep) : null;
+    const heldTranspose = heldStep ? heldStep.transpose : null;
+
     for (let i = 0; i < 32; i++) {
         const padNote = MovePads[i];
+
+        /* Row 1 (top, indices 24-31): Chord follow */
         if (i >= 24) {
-            /* Row 1 (bottom): Chord follow toggles */
             const trackIdx = i - 24;
-            const followColor = masterData.followChord[trackIdx] ? TRACK_COLORS[trackIdx] : LightGrey;
-            setLED(padNote, followColor);
-        } else if (i >= 16) {
-            /* Row 2: Track types */
-            const trackIdx = i - 16;
-            setLED(padNote, TRACK_TYPE_COLORS[masterData.trackType[trackIdx]]);
-        } else {
-            /* Rows 3-4 (top): Reserved */
-            setLED(padNote, Black);
+            const isFollowing = state.chordFollow[trackIdx];
+            setLED(padNote, isFollowing ? TRACK_COLORS[trackIdx] : DarkGrey);
+            continue;
         }
+
+        /* Row 2 (indices 16-23): Reserved - black */
+        if (i >= 16) {
+            setLED(padNote, Black);
+            continue;
+        }
+
+        /* Rows 3-4 (indices 0-15): Piano */
+        const semitone = PAD_TO_SEMITONE[i];
+
+        /* Gap pads */
+        if (semitone === null) {
+            setLED(padNote, Black);
+            continue;
+        }
+
+        /* Calculate actual semitone with octave offset */
+        const actualSemitone = semitone + (state.transposeOctaveOffset * 12);
+        const pitchClass = ((semitone % 12) + 12) % 12; /* Handle negative */
+
+        /* Determine color */
+        let color;
+
+        /* Check if this is the held step's transpose value */
+        if (heldTranspose !== null && actualSemitone === heldTranspose) {
+            color = TRACK_COLORS[state.currentTrack];
+        } else if (detected && isRoot(pitchClass, detected)) {
+            /* Root note */
+            color = VividYellow;
+        } else if (detected && isInScale(pitchClass, detected)) {
+            /* In scale */
+            color = WHITE_KEY_PADS.includes(i) ? White : LightGrey;
+        } else {
+            /* Out of scale or no detection */
+            color = WHITE_KEY_PADS.includes(i) ? DarkGrey : Black;
+        }
+
+        setLED(padNote, color);
     }
 }
 
 function updateKnobLEDs() {
-    /* Each knob shows its track color */
-    for (let i = 0; i < 8; i++) {
-        setButtonLED(MoveKnobLEDs[i], TRACK_COLORS[i]);
+    /* Knob 1 lit when holding step (duration control) */
+    setButtonLED(MoveKnobLEDs[0], state.heldTransposeStep >= 0 ? Cyan : Black);
+
+    /* Other knobs off */
+    for (let i = 1; i < 8; i++) {
+        setButtonLED(MoveKnobLEDs[i], Black);
     }
 }
 
 function updateTrackButtonLEDs() {
-    /* Track buttons off in master view - not active */
     for (let i = 0; i < 4; i++) {
-        setButtonLED(MoveTracks[i], Black);
+        const btnTrackOffset = 3 - i;
+        const trackIdx = state.shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
+
+        let color;
+        if (trackIdx === state.currentTrack) {
+            color = TRACK_COLORS[trackIdx];
+        } else if (state.chordFollow[trackIdx]) {
+            color = TRACK_COLORS_DIM[trackIdx];
+        } else {
+            color = DarkGrey;
+        }
+
+        setButtonLED(MoveTracks[i], color);
     }
 }
 
 function updateTransportLEDs() {
-    /* Play button */
     setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
-
-    /* Loop button - shows clock sync state in master view */
     setButtonLED(MoveLoop, state.sendClock ? Cyan : LightGrey);
-
-    /* Record button */
     setButtonLED(MoveRec, state.recording ? BrightRed : Black);
 }
 
 function updateCaptureLED() {
-    /* Capture off in master view */
     setButtonLED(MoveCapture, Black);
 }
 
 function updateBackLED() {
-    /* Back button lit - press to return to track view */
     setButtonLED(MoveBack, White);
+}
+
+function updateOctaveLEDs() {
+    /* Light up/down buttons based on available range */
+    setButtonLED(MoveUp, state.transposeOctaveOffset < 2 ? White : DarkGrey);
+    setButtonLED(MoveDown, state.transposeOctaveOffset > -2 ? White : DarkGrey);
+}
+
+/* ============ Display ============ */
+
+export function updateDisplayContent() {
+    const scaleName = getScaleDisplayName(state.detectedScale);
+    const stepCount = getStepCount();
+
+    let line2, line3;
+
+    if (state.heldTransposeStep >= 0) {
+        const step = getTransposeStep(state.heldTransposeStep);
+        if (step) {
+            const noteName = NOTE_NAMES[((step.transpose % 12) + 12) % 12];
+            const octaveStr = step.transpose >= 0 ? `+${step.transpose}` : `${step.transpose}`;
+            line2 = `Step ${state.heldTransposeStep + 1}: ${noteName} (${octaveStr})`;
+            line3 = `Duration: ${formatDuration(step.duration)}`;
+        } else {
+            line2 = `Step ${state.heldTransposeStep + 1}: (empty)`;
+            line3 = "Press piano key to set";
+        }
+    } else {
+        line2 = `Steps: ${stepCount}/${MAX_TRANSPOSE_STEPS}`;
+        line3 = `Octave: ${state.transposeOctaveOffset >= 0 ? '+' : ''}${state.transposeOctaveOffset}`;
+    }
+
+    displayMessage(
+        `Scale: ${scaleName}`,
+        line2,
+        line3,
+        `Sync: ${state.sendClock ? "ON" : "OFF"}`
+    );
+}
+
+/* ============ Initialize delete held state ============ */
+if (state.deleteHeld === undefined) {
+    state.deleteHeld = false;
 }

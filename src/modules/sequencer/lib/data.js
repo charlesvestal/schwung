@@ -165,6 +165,34 @@ export function migrateTrackData(trackData) {
     return trackData;
 }
 
+/* ============ Transpose Sequence ============ */
+
+/**
+ * Create a new transpose step
+ */
+export function createTransposeStep(transpose = 0, duration = 4) {
+    return {
+        transpose: transpose,
+        duration: duration
+    };
+}
+
+/**
+ * Deep clone a transpose sequence
+ */
+export function cloneTransposeSequence(seq) {
+    if (!seq) return [];
+    return seq.map(step => step ? { transpose: step.transpose, duration: step.duration } : null)
+              .filter(s => s !== null);
+}
+
+/**
+ * Default chord follow settings (tracks 1-4 drums, 5-8 melodic)
+ */
+export function getDefaultChordFollow() {
+    return [false, false, false, false, true, true, true, true];
+}
+
 /* ============ Helpers ============ */
 
 /**

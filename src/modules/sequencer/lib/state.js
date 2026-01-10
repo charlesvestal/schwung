@@ -76,7 +76,28 @@ export const state = {
     line4: "",
 
     /* Playback pad tracking */
-    litPads: []
+    litPads: [],
+
+    /* Transpose sequence (global, max 16 steps) */
+    transposeSequence: [],
+
+    /* Chord follow per track (true = transpose applies) */
+    chordFollow: [false, false, false, false, true, true, true, true],
+
+    /* Sequencer type (0 for now, extensible) */
+    sequencerType: 0,
+
+    /* Transpose display octave offset (-2 to +2) */
+    transposeOctaveOffset: 0,
+
+    /* Current beat position in transpose sequence */
+    currentTransposeBeat: 0,
+
+    /* Cached scale detection result */
+    detectedScale: null,
+
+    /* Master view: held transpose step for editing (-1 = none) */
+    heldTransposeStep: -1
 };
 
 /* Initialize track CC values */

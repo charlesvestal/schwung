@@ -8,7 +8,7 @@ import * as os from 'os';
 
 import { DATA_DIR, SETS_FILE, NUM_SETS } from './constants.js';
 import { state } from './state.js';
-import { createEmptyTracks, deepCloneTracks, migrateTrackData } from './data.js';
+import { createEmptyTracks, deepCloneTracks, migrateTrackData, cloneTransposeSequence, getDefaultChordFollow } from './data.js';
 
 /* ============ Directory Setup ============ */
 
@@ -77,7 +77,10 @@ export function loadAllSetsFromDisk() {
 export function saveCurrentSet() {
     state.sets[state.currentSet] = {
         tracks: deepCloneTracks(state.tracks),
-        bpm: state.bpm
+        bpm: state.bpm,
+        transposeSequence: cloneTransposeSequence(state.transposeSequence),
+        chordFollow: [...state.chordFollow],
+        sequencerType: state.sequencerType
     };
 }
 
@@ -89,7 +92,10 @@ export function loadSetToTracks(setIdx) {
     if (!state.sets[setIdx]) {
         state.sets[setIdx] = {
             tracks: createEmptyTracks(),
-            bpm: 120
+            bpm: 120,
+            transposeSequence: [],
+            chordFollow: getDefaultChordFollow(),
+            sequencerType: 0
         };
     }
 
@@ -104,6 +110,16 @@ export function loadSetToTracks(setIdx) {
     state.tracks = deepCloneTracks(setTracks);
     state.bpm = setBpm;
     state.currentSet = setIdx;
+
+    /* Load transpose/chord follow with defaults for old sets */
+    state.transposeSequence = cloneTransposeSequence(setData.transposeSequence || []);
+    state.chordFollow = setData.chordFollow ? [...setData.chordFollow] : getDefaultChordFollow();
+    state.sequencerType = setData.sequencerType || 0;
+
+    /* Reset transpose playback position */
+    state.currentTransposeBeat = 0;
+    state.transposeOctaveOffset = 0;
+    state.detectedScale = null;
 
     return { tracks: state.tracks, bpm: state.bpm };
 }

@@ -136,6 +136,11 @@ static int g_send_clock = 1;
 static double g_clock_phase = 0.0;
 static double g_global_phase = 0.0;  /* Master clock for all timing */
 
+/* Transpose/chord follow state */
+static int g_chord_follow[NUM_TRACKS] = {0, 0, 0, 0, 1, 1, 1, 1};  /* Tracks 5-8 follow by default */
+static int g_current_transpose = 0;  /* Current transpose offset in semitones */
+static uint32_t g_beat_count = 0;    /* Global beat counter for UI sync */
+
 /* ============ Helpers ============ */
 
 /* Simple PRNG for probability (xorshift32) */
@@ -495,16 +500,20 @@ static int check_spark_condition(int8_t spark_n, int8_t spark_m, uint8_t spark_n
 
 /**
  * Schedule notes for a step via the centralized scheduler.
- * This handles swing, ratchets, and note conflicts automatically.
+ * This handles swing, ratchets, note conflicts, and transpose automatically.
  *
  * @param track      Track data
+ * @param track_idx  Track index (for chord_follow check)
  * @param step       Step data
  * @param base_phase Global phase when this step starts
  */
-static void schedule_step_notes(track_t *track, step_t *step, double base_phase) {
+static void schedule_step_notes(track_t *track, int track_idx, step_t *step, double base_phase) {
     int note_length = step->length > 0 ? step->length : 1;
     int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
     int ratchet_count = step->ratchet > 0 ? step->ratchet : 1;
+
+    /* Calculate transpose offset for this track */
+    int transpose = g_chord_follow[track_idx] ? g_current_transpose : 0;
 
     /* For ratchets, divide the step into equal parts */
     double ratchet_step = 1.0 / ratchet_count;
@@ -517,8 +526,13 @@ static void schedule_step_notes(track_t *track, step_t *step, double base_phase)
         /* Schedule each note in the step */
         for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
             if (step->notes[n] > 0) {
+                /* Apply transpose and clamp to valid MIDI range */
+                int transposed_note = step->notes[n] + transpose;
+                if (transposed_note < 0) transposed_note = 0;
+                if (transposed_note > 127) transposed_note = 127;
+
                 schedule_note(
-                    step->notes[n],
+                    transposed_note,
                     step->velocity,
                     track->midi_channel,
                     track->swing,
@@ -572,16 +586,24 @@ static void trigger_track_step(track_t *track, int track_idx, double step_start_
     /* Schedule notes (with ratchets if comp_spark passes) */
     if (comp_spark_pass && step->ratchet > 1) {
         /* Schedule with ratchets */
-        schedule_step_notes(track, step, note_phase);
+        schedule_step_notes(track, track_idx, step, note_phase);
     } else {
         /* Schedule single trigger (no ratchet) */
         int note_length = step->length > 0 ? step->length : 1;
         int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
 
+        /* Calculate transpose offset for this track */
+        int transpose = g_chord_follow[track_idx] ? g_current_transpose : 0;
+
         for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
             if (step->notes[n] > 0) {
+                /* Apply transpose and clamp to valid MIDI range */
+                int transposed_note = step->notes[n] + transpose;
+                if (transposed_note < 0) transposed_note = 0;
+                if (transposed_note > 127) transposed_note = 127;
+
                 schedule_note(
-                    step->notes[n],
+                    transposed_note,
                     step->velocity,
                     track->midi_channel,
                     track->swing,
@@ -702,6 +724,8 @@ static void plugin_set_param(const char *key, const char *val) {
             }
             g_clock_phase = 0.0;
             g_global_phase = 0.0;
+            g_beat_count = 0;
+            g_current_transpose = 0;  /* Reset transpose at start */
 
             /* Seed PRNG with a bit of entropy */
             g_random_state = 12345;
@@ -726,6 +750,10 @@ static void plugin_set_param(const char *key, const char *val) {
     }
     else if (strcmp(key, "send_clock") == 0) {
         g_send_clock = atoi(val);
+    }
+    /* Current transpose offset (from UI transpose sequence) */
+    else if (strcmp(key, "current_transpose") == 0) {
+        g_current_transpose = atoi(val);
     }
     /* Send CC externally: send_cc_CHANNEL_CC = VALUE */
     else if (strncmp(key, "send_cc_", 8) == 0) {
@@ -775,6 +803,9 @@ static void plugin_set_param(const char *key, const char *val) {
                     if (sw >= 0 && sw <= 100) {
                         g_tracks[track].swing = sw;
                     }
+                }
+                else if (strcmp(param, "chord_follow") == 0) {
+                    g_chord_follow[track] = atoi(val) ? 1 : 0;
                 }
                 else if (strcmp(param, "loop_start") == 0) {
                     int start = atoi(val);
@@ -1039,6 +1070,9 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     else if (strcmp(key, "num_tracks") == 0) {
         return snprintf(buf, buf_len, "%d", NUM_TRACKS);
     }
+    else if (strcmp(key, "beat_count") == 0) {
+        return snprintf(buf, buf_len, "%u", g_beat_count);
+    }
     /* Track params */
     else if (strncmp(key, "track_", 6) == 0) {
         int track = atoi(key + 6);
@@ -1139,9 +1173,21 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
     double step_inc = (double)(g_bpm * 4) / (double)(MOVE_SAMPLE_RATE * 60);
     double clock_inc = (double)(g_bpm * 24) / (double)(MOVE_SAMPLE_RATE * 60);
 
+    /* Track previous global phase for beat detection */
+    double prev_global_phase = g_global_phase;
+
     for (int i = 0; i < frames; i++) {
         g_clock_phase += clock_inc;
         g_global_phase += step_inc;
+
+        /* Track beat count (1 beat = 4 steps) for transpose sequence sync */
+        /* Increment when we cross a 4-step boundary */
+        uint32_t prev_beat = (uint32_t)(prev_global_phase / 4.0);
+        uint32_t curr_beat = (uint32_t)(g_global_phase / 4.0);
+        if (curr_beat > prev_beat) {
+            g_beat_count = curr_beat;
+        }
+        prev_global_phase = g_global_phase;
 
         /* Send MIDI clock at 24 PPQN */
         if (g_send_clock && g_clock_phase >= 1.0) {

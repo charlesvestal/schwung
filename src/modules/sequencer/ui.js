@@ -20,11 +20,12 @@ import {
 } from "../../shared/input_filter.mjs";
 
 /* Import lib modules */
-import { NUM_STEPS, TRACK_COLORS } from './lib/constants.js';
+import { NUM_STEPS, NUM_TRACKS, TRACK_COLORS } from './lib/constants.js';
 import { state, enterSetView, enterTrackView, enterPatternView, enterMasterView } from './lib/state.js';
 import { setParam, getCurrentPattern } from './lib/helpers.js';
 import { createEmptyTracks } from './lib/data.js';
 import { loadAllSetsFromDisk, initializeSets } from './lib/persistence.js';
+import { getTransposeAtBeat } from './lib/transpose_sequence.js';
 
 /* Import views */
 import * as setView from './views/set.js';
@@ -106,6 +107,16 @@ globalThis.tick = function() {
 
     /* Poll DSP for playhead position when playing */
     if (state.playing && state.heldStep < 0) {
+        /* Poll beat count and update transpose sequence */
+        const beatStr = host_module_get_param('beat_count');
+        const newBeat = beatStr ? parseInt(beatStr, 10) : 0;
+        if (newBeat !== state.currentTransposeBeat) {
+            state.currentTransposeBeat = newBeat;
+            /* Calculate new transpose value and send to DSP */
+            const newTranspose = getTransposeAtBeat(newBeat);
+            setParam('current_transpose', String(newTranspose));
+        }
+
         const stepStr = host_module_get_param(`track_${state.currentTrack}_current_step`);
         const newStep = stepStr ? parseInt(stepStr, 10) : -1;
 

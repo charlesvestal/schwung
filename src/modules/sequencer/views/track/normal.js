@@ -9,7 +9,7 @@
  */
 
 import {
-    Black, White, Navy, LightGrey, Cyan, VividYellow, BrightGreen, BrightRed,
+    Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed,
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
@@ -29,6 +29,8 @@ import { state, displayMessage } from '../../lib/state.js';
 import {
     setParam, getCurrentPattern, noteToName, notesToString, updateAndSendCC
 } from '../../lib/helpers.js';
+
+import { detectScale, isRoot, isInScale } from '../../lib/scale_detection.js';
 
 /* ============ Input Handling ============ */
 
@@ -455,6 +457,10 @@ function toggleStepNote(stepIdx, note) {
         if (step.notes.length < 4) {
             step.notes.push(note);
             setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, String(note));
+            /* Recalculate scale detection when note is added */
+            if (state.chordFollow[state.currentTrack]) {
+                state.detectedScale = detectScale(state.tracks, state.chordFollow);
+            }
             return true;
         }
         return false;
@@ -545,16 +551,50 @@ function updateStepLEDs() {
 }
 
 function updatePadLEDs() {
+    const trackColor = TRACK_COLORS[state.currentTrack];
+
     if (state.heldStep >= 0) {
+        /* Holding a step: show step's notes */
         const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
         const stepNotes = step.notes;
-        const trackColor = TRACK_COLORS[state.currentTrack];
 
         for (let i = 0; i < 32; i++) {
             const midiNote = 36 + i;
             setLED(MovePads[i], stepNotes.includes(midiNote) ? trackColor : Black);
         }
+    } else if (state.chordFollow[state.currentTrack]) {
+        /* ChordFollow track: show scale on pads */
+        const detected = state.detectedScale;
+
+        for (let i = 0; i < 32; i++) {
+            const midiNote = 36 + i;
+            const pitchClass = midiNote % 12;
+            let color;
+
+            /* Check if this note is currently being played */
+            const isPlaying = state.litPads && state.litPads.includes(midiNote);
+
+            if (isPlaying) {
+                /* Currently playing note - brightest */
+                color = trackColor;
+            } else if (detected && isRoot(pitchClass, detected)) {
+                /* Root note */
+                color = trackColor;
+            } else if (detected && isInScale(pitchClass, detected)) {
+                /* In scale */
+                color = White;
+            } else if (detected) {
+                /* Out of scale */
+                color = DarkGrey;
+            } else {
+                /* No scale detected - all dim */
+                color = DarkGrey;
+            }
+
+            setLED(MovePads[i], color);
+        }
     } else {
+        /* Non-chordFollow track (drums): pads black */
         for (let i = 0; i < 32; i++) {
             setLED(MovePads[i], Black);
         }
