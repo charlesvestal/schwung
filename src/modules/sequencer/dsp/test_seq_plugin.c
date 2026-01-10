@@ -831,6 +831,162 @@ TEST(jump_with_comp_spark) {
     set_param("track_0_step_8_clear", "1");
 }
 
+/* ============ Tests: Swing Calculation ============ */
+
+/* Test calculate_swing_delay directly */
+TEST(swing_delay_no_swing) {
+    /* Swing 50 = no swing, delay should always be 0 */
+    double delay;
+
+    delay = calculate_swing_delay(50, 0.0);  /* Downbeat */
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(50, 1.0);  /* Upbeat */
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(50, 2.0);  /* Downbeat */
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(50, 3.0);  /* Upbeat */
+    ASSERT(delay == 0.0);
+}
+
+TEST(swing_delay_below_50) {
+    /* Swing below 50 should also have no delay */
+    double delay;
+
+    delay = calculate_swing_delay(0, 1.0);
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(25, 1.0);
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(49, 1.0);
+    ASSERT(delay == 0.0);
+}
+
+TEST(swing_delay_downbeats_not_affected) {
+    /* Downbeats (even steps: 0, 2, 4, ...) should never have swing delay */
+    double delay;
+
+    delay = calculate_swing_delay(67, 0.0);  /* Step 0 */
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(67, 2.0);  /* Step 2 */
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(100, 4.0);  /* Step 4 */
+    ASSERT(delay == 0.0);
+
+    delay = calculate_swing_delay(100, 100.0);  /* Step 100 */
+    ASSERT(delay == 0.0);
+}
+
+TEST(swing_delay_upbeats_affected) {
+    /* Upbeats (odd steps: 1, 3, 5, ...) should have swing delay when swing > 50 */
+    double delay;
+
+    /* Swing 67 (triplet feel): delay = (67-50)/100 * 0.5 = 0.085 */
+    delay = calculate_swing_delay(67, 1.0);
+    ASSERT(delay > 0.08 && delay < 0.09);  /* ~0.085 */
+
+    delay = calculate_swing_delay(67, 3.0);
+    ASSERT(delay > 0.08 && delay < 0.09);
+
+    /* Swing 100 (maximum): delay = (100-50)/100 * 0.5 = 0.25 */
+    delay = calculate_swing_delay(100, 1.0);
+    ASSERT(delay > 0.24 && delay < 0.26);  /* ~0.25 */
+
+    delay = calculate_swing_delay(100, 5.0);
+    ASSERT(delay > 0.24 && delay < 0.26);
+}
+
+TEST(swing_delay_values) {
+    /* Test specific swing values */
+    double delay;
+
+    /* Swing 60: delay = (60-50)/100 * 0.5 = 0.05 */
+    delay = calculate_swing_delay(60, 1.0);
+    ASSERT(delay > 0.04 && delay < 0.06);
+
+    /* Swing 75: delay = (75-50)/100 * 0.5 = 0.125 */
+    delay = calculate_swing_delay(75, 1.0);
+    ASSERT(delay > 0.12 && delay < 0.13);
+
+    /* Swing 80: delay = (80-50)/100 * 0.5 = 0.15 */
+    delay = calculate_swing_delay(80, 1.0);
+    ASSERT(delay > 0.14 && delay < 0.16);
+}
+
+TEST(swing_set_track_swing) {
+    /* Test that track swing can be set via set_param */
+    set_param("track_0_swing", "67");
+
+    /* Verify via internal state (we have access since we include the .c file) */
+    ASSERT_EQ(g_tracks[0].swing, 67);
+
+    /* Reset */
+    set_param("track_0_swing", "50");
+    ASSERT_EQ(g_tracks[0].swing, 50);
+}
+
+TEST(swing_default_value) {
+    /* Default swing should be 50 (no swing) */
+    ASSERT_EQ(g_tracks[0].swing, 50);
+}
+
+/* Test swing's effect on note timing by examining scheduled notes */
+TEST(swing_affects_note_scheduling) {
+    /* Set up notes on step 0 (downbeat) and step 1 (upbeat) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_1_add_note", "61");
+    set_param("track_0_swing", "100");  /* Maximum swing */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(3);  /* Render past both steps */
+    set_param("playing", "0");
+
+    /* Both notes should play */
+    int found_60 = 0, found_61 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 60) found_60 = 1;
+            if (g_captured_notes[i].note == 61) found_61 = 1;
+        }
+    }
+    ASSERT(found_60);
+    ASSERT(found_61);
+
+    /* Note 60 (step 0, downbeat) should come before note 61 (step 1, upbeat with swing delay) */
+    /* With swing, note 61 is delayed, so 60 should appear first in capture order */
+    int idx_60 = -1, idx_61 = -1;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 60 && idx_60 < 0) idx_60 = i;
+            if (g_captured_notes[i].note == 61 && idx_61 < 0) idx_61 = i;
+        }
+    }
+    ASSERT(idx_60 < idx_61);  /* 60 should be captured before 61 */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_0_swing", "50");
+}
+
+TEST(swing_per_track) {
+    /* Different tracks can have different swing values */
+    set_param("track_0_swing", "50");  /* No swing */
+    set_param("track_1_swing", "100"); /* Max swing */
+
+    ASSERT_EQ(g_tracks[0].swing, 50);
+    ASSERT_EQ(g_tracks[1].swing, 100);
+
+    /* Reset */
+    set_param("track_1_swing", "50");
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -898,6 +1054,17 @@ int main(int argc, char **argv) {
     printf("\nJump:\n");
     RUN_TEST(jump_basic);
     RUN_TEST(jump_with_comp_spark);
+
+    printf("\nSwing Calculation:\n");
+    RUN_TEST(swing_delay_no_swing);
+    RUN_TEST(swing_delay_below_50);
+    RUN_TEST(swing_delay_downbeats_not_affected);
+    RUN_TEST(swing_delay_upbeats_affected);
+    RUN_TEST(swing_delay_values);
+    RUN_TEST(swing_set_track_swing);
+    RUN_TEST(swing_default_value);
+    RUN_TEST(swing_affects_note_scheduling);
+    RUN_TEST(swing_per_track);
 
     cleanup_plugin();
 
