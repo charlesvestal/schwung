@@ -43,6 +43,7 @@ export function onInput(data) {
         }
         track.arpMode = mode;
         setParam(`track_${state.currentTrack}_arp_mode`, String(mode));
+        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     }
@@ -57,6 +58,7 @@ export function onInput(data) {
         }
         track.arpSpeed = speed;
         setParam(`track_${state.currentTrack}_arp_speed`, String(speed));
+        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     }
@@ -71,6 +73,7 @@ export function onInput(data) {
         }
         track.arpOctave = octave;
         setParam(`track_${state.currentTrack}_arp_octave`, String(octave));
+        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     }
@@ -146,6 +149,5 @@ export function onEnter() {
 }
 
 export function onExit() {
-    /* Save changes when exiting mode */
-    saveCurrentSetToDisk();
+    /* Changes saved on each input, nothing to do here */
 }

@@ -126,12 +126,21 @@ export function deleteSetFile(setIdx) {
 }
 
 /**
- * Save current set to memory and disk
+ * Save current set directly to disk (no clone)
+ * Fast enough for frequent saves (e.g., every jog wheel turn)
  */
 export function saveCurrentSetToDisk() {
     if (state.currentSet < 0) return false;
-    saveCurrentSet();
-    return saveSetToDisk(state.currentSet);
+    /* Serialize directly from state - no deep clone needed */
+    const setData = {
+        tracks: state.tracks,
+        bpm: state.bpm,
+        transposeSequence: state.transposeSequence,
+        chordFollow: state.chordFollow,
+        sequencerType: state.sequencerType,
+        patternSnapshots: state.patternSnapshots
+    };
+    return saveSetToDisk(state.currentSet, setData);
 }
 
 /* ============ Set Operations ============ */
@@ -145,8 +154,17 @@ export function saveCurrentSet() {
         bpm: state.bpm,
         transposeSequence: cloneTransposeSequence(state.transposeSequence),
         chordFollow: [...state.chordFollow],
-        sequencerType: state.sequencerType
+        sequencerType: state.sequencerType,
+        patternSnapshots: clonePatternSnapshots(state.patternSnapshots)
     };
+}
+
+/**
+ * Clone pattern snapshots array
+ */
+function clonePatternSnapshots(snapshots) {
+    if (!snapshots || snapshots.length === 0) return [];
+    return snapshots.map(s => s ? [...s] : null);
 }
 
 /**
@@ -198,6 +216,10 @@ export function loadSetToTracks(setIdx) {
         state.chordFollow = getDefaultChordFollow();
     }
     state.sequencerType = setData.sequencerType || 0;
+
+    /* Load pattern snapshots with default empty array */
+    state.patternSnapshots = setData.patternSnapshots ?
+        setData.patternSnapshots.map(s => s ? [...s] : null) : [];
 
     /* Reset transpose playback position */
     state.currentTransposeBeat = 0;

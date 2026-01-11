@@ -42,6 +42,7 @@ export function onInput(data) {
         }
         state.tracks[state.currentTrack].swing = swing;
         setParam(`track_${state.currentTrack}_swing`, String(swing));
+        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     }
@@ -106,6 +107,5 @@ export function onEnter() {
 }
 
 export function onExit() {
-    /* Save changes when exiting mode */
-    saveCurrentSetToDisk();
+    /* Changes saved on each input, nothing to do here */
 }

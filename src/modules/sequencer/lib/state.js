@@ -40,8 +40,12 @@ export const state = {
 
     /* Recording */
     recording: false,
+    recHeld: false,            // Rec button currently held
     heldPads: new Set(),       // Currently held pads
     lastRecordedStep: -1,      // Last step we recorded to
+
+    /* Pattern snapshots (16 slots, each stores pattern indices for all tracks) */
+    patternSnapshots: [],      // Array of 16 slots, each null or [pattern indices]
 
     /* Loop editing */
     loopEditFirst: -1,         // First step pressed while in loop edit

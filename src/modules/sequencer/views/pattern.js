@@ -21,6 +21,38 @@ import { state, displayMessage } from '../lib/state.js';
 import { setParam, updateAndSendCC, getCurrentPattern } from '../lib/helpers.js';
 import { saveCurrentSetToDisk } from '../lib/persistence.js';
 
+/* ============ Pattern Snapshots ============ */
+
+/**
+ * Save current pattern selections to a snapshot slot
+ */
+function savePatternSnapshot(stepIdx) {
+    const snapshot = [];
+    for (let t = 0; t < NUM_TRACKS; t++) {
+        snapshot.push(state.tracks[t].currentPattern);
+    }
+    /* Ensure array is long enough */
+    while (state.patternSnapshots.length <= stepIdx) {
+        state.patternSnapshots.push(null);
+    }
+    state.patternSnapshots[stepIdx] = snapshot;
+    saveCurrentSetToDisk();
+}
+
+/**
+ * Recall patterns from a snapshot slot
+ */
+function recallPatternSnapshot(stepIdx) {
+    if (!state.patternSnapshots[stepIdx]) return false;
+    const snapshot = state.patternSnapshots[stepIdx];
+    for (let t = 0; t < NUM_TRACKS && t < snapshot.length; t++) {
+        state.tracks[t].currentPattern = snapshot[t];
+        setParam(`track_${t}_pattern`, String(snapshot[t]));
+    }
+    saveCurrentSetToDisk();
+    return true;
+}
+
 /* ============ Track Button Navigation ============ */
 
 /**
@@ -62,7 +94,7 @@ export function onEnter() {
  * Called when exiting pattern view
  */
 export function onExit() {
-    // Nothing special to clean up
+    state.recHeld = false;
 }
 
 /**
@@ -159,6 +191,45 @@ export function onInput(data) {
         return true;
     }
 
+    /* Rec button - track hold state */
+    if (isCC && note === MoveRec) {
+        state.recHeld = velocity > 0;
+        updateTransportLEDs();
+        return true;
+    }
+
+    /* Steps - save/recall pattern snapshots */
+    if (isNote && note >= 16 && note <= 31) {
+        const stepIdx = note - 16;
+        if (isNoteOn && velocity > 0) {
+            if (state.recHeld) {
+                /* Rec + Step: save current patterns to this slot */
+                savePatternSnapshot(stepIdx);
+                displayMessage(
+                    `PATTERNS      ${state.bpm} BPM`,
+                    `Saved to Snapshot ${stepIdx + 1}`,
+                    "",
+                    ""
+                );
+            } else {
+                /* Step alone: recall patterns from this slot */
+                if (recallPatternSnapshot(stepIdx)) {
+                    const patStr = state.tracks.slice(state.trackScrollPosition, state.trackScrollPosition + 8)
+                        .map(t => String(t.currentPattern + 1)).join(" ");
+                    displayMessage(
+                        `PATTERNS      ${state.bpm} BPM`,
+                        `Recalled Snapshot ${stepIdx + 1}`,
+                        `Patterns: ${patStr}`,
+                        ""
+                    );
+                    updatePadLEDs();
+                }
+            }
+            updateStepLEDs();
+        }
+        return true;
+    }
+
     return false;  // Let router handle
 }
 
@@ -206,9 +277,10 @@ export function updateDisplayContent() {
 /* ============ LED Updates ============ */
 
 function updateStepLEDs() {
-    /* Steps off in pattern view - focus is on pads */
+    /* Steps show saved pattern snapshots */
     for (let i = 0; i < NUM_STEPS; i++) {
-        setLED(MoveSteps[i], Black);
+        const hasSnapshot = state.patternSnapshots[i] !== null && state.patternSnapshots[i] !== undefined;
+        setLED(MoveSteps[i], hasSnapshot ? Cyan : Black);
     }
 }
 
@@ -291,8 +363,8 @@ function updateTransportLEDs() {
     /* Loop button - off in pattern view */
     setButtonLED(MoveLoop, Black);
 
-    /* Record button */
-    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
+    /* Record button - lit when held for snapshot save */
+    setButtonLED(MoveRec, state.recHeld ? BrightRed : (state.recording ? BrightRed : Black));
 }
 
 function updateCaptureLED() {
