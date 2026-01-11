@@ -1578,6 +1578,49 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         }
         return -1;
     }
+    /* Return patch configuration as JSON for editing */
+    if (strncmp(key, "patch_config_", 13) == 0) {
+        int index = atoi(key + 13);
+        if (index >= 0 && index < g_patch_count) {
+            patch_info_t *p = &g_patches[index];
+            const char *input_str = "both";
+            if (p->midi_input == MIDI_INPUT_PADS) input_str = "pads";
+            else if (p->midi_input == MIDI_INPUT_EXTERNAL) input_str = "external";
+
+            const char *chord_str = "none";
+            if (p->chord_type == CHORD_MAJOR) chord_str = "major";
+            else if (p->chord_type == CHORD_MINOR) chord_str = "minor";
+            else if (p->chord_type == CHORD_POWER) chord_str = "power";
+            else if (p->chord_type == CHORD_OCTAVE) chord_str = "octave";
+
+            const char *arp_str = "off";
+            if (p->arp_mode == ARP_UP) arp_str = "up";
+            else if (p->arp_mode == ARP_DOWN) arp_str = "down";
+            else if (p->arp_mode == ARP_UPDOWN) arp_str = "up_down";
+            else if (p->arp_mode == ARP_RANDOM) arp_str = "random";
+
+            /* Build audio_fx JSON array */
+            char fx_json[512] = "[";
+            for (int i = 0; i < p->audio_fx_count && i < MAX_AUDIO_FX; i++) {
+                if (i > 0) strcat(fx_json, ",");
+                char fx_item[64];
+                snprintf(fx_item, sizeof(fx_item), "\"%s\"", p->audio_fx[i]);
+                strcat(fx_json, fx_item);
+            }
+            strcat(fx_json, "]");
+
+            snprintf(buf, buf_len,
+                "{\"synth\":\"%s\",\"preset\":%d,\"source\":\"%s\","
+                "\"input\":\"%s\",\"chord\":\"%s\",\"arp\":\"%s\","
+                "\"arp_bpm\":%d,\"arp_div\":%d,\"audio_fx\":%s}",
+                p->synth_module, p->synth_preset,
+                p->midi_source_module[0] ? p->midi_source_module : "",
+                input_str, chord_str, arp_str,
+                p->arp_tempo_bpm, p->arp_note_division, fx_json);
+            return 0;
+        }
+        return -1;
+    }
     if (strcmp(key, "midi_fx_js") == 0) {
         if (g_current_patch >= 0 && g_current_patch < g_patch_count) {
             buf[0] = '\0';
