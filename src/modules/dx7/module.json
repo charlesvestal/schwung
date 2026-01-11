@@ -19,7 +19,7 @@
         "name": "Preset",
         "type": "int",
         "min": 0,
-        "max": 31,
+        "max_param": "preset_count",
         "default": 0
       }
     ]
