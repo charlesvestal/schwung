@@ -14,7 +14,7 @@ import {
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
+    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
@@ -603,6 +603,9 @@ function updateStepLEDs() {
     setButtonLED(MoveStep2UI, state.shiftHeld ? White : Black);   /* Channel */
     setButtonLED(MoveStep5UI, state.shiftHeld ? White : Black);          /* Speed */
     setButtonLED(MoveStep7UI, state.shiftHeld ? White : Black);   /* Swing */
+    /* Transpose toggle - lit when shift held OR when current track has chordFollow */
+    const trackTransposed = state.chordFollow[state.currentTrack];
+    setButtonLED(MoveStep8UI, state.shiftHeld ? White : (trackTransposed ? Cyan : Black));
 }
 
 function updateKnobLEDs() {

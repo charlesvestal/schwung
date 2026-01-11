@@ -166,6 +166,9 @@ When shift is held, step LEDs clear and show mode icons:
 | 2 | White | Enter Channel mode |
 | 5 | White | Enter Speed mode |
 | 7 | White | Enter Swing mode |
+| 8 | White | Toggle transpose for track |
+
+Note: Step 8 LED shows Cyan when shift is not held if the current track has transpose enabled.
 
 ---
 

@@ -14,7 +14,7 @@ import {
     MoveLoop, MoveCapture, MoveMainButton, MoveBack
 } from "../../../shared/constants.mjs";
 
-import { updatePadLEDs } from '../lib/helpers.js';
+import { updatePadLEDs, setParam } from '../lib/helpers.js';
 
 import {
     state, displayMessage, enterSetView,
@@ -105,6 +105,17 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 22 && isNoteOn && velocity > 0) {
         enterSwingMode();
         modes.swing.onEnter();
+        updateLEDs();
+        return true;
+    }
+
+    /* Shift + Step 8 toggles transpose (chordFollow) for current track */
+    if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 23 && isNoteOn && velocity > 0) {
+        state.chordFollow[state.currentTrack] = !state.chordFollow[state.currentTrack];
+        setParam(`track_${state.currentTrack}_chord_follow`, state.chordFollow[state.currentTrack] ? "1" : "0");
+        saveCurrentSetToDisk();
+        const status = state.chordFollow[state.currentTrack] ? "ON" : "OFF";
+        displayMessage(`Track ${state.currentTrack + 1}`, `Transpose: ${status}`, "", "");
         updateLEDs();
         return true;
     }
