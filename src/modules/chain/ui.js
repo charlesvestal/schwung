@@ -33,6 +33,16 @@ let sourceUiReady = false;
 let sourceUi = null;
 let sourceUiLoadError = false;
 
+/* Editor state */
+let editorMode = false;
+let editorState = null;
+let availableComponents = {
+    sound_generators: [],
+    audio_fx: [],
+    midi_fx: [],
+    midi_sources: []
+};
+
 let needsRedraw = true;
 let tickCount = 0;
 const REDRAW_INTERVAL = 6;
@@ -114,6 +124,45 @@ function getChainUiPath(moduleId) {
     }
 
     return chainUiPath;
+}
+
+function scanChainableModules() {
+    const root = getModulesRoot();
+    if (!root) return;
+
+    availableComponents = {
+        sound_generators: [],
+        audio_fx: [],
+        midi_fx: [],
+        midi_sources: []
+    };
+
+    /* For now, use known modules - will be replaced with dynamic scan later */
+    availableComponents.sound_generators = [
+        { id: "sf2", name: "SF2 Synth", params: [{ key: "preset", name: "Preset", type: "int", min: 0, max_param: "preset_count", default: 0 }] },
+        { id: "dx7", name: "DX7 Synth", params: [{ key: "preset", name: "Preset", type: "int", min: 0, max_param: "preset_count", default: 0 }] },
+        { id: "linein", name: "Line In", params: [] }
+    ];
+
+    availableComponents.audio_fx = [
+        { id: "freeverb", name: "Freeverb", params: [
+            { key: "room_size", name: "Room Size", type: "float", min: 0, max: 1, default: 0.7, step: 0.05 },
+            { key: "damping", name: "Damping", type: "float", min: 0, max: 1, default: 0.5, step: 0.05 },
+            { key: "wet", name: "Wet", type: "float", min: 0, max: 1, default: 0.35, step: 0.05 },
+            { key: "dry", name: "Dry", type: "float", min: 0, max: 1, default: 0.65, step: 0.05 }
+        ]}
+    ];
+
+    availableComponents.midi_fx = [
+        { id: "chord", name: "Chord", params: [
+            { key: "type", name: "Chord Type", type: "enum", options: ["none", "major", "minor", "power", "octave"], default: "none" }
+        ]},
+        { id: "arp", name: "Arpeggiator", params: [
+            { key: "mode", name: "Mode", type: "enum", options: ["off", "up", "down", "up_down", "random"], default: "off" },
+            { key: "bpm", name: "BPM", type: "int", min: 40, max: 240, default: 120, step: 1 },
+            { key: "division", name: "Division", type: "enum", options: ["1/4", "1/8", "1/16"], default: "1/16" }
+        ]}
+    ];
 }
 
 function loadSourceUi(moduleId) {
@@ -444,6 +493,7 @@ function octaveDown() {
 
 globalThis.init = function() {
     console.log("Signal Chain UI initializing...");
+    scanChainableModules();
     needsRedraw = true;
     console.log("Signal Chain UI ready");
 };
