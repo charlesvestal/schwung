@@ -3,17 +3,18 @@
  * Routes input and updates to mode-specific handlers
  * Sub-modes: normal, loop, spark, channel, speed, swing
  *
- * Each mode is fully self-contained:
- * - Owns ALL its LEDs (steps, pads, knobs, track buttons, transport, capture, back)
- * - Owns ALL its input handling (except Play which is global)
- * - Coordinator only handles mode TRANSITIONS
+ * LED Ownership:
+ * - Coordinator owns: PADS (piano layout, playing notes, held step notes)
+ * - Sub-modes own: steps, knobs, track buttons, transport, capture, back
+ *
+ * This prevents flicker on mode transitions since pads never change.
  */
 
 import {
     MoveLoop, MoveCapture, MoveMainButton, MoveBack
 } from "../../../shared/constants.mjs";
 
-import { clearAllLEDs } from "../../../shared/input_filter.mjs";
+import { updatePadLEDs } from '../lib/helpers.js';
 
 import {
     state, displayMessage, enterSetView,
@@ -81,7 +82,6 @@ export function onInput(data) {
         modes[state.trackMode].onExit();
         enterSetView();
         setView.onEnter();
-        clearAllLEDs();
         setView.updateLEDs();
         return true;
     }
@@ -90,7 +90,6 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 17 && isNoteOn && velocity > 0) {
         enterChannelMode();
         modes.channel.onEnter();
-        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -99,7 +98,6 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 20 && isNoteOn && velocity > 0) {
         enterSpeedMode();
         modes.speed.onEnter();
-        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -108,7 +106,6 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 22 && isNoteOn && velocity > 0) {
         enterSwingMode();
         modes.swing.onEnter();
-        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -117,7 +114,6 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && isCC && note === MoveLoop && velocity > 0) {
         enterLoopEdit();
         modes.loop.onEnter();
-        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -128,7 +124,6 @@ export function onInput(data) {
         enterSparkMode();
         state.sparkSelectedSteps.add(stepIdx);
         modes.spark.onEnter();
-        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -145,7 +140,6 @@ export function onInput(data) {
             else if (state.trackMode === 'speed') exitSpeedMode();
             else exitSwingMode();
             modes.normal.onEnter();
-            clearAllLEDs();
             updateLEDs();
             return true;
         }
@@ -156,7 +150,6 @@ export function onInput(data) {
         modes.loop.onExit();
         exitLoopEdit();
         modes.normal.onEnter();
-        clearAllLEDs();
         updateLEDs();
         return true;
     }
@@ -168,7 +161,6 @@ export function onInput(data) {
                 modes.spark.onExit();
                 exitSparkMode();
                 modes.normal.onEnter();
-                clearAllLEDs();
                 updateLEDs();
                 return true;
             } else if (state.trackMode === 'normal') {
@@ -189,11 +181,13 @@ export function onInput(data) {
 
 /**
  * Update all LEDs for track view
- * Delegates entirely to current mode - mode owns ALL LEDs
+ * Coordinator owns pads, delegates other LEDs to sub-mode
  */
 export function updateLEDs() {
-    modes[state.trackMode].updateLEDs();
+    updatePadLEDs();  // View-level pad control
+    modes[state.trackMode].updateLEDs();  // Sub-mode handles rest
 }
+
 
 /**
  * Update display content for track view

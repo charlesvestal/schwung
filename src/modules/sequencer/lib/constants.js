@@ -4,16 +4,18 @@
  */
 
 import {
-    Black, White, LightGrey, Navy, BrightGreen, Cyan, BrightRed,
+    Black, White, LightGrey, DarkGrey, Navy, BrightGreen, Cyan, BrightRed,
     OrangeRed, VividYellow, RoyalBlue, Purple,
+    NeonPink, BurntOrange, Lime, TealGreen, AzureBlue, Violet, HotMagenta,
+    Rose, Mustard, OliveGreen, MutedTeal, MutedBlue, MutedViolet, DeepMagenta,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
 } from "../../../shared/constants.mjs";
 
 /* ============ Core Constants ============ */
 
-export const NUM_TRACKS = 8;
+export const NUM_TRACKS = 16;
 export const NUM_STEPS = 16;
-export const NUM_PATTERNS = 30;
+export const NUM_PATTERNS = 16;
 export const NUM_SETS = 32;
 
 /* ============ Timing ============ */
@@ -43,12 +45,22 @@ export const TRACK_COLORS = [
     Cyan,         // Track 5 - Bass
     RoyalBlue,    // Track 6 - Lead
     Purple,       // Track 7 - Arp
-    White         // Track 8 - Chord
+    White,        // Track 8 - Chord
+    NeonPink,     // Track 9 - Kick2
+    BurntOrange,  // Track 10 - Snare2
+    Lime,         // Track 11 - Perc2
+    TealGreen,    // Track 12 - Sample2
+    AzureBlue,    // Track 13 - Bass2
+    Violet,       // Track 14 - Lead2
+    HotMagenta,   // Track 15 - Arp2
+    LightGrey     // Track 16 - Chord2
 ];
 
 export const TRACK_NAMES = [
     "Kick", "Snare", "Perc", "Sample",
-    "Bass", "Lead", "Arp", "Chord"
+    "Bass", "Lead", "Arp", "Chord",
+    "Kick2", "Snare2", "Perc2", "Sample2",
+    "Bass2", "Lead2", "Arp2", "Chord2"
 ];
 
 /* Dim versions of track colors for non-selected tracks with content */
@@ -60,7 +72,15 @@ export const TRACK_COLORS_DIM = [
     87,           // Dark Teal (dim cyan)
     17,           // Navy (dim blue)
     107,          // Dark Purple
-    118           // Light Grey (dim white)
+    118,          // Light Grey (dim white)
+    Rose,         // Dim pink
+    Mustard,      // Dim orange
+    OliveGreen,   // Dim lime
+    MutedTeal,    // Dim teal
+    MutedBlue,    // Dim azure
+    MutedViolet,  // Dim violet
+    DeepMagenta,  // Dim magenta
+    DarkGrey      // Dim grey
 ];
 
 /* ============ Speed Options ============ */

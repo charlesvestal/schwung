@@ -113,7 +113,18 @@ export function loadSetToTracks(setIdx) {
 
     /* Load transpose/chord follow with defaults for old sets */
     state.transposeSequence = cloneTransposeSequence(setData.transposeSequence || []);
-    state.chordFollow = setData.chordFollow ? [...setData.chordFollow] : getDefaultChordFollow();
+
+    /* Handle chordFollow migration (8 -> 16 tracks) */
+    if (setData.chordFollow && setData.chordFollow.length >= 8) {
+        const chordFollow = [...setData.chordFollow];
+        /* Expand 8-element array to 16 by repeating the pattern */
+        while (chordFollow.length < 16) {
+            chordFollow.push(chordFollow[chordFollow.length - 8]);
+        }
+        state.chordFollow = chordFollow;
+    } else {
+        state.chordFollow = getDefaultChordFollow();
+    }
     state.sequencerType = setData.sequencerType || 0;
 
     /* Reset transpose playback position */

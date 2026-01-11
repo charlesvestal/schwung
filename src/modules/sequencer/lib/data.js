@@ -143,11 +143,17 @@ export function deepCloneTracks(srcTracks) {
 
 /**
  * Migrate old track data format to current format
+ * - Adds missing tracks if fewer than NUM_TRACKS
  * - Adds missing patterns if track has fewer than NUM_PATTERNS
  * - Adds speedIndex if missing
  * - Adds swing if missing
  */
 export function migrateTrackData(trackData) {
+    /* Add missing tracks (for 8-track -> 16-track migration) */
+    while (trackData.length < NUM_TRACKS) {
+        trackData.push(createEmptyTrack(trackData.length));
+    }
+
     for (const track of trackData) {
         /* Add missing patterns */
         while (track.patterns.length < NUM_PATTERNS) {
@@ -187,10 +193,11 @@ export function cloneTransposeSequence(seq) {
 }
 
 /**
- * Default chord follow settings (tracks 1-4 drums, 5-8 melodic)
+ * Default chord follow settings (tracks 1-4 drums, 5-8 melodic, repeated for 9-16)
  */
 export function getDefaultChordFollow() {
-    return [false, false, false, false, true, true, true, true];
+    return [false, false, false, false, true, true, true, true,
+            false, false, false, false, true, true, true, true];
 }
 
 /* ============ Helpers ============ */

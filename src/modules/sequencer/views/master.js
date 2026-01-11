@@ -15,7 +15,7 @@ import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM } from '../lib/constants.js';
 import { state, displayMessage } from '../lib/state.js';
-import { setParam, getParam, syncTransposeSequenceToDSP } from '../lib/helpers.js';
+import { setParam, getParam, syncTransposeSequenceToDSP, updateBpm } from '../lib/helpers.js';
 import { isRoot, isInScale, NOTE_NAMES, SCALES } from '../lib/scale_detection.js';
 import {
     setTransposeStep, removeTransposeStep, getTransposeStep, adjustTransposeDuration,
@@ -93,6 +93,9 @@ function getScaleDisplayName() {
 
 /* ============ View Interface ============ */
 
+/* BPM edit mode flag (local to master view) */
+let bpmEditMode = false;
+
 /**
  * Called when entering master view
  */
@@ -100,6 +103,7 @@ export function onEnter() {
     /* Read scale detection from DSP */
     updateDetectedScaleFromDSP();
     state.heldTransposeStep = -1;
+    bpmEditMode = false;
     updateDisplayContent();
 }
 
@@ -108,6 +112,7 @@ export function onEnter() {
  */
 export function onExit() {
     state.heldTransposeStep = -1;
+    bpmEditMode = false;
 }
 
 /**
@@ -120,8 +125,18 @@ export function onInput(data) {
     const note = data[1];
     const velocity = data[2];
 
-    /* Step buttons - transpose sequence */
-    if (isNote && note >= 16 && note <= 31) {
+    /* Step 5 (note 20) with shift - enter BPM mode */
+    if (isNote && note === 20 && state.shiftHeld) {
+        if (isNoteOn && velocity > 0) {
+            bpmEditMode = true;
+            updateDisplayContent();
+            updateLEDs();
+        }
+        return true;
+    }
+
+    /* Step buttons - transpose sequence (only when not in BPM mode) */
+    if (isNote && note >= 16 && note <= 31 && !bpmEditMode) {
         return handleStepButton(note - 16, isNoteOn, velocity);
     }
 
@@ -184,24 +199,53 @@ export function onInput(data) {
         return true;
     }
 
-    /* Jog wheel - adjust duration by larger amounts when holding step */
-    if (isCC && note === MoveMainKnob && state.heldTransposeStep >= 0) {
-        const step = getTransposeStep(state.heldTransposeStep);
-        if (step) {
+    /* Jog wheel handling */
+    if (isCC && note === MoveMainKnob) {
+        /* BPM mode: adjust BPM */
+        if (bpmEditMode) {
             let delta = 0;
             if (velocity >= 1 && velocity <= 63) {
-                delta = 4; /* 1 bar */
+                delta = 1;
             } else if (velocity >= 65 && velocity <= 127) {
-                delta = -4;
+                delta = -1;
             }
             if (delta !== 0) {
-                adjustTransposeDuration(state.heldTransposeStep, delta);
-                /* Sync transpose sequence to DSP */
-                syncTransposeSequenceToDSP();
+                updateBpm(state.bpm + delta);
                 updateDisplayContent();
-                updateStepLEDs();
             }
+            return true;
         }
+
+        /* Holding step: adjust duration by larger amounts */
+        if (state.heldTransposeStep >= 0) {
+            const step = getTransposeStep(state.heldTransposeStep);
+            if (step) {
+                let delta = 0;
+                if (velocity >= 1 && velocity <= 63) {
+                    delta = 4; /* 1 bar */
+                } else if (velocity >= 65 && velocity <= 127) {
+                    delta = -4;
+                }
+                if (delta !== 0) {
+                    adjustTransposeDuration(state.heldTransposeStep, delta);
+                    /* Sync transpose sequence to DSP */
+                    syncTransposeSequenceToDSP();
+                    updateDisplayContent();
+                    updateStepLEDs();
+                }
+            }
+            return true;
+        }
+
+        /* Not holding step: scroll tracks for chord follow (1 at a time) */
+        const maxScroll = NUM_TRACKS - 8;  /* Can scroll 0-8 to show tracks 0-7 through 8-15 */
+        if (velocity >= 1 && velocity <= 63) {
+            state.trackScrollPosition = Math.min(state.trackScrollPosition + 1, maxScroll);
+        } else if (velocity >= 65 && velocity <= 127) {
+            state.trackScrollPosition = Math.max(state.trackScrollPosition - 1, 0);
+        }
+        updateDisplayContent();
+        updatePadLEDs();
         return true;
     }
 
@@ -216,17 +260,20 @@ export function onInput(data) {
         return true;
     }
 
-    /* Track buttons - select track for viewing chord follow status */
+    /* Track buttons - not used in master view, consume but ignore */
     if (isCC && MoveTracks.includes(note)) {
-        if (velocity > 0) {
-            const btnIdx = MoveTracks.indexOf(note);
-            const trackBtnIdx = 3 - btnIdx;
-            const trackIdx = state.shiftHeld ? trackBtnIdx + 4 : trackBtnIdx;
-            state.currentTrack = trackIdx;
-            updateDisplayContent();
-            updateTrackButtonLEDs();
-        }
         return true;
+    }
+
+    /* Back button - exit BPM mode if active, else let router handle */
+    if (isCC && note === MoveBack && velocity > 0) {
+        if (bpmEditMode) {
+            bpmEditMode = false;
+            updateDisplayContent();
+            updateLEDs();
+            return true;
+        }
+        return false; /* Let router handle normal back */
     }
 
     return false;
@@ -266,9 +313,10 @@ function handleStepButton(stepIdx, isNoteOn, velocity) {
 /* ============ Pad Handling ============ */
 
 function handlePadPress(padIdx) {
-    /* Row 1 (indices 24-31): Chord follow toggle */
+    /* Row 1 (indices 24-31): Chord follow toggle with scroll offset */
     if (padIdx >= 24) {
-        const trackIdx = padIdx - 24;
+        const trackIdx = (padIdx - 24) + state.trackScrollPosition;
+        if (trackIdx >= NUM_TRACKS) return true;  /* Out of bounds */
         state.chordFollow[trackIdx] = !state.chordFollow[trackIdx];
         /* Sync to DSP - DSP will recalculate scale detection */
         setParam(`track_${trackIdx}_chord_follow`, state.chordFollow[trackIdx] ? "1" : "0");
@@ -327,10 +375,11 @@ export function updateLEDs() {
 }
 
 function updateStepUILEDs() {
-    /* Clear step UI mode icons - not used in master view */
+    /* Clear step UI mode icons */
     setButtonLED(MoveStep1UI, Black);
     setButtonLED(MoveStep2UI, Black);
-    setButtonLED(MoveStep5UI, Black);
+    /* Step 5 UI shows BPM mode option when shift held, or lit when in BPM mode */
+    setButtonLED(MoveStep5UI, (state.shiftHeld || bpmEditMode) ? Cyan : Black);
     setButtonLED(MoveStep7UI, Black);
 }
 
@@ -366,9 +415,13 @@ function updatePadLEDs() {
     for (let i = 0; i < 32; i++) {
         const padNote = MovePads[i];
 
-        /* Row 1 (top, indices 24-31): Chord follow */
+        /* Row 1 (top, indices 24-31): Chord follow with scroll offset */
         if (i >= 24) {
-            const trackIdx = i - 24;
+            const trackIdx = (i - 24) + state.trackScrollPosition;
+            if (trackIdx >= NUM_TRACKS) {
+                setLED(padNote, Black);
+                continue;
+            }
             const isFollowing = state.chordFollow[trackIdx];
             setLED(padNote, isFollowing ? TRACK_COLORS[trackIdx] : DarkGrey);
             continue;
@@ -425,20 +478,9 @@ function updateKnobLEDs() {
 }
 
 function updateTrackButtonLEDs() {
+    /* Track buttons not used in master view - all off */
     for (let i = 0; i < 4; i++) {
-        const btnTrackOffset = 3 - i;
-        const trackIdx = state.shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
-
-        let color;
-        if (trackIdx === state.currentTrack) {
-            color = TRACK_COLORS[trackIdx];
-        } else if (state.chordFollow[trackIdx]) {
-            color = TRACK_COLORS_DIM[trackIdx];
-        } else {
-            color = DarkGrey;
-        }
-
-        setButtonLED(MoveTracks[i], color);
+        setButtonLED(MoveTracks[i], Black);
     }
 }
 
@@ -465,8 +507,22 @@ function updateOctaveLEDs() {
 /* ============ Display ============ */
 
 export function updateDisplayContent() {
+    /* BPM edit mode display */
+    if (bpmEditMode) {
+        displayMessage(
+            "BPM EDIT",
+            `BPM: ${state.bpm}`,
+            "Jog: adjust | Back: exit",
+            ""
+        );
+        return;
+    }
+
     const scaleName = getScaleDisplayName();
     const stepCount = getStepCount();
+    const startTrack = state.trackScrollPosition + 1;
+    const endTrack = Math.min(state.trackScrollPosition + 8, NUM_TRACKS);
+    const trackRange = `${startTrack}-${endTrack}`;
 
     let line2, line3;
 
@@ -482,7 +538,7 @@ export function updateDisplayContent() {
             line3 = "Press piano key to set";
         }
     } else {
-        line2 = `Steps: ${stepCount}/${MAX_TRANSPOSE_STEPS}`;
+        line2 = `Steps: ${stepCount}/${MAX_TRANSPOSE_STEPS}  T${trackRange}`;
         line3 = `Octave: ${state.transposeOctaveOffset >= 0 ? '+' : ''}${state.transposeOctaveOffset}`;
     }
 
@@ -490,7 +546,7 @@ export function updateDisplayContent() {
         `Scale: ${scaleName}`,
         line2,
         line3,
-        `Sync: ${state.sendClock ? "ON" : "OFF"}`
+        `${state.bpm} BPM  Sync: ${state.sendClock ? "ON" : "OFF"}`
     );
 }
 

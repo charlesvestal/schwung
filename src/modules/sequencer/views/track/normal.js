@@ -20,17 +20,17 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 
 import {
-    NUM_STEPS, HOLD_THRESHOLD_MS, MoveKnobLEDs,
+    NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS
 } from '../../lib/constants.js';
 
 import { state, displayMessage } from '../../lib/state.js';
 
 import {
-    setParam, getCurrentPattern, noteToName, notesToString, updateAndSendCC
+    setParam, getCurrentPattern, noteToName, notesToString, updateAndSendCC, getPadBaseColor, updatePadLEDs
 } from '../../lib/helpers.js';
 
-import { detectScale, isRoot, isInScale } from '../../lib/scale_detection.js';
+import { detectScale } from '../../lib/scale_detection.js';
 
 /* ============ Input Handling ============ */
 
@@ -78,16 +78,46 @@ export function onInput(data) {
 
 /* ============ Track Button Handling ============ */
 
+/**
+ * Get the track index shown at a given button position.
+ * Button 0 (top, CC 43): Selected track
+ * Buttons 1-3: Tracks from scroll position, skipping selected track
+ */
+function getTrackAtButton(btnPosition) {
+    if (btnPosition === 0) {
+        return state.currentTrack;
+    }
+
+    /* Build list of tracks excluding selected */
+    const otherTracks = [];
+    for (let t = 0; t < NUM_TRACKS; t++) {
+        if (t !== state.currentTrack) {
+            otherTracks.push(t);
+        }
+    }
+
+    /* Get track from scroll position */
+    const scrollIdx = state.trackScrollPosition + (btnPosition - 1);
+    if (scrollIdx >= 0 && scrollIdx < otherTracks.length) {
+        return otherTracks[scrollIdx];
+    }
+    return -1;
+}
+
 function handleTrackButton(note, velocity) {
     if (velocity === 0) return true;
 
     const btnIdx = MoveTracks.indexOf(note);
-    const trackBtnIdx = 3 - btnIdx;  /* Reverse: leftmost = track 1 */
-    const trackIdx = state.shiftHeld ? trackBtnIdx + 4 : trackBtnIdx;
+    const btnPosition = 3 - btnIdx;  /* Reverse: top = 0, bottom = 3 */
 
-    state.currentTrack = trackIdx;
-    updateDisplayContent();
-    updateLEDs();
+    const trackIdx = getTrackAtButton(btnPosition);
+    if (trackIdx >= 0 && trackIdx < NUM_TRACKS) {
+        state.currentTrack = trackIdx;
+        /* Reset scroll position when selecting new track */
+        state.trackScrollPosition = 0;
+        updateDisplayContent();
+        updateLEDs();
+    }
 
     return true;
 }
@@ -262,7 +292,8 @@ function handlePad(padIdx, isNoteOn, velocity) {
         } else {
             state.heldPads.delete(midiNote);
             setParam(`track_${state.currentTrack}_preview_note_off`, String(midiNote));
-            setLED(MovePads[padIdx], Black);
+            /* Restore to base color instead of black */
+            setLED(MovePads[padIdx], getPadBaseColor(padIdx));
         }
     }
     return true;
@@ -428,19 +459,26 @@ function handleJogWheel(velocity) {
         return true;
     }
 
-    /* BPM control when shift held */
+    /* Shift + jog: scroll patterns vertically */
     if (state.shiftHeld) {
         if (velocity >= 1 && velocity <= 63) {
-            state.bpm = Math.min(state.bpm + 1, 300);
+            state.patternViewOffset = Math.min(state.patternViewOffset + 1, NUM_TRACKS - 4);
         } else if (velocity >= 65 && velocity <= 127) {
-            state.bpm = Math.max(state.bpm - 1, 20);
+            state.patternViewOffset = Math.max(state.patternViewOffset - 1, 0);
         }
-        setParam("bpm", String(state.bpm));
-        displayMessage("BPM", `${state.bpm}`, "", "");
+        displayMessage("Pattern Scroll", `Offset: ${state.patternViewOffset}`, "", "");
         return true;
     }
 
-    return false;
+    /* Jog alone: scroll tracks */
+    const maxScroll = NUM_TRACKS - 4;  /* 15 other tracks, show 3 at a time */
+    if (velocity >= 1 && velocity <= 63) {
+        state.trackScrollPosition = Math.min(state.trackScrollPosition + 1, maxScroll);
+    } else if (velocity >= 65 && velocity <= 127) {
+        state.trackScrollPosition = Math.max(state.trackScrollPosition - 1, 0);
+    }
+    updateTrackButtonLEDs();
+    return true;
 }
 
 /* ============ Step Helpers ============ */
@@ -487,7 +525,6 @@ function clearStep(stepIdx) {
 
 /**
  * Update ALL LEDs for normal mode
- * This mode owns all LEDs - nothing shared
  */
 export function updateLEDs() {
     updateStepLEDs();
@@ -550,57 +587,6 @@ function updateStepLEDs() {
     setButtonLED(MoveStep7UI, state.shiftHeld ? White : Black);   /* Swing */
 }
 
-function updatePadLEDs() {
-    const trackColor = TRACK_COLORS[state.currentTrack];
-
-    if (state.heldStep >= 0) {
-        /* Holding a step: show step's notes */
-        const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
-        const stepNotes = step.notes;
-
-        for (let i = 0; i < 32; i++) {
-            const midiNote = 36 + i;
-            setLED(MovePads[i], stepNotes.includes(midiNote) ? trackColor : Black);
-        }
-    } else if (state.chordFollow[state.currentTrack]) {
-        /* ChordFollow track: show scale on pads */
-        const detected = state.detectedScale;
-
-        for (let i = 0; i < 32; i++) {
-            const midiNote = 36 + i;
-            const pitchClass = midiNote % 12;
-            let color;
-
-            /* Check if this note is currently being played */
-            const isPlaying = state.litPads && state.litPads.includes(midiNote);
-
-            if (isPlaying) {
-                /* Currently playing note - brightest */
-                color = trackColor;
-            } else if (detected && isRoot(pitchClass, detected)) {
-                /* Root note */
-                color = trackColor;
-            } else if (detected && isInScale(pitchClass, detected)) {
-                /* In scale */
-                color = White;
-            } else if (detected) {
-                /* Out of scale */
-                color = DarkGrey;
-            } else {
-                /* No scale detected - all dim */
-                color = DarkGrey;
-            }
-
-            setLED(MovePads[i], color);
-        }
-    } else {
-        /* Non-chordFollow track (drums): pads black */
-        for (let i = 0; i < 32; i++) {
-            setLED(MovePads[i], Black);
-        }
-    }
-}
-
 function updateKnobLEDs() {
     const trackColor = TRACK_COLORS[state.currentTrack];
 
@@ -637,17 +623,28 @@ function updateKnobLEDs() {
 
 function updateTrackButtonLEDs() {
     for (let i = 0; i < 4; i++) {
-        const btnTrackOffset = 3 - i;
-        const trackIdx = state.shiftHeld ? btnTrackOffset + 4 : btnTrackOffset;
+        const btnPosition = 3 - i;  /* Top = 0, bottom = 3 */
+        const trackIdx = getTrackAtButton(btnPosition);
+
+        if (trackIdx < 0 || trackIdx >= NUM_TRACKS) {
+            setButtonLED(MoveTracks[i], Black);
+            continue;
+        }
+
         let color = Black;
 
         if (trackIdx === state.currentTrack) {
+            /* Selected track - always bright */
             color = TRACK_COLORS[trackIdx];
         } else if (getCurrentPattern(trackIdx).steps.some(s => s.notes.length > 0 || s.cc1 >= 0 || s.cc2 >= 0)) {
+            /* Has content - dim color */
             color = TRACK_COLORS_DIM[trackIdx];
+        } else {
+            /* Empty track - very dim */
+            color = DarkGrey;
         }
 
-        if (state.tracks[trackIdx].muted) {
+        if (state.tracks[trackIdx] && state.tracks[trackIdx].muted) {
             color = BrightRed;
         }
 

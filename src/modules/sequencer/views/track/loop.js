@@ -9,8 +9,8 @@
  */
 
 import {
-    Black, LightGrey, Cyan,
-    MovePads, MoveSteps, MoveTracks,
+    Black, LightGrey, Cyan, BrightGreen, BrightRed,
+    MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
 } from "../../../../shared/constants.mjs";
 
@@ -104,10 +104,7 @@ export function updateLEDs() {
         setLED(MoveSteps[i], color);
     }
 
-    /* Pads - all off */
-    for (let i = 0; i < 32; i++) {
-        setLED(MovePads[i], Black);
-    }
+    /* Pads owned by track.js coordinator */
 
     /* Knobs - all off */
     for (let i = 0; i < 8; i++) {
@@ -120,8 +117,8 @@ export function updateLEDs() {
     }
 
     /* Transport - play/rec reflect global state, loop is highlighted */
-    setButtonLED(MovePlay, state.playing ? 127 : Black);
-    setButtonLED(MoveRec, state.recording ? 127 : Black);
+    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
     setButtonLED(MoveLoop, Cyan);
 
     /* Capture and Back - off */

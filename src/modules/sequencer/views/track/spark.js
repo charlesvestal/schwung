@@ -9,8 +9,8 @@
  */
 
 import {
-    Black, LightGrey, Cyan, Purple, MoveMainKnob,
-    MovePads, MoveSteps, MoveTracks,
+    Black, White, LightGrey, Cyan, Purple, BrightGreen, BrightRed, MoveMainKnob,
+    MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
 } from "../../../../shared/constants.mjs";
@@ -179,10 +179,7 @@ export function updateLEDs() {
         setLED(MoveSteps[i], color);
     }
 
-    /* Pads - all off */
-    for (let i = 0; i < 32; i++) {
-        setLED(MovePads[i], Black);
-    }
+    /* Pads owned by track.js coordinator */
 
     /* Knobs - show available controls */
     setButtonLED(MoveKnobLEDs[0], LightGrey);  // Jump
@@ -198,13 +195,13 @@ export function updateLEDs() {
     }
 
     /* Transport - play/rec reflect global state */
-    setButtonLED(MovePlay, state.playing ? 127 : Black);
-    setButtonLED(MoveRec, state.recording ? 127 : Black);
+    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
     setButtonLED(MoveLoop, Black);
 
-    /* Capture highlighted (we're in spark mode), Back off */
+    /* Capture highlighted (we're in spark mode), Back lit for exit */
     setButtonLED(MoveCapture, Purple);
-    setButtonLED(MoveBack, Black);
+    setButtonLED(MoveBack, White);
 }
 
 /* ============ Display ============ */

@@ -82,7 +82,10 @@ export const state = {
     transposeSequence: [],
 
     /* Chord follow per track (true = transpose applies) */
-    chordFollow: [false, false, false, false, true, true, true, true],
+    chordFollow: [false, false, false, false, true, true, true, true, false, false, false, false, true, true, true, true],
+
+    /* Track scroll position for 16-track navigation (0-12, shows 3 tracks at a time after selected) */
+    trackScrollPosition: 0,
 
     /* Sequencer type (0 for now, extensible) */
     sequencerType: 0,

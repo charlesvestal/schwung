@@ -9,9 +9,10 @@
  */
 
 import {
-    Cyan, Black, MoveMainKnob,
-    MovePads, MoveSteps, MoveTracks,
-    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
+    Cyan, BrightGreen, BrightRed, Black, White, MoveMainKnob,
+    MoveSteps, MoveTracks,
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
+    MoveStep5UI
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
@@ -57,13 +58,13 @@ export function onInput(data) {
 export function updateLEDs() {
     /* Steps - only step 5 lit */
     for (let i = 0; i < NUM_STEPS; i++) {
-        setLED(MoveSteps[i], i === 4 ? Cyan : Black);
+        setLED(MoveSteps[i], i === 4 ? White : Black);
     }
 
-    /* Pads - all off */
-    for (let i = 0; i < 32; i++) {
-        setLED(MovePads[i], Black);
-    }
+    /* Step 5 UI stays lit to show we're in speed mode */
+    setButtonLED(MoveStep5UI, White);
+
+    /* Pads owned by track.js coordinator */
 
     /* Knobs - all off */
     for (let i = 0; i < 8; i++) {
@@ -76,13 +77,13 @@ export function updateLEDs() {
     }
 
     /* Transport - only play/rec reflect global state */
-    setButtonLED(MovePlay, state.playing ? 127 : Black);
-    setButtonLED(MoveRec, state.recording ? 127 : Black);
+    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
     setButtonLED(MoveLoop, Black);
 
-    /* Capture and Back - off */
+    /* Capture off, Back lit to show exit option */
     setButtonLED(MoveCapture, Black);
-    setButtonLED(MoveBack, Black);
+    setButtonLED(MoveBack, White);
 }
 
 /* ============ Display ============ */

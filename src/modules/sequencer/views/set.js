@@ -6,10 +6,11 @@
 
 import {
     Black, White, Cyan, BrightGreen, BrightRed,
-    MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
+    MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
+    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
 } from "../../../shared/constants.mjs";
 
-import { setLED, setButtonLED, clearAllLEDs } from "../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, enterTrackView } from '../lib/state.js';
@@ -70,7 +71,6 @@ export function onInput(data) {
             onExit();
             enterTrackView();
             trackView.onEnter();
-            clearAllLEDs();
             trackView.updateLEDs();
 
             displayMessage(
@@ -98,12 +98,21 @@ export function onInput(data) {
  */
 export function updateLEDs() {
     updateStepLEDs();
+    updateStepUILEDs();
     updatePadLEDs();
     updateKnobLEDs();
     updateTrackButtonLEDs();
     updateTransportLEDs();
     updateCaptureLED();
     updateBackLED();
+}
+
+function updateStepUILEDs() {
+    /* Clear step UI mode icons - not used in set view */
+    setButtonLED(MoveStep1UI, Black);
+    setButtonLED(MoveStep2UI, Black);
+    setButtonLED(MoveStep5UI, Black);
+    setButtonLED(MoveStep7UI, Black);
 }
 
 /**

@@ -262,9 +262,10 @@ New: 16 patterns per track
 
 - [x] DSP updated to 16 tracks
 - [x] DSP: Reduce NUM_PATTERNS from 30 to 16
-- [ ] JS constants expanded (NUM_TRACKS, NUM_PATTERNS, colors, names)
-- [ ] BPM control moved to master view
-- [ ] Jog wheel navigation updated (all views)
-- [ ] Track scrolling UI implemented
-- [ ] Track colors decided
+- [x] JS constants expanded (NUM_TRACKS, NUM_PATTERNS, colors, names)
+- [x] BPM control moved to master view (shift + step 5)
+- [x] Jog wheel navigation updated (all views)
+- [x] Track scrolling UI implemented (track buttons with scroll position)
+- [x] Track colors decided (8 new colors for tracks 9-16)
+- [x] Data migration for 8 -> 16 tracks
 - [ ] Testing with hardware

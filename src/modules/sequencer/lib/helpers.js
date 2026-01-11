@@ -25,6 +25,17 @@ export function getParam(key) {
     return host_module_get_param(key);
 }
 
+/* ============ BPM Helpers ============ */
+
+/**
+ * Update BPM and sync to DSP
+ * @param {number} newBpm - New BPM value (clamped to 20-300)
+ */
+export function updateBpm(newBpm) {
+    state.bpm = Math.max(20, Math.min(300, newBpm));
+    setParam("bpm", String(state.bpm));
+}
+
 /* ============ Note Helpers ============ */
 
 /**
