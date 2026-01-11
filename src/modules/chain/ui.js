@@ -478,6 +478,166 @@ function drawConfirmDelete() {
     });
 }
 
+function handleEditorJog(delta) {
+    switch (editorState.view) {
+        case EDITOR_VIEW.OVERVIEW: {
+            const maxItems = SLOT_TYPES.length + 2 + (editorState.isNew ? 0 : 1);
+            editorState.selectedSlot = Math.max(0, Math.min(maxItems - 1, editorState.selectedSlot + delta));
+            break;
+        }
+        case EDITOR_VIEW.SLOT_MENU: {
+            const slotType = SLOT_TYPES[editorState.selectedSlot];
+            const maxItems = slotType === "synth" ? 2 : 3;
+            editorState.slotMenuIndex = Math.max(0, Math.min(maxItems - 1, editorState.slotMenuIndex + delta));
+            break;
+        }
+        case EDITOR_VIEW.COMPONENT_PICKER: {
+            const components = getComponentsForSlot(SLOT_TYPES[editorState.selectedSlot]);
+            editorState.componentPickerIndex = Math.max(0, Math.min(components.length - 1, editorState.componentPickerIndex + delta));
+            break;
+        }
+        case EDITOR_VIEW.PARAM_EDITOR: {
+            handleParamJog(delta);
+            break;
+        }
+        case EDITOR_VIEW.CONFIRM_DELETE: {
+            editorState.confirmIndex = editorState.confirmIndex === 0 ? 1 : 0;
+            break;
+        }
+    }
+}
+
+function handleParamJog(delta) {
+    const slotType = SLOT_TYPES[editorState.selectedSlot];
+    const componentId = editorState.chain[slotType];
+    const component = findComponent(slotType, componentId);
+
+    if (!component || !component.params) {
+        editorState.paramIndex = 0;
+        return;
+    }
+
+    const maxItems = component.params.length + 1;
+    editorState.paramIndex = Math.max(0, Math.min(maxItems - 1, editorState.paramIndex + delta));
+}
+
+function handleEditorSelect() {
+    switch (editorState.view) {
+        case EDITOR_VIEW.OVERVIEW: {
+            if (editorState.selectedSlot < SLOT_TYPES.length) {
+                editorState.view = EDITOR_VIEW.SLOT_MENU;
+                editorState.slotMenuIndex = 0;
+            } else {
+                const actionIndex = editorState.selectedSlot - SLOT_TYPES.length;
+                if (actionIndex === 0) {
+                    saveChain();
+                } else if (actionIndex === 1) {
+                    exitEditor();
+                } else if (actionIndex === 2) {
+                    editorState.view = EDITOR_VIEW.CONFIRM_DELETE;
+                    editorState.confirmIndex = 0;
+                }
+            }
+            break;
+        }
+        case EDITOR_VIEW.SLOT_MENU: {
+            const slotType = SLOT_TYPES[editorState.selectedSlot];
+            if (editorState.slotMenuIndex === 0) {
+                editorState.view = EDITOR_VIEW.COMPONENT_PICKER;
+                editorState.componentPickerIndex = 0;
+            } else if (editorState.slotMenuIndex === 1) {
+                if (editorState.chain[slotType]) {
+                    editorState.view = EDITOR_VIEW.PARAM_EDITOR;
+                    editorState.paramIndex = 0;
+                }
+            } else if (editorState.slotMenuIndex === 2) {
+                editorState.chain[slotType] = null;
+                editorState.chain[slotType + "_config"] = {};
+                editorState.view = EDITOR_VIEW.OVERVIEW;
+            }
+            break;
+        }
+        case EDITOR_VIEW.COMPONENT_PICKER: {
+            const slotType = SLOT_TYPES[editorState.selectedSlot];
+            const components = getComponentsForSlot(slotType);
+            const selected = components[editorState.componentPickerIndex];
+            editorState.chain[slotType] = selected?.id || null;
+            editorState.chain[slotType + "_config"] = {};
+
+            if (editorState.isNew && slotType === "synth") {
+                editorState.view = EDITOR_VIEW.OVERVIEW;
+                editorState.selectedSlot = 0;
+            } else {
+                editorState.view = EDITOR_VIEW.OVERVIEW;
+            }
+            break;
+        }
+        case EDITOR_VIEW.PARAM_EDITOR: {
+            handleParamSelect();
+            break;
+        }
+        case EDITOR_VIEW.CONFIRM_DELETE: {
+            if (editorState.confirmIndex === 0) {
+                editorState.view = EDITOR_VIEW.OVERVIEW;
+            } else {
+                deleteChain();
+            }
+            break;
+        }
+    }
+}
+
+function handleParamSelect() {
+    const slotType = SLOT_TYPES[editorState.selectedSlot];
+    const componentId = editorState.chain[slotType];
+    const component = findComponent(slotType, componentId);
+
+    if (!component || !component.params) {
+        editorState.view = EDITOR_VIEW.OVERVIEW;
+        return;
+    }
+
+    if (editorState.paramIndex >= component.params.length) {
+        editorState.view = EDITOR_VIEW.OVERVIEW;
+        return;
+    }
+}
+
+function handleEditorCC(cc, val) {
+    if (!editorState) return false;
+
+    if (cc === CC_BACK && val === 127) {
+        switch (editorState.view) {
+            case EDITOR_VIEW.OVERVIEW:
+                exitEditor();
+                break;
+            case EDITOR_VIEW.SLOT_MENU:
+            case EDITOR_VIEW.COMPONENT_PICKER:
+            case EDITOR_VIEW.PARAM_EDITOR:
+            case EDITOR_VIEW.CONFIRM_DELETE:
+                editorState.view = EDITOR_VIEW.OVERVIEW;
+                break;
+        }
+        needsRedraw = true;
+        return true;
+    }
+
+    if (cc === CC_JOG) {
+        const delta = val < 64 ? 1 : -1;
+        handleEditorJog(delta);
+        needsRedraw = true;
+        return true;
+    }
+
+    if (cc === CC_JOG_CLICK && val === 127) {
+        handleEditorSelect();
+        needsRedraw = true;
+        return true;
+    }
+
+    return false;
+}
+
 function loadSourceUi(moduleId) {
     if (!moduleId) {
         sourceUiLoadError = false;
@@ -542,6 +702,11 @@ function exitSourceUi() {
 }
 
 function handleCC(cc, val) {
+    /* Handle editor mode first */
+    if (editorMode) {
+        return handleEditorCC(cc, val);
+    }
+
     if (cc === CC_BACK && val === 127) {
         if (sourceUiActive) {
             exitSourceUi();
@@ -559,6 +724,10 @@ function handleCC(cc, val) {
     }
 
     if (cc === CC_MENU && val === 127) {
+        if (viewMode === "list" && selectedPatch >= 0 && selectedPatch < patchCount) {
+            enterEditor(selectedPatch);
+            return true;
+        }
         if (viewMode === "patch" && !sourceUiActive && sourceUi) {
             enterSourceUi();
             return true;
