@@ -254,6 +254,230 @@ function exitEditor() {
     needsRedraw = true;
 }
 
+function getSlotLabel(slotType) {
+    switch (slotType) {
+        case "source": return "Source";
+        case "midi_fx": return "MIDI FX";
+        case "synth": return "Synth";
+        case "fx1": return "FX 1";
+        case "fx2": return "FX 2";
+        default: return slotType;
+    }
+}
+
+function getSlotValue(slotType) {
+    if (!editorState) return "[none]";
+    const chain = editorState.chain;
+    switch (slotType) {
+        case "source": return chain.source || "[none]";
+        case "midi_fx": return chain.midi_fx || "[none]";
+        case "synth": return chain.synth || "[none]";
+        case "fx1": return chain.fx1 || "[none]";
+        case "fx2": return chain.fx2 || "[none]";
+        default: return "[none]";
+    }
+}
+
+function drawEditorOverview() {
+    const title = editorState.isNew ? "New Chain" : "Edit Chain";
+    drawMenuHeader(title);
+
+    const items = [
+        ...SLOT_TYPES.map(slot => ({ type: "slot", slot })),
+        { type: "action", action: "save", label: "[Save]" },
+        { type: "action", action: "cancel", label: "[Cancel]" }
+    ];
+
+    if (!editorState.isNew) {
+        items.push({ type: "action", action: "delete", label: "[Delete]" });
+    }
+
+    drawMenuList({
+        items,
+        selectedIndex: editorState.selectedSlot,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomNoFooter
+        },
+        getLabel: (item) => {
+            if (item.type === "slot") return getSlotLabel(item.slot);
+            return item.label;
+        },
+        getValue: (item) => {
+            if (item.type === "slot") return getSlotValue(item.slot);
+            return "";
+        },
+        valueAlignRight: true
+    });
+}
+
+function drawSlotMenu() {
+    const slotType = SLOT_TYPES[editorState.selectedSlot];
+    drawMenuHeader(getSlotLabel(slotType));
+
+    const items = [
+        { action: "change", label: "Change..." },
+        { action: "configure", label: "Configure..." }
+    ];
+
+    if (slotType !== "synth") {
+        items.push({ action: "clear", label: "[Clear]" });
+    }
+
+    drawMenuList({
+        items,
+        selectedIndex: editorState.slotMenuIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label
+    });
+
+    drawMenuFooter("Click:select Back:cancel");
+}
+
+function getComponentsForSlot(slotType) {
+    switch (slotType) {
+        case "synth":
+            return availableComponents.sound_generators;
+        case "fx1":
+        case "fx2":
+            return [{ id: null, name: "[none]" }, ...availableComponents.audio_fx];
+        case "midi_fx":
+            return [{ id: null, name: "[none]" }, ...availableComponents.midi_fx];
+        case "source":
+            return [{ id: null, name: "[none]" }, ...availableComponents.midi_sources];
+        default:
+            return [];
+    }
+}
+
+function drawComponentPicker() {
+    const slotType = SLOT_TYPES[editorState.selectedSlot];
+    const components = getComponentsForSlot(slotType);
+    let title = "";
+
+    switch (slotType) {
+        case "synth": title = "Sound Generator"; break;
+        case "fx1":
+        case "fx2": title = "Audio FX"; break;
+        case "midi_fx": title = "MIDI FX"; break;
+        case "source": title = "MIDI Source"; break;
+        default: title = "Select"; break;
+    }
+
+    drawMenuHeader(title);
+
+    drawMenuList({
+        items: components,
+        selectedIndex: editorState.componentPickerIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.name
+    });
+
+    drawMenuFooter("Click:select Back:cancel");
+}
+
+function findComponent(slotType, componentId) {
+    if (!componentId) return null;
+
+    let list = [];
+    switch (slotType) {
+        case "synth":
+            list = availableComponents.sound_generators;
+            break;
+        case "fx1":
+        case "fx2":
+            list = availableComponents.audio_fx;
+            break;
+        case "midi_fx":
+            list = availableComponents.midi_fx;
+            break;
+        case "source":
+            list = availableComponents.midi_sources;
+            break;
+    }
+    return list.find(c => c.id === componentId);
+}
+
+function drawParamEditor() {
+    const slotType = SLOT_TYPES[editorState.selectedSlot];
+    const componentId = editorState.chain[slotType];
+    const component = findComponent(slotType, componentId);
+
+    if (!component || !component.params || component.params.length === 0) {
+        drawMenuHeader(componentId || "Unknown");
+        print(4, 28, "No configurable", 1);
+        print(4, 40, "parameters", 1);
+        drawMenuFooter("Back:return");
+        return;
+    }
+
+    drawMenuHeader(component.name);
+
+    const configKey = slotType + "_config";
+    const config = editorState.chain[configKey] || {};
+
+    const items = [
+        ...component.params.map(p => ({
+            type: "param",
+            param: p,
+            value: config[p.key] !== undefined ? config[p.key] : p.default
+        })),
+        { type: "action", action: "done", label: "[Done]" }
+    ];
+
+    drawMenuList({
+        items,
+        selectedIndex: editorState.paramIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomNoFooter
+        },
+        getLabel: (item) => {
+            if (item.type === "param") return item.param.name;
+            return item.label;
+        },
+        getValue: (item) => {
+            if (item.type === "param") {
+                const val = item.value;
+                if (item.param.type === "float") {
+                    return val.toFixed(2);
+                }
+                return String(val);
+            }
+            return "";
+        },
+        valueAlignRight: true
+    });
+}
+
+function drawConfirmDelete() {
+    drawMenuHeader("Delete Chain?");
+
+    const patchName = host_module_get_param(`patch_name_${editorState.editIndex}`) || "Unknown";
+    print(4, 24, `"${patchName}"`, 1);
+
+    const items = [
+        { action: "cancel", label: "Cancel" },
+        { action: "confirm", label: "Delete" }
+    ];
+
+    drawMenuList({
+        items,
+        selectedIndex: editorState.confirmIndex,
+        listArea: {
+            topY: 36,
+            bottomY: menuLayoutDefaults.listBottomNoFooter
+        },
+        getLabel: (item) => item.label
+    });
+}
+
 function loadSourceUi(moduleId) {
     if (!moduleId) {
         sourceUiLoadError = false;
@@ -445,6 +669,28 @@ function midiSourceAllowed(source) {
 /* Draw the UI */
 function drawUI() {
     clear_screen();
+
+    if (editorMode && editorState) {
+        switch (editorState.view) {
+            case EDITOR_VIEW.OVERVIEW:
+                drawEditorOverview();
+                break;
+            case EDITOR_VIEW.SLOT_MENU:
+                drawSlotMenu();
+                break;
+            case EDITOR_VIEW.COMPONENT_PICKER:
+                drawComponentPicker();
+                break;
+            case EDITOR_VIEW.PARAM_EDITOR:
+                drawParamEditor();
+                break;
+            case EDITOR_VIEW.CONFIRM_DELETE:
+                drawConfirmDelete();
+                break;
+        }
+        needsRedraw = false;
+        return;
+    }
 
     if (viewMode === "list") {
         drawMenuHeader("Signal Chain");
