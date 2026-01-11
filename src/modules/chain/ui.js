@@ -36,6 +36,8 @@ let sourceUiLoadError = false;
 /* Editor state */
 let editorMode = false;
 let editorState = null;
+let editorError = "";  /* Validation error message */
+let editorErrorTimeout = 0;
 let availableComponents = {
     sound_generators: [],
     audio_fx: [],
@@ -126,6 +128,82 @@ function getChainUiPath(moduleId) {
     return chainUiPath;
 }
 
+/* Built-in JS MIDI FX (not DSP modules) */
+const BUILTIN_MIDI_FX = [
+    { id: "chord", name: "Chord", builtin: true, params: [
+        { key: "type", name: "Chord Type", type: "enum", options: ["none", "major", "minor", "power", "octave"], default: "none" }
+    ]},
+    { id: "arp", name: "Arpeggiator", builtin: true, params: [
+        { key: "mode", name: "Mode", type: "enum", options: ["off", "up", "down", "up_down", "random"], default: "off" },
+        { key: "bpm", name: "BPM", type: "int", min: 40, max: 240, default: 120, step: 1 },
+        { key: "division", name: "Division", type: "enum", options: ["1/4", "1/8", "1/16"], default: "1/16" }
+    ]}
+];
+
+function parseModuleJson(jsonStr) {
+    try {
+        return JSON.parse(jsonStr);
+    } catch (e) {
+        return null;
+    }
+}
+
+function scanModuleDir(path) {
+    /* Read module.json from a directory */
+    try {
+        const jsonStr = std.loadFile(`${path}/module.json`);
+        if (!jsonStr) return null;
+        const mod = parseModuleJson(jsonStr);
+        if (!mod) return null;
+        if (!mod.capabilities || !mod.capabilities.chainable) return null;
+
+        return {
+            id: mod.id,
+            name: mod.name || mod.id,
+            component_type: mod.capabilities.component_type,
+            params: mod.capabilities.chain_params || [],
+            builtin: mod.builtin || false
+        };
+    } catch (e) {
+        return null;
+    }
+}
+
+function getInstalledModules() {
+    /* Use host_list_modules() to get actually installed modules */
+    if (typeof host_list_modules === "function") {
+        try {
+            const modules = host_list_modules();
+            if (Array.isArray(modules)) {
+                return modules.map(m => m.id || m.name);
+            }
+        } catch (e) {
+            console.log("Error listing modules: " + e);
+        }
+    }
+    /* Fallback: return empty - will just use chain subdirs */
+    return [];
+}
+
+function scanChainSubdir(basePath, subdir) {
+    /* Scan chain subdirectory for components (audio_fx, sound_generators, midi_fx) */
+    const results = [];
+    const knownComponents = {
+        "audio_fx": ["freeverb"],
+        "sound_generators": ["linein"],
+        "midi_fx": ["chord", "arp"]
+    };
+
+    const components = knownComponents[subdir] || [];
+    for (const name of components) {
+        const mod = scanModuleDir(`${basePath}/${subdir}/${name}`);
+        if (mod) {
+            results.push(mod);
+        }
+    }
+    return results;
+}
+
 function scanChainableModules() {
     const root = getModulesRoot();
     if (!root) return;
@@ -137,32 +215,51 @@ function scanChainableModules() {
         midi_sources: []
     };
 
-    /* For now, use known modules - will be replaced with dynamic scan later */
-    availableComponents.sound_generators = [
-        { id: "sf2", name: "SF2 Synth", params: [{ key: "preset", name: "Preset", type: "int", min: 0, max_param: "preset_count", default: 0 }] },
-        { id: "dx7", name: "DX7 Synth", params: [{ key: "preset", name: "Preset", type: "int", min: 0, max_param: "preset_count", default: 0 }] },
-        { id: "linein", name: "Line In", params: [] }
-    ];
+    /* Scan installed modules using host_list_modules() */
+    const installedModules = getInstalledModules();
+    for (const moduleId of installedModules) {
+        if (moduleId === "chain") continue; /* Skip chain module itself */
 
-    availableComponents.audio_fx = [
-        { id: "freeverb", name: "Freeverb", params: [
-            { key: "room_size", name: "Room Size", type: "float", min: 0, max: 1, default: 0.7, step: 0.05 },
-            { key: "damping", name: "Damping", type: "float", min: 0, max: 1, default: 0.5, step: 0.05 },
-            { key: "wet", name: "Wet", type: "float", min: 0, max: 1, default: 0.35, step: 0.05 },
-            { key: "dry", name: "Dry", type: "float", min: 0, max: 1, default: 0.65, step: 0.05 }
-        ]}
-    ];
+        const mod = scanModuleDir(`${root}/${moduleId}`);
+        if (!mod) continue;
 
-    availableComponents.midi_fx = [
-        { id: "chord", name: "Chord", params: [
-            { key: "type", name: "Chord Type", type: "enum", options: ["none", "major", "minor", "power", "octave"], default: "none" }
-        ]},
-        { id: "arp", name: "Arpeggiator", params: [
-            { key: "mode", name: "Mode", type: "enum", options: ["off", "up", "down", "up_down", "random"], default: "off" },
-            { key: "bpm", name: "BPM", type: "int", min: 40, max: 240, default: 120, step: 1 },
-            { key: "division", name: "Division", type: "enum", options: ["1/4", "1/8", "1/16"], default: "1/16" }
-        ]}
-    ];
+        switch (mod.component_type) {
+            case "sound_generator":
+                availableComponents.sound_generators.push(mod);
+                break;
+            case "audio_fx":
+                availableComponents.audio_fx.push(mod);
+                break;
+            case "midi_fx":
+                availableComponents.midi_fx.push(mod);
+                break;
+            case "midi_source":
+                availableComponents.midi_sources.push(mod);
+                break;
+        }
+    }
+
+    /* Scan chain subdirectories for embedded components */
+    const chainDir = `${root}/chain`;
+
+    const soundGens = scanChainSubdir(chainDir, "sound_generators");
+    availableComponents.sound_generators.push(...soundGens);
+
+    const audioFx = scanChainSubdir(chainDir, "audio_fx");
+    availableComponents.audio_fx.push(...audioFx);
+
+    /* Add built-in JS MIDI FX */
+    availableComponents.midi_fx.push(...BUILTIN_MIDI_FX);
+
+    /* Sort by name for consistent display */
+    availableComponents.sound_generators.sort((a, b) => a.name.localeCompare(b.name));
+    availableComponents.audio_fx.sort((a, b) => a.name.localeCompare(b.name));
+    availableComponents.midi_fx.sort((a, b) => a.name.localeCompare(b.name));
+    availableComponents.midi_sources.sort((a, b) => a.name.localeCompare(b.name));
+
+    console.log(`Scanned modules: ${availableComponents.sound_generators.length} synths, ` +
+                `${availableComponents.audio_fx.length} audio fx, ` +
+                `${availableComponents.midi_fx.length} midi fx`);
 }
 
 /* Editor view modes */
@@ -251,6 +348,8 @@ function enterEditor(patchIndex = -1) {
 function exitEditor() {
     editorMode = false;
     editorState = null;
+    editorError = "";
+    editorErrorTimeout = 0;
     needsRedraw = true;
 }
 
@@ -269,13 +368,18 @@ function getSlotValue(slotType) {
     if (!editorState) return "[none]";
     const chain = editorState.chain;
     switch (slotType) {
-        case "source": return chain.source || "[none]";
-        case "midi_fx": return chain.midi_fx || "[none]";
-        case "synth": return chain.synth || "[none]";
-        case "fx1": return chain.fx1 || "[none]";
-        case "fx2": return chain.fx2 || "[none]";
+        case "source": return chain.source ? getComponentName("source", chain.source) : "Pads / External";
+        case "midi_fx": return chain.midi_fx ? getComponentName("midi_fx", chain.midi_fx) : "[none]";
+        case "synth": return chain.synth ? getComponentName("synth", chain.synth) : "[none]";
+        case "fx1": return chain.fx1 ? getComponentName("fx1", chain.fx1) : "[none]";
+        case "fx2": return chain.fx2 ? getComponentName("fx2", chain.fx2) : "[none]";
         default: return "[none]";
     }
+}
+
+function getComponentName(slotType, componentId) {
+    const component = findComponent(slotType, componentId);
+    return component ? component.name : componentId;
 }
 
 function drawEditorOverview() {
@@ -297,7 +401,7 @@ function drawEditorOverview() {
         selectedIndex: editorState.selectedSlot,
         listArea: {
             topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomNoFooter
+            bottomY: editorError ? menuLayoutDefaults.listBottomWithFooter : menuLayoutDefaults.listBottomNoFooter
         },
         getLabel: (item) => {
             if (item.type === "slot") return getSlotLabel(item.slot);
@@ -309,6 +413,11 @@ function drawEditorOverview() {
         },
         valueAlignRight: true
     });
+
+    /* Show validation error if present */
+    if (editorError) {
+        drawMenuFooter(editorError);
+    }
 }
 
 function drawSlotMenu() {
@@ -347,7 +456,8 @@ function getComponentsForSlot(slotType) {
         case "midi_fx":
             return [{ id: null, name: "[none]" }, ...availableComponents.midi_fx];
         case "source":
-            return [{ id: null, name: "[none]" }, ...availableComponents.midi_sources];
+            /* Default is Pads/External MIDI - not "none" */
+            return [{ id: null, name: "Pads / External" }, ...availableComponents.midi_sources];
         default:
             return [];
     }
@@ -638,72 +748,122 @@ function handleEditorCC(cc, val) {
     return false;
 }
 
+function generateChainName() {
+    const chain = editorState.chain;
+    let parts = [];
+
+    /* Synth name */
+    const synth = findComponent("synth", chain.synth);
+    if (synth) {
+        parts.push(synth.name);
+        const preset = chain.synth_config?.preset;
+        if (preset !== undefined && preset > 0) {
+            parts.push(String(preset).padStart(2, '0'));
+        }
+    }
+
+    /* MIDI FX */
+    if (chain.midi_fx === "chord") {
+        const type = chain.midi_fx_config?.type;
+        if (type && type !== "none") {
+            parts.push("Chord");
+        }
+    }
+    if (chain.midi_fx === "arp") {
+        const mode = chain.midi_fx_config?.mode;
+        if (mode && mode !== "off") {
+            parts.push("Arp");
+        }
+    }
+
+    /* Audio FX */
+    if (chain.fx1) {
+        const fx = findComponent("fx1", chain.fx1);
+        if (fx) parts.push(fx.name);
+    }
+    if (chain.fx2) {
+        const fx = findComponent("fx2", chain.fx2);
+        if (fx) parts.push(fx.name);
+    }
+
+    return parts.join(" + ") || "New Chain";
+}
+
 function buildChainJson() {
     const chain = editorState.chain;
+    const name = generateChainName();
 
-    let json = "{\n";
-    json += `        "input": "both",\n`;
+    const patch = {
+        name: name,
+        version: 1,
+        chain: {
+            input: "both",
+            synth: {
+                module: chain.synth || "sf2",
+                config: {}
+            },
+            audio_fx: []
+        }
+    };
+
+    /* Synth config */
+    if (chain.synth_config) {
+        patch.chain.synth.config = { ...chain.synth_config };
+    }
 
     /* MIDI FX */
     if (chain.midi_fx === "chord") {
         const type = chain.midi_fx_config?.type || "none";
         if (type !== "none") {
-            json += `        "chord": "${type}",\n`;
+            patch.chain.midi_fx = { chord: type };
         }
     }
     if (chain.midi_fx === "arp") {
         const mode = chain.midi_fx_config?.mode || "off";
         if (mode !== "off") {
-            json += `        "arp": "${mode}",\n`;
-            json += `        "arp_bpm": ${chain.midi_fx_config?.bpm || 120},\n`;
             const div = chain.midi_fx_config?.division || "1/16";
             const divNum = div === "1/4" ? 1 : div === "1/8" ? 2 : 4;
-            json += `        "arp_division": ${divNum},\n`;
+            patch.chain.midi_fx = {
+                arp: mode,
+                arp_bpm: chain.midi_fx_config?.bpm || 120,
+                arp_division: divNum
+            };
         }
     }
-
-    /* Synth */
-    json += `        "synth": {\n`;
-    json += `            "module": "${chain.synth || "sf2"}",\n`;
-    json += `            "config": {\n`;
-    json += `                "preset": ${chain.synth_config?.preset || 0}\n`;
-    json += `            }\n`;
-    json += `        },\n`;
 
     /* Audio FX */
-    json += `        "audio_fx": [\n`;
-    const fxList = [];
     if (chain.fx1) {
-        const params = chain.fx1_config || {};
-        let fxJson = `            {\n`;
-        fxJson += `                "type": "${chain.fx1}"`;
-        if (Object.keys(params).length > 0) {
-            fxJson += `,\n                "params": ${JSON.stringify(params)}`;
+        const fx = { type: chain.fx1 };
+        if (chain.fx1_config && Object.keys(chain.fx1_config).length > 0) {
+            fx.params = chain.fx1_config;
         }
-        fxJson += `\n            }`;
-        fxList.push(fxJson);
+        patch.chain.audio_fx.push(fx);
     }
     if (chain.fx2) {
-        const params = chain.fx2_config || {};
-        let fxJson = `            {\n`;
-        fxJson += `                "type": "${chain.fx2}"`;
-        if (Object.keys(params).length > 0) {
-            fxJson += `,\n                "params": ${JSON.stringify(params)}`;
+        const fx = { type: chain.fx2 };
+        if (chain.fx2_config && Object.keys(chain.fx2_config).length > 0) {
+            fx.params = chain.fx2_config;
         }
-        fxJson += `\n            }`;
-        fxList.push(fxJson);
+        patch.chain.audio_fx.push(fx);
     }
-    json += fxList.join(",\n");
-    json += `\n        ]\n`;
 
-    json += `    }`;
+    /* MIDI source module */
+    if (chain.source) {
+        patch.chain.midi_source_module = chain.source;
+    }
 
-    return json;
+    return JSON.stringify(patch, null, 4);
+}
+
+function showEditorError(msg) {
+    editorError = msg;
+    editorErrorTimeout = 30; /* Show for ~30 ticks (~0.5 sec) */
+    needsRedraw = true;
 }
 
 function saveChain() {
     if (!editorState.chain.synth) {
-        console.log("Chain editor: Cannot save without synth");
+        showEditorError("Select a synth first");
         return;
     }
 
@@ -1109,6 +1269,15 @@ globalThis.tick = function() {
             sourceUi.tick();
         }
         return;
+    }
+
+    /* Clear editor error after timeout */
+    if (editorErrorTimeout > 0) {
+        editorErrorTimeout--;
+        if (editorErrorTimeout === 0) {
+            editorError = "";
+            needsRedraw = true;
+        }
     }
 
     /* Set default octave on first tick */

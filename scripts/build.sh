@@ -193,6 +193,14 @@ cp ./src/modules/chain/midi_fx/*.mjs ./build/modules/chain/midi_fx/ 2>/dev/null 
 mkdir -p ./build/modules/chain/patches/
 cp ./src/modules/chain/patches/*.json ./build/modules/chain/patches/ 2>/dev/null || true
 
+# Copy chain component module.json files for dynamic discovery
+cp ./src/modules/chain/audio_fx/freeverb/module.json ./build/modules/chain/audio_fx/freeverb/ 2>/dev/null || true
+cp ./src/modules/chain/sound_generators/linein/module.json ./build/modules/chain/sound_generators/linein/ 2>/dev/null || true
+mkdir -p ./build/modules/chain/midi_fx/chord/
+cp ./src/modules/chain/midi_fx/chord/module.json ./build/modules/chain/midi_fx/chord/ 2>/dev/null || true
+mkdir -p ./build/modules/chain/midi_fx/arp/
+cp ./src/modules/chain/midi_fx/arp/module.json ./build/modules/chain/midi_fx/arp/ 2>/dev/null || true
+
 echo "Build complete!"
 echo "Host binary: build/move-anything"
 echo "Modules: build/modules/"
