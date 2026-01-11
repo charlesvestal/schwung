@@ -25,7 +25,7 @@ import {
     enterChannelMode, exitChannelMode
 } from '../lib/state.js';
 
-import { saveCurrentSet, saveAllSetsToDisk } from '../lib/persistence.js';
+import { saveCurrentSetToDisk } from '../lib/persistence.js';
 import * as setView from './set.js';
 
 /* Mode modules */
@@ -75,8 +75,7 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 16 && isNoteOn && velocity > 0) {
         /* Save current set before going to set view */
         if (state.currentSet >= 0) {
-            saveCurrentSet();
-            saveAllSetsToDisk();
+            saveCurrentSetToDisk();
         }
         /* Transition to set view */
         modes[state.trackMode].onExit();

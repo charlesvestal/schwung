@@ -19,6 +19,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs, SPEED_OPTIONS } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam } from '../../lib/helpers.js';
+import { saveCurrentSetToDisk } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
 
@@ -41,6 +42,7 @@ export function onInput(data) {
         }
         state.tracks[state.currentTrack].speedIndex = speedIdx;
         setParam(`track_${state.currentTrack}_speed`, String(SPEED_OPTIONS[speedIdx].mult));
+        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     }

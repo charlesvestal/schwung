@@ -6,7 +6,7 @@
 import * as std from 'std';
 import * as os from 'os';
 
-import { DATA_DIR, SETS_FILE, NUM_SETS } from './constants.js';
+import { DATA_DIR, SETS_DIR, SETS_FILE, NUM_SETS } from './constants.js';
 import { state } from './state.js';
 import { createEmptyTracks, deepCloneTracks, migrateTrackData, cloneTransposeSequence, getDefaultChordFollow } from './data.js';
 
@@ -28,45 +28,110 @@ function ensureDataDir() {
     }
 }
 
-/* ============ Disk I/O ============ */
-
 /**
- * Save all sets to disk
+ * Ensure sets directory exists
  */
-export function saveAllSetsToDisk() {
+export function ensureSetsDir() {
     ensureDataDir();
     try {
-        const f = std.open(SETS_FILE, 'w');
+        os.mkdir(SETS_DIR, 0o755);
+    } catch (e) {
+        /* Directory may already exist */
+    }
+}
+
+/**
+ * Get path to set file
+ */
+function getSetFilePath(setIdx) {
+    return SETS_DIR + '/' + setIdx + '.json';
+}
+
+/**
+ * Check if a set file exists
+ */
+export function setFileExists(setIdx) {
+    try {
+        const stat = os.stat(getSetFilePath(setIdx));
+        return stat[0] === 0;  // 0 = success
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * List all populated sets (sets that have files on disk)
+ */
+export function listPopulatedSets() {
+    const populated = [];
+    for (let i = 0; i < NUM_SETS; i++) {
+        if (setFileExists(i)) {
+            populated.push(i);
+        }
+    }
+    return populated;
+}
+
+/* ============ Individual Set I/O ============ */
+
+/**
+ * Save a single set to disk
+ */
+export function saveSetToDisk(setIdx, setData) {
+    ensureSetsDir();
+    const filePath = getSetFilePath(setIdx);
+    const tmpPath = filePath + '.tmp';
+
+    try {
+        const f = std.open(tmpPath, 'w');
         if (f) {
-            f.puts(JSON.stringify(state.sets));
+            f.puts(JSON.stringify(setData || state.sets[setIdx]));
             f.close();
-            console.log('Sets saved to disk');
+            os.rename(tmpPath, filePath);
             return true;
         }
     } catch (e) {
-        console.log('Failed to save sets: ' + e);
+        console.log('Failed to save set ' + setIdx + ': ' + e);
+        try { os.remove(tmpPath); } catch (e2) {}
     }
     return false;
 }
 
 /**
- * Load all sets from disk
+ * Load a single set from disk
+ * Returns set data or null if not found/error
  */
-export function loadAllSetsFromDisk() {
+export function loadSetFromDisk(setIdx) {
     try {
-        const content = std.loadFile(SETS_FILE);
+        const content = std.loadFile(getSetFilePath(setIdx));
         if (content) {
-            const loaded = JSON.parse(content);
-            if (Array.isArray(loaded) && loaded.length === NUM_SETS) {
-                state.sets = loaded;
-                console.log('Sets loaded from disk');
-                return true;
-            }
+            return JSON.parse(content);
         }
     } catch (e) {
-        console.log('No saved sets found or failed to load: ' + e);
+        console.log('Failed to load set ' + setIdx + ': ' + e);
     }
-    return false;
+    return null;
+}
+
+/**
+ * Delete a set file
+ */
+export function deleteSetFile(setIdx) {
+    try {
+        os.remove(getSetFilePath(setIdx));
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Save current set to memory and disk
+ */
+export function saveCurrentSetToDisk() {
+    if (state.currentSet < 0) return false;
+    saveCurrentSet();
+    return saveSetToDisk(state.currentSet);
 }
 
 /* ============ Set Operations ============ */
@@ -89,14 +154,21 @@ export function saveCurrentSet() {
  * Returns the set data for syncing to DSP
  */
 export function loadSetToTracks(setIdx) {
+    /* Try to load from disk first if not in memory */
     if (!state.sets[setIdx]) {
-        state.sets[setIdx] = {
-            tracks: createEmptyTracks(),
-            bpm: 120,
-            transposeSequence: [],
-            chordFollow: getDefaultChordFollow(),
-            sequencerType: 0
-        };
+        const diskData = loadSetFromDisk(setIdx);
+        if (diskData) {
+            state.sets[setIdx] = diskData;
+        } else {
+            /* Create empty set */
+            state.sets[setIdx] = {
+                tracks: createEmptyTracks(),
+                bpm: 120,
+                transposeSequence: [],
+                chordFollow: getDefaultChordFollow(),
+                sequencerType: 0
+            };
+        }
     }
 
     /* Handle both old format (array) and new format ({tracks, bpm}) */
@@ -147,12 +219,25 @@ export function initializeSets() {
 }
 
 /**
- * Check if a set has any content (notes or CC values)
+ * Check if a set has any content
+ * Uses file existence check for speed (if file exists, set has content)
  */
 export function setHasContent(setIdx) {
+    /* Fast path: check if file exists on disk */
+    if (setFileExists(setIdx)) return true;
+
+    /* Fallback: check in-memory data (for unsaved sets) */
     if (!state.sets[setIdx]) return false;
-    const setTracks = state.sets[setIdx].tracks || state.sets[setIdx];
-    for (const track of setTracks) {
+    return setDataHasContent(state.sets[setIdx]);
+}
+
+/**
+ * Check if set data object has any content (notes or CC values)
+ */
+function setDataHasContent(setData) {
+    if (!setData) return false;
+    const tracks = setData.tracks || setData;
+    for (const track of tracks) {
         for (const pattern of track.patterns) {
             for (const step of pattern.steps) {
                 if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
@@ -162,4 +247,46 @@ export function setHasContent(setIdx) {
         }
     }
     return false;
+}
+
+/* ============ Migration ============ */
+
+/**
+ * Migrate from legacy sets.json to individual set files
+ * Call this once at startup - it checks if migration is needed
+ */
+export function migrateFromLegacy() {
+    try {
+        /* Check if old sets.json exists */
+        const content = std.loadFile(SETS_FILE);
+        if (!content) return false;
+
+        /* Check if already migrated (sets/ dir has files) */
+        ensureSetsDir();
+        if (listPopulatedSets().length > 0) {
+            console.log('Migration skipped - sets/ already has files');
+            return false;
+        }
+
+        /* Parse old format */
+        const allSets = JSON.parse(content);
+        if (!Array.isArray(allSets)) return false;
+
+        /* Write each non-empty set to individual file */
+        let migrated = 0;
+        for (let i = 0; i < allSets.length; i++) {
+            if (allSets[i] && setDataHasContent(allSets[i])) {
+                saveSetToDisk(i, allSets[i]);
+                migrated++;
+            }
+        }
+
+        /* Rename old file to backup */
+        os.rename(SETS_FILE, SETS_FILE + '.backup');
+        console.log('Migrated ' + migrated + ' sets to individual files');
+        return true;
+    } catch (e) {
+        console.log('Migration failed: ' + e);
+        return false;
+    }
 }

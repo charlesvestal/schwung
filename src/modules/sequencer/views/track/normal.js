@@ -31,6 +31,7 @@ import {
 } from '../../lib/helpers.js';
 
 import { detectScale } from '../../lib/scale_detection.js';
+import { saveCurrentSetToDisk } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
 
@@ -158,19 +159,23 @@ function handleKnobTouch(data) {
 
 function handleKnobTap(knobIdx) {
     const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
+    let changed = false;
 
     if (knobIdx === 0 && step.cc1 >= 0) {
         step.cc1 = -1;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_cc1`, "-1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "CC1 cleared", "");
+        changed = true;
     } else if (knobIdx === 1 && step.cc2 >= 0) {
         step.cc2 = -1;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_cc2`, "-1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "CC2 cleared", "");
+        changed = true;
     } else if (knobIdx === 6 && step.ratchet > 0) {
         step.ratchet = 0;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, "1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "Ratchet: 1x", "");
+        changed = true;
     } else if (knobIdx === 7) {
         step.condition = 0;
         step.probability = 100;
@@ -179,7 +184,9 @@ function handleKnobTap(knobIdx) {
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_not`, "0");
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_probability`, "100");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "Cond/Prob cleared", "");
+        changed = true;
     }
+    if (changed) saveCurrentSetToDisk();
     updateLEDs();
 }
 
@@ -220,6 +227,7 @@ function handleStepLength(stepIdx) {
         displayMessage(`Step ${state.heldStep + 1}`, `Length: ${newLength} steps`, `-> Step ${stepIdx + 1}`, "");
     }
     state.stepPadPressed[state.heldStep] = true;
+    saveCurrentSetToDisk();
     updateLEDs();
     return true;
 }
@@ -227,6 +235,7 @@ function handleStepLength(stepIdx) {
 function handleStepRelease(stepIdx) {
     const pressTime = state.stepPressTimes[stepIdx];
     const padPressed = state.stepPadPressed[stepIdx];
+    let changed = false;
 
     if (pressTime !== undefined && !padPressed) {
         const holdDuration = Date.now() - pressTime;
@@ -234,8 +243,10 @@ function handleStepRelease(stepIdx) {
             const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
             if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
                 clearStep(stepIdx);
+                changed = true;
             } else if (state.lastSelectedNote > 0) {
                 toggleStepNote(stepIdx, state.lastSelectedNote);
+                changed = true;
             }
         }
     }
@@ -246,6 +257,7 @@ function handleStepRelease(stepIdx) {
     if (state.heldStep === stepIdx) {
         state.heldStep = -1;
     }
+    if (changed) saveCurrentSetToDisk();
     updateLEDs();
 }
 
@@ -260,6 +272,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
             const wasAdded = toggleStepNote(state.heldStep, midiNote);
             state.stepPadPressed[state.heldStep] = true;
             setParam(`track_${state.currentTrack}_preview_note`, String(midiNote));
+            saveCurrentSetToDisk();
 
             const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
             displayMessage(
@@ -286,6 +299,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
                 if (!step.notes.includes(midiNote) && step.notes.length < 4) {
                     step.notes.push(midiNote);
                     setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_add_note`, String(midiNote));
+                    saveCurrentSetToDisk();
                 }
                 state.lastRecordedStep = state.currentPlayStep;
             }
@@ -341,6 +355,7 @@ function handleShiftKnob(knobIdx, velocity) {
         }
         state.tracks[state.currentTrack].speedIndex = speedIdx;
         setParam(`track_${state.currentTrack}_speed`, String(SPEED_OPTIONS[speedIdx].mult));
+        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     } else if (knobIdx === 7) {
@@ -353,6 +368,7 @@ function handleShiftKnob(knobIdx, velocity) {
         }
         state.tracks[state.currentTrack].channel = channel;
         setParam(`track_${state.currentTrack}_channel`, String(channel));
+        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     }
@@ -425,6 +441,7 @@ function handleStepKnob(knobIdx, velocity) {
         }
     }
 
+    saveCurrentSetToDisk();
     updateLEDs();
     return true;
 }
@@ -445,6 +462,7 @@ function handleJogWheel(velocity) {
 
         step.offset = offset;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_offset`, String(offset));
+        saveCurrentSetToDisk();
 
         /* Display offset as percentage of step */
         const pct = Math.round((offset / 48) * 100);

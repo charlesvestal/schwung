@@ -19,6 +19,7 @@ import {
 } from '../lib/constants.js';
 import { state, displayMessage } from '../lib/state.js';
 import { setParam, updateAndSendCC, getCurrentPattern } from '../lib/helpers.js';
+import { saveCurrentSetToDisk } from '../lib/persistence.js';
 
 /* ============ Track Button Navigation ============ */
 
@@ -89,6 +90,7 @@ export function onInput(data) {
             if (trackIdx < NUM_TRACKS && patternIdx < NUM_PATTERNS) {
                 state.tracks[trackIdx].currentPattern = patternIdx;
                 setParam(`track_${trackIdx}_pattern`, String(patternIdx));
+                saveCurrentSetToDisk();
 
                 displayMessage(
                     `PATTERNS      ${state.bpm} BPM`,

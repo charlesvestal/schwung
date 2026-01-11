@@ -22,7 +22,7 @@ import { NUM_STEPS } from './lib/constants.js';
 import { state, enterSetView, enterTrackView, enterPatternView, enterMasterView } from './lib/state.js';
 import { setParam, getCurrentPattern } from './lib/helpers.js';
 import { createEmptyTracks } from './lib/data.js';
-import { loadAllSetsFromDisk, initializeSets } from './lib/persistence.js';
+import { initializeSets, ensureSetsDir, migrateFromLegacy } from './lib/persistence.js';
 
 /* Import views */
 import * as setView from './views/set.js';
@@ -83,9 +83,10 @@ function onViewTransition() {
 globalThis.init = function() {
     console.log("SEQOMD starting...");
 
-    /* Initialize sets */
+    /* Initialize sets - migrate from legacy format if needed */
     initializeSets();
-    loadAllSetsFromDisk();
+    ensureSetsDir();
+    migrateFromLegacy();
 
     /* Initialize track data */
     state.tracks = createEmptyTracks();

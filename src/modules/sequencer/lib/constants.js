@@ -25,7 +25,8 @@ export const HOLD_THRESHOLD_MS = 300;  // Time threshold for hold vs tap
 /* ============ Persistence ============ */
 
 export const DATA_DIR = '/data/UserData/move-anything-data/sequencer';
-export const SETS_FILE = DATA_DIR + '/sets.json';
+export const SETS_DIR = DATA_DIR + '/sets';
+export const SETS_FILE = DATA_DIR + '/sets.json';  // Legacy, for migration
 
 /* ============ MIDI ============ */
 
