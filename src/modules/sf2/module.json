@@ -12,7 +12,17 @@
     "midi_out": true,
     "aftertouch": true,
     "chainable": true,
-    "component_type": "sound_generator"
+    "component_type": "sound_generator",
+    "chain_params": [
+      {
+        "key": "preset",
+        "name": "Preset",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "default": 0
+      }
+    ]
   },
   "defaults": {
     "soundfont_path": "/data/UserData/move-anything/modules/sf2/instrument.sf2",
