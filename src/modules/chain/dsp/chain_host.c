@@ -132,6 +132,8 @@ static host_api_v1_t g_source_host_api;
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source);
 static int midi_source_send(const uint8_t *msg, int len);
+static int scan_patches(const char *module_dir);
+static void unload_patch(void);
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -932,6 +934,212 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
     return 0;
 }
 
+/* Generate a patch name from components */
+static void generate_patch_name(char *out, int out_len,
+                                const char *synth, int preset,
+                                const char *fx1, const char *fx2) {
+    char preset_name[MAX_NAME_LEN] = "";
+
+    /* Try to get preset name from synth */
+    if (g_synth_plugin && g_synth_plugin->get_param) {
+        g_synth_plugin->get_param("preset_name", preset_name, sizeof(preset_name));
+    }
+
+    if (preset_name[0] != '\0') {
+        snprintf(out, out_len, "%s %02d %s", synth, preset, preset_name);
+    } else {
+        snprintf(out, out_len, "%s %02d", synth, preset);
+    }
+
+    /* Append FX names */
+    if (fx1 && fx1[0] != '\0') {
+        int len = strlen(out);
+        snprintf(out + len, out_len - len, " + %s", fx1);
+    }
+    if (fx2 && fx2[0] != '\0') {
+        int len = strlen(out);
+        snprintf(out + len, out_len - len, " + %s", fx2);
+    }
+}
+
+static void sanitize_filename(char *out, int out_len, const char *name) {
+    int j = 0;
+    for (int i = 0; name[i] && j < out_len - 1; i++) {
+        char c = name[i];
+        if (c >= 'A' && c <= 'Z') {
+            out[j++] = c + 32; /* lowercase */
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            out[j++] = c;
+        } else if (c == ' ' || c == '-') {
+            out[j++] = '_';
+        }
+        /* Skip other characters */
+    }
+    out[j] = '\0';
+}
+
+static int check_filename_exists(const char *dir, const char *base, char *out_path, int out_len) {
+    char path[MAX_PATH_LEN];
+    snprintf(path, sizeof(path), "%s/%s.json", dir, base);
+
+    FILE *f = fopen(path, "r");
+    if (f) {
+        fclose(f);
+        return 1; /* Exists */
+    }
+
+    strncpy(out_path, path, out_len - 1);
+    out_path[out_len - 1] = '\0';
+    return 0;
+}
+
+static int save_patch(const char *json_data) {
+    char msg[256];
+    char patches_dir[MAX_PATH_LEN];
+    snprintf(patches_dir, sizeof(patches_dir), "%s/patches", g_module_dir);
+
+    /* Parse incoming JSON to get components */
+    char synth[MAX_NAME_LEN] = "sf2";
+    int preset = 0;
+    char fx1[MAX_NAME_LEN] = "";
+    char fx2[MAX_NAME_LEN] = "";
+
+    json_get_string_in_section(json_data, "synth", "module", synth, sizeof(synth));
+    json_get_int_in_section(json_data, "config", "preset", &preset);
+
+    /* Parse audio_fx to get fx1 and fx2 */
+    const char *fx_pos = strstr(json_data, "\"audio_fx\"");
+    if (fx_pos) {
+        const char *bracket = strchr(fx_pos, '[');
+        if (bracket) {
+            /* Look for first "type" */
+            const char *type1 = strstr(bracket, "\"type\"");
+            if (type1) {
+                const char *colon = strchr(type1, ':');
+                if (colon) {
+                    const char *q1 = strchr(colon, '"');
+                    if (q1) {
+                        q1++;
+                        const char *q2 = strchr(q1, '"');
+                        if (q2) {
+                            int len = q2 - q1;
+                            if (len < MAX_NAME_LEN) {
+                                strncpy(fx1, q1, len);
+                                fx1[len] = '\0';
+                            }
+                            /* Look for second "type" */
+                            const char *type2 = strstr(q2, "\"type\"");
+                            if (type2) {
+                                colon = strchr(type2, ':');
+                                if (colon) {
+                                    q1 = strchr(colon, '"');
+                                    if (q1) {
+                                        q1++;
+                                        q2 = strchr(q1, '"');
+                                        if (q2) {
+                                            len = q2 - q1;
+                                            if (len < MAX_NAME_LEN) {
+                                                strncpy(fx2, q1, len);
+                                                fx2[len] = '\0';
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Generate name */
+    char name[MAX_NAME_LEN];
+    generate_patch_name(name, sizeof(name), synth, preset, fx1, fx2);
+
+    /* Sanitize to filename */
+    char base_filename[MAX_NAME_LEN];
+    sanitize_filename(base_filename, sizeof(base_filename), name);
+
+    /* Find available filename */
+    char filepath[MAX_PATH_LEN];
+    if (check_filename_exists(patches_dir, base_filename, filepath, sizeof(filepath))) {
+        /* Need to add suffix */
+        for (int i = 2; i < 100; i++) {
+            char suffixed[MAX_NAME_LEN];
+            snprintf(suffixed, sizeof(suffixed), "%s_%02d", base_filename, i);
+            if (!check_filename_exists(patches_dir, suffixed, filepath, sizeof(filepath))) {
+                /* Update name with suffix */
+                int namelen = strlen(name);
+                snprintf(name + namelen, sizeof(name) - namelen, " %02d", i);
+                break;
+            }
+        }
+    }
+
+    /* Build final JSON with generated name */
+    char final_json[4096];
+    snprintf(final_json, sizeof(final_json),
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"chain\": %s\n"
+        "}\n",
+        name, json_data);
+
+    /* Write file */
+    FILE *f = fopen(filepath, "w");
+    if (!f) {
+        snprintf(msg, sizeof(msg), "Failed to create patch file: %s", filepath);
+        chain_log(msg);
+        return -1;
+    }
+
+    fwrite(final_json, 1, strlen(final_json), f);
+    fclose(f);
+
+    snprintf(msg, sizeof(msg), "Saved patch: %s", filepath);
+    chain_log(msg);
+
+    /* Rescan patches */
+    scan_patches(g_module_dir);
+
+    return 0;
+}
+
+static int delete_patch(int index) {
+    char msg[256];
+
+    if (index < 0 || index >= g_patch_count) {
+        snprintf(msg, sizeof(msg), "Invalid patch index for delete: %d", index);
+        chain_log(msg);
+        return -1;
+    }
+
+    const char *path = g_patches[index].path;
+
+    if (remove(path) != 0) {
+        snprintf(msg, sizeof(msg), "Failed to delete patch: %s", path);
+        chain_log(msg);
+        return -1;
+    }
+
+    snprintf(msg, sizeof(msg), "Deleted patch: %s", path);
+    chain_log(msg);
+
+    /* Rescan patches */
+    scan_patches(g_module_dir);
+
+    /* If we deleted the current patch, unload it */
+    if (index == g_current_patch) {
+        unload_patch();
+    } else if (index < g_current_patch) {
+        g_current_patch--;
+    }
+
+    return 0;
+}
+
 /* Scan patches directory and populate patch list */
 static int scan_patches(const char *module_dir) {
     char patches_dir[MAX_PATH_LEN];
@@ -1280,6 +1488,18 @@ static void plugin_set_param(const char *key, const char *val) {
         g_source_ui_active = atoi(val) ? 1 : 0;
         return;
     }
+
+    if (strcmp(key, "save_patch") == 0) {
+        save_patch(val);
+        return;
+    }
+
+    if (strcmp(key, "delete_patch") == 0) {
+        int index = atoi(val);
+        delete_patch(index);
+        return;
+    }
+
     if (strncmp(key, "source:", 7) == 0) {
         const char *subkey = key + 7;
         if (g_source_plugin && g_source_plugin->set_param && subkey[0] != '\0') {
