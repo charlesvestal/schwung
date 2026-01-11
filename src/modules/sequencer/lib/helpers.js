@@ -3,8 +3,11 @@
  * Shared utility functions used by views and router
  */
 
-import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS } from './constants.js';
+import { VividYellow, LightGrey, DarkGrey, White, MovePads } from '../../../shared/constants.mjs';
+import { setLED } from '../../../shared/input_filter.mjs';
+import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS, TRACK_COLORS } from './constants.js';
 import { state } from './state.js';
+import { isRoot, isInScale } from './scale_detection.js';
 
 /* ============ DSP Communication ============ */
 
@@ -93,6 +96,74 @@ export function toggleTrackMute(trackIdx) {
     }
 }
 
+/* ============ Pad Color Helpers ============ */
+
+/**
+ * Get the base color for a pad based on piano layout and scale detection.
+ * C notes are always VividYellow. Other notes depend on scale detection.
+ */
+export function getPadBaseColor(padIdx) {
+    const midiNote = 36 + padIdx;
+    const pitchClass = midiNote % 12;
+    const detected = state.detectedScale;
+    const isChordFollowTrack = state.chordFollow[state.currentTrack];
+
+    /* C notes are always prominent (VividYellow) */
+    if (pitchClass === 0) {
+        return VividYellow;
+    }
+
+    if (isChordFollowTrack && detected) {
+        /* ChordFollow track with scale detected */
+        if (isRoot(pitchClass, detected)) {
+            /* Root note (non-C) */
+            return White;
+        } else if (isInScale(pitchClass, detected)) {
+            /* In scale */
+            return LightGrey;
+        } else {
+            /* Out of scale */
+            return DarkGrey;
+        }
+    } else {
+        /* Drum track or no scale detected - show basic piano layout */
+        /* White keys: C, D, E, F, G, A, B = pitch classes 0, 2, 4, 5, 7, 9, 11 */
+        const isWhiteKey = [0, 2, 4, 5, 7, 9, 11].includes(pitchClass);
+        return isWhiteKey ? LightGrey : DarkGrey;
+    }
+}
+
+/**
+ * Update pad LEDs - shows piano layout with held step notes and playing notes highlighted
+ * This is shared between track.js coordinator and normal.js sub-mode
+ */
+export function updatePadLEDs() {
+    const trackColor = TRACK_COLORS[state.currentTrack];
+
+    /* Get step notes if holding a step */
+    const stepNotes = state.heldStep >= 0
+        ? getCurrentPattern(state.currentTrack).steps[state.heldStep].notes
+        : [];
+
+    for (let i = 0; i < 32; i++) {
+        const midiNote = 36 + i;
+
+        /* Check if this note is in the held step */
+        const isInStep = stepNotes.includes(midiNote);
+
+        /* Check if this note is currently being played */
+        const isPlaying = state.litPads && state.litPads.includes(midiNote);
+
+        if (isInStep || isPlaying) {
+            /* Step's notes or currently playing - track color (most prominent) */
+            setLED(MovePads[i], trackColor);
+        } else {
+            /* Show piano layout base color */
+            setLED(MovePads[i], getPadBaseColor(i));
+        }
+    }
+}
+
 /**
  * Sync all track data from JS state to DSP
  * Call this after loading a set
@@ -175,6 +246,31 @@ export function syncAllTracksToDSP() {
         }
     }
 
+    /* Sync transpose sequence to DSP */
+    syncTransposeSequenceToDSP();
+
     console.log("All tracks synced to DSP");
+}
+
+/**
+ * Sync transpose sequence from JS state to DSP
+ * DSP now handles transpose lookup internally
+ */
+export function syncTransposeSequenceToDSP() {
+    /* Clear existing sequence in DSP */
+    setParam("transpose_clear", "1");
+
+    /* Send each step */
+    let stepIdx = 0;
+    for (const step of state.transposeSequence) {
+        if (step) {
+            setParam(`transpose_step_${stepIdx}_transpose`, String(step.transpose));
+            /* Duration is stored in beats in JS, but DSP wants steps (1 beat = 4 steps) */
+            const durationInSteps = step.duration * 4;
+            setParam(`transpose_step_${stepIdx}_duration`, String(durationInSteps));
+            stepIdx++;
+        }
+    }
+    setParam("transpose_step_count", String(stepIdx));
 }
 

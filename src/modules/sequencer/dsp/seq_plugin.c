@@ -15,14 +15,21 @@
 
 /* ============ Constants ============ */
 
-#define NUM_TRACKS 8
+#define NUM_TRACKS 16
 #define NUM_STEPS 16
-#define NUM_PATTERNS 30
+#define NUM_PATTERNS 16
 #define MAX_NOTES_PER_STEP 4
 #define MAX_SCHEDULED_NOTES 128
 
 #define DEFAULT_VELOCITY 100
 #define DEFAULT_GATE 50
+
+/* Transpose sequence constants */
+#define MAX_TRANSPOSE_STEPS 16
+#define MAX_TRANSPOSE_TOTAL_STEPS 4096  /* 16 steps × max 256 steps each */
+
+/* Scale detection constants */
+#define NUM_SCALE_TEMPLATES 15
 
 /* Swing is applied as a delay to upbeat notes.
  * Swing value 50 = no swing, 67 = triplet feel.
@@ -118,6 +125,38 @@ typedef struct {
     uint8_t active;         /* Is this slot in use? */
 } scheduled_note_t;
 
+/* Transpose step - one entry in the transpose sequence */
+typedef struct {
+    int8_t transpose;       /* -24 to +24 semitones */
+    uint16_t duration;      /* Duration in steps (1-256) */
+} transpose_step_t;
+
+/* Scale template for scale detection */
+typedef struct {
+    const char *name;
+    uint8_t notes[8];       /* Pitch classes, terminated by 255 */
+    uint8_t note_count;
+} scale_template_t;
+
+/* Scale templates - ordered by preference (simpler scales first) */
+static const scale_template_t g_scale_templates[NUM_SCALE_TEMPLATES] = {
+    { "Minor Penta",    {0, 3, 5, 7, 10, 255, 255, 255}, 5 },
+    { "Major Penta",    {0, 2, 4, 7, 9, 255, 255, 255}, 5 },
+    { "Blues",          {0, 3, 5, 6, 7, 10, 255, 255}, 6 },
+    { "Whole Tone",     {0, 2, 4, 6, 8, 10, 255, 255}, 6 },
+    { "Major",          {0, 2, 4, 5, 7, 9, 11, 255}, 7 },
+    { "Natural Minor",  {0, 2, 3, 5, 7, 8, 10, 255}, 7 },
+    { "Dorian",         {0, 2, 3, 5, 7, 9, 10, 255}, 7 },
+    { "Mixolydian",     {0, 2, 4, 5, 7, 9, 10, 255}, 7 },
+    { "Phrygian",       {0, 1, 3, 5, 7, 8, 10, 255}, 7 },
+    { "Lydian",         {0, 2, 4, 6, 7, 9, 11, 255}, 7 },
+    { "Locrian",        {0, 1, 3, 5, 6, 8, 10, 255}, 7 },
+    { "Harmonic Minor", {0, 2, 3, 5, 7, 8, 11, 255}, 7 },
+    { "Melodic Minor",  {0, 2, 3, 5, 7, 9, 11, 255}, 7 },
+    { "Diminished HW",  {0, 1, 3, 4, 6, 7, 9, 10}, 8 },
+    { "Diminished WH",  {0, 2, 3, 5, 6, 8, 9, 11}, 8 }
+};
+
 /* ============ Plugin State ============ */
 
 static const host_api_v1_t *g_host = NULL;
@@ -137,9 +176,22 @@ static double g_clock_phase = 0.0;
 static double g_global_phase = 0.0;  /* Master clock for all timing */
 
 /* Transpose/chord follow state */
-static int g_chord_follow[NUM_TRACKS] = {0, 0, 0, 0, 1, 1, 1, 1};  /* Tracks 5-8 follow by default */
-static int g_current_transpose = 0;  /* Current transpose offset in semitones */
+static int g_chord_follow[NUM_TRACKS] = {0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1};  /* Tracks 5-8, 13-16 follow by default */
+static int g_current_transpose = 0;  /* Current transpose offset in semitones (legacy, kept for compatibility) */
 static uint32_t g_beat_count = 0;    /* Global beat counter for UI sync */
+
+/* Transpose sequence - managed internally by DSP */
+static transpose_step_t g_transpose_sequence[MAX_TRANSPOSE_STEPS];
+static int g_transpose_step_count = 0;          /* Number of active steps */
+static uint32_t g_transpose_total_steps = 0;    /* Sum of all durations */
+static int8_t *g_transpose_lookup = NULL;       /* Pre-computed lookup table (dynamically allocated) */
+static uint32_t g_transpose_lookup_size = 0;    /* Size of lookup table */
+static int g_transpose_lookup_valid = 0;        /* Is lookup table valid? */
+
+/* Scale detection state */
+static int8_t g_detected_scale_root = -1;       /* 0-11, or -1 if none */
+static int8_t g_detected_scale_index = -1;      /* Index into g_scale_templates, or -1 */
+static int g_scale_dirty = 1;                   /* Needs recalculation */
 
 /* ============ Helpers ============ */
 
@@ -166,6 +218,197 @@ static void plugin_log(const char *msg) {
     if (g_host && g_host->log) {
         g_host->log(msg);
     }
+}
+
+/* ============ Transpose Sequence Functions ============ */
+
+/**
+ * Rebuild the transpose lookup table from the sequence.
+ * Called when transpose sequence is modified.
+ */
+static void rebuild_transpose_lookup(void) {
+    /* Calculate total steps */
+    g_transpose_total_steps = 0;
+    for (int i = 0; i < g_transpose_step_count; i++) {
+        g_transpose_total_steps += g_transpose_sequence[i].duration;
+    }
+
+    if (g_transpose_total_steps == 0 || g_transpose_step_count == 0) {
+        g_transpose_lookup_valid = 0;
+        return;
+    }
+
+    /* Reallocate lookup table if needed */
+    if (g_transpose_total_steps > g_transpose_lookup_size) {
+        if (g_transpose_lookup) {
+            free(g_transpose_lookup);
+        }
+        g_transpose_lookup = (int8_t *)malloc(g_transpose_total_steps);
+        if (!g_transpose_lookup) {
+            g_transpose_lookup_size = 0;
+            g_transpose_lookup_valid = 0;
+            return;
+        }
+        g_transpose_lookup_size = g_transpose_total_steps;
+    }
+
+    /* Build lookup table */
+    uint32_t step = 0;
+    for (int i = 0; i < g_transpose_step_count; i++) {
+        int8_t transpose = g_transpose_sequence[i].transpose;
+        uint16_t duration = g_transpose_sequence[i].duration;
+        for (uint16_t d = 0; d < duration && step < g_transpose_total_steps; d++) {
+            g_transpose_lookup[step++] = transpose;
+        }
+    }
+
+    g_transpose_lookup_valid = 1;
+}
+
+/**
+ * Get transpose value for a given step position (handles looping).
+ * Uses the internal lookup table - no UI round-trip.
+ */
+static int8_t get_transpose_at_step(uint32_t step) {
+    if (!g_transpose_lookup_valid || g_transpose_total_steps == 0 || !g_transpose_lookup) {
+        return 0;
+    }
+    uint32_t looped_step = step % g_transpose_total_steps;
+    return g_transpose_lookup[looped_step];
+}
+
+/**
+ * Get the current transpose step index for a given step position.
+ * Returns -1 if no sequence or invalid.
+ */
+static int get_transpose_step_index(uint32_t step) {
+    if (g_transpose_step_count == 0 || g_transpose_total_steps == 0) {
+        return -1;
+    }
+
+    uint32_t looped_step = step % g_transpose_total_steps;
+    uint32_t accumulated = 0;
+    for (int i = 0; i < g_transpose_step_count; i++) {
+        accumulated += g_transpose_sequence[i].duration;
+        if (looped_step < accumulated) {
+            return i;
+        }
+    }
+    return g_transpose_step_count - 1;
+}
+
+/**
+ * Clear the transpose sequence.
+ */
+static void clear_transpose_sequence(void) {
+    g_transpose_step_count = 0;
+    g_transpose_total_steps = 0;
+    g_transpose_lookup_valid = 0;
+    memset(g_transpose_sequence, 0, sizeof(g_transpose_sequence));
+}
+
+/* ============ Scale Detection Functions ============ */
+
+/**
+ * Count set bits in a 16-bit value (popcount).
+ */
+static int popcount16(uint16_t x) {
+    int count = 0;
+    while (x) {
+        count += x & 1;
+        x >>= 1;
+    }
+    return count;
+}
+
+/**
+ * Collect all pitch classes from chord-follow tracks.
+ * Returns a 12-bit mask where bit N = pitch class N is present.
+ * Scans ALL patterns (not just current) to match JS behavior.
+ */
+static uint16_t collect_pitch_classes(void) {
+    uint16_t mask = 0;
+
+    for (int t = 0; t < NUM_TRACKS; t++) {
+        if (!g_chord_follow[t]) continue;
+
+        /* Scan all patterns for this track */
+        for (int p = 0; p < NUM_PATTERNS; p++) {
+            pattern_t *pattern = &g_tracks[t].patterns[p];
+            for (int s = 0; s < NUM_STEPS; s++) {
+                step_t *step = &pattern->steps[s];
+                for (int n = 0; n < step->num_notes; n++) {
+                    if (step->notes[n] > 0) {
+                        int pitch_class = step->notes[n] % 12;
+                        mask |= (1 << pitch_class);
+                    }
+                }
+            }
+        }
+    }
+
+    return mask;
+}
+
+/**
+ * Score how well pitch classes fit a scale template at a given root.
+ * Returns score * 1000 for integer comparison (higher = better).
+ */
+static int score_scale(uint16_t pitch_mask, int scale_idx, int root) {
+    if (pitch_mask == 0) return 0;
+
+    /* Build scale mask for this root */
+    uint16_t scale_mask = 0;
+    for (int i = 0; i < g_scale_templates[scale_idx].note_count; i++) {
+        int pc = (g_scale_templates[scale_idx].notes[i] + root) % 12;
+        scale_mask |= (1 << pc);
+    }
+
+    /* Count notes in scale */
+    int in_scale = popcount16(pitch_mask & scale_mask);
+    int total = popcount16(pitch_mask);
+
+    if (total == 0) return 0;
+
+    /* Score: fit ratio * 1000 + small bonus for simpler scales */
+    int fit_score = (in_scale * 1000) / total;
+    int size_bonus = 100 / g_scale_templates[scale_idx].note_count;
+
+    return fit_score + size_bonus;
+}
+
+/**
+ * Detect the best-fitting scale from chord-follow track notes.
+ * Updates g_detected_scale_root and g_detected_scale_index.
+ */
+static void detect_scale(void) {
+    uint16_t pitch_mask = collect_pitch_classes();
+
+    if (pitch_mask == 0) {
+        g_detected_scale_root = -1;
+        g_detected_scale_index = -1;
+        g_scale_dirty = 0;
+        return;
+    }
+
+    int best_score = -1;
+    int best_root = 0;
+    int best_scale = 0;
+
+    for (int root = 0; root < 12; root++) {
+        for (int scale = 0; scale < NUM_SCALE_TEMPLATES; scale++) {
+            int score = score_scale(pitch_mask, scale, root);
+            if (score > best_score) {
+                best_score = score;
+                best_root = root;
+                best_scale = scale;
+            }
+        }
+    }
+
+    g_detected_scale_root = best_root;
+    g_detected_scale_index = best_scale;
+    g_scale_dirty = 0;
 }
 
 static void send_note_on(int note, int velocity, int channel) {
@@ -512,8 +755,9 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
     int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
     int ratchet_count = step->ratchet > 0 ? step->ratchet : 1;
 
-    /* Calculate transpose offset for this track */
-    int transpose = g_chord_follow[track_idx] ? g_current_transpose : 0;
+    /* Calculate transpose offset for this track using internal lookup */
+    uint32_t global_step = (uint32_t)g_global_phase;
+    int transpose = g_chord_follow[track_idx] ? get_transpose_at_step(global_step) : 0;
 
     /* For ratchets, divide the step into equal parts */
     double ratchet_step = 1.0 / ratchet_count;
@@ -592,8 +836,9 @@ static void trigger_track_step(track_t *track, int track_idx, double step_start_
         int note_length = step->length > 0 ? step->length : 1;
         int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
 
-        /* Calculate transpose offset for this track */
-        int transpose = g_chord_follow[track_idx] ? g_current_transpose : 0;
+        /* Calculate transpose offset for this track using internal lookup */
+        uint32_t global_step = (uint32_t)g_global_phase;
+        int transpose = g_chord_follow[track_idx] ? get_transpose_at_step(global_step) : 0;
 
         for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
             if (step->notes[n] > 0) {
@@ -694,6 +939,13 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
 static void plugin_on_unload(void) {
     plugin_log("SEQOMD unloading");
     all_notes_off();
+
+    /* Free transpose lookup table */
+    if (g_transpose_lookup) {
+        free(g_transpose_lookup);
+        g_transpose_lookup = NULL;
+        g_transpose_lookup_size = 0;
+    }
 }
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
@@ -751,9 +1003,48 @@ static void plugin_set_param(const char *key, const char *val) {
     else if (strcmp(key, "send_clock") == 0) {
         g_send_clock = atoi(val);
     }
-    /* Current transpose offset (from UI transpose sequence) */
+    /* Current transpose offset (legacy - kept for backward compatibility) */
     else if (strcmp(key, "current_transpose") == 0) {
         g_current_transpose = atoi(val);
+    }
+    /* Transpose sequence parameters */
+    else if (strcmp(key, "transpose_clear") == 0) {
+        clear_transpose_sequence();
+    }
+    else if (strcmp(key, "transpose_step_count") == 0) {
+        int count = atoi(val);
+        if (count >= 0 && count <= MAX_TRANSPOSE_STEPS) {
+            g_transpose_step_count = count;
+            rebuild_transpose_lookup();
+        }
+    }
+    else if (strncmp(key, "transpose_step_", 15) == 0) {
+        /* Parse: transpose_step_N_transpose or transpose_step_N_duration */
+        int step_idx = atoi(key + 15);
+        if (step_idx >= 0 && step_idx < MAX_TRANSPOSE_STEPS) {
+            const char *param = strchr(key + 15, '_');
+            if (param) {
+                param++;
+                if (strcmp(param, "transpose") == 0) {
+                    int t = atoi(val);
+                    if (t >= -24 && t <= 24) {
+                        g_transpose_sequence[step_idx].transpose = t;
+                        /* Expand step count if needed */
+                        if (step_idx >= g_transpose_step_count) {
+                            g_transpose_step_count = step_idx + 1;
+                        }
+                        rebuild_transpose_lookup();
+                    }
+                }
+                else if (strcmp(param, "duration") == 0) {
+                    int d = atoi(val);
+                    if (d >= 1 && d <= 256) {
+                        g_transpose_sequence[step_idx].duration = d;
+                        rebuild_transpose_lookup();
+                    }
+                }
+            }
+        }
     }
     /* Send CC externally: send_cc_CHANNEL_CC = VALUE */
     else if (strncmp(key, "send_cc_", 8) == 0) {
@@ -806,6 +1097,7 @@ static void plugin_set_param(const char *key, const char *val) {
                 }
                 else if (strcmp(param, "chord_follow") == 0) {
                     g_chord_follow[track] = atoi(val) ? 1 : 0;
+                    g_scale_dirty = 1;  /* Scale needs recalculation */
                 }
                 else if (strcmp(param, "loop_start") == 0) {
                     int start = atoi(val);
@@ -881,6 +1173,10 @@ static void plugin_set_param(const char *key, const char *val) {
                                     if (!exists && s->num_notes < MAX_NOTES_PER_STEP) {
                                         s->notes[s->num_notes] = note;
                                         s->num_notes++;
+                                        /* Mark scale dirty if chord-follow track */
+                                        if (g_chord_follow[track]) {
+                                            g_scale_dirty = 1;
+                                        }
                                     }
                                 }
                             }
@@ -897,6 +1193,10 @@ static void plugin_set_param(const char *key, const char *val) {
                                             }
                                             s->notes[s->num_notes - 1] = 0;
                                             s->num_notes--;
+                                            /* Mark scale dirty if chord-follow track */
+                                            if (g_chord_follow[track]) {
+                                                g_scale_dirty = 1;
+                                            }
                                             break;
                                         }
                                     }
@@ -926,6 +1226,10 @@ static void plugin_set_param(const char *key, const char *val) {
                                 s->comp_spark_not = 0;
                                 s->jump = -1;
                                 s->offset = 0;
+                                /* Mark scale dirty if chord-follow track */
+                                if (g_chord_follow[track]) {
+                                    g_scale_dirty = 1;
+                                }
                             }
                             else if (strcmp(step_param, "vel") == 0) {
                                 int vel = atoi(val);
@@ -1072,6 +1376,43 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     }
     else if (strcmp(key, "beat_count") == 0) {
         return snprintf(buf, buf_len, "%u", g_beat_count);
+    }
+    /* Transpose sequence params */
+    else if (strcmp(key, "current_transpose") == 0) {
+        /* Return the current transpose value based on internal lookup */
+        uint32_t global_step = (uint32_t)g_global_phase;
+        int8_t transpose = get_transpose_at_step(global_step);
+        return snprintf(buf, buf_len, "%d", transpose);
+    }
+    else if (strcmp(key, "current_transpose_step") == 0) {
+        /* Return which step index in the transpose sequence is active */
+        uint32_t global_step = (uint32_t)g_global_phase;
+        int step_idx = get_transpose_step_index(global_step);
+        return snprintf(buf, buf_len, "%d", step_idx);
+    }
+    else if (strcmp(key, "transpose_step_count") == 0) {
+        return snprintf(buf, buf_len, "%d", g_transpose_step_count);
+    }
+    else if (strcmp(key, "transpose_total_steps") == 0) {
+        return snprintf(buf, buf_len, "%u", g_transpose_total_steps);
+    }
+    /* Scale detection params */
+    else if (strcmp(key, "detected_scale_root") == 0) {
+        /* Recalculate if dirty */
+        if (g_scale_dirty) {
+            detect_scale();
+        }
+        return snprintf(buf, buf_len, "%d", g_detected_scale_root);
+    }
+    else if (strcmp(key, "detected_scale_name") == 0) {
+        /* Recalculate if dirty */
+        if (g_scale_dirty) {
+            detect_scale();
+        }
+        if (g_detected_scale_index >= 0 && g_detected_scale_index < NUM_SCALE_TEMPLATES) {
+            return snprintf(buf, buf_len, "%s", g_scale_templates[g_detected_scale_index].name);
+        }
+        return snprintf(buf, buf_len, "None");
     }
     /* Track params */
     else if (strncmp(key, "track_", 6) == 0) {

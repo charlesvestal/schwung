@@ -1172,6 +1172,320 @@ TEST(swing_comparison_5_vs_16_step_loops) {
     set_param("track_1_loop_end", "15");
 }
 
+/* ============ Tests: Transpose Sequence (DSP Internal) ============ */
+
+TEST(transpose_sequence_empty) {
+    /* Empty sequence = no transpose */
+    set_param("transpose_clear", "1");
+    set_param("track_4_step_0_add_note", "60");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);
+    set_param("playing", "0");
+
+    /* Note should be untransposed */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 60);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+}
+
+TEST(transpose_sequence_single_step) {
+    /* Single step: +5 for 16 steps (4 beats) */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "5");
+    set_param("transpose_step_0_duration", "16");
+    set_param("transpose_step_count", "1");
+
+    set_param("track_4_step_0_add_note", "60");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);
+    set_param("playing", "0");
+
+    /* Note should be transposed +5 */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 65);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(transpose_sequence_multiple_steps) {
+    /* Step 0: +0 for 4 steps, Step 1: +7 for 4 steps */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "0");
+    set_param("transpose_step_0_duration", "4");
+    set_param("transpose_step_1_transpose", "7");
+    set_param("transpose_step_1_duration", "4");
+    set_param("transpose_step_count", "2");
+
+    /* Note at step 0 (in first transpose region) */
+    set_param("track_4_step_0_add_note", "60");
+    /* Note at step 4 (in second transpose region) */
+    set_param("track_4_step_4_add_note", "60");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(6);  /* Get through steps 0-5 */
+    set_param("playing", "0");
+
+    /* Should have captured note 60 and note 67 */
+    int found_60 = 0, found_67 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 60) found_60 = 1;
+            if (g_captured_notes[i].note == 67) found_67 = 1;
+        }
+    }
+    ASSERT(found_60);
+    ASSERT(found_67);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("track_4_step_4_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(transpose_sequence_boundary_exact) {
+    /* Critical: transpose changes exactly at step boundary */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "0");
+    set_param("transpose_step_0_duration", "4");   /* Steps 0-3 */
+    set_param("transpose_step_1_transpose", "12");
+    set_param("transpose_step_1_duration", "4");   /* Steps 4-7 */
+    set_param("transpose_step_count", "2");
+
+    /* Note at step 3 (last step of first transpose) */
+    set_param("track_4_step_3_add_note", "48");
+    /* Note at step 4 (first step of second transpose) */
+    set_param("track_4_step_4_add_note", "48");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(6);
+    set_param("playing", "0");
+
+    /* Step 3: transpose +0 -> note 48 */
+    /* Step 4: transpose +12 -> note 60 */
+    int found_48 = 0, found_60 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 48) found_48 = 1;
+            if (g_captured_notes[i].note == 60) found_60 = 1;
+        }
+    }
+    ASSERT(found_48);
+    ASSERT(found_60);
+
+    /* Clean up */
+    set_param("track_4_step_3_clear", "1");
+    set_param("track_4_step_4_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(transpose_sequence_pause_resume) {
+    /* Fix for original bug: pause/resume uses correct transpose */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "0");
+    set_param("transpose_step_0_duration", "16");
+    set_param("transpose_step_1_transpose", "5");
+    set_param("transpose_step_1_duration", "16");
+    set_param("transpose_step_count", "2");
+
+    set_param("track_4_step_0_add_note", "60");
+
+    /* Play to step 16 (into second transpose region) */
+    set_param("playing", "1");
+    render_steps(17);
+    set_param("playing", "0");
+
+    /* Pause and resume - should restart at step 0 with transpose +0 */
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);
+    set_param("playing", "0");
+
+    /* First note should be 60 (transpose +0), not 65 (transpose +5) */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 60);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(transpose_sequence_loop) {
+    /* Sequence loops correctly */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "0");
+    set_param("transpose_step_0_duration", "8");
+    set_param("transpose_step_1_transpose", "12");
+    set_param("transpose_step_1_duration", "8");
+    set_param("transpose_step_count", "2");
+    /* Total: 16 steps, loops at step 16 */
+
+    set_param("track_4_step_0_add_note", "48");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(17);  /* Step 16 = looped to step 0 */
+    set_param("playing", "0");
+
+    /* First note at step 0: transpose +0 -> 48 */
+    /* Second note at step 16 (looped): transpose +0 -> 48 */
+    int count_48 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on && g_captured_notes[i].note == 48) {
+            count_48++;
+        }
+    }
+    ASSERT_EQ(count_48, 2);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(transpose_sequence_long_duration) {
+    /* Test long duration (256 steps = 16 bars) */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "3");
+    set_param("transpose_step_0_duration", "256");
+    set_param("transpose_step_count", "1");
+
+    set_param("track_4_step_0_add_note", "60");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);
+    set_param("playing", "0");
+
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 63);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(transpose_sequence_drum_track_not_affected) {
+    /* Drum tracks (0-3) should not transpose even with sequence */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "12");
+    set_param("transpose_step_0_duration", "16");
+    set_param("transpose_step_count", "1");
+
+    /* Note on drum track (0) */
+    set_param("track_0_step_0_add_note", "36");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);
+    set_param("playing", "0");
+
+    /* Note should NOT be transposed */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 36);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+/* ============ Tests: Scale Detection ============ */
+
+TEST(scale_detection_no_notes) {
+    /* Clear all notes first */
+    for (int t = 4; t < 8; t++) {
+        for (int s = 0; s < 16; s++) {
+            char key[64];
+            snprintf(key, sizeof(key), "track_%d_step_%d_clear", t, s);
+            set_param(key, "1");
+        }
+    }
+
+    int root = get_param_int("detected_scale_root");
+    ASSERT_EQ(root, -1);
+}
+
+TEST(scale_detection_c_major_triad) {
+    /* Clear first */
+    for (int t = 4; t < 8; t++) {
+        for (int s = 0; s < 16; s++) {
+            char key[64];
+            snprintf(key, sizeof(key), "track_%d_step_%d_clear", t, s);
+            set_param(key, "1");
+        }
+    }
+
+    /* Add C major triad to track 4 (chord-follow) */
+    set_param("track_4_step_0_add_note", "60");  /* C */
+    set_param("track_4_step_1_add_note", "64");  /* E */
+    set_param("track_4_step_2_add_note", "67");  /* G */
+
+    int root = get_param_int("detected_scale_root");
+    ASSERT_EQ(root, 0);  /* C */
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("track_4_step_1_clear", "1");
+    set_param("track_4_step_2_clear", "1");
+}
+
+TEST(scale_detection_drum_track_ignored) {
+    /* Clear chord-follow tracks first */
+    for (int t = 4; t < 8; t++) {
+        for (int s = 0; s < 16; s++) {
+            char key[64];
+            snprintf(key, sizeof(key), "track_%d_step_%d_clear", t, s);
+            set_param(key, "1");
+        }
+    }
+
+    /* Notes on track 0 (chord_follow=0) should be ignored */
+    set_param("track_0_step_0_add_note", "61");  /* C# */
+    set_param("track_0_step_1_add_note", "63");  /* D# */
+
+    int root = get_param_int("detected_scale_root");
+    ASSERT_EQ(root, -1);  /* No scale from non-chord-follow tracks */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_1_clear", "1");
+}
+
+TEST(scale_detection_updates_on_note_change) {
+    /* Clear first */
+    for (int t = 4; t < 8; t++) {
+        for (int s = 0; s < 16; s++) {
+            char key[64];
+            snprintf(key, sizeof(key), "track_%d_step_%d_clear", t, s);
+            set_param(key, "1");
+        }
+    }
+
+    /* Add C note */
+    set_param("track_4_step_0_add_note", "60");  /* C */
+    int root1 = get_param_int("detected_scale_root");
+    ASSERT_EQ(root1, 0);  /* C */
+
+    /* Add more notes to potentially change scale */
+    set_param("track_4_step_1_add_note", "62");  /* D */
+    set_param("track_4_step_2_add_note", "64");  /* E */
+    int root2 = get_param_int("detected_scale_root");
+    ASSERT(root2 >= 0);  /* Scale should be detected */
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("track_4_step_1_clear", "1");
+    set_param("track_4_step_2_clear", "1");
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -1256,6 +1570,22 @@ int main(int argc, char **argv) {
     RUN_TEST(swing_short_loop_second_iteration);
     RUN_TEST(swing_global_phase_determines_swing);
     RUN_TEST(swing_comparison_5_vs_16_step_loops);
+
+    printf("\nTranspose Sequence (DSP Internal):\n");
+    RUN_TEST(transpose_sequence_empty);
+    RUN_TEST(transpose_sequence_single_step);
+    RUN_TEST(transpose_sequence_multiple_steps);
+    RUN_TEST(transpose_sequence_boundary_exact);
+    RUN_TEST(transpose_sequence_pause_resume);
+    RUN_TEST(transpose_sequence_loop);
+    RUN_TEST(transpose_sequence_long_duration);
+    RUN_TEST(transpose_sequence_drum_track_not_affected);
+
+    printf("\nScale Detection:\n");
+    RUN_TEST(scale_detection_no_notes);
+    RUN_TEST(scale_detection_c_major_triad);
+    RUN_TEST(scale_detection_drum_track_ignored);
+    RUN_TEST(scale_detection_updates_on_note_change);
 
     cleanup_plugin();
 

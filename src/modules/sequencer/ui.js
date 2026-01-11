@@ -7,25 +7,22 @@ import * as std from 'std';
 import * as os from 'os';
 
 import {
-    Black,
     MidiNoteOn, MidiNoteOff, MidiCC,
-    MovePlay, MoveRec, MoveShift, MoveMenu, MoveBack,
-    MovePads, MoveSteps, MoveCopy
+    MovePlay, MoveRec, MoveShift, MoveMenu, MoveBack, MoveCopy
 } from "../../shared/constants.mjs";
 
 import {
     isNoiseMessage, isCapacitiveTouchMessage,
-    setLED, setButtonLED, clearAllLEDs, clearLEDCache,
+    setButtonLED, clearLEDCache,
     setLedsEnabled, getLedsEnabled
 } from "../../shared/input_filter.mjs";
 
 /* Import lib modules */
-import { NUM_STEPS, NUM_TRACKS, TRACK_COLORS } from './lib/constants.js';
+import { NUM_STEPS } from './lib/constants.js';
 import { state, enterSetView, enterTrackView, enterPatternView, enterMasterView } from './lib/state.js';
 import { setParam, getCurrentPattern } from './lib/helpers.js';
 import { createEmptyTracks } from './lib/data.js';
 import { loadAllSetsFromDisk, initializeSets } from './lib/persistence.js';
-import { getTransposeAtBeat } from './lib/transpose_sequence.js';
 
 /* Import views */
 import * as setView from './views/set.js';
@@ -40,6 +37,14 @@ const views = {
     pattern: patternView,
     master: masterView
 };
+
+/* LED Update Throttling
+ * Tick runs at 344 Hz (44100 sample rate / 128 block size).
+ * At 140 BPM, 6x speed: ~1.5 LED updates per step with divisor of 4.
+ * Adjust this value to balance visual smoothness vs. SPI traffic.
+ */
+const LED_UPDATE_DIVISOR = 4;
+let ledTickCounter = 0;
 
 function getCurrentView() {
     return views[state.view];
@@ -67,9 +72,8 @@ function updateAllLEDs() {
     updateMenuLED();
 }
 
-/* Call this when switching between views to reset all LEDs first */
+/* Call this when switching between views */
 function onViewTransition() {
-    clearAllLEDs();
     getCurrentView().updateLEDs();
     updateMenuLED();
 }
@@ -78,7 +82,6 @@ function onViewTransition() {
 
 globalThis.init = function() {
     console.log("SEQOMD starting...");
-    clearAllLEDs();
 
     /* Initialize sets */
     initializeSets();
@@ -101,22 +104,17 @@ globalThis.init = function() {
     updateAllLEDs();
 };
 
-/* Track which pads are lit for playback display */
+/* Track state for playback display */
+let pendingPlayheadUpdate = null;  /* { oldStep, newStep } or null */
+let pendingPadUpdate = false;
+
 globalThis.tick = function() {
+    ledTickCounter++;
     drawUI();
 
-    /* Poll DSP for playhead position when playing */
+    /* Poll DSP for playhead position when playing (always at full rate for timing) */
+    /* Note: Transpose is now computed internally by DSP - no polling needed */
     if (state.playing && state.heldStep < 0) {
-        /* Poll beat count and update transpose sequence */
-        const beatStr = host_module_get_param('beat_count');
-        const newBeat = beatStr ? parseInt(beatStr, 10) : 0;
-        if (newBeat !== state.currentTransposeBeat) {
-            state.currentTransposeBeat = newBeat;
-            /* Calculate new transpose value and send to DSP */
-            const newTranspose = getTransposeAtBeat(newBeat);
-            setParam('current_transpose', String(newTranspose));
-        }
-
         const stepStr = host_module_get_param(`track_${state.currentTrack}_current_step`);
         const newStep = stepStr ? parseInt(stepStr, 10) : -1;
 
@@ -124,50 +122,41 @@ globalThis.tick = function() {
             const oldStep = state.currentPlayStep;
             state.currentPlayStep = newStep;
 
-            /* Lightweight playhead update - only 2 step LEDs */
+            /* Mark pending LED updates */
             if (state.view === 'track') {
-                trackView.updatePlayhead(oldStep, newStep);
-            }
+                pendingPlayheadUpdate = { oldStep, newStep };
 
-            /* Update pad note display - only changed pads */
-            if (state.view === 'track' && state.trackMode === 'normal') {
-                /* Clear previously lit pads */
-                for (const padIdx of state.litPads) {
-                    if (padIdx >= 0 && padIdx < 32) {
-                        setLED(MovePads[padIdx], Black);
-                    }
-                }
-                state.litPads = [];
-
-                /* Light up pads for currently playing notes */
+                /* Update litPads with currently playing MIDI notes */
                 if (newStep >= 0 && newStep < NUM_STEPS) {
                     const step = getCurrentPattern(state.currentTrack).steps[newStep];
-                    const trackColor = TRACK_COLORS[state.currentTrack];
-
-                    for (const note of step.notes) {
-                        const padIdx = note - 36;
-                        if (padIdx >= 0 && padIdx < 32) {
-                            setLED(MovePads[padIdx], trackColor);
-                            state.litPads.push(padIdx);
-                        }
-                    }
+                    state.litPads = step.notes.filter(n => n >= 36 && n < 68);
+                } else {
+                    state.litPads = [];
                 }
+                pendingPadUpdate = true;
             }
         }
     } else if (state.currentPlayStep !== -1 && !state.playing) {
-        /* Stopped - clear playhead and note display, full refresh needed */
+        /* Stopped - clear playhead and note display */
         const oldStep = state.currentPlayStep;
         state.currentPlayStep = -1;
         state.lastRecordedStep = -1;
-        for (const padIdx of state.litPads) {
-            if (padIdx >= 0 && padIdx < 32) {
-                setLED(MovePads[padIdx], Black);
-            }
-        }
         state.litPads = [];
         if (state.view === 'track') {
-            /* Restore old playhead step to normal color */
-            trackView.updatePlayhead(oldStep, -1);
+            pendingPlayheadUpdate = { oldStep, newStep: -1 };
+            pendingPadUpdate = true;
+        }
+    }
+
+    /* Throttled LED updates */
+    if (ledTickCounter % LED_UPDATE_DIVISOR === 0) {
+        if (pendingPlayheadUpdate && state.view === 'track') {
+            trackView.updatePlayhead(pendingPlayheadUpdate.oldStep, pendingPlayheadUpdate.newStep);
+            pendingPlayheadUpdate = null;
+        }
+        if (pendingPadUpdate && state.view === 'track') {
+            trackView.updatePadLEDs();
+            pendingPadUpdate = false;
         }
     }
 };

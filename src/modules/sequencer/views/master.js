@@ -7,15 +7,16 @@ import {
     Black, White, LightGrey, DarkGrey, BrightGreen, Cyan, BrightRed, VividYellow,
     MoveSteps, MovePads, MoveTracks, MoveLoop, MovePlay, MoveRec, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    MoveUp, MoveDown, MoveDelete, MoveMainKnob
+    MoveUp, MoveDown, MoveDelete, MoveMainKnob,
+    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM } from '../lib/constants.js';
 import { state, displayMessage } from '../lib/state.js';
-import { setParam } from '../lib/helpers.js';
-import { detectScale, getScaleDisplayName, isRoot, isInScale, NOTE_NAMES } from '../lib/scale_detection.js';
+import { setParam, getParam, syncTransposeSequenceToDSP } from '../lib/helpers.js';
+import { isRoot, isInScale, NOTE_NAMES, SCALES } from '../lib/scale_detection.js';
 import {
     setTransposeStep, removeTransposeStep, getTransposeStep, adjustTransposeDuration,
     getCurrentStepIndex, getStepCount, formatDuration, MAX_TRANSPOSE_STEPS
@@ -48,14 +49,56 @@ const WHITE_KEY_PADS = [0, 1, 2, 3, 4, 5, 6, 7];
 const BLACK_KEY_PADS = [9, 10, 12, 13, 14];
 const GAP_PADS = [8, 11, 15];
 
+/* ============ Scale Detection from DSP ============ */
+
+/**
+ * Read detected scale from DSP and update state.detectedScale
+ * DSP provides root (0-11 or -1) and scale name string
+ */
+function updateDetectedScaleFromDSP() {
+    const rootStr = getParam('detected_scale_root');
+    const nameStr = getParam('detected_scale_name');
+
+    const root = rootStr ? parseInt(rootStr, 10) : -1;
+
+    if (root < 0 || !nameStr) {
+        state.detectedScale = null;
+        return;
+    }
+
+    /* Find scale template by name to get the note intervals */
+    const scaleTemplate = SCALES.find(s => s.name === nameStr);
+    if (!scaleTemplate) {
+        state.detectedScale = null;
+        return;
+    }
+
+    /* Build scale notes set (transposed to root) */
+    const scaleNotes = new Set(scaleTemplate.notes.map(n => (n + root) % 12));
+
+    state.detectedScale = {
+        root: root,
+        scaleName: nameStr,
+        scaleNotes: scaleNotes
+    };
+}
+
+/**
+ * Get display name for detected scale
+ */
+function getScaleDisplayName() {
+    if (!state.detectedScale) return 'No scale';
+    return `${NOTE_NAMES[state.detectedScale.root]} ${state.detectedScale.scaleName}`;
+}
+
 /* ============ View Interface ============ */
 
 /**
  * Called when entering master view
  */
 export function onEnter() {
-    /* Recalculate scale detection */
-    state.detectedScale = detectScale(state.tracks, state.chordFollow);
+    /* Read scale detection from DSP */
+    updateDetectedScaleFromDSP();
     state.heldTransposeStep = -1;
     updateDisplayContent();
 }
@@ -131,6 +174,8 @@ export function onInput(data) {
             if (delta !== 0) {
                 const newDur = adjustTransposeDuration(state.heldTransposeStep, delta);
                 if (newDur !== null) {
+                    /* Sync transpose sequence to DSP */
+                    syncTransposeSequenceToDSP();
                     updateDisplayContent();
                     updateStepLEDs();
                 }
@@ -151,6 +196,8 @@ export function onInput(data) {
             }
             if (delta !== 0) {
                 adjustTransposeDuration(state.heldTransposeStep, delta);
+                /* Sync transpose sequence to DSP */
+                syncTransposeSequenceToDSP();
                 updateDisplayContent();
                 updateStepLEDs();
             }
@@ -192,6 +239,8 @@ function handleStepButton(stepIdx, isNoteOn, velocity) {
         /* Check for delete */
         if (state.deleteHeld) {
             removeTransposeStep(stepIdx);
+            /* Sync transpose sequence to DSP */
+            syncTransposeSequenceToDSP();
             updateDisplayContent();
             updateStepLEDs();
             return true;
@@ -221,10 +270,10 @@ function handlePadPress(padIdx) {
     if (padIdx >= 24) {
         const trackIdx = padIdx - 24;
         state.chordFollow[trackIdx] = !state.chordFollow[trackIdx];
-        /* Sync to DSP */
+        /* Sync to DSP - DSP will recalculate scale detection */
         setParam(`track_${trackIdx}_chord_follow`, state.chordFollow[trackIdx] ? "1" : "0");
-        /* Recalculate scale when chord follow changes */
-        state.detectedScale = detectScale(state.tracks, state.chordFollow);
+        /* Read updated scale from DSP */
+        updateDetectedScaleFromDSP();
         updateDisplayContent();
         updatePadLEDs();
         return true;
@@ -249,6 +298,8 @@ function handlePadPress(padIdx) {
         const existingStep = getTransposeStep(state.heldTransposeStep);
         const duration = existingStep ? existingStep.duration : 4;
         setTransposeStep(state.heldTransposeStep, transpose, duration);
+        /* Sync transpose sequence to DSP */
+        syncTransposeSequenceToDSP();
         updateDisplayContent();
         updateStepLEDs();
         updatePadLEDs();
@@ -265,6 +316,7 @@ function handlePadRelease(padIdx) {
 
 export function updateLEDs() {
     updateStepLEDs();
+    updateStepUILEDs();
     updatePadLEDs();
     updateKnobLEDs();
     updateTrackButtonLEDs();
@@ -272,6 +324,14 @@ export function updateLEDs() {
     updateCaptureLED();
     updateBackLED();
     updateOctaveLEDs();
+}
+
+function updateStepUILEDs() {
+    /* Clear step UI mode icons - not used in master view */
+    setButtonLED(MoveStep1UI, Black);
+    setButtonLED(MoveStep2UI, Black);
+    setButtonLED(MoveStep5UI, Black);
+    setButtonLED(MoveStep7UI, Black);
 }
 
 function updateStepLEDs() {
@@ -405,7 +465,7 @@ function updateOctaveLEDs() {
 /* ============ Display ============ */
 
 export function updateDisplayContent() {
-    const scaleName = getScaleDisplayName(state.detectedScale);
+    const scaleName = getScaleDisplayName();
     const stepCount = getStepCount();
 
     let line2, line3;
