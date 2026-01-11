@@ -165,6 +165,95 @@ function scanChainableModules() {
     ];
 }
 
+/* Editor view modes */
+const EDITOR_VIEW = {
+    OVERVIEW: "overview",
+    SLOT_MENU: "slot_menu",
+    COMPONENT_PICKER: "component_picker",
+    PARAM_EDITOR: "param_editor",
+    CONFIRM_DELETE: "confirm_delete"
+};
+
+/* Editor slot types */
+const SLOT_TYPES = ["source", "midi_fx", "synth", "fx1", "fx2"];
+
+function createEditorState(existingPatch = null) {
+    if (existingPatch) {
+        return {
+            isNew: false,
+            originalPath: existingPatch.path || "",
+            view: EDITOR_VIEW.OVERVIEW,
+            selectedSlot: 0,
+            slotMenuIndex: 0,
+            componentPickerIndex: 0,
+            paramIndex: 0,
+            confirmIndex: 0,
+            chain: {
+                source: existingPatch.midi_source_module || null,
+                midi_fx: existingPatch.chord_type || existingPatch.arp_mode ? "chord" : null,
+                midi_fx_config: {},
+                synth: existingPatch.synth_module || "sf2",
+                synth_config: { preset: existingPatch.synth_preset || 0 },
+                fx1: existingPatch.audio_fx?.[0] || null,
+                fx1_config: {},
+                fx2: existingPatch.audio_fx?.[1] || null,
+                fx2_config: {}
+            }
+        };
+    }
+    return {
+        isNew: true,
+        originalPath: "",
+        view: EDITOR_VIEW.COMPONENT_PICKER,
+        selectedSlot: 2, /* Start at synth slot */
+        slotMenuIndex: 0,
+        componentPickerIndex: 0,
+        paramIndex: 0,
+        confirmIndex: 0,
+        chain: {
+            source: null,
+            midi_fx: null,
+            midi_fx_config: {},
+            synth: null,
+            synth_config: {},
+            fx1: null,
+            fx1_config: {},
+            fx2: null,
+            fx2_config: {}
+        }
+    };
+}
+
+function enterEditor(patchIndex = -1) {
+    if (patchIndex >= 0 && patchIndex < patchCount) {
+        /* Edit existing patch */
+        const patchData = {
+            path: "",
+            midi_source_module: "",
+            synth_module: "",
+            synth_preset: 0,
+            audio_fx: [],
+            chord_type: null,
+            arp_mode: null
+        };
+        const name = host_module_get_param(`patch_name_${patchIndex}`);
+        patchData.name = name;
+        editorState = createEditorState(patchData);
+        editorState.editIndex = patchIndex;
+    } else {
+        /* New chain */
+        editorState = createEditorState();
+    }
+    editorMode = true;
+    needsRedraw = true;
+}
+
+function exitEditor() {
+    editorMode = false;
+    editorState = null;
+    needsRedraw = true;
+}
+
 function loadSourceUi(moduleId) {
     if (!moduleId) {
         sourceUiLoadError = false;
