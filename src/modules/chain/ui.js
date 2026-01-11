@@ -638,6 +638,93 @@ function handleEditorCC(cc, val) {
     return false;
 }
 
+function buildChainJson() {
+    const chain = editorState.chain;
+
+    let json = "{\n";
+    json += `        "input": "both",\n`;
+
+    /* MIDI FX */
+    if (chain.midi_fx === "chord") {
+        const type = chain.midi_fx_config?.type || "none";
+        if (type !== "none") {
+            json += `        "chord": "${type}",\n`;
+        }
+    }
+    if (chain.midi_fx === "arp") {
+        const mode = chain.midi_fx_config?.mode || "off";
+        if (mode !== "off") {
+            json += `        "arp": "${mode}",\n`;
+            json += `        "arp_bpm": ${chain.midi_fx_config?.bpm || 120},\n`;
+            const div = chain.midi_fx_config?.division || "1/16";
+            const divNum = div === "1/4" ? 1 : div === "1/8" ? 2 : 4;
+            json += `        "arp_division": ${divNum},\n`;
+        }
+    }
+
+    /* Synth */
+    json += `        "synth": {\n`;
+    json += `            "module": "${chain.synth || "sf2"}",\n`;
+    json += `            "config": {\n`;
+    json += `                "preset": ${chain.synth_config?.preset || 0}\n`;
+    json += `            }\n`;
+    json += `        },\n`;
+
+    /* Audio FX */
+    json += `        "audio_fx": [\n`;
+    const fxList = [];
+    if (chain.fx1) {
+        const params = chain.fx1_config || {};
+        let fxJson = `            {\n`;
+        fxJson += `                "type": "${chain.fx1}"`;
+        if (Object.keys(params).length > 0) {
+            fxJson += `,\n                "params": ${JSON.stringify(params)}`;
+        }
+        fxJson += `\n            }`;
+        fxList.push(fxJson);
+    }
+    if (chain.fx2) {
+        const params = chain.fx2_config || {};
+        let fxJson = `            {\n`;
+        fxJson += `                "type": "${chain.fx2}"`;
+        if (Object.keys(params).length > 0) {
+            fxJson += `,\n                "params": ${JSON.stringify(params)}`;
+        }
+        fxJson += `\n            }`;
+        fxList.push(fxJson);
+    }
+    json += fxList.join(",\n");
+    json += `\n        ]\n`;
+
+    json += `    }`;
+
+    return json;
+}
+
+function saveChain() {
+    if (!editorState.chain.synth) {
+        console.log("Chain editor: Cannot save without synth");
+        return;
+    }
+
+    const chainJson = buildChainJson();
+    host_module_set_param("save_patch", chainJson);
+
+    exitEditor();
+}
+
+function deleteChain() {
+    if (editorState.isNew || editorState.editIndex === undefined) {
+        console.log("Chain editor: Cannot delete new chain");
+        exitEditor();
+        return;
+    }
+
+    host_module_set_param("delete_patch", String(editorState.editIndex));
+
+    exitEditor();
+}
+
 function loadSourceUi(moduleId) {
     if (!moduleId) {
         sourceUiLoadError = false;
