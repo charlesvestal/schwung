@@ -171,18 +171,23 @@ function scanModuleDir(path) {
 
 function getInstalledModules() {
     /* Use host_list_modules() to get actually installed modules */
+    const moduleIds = [];
     if (typeof host_list_modules === "function") {
         try {
             const modules = host_list_modules();
             if (Array.isArray(modules)) {
-                return modules.map(m => m.id || m.name);
+                for (const m of modules) {
+                    const id = m.id || m.name;
+                    if (id && !moduleIds.includes(id)) {
+                        moduleIds.push(id);
+                    }
+                }
             }
         } catch (e) {
             console.log("Error listing modules: " + e);
         }
     }
-    /* Fallback: return empty - will just use chain subdirs */
-    return [];
+    return moduleIds;
 }
 
 function scanChainSubdir(basePath, subdir) {
@@ -268,14 +273,37 @@ const EDITOR_VIEW = {
     SLOT_MENU: "slot_menu",
     COMPONENT_PICKER: "component_picker",
     PARAM_EDITOR: "param_editor",
+    KNOB_EDITOR: "knob_editor",
+    KNOB_PARAM_PICKER: "knob_param_picker",
     CONFIRM_DELETE: "confirm_delete"
 };
 
-/* Editor slot types */
+/* Editor slot types - source combines input routing + MIDI generator modules */
 const SLOT_TYPES = ["source", "midi_fx", "synth", "fx1", "fx2"];
+
+/* Knob constants - Move has 8 knobs (CC 71-78) */
+const NUM_KNOBS = 8;
+const KNOB_CC_START = 71;
+
+/* Source options - input routing options that are NOT MIDI generator modules */
+const INPUT_SOURCE_OPTIONS = [
+    { id: "both", name: "Pads + External", isInputOption: true },
+    { id: "pads", name: "Pads Only", isInputOption: true },
+    { id: "external", name: "External Only", isInputOption: true }
+];
+
+function createEmptyKnobs() {
+    const knobs = [];
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        knobs.push({ slot: null, param: null });
+    }
+    return knobs;
+}
 
 function createEditorState(existingPatch = null) {
     if (existingPatch) {
+        /* Source can be an input option string or a MIDI source module ID */
+        let source = existingPatch.midi_source_module || existingPatch.input || "both";
         return {
             isNew: false,
             originalPath: existingPatch.path || "",
@@ -285,8 +313,11 @@ function createEditorState(existingPatch = null) {
             componentPickerIndex: 0,
             paramIndex: 0,
             confirmIndex: 0,
+            knobIndex: 0,
+            knobParamIndex: 0,
             chain: {
-                source: existingPatch.midi_source_module || null,
+                source: source,
+                source_config: {},
                 midi_fx: existingPatch.chord_type || existingPatch.arp_mode ? "chord" : null,
                 midi_fx_config: {},
                 synth: existingPatch.synth_module || "sf2",
@@ -294,7 +325,8 @@ function createEditorState(existingPatch = null) {
                 fx1: existingPatch.audio_fx?.[0] || null,
                 fx1_config: {},
                 fx2: existingPatch.audio_fx?.[1] || null,
-                fx2_config: {}
+                fx2_config: {},
+                knobs: existingPatch.knobs || createEmptyKnobs()
             }
         };
     }
@@ -302,13 +334,16 @@ function createEditorState(existingPatch = null) {
         isNew: true,
         originalPath: "",
         view: EDITOR_VIEW.COMPONENT_PICKER,
-        selectedSlot: 2, /* Start at synth slot */
+        selectedSlot: 2, /* Start at synth slot (index 2: source, midi_fx, synth) */
         slotMenuIndex: 0,
         componentPickerIndex: 0,
         paramIndex: 0,
         confirmIndex: 0,
+        knobIndex: 0,
+        knobParamIndex: 0,
         chain: {
-            source: null,
+            source: "both",
+            source_config: {},
             midi_fx: null,
             midi_fx_config: {},
             synth: null,
@@ -316,27 +351,87 @@ function createEditorState(existingPatch = null) {
             fx1: null,
             fx1_config: {},
             fx2: null,
-            fx2_config: {}
+            fx2_config: {},
+            knobs: createEmptyKnobs()
         }
     };
 }
 
 function enterEditor(patchIndex = -1) {
     if (patchIndex >= 0 && patchIndex < patchCount) {
-        /* Edit existing patch */
-        const patchData = {
-            path: "",
-            midi_source_module: "",
-            synth_module: "",
-            synth_preset: 0,
-            audio_fx: [],
-            chord_type: null,
-            arp_mode: null
+        /* Edit existing patch - load config from DSP */
+        const configJson = host_module_get_param(`patch_config_${patchIndex}`);
+        let config = null;
+        try {
+            config = JSON.parse(configJson || "{}");
+        } catch (e) {
+            console.log("Failed to parse patch config: " + e);
+            config = {};
+        }
+
+        editorState = {
+            isNew: false,
+            originalPath: "",
+            editIndex: patchIndex,
+            view: EDITOR_VIEW.OVERVIEW,
+            selectedSlot: 0,
+            slotMenuIndex: 0,
+            componentPickerIndex: 0,
+            paramIndex: 0,
+            confirmIndex: 0,
+            knobIndex: 0,
+            knobParamIndex: 0,
+            chain: {
+                source: config.source || null,
+                midi_fx: null,
+                midi_fx_config: {},
+                synth: config.synth || "sf2",
+                synth_config: { preset: config.preset || 0 },
+                fx1: null,
+                fx1_config: {},
+                fx2: null,
+                fx2_config: {},
+                input: config.input || "both",
+                knobs: config.knobs || createEmptyKnobs()
+            }
         };
-        const name = host_module_get_param(`patch_name_${patchIndex}`);
-        patchData.name = name;
-        editorState = createEditorState(patchData);
-        editorState.editIndex = patchIndex;
+
+        /* Parse MIDI FX */
+        if (config.chord && config.chord !== "none") {
+            editorState.chain.midi_fx = "chord";
+            editorState.chain.midi_fx_config = { type: config.chord };
+        } else if (config.arp && config.arp !== "off") {
+            editorState.chain.midi_fx = "arp";
+            const divStr = config.arp_div === 1 ? "1/4" : config.arp_div === 2 ? "1/8" : "1/16";
+            editorState.chain.midi_fx_config = {
+                mode: config.arp,
+                bpm: config.arp_bpm || 120,
+                division: divStr
+            };
+        }
+
+        /* Parse Audio FX */
+        if (Array.isArray(config.audio_fx)) {
+            if (config.audio_fx[0]) {
+                editorState.chain.fx1 = config.audio_fx[0];
+            }
+            if (config.audio_fx[1]) {
+                editorState.chain.fx2 = config.audio_fx[1];
+            }
+        }
+
+        /* Parse Knob Mappings */
+        if (Array.isArray(config.knob_mappings)) {
+            for (const mapping of config.knob_mappings) {
+                const knobIndex = mapping.cc - KNOB_CC_START;
+                if (knobIndex >= 0 && knobIndex < NUM_KNOBS) {
+                    editorState.chain.knobs[knobIndex] = {
+                        slot: mapping.target,
+                        param: mapping.param
+                    };
+                }
+            }
+        }
     } else {
         /* New chain */
         editorState = createEditorState();
@@ -364,11 +459,22 @@ function getSlotLabel(slotType) {
     }
 }
 
+function isInputSourceOption(value) {
+    return INPUT_SOURCE_OPTIONS.some(o => o.id === value);
+}
+
 function getSlotValue(slotType) {
     if (!editorState) return "[none]";
     const chain = editorState.chain;
     switch (slotType) {
-        case "source": return chain.source ? getComponentName("source", chain.source) : "Pads / External";
+        case "source": {
+            const value = chain.source;
+            /* Check if it's an input option (pads/external/both) */
+            const inputOpt = INPUT_SOURCE_OPTIONS.find(o => o.id === value);
+            if (inputOpt) return inputOpt.name;
+            /* Otherwise it's a MIDI source module */
+            return value ? getComponentName("source", value) : "Pads + External";
+        }
         case "midi_fx": return chain.midi_fx ? getComponentName("midi_fx", chain.midi_fx) : "[none]";
         case "synth": return chain.synth ? getComponentName("synth", chain.synth) : "[none]";
         case "fx1": return chain.fx1 ? getComponentName("fx1", chain.fx1) : "[none]";
@@ -382,12 +488,18 @@ function getComponentName(slotType, componentId) {
     return component ? component.name : componentId;
 }
 
+function getAssignedKnobCount() {
+    if (!editorState || !editorState.chain.knobs) return 0;
+    return editorState.chain.knobs.filter(k => k.slot && k.param).length;
+}
+
 function drawEditorOverview() {
     const title = editorState.isNew ? "New Chain" : "Edit Chain";
     drawMenuHeader(title);
 
     const items = [
         ...SLOT_TYPES.map(slot => ({ type: "slot", slot })),
+        { type: "knobs", label: "Knobs" },
         { type: "action", action: "save", label: "[Save]" },
         { type: "action", action: "cancel", label: "[Cancel]" }
     ];
@@ -405,10 +517,15 @@ function drawEditorOverview() {
         },
         getLabel: (item) => {
             if (item.type === "slot") return getSlotLabel(item.slot);
+            if (item.type === "knobs") return "Knobs";
             return item.label;
         },
         getValue: (item) => {
             if (item.type === "slot") return getSlotValue(item.slot);
+            if (item.type === "knobs") {
+                const count = getAssignedKnobCount();
+                return count > 0 ? `${count} assigned` : "[none]";
+            }
             return "";
         },
         valueAlignRight: true
@@ -425,11 +542,20 @@ function drawSlotMenu() {
     drawMenuHeader(getSlotLabel(slotType));
 
     const items = [
-        { action: "change", label: "Change..." },
-        { action: "configure", label: "Configure..." }
+        { action: "change", label: "Change..." }
     ];
 
-    if (slotType !== "synth") {
+    /* Source slot: only show Configure for MIDI source modules, not input options */
+    const sourceValue = editorState.chain.source;
+    const isSourceInputOption = slotType === "source" && isInputSourceOption(sourceValue);
+
+    /* Show Configure for slots that have configurable params (not input options) */
+    if (!isSourceInputOption) {
+        items.push({ action: "configure", label: "Configure..." });
+    }
+
+    /* Can't clear synth or source (source always has a value) */
+    if (slotType !== "synth" && slotType !== "source") {
         items.push({ action: "clear", label: "[Clear]" });
     }
 
@@ -448,6 +574,9 @@ function drawSlotMenu() {
 
 function getComponentsForSlot(slotType) {
     switch (slotType) {
+        case "source":
+            /* Input options first, then MIDI source modules */
+            return [...INPUT_SOURCE_OPTIONS, ...availableComponents.midi_sources];
         case "synth":
             return availableComponents.sound_generators;
         case "fx1":
@@ -455,9 +584,6 @@ function getComponentsForSlot(slotType) {
             return [{ id: null, name: "[none]" }, ...availableComponents.audio_fx];
         case "midi_fx":
             return [{ id: null, name: "[none]" }, ...availableComponents.midi_fx];
-        case "source":
-            /* Default is Pads/External MIDI - not "none" */
-            return [{ id: null, name: "Pads / External" }, ...availableComponents.midi_sources];
         default:
             return [];
     }
@@ -469,11 +595,11 @@ function drawComponentPicker() {
     let title = "";
 
     switch (slotType) {
+        case "source": title = "Source"; break;
         case "synth": title = "Sound Generator"; break;
         case "fx1":
         case "fx2": title = "Audio FX"; break;
         case "midi_fx": title = "MIDI FX"; break;
-        case "source": title = "MIDI Source"; break;
         default: title = "Select"; break;
     }
 
@@ -508,6 +634,9 @@ function findComponent(slotType, componentId) {
             list = availableComponents.midi_fx;
             break;
         case "source":
+            /* Check input options first, then MIDI source modules */
+            const inputOpt = INPUT_SOURCE_OPTIONS.find(o => o.id === componentId);
+            if (inputOpt) return inputOpt;
             list = availableComponents.midi_sources;
             break;
     }
@@ -546,7 +675,7 @@ function drawParamEditor() {
         selectedIndex: editorState.paramIndex,
         listArea: {
             topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomNoFooter
+            bottomY: menuLayoutDefaults.listBottomWithFooter
         },
         getLabel: (item) => {
             if (item.type === "param") return item.param.name;
@@ -564,6 +693,8 @@ function drawParamEditor() {
         },
         valueAlignRight: true
     });
+
+    drawMenuFooter("Jog:value Up/Dn:nav");
 }
 
 function drawConfirmDelete() {
@@ -588,16 +719,133 @@ function drawConfirmDelete() {
     });
 }
 
+function getKnobAssignmentLabel(knobAssignment) {
+    if (!knobAssignment || !knobAssignment.slot || !knobAssignment.param) {
+        return "[none]";
+    }
+    const slotLabel = getSlotLabel(knobAssignment.slot);
+    return `${slotLabel}: ${knobAssignment.param}`;
+}
+
+function getAllAssignableParams() {
+    /* Get all parameters from all configured components */
+    const params = [];
+    const chain = editorState.chain;
+
+    /* Add synth params */
+    if (chain.synth) {
+        const component = findComponent("synth", chain.synth);
+        if (component && component.params) {
+            for (const p of component.params) {
+                params.push({ slot: "synth", param: p.key, name: `${component.name}: ${p.name}` });
+            }
+        }
+    }
+
+    /* Add MIDI FX params */
+    if (chain.midi_fx) {
+        const component = findComponent("midi_fx", chain.midi_fx);
+        if (component && component.params) {
+            for (const p of component.params) {
+                params.push({ slot: "midi_fx", param: p.key, name: `${component.name}: ${p.name}` });
+            }
+        }
+    }
+
+    /* Add FX1 params */
+    if (chain.fx1) {
+        const component = findComponent("fx1", chain.fx1);
+        if (component && component.params) {
+            for (const p of component.params) {
+                params.push({ slot: "fx1", param: p.key, name: `FX1 ${component.name}: ${p.name}` });
+            }
+        }
+    }
+
+    /* Add FX2 params */
+    if (chain.fx2) {
+        const component = findComponent("fx2", chain.fx2);
+        if (component && component.params) {
+            for (const p of component.params) {
+                params.push({ slot: "fx2", param: p.key, name: `FX2 ${component.name}: ${p.name}` });
+            }
+        }
+    }
+
+    return params;
+}
+
+function drawKnobEditor() {
+    drawMenuHeader("Knob Assignment");
+
+    const items = [];
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        const knob = editorState.chain.knobs[i];
+        items.push({
+            type: "knob",
+            index: i,
+            label: `Knob ${i + 1}`,
+            assignment: knob
+        });
+    }
+    items.push({ type: "action", action: "done", label: "[Done]" });
+
+    drawMenuList({
+        items,
+        selectedIndex: editorState.knobIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => {
+            if (item.type === "knob") return item.label;
+            return item.label;
+        },
+        getValue: (item) => {
+            if (item.type === "knob") return getKnobAssignmentLabel(item.assignment);
+            return "";
+        },
+        valueAlignRight: true
+    });
+
+    drawMenuFooter("Click:assign Back:return");
+}
+
+function drawKnobParamPicker() {
+    const knobNum = editorState.knobIndex + 1;
+    drawMenuHeader(`Knob ${knobNum} Param`);
+
+    const params = getAllAssignableParams();
+    const items = [
+        { type: "clear", name: "[Clear]" },
+        ...params.map(p => ({ type: "param", ...p }))
+    ];
+
+    drawMenuList({
+        items,
+        selectedIndex: editorState.knobParamIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.name
+    });
+
+    drawMenuFooter("Click:select Back:cancel");
+}
+
 function handleEditorJog(delta) {
     switch (editorState.view) {
         case EDITOR_VIEW.OVERVIEW: {
-            const maxItems = SLOT_TYPES.length + 2 + (editorState.isNew ? 0 : 1);
+            /* SLOT_TYPES + Knobs + Save + Cancel + (Delete if editing) */
+            const maxItems = SLOT_TYPES.length + 1 + 2 + (editorState.isNew ? 0 : 1);
             editorState.selectedSlot = Math.max(0, Math.min(maxItems - 1, editorState.selectedSlot + delta));
             break;
         }
         case EDITOR_VIEW.SLOT_MENU: {
             const slotType = SLOT_TYPES[editorState.selectedSlot];
-            const maxItems = slotType === "synth" ? 2 : 3;
+            /* input: 1 item (Change), synth: 2 items (Change, Configure), others: 3 items */
+            const maxItems = slotType === "input" ? 1 : slotType === "synth" ? 2 : 3;
             editorState.slotMenuIndex = Math.max(0, Math.min(maxItems - 1, editorState.slotMenuIndex + delta));
             break;
         }
@@ -608,6 +856,19 @@ function handleEditorJog(delta) {
         }
         case EDITOR_VIEW.PARAM_EDITOR: {
             handleParamJog(delta);
+            break;
+        }
+        case EDITOR_VIEW.KNOB_EDITOR: {
+            /* 8 knobs + Done button */
+            const maxItems = NUM_KNOBS + 1;
+            editorState.knobIndex = Math.max(0, Math.min(maxItems - 1, editorState.knobIndex + delta));
+            break;
+        }
+        case EDITOR_VIEW.KNOB_PARAM_PICKER: {
+            /* Clear + all assignable params */
+            const params = getAllAssignableParams();
+            const maxItems = 1 + params.length;
+            editorState.knobParamIndex = Math.max(0, Math.min(maxItems - 1, editorState.knobParamIndex + delta));
             break;
         }
         case EDITOR_VIEW.CONFIRM_DELETE: {
@@ -623,11 +884,62 @@ function handleParamJog(delta) {
     const component = findComponent(slotType, componentId);
 
     if (!component || !component.params) {
+        return;
+    }
+
+    /* If on [Done] button, jog navigates */
+    if (editorState.paramIndex >= component.params.length) {
+        return;
+    }
+
+    /* Adjust the selected parameter value */
+    const param = component.params[editorState.paramIndex];
+    const configKey = slotType + "_config";
+    if (!editorState.chain[configKey]) {
+        editorState.chain[configKey] = {};
+    }
+    const config = editorState.chain[configKey];
+    let value = config[param.key] !== undefined ? config[param.key] : param.default;
+
+    switch (param.type) {
+        case "int": {
+            const step = param.step || 1;
+            value = Math.max(param.min, Math.min(param.max || 127, value + delta * step));
+            break;
+        }
+        case "float": {
+            const step = param.step || 0.05;
+            value = Math.max(param.min, Math.min(param.max || 1.0, value + delta * step));
+            /* Round to avoid floating point errors */
+            value = Math.round(value * 100) / 100;
+            break;
+        }
+        case "enum": {
+            const options = param.options || [];
+            if (options.length > 0) {
+                let idx = options.indexOf(value);
+                if (idx < 0) idx = 0;
+                idx = Math.max(0, Math.min(options.length - 1, idx + delta));
+                value = options[idx];
+            }
+            break;
+        }
+    }
+
+    config[param.key] = value;
+}
+
+function handleParamNavigate(delta) {
+    const slotType = SLOT_TYPES[editorState.selectedSlot];
+    const componentId = editorState.chain[slotType];
+    const component = findComponent(slotType, componentId);
+
+    if (!component || !component.params) {
         editorState.paramIndex = 0;
         return;
     }
 
-    const maxItems = component.params.length + 1;
+    const maxItems = component.params.length + 1; /* +1 for Done */
     editorState.paramIndex = Math.max(0, Math.min(maxItems - 1, editorState.paramIndex + delta));
 }
 
@@ -635,10 +947,16 @@ function handleEditorSelect() {
     switch (editorState.view) {
         case EDITOR_VIEW.OVERVIEW: {
             if (editorState.selectedSlot < SLOT_TYPES.length) {
+                /* Slot selection */
                 editorState.view = EDITOR_VIEW.SLOT_MENU;
                 editorState.slotMenuIndex = 0;
+            } else if (editorState.selectedSlot === SLOT_TYPES.length) {
+                /* Knobs row */
+                editorState.view = EDITOR_VIEW.KNOB_EDITOR;
+                editorState.knobIndex = 0;
             } else {
-                const actionIndex = editorState.selectedSlot - SLOT_TYPES.length;
+                /* Actions: Save, Cancel, Delete */
+                const actionIndex = editorState.selectedSlot - SLOT_TYPES.length - 1;
                 if (actionIndex === 0) {
                     saveChain();
                 } else if (actionIndex === 1) {
@@ -652,18 +970,42 @@ function handleEditorSelect() {
         }
         case EDITOR_VIEW.SLOT_MENU: {
             const slotType = SLOT_TYPES[editorState.selectedSlot];
-            if (editorState.slotMenuIndex === 0) {
-                editorState.view = EDITOR_VIEW.COMPONENT_PICKER;
-                editorState.componentPickerIndex = 0;
-            } else if (editorState.slotMenuIndex === 1) {
-                if (editorState.chain[slotType]) {
-                    editorState.view = EDITOR_VIEW.PARAM_EDITOR;
-                    editorState.paramIndex = 0;
+            /* Source slot with input option only has Change available */
+            const sourceValue = editorState.chain.source;
+            const isSourceInputOption = slotType === "source" && isInputSourceOption(sourceValue);
+
+            if (isSourceInputOption) {
+                /* Only Change is available for source with input option */
+                if (editorState.slotMenuIndex === 0) {
+                    editorState.view = EDITOR_VIEW.COMPONENT_PICKER;
+                    editorState.componentPickerIndex = 0;
                 }
-            } else if (editorState.slotMenuIndex === 2) {
-                editorState.chain[slotType] = null;
-                editorState.chain[slotType + "_config"] = {};
-                editorState.view = EDITOR_VIEW.OVERVIEW;
+            } else if (slotType === "source" || slotType === "synth") {
+                /* Source (with module) or synth: Change and Configure, no Clear */
+                if (editorState.slotMenuIndex === 0) {
+                    editorState.view = EDITOR_VIEW.COMPONENT_PICKER;
+                    editorState.componentPickerIndex = 0;
+                } else if (editorState.slotMenuIndex === 1) {
+                    if (editorState.chain[slotType]) {
+                        editorState.view = EDITOR_VIEW.PARAM_EDITOR;
+                        editorState.paramIndex = 0;
+                    }
+                }
+            } else {
+                /* Other slots: Change, Configure, Clear */
+                if (editorState.slotMenuIndex === 0) {
+                    editorState.view = EDITOR_VIEW.COMPONENT_PICKER;
+                    editorState.componentPickerIndex = 0;
+                } else if (editorState.slotMenuIndex === 1) {
+                    if (editorState.chain[slotType]) {
+                        editorState.view = EDITOR_VIEW.PARAM_EDITOR;
+                        editorState.paramIndex = 0;
+                    }
+                } else if (editorState.slotMenuIndex === 2) {
+                    editorState.chain[slotType] = null;
+                    editorState.chain[slotType + "_config"] = {};
+                    editorState.view = EDITOR_VIEW.OVERVIEW;
+                }
             }
             break;
         }
@@ -671,7 +1013,13 @@ function handleEditorSelect() {
             const slotType = SLOT_TYPES[editorState.selectedSlot];
             const components = getComponentsForSlot(slotType);
             const selected = components[editorState.componentPickerIndex];
-            editorState.chain[slotType] = selected?.id || null;
+
+            /* Source must always have a value - default to "both" */
+            if (slotType === "source") {
+                editorState.chain.source = selected?.id || "both";
+            } else {
+                editorState.chain[slotType] = selected?.id || null;
+            }
             editorState.chain[slotType + "_config"] = {};
 
             if (editorState.isNew && slotType === "synth") {
@@ -684,6 +1032,33 @@ function handleEditorSelect() {
         }
         case EDITOR_VIEW.PARAM_EDITOR: {
             handleParamSelect();
+            break;
+        }
+        case EDITOR_VIEW.KNOB_EDITOR: {
+            if (editorState.knobIndex >= NUM_KNOBS) {
+                /* Done button */
+                editorState.view = EDITOR_VIEW.OVERVIEW;
+            } else {
+                /* Select a knob to assign */
+                editorState.view = EDITOR_VIEW.KNOB_PARAM_PICKER;
+                editorState.knobParamIndex = 0;
+            }
+            break;
+        }
+        case EDITOR_VIEW.KNOB_PARAM_PICKER: {
+            const params = getAllAssignableParams();
+            if (editorState.knobParamIndex === 0) {
+                /* Clear */
+                editorState.chain.knobs[editorState.knobIndex] = { slot: null, param: null };
+            } else {
+                /* Assign param */
+                const selected = params[editorState.knobParamIndex - 1];
+                editorState.chain.knobs[editorState.knobIndex] = {
+                    slot: selected.slot,
+                    param: selected.param
+                };
+            }
+            editorState.view = EDITOR_VIEW.KNOB_EDITOR;
             break;
         }
         case EDITOR_VIEW.CONFIRM_DELETE: {
@@ -707,10 +1082,14 @@ function handleParamSelect() {
         return;
     }
 
+    /* If on [Done], return to overview */
     if (editorState.paramIndex >= component.params.length) {
         editorState.view = EDITOR_VIEW.OVERVIEW;
         return;
     }
+
+    /* Click moves to next parameter (or Done) */
+    editorState.paramIndex++;
 }
 
 function handleEditorCC(cc, val) {
@@ -724,8 +1103,12 @@ function handleEditorCC(cc, val) {
             case EDITOR_VIEW.SLOT_MENU:
             case EDITOR_VIEW.COMPONENT_PICKER:
             case EDITOR_VIEW.PARAM_EDITOR:
+            case EDITOR_VIEW.KNOB_EDITOR:
             case EDITOR_VIEW.CONFIRM_DELETE:
                 editorState.view = EDITOR_VIEW.OVERVIEW;
+                break;
+            case EDITOR_VIEW.KNOB_PARAM_PICKER:
+                editorState.view = EDITOR_VIEW.KNOB_EDITOR;
                 break;
         }
         needsRedraw = true;
@@ -743,6 +1126,20 @@ function handleEditorCC(cc, val) {
         handleEditorSelect();
         needsRedraw = true;
         return true;
+    }
+
+    /* Up/Down for param navigation in param editor */
+    if (editorState.view === EDITOR_VIEW.PARAM_EDITOR) {
+        if (cc === CC_UP && val === 127) {
+            handleParamNavigate(-1);
+            needsRedraw = true;
+            return true;
+        }
+        if (cc === CC_DOWN && val === 127) {
+            handleParamNavigate(1);
+            needsRedraw = true;
+            return true;
+        }
     }
 
     return false;
@@ -797,7 +1194,6 @@ function buildChainJson() {
         name: name,
         version: 1,
         chain: {
-            input: "both",
             synth: {
                 module: chain.synth || "sf2",
                 config: {}
@@ -805,6 +1201,17 @@ function buildChainJson() {
             audio_fx: []
         }
     };
+
+    /* Source can be an input option (pads/external/both) or a MIDI source module */
+    const sourceValue = chain.source || "both";
+    if (isInputSourceOption(sourceValue)) {
+        /* Input routing option - store as "input" for backwards compat */
+        patch.chain.input = sourceValue;
+    } else {
+        /* MIDI source module - default input to "both" and set module */
+        patch.chain.input = "both";
+        patch.chain.midi_source_module = sourceValue;
+    }
 
     /* Synth config */
     if (chain.synth_config) {
@@ -847,9 +1254,22 @@ function buildChainJson() {
         patch.chain.audio_fx.push(fx);
     }
 
-    /* MIDI source module */
-    if (chain.source) {
-        patch.chain.midi_source_module = chain.source;
+    /* Knob assignments */
+    if (chain.knobs) {
+        const knobs = [];
+        for (let i = 0; i < NUM_KNOBS; i++) {
+            const knob = chain.knobs[i];
+            if (knob && knob.slot && knob.param) {
+                knobs.push({
+                    cc: KNOB_CC_START + i,
+                    target: knob.slot,
+                    param: knob.param
+                });
+            }
+        }
+        if (knobs.length > 0) {
+            patch.chain.knob_mappings = knobs;
+        }
     }
 
     return JSON.stringify(patch, null, 4);
@@ -1106,6 +1526,12 @@ function drawUI() {
                 break;
             case EDITOR_VIEW.PARAM_EDITOR:
                 drawParamEditor();
+                break;
+            case EDITOR_VIEW.KNOB_EDITOR:
+                drawKnobEditor();
+                break;
+            case EDITOR_VIEW.KNOB_PARAM_PICKER:
+                drawKnobParamPicker();
                 break;
             case EDITOR_VIEW.CONFIRM_DELETE:
                 drawConfirmDelete();

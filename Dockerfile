@@ -6,6 +6,7 @@ FROM debian:bookworm
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu \
     make \
     file \
     && rm -rf /var/lib/apt/lists/*
@@ -33,7 +34,7 @@ CMD set -e && \
     CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh && \
     echo "" && \
     echo "Packaging..." && \
-    ./scripts/package.sh && \
+    CROSS_PREFIX=aarch64-linux-gnu- ./scripts/package.sh && \
     echo "" && \
     echo "=== Build Artifacts ===" && \
     file /build/build/move-anything && \
