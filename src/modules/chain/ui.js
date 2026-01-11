@@ -15,7 +15,7 @@ let patchName = "";
 let patchCount = 0;
 let currentPatch = 0;
 let patchNames = [];
-let selectedPatch = 0;
+let selectedPatch = -1;  /* -1 = New Chain item */
 let viewMode = "list";
 let synthModule = "";
 let presetName = "";
@@ -738,12 +738,13 @@ function handleCC(cc, val) {
     if (cc === CC_JOG) {
         if (viewMode === "list") {
             const delta = val < 64 ? val : val - 128;
-            if (patchCount > 0 && delta !== 0) {
+            if (patchCount >= 0 && delta !== 0) {
+                const totalItems = patchCount + 1; /* +1 for New Chain */
                 const next = selectedPatch + (delta > 0 ? 1 : -1);
-                if (next < 0) {
+                if (next < -1) {
                     selectedPatch = patchCount - 1;
                 } else if (next >= patchCount) {
-                    selectedPatch = 0;
+                    selectedPatch = -1; /* New Chain is at index -1 */
                 } else {
                     selectedPatch = next;
                 }
@@ -755,11 +756,17 @@ function handleCC(cc, val) {
     }
 
     if (cc === CC_JOG_CLICK && val === 127) {
-        if (viewMode === "list" && patchCount > 0) {
-            host_module_set_param("patch", String(selectedPatch));
-            viewMode = "patch";
-            needsRedraw = true;
-            return true;
+        if (viewMode === "list") {
+            if (selectedPatch === -1) {
+                /* New Chain selected */
+                enterEditor(-1);
+                return true;
+            } else if (selectedPatch >= 0 && selectedPatch < patchCount) {
+                host_module_set_param("patch", String(selectedPatch));
+                viewMode = "patch";
+                needsRedraw = true;
+                return true;
+            }
         }
         return false;
     }
@@ -863,16 +870,23 @@ function drawUI() {
 
     if (viewMode === "list") {
         drawMenuHeader("Signal Chain");
+
+        /* Build list with New Chain at top */
+        const listItems = [
+            { type: "new", name: "[+ New Chain]" },
+            ...patchNames.map((name, i) => ({ type: "patch", name, index: i }))
+        ];
+
         drawMenuList({
-            items: patchNames,
-            selectedIndex: selectedPatch,
+            items: listItems,
+            selectedIndex: selectedPatch + 1, /* +1 for New Chain item */
             listArea: {
                 topY: menuLayoutDefaults.listTopY,
                 bottomY: menuLayoutDefaults.listBottomWithFooter
             },
-            getLabel: (name) => name
+            getLabel: (item) => item.name
         });
-        drawMenuFooter("Click:load Back:menu");
+        drawMenuFooter("Click:load Menu:edit");
         needsRedraw = false;
         return;
     }
