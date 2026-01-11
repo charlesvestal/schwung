@@ -175,3 +175,44 @@ export const CONDITIONS = [
     { name: "!7:8", n: 8, m: 7, not: true },
     { name: "!8:8", n: 8, m: 8, not: true }
 ];
+
+/* ============ Arpeggiator Options ============ */
+
+export const ARP_MODES = [
+    { name: 'Off' },
+    { name: 'Up' },
+    { name: 'Down' },
+    { name: 'Up-Down' },
+    { name: 'Down-Up' },
+    { name: 'Up & Down' },
+    { name: 'Down & Up' },
+    { name: 'Random' },
+    { name: 'Chord' },
+    { name: 'Outside-In' },
+    { name: 'Inside-Out' },
+    { name: 'Converge' },
+    { name: 'Diverge' },
+    { name: 'Thumb' },
+    { name: 'Pinky' }
+];
+
+export const ARP_SPEEDS = [
+    { name: '1/1', div: 1 },
+    { name: '1/2', div: 2 },
+    { name: '1/3', div: 3 },
+    { name: '1/4', div: 4 },
+    { name: '1/6', div: 6 },
+    { name: '1/8', div: 8 }
+];
+
+export const ARP_OCTAVES = [
+    { name: '0' },
+    { name: '+1' },
+    { name: '+2' },
+    { name: '-1' },
+    { name: '-2' },
+    { name: '±1' },
+    { name: '±2' }
+];
+
+export const DEFAULT_ARP_SPEED = 3;  /* 1/4 */

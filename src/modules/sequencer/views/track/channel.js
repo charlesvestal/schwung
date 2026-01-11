@@ -42,7 +42,6 @@ export function onInput(data) {
         }
         state.tracks[state.currentTrack].channel = ch;
         setParam(`track_${state.currentTrack}_channel`, String(ch));
-        saveCurrentSetToDisk();
         updateDisplayContent();
         return true;
     }
@@ -107,5 +106,6 @@ export function onEnter() {
 }
 
 export function onExit() {
-    /* No cleanup needed */
+    /* Save changes when exiting mode */
+    saveCurrentSetToDisk();
 }

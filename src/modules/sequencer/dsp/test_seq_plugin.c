@@ -1486,6 +1486,557 @@ TEST(scale_detection_updates_on_note_change) {
     set_param("track_4_step_2_clear", "1");
 }
 
+/* ============ Tests: Arpeggiator Pattern Generation ============ */
+
+TEST(arp_pattern_up) {
+    /* Up mode: notes in ascending order */
+    uint8_t notes[] = {60, 64, 67, 71};  /* C-E-G-B */
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_UP, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 4);
+    ASSERT_EQ(pattern[0], 60);  /* C */
+    ASSERT_EQ(pattern[1], 64);  /* E */
+    ASSERT_EQ(pattern[2], 67);  /* G */
+    ASSERT_EQ(pattern[3], 71);  /* B */
+}
+
+TEST(arp_pattern_down) {
+    /* Down mode: notes in descending order */
+    uint8_t notes[] = {60, 64, 67, 71};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_DOWN, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 4);
+    ASSERT_EQ(pattern[0], 71);  /* B */
+    ASSERT_EQ(pattern[1], 67);  /* G */
+    ASSERT_EQ(pattern[2], 64);  /* E */
+    ASSERT_EQ(pattern[3], 60);  /* C */
+}
+
+TEST(arp_pattern_up_down) {
+    /* Up-Down: up then down, excludes middle endpoints: C-E-G-B-G-E */
+    uint8_t notes[] = {60, 64, 67, 71};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_UP_DOWN, ARP_OCT_NONE, pattern, 16);
+    /* C-E-G-B-G-E = 6 notes */
+    ASSERT_EQ(len, 6);
+    ASSERT_EQ(pattern[0], 60);  /* C */
+    ASSERT_EQ(pattern[1], 64);  /* E */
+    ASSERT_EQ(pattern[2], 67);  /* G */
+    ASSERT_EQ(pattern[3], 71);  /* B */
+    ASSERT_EQ(pattern[4], 67);  /* G */
+    ASSERT_EQ(pattern[5], 64);  /* E */
+}
+
+TEST(arp_pattern_up_and_down) {
+    /* Up & Down: up then down, repeats endpoints: C-E-G-B-B-G-E-C */
+    uint8_t notes[] = {60, 64, 67, 71};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_UP_AND_DOWN, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 8);
+    ASSERT_EQ(pattern[0], 60);  /* C */
+    ASSERT_EQ(pattern[3], 71);  /* B */
+    ASSERT_EQ(pattern[4], 71);  /* B (repeated) */
+    ASSERT_EQ(pattern[7], 60);  /* C */
+}
+
+TEST(arp_pattern_thumb) {
+    /* Thumb: bass pedal - C-C-E-C-G-C-B */
+    uint8_t notes[] = {60, 64, 67, 71};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_THUMB, ARP_OCT_NONE, pattern, 16);
+    /* First note, then (bass, next) pairs for remaining notes = 1 + 3*2 = 7 */
+    ASSERT_EQ(len, 7);
+    ASSERT_EQ(pattern[0], 60);  /* C (first) */
+    ASSERT_EQ(pattern[1], 60);  /* C (bass pedal) */
+    ASSERT_EQ(pattern[2], 64);  /* E */
+    ASSERT_EQ(pattern[3], 60);  /* C (bass pedal) */
+    ASSERT_EQ(pattern[4], 67);  /* G */
+    ASSERT_EQ(pattern[5], 60);  /* C (bass pedal) */
+    ASSERT_EQ(pattern[6], 71);  /* B */
+}
+
+TEST(arp_pattern_pinky) {
+    /* Pinky: top note pedal - B-B-G-B-E-B-C */
+    uint8_t notes[] = {60, 64, 67, 71};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_PINKY, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 7);
+    ASSERT_EQ(pattern[0], 71);  /* B (first) */
+    ASSERT_EQ(pattern[1], 71);  /* B (top pedal) */
+    ASSERT_EQ(pattern[2], 67);  /* G */
+    ASSERT_EQ(pattern[3], 71);  /* B (top pedal) */
+    ASSERT_EQ(pattern[4], 64);  /* E */
+    ASSERT_EQ(pattern[5], 71);  /* B (top pedal) */
+    ASSERT_EQ(pattern[6], 60);  /* C */
+}
+
+TEST(arp_pattern_converge) {
+    /* Converge: low/high pairs moving in: C-B-E-G */
+    uint8_t notes[] = {60, 64, 67, 71};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_CONVERGE, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 4);
+    ASSERT_EQ(pattern[0], 60);  /* C (low) */
+    ASSERT_EQ(pattern[1], 71);  /* B (high) */
+    ASSERT_EQ(pattern[2], 64);  /* E (next low) */
+    ASSERT_EQ(pattern[3], 67);  /* G (next high) */
+}
+
+TEST(arp_pattern_outside_in) {
+    /* Outside-In: high/low alternating inward: B-C-G-E */
+    uint8_t notes[] = {60, 64, 67, 71};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_OUTSIDE_IN, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 4);
+    ASSERT_EQ(pattern[0], 71);  /* B (high) */
+    ASSERT_EQ(pattern[1], 60);  /* C (low) */
+    ASSERT_EQ(pattern[2], 67);  /* G (next high) */
+    ASSERT_EQ(pattern[3], 64);  /* E (next low) */
+}
+
+TEST(arp_pattern_octave_up1) {
+    /* With +1 octave, pattern has base + octave up */
+    uint8_t notes[] = {60, 64, 67};  /* C-E-G */
+    uint8_t pattern[32];
+    int len = generate_arp_pattern(notes, 3, ARP_UP, ARP_OCT_UP1, pattern, 32);
+    ASSERT_EQ(len, 6);  /* 3 + 3 */
+    ASSERT_EQ(pattern[0], 60);  /* C */
+    ASSERT_EQ(pattern[1], 64);  /* E */
+    ASSERT_EQ(pattern[2], 67);  /* G */
+    ASSERT_EQ(pattern[3], 72);  /* C+12 */
+    ASSERT_EQ(pattern[4], 76);  /* E+12 */
+    ASSERT_EQ(pattern[5], 79);  /* G+12 */
+}
+
+TEST(arp_pattern_octave_down1) {
+    /* With -1 octave: octave down first, then base */
+    uint8_t notes[] = {60, 64, 67};
+    uint8_t pattern[32];
+    int len = generate_arp_pattern(notes, 3, ARP_UP, ARP_OCT_DOWN1, pattern, 32);
+    ASSERT_EQ(len, 6);
+    ASSERT_EQ(pattern[0], 48);  /* C-12 */
+    ASSERT_EQ(pattern[1], 52);  /* E-12 */
+    ASSERT_EQ(pattern[2], 55);  /* G-12 */
+    ASSERT_EQ(pattern[3], 60);  /* C */
+    ASSERT_EQ(pattern[4], 64);  /* E */
+    ASSERT_EQ(pattern[5], 67);  /* G */
+}
+
+TEST(arp_pattern_octave_both1) {
+    /* With ±1 octave: down, base, up */
+    uint8_t notes[] = {60, 64, 67};
+    uint8_t pattern[32];
+    int len = generate_arp_pattern(notes, 3, ARP_UP, ARP_OCT_BOTH1, pattern, 32);
+    ASSERT_EQ(len, 9);  /* 3 * 3 octaves */
+    /* -12, base, +12 */
+    ASSERT_EQ(pattern[0], 48);  /* C-12 */
+    ASSERT_EQ(pattern[3], 60);  /* C base */
+    ASSERT_EQ(pattern[6], 72);  /* C+12 */
+}
+
+TEST(arp_pattern_single_note) {
+    /* Single note should return just that note */
+    uint8_t notes[] = {60};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 1, ARP_UP, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 1);
+    ASSERT_EQ(pattern[0], 60);
+}
+
+TEST(arp_pattern_two_notes_up_down) {
+    /* Two notes in Up-Down: just 0-1 (can't go back down) */
+    uint8_t notes[] = {60, 67};
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 2, ARP_UP_DOWN, ARP_OCT_NONE, pattern, 16);
+    /* With 2 notes: up is 0-1, down back is nothing (middle is empty) */
+    ASSERT_EQ(len, 2);
+    ASSERT_EQ(pattern[0], 60);
+    ASSERT_EQ(pattern[1], 67);
+}
+
+TEST(arp_pattern_unsorted_input) {
+    /* Notes given out of order should still work */
+    uint8_t notes[] = {67, 60, 71, 64};  /* G-C-B-E should become C-E-G-B */
+    uint8_t pattern[16];
+    int len = generate_arp_pattern(notes, 4, ARP_UP, ARP_OCT_NONE, pattern, 16);
+    ASSERT_EQ(len, 4);
+    ASSERT_EQ(pattern[0], 60);  /* C (sorted) */
+    ASSERT_EQ(pattern[1], 64);  /* E (sorted) */
+    ASSERT_EQ(pattern[2], 67);  /* G (sorted) */
+    ASSERT_EQ(pattern[3], 71);  /* B (sorted) */
+}
+
+/* ============ Tests: Arpeggiator Scheduling ============ */
+
+TEST(arp_scheduling_basic) {
+    /* Set up track with arp mode Up */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "3"); /* 1/4 = 4 notes per step */
+
+    /* Add 3-note chord to step 0 */
+    set_param("track_0_step_0_add_note", "60");  /* C */
+    set_param("track_0_step_0_add_note", "64");  /* E */
+    set_param("track_0_step_0_add_note", "67");  /* G */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);  /* Render through step 0 and into step 1 */
+    set_param("playing", "0");
+
+    /* With arp speed 1/4 (4 notes/step) and note length 1, we get 4 arp notes
+     * Pattern C-E-G cycles: C, E, G, C */
+    int count_60 = count_note_ons(60, 0);  /* C appears twice (positions 0, 3) */
+    int count_64 = count_note_ons(64, 0);  /* E appears once (position 1) */
+    int count_67 = count_note_ons(67, 0);  /* G appears once (position 2) */
+
+    ASSERT_EQ(count_60, 2);
+    ASSERT_EQ(count_64, 1);
+    ASSERT_EQ(count_67, 1);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_scheduling_with_note_length) {
+    /* Note length 2 + arp speed 1/4 = 8 arp notes */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "3"); /* 1/4 */
+    set_param("track_0_step_0_length", "2");
+
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(4);  /* Render through 2-step note length */
+    set_param("playing", "0");
+
+    /* 8 notes total: C-E-G-C-E-G-C-E (cycling 3-note pattern) */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    /* 8 notes, pattern length 3: 8/3 = 2.67 cycles
+     * C: positions 0, 3, 6 = 3 times
+     * E: positions 1, 4, 7 = 3 times
+     * G: positions 2, 5 = 2 times */
+    ASSERT_EQ(count_60, 3);
+    ASSERT_EQ(count_64, 3);
+    ASSERT_EQ(count_67, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_0_length", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_step_override) {
+    /* Track has Up mode, step overrides to Down */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 notes per step */
+    set_param("track_0_step_0_arp_mode", "2");  /* ARP_DOWN override */
+
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "72");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* With Down mode and 2 notes per step: 72, 60 */
+    /* First note should be 72 (high), not 60 (low) */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 72);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_ignores_ratchet) {
+    /* When arp active, ratchet should be ignored */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 notes per step */
+    set_param("track_0_step_0_ratchet", "4");  /* Would be 4 triggers if no arp */
+
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* With arp: 2 notes (60, 64), not 8 (4 ratchets * 2 notes) */
+    int total_notes = count_note_ons(60, 0) + count_note_ons(64, 0);
+    ASSERT_EQ(total_notes, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_0_ratchet", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_single_note_no_arp) {
+    /* Single note should not arp (uses ratchet instead) */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "3"); /* 1/4 */
+    set_param("track_0_step_0_ratchet", "2");
+
+    set_param("track_0_step_0_add_note", "60");  /* Only 1 note */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* Single note: arp doesn't apply, ratchet does = 2 triggers */
+    int count = count_note_ons(60, 0);
+    ASSERT_EQ(count, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_0_ratchet", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_chord_mode) {
+    /* Chord mode: all notes together, repeated at arp speed */
+    set_param("track_0_arp_mode", "8");  /* ARP_CHORD */
+    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 hits per step */
+
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* Chord mode with 2 hits: each note plays twice = 6 total */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 2);
+    ASSERT_EQ(count_64, 2);
+    ASSERT_EQ(count_67, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+/* ============ Tests: Arpeggiator with Swing ============ */
+
+TEST(arp_with_swing) {
+    /* Arp notes should have swing applied based on global beat position */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 notes per step */
+    set_param("track_0_swing", "100");   /* Maximum swing */
+
+    /* Notes on step 0 (downbeat) and step 1 (upbeat) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_1_add_note", "67");
+    set_param("track_0_step_1_add_note", "71");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(4);
+    set_param("playing", "0");
+
+    /* All notes should play */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+    int count_71 = count_note_ons(71, 0);
+
+    ASSERT(count_60 >= 1);
+    ASSERT(count_64 >= 1);
+    ASSERT(count_67 >= 1);
+    ASSERT(count_71 >= 1);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_0_swing", "50");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_swing_per_track) {
+    /* Different tracks can have different swing with arp */
+    set_param("track_0_arp_mode", "1");
+    set_param("track_0_swing", "50");  /* No swing */
+    set_param("track_1_arp_mode", "1");
+    set_param("track_1_swing", "67");  /* Triplet swing */
+
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_1_step_0_add_note", "72");
+    set_param("track_1_step_0_add_note", "76");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* Both should play their arp notes */
+    int count_ch0 = count_note_ons(60, 0) + count_note_ons(64, 0);
+    int count_ch1 = count_note_ons(72, 1) + count_note_ons(76, 1);
+
+    ASSERT(count_ch0 >= 2);
+    ASSERT(count_ch1 >= 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_1_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_1_arp_mode", "0");
+    set_param("track_1_swing", "50");
+}
+
+/* ============ Tests: Arpeggiator with Transpose ============ */
+
+TEST(arp_with_transpose) {
+    /* Arp notes should be transposed when chord_follow enabled */
+    set_param("track_4_chord_follow", "1");  /* Already default */
+    set_param("track_4_arp_mode", "1");  /* ARP_UP */
+    set_param("track_4_arp_speed", "1"); /* 1/2 */
+    set_param("current_transpose", "5"); /* +5 semitones */
+
+    set_param("track_4_step_0_add_note", "60");
+    set_param("track_4_step_0_add_note", "64");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* Notes should be transposed: 60+5=65, 64+5=69 */
+    int found_65 = 0, found_69 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on && g_captured_notes[i].channel == 4) {
+            if (g_captured_notes[i].note == 65) found_65 = 1;
+            if (g_captured_notes[i].note == 69) found_69 = 1;
+        }
+    }
+    ASSERT(found_65);
+    ASSERT(found_69);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("track_4_arp_mode", "0");
+    set_param("current_transpose", "0");
+}
+
+TEST(arp_transpose_with_octave) {
+    /* Arp octave extension + transpose */
+    set_param("track_4_arp_mode", "1");
+    set_param("track_4_arp_speed", "0"); /* 1/1 = 1 note per step */
+    set_param("track_4_arp_octave", "1"); /* +1 octave */
+    set_param("current_transpose", "3");
+
+    set_param("track_4_step_0_add_note", "60");
+    set_param("track_4_step_0_add_note", "64");
+    set_param("track_4_step_0_length", "4"); /* 4 notes from arp */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);
+    set_param("playing", "0");
+
+    /* With +1 octave and transpose +3:
+     * Base pattern: 60, 64 -> +1 oct: 60, 64, 72, 76
+     * Transposed: 63, 67, 75, 79 */
+    int found_63 = 0, found_67 = 0, found_75 = 0, found_79 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on && g_captured_notes[i].channel == 4) {
+            if (g_captured_notes[i].note == 63) found_63 = 1;
+            if (g_captured_notes[i].note == 67) found_67 = 1;
+            if (g_captured_notes[i].note == 75) found_75 = 1;
+            if (g_captured_notes[i].note == 79) found_79 = 1;
+        }
+    }
+    ASSERT(found_63);
+    ASSERT(found_67);
+    ASSERT(found_75);
+    ASSERT(found_79);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("track_4_step_0_length", "1");
+    set_param("track_4_arp_mode", "0");
+    set_param("track_4_arp_octave", "0");
+    set_param("current_transpose", "0");
+}
+
+TEST(arp_no_transpose_on_drum_track) {
+    /* Drum tracks don't transpose even with arp */
+    set_param("track_0_arp_mode", "1");
+    set_param("track_0_arp_speed", "1");
+    set_param("current_transpose", "12");
+
+    set_param("track_0_step_0_add_note", "36");
+    set_param("track_0_step_0_add_note", "38");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* Notes should NOT be transposed (track 0 has chord_follow=0) */
+    int found_36 = 0, found_38 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on && g_captured_notes[i].channel == 0) {
+            if (g_captured_notes[i].note == 36) found_36 = 1;
+            if (g_captured_notes[i].note == 38) found_38 = 1;
+        }
+    }
+    ASSERT(found_36);
+    ASSERT(found_38);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("current_transpose", "0");
+}
+
+TEST(arp_params_persist) {
+    /* Test that arp parameters can be set and read */
+    set_param("track_0_arp_mode", "3");
+    set_param("track_0_arp_speed", "5");
+    set_param("track_0_arp_octave", "2");
+
+    ASSERT_EQ(g_tracks[0].arp_mode, 3);
+    ASSERT_EQ(g_tracks[0].arp_speed, 5);
+    ASSERT_EQ(g_tracks[0].arp_octave, 2);
+
+    /* Reset */
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_speed", "3");
+    set_param("track_0_arp_octave", "0");
+}
+
+TEST(arp_step_params_persist) {
+    /* Test step-level arp overrides */
+    set_param("track_0_step_5_arp_mode", "7");
+    set_param("track_0_step_5_arp_speed", "4");
+
+    pattern_t *pat = get_current_pattern(&g_tracks[0]);
+    ASSERT_EQ(pat->steps[5].arp_mode, 7);
+    ASSERT_EQ(pat->steps[5].arp_speed, 4);
+
+    /* Clear resets to -1 */
+    set_param("track_0_step_5_clear", "1");
+    ASSERT_EQ(pat->steps[5].arp_mode, -1);
+    ASSERT_EQ(pat->steps[5].arp_speed, -1);
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -1586,6 +2137,41 @@ int main(int argc, char **argv) {
     RUN_TEST(scale_detection_c_major_triad);
     RUN_TEST(scale_detection_drum_track_ignored);
     RUN_TEST(scale_detection_updates_on_note_change);
+
+    printf("\nArpeggiator Pattern Generation:\n");
+    RUN_TEST(arp_pattern_up);
+    RUN_TEST(arp_pattern_down);
+    RUN_TEST(arp_pattern_up_down);
+    RUN_TEST(arp_pattern_up_and_down);
+    RUN_TEST(arp_pattern_thumb);
+    RUN_TEST(arp_pattern_pinky);
+    RUN_TEST(arp_pattern_converge);
+    RUN_TEST(arp_pattern_outside_in);
+    RUN_TEST(arp_pattern_octave_up1);
+    RUN_TEST(arp_pattern_octave_down1);
+    RUN_TEST(arp_pattern_octave_both1);
+    RUN_TEST(arp_pattern_single_note);
+    RUN_TEST(arp_pattern_two_notes_up_down);
+    RUN_TEST(arp_pattern_unsorted_input);
+
+    printf("\nArpeggiator Scheduling:\n");
+    RUN_TEST(arp_scheduling_basic);
+    RUN_TEST(arp_scheduling_with_note_length);
+    RUN_TEST(arp_step_override);
+    RUN_TEST(arp_ignores_ratchet);
+    RUN_TEST(arp_single_note_no_arp);
+    RUN_TEST(arp_chord_mode);
+
+    printf("\nArpeggiator with Swing:\n");
+    RUN_TEST(arp_with_swing);
+    RUN_TEST(arp_swing_per_track);
+
+    printf("\nArpeggiator with Transpose:\n");
+    RUN_TEST(arp_with_transpose);
+    RUN_TEST(arp_transpose_with_octave);
+    RUN_TEST(arp_no_transpose_on_drum_track);
+    RUN_TEST(arp_params_persist);
+    RUN_TEST(arp_step_params_persist);
 
     cleanup_plugin();
 

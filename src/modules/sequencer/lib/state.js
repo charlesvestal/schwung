@@ -16,7 +16,7 @@ export const state = {
     /* Current view: 'set' | 'track' | 'pattern' | 'master' */
     view: 'set',
 
-    /* Track view sub-mode: 'normal' | 'loop' | 'spark' | 'swing' | 'bpm' */
+    /* Track view sub-mode: 'normal' | 'loop' | 'spark' | 'swing' | 'bpm' | 'arp' */
     trackMode: 'normal',
 
     /* Track selection */
@@ -148,6 +148,10 @@ export function isBpmMode() {
     return state.view === 'track' && state.trackMode === 'bpm';
 }
 
+export function isArpMode() {
+    return state.view === 'track' && state.trackMode === 'arp';
+}
+
 export function isTrackNormalMode() {
     return state.view === 'track' && state.trackMode === 'normal';
 }
@@ -229,5 +233,14 @@ export function enterChannelMode() {
 }
 
 export function exitChannelMode() {
+    state.trackMode = 'normal';
+}
+
+export function enterArpMode() {
+    state.view = 'track';
+    state.trackMode = 'arp';
+}
+
+export function exitArpMode() {
     state.trackMode = 'normal';
 }

@@ -3,7 +3,7 @@
  * Functions for creating and manipulating track/step data
  */
 
-import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, DEFAULT_SPEED_INDEX } from './constants.js';
+import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, DEFAULT_SPEED_INDEX, DEFAULT_ARP_SPEED } from './constants.js';
 
 /* ============ Step Data ============ */
 
@@ -22,7 +22,9 @@ export function createEmptyStep() {
         paramSpark: 0,     // Index into CONDITIONS - when CC locks apply
         compSpark: 0,      // Index into CONDITIONS - when ratchet/jump apply
         jump: -1,          // Jump target step (-1 = no jump, 0-15 = step)
-        offset: 0          // Micro-timing offset in ticks (-24 to +24, 48 ticks per step)
+        offset: 0,         // Micro-timing offset in ticks (-24 to +24, 48 ticks per step)
+        arpMode: -1,       // Arp mode override (-1 = use track, 0+ = override)
+        arpSpeed: -1       // Arp speed override (-1 = use track, 0+ = override)
     };
 }
 
@@ -41,7 +43,9 @@ export function cloneStep(srcStep) {
         paramSpark: srcStep.paramSpark,
         compSpark: srcStep.compSpark,
         jump: srcStep.jump,
-        offset: srcStep.offset || 0
+        offset: srcStep.offset || 0,
+        arpMode: srcStep.arpMode !== undefined ? srcStep.arpMode : -1,
+        arpSpeed: srcStep.arpSpeed !== undefined ? srcStep.arpSpeed : -1
     };
 }
 
@@ -89,7 +93,10 @@ export function createEmptyTrack(channel) {
         muted: false,
         channel: channel,
         speedIndex: DEFAULT_SPEED_INDEX,
-        swing: 50
+        swing: 50,
+        arpMode: 0,                   // 0 = Off, 1+ = arp mode
+        arpSpeed: DEFAULT_ARP_SPEED,  // Index into ARP_SPEEDS
+        arpOctave: 0                  // Index into ARP_OCTAVES
     };
     for (let p = 0; p < NUM_PATTERNS; p++) {
         track.patterns.push(createEmptyPattern());
@@ -107,7 +114,10 @@ export function cloneTrack(srcTrack) {
         muted: srcTrack.muted,
         channel: srcTrack.channel,
         speedIndex: srcTrack.speedIndex,
-        swing: srcTrack.swing !== undefined ? srcTrack.swing : 50
+        swing: srcTrack.swing !== undefined ? srcTrack.swing : 50,
+        arpMode: srcTrack.arpMode !== undefined ? srcTrack.arpMode : 0,
+        arpSpeed: srcTrack.arpSpeed !== undefined ? srcTrack.arpSpeed : DEFAULT_ARP_SPEED,
+        arpOctave: srcTrack.arpOctave !== undefined ? srcTrack.arpOctave : 0
     };
     for (let p = 0; p < NUM_PATTERNS; p++) {
         clone.patterns.push(clonePattern(srcTrack.patterns[p]));
@@ -147,6 +157,7 @@ export function deepCloneTracks(srcTracks) {
  * - Adds missing patterns if track has fewer than NUM_PATTERNS
  * - Adds speedIndex if missing
  * - Adds swing if missing
+ * - Adds arp fields if missing
  */
 export function migrateTrackData(trackData) {
     /* Add missing tracks (for 8-track -> 16-track migration) */
@@ -166,6 +177,27 @@ export function migrateTrackData(trackData) {
         /* Ensure swing exists */
         if (track.swing === undefined) {
             track.swing = 50;
+        }
+        /* Ensure arp fields exist */
+        if (track.arpMode === undefined) {
+            track.arpMode = 0;
+        }
+        if (track.arpSpeed === undefined) {
+            track.arpSpeed = DEFAULT_ARP_SPEED;
+        }
+        if (track.arpOctave === undefined) {
+            track.arpOctave = 0;
+        }
+        /* Migrate step arp fields */
+        for (const pattern of track.patterns) {
+            for (const step of pattern.steps) {
+                if (step.arpMode === undefined) {
+                    step.arpMode = -1;
+                }
+                if (step.arpSpeed === undefined) {
+                    step.arpSpeed = -1;
+                }
+            }
         }
     }
     return trackData;

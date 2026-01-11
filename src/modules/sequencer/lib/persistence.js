@@ -53,7 +53,7 @@ function getSetFilePath(setIdx) {
 export function setFileExists(setIdx) {
     try {
         const stat = os.stat(getSetFilePath(setIdx));
-        return stat[0] === 0;  // 0 = success
+        return stat[1] === 0;  // stat[1] is error code, 0 = success
     } catch (e) {
         return false;
     }

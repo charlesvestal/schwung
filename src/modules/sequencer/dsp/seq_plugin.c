@@ -31,6 +31,42 @@
 /* Scale detection constants */
 #define NUM_SCALE_TEMPLATES 15
 
+/* Arpeggiator constants */
+#define ARP_OFF           0
+#define ARP_UP            1
+#define ARP_DOWN          2
+#define ARP_UP_DOWN       3   /* Includes endpoints twice */
+#define ARP_DOWN_UP       4   /* Includes endpoints twice */
+#define ARP_UP_AND_DOWN   5   /* Excludes repeated endpoints */
+#define ARP_DOWN_AND_UP   6   /* Excludes repeated endpoints */
+#define ARP_RANDOM        7
+#define ARP_CHORD         8   /* Repeated chord hits */
+#define ARP_OUTSIDE_IN    9   /* High/low alternating inward */
+#define ARP_INSIDE_OUT    10  /* Middle outward alternating */
+#define ARP_CONVERGE      11  /* Low/high pairs moving in */
+#define ARP_DIVERGE       12  /* Middle expanding out */
+#define ARP_THUMB         13  /* Bass note pedal */
+#define ARP_PINKY         14  /* Top note pedal */
+#define NUM_ARP_MODES     15
+
+/* Arp speed divisions (notes per step) */
+static const int ARP_DIVISIONS[] = {1, 2, 3, 4, 6, 8};
+#define NUM_ARP_SPEEDS    6
+#define DEFAULT_ARP_SPEED 3  /* 1/4 = 4 notes per step */
+
+/* Arp octave options */
+#define ARP_OCT_NONE      0
+#define ARP_OCT_UP1       1
+#define ARP_OCT_UP2       2
+#define ARP_OCT_DOWN1     3
+#define ARP_OCT_DOWN2     4
+#define ARP_OCT_BOTH1     5
+#define ARP_OCT_BOTH2     6
+#define NUM_ARP_OCTAVES   7
+
+/* Max arp pattern length (4 notes * 3 octaves * 2 for ping-pong) */
+#define MAX_ARP_PATTERN   64
+
 /* Swing is applied as a delay to upbeat notes.
  * Swing value 50 = no swing, 67 = triplet feel.
  * The delay is calculated as: (swing - 50) / 100.0 * 0.5 steps */
@@ -68,6 +104,9 @@ typedef struct {
     uint8_t comp_spark_not;              /* Negate condition */
     int8_t jump;                         /* Jump target step (-1 = no jump, 0-15 = step) */
     int8_t offset;                       /* Micro-timing offset in ticks (-24 to +24, 48 ticks per step) */
+    /* Arpeggiator per-step overrides */
+    int8_t arp_mode;                     /* -1=use track, 0+=override mode */
+    int8_t arp_speed;                    /* -1=use track, 0+=override speed */
 } step_t;
 
 /* Pattern data - contains steps and loop points */
@@ -106,6 +145,10 @@ typedef struct {
     double trigger_at_phase;     /* Phase value when trigger should fire */
     uint8_t pending_step;        /* Which step is pending */
     double next_step_at;         /* Phase value when next step advance should happen */
+    /* Arpeggiator settings */
+    uint8_t arp_mode;            /* 0=Off, 1=Up, 2=Down, etc. */
+    uint8_t arp_speed;           /* 0=1/1, 1=1/2, 2=1/3, etc. (default 3=1/4) */
+    uint8_t arp_octave;          /* 0=none, 1=+1, 2=+2, 3=-1, 4=-2, 5=±1, 6=±2 */
 } track_t;
 
 /* ============ Centralized Note Scheduler ============ */
@@ -271,7 +314,8 @@ static void rebuild_transpose_lookup(void) {
  */
 static int8_t get_transpose_at_step(uint32_t step) {
     if (!g_transpose_lookup_valid || g_transpose_total_steps == 0 || !g_transpose_lookup) {
-        return 0;
+        /* Fall back to legacy current_transpose when no sequence defined */
+        return (int8_t)g_current_transpose;
     }
     uint32_t looped_step = step % g_transpose_total_steps;
     return g_transpose_lookup[looped_step];
@@ -656,6 +700,9 @@ static void init_pattern(pattern_t *pattern) {
         pattern->steps[i].comp_spark_not = 0;
         pattern->steps[i].jump = -1;            /* No jump */
         pattern->steps[i].offset = 0;           /* No micro-timing offset */
+        /* Arp per-step overrides */
+        pattern->steps[i].arp_mode = -1;        /* Use track default */
+        pattern->steps[i].arp_speed = -1;       /* Use track default */
     }
 }
 
@@ -683,6 +730,10 @@ static void init_track(track_t *track, int channel) {
     track->trigger_at_phase = 0.0;
     track->pending_step = 0;
     track->next_step_at = 1.0;  /* Default step length */
+    /* Arpeggiator defaults */
+    track->arp_mode = ARP_OFF;
+    track->arp_speed = DEFAULT_ARP_SPEED;
+    track->arp_octave = ARP_OCT_NONE;
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -692,6 +743,306 @@ static void init_track(track_t *track, int channel) {
     for (int p = 0; p < NUM_PATTERNS; p++) {
         init_pattern(&track->patterns[p]);
     }
+}
+
+/* ============ Arpeggiator Pattern Generation ============ */
+
+/* Helper: sort notes by pitch (insertion sort, small arrays) */
+static void sort_notes(uint8_t *notes, int count) {
+    for (int i = 1; i < count; i++) {
+        uint8_t key = notes[i];
+        int j = i - 1;
+        while (j >= 0 && notes[j] > key) {
+            notes[j + 1] = notes[j];
+            j--;
+        }
+        notes[j + 1] = key;
+    }
+}
+
+/* Helper: shuffle array (Fisher-Yates) */
+static void shuffle_notes(uint8_t *notes, int count) {
+    for (int i = count - 1; i > 0; i--) {
+        int j = random_check(100) * i / 100;  /* Simple random index */
+        if (j > i) j = i;
+        uint8_t tmp = notes[i];
+        notes[i] = notes[j];
+        notes[j] = tmp;
+    }
+}
+
+/**
+ * Generate arp pattern for given notes.
+ * Notes are sorted by pitch, then arranged according to arp_mode.
+ * Octave extension is applied if arp_octave > 0.
+ * Returns pattern length.
+ */
+static int generate_arp_pattern(uint8_t *notes, int num_notes, int arp_mode,
+                                 int arp_octave, uint8_t *out_pattern, int max_len) {
+    if (num_notes <= 0 || num_notes > MAX_NOTES_PER_STEP) return 0;
+
+    /* Copy and sort notes by pitch */
+    uint8_t sorted[MAX_NOTES_PER_STEP];
+    for (int i = 0; i < num_notes; i++) {
+        sorted[i] = notes[i];
+    }
+    sort_notes(sorted, num_notes);
+
+    int len = 0;
+
+    /* Generate base pattern based on mode */
+    switch (arp_mode) {
+        case ARP_UP:
+            for (int i = 0; i < num_notes && len < max_len; i++) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_DOWN:
+            for (int i = num_notes - 1; i >= 0 && len < max_len; i--) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_UP_DOWN:
+            /* Up then down, includes endpoints twice: C-E-G-E */
+            for (int i = 0; i < num_notes && len < max_len; i++) {
+                out_pattern[len++] = sorted[i];
+            }
+            for (int i = num_notes - 2; i > 0 && len < max_len; i--) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_DOWN_UP:
+            /* Down then up, includes endpoints twice: G-E-C-E */
+            for (int i = num_notes - 1; i >= 0 && len < max_len; i--) {
+                out_pattern[len++] = sorted[i];
+            }
+            for (int i = 1; i < num_notes - 1 && len < max_len; i++) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_UP_AND_DOWN:
+            /* Up then down, no repeated endpoints: C-E-G-G-E-C */
+            for (int i = 0; i < num_notes && len < max_len; i++) {
+                out_pattern[len++] = sorted[i];
+            }
+            for (int i = num_notes - 1; i >= 0 && len < max_len; i--) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_DOWN_AND_UP:
+            /* Down then up, no repeated endpoints: G-E-C-C-E-G */
+            for (int i = num_notes - 1; i >= 0 && len < max_len; i--) {
+                out_pattern[len++] = sorted[i];
+            }
+            for (int i = 0; i < num_notes && len < max_len; i++) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_RANDOM:
+            /* Shuffle the sorted notes */
+            for (int i = 0; i < num_notes; i++) {
+                out_pattern[i] = sorted[i];
+            }
+            shuffle_notes(out_pattern, num_notes);
+            len = num_notes;
+            break;
+
+        case ARP_CHORD:
+            /* All notes at once - just return first note, caller handles chord */
+            /* For scheduling purposes, we treat this as playing all notes at each position */
+            for (int i = 0; i < num_notes && len < max_len; i++) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_OUTSIDE_IN:
+            /* High/low alternating inward: G-C-E (for C-E-G) */
+            for (int i = 0; i < (num_notes + 1) / 2 && len < max_len; i++) {
+                if (len < max_len) out_pattern[len++] = sorted[num_notes - 1 - i];
+                if (i != num_notes - 1 - i && len < max_len) {
+                    out_pattern[len++] = sorted[i];
+                }
+            }
+            break;
+
+        case ARP_INSIDE_OUT:
+            /* Middle outward alternating */
+            {
+                int mid = num_notes / 2;
+                if (len < max_len) out_pattern[len++] = sorted[mid];
+                for (int i = 1; i <= mid && len < max_len; i++) {
+                    if (mid + i < num_notes && len < max_len) {
+                        out_pattern[len++] = sorted[mid + i];
+                    }
+                    if (mid - i >= 0 && len < max_len) {
+                        out_pattern[len++] = sorted[mid - i];
+                    }
+                }
+            }
+            break;
+
+        case ARP_CONVERGE:
+            /* Low/high pairs moving in: C-G-E (for C-E-G) */
+            for (int i = 0; i < (num_notes + 1) / 2 && len < max_len; i++) {
+                if (len < max_len) out_pattern[len++] = sorted[i];
+                if (i != num_notes - 1 - i && len < max_len) {
+                    out_pattern[len++] = sorted[num_notes - 1 - i];
+                }
+            }
+            break;
+
+        case ARP_DIVERGE:
+            /* Middle expanding out (same as inside_out for notes) */
+            {
+                int mid = num_notes / 2;
+                if (len < max_len) out_pattern[len++] = sorted[mid];
+                for (int i = 1; i <= mid && len < max_len; i++) {
+                    if (mid + i < num_notes && len < max_len) {
+                        out_pattern[len++] = sorted[mid + i];
+                    }
+                    if (mid - i >= 0 && len < max_len) {
+                        out_pattern[len++] = sorted[mid - i];
+                    }
+                }
+            }
+            break;
+
+        case ARP_THUMB:
+            /* Bass note pedal: C-C-E-C-G */
+            if (len < max_len) out_pattern[len++] = sorted[0];
+            for (int i = 1; i < num_notes && len < max_len; i++) {
+                if (len < max_len) out_pattern[len++] = sorted[0];
+                if (len < max_len) out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        case ARP_PINKY:
+            /* Top note pedal: G-G-E-G-C */
+            if (len < max_len) out_pattern[len++] = sorted[num_notes - 1];
+            for (int i = num_notes - 2; i >= 0 && len < max_len; i--) {
+                if (len < max_len) out_pattern[len++] = sorted[num_notes - 1];
+                if (len < max_len) out_pattern[len++] = sorted[i];
+            }
+            break;
+
+        default:
+            /* Default to up */
+            for (int i = 0; i < num_notes && len < max_len; i++) {
+                out_pattern[len++] = sorted[i];
+            }
+            break;
+    }
+
+    /* Apply octave extension */
+    if (arp_octave != ARP_OCT_NONE && len > 0) {
+        int base_len = len;
+        uint8_t base_pattern[MAX_ARP_PATTERN];
+        for (int i = 0; i < base_len; i++) {
+            base_pattern[i] = out_pattern[i];
+        }
+
+        len = 0;  /* Reset and rebuild with octaves */
+
+        switch (arp_octave) {
+            case ARP_OCT_UP1:
+                /* Base, then +12 */
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    out_pattern[len++] = base_pattern[i];
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] + 12;
+                    if (note <= 127) out_pattern[len++] = note;
+                }
+                break;
+
+            case ARP_OCT_UP2:
+                /* Base, +12, +24 */
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    out_pattern[len++] = base_pattern[i];
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] + 12;
+                    if (note <= 127) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] + 24;
+                    if (note <= 127) out_pattern[len++] = note;
+                }
+                break;
+
+            case ARP_OCT_DOWN1:
+                /* -12, then base */
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] - 12;
+                    if (note >= 0) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    out_pattern[len++] = base_pattern[i];
+                }
+                break;
+
+            case ARP_OCT_DOWN2:
+                /* -24, -12, base */
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] - 24;
+                    if (note >= 0) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] - 12;
+                    if (note >= 0) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    out_pattern[len++] = base_pattern[i];
+                }
+                break;
+
+            case ARP_OCT_BOTH1:
+                /* -12, base, +12 */
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] - 12;
+                    if (note >= 0) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    out_pattern[len++] = base_pattern[i];
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] + 12;
+                    if (note <= 127) out_pattern[len++] = note;
+                }
+                break;
+
+            case ARP_OCT_BOTH2:
+                /* -24, -12, base, +12, +24 */
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] - 24;
+                    if (note >= 0) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] - 12;
+                    if (note >= 0) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    out_pattern[len++] = base_pattern[i];
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] + 12;
+                    if (note <= 127) out_pattern[len++] = note;
+                }
+                for (int i = 0; i < base_len && len < max_len; i++) {
+                    int note = base_pattern[i] + 24;
+                    if (note <= 127) out_pattern[len++] = note;
+                }
+                break;
+        }
+    }
+
+    return len;
 }
 
 /* Get current pattern for a track */
@@ -743,35 +1094,80 @@ static int check_spark_condition(int8_t spark_n, int8_t spark_m, uint8_t spark_n
 
 /**
  * Schedule notes for a step via the centralized scheduler.
- * This handles swing, ratchets, note conflicts, and transpose automatically.
+ * This handles swing, ratchets, arp, note conflicts, and transpose automatically.
  *
- * @param track      Track data
- * @param track_idx  Track index (for chord_follow check)
- * @param step       Step data
- * @param base_phase Global phase when this step starts
+ * @param track       Track data
+ * @param track_idx   Track index (for chord_follow check)
+ * @param step        Step data
+ * @param base_phase  Global phase when this step starts
+ * @param use_arp     Whether to use arp scheduling (1=use arp, 0=don't)
+ * @param use_ratchet Whether to use step's ratchet value (1=use ratchet, 0=force single trigger)
  */
-static void schedule_step_notes(track_t *track, int track_idx, step_t *step, double base_phase) {
+static void schedule_step_notes(track_t *track, int track_idx, step_t *step, double base_phase, int use_arp, int use_ratchet) {
     int note_length = step->length > 0 ? step->length : 1;
     int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
-    int ratchet_count = step->ratchet > 0 ? step->ratchet : 1;
 
     /* Calculate transpose offset for this track using internal lookup */
     uint32_t global_step = (uint32_t)g_global_phase;
     int transpose = g_chord_follow[track_idx] ? get_transpose_at_step(global_step) : 0;
 
-    /* For ratchets, divide the step into equal parts */
-    double ratchet_step = 1.0 / ratchet_count;
-    /* Ratchet note length is proportional to gate but divided by ratchet count */
-    double ratchet_length = (double)note_length / ratchet_count;
+    if (use_arp && step->num_notes > 1) {
+        /* Arpeggiator scheduling - ignore ratchet when arp is active */
 
-    for (int r = 0; r < ratchet_count; r++) {
-        double note_on_phase = base_phase + (r * ratchet_step);
+        /* Resolve arp settings (step override or track default) */
+        int arp_mode = step->arp_mode >= 0 ? step->arp_mode : track->arp_mode;
+        int arp_speed = step->arp_speed >= 0 ? step->arp_speed : track->arp_speed;
+        int arp_octave = track->arp_octave;  /* Octave is track-only, no step override */
 
-        /* Schedule each note in the step */
-        for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
-            if (step->notes[n] > 0) {
-                /* Apply transpose and clamp to valid MIDI range */
-                int transposed_note = step->notes[n] + transpose;
+        /* Generate arp pattern */
+        uint8_t arp_pattern[MAX_ARP_PATTERN];
+        int pattern_len = generate_arp_pattern(step->notes, step->num_notes,
+                                                arp_mode, arp_octave, arp_pattern, MAX_ARP_PATTERN);
+
+        if (pattern_len == 0) return;
+
+        /* Handle ARP_CHORD mode - all notes together at each arp position */
+        if (arp_mode == ARP_CHORD) {
+            /* Chord mode: play all notes together, repeated at arp speed */
+            int notes_per_step = ARP_DIVISIONS[arp_speed];
+            int total_hits = notes_per_step * note_length;
+            double hit_duration = (double)note_length / total_hits;
+
+            for (int i = 0; i < total_hits; i++) {
+                double note_phase = base_phase + (i * hit_duration);
+
+                /* Play all notes as chord */
+                for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
+                    if (step->notes[n] > 0) {
+                        int transposed_note = step->notes[n] + transpose;
+                        if (transposed_note < 0) transposed_note = 0;
+                        if (transposed_note > 127) transposed_note = 127;
+
+                        schedule_note(
+                            transposed_note,
+                            step->velocity,
+                            track->midi_channel,
+                            track->swing,
+                            note_phase,
+                            hit_duration,
+                            gate
+                        );
+                    }
+                }
+            }
+        } else {
+            /* Normal arp: cycle through pattern */
+            int notes_per_step = ARP_DIVISIONS[arp_speed];
+            int total_arp_notes = notes_per_step * note_length;
+            double note_duration = (double)note_length / total_arp_notes;
+
+            for (int i = 0; i < total_arp_notes; i++) {
+                double note_phase = base_phase + (i * note_duration);
+                int pattern_idx = i % pattern_len;
+                int note_value = arp_pattern[pattern_idx];
+
+                /* Apply transpose and clamp */
+                int transposed_note = note_value + transpose;
                 if (transposed_note < 0) transposed_note = 0;
                 if (transposed_note > 127) transposed_note = 127;
 
@@ -780,10 +1176,42 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
                     step->velocity,
                     track->midi_channel,
                     track->swing,
-                    note_on_phase,
-                    ratchet_length,
+                    note_phase,
+                    note_duration,
                     gate
                 );
+            }
+        }
+    } else {
+        /* Standard ratchet scheduling (no arp, or single note) */
+        int ratchet_count = (use_ratchet && step->ratchet > 0) ? step->ratchet : 1;
+
+        /* For ratchets, divide the step into equal parts */
+        double ratchet_step = 1.0 / ratchet_count;
+        /* Ratchet note length is proportional to gate but divided by ratchet count */
+        double ratchet_length = (double)note_length / ratchet_count;
+
+        for (int r = 0; r < ratchet_count; r++) {
+            double note_on_phase = base_phase + (r * ratchet_step);
+
+            /* Schedule each note in the step */
+            for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
+                if (step->notes[n] > 0) {
+                    /* Apply transpose and clamp to valid MIDI range */
+                    int transposed_note = step->notes[n] + transpose;
+                    if (transposed_note < 0) transposed_note = 0;
+                    if (transposed_note > 127) transposed_note = 127;
+
+                    schedule_note(
+                        transposed_note,
+                        step->velocity,
+                        track->midi_channel,
+                        track->swing,
+                        note_on_phase,
+                        ratchet_length,
+                        gate
+                    );
+                }
             }
         }
     }
@@ -819,7 +1247,7 @@ static void trigger_track_step(track_t *track, int track_idx, double step_start_
     /* Check if this step should trigger (probability + conditions / trigger spark) */
     if (!should_step_trigger(step, track)) return;
 
-    /* Check comp_spark - should ratchet apply this loop? */
+    /* Check comp_spark - should ratchet/arp apply this loop? */
     int comp_spark_pass = check_spark_condition(
         step->comp_spark_n, step->comp_spark_m, step->comp_spark_not, track);
 
@@ -827,37 +1255,20 @@ static void trigger_track_step(track_t *track, int track_idx, double step_start_
     double offset_phase = (double)step->offset / 48.0;
     double note_phase = step_start_phase + offset_phase;
 
-    /* Schedule notes (with ratchets if comp_spark passes) */
-    if (comp_spark_pass && step->ratchet > 1) {
-        /* Schedule with ratchets */
-        schedule_step_notes(track, track_idx, step, note_phase);
+    /* Determine if arp is active (step override or track default) */
+    int arp_mode = step->arp_mode >= 0 ? step->arp_mode : track->arp_mode;
+    int use_arp = (arp_mode > ARP_OFF) && (step->num_notes > 1);
+
+    /* Schedule notes - arp takes priority over ratchet when active */
+    if (use_arp) {
+        /* Arp is active - use arp scheduling (ignores ratchet) */
+        schedule_step_notes(track, track_idx, step, note_phase, 1, 0);
+    } else if (comp_spark_pass && step->ratchet > 1) {
+        /* No arp, use ratchets */
+        schedule_step_notes(track, track_idx, step, note_phase, 0, 1);
     } else {
-        /* Schedule single trigger (no ratchet) */
-        int note_length = step->length > 0 ? step->length : 1;
-        int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
-
-        /* Calculate transpose offset for this track using internal lookup */
-        uint32_t global_step = (uint32_t)g_global_phase;
-        int transpose = g_chord_follow[track_idx] ? get_transpose_at_step(global_step) : 0;
-
-        for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
-            if (step->notes[n] > 0) {
-                /* Apply transpose and clamp to valid MIDI range */
-                int transposed_note = step->notes[n] + transpose;
-                if (transposed_note < 0) transposed_note = 0;
-                if (transposed_note > 127) transposed_note = 127;
-
-                schedule_note(
-                    transposed_note,
-                    step->velocity,
-                    track->midi_channel,
-                    track->swing,
-                    note_phase,
-                    note_length,
-                    gate
-                );
-            }
-        }
+        /* Single trigger (no arp, no ratchet) */
+        schedule_step_notes(track, track_idx, step, note_phase, 0, 0);
     }
 
     /* Handle jump (only if comp_spark passes) */
@@ -1099,6 +1510,25 @@ static void plugin_set_param(const char *key, const char *val) {
                     g_chord_follow[track] = atoi(val) ? 1 : 0;
                     g_scale_dirty = 1;  /* Scale needs recalculation */
                 }
+                /* Arpeggiator track-level params */
+                else if (strcmp(param, "arp_mode") == 0) {
+                    int mode = atoi(val);
+                    if (mode >= 0 && mode < NUM_ARP_MODES) {
+                        g_tracks[track].arp_mode = mode;
+                    }
+                }
+                else if (strcmp(param, "arp_speed") == 0) {
+                    int speed = atoi(val);
+                    if (speed >= 0 && speed < NUM_ARP_SPEEDS) {
+                        g_tracks[track].arp_speed = speed;
+                    }
+                }
+                else if (strcmp(param, "arp_octave") == 0) {
+                    int oct = atoi(val);
+                    if (oct >= 0 && oct < NUM_ARP_OCTAVES) {
+                        g_tracks[track].arp_octave = oct;
+                    }
+                }
                 else if (strcmp(param, "loop_start") == 0) {
                     int start = atoi(val);
                     if (start >= 0 && start < NUM_STEPS) {
@@ -1226,6 +1656,9 @@ static void plugin_set_param(const char *key, const char *val) {
                                 s->comp_spark_not = 0;
                                 s->jump = -1;
                                 s->offset = 0;
+                                /* Clear arp overrides */
+                                s->arp_mode = -1;
+                                s->arp_speed = -1;
                                 /* Mark scale dirty if chord-follow track */
                                 if (g_chord_follow[track]) {
                                     g_scale_dirty = 1;
@@ -1328,6 +1761,19 @@ static void plugin_set_param(const char *key, const char *val) {
                                 int off = atoi(val);
                                 if (off >= -24 && off <= 24) {
                                     get_current_pattern(&g_tracks[track])->steps[step].offset = off;
+                                }
+                            }
+                            /* Step-level arp overrides */
+                            else if (strcmp(step_param, "arp_mode") == 0) {
+                                int mode = atoi(val);
+                                if (mode >= -1 && mode < NUM_ARP_MODES) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].arp_mode = mode;
+                                }
+                            }
+                            else if (strcmp(step_param, "arp_speed") == 0) {
+                                int speed = atoi(val);
+                                if (speed >= -1 && speed < NUM_ARP_SPEEDS) {
+                                    get_current_pattern(&g_tracks[track])->steps[step].arp_speed = speed;
                                 }
                             }
                         }
@@ -1448,6 +1894,16 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
                 else if (strcmp(param, "current_step") == 0) {
                     return snprintf(buf, buf_len, "%d", g_tracks[track].current_step);
                 }
+                /* Arpeggiator track-level params */
+                else if (strcmp(param, "arp_mode") == 0) {
+                    return snprintf(buf, buf_len, "%d", g_tracks[track].arp_mode);
+                }
+                else if (strcmp(param, "arp_speed") == 0) {
+                    return snprintf(buf, buf_len, "%d", g_tracks[track].arp_speed);
+                }
+                else if (strcmp(param, "arp_octave") == 0) {
+                    return snprintf(buf, buf_len, "%d", g_tracks[track].arp_octave);
+                }
                 else if (strncmp(param, "step_", 5) == 0) {
                     int step = atoi(param + 5);
                     if (step >= 0 && step < NUM_STEPS) {
@@ -1482,6 +1938,13 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
                             }
                             else if (strcmp(step_param, "gate") == 0) {
                                 return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].gate);
+                            }
+                            /* Step-level arp overrides */
+                            else if (strcmp(step_param, "arp_mode") == 0) {
+                                return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].arp_mode);
+                            }
+                            else if (strcmp(step_param, "arp_speed") == 0) {
+                                return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].arp_speed);
                             }
                         }
                     }

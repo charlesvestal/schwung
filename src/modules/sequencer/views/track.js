@@ -1,7 +1,7 @@
 /*
  * Track View - Coordinator
  * Routes input and updates to mode-specific handlers
- * Sub-modes: normal, loop, spark, channel, speed, swing
+ * Sub-modes: normal, loop, spark, channel, speed, swing, arp
  *
  * LED Ownership:
  * - Coordinator owns: PADS (piano layout, playing notes, held step notes)
@@ -22,7 +22,8 @@ import {
     enterSparkMode, exitSparkMode,
     enterSwingMode, exitSwingMode,
     enterSpeedMode, exitSpeedMode,
-    enterChannelMode, exitChannelMode
+    enterChannelMode, exitChannelMode,
+    enterArpMode, exitArpMode
 } from '../lib/state.js';
 
 import { saveCurrentSetToDisk } from '../lib/persistence.js';
@@ -35,8 +36,9 @@ import * as spark from './track/spark.js';
 import * as swing from './track/swing.js';
 import * as speed from './track/speed.js';
 import * as channel from './track/channel.js';
+import * as arp from './track/arp.js';
 
-const modes = { normal, loop, spark, swing, speed, channel };
+const modes = { normal, loop, spark, swing, speed, channel, arp };
 
 /* ============ View Interface ============ */
 
@@ -120,6 +122,14 @@ export function onInput(data) {
         return true;
     }
 
+    /* Shift + Step 11 enters arp mode */
+    if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 26 && isNoteOn && velocity > 0) {
+        enterArpMode();
+        modes.arp.onEnter();
+        updateLEDs();
+        return true;
+    }
+
     /* Loop button press enters loop mode */
     if (state.trackMode === 'normal' && isCC && note === MoveLoop && velocity > 0) {
         enterLoopEdit();
@@ -140,15 +150,16 @@ export function onInput(data) {
 
     /*
      * Mode EXIT transitions
-     * Jog click or back button exits channel/speed/swing modes
+     * Jog click or back button exits channel/speed/swing/arp modes
      */
-    if (state.trackMode === 'channel' || state.trackMode === 'speed' || state.trackMode === 'swing') {
+    if (state.trackMode === 'channel' || state.trackMode === 'speed' || state.trackMode === 'swing' || state.trackMode === 'arp') {
         if ((isNote && note === MoveMainButton && isNoteOn && velocity > 0) ||
             (isCC && note === MoveBack && velocity > 0)) {
             modes[state.trackMode].onExit();
             if (state.trackMode === 'channel') exitChannelMode();
             else if (state.trackMode === 'speed') exitSpeedMode();
-            else exitSwingMode();
+            else if (state.trackMode === 'swing') exitSwingMode();
+            else exitArpMode();
             modes.normal.onEnter();
             updateLEDs();
             return true;

@@ -14,14 +14,15 @@ import {
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
-    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI
+    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 
 import {
     NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, MoveKnobLEDs,
-    TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS
+    TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
+    ARP_MODES, ARP_SPEEDS
 } from '../../lib/constants.js';
 
 import { state, displayMessage } from '../../lib/state.js';
@@ -322,7 +323,7 @@ function handleKnob(knobIdx, velocity) {
         return handleShiftKnob(knobIdx, velocity);
     }
 
-    if (state.heldStep >= 0 && (knobIdx < 2 || knobIdx === 6 || knobIdx === 7)) {
+    if (state.heldStep >= 0 && (knobIdx < 4 || knobIdx === 6 || knobIdx === 7)) {
         return handleStepKnob(knobIdx, velocity);
     }
 
@@ -402,6 +403,44 @@ function handleStepKnob(knobIdx, velocity) {
             `Step ${state.heldStep + 1}`,
             `CC${knobIdx + 1}: ${val}`,
             `(CC ${cc} on Ch ${state.tracks[state.currentTrack].channel + 1})`,
+            ""
+        );
+    } else if (knobIdx === 2) {
+        /* Step arp mode override */
+        let mode = step.arpMode;
+        /* Start from -1 (Track) and go up to last mode */
+        if (velocity >= 1 && velocity <= 63) {
+            mode = Math.min(mode + 1, ARP_MODES.length - 1);
+        } else if (velocity >= 65 && velocity <= 127) {
+            mode = Math.max(mode - 1, -1);
+        }
+        step.arpMode = mode;
+        setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_mode`, String(mode));
+        const modeName = mode < 0 ? "Track" : ARP_MODES[mode].name;
+        const trackModeName = ARP_MODES[state.tracks[state.currentTrack].arpMode].name;
+        displayMessage(
+            `Step ${state.heldStep + 1}`,
+            `Arp: ${modeName}`,
+            mode < 0 ? `(Track: ${trackModeName})` : "(step override)",
+            ""
+        );
+    } else if (knobIdx === 3) {
+        /* Step arp speed override */
+        let speed = step.arpSpeed;
+        /* Start from -1 (Track) and go up to last speed */
+        if (velocity >= 1 && velocity <= 63) {
+            speed = Math.min(speed + 1, ARP_SPEEDS.length - 1);
+        } else if (velocity >= 65 && velocity <= 127) {
+            speed = Math.max(speed - 1, -1);
+        }
+        step.arpSpeed = speed;
+        setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_speed`, String(speed));
+        const speedName = speed < 0 ? "Track" : ARP_SPEEDS[speed].name;
+        const trackSpeedName = ARP_SPEEDS[state.tracks[state.currentTrack].arpSpeed].name;
+        displayMessage(
+            `Step ${state.heldStep + 1}`,
+            `Arp Speed: ${speedName}`,
+            speed < 0 ? `(Track: ${trackSpeedName})` : "(step override)",
             ""
         );
     } else if (knobIdx === 6) {
@@ -536,6 +575,8 @@ function clearStep(stepIdx) {
     step.compSpark = 0;
     step.jump = -1;
     step.offset = 0;
+    step.arpMode = -1;
+    step.arpSpeed = -1;
     setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
 }
 
@@ -606,6 +647,9 @@ function updateStepLEDs() {
     /* Transpose toggle - lit when shift held OR when current track has chordFollow */
     const trackTransposed = state.chordFollow[state.currentTrack];
     setButtonLED(MoveStep8UI, state.shiftHeld ? White : (trackTransposed ? Cyan : Black));
+    /* Arp - lit when shift held OR when current track has arp enabled */
+    const trackArpEnabled = state.tracks[state.currentTrack].arpMode > 0;
+    setButtonLED(MoveStep11UI, state.shiftHeld ? White : (trackArpEnabled ? Cyan : Black));
 }
 
 function updateKnobLEDs() {
@@ -624,7 +668,10 @@ function updateKnobLEDs() {
         const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
         setButtonLED(MoveKnobLEDs[0], step.cc1 >= 0 ? trackColor : LightGrey);
         setButtonLED(MoveKnobLEDs[1], step.cc2 >= 0 ? trackColor : LightGrey);
-        for (let i = 2; i < 6; i++) {
+        /* Knobs 3-4: arp mode/speed overrides */
+        setButtonLED(MoveKnobLEDs[2], step.arpMode >= 0 ? Cyan : LightGrey);
+        setButtonLED(MoveKnobLEDs[3], step.arpSpeed >= 0 ? Cyan : LightGrey);
+        for (let i = 4; i < 6; i++) {
             setButtonLED(MoveKnobLEDs[i], Black);
         }
         setButtonLED(MoveKnobLEDs[6], step.ratchet > 0 ? trackColor : LightGrey);
