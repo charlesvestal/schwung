@@ -20,7 +20,7 @@ import {
 /* Import lib modules */
 import { NUM_STEPS } from './lib/constants.js';
 import { state, enterSetView, enterTrackView, enterPatternView, enterMasterView } from './lib/state.js';
-import { setParam, getCurrentPattern } from './lib/helpers.js';
+import { setParam, getCurrentPattern, updatePadLEDs } from './lib/helpers.js';
 import { createEmptyTracks } from './lib/data.js';
 import { initializeSets, ensureSetsDir, migrateFromLegacy, flushDirty, tickDirty } from './lib/persistence.js';
 
@@ -130,10 +130,29 @@ globalThis.tick = function() {
             if (state.view === 'track') {
                 pendingPlayheadUpdate = { oldStep, newStep };
 
-                /* Update litPads with currently playing MIDI notes */
+                /* Update litPads with currently playing MIDI notes (including held notes) */
                 if (newStep >= 0 && newStep < NUM_STEPS) {
-                    const step = getCurrentPattern(state.currentTrack).steps[newStep];
-                    state.litPads = step.notes.filter(n => n >= 36 && n < 68);
+                    const pattern = getCurrentPattern(state.currentTrack);
+                    const playingNotes = [];
+
+                    /* Check all steps to see if their notes are still sounding */
+                    for (let s = 0; s < NUM_STEPS; s++) {
+                        const step = pattern.steps[s];
+                        if (step.notes.length === 0) continue;
+
+                        const length = step.length || 1;
+                        const stepEnd = s + length - 1;
+
+                        /* Note is playing if current step is within its duration */
+                        if (s <= newStep && newStep <= stepEnd) {
+                            for (const note of step.notes) {
+                                if (note >= 36 && note < 68 && !playingNotes.includes(note)) {
+                                    playingNotes.push(note);
+                                }
+                            }
+                        }
+                    }
+                    state.litPads = playingNotes;
                 } else {
                     state.litPads = [];
                 }
@@ -159,7 +178,7 @@ globalThis.tick = function() {
             pendingPlayheadUpdate = null;
         }
         if (pendingPadUpdate && state.view === 'track') {
-            trackView.updatePadLEDs();
+            updatePadLEDs();
             pendingPadUpdate = false;
         }
     }
