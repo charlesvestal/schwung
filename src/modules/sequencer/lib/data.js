@@ -24,7 +24,8 @@ export function createEmptyStep() {
         jump: -1,          // Jump target step (-1 = no jump, 0-15 = step)
         offset: 0,         // Micro-timing offset in ticks (-24 to +24, 48 ticks per step)
         arpMode: -1,       // Arp mode override (-1 = use track, 0+ = override)
-        arpSpeed: -1       // Arp speed override (-1 = use track, 0+ = override)
+        arpSpeed: -1,      // Arp speed override (-1 = use track, 0+ = override)
+        arpOctave: -1      // Arp octave override (-1 = use track, 0+ = override)
     };
 }
 
@@ -45,7 +46,8 @@ export function cloneStep(srcStep) {
         jump: srcStep.jump,
         offset: srcStep.offset || 0,
         arpMode: srcStep.arpMode !== undefined ? srcStep.arpMode : -1,
-        arpSpeed: srcStep.arpSpeed !== undefined ? srcStep.arpSpeed : -1
+        arpSpeed: srcStep.arpSpeed !== undefined ? srcStep.arpSpeed : -1,
+        arpOctave: srcStep.arpOctave !== undefined ? srcStep.arpOctave : -1
     };
 }
 
@@ -197,6 +199,9 @@ export function migrateTrackData(trackData) {
                 if (step.arpSpeed === undefined) {
                     step.arpSpeed = -1;
                 }
+                if (step.arpOctave === undefined) {
+                    step.arpOctave = -1;
+                }
             }
         }
     }
@@ -253,8 +258,10 @@ export function setHasContent(set) {
 }
 
 /**
- * Get current pattern for a track
+ * Get current pattern for a track (returns pattern 0 if track is off)
  */
 export function getCurrentPattern(tracks, trackIdx) {
-    return tracks[trackIdx].patterns[tracks[trackIdx].currentPattern];
+    const track = tracks[trackIdx];
+    const patIdx = track.currentPattern < 0 ? 0 : track.currentPattern;
+    return track.patterns[patIdx];
 }

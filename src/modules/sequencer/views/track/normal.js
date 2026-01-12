@@ -22,7 +22,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import {
     NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
-    ARP_MODES, ARP_SPEEDS
+    ARP_MODES, ARP_SPEEDS, ARP_OCTAVES
 } from '../../lib/constants.js';
 
 import { state, displayMessage } from '../../lib/state.js';
@@ -32,7 +32,7 @@ import {
 } from '../../lib/helpers.js';
 
 import { detectScale } from '../../lib/scale_detection.js';
-import { saveCurrentSetToDisk } from '../../lib/persistence.js';
+import { markDirty } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
 
@@ -187,7 +187,7 @@ function handleKnobTap(knobIdx) {
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "Cond/Prob cleared", "");
         changed = true;
     }
-    if (changed) saveCurrentSetToDisk();
+    if (changed) markDirty();
     updateLEDs();
 }
 
@@ -228,7 +228,7 @@ function handleStepLength(stepIdx) {
         displayMessage(`Step ${state.heldStep + 1}`, `Length: ${newLength} steps`, `-> Step ${stepIdx + 1}`, "");
     }
     state.stepPadPressed[state.heldStep] = true;
-    saveCurrentSetToDisk();
+    markDirty();
     updateLEDs();
     return true;
 }
@@ -258,7 +258,7 @@ function handleStepRelease(stepIdx) {
     if (state.heldStep === stepIdx) {
         state.heldStep = -1;
     }
-    if (changed) saveCurrentSetToDisk();
+    if (changed) markDirty();
     updateLEDs();
 }
 
@@ -273,7 +273,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
             const wasAdded = toggleStepNote(state.heldStep, midiNote);
             state.stepPadPressed[state.heldStep] = true;
             setParam(`track_${state.currentTrack}_preview_note`, String(midiNote));
-            saveCurrentSetToDisk();
+            markDirty();
 
             const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
             displayMessage(
@@ -300,7 +300,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
                 if (!step.notes.includes(midiNote) && step.notes.length < 4) {
                     step.notes.push(midiNote);
                     setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_add_note`, String(midiNote));
-                    saveCurrentSetToDisk();
+                    markDirty();
                 }
                 state.lastRecordedStep = state.currentPlayStep;
             }
@@ -323,7 +323,7 @@ function handleKnob(knobIdx, velocity) {
         return handleShiftKnob(knobIdx, velocity);
     }
 
-    if (state.heldStep >= 0 && (knobIdx < 4 || knobIdx === 6 || knobIdx === 7)) {
+    if (state.heldStep >= 0 && (knobIdx < 5 || knobIdx === 6 || knobIdx === 7)) {
         return handleStepKnob(knobIdx, velocity);
     }
 
@@ -356,7 +356,7 @@ function handleShiftKnob(knobIdx, velocity) {
         }
         state.tracks[state.currentTrack].speedIndex = speedIdx;
         setParam(`track_${state.currentTrack}_speed`, String(SPEED_OPTIONS[speedIdx].mult));
-        saveCurrentSetToDisk();
+        markDirty();
         updateDisplayContent();
         return true;
     } else if (knobIdx === 7) {
@@ -369,7 +369,7 @@ function handleShiftKnob(knobIdx, velocity) {
         }
         state.tracks[state.currentTrack].channel = channel;
         setParam(`track_${state.currentTrack}_channel`, String(channel));
-        saveCurrentSetToDisk();
+        markDirty();
         updateDisplayContent();
         return true;
     }
@@ -443,6 +443,25 @@ function handleStepKnob(knobIdx, velocity) {
             speed < 0 ? `(Track: ${trackSpeedName})` : "(step override)",
             ""
         );
+    } else if (knobIdx === 4) {
+        /* Step arp octave override */
+        let octave = step.arpOctave;
+        /* Start from -1 (Track) and go up to last octave */
+        if (velocity >= 1 && velocity <= 63) {
+            octave = Math.min(octave + 1, ARP_OCTAVES.length - 1);
+        } else if (velocity >= 65 && velocity <= 127) {
+            octave = Math.max(octave - 1, -1);
+        }
+        step.arpOctave = octave;
+        setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_octave`, String(octave));
+        const octaveName = octave < 0 ? "Track" : ARP_OCTAVES[octave].name;
+        const trackOctaveName = ARP_OCTAVES[state.tracks[state.currentTrack].arpOctave].name;
+        displayMessage(
+            `Step ${state.heldStep + 1}`,
+            `Arp Octave: ${octaveName}`,
+            octave < 0 ? `(Track: ${trackOctaveName})` : "(step override)",
+            ""
+        );
     } else if (knobIdx === 6) {
         /* Ratchet */
         let ratchIdx = step.ratchet;
@@ -480,7 +499,7 @@ function handleStepKnob(knobIdx, velocity) {
         }
     }
 
-    saveCurrentSetToDisk();
+    markDirty();
     updateLEDs();
     return true;
 }
@@ -501,7 +520,7 @@ function handleJogWheel(velocity) {
 
         step.offset = offset;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_offset`, String(offset));
-        saveCurrentSetToDisk();
+        markDirty();
 
         /* Display offset as percentage of step */
         const pct = Math.round((offset / 48) * 100);
@@ -577,6 +596,7 @@ function clearStep(stepIdx) {
     step.offset = 0;
     step.arpMode = -1;
     step.arpSpeed = -1;
+    step.arpOctave = -1;
     setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
 }
 
@@ -668,12 +688,11 @@ function updateKnobLEDs() {
         const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
         setButtonLED(MoveKnobLEDs[0], step.cc1 >= 0 ? trackColor : LightGrey);
         setButtonLED(MoveKnobLEDs[1], step.cc2 >= 0 ? trackColor : LightGrey);
-        /* Knobs 3-4: arp mode/speed overrides */
+        /* Knobs 3-5: arp mode/speed/octave overrides */
         setButtonLED(MoveKnobLEDs[2], step.arpMode >= 0 ? Cyan : LightGrey);
         setButtonLED(MoveKnobLEDs[3], step.arpSpeed >= 0 ? Cyan : LightGrey);
-        for (let i = 4; i < 6; i++) {
-            setButtonLED(MoveKnobLEDs[i], Black);
-        }
+        setButtonLED(MoveKnobLEDs[4], step.arpOctave >= 0 ? Cyan : LightGrey);
+        setButtonLED(MoveKnobLEDs[5], Black);
         setButtonLED(MoveKnobLEDs[6], step.ratchet > 0 ? trackColor : LightGrey);
         const hasProb = step.probability < 100;
         const hasCond = step.condition > 0;
@@ -787,14 +806,17 @@ export function updateDisplayContent() {
     } else {
         const trackNum = state.currentTrack + 1;
         const muteStr = state.tracks[state.currentTrack].muted ? " [MUTE]" : "";
+        const track = state.tracks[state.currentTrack];
         const pattern = getCurrentPattern(state.currentTrack);
-        const loopStr = (pattern.loopStart > 0 || pattern.loopEnd < NUM_STEPS - 1)
+        const isOff = track.currentPattern < 0;
+        const loopStr = (!isOff && (pattern.loopStart > 0 || pattern.loopEnd < NUM_STEPS - 1))
             ? `Loop:${pattern.loopStart + 1}-${pattern.loopEnd + 1}`
             : "";
+        const patternStr = isOff ? "OFF" : `Pattern ${track.currentPattern + 1}`;
 
         displayMessage(
             `Track ${trackNum}${muteStr}`,
-            `Pattern ${state.tracks[state.currentTrack].currentPattern + 1}`,
+            patternStr,
             loopStr,
             ""
         );
