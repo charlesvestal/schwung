@@ -107,8 +107,11 @@ export const state = {
     /* Master view: held transpose step for editing (-1 = none) */
     heldTransposeStep: -1,
 
-    /* Step arp parameter selection (0=mode, 1=speed, 2=octave) */
-    stepArpParam: 0
+    /* Step arp parameter selection (0=mode, 1=speed, 2=octave, 3=layer) */
+    stepArpParam: 0,
+
+    /* Pad octave offset for track view (-2 to +2) */
+    padOctaveOffset: 0
 };
 
 /* Initialize track CC values */

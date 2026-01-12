@@ -11,7 +11,7 @@
 import {
     Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed, Purple,
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
-    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob7Touch, MoveKnob8Touch,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
@@ -73,6 +73,26 @@ export function onInput(data) {
     /* Jog wheel */
     if (isCC && note === MoveMainKnob) {
         return handleJogWheel(velocity);
+    }
+
+    /* Up/Down - octave shift for pads */
+    if (isCC && note === MoveUp && velocity > 0) {
+        if (state.padOctaveOffset < 2) {
+            state.padOctaveOffset++;
+            displayMessage("Pad Octave", `Offset: ${state.padOctaveOffset >= 0 ? '+' : ''}${state.padOctaveOffset}`, "", "");
+            updatePadLEDs();
+            updateOctaveLEDs();
+        }
+        return true;
+    }
+    if (isCC && note === MoveDown && velocity > 0) {
+        if (state.padOctaveOffset > -2) {
+            state.padOctaveOffset--;
+            displayMessage("Pad Octave", `Offset: ${state.padOctaveOffset >= 0 ? '+' : ''}${state.padOctaveOffset}`, "", "");
+            updatePadLEDs();
+            updateOctaveLEDs();
+        }
+        return true;
     }
 
     return false;
@@ -270,7 +290,8 @@ function handleStepRelease(stepIdx) {
 /* ============ Pad Handling ============ */
 
 function handlePad(padIdx, isNoteOn, velocity) {
-    const midiNote = 36 + padIdx;
+    const baseNote = 36 + padIdx + (state.padOctaveOffset * 12);
+    const midiNote = Math.max(0, Math.min(127, baseNote));
 
     if (state.heldStep >= 0) {
         /* Holding a step: toggle notes */
@@ -632,6 +653,7 @@ export function updateLEDs() {
     updateTransportLEDs();
     updateCaptureLED();
     updateBackLED();
+    updateOctaveLEDs();
 }
 
 function updateStepLEDs() {
@@ -796,6 +818,12 @@ function updateCaptureLED() {
 function updateBackLED() {
     /* Back button off in track view - we're already home */
     setButtonLED(MoveBack, Black);
+}
+
+function updateOctaveLEDs() {
+    /* Up/Down buttons for octave shift - lit when can move in that direction */
+    setButtonLED(MoveUp, state.padOctaveOffset < 2 ? White : DarkGrey);
+    setButtonLED(MoveDown, state.padOctaveOffset > -2 ? White : DarkGrey);
 }
 
 /* ============ Playhead Update ============ */
