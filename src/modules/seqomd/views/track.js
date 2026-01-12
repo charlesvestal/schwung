@@ -294,3 +294,12 @@ export function updatePlayhead(oldStep, newStep) {
         modes[state.trackMode].updatePlayhead(oldStep, newStep);
     }
 }
+
+/**
+ * Called from main tick() to check for display auto-return
+ */
+export function tick() {
+    if (state.trackMode === 'normal' && normal.checkDisplayReturn) {
+        normal.checkDisplayReturn();
+    }
+}

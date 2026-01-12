@@ -111,7 +111,10 @@ export const state = {
     stepArpParam: 0,
 
     /* Pad octave offset for track view (-2 to +2) */
-    padOctaveOffset: 0
+    padOctaveOffset: 0,
+
+    /* Display auto-return timeout (timestamp when to return to default display, 0 = disabled) */
+    displayReturnTime: 0
 };
 
 /* Initialize track CC values */

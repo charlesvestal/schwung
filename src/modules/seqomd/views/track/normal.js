@@ -20,7 +20,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 
 import {
-    NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, MoveKnobLEDs,
+    NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
     ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS
 } from '../../lib/constants.js';
@@ -33,6 +33,27 @@ import {
 
 import { detectScale } from '../../lib/scale_detection.js';
 import { markDirty } from '../../lib/persistence.js';
+
+/* ============ Display Return Helper ============ */
+
+/**
+ * Schedule display to return to default content after a delay.
+ * Called when changing step parameters while holding a step.
+ */
+function scheduleDisplayReturn() {
+    state.displayReturnTime = Date.now() + DISPLAY_RETURN_MS;
+}
+
+/**
+ * Check if display should return to default and do so.
+ * Called from tick().
+ */
+export function checkDisplayReturn() {
+    if (state.displayReturnTime > 0 && Date.now() > state.displayReturnTime) {
+        state.displayReturnTime = 0;
+        updateDisplayContent();
+    }
+}
 
 /* ============ Input Handling ============ */
 
@@ -186,20 +207,24 @@ function handleKnobTap(knobIdx) {
         step.cc1 = -1;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_cc1`, "-1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "CC1 cleared", "");
+        scheduleDisplayReturn();
         changed = true;
     } else if (knobIdx === 1 && step.cc2 >= 0) {
         step.cc2 = -1;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_cc2`, "-1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "CC2 cleared", "");
+        scheduleDisplayReturn();
         changed = true;
     } else if (knobIdx === 2) {
         /* Cycle step arp parameter: mode -> speed -> octave -> layer -> mode */
         state.stepArpParam = (state.stepArpParam + 1) % 4;
         displayStepArpParams();
+        scheduleDisplayReturn();
     } else if (knobIdx === 6 && step.ratchet > 0) {
         step.ratchet = 0;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, "1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "Ratchet: 1x", "");
+        scheduleDisplayReturn();
         changed = true;
     } else if (knobIdx === 7) {
         step.condition = 0;
@@ -209,6 +234,7 @@ function handleKnobTap(knobIdx) {
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_not`, "0");
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_probability`, "100");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "Cond/Prob cleared", "");
+        scheduleDisplayReturn();
         changed = true;
     }
     if (changed) markDirty();
@@ -251,6 +277,7 @@ function handleStepLength(stepIdx) {
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_length`, String(newLength));
         displayMessage(`Step ${state.heldStep + 1}`, `Length: ${newLength} steps`, `-> Step ${stepIdx + 1}`, "");
     }
+    scheduleDisplayReturn();
     state.stepPadPressed[state.heldStep] = true;
     markDirty();
     updateLEDs();
@@ -282,6 +309,7 @@ function handleStepRelease(stepIdx) {
     if (state.heldStep === stepIdx) {
         state.heldStep = -1;
         state.stepArpParam = 0;  /* Reset arp param selection for next step */
+        state.displayReturnTime = 0;  /* Clear any pending display return */
     }
     if (changed) markDirty();
     updateLEDs();
@@ -308,6 +336,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
                 `Notes: ${notesToString(step.notes)}`,
                 wasAdded ? `Added ${noteToName(midiNote)}` : `Removed ${noteToName(midiNote)}`
             );
+            scheduleDisplayReturn();
             updateLEDs();
         } else {
             setParam(`track_${state.currentTrack}_preview_note_off`, String(midiNote));
@@ -512,6 +541,7 @@ function handleStepKnob(knobIdx, velocity) {
         }
     }
 
+    scheduleDisplayReturn();
     markDirty();
     updateLEDs();
     return true;
@@ -570,6 +600,7 @@ function handleJogWheel(velocity) {
             `(${sign}${pct}% of step)`,
             offset === 0 ? "On grid" : (offset < 0 ? "Early" : "Late")
         );
+        scheduleDisplayReturn();
         state.stepPadPressed[state.heldStep] = true;
         return true;
     }

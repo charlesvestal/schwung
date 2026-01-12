@@ -21,6 +21,7 @@ export const NUM_SETS = 32;
 /* ============ Timing ============ */
 
 export const HOLD_THRESHOLD_MS = 300;  // Time threshold for hold vs tap
+export const DISPLAY_RETURN_MS = 2000; // Time before display returns to default after parameter change
 
 /* ============ Persistence ============ */
 

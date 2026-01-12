@@ -116,6 +116,11 @@ globalThis.tick = function() {
     /* Check for debounced saves */
     tickDirty();
 
+    /* Check for display auto-return in track view */
+    if (state.view === 'track') {
+        trackView.tick();
+    }
+
     /* Poll DSP for playhead position when playing (always at full rate for timing) */
     /* Note: Transpose is now computed internally by DSP - no polling needed */
     if (state.playing && state.heldStep < 0) {
