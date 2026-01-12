@@ -1313,6 +1313,458 @@ static void advance_track(track_t *track, int track_idx) {
     track->next_step_at = 1.0;
 }
 
+/* ============ Parameter Sub-handlers ============ */
+
+/**
+ * Handle step-level parameter setting.
+ * Called for params like: track_T_step_S_note, track_T_step_S_vel, etc.
+ */
+static void set_step_param(int track_idx, int step_idx, const char *param, const char *val) {
+    step_t *s = &get_current_pattern(&g_tracks[track_idx])->steps[step_idx];
+
+    /* Set single note (backward compat - clears other notes) */
+    if (strcmp(param, "note") == 0) {
+        int note = atoi(val);
+        if (note == 0) {
+            s->num_notes = 0;
+            for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
+                s->notes[n] = 0;
+            }
+        } else if (note >= 1 && note <= 127) {
+            s->notes[0] = note;
+            s->num_notes = 1;
+            for (int n = 1; n < MAX_NOTES_PER_STEP; n++) {
+                s->notes[n] = 0;
+            }
+        }
+    }
+    /* Add a note to the step (for chords) */
+    else if (strcmp(param, "add_note") == 0) {
+        int note = atoi(val);
+        if (note >= 1 && note <= 127) {
+            int exists = 0;
+            for (int n = 0; n < s->num_notes; n++) {
+                if (s->notes[n] == note) {
+                    exists = 1;
+                    break;
+                }
+            }
+            if (!exists && s->num_notes < MAX_NOTES_PER_STEP) {
+                s->notes[s->num_notes] = note;
+                s->num_notes++;
+                if (g_chord_follow[track_idx]) {
+                    g_scale_dirty = 1;
+                }
+            }
+        }
+    }
+    /* Remove a note from the step */
+    else if (strcmp(param, "remove_note") == 0) {
+        int note = atoi(val);
+        if (note >= 1 && note <= 127) {
+            for (int n = 0; n < s->num_notes; n++) {
+                if (s->notes[n] == note) {
+                    for (int m = n; m < s->num_notes - 1; m++) {
+                        s->notes[m] = s->notes[m + 1];
+                    }
+                    s->notes[s->num_notes - 1] = 0;
+                    s->num_notes--;
+                    if (g_chord_follow[track_idx]) {
+                        g_scale_dirty = 1;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    /* Clear all notes, CCs, and parameters from step */
+    else if (strcmp(param, "clear") == 0) {
+        s->num_notes = 0;
+        for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
+            s->notes[n] = 0;
+        }
+        s->cc1 = -1;
+        s->cc2 = -1;
+        s->probability = 100;
+        s->condition_n = 0;
+        s->condition_m = 0;
+        s->condition_not = 0;
+        s->ratchet = 1;
+        s->length = 1;
+        s->param_spark_n = 0;
+        s->param_spark_m = 0;
+        s->param_spark_not = 0;
+        s->comp_spark_n = 0;
+        s->comp_spark_m = 0;
+        s->comp_spark_not = 0;
+        s->jump = -1;
+        s->offset = 0;
+        s->arp_mode = -1;
+        s->arp_speed = -1;
+        if (g_chord_follow[track_idx]) {
+            g_scale_dirty = 1;
+        }
+    }
+    else if (strcmp(param, "vel") == 0) {
+        int vel = atoi(val);
+        if (vel >= 1 && vel <= 127) {
+            s->velocity = vel;
+        }
+    }
+    else if (strcmp(param, "gate") == 0) {
+        int gate = atoi(val);
+        if (gate >= 1 && gate <= 100) {
+            s->gate = gate;
+        }
+    }
+    else if (strcmp(param, "cc1") == 0) {
+        int cc_val = atoi(val);
+        if (cc_val >= -1 && cc_val <= 127) {
+            s->cc1 = cc_val;
+        }
+    }
+    else if (strcmp(param, "cc2") == 0) {
+        int cc_val = atoi(val);
+        if (cc_val >= -1 && cc_val <= 127) {
+            s->cc2 = cc_val;
+        }
+    }
+    else if (strcmp(param, "probability") == 0) {
+        int prob = atoi(val);
+        if (prob >= 1 && prob <= 100) {
+            s->probability = prob;
+        }
+    }
+    else if (strcmp(param, "condition_n") == 0) {
+        s->condition_n = atoi(val);
+    }
+    else if (strcmp(param, "condition_m") == 0) {
+        s->condition_m = atoi(val);
+    }
+    else if (strcmp(param, "condition_not") == 0) {
+        s->condition_not = atoi(val) ? 1 : 0;
+    }
+    else if (strcmp(param, "param_spark_n") == 0) {
+        s->param_spark_n = atoi(val);
+    }
+    else if (strcmp(param, "param_spark_m") == 0) {
+        s->param_spark_m = atoi(val);
+    }
+    else if (strcmp(param, "param_spark_not") == 0) {
+        s->param_spark_not = atoi(val) ? 1 : 0;
+    }
+    else if (strcmp(param, "comp_spark_n") == 0) {
+        s->comp_spark_n = atoi(val);
+    }
+    else if (strcmp(param, "comp_spark_m") == 0) {
+        s->comp_spark_m = atoi(val);
+    }
+    else if (strcmp(param, "comp_spark_not") == 0) {
+        s->comp_spark_not = atoi(val) ? 1 : 0;
+    }
+    else if (strcmp(param, "jump") == 0) {
+        int jump = atoi(val);
+        if (jump >= -1 && jump < NUM_STEPS) {
+            s->jump = jump;
+        }
+    }
+    else if (strcmp(param, "ratchet") == 0) {
+        int ratch = atoi(val);
+        if (ratch >= 1 && ratch <= 8) {
+            s->ratchet = ratch;
+        }
+    }
+    else if (strcmp(param, "length") == 0) {
+        int len = atoi(val);
+        if (len >= 1 && len <= 16) {
+            s->length = len;
+        }
+    }
+    else if (strcmp(param, "offset") == 0) {
+        int off = atoi(val);
+        if (off >= -24 && off <= 24) {
+            s->offset = off;
+        }
+    }
+    else if (strcmp(param, "arp_mode") == 0) {
+        int mode = atoi(val);
+        if (mode >= -1 && mode < NUM_ARP_MODES) {
+            s->arp_mode = mode;
+        }
+    }
+    else if (strcmp(param, "arp_speed") == 0) {
+        int speed = atoi(val);
+        if (speed >= -1 && speed < NUM_ARP_SPEEDS) {
+            s->arp_speed = speed;
+        }
+    }
+}
+
+/**
+ * Handle step-level parameter getting.
+ * Returns bytes written to buf, or -1 if param not found.
+ */
+static int get_step_param(int track_idx, int step_idx, const char *param, char *buf, int buf_len) {
+    step_t *s = &get_current_pattern(&g_tracks[track_idx])->steps[step_idx];
+
+    if (strcmp(param, "note") == 0) {
+        return snprintf(buf, buf_len, "%d", s->num_notes > 0 ? s->notes[0] : 0);
+    }
+    else if (strcmp(param, "notes") == 0) {
+        if (s->num_notes == 0) {
+            return snprintf(buf, buf_len, "");
+        }
+        int pos = 0;
+        for (int n = 0; n < s->num_notes && pos < buf_len - 4; n++) {
+            if (n > 0) {
+                pos += snprintf(buf + pos, buf_len - pos, ",");
+            }
+            pos += snprintf(buf + pos, buf_len - pos, "%d", s->notes[n]);
+        }
+        return pos;
+    }
+    else if (strcmp(param, "num_notes") == 0) {
+        return snprintf(buf, buf_len, "%d", s->num_notes);
+    }
+    else if (strcmp(param, "vel") == 0) {
+        return snprintf(buf, buf_len, "%d", s->velocity);
+    }
+    else if (strcmp(param, "gate") == 0) {
+        return snprintf(buf, buf_len, "%d", s->gate);
+    }
+    else if (strcmp(param, "arp_mode") == 0) {
+        return snprintf(buf, buf_len, "%d", s->arp_mode);
+    }
+    else if (strcmp(param, "arp_speed") == 0) {
+        return snprintf(buf, buf_len, "%d", s->arp_speed);
+    }
+
+    return -1;
+}
+
+/**
+ * Handle track-level parameter setting.
+ * Called for params like: track_T_channel, track_T_mute, etc.
+ * Also dispatches to set_step_param for step_S_* params.
+ */
+static void set_track_param(int track_idx, const char *param, const char *val) {
+    track_t *track = &g_tracks[track_idx];
+
+    if (strcmp(param, "channel") == 0) {
+        int ch = atoi(val);
+        if (ch >= 0 && ch <= 15) {
+            track->midi_channel = ch;
+        }
+    }
+    else if (strcmp(param, "mute") == 0) {
+        track->muted = atoi(val) ? 1 : 0;
+    }
+    else if (strcmp(param, "length") == 0) {
+        int len = atoi(val);
+        if (len >= 1 && len <= NUM_STEPS) {
+            track->length = len;
+        }
+    }
+    else if (strcmp(param, "speed") == 0) {
+        double spd = atof(val);
+        if (spd >= 0.1 && spd <= 8.0) {
+            track->speed = spd;
+        }
+    }
+    else if (strcmp(param, "swing") == 0) {
+        int sw = atoi(val);
+        if (sw >= 0 && sw <= 100) {
+            track->swing = sw;
+        }
+    }
+    else if (strcmp(param, "chord_follow") == 0) {
+        g_chord_follow[track_idx] = atoi(val) ? 1 : 0;
+        g_scale_dirty = 1;
+    }
+    else if (strcmp(param, "arp_mode") == 0) {
+        int mode = atoi(val);
+        if (mode >= 0 && mode < NUM_ARP_MODES) {
+            track->arp_mode = mode;
+        }
+    }
+    else if (strcmp(param, "arp_speed") == 0) {
+        int speed = atoi(val);
+        if (speed >= 0 && speed < NUM_ARP_SPEEDS) {
+            track->arp_speed = speed;
+        }
+    }
+    else if (strcmp(param, "arp_octave") == 0) {
+        int oct = atoi(val);
+        if (oct >= 0 && oct < NUM_ARP_OCTAVES) {
+            track->arp_octave = oct;
+        }
+    }
+    else if (strcmp(param, "loop_start") == 0) {
+        int start = atoi(val);
+        if (start >= 0 && start < NUM_STEPS) {
+            get_current_pattern(track)->loop_start = start;
+        }
+    }
+    else if (strcmp(param, "loop_end") == 0) {
+        int end = atoi(val);
+        if (end >= 0 && end < NUM_STEPS) {
+            get_current_pattern(track)->loop_end = end;
+        }
+    }
+    else if (strcmp(param, "pattern") == 0) {
+        int pat = atoi(val);
+        if (pat >= 0 && pat < NUM_PATTERNS) {
+            track->current_pattern = pat;
+        }
+    }
+    else if (strcmp(param, "preview_note") == 0) {
+        int note = atoi(val);
+        if (note > 0 && note <= 127) {
+            send_note_on(note, DEFAULT_VELOCITY, track->midi_channel);
+        }
+    }
+    else if (strcmp(param, "preview_note_off") == 0) {
+        int note = atoi(val);
+        if (note > 0 && note <= 127) {
+            send_note_off(note, track->midi_channel);
+        }
+    }
+    /* Step-level params: step_S_param */
+    else if (strncmp(param, "step_", 5) == 0) {
+        int step = atoi(param + 5);
+        if (step >= 0 && step < NUM_STEPS) {
+            const char *step_param = strchr(param + 5, '_');
+            if (step_param) {
+                set_step_param(track_idx, step, step_param + 1, val);
+            }
+        }
+    }
+}
+
+/**
+ * Handle track-level parameter getting.
+ * Returns bytes written to buf, or -1 if param not found.
+ */
+static int get_track_param(int track_idx, const char *param, char *buf, int buf_len) {
+    track_t *track = &g_tracks[track_idx];
+
+    if (strcmp(param, "channel") == 0) {
+        return snprintf(buf, buf_len, "%d", track->midi_channel);
+    }
+    else if (strcmp(param, "mute") == 0) {
+        return snprintf(buf, buf_len, "%d", track->muted);
+    }
+    else if (strcmp(param, "length") == 0) {
+        return snprintf(buf, buf_len, "%d", track->length);
+    }
+    else if (strcmp(param, "speed") == 0) {
+        return snprintf(buf, buf_len, "%.4f", track->speed);
+    }
+    else if (strcmp(param, "swing") == 0) {
+        return snprintf(buf, buf_len, "%d", track->swing);
+    }
+    else if (strcmp(param, "loop_start") == 0) {
+        return snprintf(buf, buf_len, "%d", get_current_pattern(track)->loop_start);
+    }
+    else if (strcmp(param, "loop_end") == 0) {
+        return snprintf(buf, buf_len, "%d", get_current_pattern(track)->loop_end);
+    }
+    else if (strcmp(param, "pattern") == 0) {
+        return snprintf(buf, buf_len, "%d", track->current_pattern);
+    }
+    else if (strcmp(param, "current_step") == 0) {
+        return snprintf(buf, buf_len, "%d", track->current_step);
+    }
+    else if (strcmp(param, "arp_mode") == 0) {
+        return snprintf(buf, buf_len, "%d", track->arp_mode);
+    }
+    else if (strcmp(param, "arp_speed") == 0) {
+        return snprintf(buf, buf_len, "%d", track->arp_speed);
+    }
+    else if (strcmp(param, "arp_octave") == 0) {
+        return snprintf(buf, buf_len, "%d", track->arp_octave);
+    }
+    /* Step-level params: step_S_param */
+    else if (strncmp(param, "step_", 5) == 0) {
+        int step = atoi(param + 5);
+        if (step >= 0 && step < NUM_STEPS) {
+            const char *step_param = strchr(param + 5, '_');
+            if (step_param) {
+                return get_step_param(track_idx, step, step_param + 1, buf, buf_len);
+            }
+        }
+    }
+
+    return -1;
+}
+
+/**
+ * Handle transpose sequence parameter setting.
+ */
+static void set_transpose_param(const char *key, const char *val) {
+    if (strcmp(key, "transpose_clear") == 0) {
+        clear_transpose_sequence();
+    }
+    else if (strcmp(key, "transpose_step_count") == 0) {
+        int count = atoi(val);
+        if (count >= 0 && count <= MAX_TRANSPOSE_STEPS) {
+            g_transpose_step_count = count;
+            rebuild_transpose_lookup();
+        }
+    }
+    else if (strncmp(key, "transpose_step_", 15) == 0) {
+        int step_idx = atoi(key + 15);
+        if (step_idx >= 0 && step_idx < MAX_TRANSPOSE_STEPS) {
+            const char *param = strchr(key + 15, '_');
+            if (param) {
+                param++;
+                if (strcmp(param, "transpose") == 0) {
+                    int t = atoi(val);
+                    if (t >= -24 && t <= 24) {
+                        g_transpose_sequence[step_idx].transpose = t;
+                        if (step_idx >= g_transpose_step_count) {
+                            g_transpose_step_count = step_idx + 1;
+                        }
+                        rebuild_transpose_lookup();
+                    }
+                }
+                else if (strcmp(param, "duration") == 0) {
+                    int d = atoi(val);
+                    if (d >= 1 && d <= 256) {
+                        g_transpose_sequence[step_idx].duration = d;
+                        rebuild_transpose_lookup();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Handle transpose sequence parameter getting.
+ * Returns bytes written to buf, or -1 if param not found.
+ */
+static int get_transpose_param(const char *key, char *buf, int buf_len) {
+    if (strcmp(key, "current_transpose") == 0) {
+        uint32_t global_step = (uint32_t)g_global_phase;
+        int8_t transpose = get_transpose_at_step(global_step);
+        return snprintf(buf, buf_len, "%d", transpose);
+    }
+    else if (strcmp(key, "current_transpose_step") == 0) {
+        uint32_t global_step = (uint32_t)g_global_phase;
+        int step_idx = get_transpose_step_index(global_step);
+        return snprintf(buf, buf_len, "%d", step_idx);
+    }
+    else if (strcmp(key, "transpose_step_count") == 0) {
+        return snprintf(buf, buf_len, "%d", g_transpose_step_count);
+    }
+    else if (strcmp(key, "transpose_total_steps") == 0) {
+        return snprintf(buf, buf_len, "%u", g_transpose_total_steps);
+    }
+
+    return -1;
+}
+
 /* ============ Plugin Callbacks ============ */
 
 static int plugin_on_load(const char *module_dir, const char *json_defaults) {
@@ -1367,6 +1819,7 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
 }
 
 static void plugin_set_param(const char *key, const char *val) {
+    /* Global params */
     if (strcmp(key, "bpm") == 0) {
         int new_bpm = atoi(val);
         if (new_bpm >= 20 && new_bpm <= 300) {
@@ -1378,7 +1831,6 @@ static void plugin_set_param(const char *key, const char *val) {
         if (new_playing && !g_playing) {
             /* Starting playback - clear scheduler and reset all tracks */
             clear_scheduled_notes();
-
             for (int t = 0; t < NUM_TRACKS; t++) {
                 g_tracks[t].current_step = get_current_pattern(&g_tracks[t])->loop_start;
                 g_tracks[t].phase = 0.0;
@@ -1388,22 +1840,15 @@ static void plugin_set_param(const char *key, const char *val) {
             g_clock_phase = 0.0;
             g_global_phase = 0.0;
             g_beat_count = 0;
-            /* Note: Don't reset g_current_transpose here - it's set by UI */
-
-            /* Seed PRNG with a bit of entropy */
             g_random_state = 12345;
-
             if (g_send_clock) {
                 send_midi_start();
                 send_midi_clock();
             }
-
-            /* Schedule first step on all tracks via centralized scheduler */
             for (int t = 0; t < NUM_TRACKS; t++) {
                 trigger_track_step(&g_tracks[t], t, 0.0);
             }
         } else if (!new_playing && g_playing) {
-            /* Stopping playback */
             all_notes_off();
             if (g_send_clock) {
                 send_midi_stop();
@@ -1414,52 +1859,15 @@ static void plugin_set_param(const char *key, const char *val) {
     else if (strcmp(key, "send_clock") == 0) {
         g_send_clock = atoi(val);
     }
-    /* Current transpose offset (legacy - kept for backward compatibility) */
     else if (strcmp(key, "current_transpose") == 0) {
         g_current_transpose = atoi(val);
     }
-    /* Transpose sequence parameters */
-    else if (strcmp(key, "transpose_clear") == 0) {
-        clear_transpose_sequence();
-    }
-    else if (strcmp(key, "transpose_step_count") == 0) {
-        int count = atoi(val);
-        if (count >= 0 && count <= MAX_TRANSPOSE_STEPS) {
-            g_transpose_step_count = count;
-            rebuild_transpose_lookup();
-        }
-    }
-    else if (strncmp(key, "transpose_step_", 15) == 0) {
-        /* Parse: transpose_step_N_transpose or transpose_step_N_duration */
-        int step_idx = atoi(key + 15);
-        if (step_idx >= 0 && step_idx < MAX_TRANSPOSE_STEPS) {
-            const char *param = strchr(key + 15, '_');
-            if (param) {
-                param++;
-                if (strcmp(param, "transpose") == 0) {
-                    int t = atoi(val);
-                    if (t >= -24 && t <= 24) {
-                        g_transpose_sequence[step_idx].transpose = t;
-                        /* Expand step count if needed */
-                        if (step_idx >= g_transpose_step_count) {
-                            g_transpose_step_count = step_idx + 1;
-                        }
-                        rebuild_transpose_lookup();
-                    }
-                }
-                else if (strcmp(param, "duration") == 0) {
-                    int d = atoi(val);
-                    if (d >= 1 && d <= 256) {
-                        g_transpose_sequence[step_idx].duration = d;
-                        rebuild_transpose_lookup();
-                    }
-                }
-            }
-        }
+    /* Transpose sequence params */
+    else if (strncmp(key, "transpose_", 10) == 0) {
+        set_transpose_param(key, val);
     }
     /* Send CC externally: send_cc_CHANNEL_CC = VALUE */
     else if (strncmp(key, "send_cc_", 8) == 0) {
-        /* Parse: send_cc_15_1 for channel 15, CC 1 */
         int channel = atoi(key + 8);
         const char *cc_part = strchr(key + 8, '_');
         if (cc_part) {
@@ -1470,315 +1878,13 @@ static void plugin_set_param(const char *key, const char *val) {
             }
         }
     }
-    /* Track-specific parameters: track_T_step_S_note, track_T_step_S_vel, etc. */
+    /* Track params */
     else if (strncmp(key, "track_", 6) == 0) {
         int track = atoi(key + 6);
         if (track >= 0 && track < NUM_TRACKS) {
             const char *param = strchr(key + 6, '_');
             if (param) {
-                param++;
-
-                /* Track-level params: track_T_channel, track_T_mute, track_T_length */
-                if (strcmp(param, "channel") == 0) {
-                    int ch = atoi(val);
-                    if (ch >= 0 && ch <= 15) {
-                        g_tracks[track].midi_channel = ch;
-                    }
-                }
-                else if (strcmp(param, "mute") == 0) {
-                    g_tracks[track].muted = atoi(val) ? 1 : 0;
-                }
-                else if (strcmp(param, "length") == 0) {
-                    int len = atoi(val);
-                    if (len >= 1 && len <= NUM_STEPS) {
-                        g_tracks[track].length = len;
-                    }
-                }
-                else if (strcmp(param, "speed") == 0) {
-                    double spd = atof(val);
-                    if (spd >= 0.1 && spd <= 8.0) {
-                        g_tracks[track].speed = spd;
-                    }
-                }
-                else if (strcmp(param, "swing") == 0) {
-                    int sw = atoi(val);
-                    if (sw >= 0 && sw <= 100) {
-                        g_tracks[track].swing = sw;
-                    }
-                }
-                else if (strcmp(param, "chord_follow") == 0) {
-                    g_chord_follow[track] = atoi(val) ? 1 : 0;
-                    g_scale_dirty = 1;  /* Scale needs recalculation */
-                }
-                /* Arpeggiator track-level params */
-                else if (strcmp(param, "arp_mode") == 0) {
-                    int mode = atoi(val);
-                    if (mode >= 0 && mode < NUM_ARP_MODES) {
-                        g_tracks[track].arp_mode = mode;
-                    }
-                }
-                else if (strcmp(param, "arp_speed") == 0) {
-                    int speed = atoi(val);
-                    if (speed >= 0 && speed < NUM_ARP_SPEEDS) {
-                        g_tracks[track].arp_speed = speed;
-                    }
-                }
-                else if (strcmp(param, "arp_octave") == 0) {
-                    int oct = atoi(val);
-                    if (oct >= 0 && oct < NUM_ARP_OCTAVES) {
-                        g_tracks[track].arp_octave = oct;
-                    }
-                }
-                else if (strcmp(param, "loop_start") == 0) {
-                    int start = atoi(val);
-                    if (start >= 0 && start < NUM_STEPS) {
-                        get_current_pattern(&g_tracks[track])->loop_start = start;
-                    }
-                }
-                else if (strcmp(param, "loop_end") == 0) {
-                    int end = atoi(val);
-                    if (end >= 0 && end < NUM_STEPS) {
-                        get_current_pattern(&g_tracks[track])->loop_end = end;
-                    }
-                }
-                else if (strcmp(param, "pattern") == 0) {
-                    int pat = atoi(val);
-                    if (pat >= 0 && pat < NUM_PATTERNS) {
-                        g_tracks[track].current_pattern = pat;
-                    }
-                }
-                /* Preview note - play a note immediately for auditioning */
-                else if (strcmp(param, "preview_note") == 0) {
-                    int note = atoi(val);
-                    if (note > 0 && note <= 127) {
-                        send_note_on(note, DEFAULT_VELOCITY, g_tracks[track].midi_channel);
-                    }
-                }
-                else if (strcmp(param, "preview_note_off") == 0) {
-                    int note = atoi(val);
-                    if (note > 0 && note <= 127) {
-                        send_note_off(note, g_tracks[track].midi_channel);
-                    }
-                }
-                /* Step-level params: track_T_step_S_note, etc. */
-                else if (strncmp(param, "step_", 5) == 0) {
-                    int step = atoi(param + 5);
-                    if (step >= 0 && step < NUM_STEPS) {
-                        const char *step_param = strchr(param + 5, '_');
-                        if (step_param) {
-                            step_param++;
-                            /* Set single note (backward compat - clears other notes) */
-                            if (strcmp(step_param, "note") == 0) {
-                                int note = atoi(val);
-                                step_t *s = &get_current_pattern(&g_tracks[track])->steps[step];
-                                if (note == 0) {
-                                    /* Clear all notes */
-                                    s->num_notes = 0;
-                                    for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
-                                        s->notes[n] = 0;
-                                    }
-                                } else if (note >= 1 && note <= 127) {
-                                    /* Set as single note */
-                                    s->notes[0] = note;
-                                    s->num_notes = 1;
-                                    for (int n = 1; n < MAX_NOTES_PER_STEP; n++) {
-                                        s->notes[n] = 0;
-                                    }
-                                }
-                            }
-                            /* Add a note to the step (for chords) */
-                            else if (strcmp(step_param, "add_note") == 0) {
-                                int note = atoi(val);
-                                if (note >= 1 && note <= 127) {
-                                    step_t *s = &get_current_pattern(&g_tracks[track])->steps[step];
-                                    /* Check if note already exists */
-                                    int exists = 0;
-                                    for (int n = 0; n < s->num_notes; n++) {
-                                        if (s->notes[n] == note) {
-                                            exists = 1;
-                                            break;
-                                        }
-                                    }
-                                    /* Add if not exists and room available */
-                                    if (!exists && s->num_notes < MAX_NOTES_PER_STEP) {
-                                        s->notes[s->num_notes] = note;
-                                        s->num_notes++;
-                                        /* Mark scale dirty if chord-follow track */
-                                        if (g_chord_follow[track]) {
-                                            g_scale_dirty = 1;
-                                        }
-                                    }
-                                }
-                            }
-                            /* Remove a note from the step */
-                            else if (strcmp(step_param, "remove_note") == 0) {
-                                int note = atoi(val);
-                                if (note >= 1 && note <= 127) {
-                                    step_t *s = &get_current_pattern(&g_tracks[track])->steps[step];
-                                    for (int n = 0; n < s->num_notes; n++) {
-                                        if (s->notes[n] == note) {
-                                            /* Shift remaining notes down */
-                                            for (int m = n; m < s->num_notes - 1; m++) {
-                                                s->notes[m] = s->notes[m + 1];
-                                            }
-                                            s->notes[s->num_notes - 1] = 0;
-                                            s->num_notes--;
-                                            /* Mark scale dirty if chord-follow track */
-                                            if (g_chord_follow[track]) {
-                                                g_scale_dirty = 1;
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            /* Clear all notes, CCs, and parameters from step */
-                            else if (strcmp(step_param, "clear") == 0) {
-                                step_t *s = &get_current_pattern(&g_tracks[track])->steps[step];
-                                s->num_notes = 0;
-                                for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
-                                    s->notes[n] = 0;
-                                }
-                                s->cc1 = -1;
-                                s->cc2 = -1;
-                                s->probability = 100;
-                                s->condition_n = 0;
-                                s->condition_m = 0;
-                                s->condition_not = 0;
-                                s->ratchet = 1;
-                                s->length = 1;
-                                /* Clear spark fields */
-                                s->param_spark_n = 0;
-                                s->param_spark_m = 0;
-                                s->param_spark_not = 0;
-                                s->comp_spark_n = 0;
-                                s->comp_spark_m = 0;
-                                s->comp_spark_not = 0;
-                                s->jump = -1;
-                                s->offset = 0;
-                                /* Clear arp overrides */
-                                s->arp_mode = -1;
-                                s->arp_speed = -1;
-                                /* Mark scale dirty if chord-follow track */
-                                if (g_chord_follow[track]) {
-                                    g_scale_dirty = 1;
-                                }
-                            }
-                            else if (strcmp(step_param, "vel") == 0) {
-                                int vel = atoi(val);
-                                if (vel >= 1 && vel <= 127) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].velocity = vel;
-                                }
-                            }
-                            else if (strcmp(step_param, "gate") == 0) {
-                                int gate = atoi(val);
-                                if (gate >= 1 && gate <= 100) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].gate = gate;
-                                }
-                            }
-                            /* Per-step CC values */
-                            else if (strcmp(step_param, "cc1") == 0) {
-                                int cc_val = atoi(val);
-                                if (cc_val >= -1 && cc_val <= 127) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].cc1 = cc_val;
-                                }
-                            }
-                            else if (strcmp(step_param, "cc2") == 0) {
-                                int cc_val = atoi(val);
-                                if (cc_val >= -1 && cc_val <= 127) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].cc2 = cc_val;
-                                }
-                            }
-                            /* Probability */
-                            else if (strcmp(step_param, "probability") == 0) {
-                                int prob = atoi(val);
-                                if (prob >= 1 && prob <= 100) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].probability = prob;
-                                }
-                            }
-                            /* Condition parameters */
-                            else if (strcmp(step_param, "condition_n") == 0) {
-                                int n = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].condition_n = n;
-                            }
-                            else if (strcmp(step_param, "condition_m") == 0) {
-                                int m = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].condition_m = m;
-                            }
-                            else if (strcmp(step_param, "condition_not") == 0) {
-                                int not_flag = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].condition_not = not_flag ? 1 : 0;
-                            }
-                            /* Parameter Spark (when CC locks apply) */
-                            else if (strcmp(step_param, "param_spark_n") == 0) {
-                                int n = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].param_spark_n = n;
-                            }
-                            else if (strcmp(step_param, "param_spark_m") == 0) {
-                                int m = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].param_spark_m = m;
-                            }
-                            else if (strcmp(step_param, "param_spark_not") == 0) {
-                                int not_flag = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].param_spark_not = not_flag ? 1 : 0;
-                            }
-                            /* Component Spark (when ratchet/jump apply) */
-                            else if (strcmp(step_param, "comp_spark_n") == 0) {
-                                int n = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].comp_spark_n = n;
-                            }
-                            else if (strcmp(step_param, "comp_spark_m") == 0) {
-                                int m = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].comp_spark_m = m;
-                            }
-                            else if (strcmp(step_param, "comp_spark_not") == 0) {
-                                int not_flag = atoi(val);
-                                get_current_pattern(&g_tracks[track])->steps[step].comp_spark_not = not_flag ? 1 : 0;
-                            }
-                            /* Jump target */
-                            else if (strcmp(step_param, "jump") == 0) {
-                                int jump = atoi(val);
-                                if (jump >= -1 && jump < NUM_STEPS) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].jump = jump;
-                                }
-                            }
-                            /* Ratchet */
-                            else if (strcmp(step_param, "ratchet") == 0) {
-                                int ratch = atoi(val);
-                                if (ratch >= 1 && ratch <= 8) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].ratchet = ratch;
-                                }
-                            }
-                            /* Note length in steps */
-                            else if (strcmp(step_param, "length") == 0) {
-                                int len = atoi(val);
-                                if (len >= 1 && len <= 16) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].length = len;
-                                }
-                            }
-                            /* Micro-timing offset */
-                            else if (strcmp(step_param, "offset") == 0) {
-                                int off = atoi(val);
-                                if (off >= -24 && off <= 24) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].offset = off;
-                                }
-                            }
-                            /* Step-level arp overrides */
-                            else if (strcmp(step_param, "arp_mode") == 0) {
-                                int mode = atoi(val);
-                                if (mode >= -1 && mode < NUM_ARP_MODES) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].arp_mode = mode;
-                                }
-                            }
-                            else if (strcmp(step_param, "arp_speed") == 0) {
-                                int speed = atoi(val);
-                                if (speed >= -1 && speed < NUM_ARP_SPEEDS) {
-                                    get_current_pattern(&g_tracks[track])->steps[step].arp_speed = speed;
-                                }
-                            }
-                        }
-                    }
-                }
+                set_track_param(track, param + 1, val);
             }
         }
     }
@@ -1787,19 +1893,14 @@ static void plugin_set_param(const char *key, const char *val) {
         int step = atoi(key + 5);
         if (step >= 0 && step < NUM_STEPS) {
             const char *param = strchr(key + 5, '_');
-            if (param) {
-                param++;
-                /* Apply to track 0 for backward compat */
-                if (strcmp(param, "note") == 0) {
-                    int note = atoi(val);
-                    if (note >= 0 && note <= 127) {
-                        /* Backward compat: clear step and set single note */
-                        pattern_t *pat = get_current_pattern(&g_tracks[0]);
-                        pat->steps[step].num_notes = 0;
-                        if (note > 0) {
-                            pat->steps[step].notes[0] = (uint8_t)note;
-                            pat->steps[step].num_notes = 1;
-                        }
+            if (param && strcmp(param + 1, "note") == 0) {
+                int note = atoi(val);
+                if (note >= 0 && note <= 127) {
+                    pattern_t *pat = get_current_pattern(&g_tracks[0]);
+                    pat->steps[step].num_notes = 0;
+                    if (note > 0) {
+                        pat->steps[step].notes[0] = (uint8_t)note;
+                        pat->steps[step].num_notes = 1;
                     }
                 }
             }
@@ -1808,6 +1909,7 @@ static void plugin_set_param(const char *key, const char *val) {
 }
 
 static int plugin_get_param(const char *key, char *buf, int buf_len) {
+    /* Global params */
     if (strcmp(key, "bpm") == 0) {
         return snprintf(buf, buf_len, "%d", g_bpm);
     }
@@ -1823,38 +1925,20 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     else if (strcmp(key, "beat_count") == 0) {
         return snprintf(buf, buf_len, "%u", g_beat_count);
     }
-    /* Transpose sequence params */
-    else if (strcmp(key, "current_transpose") == 0) {
-        /* Return the current transpose value based on internal lookup */
-        uint32_t global_step = (uint32_t)g_global_phase;
-        int8_t transpose = get_transpose_at_step(global_step);
-        return snprintf(buf, buf_len, "%d", transpose);
-    }
-    else if (strcmp(key, "current_transpose_step") == 0) {
-        /* Return which step index in the transpose sequence is active */
-        uint32_t global_step = (uint32_t)g_global_phase;
-        int step_idx = get_transpose_step_index(global_step);
-        return snprintf(buf, buf_len, "%d", step_idx);
-    }
-    else if (strcmp(key, "transpose_step_count") == 0) {
-        return snprintf(buf, buf_len, "%d", g_transpose_step_count);
-    }
-    else if (strcmp(key, "transpose_total_steps") == 0) {
-        return snprintf(buf, buf_len, "%u", g_transpose_total_steps);
+    /* Transpose params */
+    else if (strcmp(key, "current_transpose") == 0 ||
+             strcmp(key, "current_transpose_step") == 0 ||
+             strcmp(key, "transpose_step_count") == 0 ||
+             strcmp(key, "transpose_total_steps") == 0) {
+        return get_transpose_param(key, buf, buf_len);
     }
     /* Scale detection params */
     else if (strcmp(key, "detected_scale_root") == 0) {
-        /* Recalculate if dirty */
-        if (g_scale_dirty) {
-            detect_scale();
-        }
+        if (g_scale_dirty) detect_scale();
         return snprintf(buf, buf_len, "%d", g_detected_scale_root);
     }
     else if (strcmp(key, "detected_scale_name") == 0) {
-        /* Recalculate if dirty */
-        if (g_scale_dirty) {
-            detect_scale();
-        }
+        if (g_scale_dirty) detect_scale();
         if (g_detected_scale_index >= 0 && g_detected_scale_index < NUM_SCALE_TEMPLATES) {
             return snprintf(buf, buf_len, "%s", g_scale_templates[g_detected_scale_index].name);
         }
@@ -1866,89 +1950,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         if (track >= 0 && track < NUM_TRACKS) {
             const char *param = strchr(key + 6, '_');
             if (param) {
-                param++;
-                if (strcmp(param, "channel") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].midi_channel);
-                }
-                else if (strcmp(param, "mute") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].muted);
-                }
-                else if (strcmp(param, "length") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].length);
-                }
-                else if (strcmp(param, "speed") == 0) {
-                    return snprintf(buf, buf_len, "%.4f", g_tracks[track].speed);
-                }
-                else if (strcmp(param, "swing") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].swing);
-                }
-                else if (strcmp(param, "loop_start") == 0) {
-                    return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->loop_start);
-                }
-                else if (strcmp(param, "loop_end") == 0) {
-                    return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->loop_end);
-                }
-                else if (strcmp(param, "pattern") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].current_pattern);
-                }
-                else if (strcmp(param, "current_step") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].current_step);
-                }
-                /* Arpeggiator track-level params */
-                else if (strcmp(param, "arp_mode") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].arp_mode);
-                }
-                else if (strcmp(param, "arp_speed") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].arp_speed);
-                }
-                else if (strcmp(param, "arp_octave") == 0) {
-                    return snprintf(buf, buf_len, "%d", g_tracks[track].arp_octave);
-                }
-                else if (strncmp(param, "step_", 5) == 0) {
-                    int step = atoi(param + 5);
-                    if (step >= 0 && step < NUM_STEPS) {
-                        const char *step_param = strchr(param + 5, '_');
-                        if (step_param) {
-                            step_param++;
-                            /* Return first note (backward compat) */
-                            if (strcmp(step_param, "note") == 0) {
-                                step_t *s = &get_current_pattern(&g_tracks[track])->steps[step];
-                                return snprintf(buf, buf_len, "%d", s->num_notes > 0 ? s->notes[0] : 0);
-                            }
-                            /* Return all notes as comma-separated */
-                            else if (strcmp(step_param, "notes") == 0) {
-                                step_t *s = &get_current_pattern(&g_tracks[track])->steps[step];
-                                if (s->num_notes == 0) {
-                                    return snprintf(buf, buf_len, "");
-                                }
-                                int pos = 0;
-                                for (int n = 0; n < s->num_notes && pos < buf_len - 4; n++) {
-                                    if (n > 0) {
-                                        pos += snprintf(buf + pos, buf_len - pos, ",");
-                                    }
-                                    pos += snprintf(buf + pos, buf_len - pos, "%d", s->notes[n]);
-                                }
-                                return pos;
-                            }
-                            else if (strcmp(step_param, "num_notes") == 0) {
-                                return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].num_notes);
-                            }
-                            else if (strcmp(step_param, "vel") == 0) {
-                                return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].velocity);
-                            }
-                            else if (strcmp(step_param, "gate") == 0) {
-                                return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].gate);
-                            }
-                            /* Step-level arp overrides */
-                            else if (strcmp(step_param, "arp_mode") == 0) {
-                                return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].arp_mode);
-                            }
-                            else if (strcmp(step_param, "arp_speed") == 0) {
-                                return snprintf(buf, buf_len, "%d", get_current_pattern(&g_tracks[track])->steps[step].arp_speed);
-                            }
-                        }
-                    }
-                }
+                return get_track_param(track, param + 1, buf, buf_len);
             }
         }
     }
