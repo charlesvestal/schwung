@@ -13,7 +13,7 @@ import {
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch,
+    MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob7Touch, MoveKnob8Touch,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
 } from "../../../../shared/constants.mjs";
 
@@ -132,8 +132,8 @@ function handleKnobTouch(data) {
     const note = data[1];
     const velocity = data[2];
 
-    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob7Touch, MoveKnob8Touch];
-    const touchKnobIndices = [0, 1, 6, 7];
+    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob7Touch, MoveKnob8Touch];
+    const touchKnobIndices = [0, 1, 2, 6, 7];
 
     if (isNote && touchKnobs.includes(note)) {
         const touchIdx = touchKnobs.indexOf(note);
@@ -172,6 +172,10 @@ function handleKnobTap(knobIdx) {
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_cc2`, "-1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "CC2 cleared", "");
         changed = true;
+    } else if (knobIdx === 2) {
+        /* Cycle step arp parameter: mode -> speed -> octave -> mode */
+        state.stepArpParam = (state.stepArpParam + 1) % 3;
+        displayStepArpParams();
     } else if (knobIdx === 6 && step.ratchet > 0) {
         step.ratchet = 0;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, "1");
@@ -257,6 +261,7 @@ function handleStepRelease(stepIdx) {
 
     if (state.heldStep === stepIdx) {
         state.heldStep = -1;
+        state.stepArpParam = 0;  /* Reset arp param selection for next step */
     }
     if (changed) markDirty();
     updateLEDs();
@@ -323,7 +328,7 @@ function handleKnob(knobIdx, velocity) {
         return handleShiftKnob(knobIdx, velocity);
     }
 
-    if (state.heldStep >= 0 && (knobIdx < 5 || knobIdx === 6 || knobIdx === 7)) {
+    if (state.heldStep >= 0 && (knobIdx < 3 || knobIdx === 6 || knobIdx === 7)) {
         return handleStepKnob(knobIdx, velocity);
     }
 
@@ -406,62 +411,39 @@ function handleStepKnob(knobIdx, velocity) {
             ""
         );
     } else if (knobIdx === 2) {
-        /* Step arp mode override */
-        let mode = step.arpMode;
-        /* Start from -1 (Track) and go up to last mode */
-        if (velocity >= 1 && velocity <= 63) {
-            mode = Math.min(mode + 1, ARP_MODES.length - 1);
-        } else if (velocity >= 65 && velocity <= 127) {
-            mode = Math.max(mode - 1, -1);
+        /* Step arp - single knob controls mode/speed/octave based on stepArpParam */
+        if (state.stepArpParam === 0) {
+            /* Mode */
+            let mode = step.arpMode;
+            if (velocity >= 1 && velocity <= 63) {
+                mode = Math.min(mode + 1, ARP_MODES.length - 1);
+            } else if (velocity >= 65 && velocity <= 127) {
+                mode = Math.max(mode - 1, -1);
+            }
+            step.arpMode = mode;
+            setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_mode`, String(mode));
+        } else if (state.stepArpParam === 1) {
+            /* Speed */
+            let speed = step.arpSpeed;
+            if (velocity >= 1 && velocity <= 63) {
+                speed = Math.min(speed + 1, ARP_SPEEDS.length - 1);
+            } else if (velocity >= 65 && velocity <= 127) {
+                speed = Math.max(speed - 1, -1);
+            }
+            step.arpSpeed = speed;
+            setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_speed`, String(speed));
+        } else {
+            /* Octave */
+            let octave = step.arpOctave;
+            if (velocity >= 1 && velocity <= 63) {
+                octave = Math.min(octave + 1, ARP_OCTAVES.length - 1);
+            } else if (velocity >= 65 && velocity <= 127) {
+                octave = Math.max(octave - 1, -1);
+            }
+            step.arpOctave = octave;
+            setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_octave`, String(octave));
         }
-        step.arpMode = mode;
-        setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_mode`, String(mode));
-        const modeName = mode < 0 ? "Track" : ARP_MODES[mode].name;
-        const trackModeName = ARP_MODES[state.tracks[state.currentTrack].arpMode].name;
-        displayMessage(
-            `Step ${state.heldStep + 1}`,
-            `Arp: ${modeName}`,
-            mode < 0 ? `(Track: ${trackModeName})` : "(step override)",
-            ""
-        );
-    } else if (knobIdx === 3) {
-        /* Step arp speed override */
-        let speed = step.arpSpeed;
-        /* Start from -1 (Track) and go up to last speed */
-        if (velocity >= 1 && velocity <= 63) {
-            speed = Math.min(speed + 1, ARP_SPEEDS.length - 1);
-        } else if (velocity >= 65 && velocity <= 127) {
-            speed = Math.max(speed - 1, -1);
-        }
-        step.arpSpeed = speed;
-        setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_speed`, String(speed));
-        const speedName = speed < 0 ? "Track" : ARP_SPEEDS[speed].name;
-        const trackSpeedName = ARP_SPEEDS[state.tracks[state.currentTrack].arpSpeed].name;
-        displayMessage(
-            `Step ${state.heldStep + 1}`,
-            `Arp Speed: ${speedName}`,
-            speed < 0 ? `(Track: ${trackSpeedName})` : "(step override)",
-            ""
-        );
-    } else if (knobIdx === 4) {
-        /* Step arp octave override */
-        let octave = step.arpOctave;
-        /* Start from -1 (Track) and go up to last octave */
-        if (velocity >= 1 && velocity <= 63) {
-            octave = Math.min(octave + 1, ARP_OCTAVES.length - 1);
-        } else if (velocity >= 65 && velocity <= 127) {
-            octave = Math.max(octave - 1, -1);
-        }
-        step.arpOctave = octave;
-        setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_octave`, String(octave));
-        const octaveName = octave < 0 ? "Track" : ARP_OCTAVES[octave].name;
-        const trackOctaveName = ARP_OCTAVES[state.tracks[state.currentTrack].arpOctave].name;
-        displayMessage(
-            `Step ${state.heldStep + 1}`,
-            `Arp Octave: ${octaveName}`,
-            octave < 0 ? `(Track: ${trackOctaveName})` : "(step override)",
-            ""
-        );
+        displayStepArpParams();
     } else if (knobIdx === 6) {
         /* Ratchet */
         let ratchIdx = step.ratchet;
@@ -502,6 +484,30 @@ function handleStepKnob(knobIdx, velocity) {
     markDirty();
     updateLEDs();
     return true;
+}
+
+/* ============ Step Arp Display ============ */
+
+const STEP_ARP_COLORS = [Cyan, VividYellow, Purple];  /* Mode, Speed, Octave */
+
+function displayStepArpParams() {
+    const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
+
+    const modeName = step.arpMode < 0 ? "Track" : ARP_MODES[step.arpMode].name;
+    const speedName = step.arpSpeed < 0 ? "Track" : ARP_SPEEDS[step.arpSpeed].name;
+    const octaveName = step.arpOctave < 0 ? "Track" : ARP_OCTAVES[step.arpOctave].name;
+
+    const modePrefix = state.stepArpParam === 0 ? "Mode> " : "Mode: ";
+    const speedPrefix = state.stepArpParam === 1 ? "Speed> " : "Speed: ";
+    const octavePrefix = state.stepArpParam === 2 ? "Octave> " : "Octave: ";
+
+    displayMessage(
+        `${modePrefix}${modeName}`,
+        `${speedPrefix}${speedName}`,
+        `${octavePrefix}${octaveName}`,
+        ""
+    );
+    updateLEDs();
 }
 
 /* ============ Jog Wheel Handling ============ */
@@ -705,10 +711,10 @@ function updateKnobLEDs() {
         const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
         setButtonLED(MoveKnobLEDs[0], step.cc1 >= 0 ? trackColor : LightGrey);
         setButtonLED(MoveKnobLEDs[1], step.cc2 >= 0 ? trackColor : LightGrey);
-        /* Knobs 3-5: arp mode/speed/octave overrides */
-        setButtonLED(MoveKnobLEDs[2], step.arpMode >= 0 ? Cyan : LightGrey);
-        setButtonLED(MoveKnobLEDs[3], step.arpSpeed >= 0 ? Cyan : LightGrey);
-        setButtonLED(MoveKnobLEDs[4], step.arpOctave >= 0 ? Cyan : LightGrey);
+        /* Knob 3: arp (color indicates mode/speed/octave selection) */
+        setButtonLED(MoveKnobLEDs[2], STEP_ARP_COLORS[state.stepArpParam]);
+        setButtonLED(MoveKnobLEDs[3], Black);
+        setButtonLED(MoveKnobLEDs[4], Black);
         setButtonLED(MoveKnobLEDs[5], Black);
         setButtonLED(MoveKnobLEDs[6], step.ratchet > 0 ? trackColor : LightGrey);
         const hasProb = step.probability < 100;

@@ -105,7 +105,10 @@ export const state = {
     detectedScale: null,
 
     /* Master view: held transpose step for editing (-1 = none) */
-    heldTransposeStep: -1
+    heldTransposeStep: -1,
+
+    /* Step arp parameter selection (0=mode, 1=speed, 2=octave) */
+    stepArpParam: 0
 };
 
 /* Initialize track CC values */
