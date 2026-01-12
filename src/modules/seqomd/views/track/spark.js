@@ -160,7 +160,7 @@ function handleSparkOffset(velocity) {
 export function updateLEDs() {
     const pattern = getCurrentPattern(state.currentTrack);
 
-    /* Steps - show spark state */
+    /* Steps - show spark state with playhead overlay */
     for (let i = 0; i < NUM_STEPS; i++) {
         let color = Black;
         const step = pattern.steps[i];
@@ -178,6 +178,11 @@ export function updateLEDs() {
         /* Selected steps */
         if (state.sparkSelectedSteps.has(i)) {
             color = Purple;
+        }
+
+        /* Playhead overlay */
+        if (state.playing && i === state.currentPlayStep) {
+            color = White;
         }
 
         setLED(MoveSteps[i], color);
@@ -206,6 +211,44 @@ export function updateLEDs() {
     /* Capture highlighted (we're in spark mode), Back lit for exit */
     setButtonLED(MoveCapture, Purple);
     setButtonLED(MoveBack, White);
+}
+
+/* ============ Playhead ============ */
+
+/**
+ * Get the color for a step in spark mode
+ */
+function getStepColor(stepIdx) {
+    const pattern = getCurrentPattern(state.currentTrack);
+    const step = pattern.steps[stepIdx];
+
+    /* Selected steps */
+    if (state.sparkSelectedSteps.has(stepIdx)) {
+        return Purple;
+    }
+    /* Steps with spark settings */
+    if (step.paramSpark > 0 || step.compSpark > 0 || step.jump >= 0) {
+        return Cyan;
+    }
+    /* Steps with content */
+    if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+        return LightGrey;
+    }
+    return Black;
+}
+
+/**
+ * Lightweight playhead update - only updates the two step LEDs that changed
+ */
+export function updatePlayhead(oldStep, newStep) {
+    /* Restore old step to its mode color */
+    if (oldStep >= 0 && oldStep < NUM_STEPS) {
+        setLED(MoveSteps[oldStep], getStepColor(oldStep));
+    }
+    /* Set new step to playhead */
+    if (newStep >= 0 && newStep < NUM_STEPS) {
+        setLED(MoveSteps[newStep], White);
+    }
 }
 
 /* ============ Display ============ */

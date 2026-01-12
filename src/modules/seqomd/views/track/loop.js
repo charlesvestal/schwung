@@ -9,7 +9,7 @@
  */
 
 import {
-    Black, LightGrey, Cyan, BrightGreen, BrightRed,
+    Black, White, LightGrey, Cyan, BrightGreen, BrightRed,
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
 } from "../../../../shared/constants.mjs";
@@ -84,7 +84,7 @@ export function updateLEDs() {
     const pattern = getCurrentPattern(state.currentTrack);
     const trackColor = TRACK_COLORS[state.currentTrack];
 
-    /* Steps - show loop range */
+    /* Steps - show loop range with playhead overlay */
     for (let i = 0; i < NUM_STEPS; i++) {
         let color = Black;
 
@@ -101,6 +101,11 @@ export function updateLEDs() {
         /* Currently selected first point */
         if (state.loopEditFirst >= 0 && i === state.loopEditFirst) {
             color = Cyan;
+        }
+
+        /* Playhead overlay */
+        if (state.playing && i === state.currentPlayStep) {
+            color = White;
         }
 
         setLED(MoveSteps[i], color);
@@ -126,6 +131,44 @@ export function updateLEDs() {
     /* Capture and Back - off */
     setButtonLED(MoveCapture, Black);
     setButtonLED(MoveBack, Black);
+}
+
+/* ============ Playhead ============ */
+
+/**
+ * Get the color for a step in loop mode
+ */
+function getStepColor(stepIdx) {
+    const pattern = getCurrentPattern(state.currentTrack);
+    const trackColor = TRACK_COLORS[state.currentTrack];
+
+    /* Currently selected first point */
+    if (state.loopEditFirst >= 0 && stepIdx === state.loopEditFirst) {
+        return Cyan;
+    }
+    /* Loop start/end points */
+    if (stepIdx === pattern.loopStart || stepIdx === pattern.loopEnd) {
+        return trackColor;
+    }
+    /* Steps within loop range */
+    if (stepIdx >= pattern.loopStart && stepIdx <= pattern.loopEnd) {
+        return LightGrey;
+    }
+    return Black;
+}
+
+/**
+ * Lightweight playhead update - only updates the two step LEDs that changed
+ */
+export function updatePlayhead(oldStep, newStep) {
+    /* Restore old step to its mode color */
+    if (oldStep >= 0 && oldStep < NUM_STEPS) {
+        setLED(MoveSteps[oldStep], getStepColor(oldStep));
+    }
+    /* Set new step to playhead */
+    if (newStep >= 0 && newStep < NUM_STEPS) {
+        setLED(MoveSteps[newStep], White);
+    }
 }
 
 /* ============ Display ============ */

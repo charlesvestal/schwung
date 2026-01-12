@@ -58,12 +58,13 @@ export function onInput(data) {
  * This mode owns all LEDs - nothing shared
  */
 export function updateLEDs() {
-    /* Steps - only step 7 lit */
+    /* Steps - all black, playhead handled separately */
     for (let i = 0; i < NUM_STEPS; i++) {
-        setLED(MoveSteps[i], i === 6 ? White : Black);
+        const isPlayhead = state.playing && i === state.currentPlayStep;
+        setLED(MoveSteps[i], isPlayhead ? White : Black);
     }
 
-    /* Step 7 UI stays lit to show we're in swing mode */
+    /* Step 7 UI lit to show we're in swing mode */
     setButtonLED(MoveStep7UI, White);
 
     /* Pads owned by track.js coordinator */
@@ -86,6 +87,22 @@ export function updateLEDs() {
     /* Capture off, Back lit to show exit option */
     setButtonLED(MoveCapture, Black);
     setButtonLED(MoveBack, White);
+}
+
+/* ============ Playhead ============ */
+
+/**
+ * Lightweight playhead update - only updates the two step LEDs that changed
+ */
+export function updatePlayhead(oldStep, newStep) {
+    /* Restore old step to black */
+    if (oldStep >= 0 && oldStep < NUM_STEPS) {
+        setLED(MoveSteps[oldStep], Black);
+    }
+    /* Set new step to playhead */
+    if (newStep >= 0 && newStep < NUM_STEPS) {
+        setLED(MoveSteps[newStep], White);
+    }
 }
 
 /* ============ Display ============ */
