@@ -20,7 +20,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 
 import {
-    NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
+    NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, COPY_HOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
     ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS
 } from '../../lib/constants.js';
@@ -33,6 +33,7 @@ import {
 
 import { detectScale } from '../../lib/scale_detection.js';
 import { markDirty } from '../../lib/persistence.js';
+import { cloneStep } from '../../lib/data.js';
 
 /* ============ Display Return Helper ============ */
 
@@ -52,6 +53,40 @@ export function checkDisplayReturn() {
     if (state.displayReturnTime > 0 && Date.now() > state.displayReturnTime) {
         state.displayReturnTime = 0;
         updateDisplayContent();
+    }
+}
+
+/**
+ * Check if any held step has reached copy threshold and copy it.
+ * Called from tick().
+ */
+export function checkCopyHold() {
+    if (state.heldStep >= 0) {
+        const stepIdx = state.heldStep;
+        const pressTime = state.stepPressTimes[stepIdx];
+
+        if (pressTime !== undefined && !state.copyHoldDetected[stepIdx]) {
+            const holdDuration = Date.now() - pressTime;
+
+            if (holdDuration >= COPY_HOLD_MS) {
+                const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
+                const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
+
+                if (hasContent) {
+                    // Copy step to buffer
+                    state.stepCopyBuffer = cloneStep(step);
+                    state.copyHoldDetected[stepIdx] = true;
+
+                    displayMessage(
+                        undefined,
+                        `Copied Step ${stepIdx + 1}`,
+                        "Tap empty step to paste",
+                        ""
+                    );
+                    scheduleDisplayReturn();
+                }
+            }
+        }
     }
 }
 
@@ -293,10 +328,20 @@ function handleStepRelease(stepIdx) {
         const holdDuration = Date.now() - pressTime;
         if (holdDuration < HOLD_THRESHOLD_MS) {
             const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
-            if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+            const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
+
+            // Paste if buffer exists and step is empty
+            if (state.stepCopyBuffer && !hasContent) {
+                pasteStep(stepIdx);
+                changed = true;
+            }
+            // Clear if has content (existing behavior)
+            else if (hasContent) {
                 clearStep(stepIdx);
                 changed = true;
-            } else if (state.lastSelectedNote > 0) {
+            }
+            // Add note if empty and note selected (existing behavior)
+            else if (state.lastSelectedNote > 0) {
                 toggleStepNote(stepIdx, state.lastSelectedNote);
                 changed = true;
             }
@@ -305,6 +350,7 @@ function handleStepRelease(stepIdx) {
 
     delete state.stepPressTimes[stepIdx];
     delete state.stepPadPressed[stepIdx];
+    delete state.copyHoldDetected[stepIdx];
 
     if (state.heldStep === stepIdx) {
         state.heldStep = -1;
@@ -318,6 +364,11 @@ function handleStepRelease(stepIdx) {
 /* ============ Pad Handling ============ */
 
 function handlePad(padIdx, isNoteOn, velocity) {
+    // Cancel copy buffer on any pad press
+    if (isNoteOn && velocity > 0 && state.stepCopyBuffer) {
+        state.stepCopyBuffer = null;
+    }
+
     const baseNote = 36 + padIdx + (state.padOctaveOffset * 12);
     const midiNote = Math.max(0, Math.min(127, baseNote));
 
@@ -671,6 +722,99 @@ function clearStep(stepIdx) {
     setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
 }
 
+/**
+ * Paste copied step data to target step
+ */
+function pasteStep(stepIdx) {
+    if (!state.stepCopyBuffer) return false;
+
+    const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
+    const srcStep = state.stepCopyBuffer;
+
+    // Copy all properties
+    step.notes = [...srcStep.notes];
+    step.cc1 = srcStep.cc1;
+    step.cc2 = srcStep.cc2;
+    step.probability = srcStep.probability;
+    step.condition = srcStep.condition;
+    step.ratchet = srcStep.ratchet;
+    step.length = srcStep.length || 1;
+    step.paramSpark = srcStep.paramSpark;
+    step.compSpark = srcStep.compSpark;
+    step.jump = srcStep.jump;
+    step.offset = srcStep.offset || 0;
+    step.arpMode = srcStep.arpMode !== undefined ? srcStep.arpMode : -1;
+    step.arpSpeed = srcStep.arpSpeed !== undefined ? srcStep.arpSpeed : -1;
+    step.arpOctave = srcStep.arpOctave !== undefined ? srcStep.arpOctave : -1;
+    step.arpLayer = srcStep.arpLayer !== undefined ? srcStep.arpLayer : 0;
+
+    // Sync ALL parameters to DSP
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
+
+    // Add notes
+    for (const note of step.notes) {
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, String(note));
+    }
+
+    // Sync CCs
+    if (step.cc1 >= 0) {
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_cc1`, String(step.cc1));
+    }
+    if (step.cc2 >= 0) {
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_cc2`, String(step.cc2));
+    }
+
+    // Sync probability/condition
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_probability`, String(step.probability));
+    if (step.condition > 0) {
+        const cond = CONDITIONS[step.condition];
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_condition_n`, String(cond.n));
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_condition_m`, String(cond.m));
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_condition_not`, cond.not ? "1" : "0");
+    }
+
+    // Sync ratchet
+    if (step.ratchet > 0) {
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_ratchet`, String(RATCHET_VALUES[step.ratchet]));
+    }
+
+    // Sync length and offset
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_length`, String(step.length));
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_offset`, String(step.offset));
+
+    // Sync spark conditions
+    if (step.paramSpark > 0) {
+        const cond = CONDITIONS[step.paramSpark];
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_param_spark_n`, String(cond.n));
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_param_spark_m`, String(cond.m));
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_param_spark_not`, cond.not ? "1" : "0");
+    }
+    if (step.compSpark > 0) {
+        const cond = CONDITIONS[step.compSpark];
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_comp_spark_n`, String(cond.n));
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_comp_spark_m`, String(cond.m));
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_comp_spark_not`, cond.not ? "1" : "0");
+    }
+    if (step.jump >= 0) {
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_jump`, String(step.jump));
+    }
+
+    // Sync arp overrides
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_arp_mode`, String(step.arpMode));
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_arp_speed`, String(step.arpSpeed));
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_arp_octave`, String(step.arpOctave));
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_arp_layer`, String(step.arpLayer));
+
+    displayMessage(
+        undefined,
+        `Pasted to Step ${stepIdx + 1}`,
+        `Notes: ${notesToString(step.notes)}`,
+        ""
+    );
+
+    return true;
+}
+
 /* ============ LED Updates ============ */
 
 /**
@@ -926,4 +1070,5 @@ export function onEnter() {
 
 export function onExit() {
     state.heldStep = -1;
+    state.stepCopyBuffer = null;
 }

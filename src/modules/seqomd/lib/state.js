@@ -31,6 +31,8 @@ export const state = {
     heldStep: -1,              // Currently held step for editing (-1 = none)
     stepPressTimes: {},        // Per-step press timestamps for quick tap detection
     stepPadPressed: {},        // Per-step flag if pad was pressed while held
+    stepCopyBuffer: null,      // Copied step data for paste operations
+    copyHoldDetected: {},      // Per-step flag: copy was triggered at 500ms
 
     /* Playhead */
     currentPlayStep: -1,       // Current playhead position (0-15)
