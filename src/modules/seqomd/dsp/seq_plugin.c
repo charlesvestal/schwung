@@ -1123,7 +1123,7 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
     uint32_t global_step = (uint32_t)g_global_phase;
     int transpose = g_chord_follow[track_idx] ? get_transpose_at_step(global_step) : 0;
 
-    if (use_arp && step->num_notes > 1) {
+    if (use_arp && step->num_notes >= 1) {
         /* Arpeggiator scheduling - ignore ratchet when arp is active */
 
         /* Resolve arp settings (step override or track default) */
@@ -1268,7 +1268,7 @@ static void trigger_track_step(track_t *track, int track_idx, double step_start_
 
     /* Determine if arp is active (step override or track default) */
     int arp_mode = step->arp_mode >= 0 ? step->arp_mode : track->arp_mode;
-    int use_arp = (arp_mode > ARP_OFF) && (step->num_notes > 1);
+    int use_arp = (arp_mode > ARP_OFF) && (step->num_notes >= 1);
 
     /* Schedule notes - arp takes priority over ratchet when active */
     if (use_arp) {

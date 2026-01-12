@@ -1780,11 +1780,10 @@ TEST(arp_ignores_ratchet) {
     set_param("track_0_arp_mode", "0");
 }
 
-TEST(arp_single_note_no_arp) {
-    /* Single note should not arp (uses ratchet instead) */
+TEST(arp_single_note_arps) {
+    /* Single note SHOULD arp - repeats at arp speed */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "0"); /* 1/32 */
-    set_param("track_0_step_0_ratchet", "2");
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 notes per step */
 
     set_param("track_0_step_0_add_note", "60");  /* Only 1 note */
 
@@ -1793,13 +1792,12 @@ TEST(arp_single_note_no_arp) {
     render_steps(2);
     set_param("playing", "0");
 
-    /* Single note: arp doesn't apply, ratchet does = 2 triggers */
+    /* Single note with arp: should repeat 2x per step (1/32 speed) */
     int count = count_note_ons(60, 0);
     ASSERT_EQ(count, 2);
 
     /* Clean up */
     set_param("track_0_step_0_clear", "1");
-    set_param("track_0_step_0_ratchet", "1");
     set_param("track_0_arp_mode", "0");
 }
 
@@ -2176,7 +2174,7 @@ int main(int argc, char **argv) {
     RUN_TEST(arp_scheduling_with_note_length);
     RUN_TEST(arp_step_override);
     RUN_TEST(arp_ignores_ratchet);
-    RUN_TEST(arp_single_note_no_arp);
+    RUN_TEST(arp_single_note_arps);
     RUN_TEST(arp_chord_mode);
 
     printf("\nArpeggiator with Swing:\n");
