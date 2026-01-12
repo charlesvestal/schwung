@@ -19,7 +19,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam } from '../../lib/helpers.js';
-import { saveCurrentSetToDisk } from '../../lib/persistence.js';
+import { markDirty } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
 
@@ -42,7 +42,7 @@ export function onInput(data) {
         }
         state.tracks[state.currentTrack].swing = swing;
         setParam(`track_${state.currentTrack}_swing`, String(swing));
-        saveCurrentSetToDisk();
+        markDirty();
         updateDisplayContent();
         return true;
     }

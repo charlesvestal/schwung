@@ -16,7 +16,7 @@ import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, enterTrackView } from '../lib/state.js';
 import * as trackView from './track.js';
 import { setParam, syncAllTracksToDSP } from '../lib/helpers.js';
-import { saveCurrentSetToDisk, loadSetToTracks, setHasContent } from '../lib/persistence.js';
+import { markDirty, loadSetToTracks, setHasContent } from '../lib/persistence.js';
 
 /* ============ View Interface ============ */
 
@@ -57,7 +57,7 @@ export function onInput(data) {
 
             /* Save current set if we have one loaded */
             if (state.currentSet >= 0) {
-                saveCurrentSetToDisk();
+                markDirty();
             }
 
             /* Load the selected set */

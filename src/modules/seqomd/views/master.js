@@ -21,7 +21,7 @@ import {
     setTransposeStep, removeTransposeStep, getTransposeStep, adjustTransposeDuration,
     getCurrentStepIndex, getStepCount, formatDuration, MAX_TRANSPOSE_STEPS
 } from '../lib/transpose_sequence.js';
-import { saveCurrentSetToDisk } from '../lib/persistence.js';
+import { markDirty } from '../lib/persistence.js';
 
 /* ============ Piano Mapping ============ */
 
@@ -192,7 +192,7 @@ export function onInput(data) {
                 if (newDur !== null) {
                     /* Sync transpose sequence to DSP */
                     syncTransposeSequenceToDSP();
-                    saveCurrentSetToDisk();
+                    markDirty();
                     updateDisplayContent();
                     updateStepLEDs();
                 }
@@ -213,7 +213,7 @@ export function onInput(data) {
             }
             if (delta !== 0) {
                 updateBpm(state.bpm + delta);
-                saveCurrentSetToDisk();
+                markDirty();
                 updateDisplayContent();
             }
             return true;
@@ -233,7 +233,7 @@ export function onInput(data) {
                     adjustTransposeDuration(state.heldTransposeStep, delta);
                     /* Sync transpose sequence to DSP */
                     syncTransposeSequenceToDSP();
-                    saveCurrentSetToDisk();
+                    markDirty();
                     updateDisplayContent();
                     updateStepLEDs();
                 }
@@ -292,7 +292,7 @@ function handleStepButton(stepIdx, isNoteOn, velocity) {
             removeTransposeStep(stepIdx);
             /* Sync transpose sequence to DSP */
             syncTransposeSequenceToDSP();
-            saveCurrentSetToDisk();
+            markDirty();
             updateDisplayContent();
             updateStepLEDs();
             return true;
@@ -325,7 +325,7 @@ function handlePadPress(padIdx) {
         state.chordFollow[trackIdx] = !state.chordFollow[trackIdx];
         /* Sync to DSP - DSP will recalculate scale detection */
         setParam(`track_${trackIdx}_chord_follow`, state.chordFollow[trackIdx] ? "1" : "0");
-        saveCurrentSetToDisk();
+        markDirty();
         /* Read updated scale from DSP */
         updateDetectedScaleFromDSP();
         updateDisplayContent();
@@ -354,7 +354,7 @@ function handlePadPress(padIdx) {
         setTransposeStep(state.heldTransposeStep, transpose, duration);
         /* Sync transpose sequence to DSP */
         syncTransposeSequenceToDSP();
-        saveCurrentSetToDisk();
+        markDirty();
         updateDisplayContent();
         updateStepLEDs();
         updatePadLEDs();

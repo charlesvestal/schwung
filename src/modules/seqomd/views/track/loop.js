@@ -18,7 +18,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs, TRACK_COLORS } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, getCurrentPattern } from '../../lib/helpers.js';
-import { saveCurrentSetToDisk } from '../../lib/persistence.js';
+import { markDirty } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
 
@@ -69,7 +69,7 @@ function handleLoopEditStep(stepIdx) {
             ""
         );
         state.loopEditFirst = -1;
-        saveCurrentSetToDisk();
+        markDirty();
     }
     updateLEDs();
 }

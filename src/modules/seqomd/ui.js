@@ -22,7 +22,7 @@ import { NUM_STEPS } from './lib/constants.js';
 import { state, enterSetView, enterTrackView, enterPatternView, enterMasterView } from './lib/state.js';
 import { setParam, getCurrentPattern } from './lib/helpers.js';
 import { createEmptyTracks } from './lib/data.js';
-import { initializeSets, ensureSetsDir, migrateFromLegacy } from './lib/persistence.js';
+import { initializeSets, ensureSetsDir, migrateFromLegacy, flushDirty, tickDirty } from './lib/persistence.js';
 
 /* Import views */
 import * as setView from './views/set.js';
@@ -113,6 +113,9 @@ globalThis.tick = function() {
     ledTickCounter++;
     drawUI();
 
+    /* Check for debounced saves */
+    tickDirty();
+
     /* Poll DSP for playhead position when playing (always at full rate for timing) */
     /* Note: Transpose is now computed internally by DSP - no polling needed */
     if (state.playing && state.heldStep < 0) {
@@ -191,6 +194,7 @@ globalThis.onMidiMessageInternal = function(data) {
             setParam("playing", state.playing ? "1" : "0");
             if (!state.playing) {
                 state.lastRecordedStep = -1;
+                flushDirty();  /* Save any changes made during playback */
             }
             getCurrentView().updateLEDs();
         }

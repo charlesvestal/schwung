@@ -19,7 +19,7 @@ import {
 } from '../lib/constants.js';
 import { state, displayMessage } from '../lib/state.js';
 import { setParam, updateAndSendCC, getCurrentPattern } from '../lib/helpers.js';
-import { saveCurrentSetToDisk } from '../lib/persistence.js';
+import { markDirty } from '../lib/persistence.js';
 
 /* ============ Pattern Snapshots ============ */
 
@@ -36,7 +36,7 @@ function savePatternSnapshot(stepIdx) {
         state.patternSnapshots.push(null);
     }
     state.patternSnapshots[stepIdx] = snapshot;
-    saveCurrentSetToDisk();
+    markDirty();
 }
 
 /**
@@ -49,7 +49,7 @@ function recallPatternSnapshot(stepIdx) {
         state.tracks[t].currentPattern = snapshot[t];
         setParam(`track_${t}_pattern`, String(snapshot[t]));
     }
-    saveCurrentSetToDisk();
+    markDirty();
     return true;
 }
 
@@ -122,7 +122,7 @@ export function onInput(data) {
             if (trackIdx < NUM_TRACKS && patternIdx < NUM_PATTERNS) {
                 state.tracks[trackIdx].currentPattern = patternIdx;
                 setParam(`track_${trackIdx}_pattern`, String(patternIdx));
-                saveCurrentSetToDisk();
+                markDirty();
 
                 displayMessage(
                     `PATTERNS      ${state.bpm} BPM`,

@@ -12,6 +12,7 @@ export const state = {
     playing: false,
     bpm: 120,
     sendClock: 1,
+    dirty: false,  /* Set needs saving (deferred during playback) */
 
     /* Current view: 'set' | 'track' | 'pattern' | 'master' */
     view: 'set',

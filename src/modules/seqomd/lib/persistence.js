@@ -125,6 +125,45 @@ export function deleteSetFile(setIdx) {
     }
 }
 
+/* Debounce delay in ms - save after this much idle time */
+const SAVE_DEBOUNCE_MS = 500;
+let lastDirtyTime = 0;
+
+/**
+ * Mark current set as dirty (needs save).
+ * Save is debounced - will happen after SAVE_DEBOUNCE_MS of no changes.
+ * Call tickDirty() from main loop to process saves.
+ */
+export function markDirty() {
+    state.dirty = true;
+    lastDirtyTime = Date.now();
+}
+
+/**
+ * Check and save if dirty and debounce time has passed.
+ * Call this from the main tick loop.
+ */
+export function tickDirty() {
+    if (state.dirty && !state.playing) {
+        const elapsed = Date.now() - lastDirtyTime;
+        if (elapsed >= SAVE_DEBOUNCE_MS) {
+            saveCurrentSetToDisk();
+            state.dirty = false;
+        }
+    }
+}
+
+/**
+ * Flush dirty state to disk immediately.
+ * Call this when playback stops or leaving a set.
+ */
+export function flushDirty() {
+    if (state.dirty) {
+        saveCurrentSetToDisk();
+        state.dirty = false;
+    }
+}
+
 /**
  * Save current set directly to disk (no clone)
  * Fast enough for frequent saves (e.g., every jog wheel turn)

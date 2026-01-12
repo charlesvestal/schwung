@@ -19,7 +19,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs, CONDITIONS } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, getCurrentPattern } from '../../lib/helpers.js';
-import { saveCurrentSetToDisk } from '../../lib/persistence.js';
+import { markDirty } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
 
@@ -115,7 +115,7 @@ function handleSparkKnob(knobIdx, velocity) {
         }
     }
 
-    saveCurrentSetToDisk();
+    markDirty();
     updateDisplayContent();
     updateLEDs();
 }
@@ -137,7 +137,7 @@ function handleSparkOffset(velocity) {
         setParam(`track_${state.currentTrack}_step_${stepIdx}_offset`, String(offset));
     }
 
-    saveCurrentSetToDisk();
+    markDirty();
 
     const firstStep = [...state.sparkSelectedSteps][0];
     const offset = pattern.steps[firstStep].offset;

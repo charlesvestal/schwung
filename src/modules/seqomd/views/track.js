@@ -26,7 +26,7 @@ import {
     enterArpMode, exitArpMode
 } from '../lib/state.js';
 
-import { saveCurrentSetToDisk } from '../lib/persistence.js';
+import { markDirty } from '../lib/persistence.js';
 import * as setView from './set.js';
 
 /* Mode modules */
@@ -77,7 +77,7 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 16 && isNoteOn && velocity > 0) {
         /* Save current set before going to set view */
         if (state.currentSet >= 0) {
-            saveCurrentSetToDisk();
+            markDirty();
         }
         /* Transition to set view */
         modes[state.trackMode].onExit();
@@ -115,7 +115,7 @@ export function onInput(data) {
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 23 && isNoteOn && velocity > 0) {
         state.chordFollow[state.currentTrack] = !state.chordFollow[state.currentTrack];
         setParam(`track_${state.currentTrack}_chord_follow`, state.chordFollow[state.currentTrack] ? "1" : "0");
-        saveCurrentSetToDisk();
+        markDirty();
         const status = state.chordFollow[state.currentTrack] ? "ON" : "OFF";
         displayMessage(`Track ${state.currentTrack + 1}`, `Transpose: ${status}`, "", "");
         updateLEDs();
