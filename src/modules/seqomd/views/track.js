@@ -89,6 +89,7 @@ export function onInput(data) {
 
     /* Shift + Step 2 enters channel mode */
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 17 && isNoteOn && velocity > 0) {
+        modes.normal.onExit();
         enterChannelMode();
         modes.channel.onEnter();
         updateLEDs();
@@ -97,6 +98,7 @@ export function onInput(data) {
 
     /* Shift + Step 5 enters speed mode */
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 20 && isNoteOn && velocity > 0) {
+        modes.normal.onExit();
         enterSpeedMode();
         modes.speed.onEnter();
         updateLEDs();
@@ -105,6 +107,7 @@ export function onInput(data) {
 
     /* Shift + Step 7 enters swing mode */
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 22 && isNoteOn && velocity > 0) {
+        modes.normal.onExit();
         enterSwingMode();
         modes.swing.onEnter();
         updateLEDs();
@@ -124,6 +127,7 @@ export function onInput(data) {
 
     /* Shift + Step 11 enters arp mode */
     if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 26 && isNoteOn && velocity > 0) {
+        modes.normal.onExit();
         enterArpMode();
         modes.arp.onEnter();
         updateLEDs();
@@ -132,6 +136,7 @@ export function onInput(data) {
 
     /* Loop button press enters loop mode */
     if (state.trackMode === 'normal' && isCC && note === MoveLoop && velocity > 0) {
+        modes.normal.onExit();
         enterLoopEdit();
         modes.loop.onEnter();
         updateLEDs();
@@ -140,6 +145,7 @@ export function onInput(data) {
 
     /* Capture + step enters spark mode */
     if (state.trackMode === 'normal' && state.captureHeld && isNote && note >= 16 && note <= 31 && isNoteOn && velocity > 0) {
+        modes.normal.onExit();
         const stepIdx = note - 16;
         enterSparkMode();
         state.sparkSelectedSteps.add(stepIdx);
@@ -150,11 +156,18 @@ export function onInput(data) {
 
     /*
      * Mode EXIT transitions
-     * Jog click or back button exits channel/speed/swing/arp modes
+     * Jog click, back button, or shift+step (same as entry) exits channel/speed/swing/arp modes
      */
     if (state.trackMode === 'channel' || state.trackMode === 'speed' || state.trackMode === 'swing' || state.trackMode === 'arp') {
-        if ((isNote && note === MoveMainButton && isNoteOn && velocity > 0) ||
-            (isCC && note === MoveBack && velocity > 0)) {
+        const isJogClick = isNote && note === MoveMainButton && isNoteOn && velocity > 0;
+        const isBackButton = isCC && note === MoveBack && velocity > 0;
+        const isShiftStepExit = state.shiftHeld && isNote && isNoteOn && velocity > 0 && (
+            (state.trackMode === 'channel' && note === 17) ||
+            (state.trackMode === 'speed' && note === 20) ||
+            (state.trackMode === 'swing' && note === 22) ||
+            (state.trackMode === 'arp' && note === 26)
+        );
+        if (isJogClick || isBackButton || isShiftStepExit) {
             modes[state.trackMode].onExit();
             if (state.trackMode === 'channel') exitChannelMode();
             else if (state.trackMode === 'speed') exitSpeedMode();
