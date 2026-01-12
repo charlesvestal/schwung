@@ -28,12 +28,15 @@ int global_exit_flag = 0;
 
 /* Host-level input state for system shortcuts */
 int host_shift_held = 0;
+int host_transpose = 0;  /* Semitone transpose for internal MIDI (-48 to +48) */
 
 /* Move MIDI CC constants for system shortcuts */
 #define CC_SHIFT 49
 #define CC_JOG_CLICK 3
 #define CC_BACK 51
 #define CC_MASTER_KNOB 79
+#define CC_UP 55
+#define CC_DOWN 54
 
 /* Module manager instance */
 module_manager_t g_module_manager;
@@ -500,6 +503,28 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
         midi[1] = at_value;
       }
     }
+
+    /* Apply pad layout and transpose for Note On/Off on pad notes (68-99) */
+    if ((msg_type == 0x90 || msg_type == 0x80) && data1 >= 68 && data1 <= 99) {
+      int note = data1;
+
+      /* Apply pad layout remapping */
+      if (g_settings.pad_layout == PAD_LAYOUT_FOURTH) {
+        /* Fourth layout: each row is a fourth (5 semitones) up */
+        int row = (note - 68) / 8;
+        int col = (note - 68) % 8;
+        note = 60 + (row * 5) + col;
+      }
+
+      /* Apply transpose */
+      note += host_transpose;
+
+      /* Clamp to valid MIDI note range */
+      if (note < 0) note = 0;
+      if (note > 127) note = 127;
+
+      midi[1] = (unsigned char)note;
+    }
   }
 
   /* Handle CC messages for host shortcuts */
@@ -557,6 +582,24 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
       printf("Host: Volume %d -> %d\n", current_vol, mm_get_host_volume(&g_module_manager));
     }
     return 1;  /* Consumed by host */
+  }
+
+  /* Shift + Up/Down = Semitone transpose */
+  if (host_shift_held && value == 127) {
+    if (cc == CC_UP) {
+      if (host_transpose < 48) {
+        host_transpose++;
+        printf("Host: Transpose +1 -> %d\n", host_transpose);
+      }
+      return 1;  /* Consumed */
+    }
+    if (cc == CC_DOWN) {
+      if (host_transpose > -48) {
+        host_transpose--;
+        printf("Host: Transpose -1 -> %d\n", host_transpose);
+      }
+      return 1;  /* Consumed */
+    }
   }
 
   return 0;  /* Pass through */
@@ -1453,6 +1496,8 @@ static JSValue js_host_get_setting(JSContext *ctx, JSValueConst this_val,
         result = JS_NewInt32(ctx, g_settings.aftertouch_enabled);
     } else if (strcmp(key, "aftertouch_deadzone") == 0) {
         result = JS_NewInt32(ctx, g_settings.aftertouch_deadzone);
+    } else if (strcmp(key, "pad_layout") == 0) {
+        result = JS_NewString(ctx, settings_pad_layout_name(g_settings.pad_layout));
     } else if (strcmp(key, "clock_mode") == 0) {
         const char *mode_names[] = {"off", "internal", "external"};
         result = JS_NewString(ctx, mode_names[g_settings.clock_mode]);
@@ -1493,6 +1538,12 @@ static JSValue js_host_set_setting(JSContext *ctx, JSValueConst this_val,
             if (val < 0) val = 0;
             if (val > 50) val = 50;
             g_settings.aftertouch_deadzone = val;
+        }
+    } else if (strcmp(key, "pad_layout") == 0) {
+        const char *val = JS_ToCString(ctx, argv[1]);
+        if (val) {
+            g_settings.pad_layout = settings_parse_pad_layout(val);
+            JS_FreeCString(ctx, val);
         }
     } else if (strcmp(key, "clock_mode") == 0) {
         const char *val = JS_ToCString(ctx, argv[1]);
@@ -2112,14 +2163,7 @@ int main(int argc, char *argv[])
 
             if (cable == 2)
             {
-                /* Apply transforms to external MIDI */
-                int consumed = process_host_midi(&byte[1], apply_transforms);
-                if (consumed) continue;
-
-                /* Route to JS handler */
-                if(callGlobalFunction(&ctx, &JSonMidiMessageExternal, &byte[1])) {
-                  printf("JS:onMidiMessageExternal failed\n");
-                }
+                /* External MIDI: no transforms, no UI - direct to DSP only */
                 /* Route to DSP plugin */
                 mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_EXTERNAL);
             }

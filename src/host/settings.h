@@ -16,6 +16,13 @@ typedef enum {
     VELOCITY_CURVE_COUNT
 } velocity_curve_t;
 
+/* Pad layout options */
+typedef enum {
+    PAD_LAYOUT_CHROMATIC = 0,
+    PAD_LAYOUT_FOURTH,
+    PAD_LAYOUT_COUNT
+} pad_layout_t;
+
 /* MIDI clock mode options */
 typedef enum {
     CLOCK_MODE_OFF = 0,
@@ -29,6 +36,7 @@ typedef struct {
     velocity_curve_t velocity_curve;
     int aftertouch_enabled;
     int aftertouch_deadzone;  /* 0-50 */
+    pad_layout_t pad_layout;  /* chromatic/fourth */
     clock_mode_t clock_mode;  /* off/internal/external */
     int tempo_bpm;            /* 20-300 BPM */
 } host_settings_t;
@@ -58,5 +66,11 @@ const char* settings_velocity_curve_name(velocity_curve_t curve);
 
 /* Parse velocity curve from string */
 velocity_curve_t settings_parse_velocity_curve(const char *str);
+
+/* Get pad layout name for display */
+const char* settings_pad_layout_name(pad_layout_t layout);
+
+/* Parse pad layout from string */
+pad_layout_t settings_parse_pad_layout(const char *str);
 
 #endif /* SETTINGS_H */
