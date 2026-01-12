@@ -49,10 +49,22 @@
 #define ARP_PINKY         14  /* Top note pedal */
 #define NUM_ARP_MODES     15
 
-/* Arp speed divisions (notes per step) */
-static const int ARP_DIVISIONS[] = {1, 2, 3, 4, 6, 8};
-#define NUM_ARP_SPEEDS    6
-#define DEFAULT_ARP_SPEED 3  /* 1/4 = 4 notes per step */
+/* Arp speed: steps per arp note (musical note values, 16 steps = 1 bar)
+ * Index: 0=1/32, 1=1/24, 2=1/16, 3=1/12, 4=1/8, 5=1/6, 6=1/4, 7=1/3, 8=1/2, 9=1/1 */
+static const double ARP_STEP_RATES[] = {
+    0.5,      /* 1/32 - 32nd notes (2 per step) */
+    2.0/3.0,  /* 1/24 - triplet 16ths */
+    1.0,      /* 1/16 - 16th notes (1 per step) */
+    4.0/3.0,  /* 1/12 - triplet 8ths */
+    2.0,      /* 1/8  - 8th notes */
+    8.0/3.0,  /* 1/6  - triplet quarters */
+    4.0,      /* 1/4  - quarter notes */
+    16.0/3.0, /* 1/3  - triplet halves */
+    8.0,      /* 1/2  - half notes */
+    16.0      /* 1/1  - whole note */
+};
+#define NUM_ARP_SPEEDS    10
+#define DEFAULT_ARP_SPEED 2  /* 1/16 = 1 note per step */
 
 /* Arp octave options */
 #define ARP_OCT_NONE      0
@@ -1126,15 +1138,18 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
 
         if (pattern_len == 0) return;
 
+        /* Calculate arp timing using musical note values
+         * ARP_STEP_RATES[speed] = steps per arp note
+         * e.g., 1/32 = 0.5 (2 notes per step), 1/4 = 4.0 (1 note per 4 steps) */
+        double steps_per_note = ARP_STEP_RATES[arp_speed];
+        int total_arp_notes = (int)(note_length / steps_per_note + 0.5);
+        if (total_arp_notes < 1) total_arp_notes = 1;
+        double note_duration = (double)note_length / total_arp_notes;
+
         /* Handle ARP_CHORD mode - all notes together at each arp position */
         if (arp_mode == ARP_CHORD) {
-            /* Chord mode: play all notes together, repeated at arp speed */
-            int notes_per_step = ARP_DIVISIONS[arp_speed];
-            int total_hits = notes_per_step * note_length;
-            double hit_duration = (double)note_length / total_hits;
-
-            for (int i = 0; i < total_hits; i++) {
-                double note_phase = base_phase + (i * hit_duration);
+            for (int i = 0; i < total_arp_notes; i++) {
+                double note_phase = base_phase + (i * note_duration);
 
                 /* Play all notes as chord */
                 for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
@@ -1149,7 +1164,7 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
                             track->midi_channel,
                             track->swing,
                             note_phase,
-                            hit_duration,
+                            note_duration,
                             gate
                         );
                     }
@@ -1157,10 +1172,6 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
             }
         } else {
             /* Normal arp: cycle through pattern */
-            int notes_per_step = ARP_DIVISIONS[arp_speed];
-            int total_arp_notes = notes_per_step * note_length;
-            double note_duration = (double)note_length / total_arp_notes;
-
             for (int i = 0; i < total_arp_notes; i++) {
                 double note_phase = base_phase + (i * note_duration);
                 int pattern_idx = i % pattern_len;

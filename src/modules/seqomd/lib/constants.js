@@ -196,17 +196,19 @@ export const ARP_MODES = [
     { name: 'Pinky' }
 ];
 
+/* ARP_SPEEDS: Musical note values (16 steps = 1 bar)
+ * Must match DSP ARP_STEP_RATES[] */
 export const ARP_SPEEDS = [
-    { name: '1/32', rate: 0.5 },      // 32nd notes (2 per step)
-    { name: '1/24', rate: 2/3 },      // Triplet 16ths
-    { name: '1/16', rate: 1 },        // 16th notes (1 per step)
-    { name: '1/12', rate: 4/3 },      // Triplet 8ths
-    { name: '1/8',  rate: 2 },        // 8th notes
-    { name: '1/6',  rate: 8/3 },      // Triplet quarters
-    { name: '1/4',  rate: 4 },        // Quarter notes
-    { name: '1/3',  rate: 16/3 },     // Triplet halves
-    { name: '1/2',  rate: 8 },        // Half notes
-    { name: '1/1',  rate: 16 }        // Whole notes
+    { name: '1/32' },   // 32nd notes (2 per step)
+    { name: '1/24' },   // triplet 16ths
+    { name: '1/16' },   // 16th notes (1 per step)
+    { name: '1/12' },   // triplet 8ths
+    { name: '1/8' },    // 8th notes
+    { name: '1/6' },    // triplet quarters
+    { name: '1/4' },    // quarter notes
+    { name: '1/3' },    // triplet halves
+    { name: '1/2' },    // half notes
+    { name: '1/1' }     // whole note
 ];
 
 export const ARP_OCTAVES = [
@@ -219,4 +221,4 @@ export const ARP_OCTAVES = [
     { name: '±2' }
 ];
 
-export const DEFAULT_ARP_SPEED = 2;  /* 1/16 */
+export const DEFAULT_ARP_SPEED = 2;  /* 1/16 = 1 note per step */
