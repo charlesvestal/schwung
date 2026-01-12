@@ -1838,10 +1838,10 @@ TEST(arp_with_swing) {
      * Step 0 (downbeat) should NOT be delayed.
      * Step 1 (upbeat) SHOULD be delayed by swing. */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 notes per step */
     set_param("track_0_swing", "100");   /* Maximum swing */
 
-    /* Single note on step 0 (downbeat) and step 1 (upbeat) */
+    /* 2 notes on step 0 (downbeat) and step 1 (upbeat) */
     set_param("track_0_step_0_add_note", "60");
     set_param("track_0_step_0_add_note", "64");
     set_param("track_0_step_1_add_note", "67");
@@ -1852,7 +1852,7 @@ TEST(arp_with_swing) {
     render_steps(4);
     set_param("playing", "0");
 
-    /* All notes should play */
+    /* All notes should play (2 notes per step with 1/32 speed) */
     int count_60 = count_note_ons(60, 0);
     int count_64 = count_note_ons(64, 0);
     int count_67 = count_note_ons(67, 0);
@@ -1886,8 +1886,10 @@ TEST(arp_with_swing) {
 TEST(arp_swing_per_track) {
     /* Different tracks can have different swing with arp */
     set_param("track_0_arp_mode", "1");
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 notes per step */
     set_param("track_0_swing", "50");  /* No swing */
     set_param("track_1_arp_mode", "1");
+    set_param("track_1_arp_speed", "0"); /* 1/32 = 2 notes per step */
     set_param("track_1_swing", "67");  /* Triplet swing */
 
     set_param("track_0_step_0_add_note", "60");
@@ -1900,7 +1902,7 @@ TEST(arp_swing_per_track) {
     render_steps(2);
     set_param("playing", "0");
 
-    /* Both should play their arp notes */
+    /* Both should play their arp notes (2 per step) */
     int count_ch0 = count_note_ons(60, 0) + count_note_ons(64, 0);
     int count_ch1 = count_note_ons(72, 1) + count_note_ons(76, 1);
 
