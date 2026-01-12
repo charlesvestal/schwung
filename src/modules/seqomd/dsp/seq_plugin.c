@@ -18,7 +18,7 @@
 #define NUM_TRACKS 16
 #define NUM_STEPS 16
 #define NUM_PATTERNS 16
-#define MAX_NOTES_PER_STEP 4
+#define MAX_NOTES_PER_STEP 7
 #define MAX_SCHEDULED_NOTES 128
 
 #define DEFAULT_VELOCITY 100
@@ -76,6 +76,11 @@ static const double ARP_STEP_RATES[] = {
 #define ARP_OCT_BOTH2     6
 #define NUM_ARP_OCTAVES   7
 
+/* Arp layer modes - step-only (no track default) */
+#define ARP_LAYER_LAYER   0  /* Arps play over each other (default) */
+#define ARP_LAYER_CUT     1  /* New step kills previous arp notes */
+#define NUM_ARP_LAYERS    2
+
 /* Max arp pattern length (4 notes * 3 octaves * 2 for ping-pong) */
 #define MAX_ARP_PATTERN   64
 
@@ -94,7 +99,7 @@ static const double ARP_STEP_RATES[] = {
 
 /* Step data */
 typedef struct {
-    uint8_t notes[MAX_NOTES_PER_STEP];  /* Up to 4 notes per step (0 = empty slot) */
+    uint8_t notes[MAX_NOTES_PER_STEP];  /* Up to 7 notes per step (0 = empty slot) */
     uint8_t num_notes;                   /* Number of active notes */
     uint8_t velocity;                    /* 1-127 */
     uint8_t gate;                        /* Gate length as % of step (1-100) */
@@ -119,6 +124,7 @@ typedef struct {
     /* Arpeggiator per-step overrides */
     int8_t arp_mode;                     /* -1=use track, 0+=override mode */
     int8_t arp_speed;                    /* -1=use track, 0+=override speed */
+    uint8_t arp_layer;                   /* 0=Layer, 1=Cut, 2=Legato */
 } step_t;
 
 /* Pattern data - contains steps and loop points */
@@ -677,6 +683,26 @@ static void clear_scheduled_notes(void) {
     }
 }
 
+/**
+ * Clear scheduled notes for a specific channel (Cut mode).
+ * Sends note-off for any currently playing notes and cancels pending notes.
+ */
+static void cut_channel_notes(uint8_t channel) {
+    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
+        scheduled_note_t *sn = &g_scheduled_notes[i];
+        if (sn->active && sn->channel == channel) {
+            /* Send note-off for any note that has started but not ended */
+            if (sn->on_sent && !sn->off_sent) {
+                send_note_off(sn->note, sn->channel);
+            }
+            /* Cancel the slot */
+            sn->active = 0;
+            sn->on_sent = 0;
+            sn->off_sent = 0;
+        }
+    }
+}
+
 /* Send note-off for all active notes */
 static void all_notes_off(void) {
     /* Clear all scheduled notes - this sends note-off for any active notes */
@@ -715,6 +741,7 @@ static void init_pattern(pattern_t *pattern) {
         /* Arp per-step overrides */
         pattern->steps[i].arp_mode = -1;        /* Use track default */
         pattern->steps[i].arp_speed = -1;       /* Use track default */
+        pattern->steps[i].arp_layer = ARP_LAYER_LAYER;  /* Default to layer */
     }
 }
 
@@ -1270,6 +1297,12 @@ static void trigger_track_step(track_t *track, int track_idx, double step_start_
     int arp_mode = step->arp_mode >= 0 ? step->arp_mode : track->arp_mode;
     int use_arp = (arp_mode > ARP_OFF) && (step->num_notes >= 1);
 
+    /* Handle arp layer mode - Cut cancels previous notes before scheduling new ones.
+     * This applies to both arp and non-arp steps (a non-arp step can cut a running arp) */
+    if (step->arp_layer == ARP_LAYER_CUT) {
+        cut_channel_notes(track->midi_channel);
+    }
+
     /* Schedule notes - arp takes priority over ratchet when active */
     if (use_arp) {
         /* Arp is active - use arp scheduling (ignores ratchet) */
@@ -1412,6 +1445,7 @@ static void set_step_param(int track_idx, int step_idx, const char *param, const
         s->offset = 0;
         s->arp_mode = -1;
         s->arp_speed = -1;
+        s->arp_layer = ARP_LAYER_LAYER;
         if (g_chord_follow[track_idx]) {
             g_scale_dirty = 1;
         }
@@ -1509,6 +1543,12 @@ static void set_step_param(int track_idx, int step_idx, const char *param, const
             s->arp_speed = speed;
         }
     }
+    else if (strcmp(param, "arp_layer") == 0) {
+        int layer = atoi(val);
+        if (layer >= 0 && layer < NUM_ARP_LAYERS) {
+            s->arp_layer = layer;
+        }
+    }
 }
 
 /**
@@ -1548,6 +1588,9 @@ static int get_step_param(int track_idx, int step_idx, const char *param, char *
     }
     else if (strcmp(param, "arp_speed") == 0) {
         return snprintf(buf, buf_len, "%d", s->arp_speed);
+    }
+    else if (strcmp(param, "arp_layer") == 0) {
+        return snprintf(buf, buf_len, "%d", s->arp_layer);
     }
 
     return -1;

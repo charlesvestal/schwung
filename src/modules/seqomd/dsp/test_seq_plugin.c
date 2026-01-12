@@ -2052,6 +2052,141 @@ TEST(arp_step_params_persist) {
     ASSERT_EQ(pat->steps[5].arp_speed, -1);
 }
 
+/* ============ Arp Layer Tests ============ */
+
+TEST(arp_layer_default) {
+    /* Test that arp_layer defaults to 0 (Layer) */
+    pattern_t *pat = get_current_pattern(&g_tracks[0]);
+    ASSERT_EQ(pat->steps[0].arp_layer, 0);  /* ARP_LAYER_LAYER */
+}
+
+TEST(arp_layer_param_persist) {
+    /* Test step-level arp_layer parameter */
+    set_param("track_0_step_3_arp_layer", "1");  /* Cut */
+
+    pattern_t *pat = get_current_pattern(&g_tracks[0]);
+    ASSERT_EQ(pat->steps[3].arp_layer, 1);
+
+    set_param("track_0_step_3_arp_layer", "2");  /* Legato */
+    ASSERT_EQ(pat->steps[3].arp_layer, 2);
+
+    /* Clear resets to 0 (Layer is default, not -1) */
+    set_param("track_0_step_3_clear", "1");
+    ASSERT_EQ(pat->steps[3].arp_layer, 0);
+}
+
+TEST(arp_layer_layer_overlaps) {
+    /* Layer mode: two arp steps overlap - both play their notes */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Step 0: C-E chord, length 4 (plays 4 arp notes: C, E, C, E) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_length", "4");
+    set_param("track_0_step_0_arp_layer", "0");  /* Layer (default) */
+
+    /* Step 2: G note, length 2 (plays 2 arp notes: G, G) */
+    set_param("track_0_step_2_add_note", "67");
+    set_param("track_0_step_2_length", "2");
+    set_param("track_0_step_2_arp_layer", "0");  /* Layer (default) */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);  /* Render through both arps */
+    set_param("playing", "0");
+
+    /* Step 0 arp: C(step0), E(step1), C(step2), E(step3)
+     * Step 2 arp: G(step2), G(step3)
+     * In Layer mode, both play - at step 2 and 3, we get overlapping notes */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 2);  /* C plays twice */
+    ASSERT_EQ(count_64, 2);  /* E plays twice */
+    ASSERT_EQ(count_67, 2);  /* G plays twice (step 2's arp overlaps) */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_layer_cut_cancels) {
+    /* Cut mode: new step cancels previous arp notes */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Step 0: C-E chord, length 4 (would play 4 arp notes) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_length", "4");
+    set_param("track_0_step_0_arp_layer", "0");  /* Layer */
+
+    /* Step 2: G note with CUT - should cancel step 0's remaining arp */
+    set_param("track_0_step_2_add_note", "67");
+    set_param("track_0_step_2_length", "2");
+    set_param("track_0_step_2_arp_layer", "1");  /* Cut */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);
+    set_param("playing", "0");
+
+    /* Step 0 arp: C(step0), E(step1) - then step 2 triggers with Cut
+     * Step 2 arp: G(step2), G(step3)
+     * Step 0's notes at step 2 and 3 are cancelled by Cut */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 1);  /* C plays only once (step 0) */
+    ASSERT_EQ(count_64, 1);  /* E plays only once (step 1) */
+    ASSERT_EQ(count_67, 2);  /* G plays twice (step 2's arp takes over) */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_layer_cut_single_note) {
+    /* Cut mode: single note (no arp) can still cut a running arp */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Step 0: C-E chord, length 4 (would play 4 arp notes) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_length", "4");
+
+    /* Step 2: Single G note with Cut and arp_mode = -1 (use track, but only 1 note = no arp) */
+    set_param("track_0_step_2_add_note", "67");
+    set_param("track_0_step_2_arp_layer", "1");  /* Cut */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);
+    set_param("playing", "0");
+
+    /* Step 0 arp: C(step0), E(step1) - then step 2 triggers with Cut
+     * Step 2: G plays as single note (no arp, just 1 note)
+     * Step 0's notes at step 2 and 3 are cancelled */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 1);  /* C plays only once (step 0) */
+    ASSERT_EQ(count_64, 1);  /* E plays only once (step 1) */
+    ASSERT_EQ(count_67, 1);  /* G plays once (single note, not arped) */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -2187,6 +2322,13 @@ int main(int argc, char **argv) {
     RUN_TEST(arp_no_transpose_on_drum_track);
     RUN_TEST(arp_params_persist);
     RUN_TEST(arp_step_params_persist);
+
+    printf("\nArpeggiator Layer Modes:\n");
+    RUN_TEST(arp_layer_default);
+    RUN_TEST(arp_layer_param_persist);
+    RUN_TEST(arp_layer_layer_overlaps);
+    RUN_TEST(arp_layer_cut_cancels);
+    RUN_TEST(arp_layer_cut_single_note);
 
     cleanup_plugin();
 

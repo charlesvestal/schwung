@@ -221,4 +221,9 @@ export const ARP_OCTAVES = [
     { name: '±2' }
 ];
 
+export const ARP_LAYERS = [
+    { name: 'Layer' },    // 0: Arps play over each other (default)
+    { name: 'Cut' }       // 1: New step kills previous arp notes
+];
+
 export const DEFAULT_ARP_SPEED = 2;  /* 1/16 = 1 note per step */

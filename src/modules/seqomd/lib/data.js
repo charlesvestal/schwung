@@ -25,7 +25,8 @@ export function createEmptyStep() {
         offset: 0,         // Micro-timing offset in ticks (-24 to +24, 48 ticks per step)
         arpMode: -1,       // Arp mode override (-1 = use track, 0+ = override)
         arpSpeed: -1,      // Arp speed override (-1 = use track, 0+ = override)
-        arpOctave: -1      // Arp octave override (-1 = use track, 0+ = override)
+        arpOctave: -1,     // Arp octave override (-1 = use track, 0+ = override)
+        arpLayer: 0        // Arp layer mode (0=Layer, 1=Cut, 2=Legato) - step only, no track default
     };
 }
 
@@ -47,7 +48,8 @@ export function cloneStep(srcStep) {
         offset: srcStep.offset || 0,
         arpMode: srcStep.arpMode !== undefined ? srcStep.arpMode : -1,
         arpSpeed: srcStep.arpSpeed !== undefined ? srcStep.arpSpeed : -1,
-        arpOctave: srcStep.arpOctave !== undefined ? srcStep.arpOctave : -1
+        arpOctave: srcStep.arpOctave !== undefined ? srcStep.arpOctave : -1,
+        arpLayer: srcStep.arpLayer !== undefined ? srcStep.arpLayer : 0
     };
 }
 
@@ -201,6 +203,9 @@ export function migrateTrackData(trackData) {
                 }
                 if (step.arpOctave === undefined) {
                     step.arpOctave = -1;
+                }
+                if (step.arpLayer === undefined) {
+                    step.arpLayer = 0;
                 }
             }
         }

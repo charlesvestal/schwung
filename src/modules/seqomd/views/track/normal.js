@@ -22,7 +22,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import {
     NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
-    ARP_MODES, ARP_SPEEDS, ARP_OCTAVES
+    ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS
 } from '../../lib/constants.js';
 
 import { state, displayMessage } from '../../lib/state.js';
@@ -173,8 +173,8 @@ function handleKnobTap(knobIdx) {
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "CC2 cleared", "");
         changed = true;
     } else if (knobIdx === 2) {
-        /* Cycle step arp parameter: mode -> speed -> octave -> mode */
-        state.stepArpParam = (state.stepArpParam + 1) % 3;
+        /* Cycle step arp parameter: mode -> speed -> octave -> layer -> mode */
+        state.stepArpParam = (state.stepArpParam + 1) % 4;
         displayStepArpParams();
     } else if (knobIdx === 6 && step.ratchet > 0) {
         step.ratchet = 0;
@@ -302,7 +302,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
             /* Recording mode */
             if (state.recording && state.playing && state.currentPlayStep >= 0) {
                 const step = getCurrentPattern(state.currentTrack).steps[state.currentPlayStep];
-                if (!step.notes.includes(midiNote) && step.notes.length < 4) {
+                if (!step.notes.includes(midiNote) && step.notes.length < 7) {
                     step.notes.push(midiNote);
                     setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_add_note`, String(midiNote));
                     markDirty();
@@ -432,7 +432,7 @@ function handleStepKnob(knobIdx, velocity) {
             }
             step.arpSpeed = speed;
             setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_speed`, String(speed));
-        } else {
+        } else if (state.stepArpParam === 2) {
             /* Octave */
             let octave = step.arpOctave;
             if (velocity >= 1 && velocity <= 63) {
@@ -442,6 +442,16 @@ function handleStepKnob(knobIdx, velocity) {
             }
             step.arpOctave = octave;
             setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_octave`, String(octave));
+        } else {
+            /* Layer - no track default, always 0-2 */
+            let layer = step.arpLayer;
+            if (velocity >= 1 && velocity <= 63) {
+                layer = Math.min(layer + 1, ARP_LAYERS.length - 1);
+            } else if (velocity >= 65 && velocity <= 127) {
+                layer = Math.max(layer - 1, 0);
+            }
+            step.arpLayer = layer;
+            setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_layer`, String(layer));
         }
         displayStepArpParams();
     } else if (knobIdx === 6) {
@@ -488,7 +498,7 @@ function handleStepKnob(knobIdx, velocity) {
 
 /* ============ Step Arp Display ============ */
 
-const STEP_ARP_COLORS = [Cyan, VividYellow, Purple];  /* Mode, Speed, Octave */
+const STEP_ARP_COLORS = [Cyan, VividYellow, Purple, BrightGreen];  /* Mode, Speed, Octave, Layer */
 
 function displayStepArpParams() {
     const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
@@ -496,15 +506,17 @@ function displayStepArpParams() {
     const modeName = step.arpMode < 0 ? "Track" : ARP_MODES[step.arpMode].name;
     const speedName = step.arpSpeed < 0 ? "Track" : ARP_SPEEDS[step.arpSpeed].name;
     const octaveName = step.arpOctave < 0 ? "Track" : ARP_OCTAVES[step.arpOctave].name;
+    const layerName = ARP_LAYERS[step.arpLayer].name;  /* No track default for layer */
 
-    const modePrefix = state.stepArpParam === 0 ? "Mode> " : "Mode: ";
-    const speedPrefix = state.stepArpParam === 1 ? "Speed> " : "Speed: ";
-    const octavePrefix = state.stepArpParam === 2 ? "Octave> " : "Octave: ";
+    const modePrefix = state.stepArpParam === 0 ? ">" : " ";
+    const speedPrefix = state.stepArpParam === 1 ? ">" : " ";
+    const octavePrefix = state.stepArpParam === 2 ? ">" : " ";
+    const layerPrefix = state.stepArpParam === 3 ? ">" : " ";
 
     displayMessage(
-        `${modePrefix}${modeName}`,
-        `${speedPrefix}${speedName}`,
-        `${octavePrefix}${octaveName}`,
+        `${modePrefix}Mode:${modeName} ${speedPrefix}Spd:${speedName}`,
+        `${octavePrefix}Oct:${octaveName} ${layerPrefix}Lyr:${layerName}`,
+        "",
         ""
     );
     updateLEDs();
@@ -574,7 +586,7 @@ function toggleStepNote(stepIdx, note) {
         setParam(`track_${state.currentTrack}_step_${stepIdx}_remove_note`, String(note));
         return false;
     } else {
-        if (step.notes.length < 4) {
+        if (step.notes.length < 7) {
             step.notes.push(note);
             setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, String(note));
             /* Recalculate scale detection when note is added */
@@ -603,6 +615,7 @@ function clearStep(stepIdx) {
     step.arpMode = -1;
     step.arpSpeed = -1;
     step.arpOctave = -1;
+    step.arpLayer = 0;
     setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
 }
 
