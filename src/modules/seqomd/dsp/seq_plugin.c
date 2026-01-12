@@ -19,7 +19,7 @@
 #define NUM_STEPS 16
 #define NUM_PATTERNS 16
 #define MAX_NOTES_PER_STEP 7
-#define MAX_SCHEDULED_NOTES 128
+#define MAX_SCHEDULED_NOTES 512  /* Increased from 128 for complex patterns with many overlapping notes */
 
 #define DEFAULT_VELOCITY 100
 #define DEFAULT_GATE 50
@@ -620,6 +620,7 @@ static void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
                 if (conflict->on_sent && !conflict->off_sent) {
                     send_note_off(conflict->note, conflict->channel);
                     conflict->off_sent = 1;
+                    conflict->active = 0;  /* Free the slot to prevent leak */
                 }
             }
         }

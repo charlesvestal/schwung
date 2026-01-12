@@ -2187,6 +2187,127 @@ TEST(arp_layer_cut_single_note) {
     set_param("track_0_arp_mode", "0");
 }
 
+/* ============ Scheduler Tests ============ */
+
+/* Helper: Count active scheduler slots */
+static int count_active_scheduler_slots(void) {
+    int count = 0;
+    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
+        if (g_scheduled_notes[i].active) {
+            count++;
+        }
+    }
+    return count;
+}
+
+TEST(scheduler_no_leak_on_conflict) {
+    /* Regression test for scheduler leak bug:
+     * When notes conflict (same note+channel), the old note is immediately terminated.
+     * Before the fix, the slot was marked off_sent=1 but active remained 1,
+     * causing the slot to leak and never be freed.
+     * This test simulates Set 16's pattern: long overlapping notes that cause conflicts.
+     */
+
+    /* Setup: Single note that repeats every step with long length
+     * This creates conflicts as each new note-on happens while the previous is still playing */
+    set_param("track_0_step_0_add_note", "60");  /* Middle C */
+    set_param("track_0_step_0_length", "8");     /* 8-step length (4 steps = 1 bar) */
+
+    /* Also add steps 1-7 with same note to create continuous conflicts */
+    for (int i = 1; i < 8; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_add_note", i);
+        set_param(key, "60");
+        snprintf(key, sizeof(key), "track_0_step_%d_length", i);
+        set_param(key, "8");
+    }
+
+    clear_captured_notes();
+    set_param("playing", "1");
+
+    /* Render several loops - if scheduler leaks, slots will accumulate */
+    int initial_active = count_active_scheduler_slots();
+
+    /* Loop 1-2: Initial state */
+    render_steps(32);  /* 2 full loops */
+    int active_after_2_loops = count_active_scheduler_slots();
+
+    /* Loop 3-10: Continue playing - should NOT accumulate slots */
+    render_steps(128);  /* 8 more loops */
+    int active_after_10_loops = count_active_scheduler_slots();
+
+    set_param("playing", "0");
+
+    /* Verify slots are being freed:
+     * - After 2 loops: should have ~8 active notes (one per step currently playing)
+     * - After 10 loops: should have similar number, NOT accumulating
+     * - If leak exists: active slots would grow by ~8 per loop = 80+ slots after 10 loops
+     */
+
+    /* With the fix, we expect bounded growth (only currently playing notes) */
+    ASSERT(active_after_2_loops < 20);   /* Should be ~8-12 slots, definitely under 20 */
+    ASSERT(active_after_10_loops < 20);  /* Still under 20, not growing */
+
+    /* The critical test: slots should NOT accumulate over many loops
+     * Without the fix, this would fail as slots leak ~5-8 per loop */
+    int slot_growth = active_after_10_loops - active_after_2_loops;
+    ASSERT(slot_growth < 10);  /* Small variance OK, but not 40+ leaked slots */
+
+    /* Verify notes actually played (not silently dropped due to full scheduler) */
+    int note_count = count_note_ons(60, 0);
+    ASSERT(note_count > 0);  /* Should have played many notes */
+
+    /* Clean up */
+    for (int i = 0; i < 8; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+}
+
+TEST(scheduler_conflict_frees_slot_immediately) {
+    /* Direct test: verify that when a conflict happens and note is immediately
+     * terminated, the slot is freed (active=0) not just marked off_sent=1 */
+
+    /* Ensure clean state */
+    set_param("playing", "0");
+    clear_captured_notes();
+
+    /* Setup: Schedule a long note, then immediately schedule a conflicting note */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_length", "16");  /* Very long */
+
+    set_param("track_0_step_1_add_note", "60");  /* Same note = conflict */
+    set_param("track_0_step_1_length", "1");
+
+    set_param("playing", "1");
+
+    /* Step 0: Schedule long note */
+    render_steps(1);
+    int after_step_0 = count_active_scheduler_slots();
+
+    /* Step 1: Conflict occurs - old note should be freed */
+    render_steps(1);
+    int after_step_1 = count_active_scheduler_slots();
+
+    /* Continue a bit more to let notes play out */
+    render_steps(2);
+    int after_step_3 = count_active_scheduler_slots();
+
+    set_param("playing", "0");
+
+    /* The key test: after conflict and cleanup, slots should not accumulate
+     * With the bug, slots would leak (after_step_1 would be 2: leaked + new)
+     * With the fix, slots are properly freed (after_step_1 should be 0-1) */
+    ASSERT(after_step_0 <= 2);  /* Should have at most 1-2 slots */
+    ASSERT(after_step_1 <= 1);  /* After conflict resolution, should not accumulate */
+    ASSERT(after_step_3 <= 1);  /* Still bounded as notes expire */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_1_clear", "1");
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -2329,6 +2450,10 @@ int main(int argc, char **argv) {
     RUN_TEST(arp_layer_layer_overlaps);
     RUN_TEST(arp_layer_cut_cancels);
     RUN_TEST(arp_layer_cut_single_note);
+
+    printf("\nScheduler Integrity:\n");
+    RUN_TEST(scheduler_no_leak_on_conflict);
+    RUN_TEST(scheduler_conflict_frees_slot_immediately);
 
     cleanup_plugin();
 

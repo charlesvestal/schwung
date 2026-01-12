@@ -140,6 +140,15 @@ globalThis.tick = function() {
                     const pattern = getCurrentPattern(state.currentTrack);
                     const playingNotes = [];
 
+                    /* Find the most recent CUT step (arpLayer = 1) that cancels earlier notes */
+                    let lastCutStep = -1;
+                    for (let s = 0; s <= newStep; s++) {
+                        const step = pattern.steps[s];
+                        if (step.notes.length > 0 && step.arpLayer === 1) {
+                            lastCutStep = s;
+                        }
+                    }
+
                     /* Check all steps to see if their notes are still sounding */
                     for (let s = 0; s < NUM_STEPS; s++) {
                         const step = pattern.steps[s];
@@ -148,8 +157,11 @@ globalThis.tick = function() {
                         const length = step.length || 1;
                         const stepEnd = s + length - 1;
 
-                        /* Note is playing if current step is within its duration */
-                        if (s <= newStep && newStep <= stepEnd) {
+                        /* Note is playing if:
+                         * 1. Current step is within its duration, AND
+                         * 2. This step is at or after the most recent CUT step
+                         */
+                        if (s <= newStep && newStep <= stepEnd && s >= lastCutStep) {
                             for (const note of step.notes) {
                                 if (note >= 36 && note < 68 && !playingNotes.includes(note)) {
                                     playingNotes.push(note);
