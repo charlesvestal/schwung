@@ -1671,7 +1671,7 @@ TEST(arp_pattern_unsorted_input) {
 TEST(arp_scheduling_basic) {
     /* Set up track with arp mode Up */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "3"); /* 1/4 = 4 notes per step */
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 notes per step */
 
     /* Add 3-note chord to step 0 */
     set_param("track_0_step_0_add_note", "60");  /* C */
@@ -1683,15 +1683,15 @@ TEST(arp_scheduling_basic) {
     render_steps(2);  /* Render through step 0 and into step 1 */
     set_param("playing", "0");
 
-    /* With arp speed 1/4 (4 notes/step) and note length 1, we get 4 arp notes
-     * Pattern C-E-G cycles: C, E, G, C */
-    int count_60 = count_note_ons(60, 0);  /* C appears twice (positions 0, 3) */
+    /* With arp speed 1/32 (2 notes/step) and note length 1, we get 2 arp notes
+     * Pattern C-E-G cycles: C, E */
+    int count_60 = count_note_ons(60, 0);  /* C appears once (position 0) */
     int count_64 = count_note_ons(64, 0);  /* E appears once (position 1) */
-    int count_67 = count_note_ons(67, 0);  /* G appears once (position 2) */
+    int count_67 = count_note_ons(67, 0);  /* G doesn't play (pattern too short) */
 
-    ASSERT_EQ(count_60, 2);
+    ASSERT_EQ(count_60, 1);
     ASSERT_EQ(count_64, 1);
-    ASSERT_EQ(count_67, 1);
+    ASSERT_EQ(count_67, 0);
 
     /* Clean up */
     set_param("track_0_step_0_clear", "1");
@@ -1699,9 +1699,9 @@ TEST(arp_scheduling_basic) {
 }
 
 TEST(arp_scheduling_with_note_length) {
-    /* Note length 2 + arp speed 1/4 = 8 arp notes */
+    /* Note length 2 + arp speed 1/32 = 4 arp notes */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "3"); /* 1/4 */
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 notes per step */
     set_param("track_0_step_0_length", "2");
 
     set_param("track_0_step_0_add_note", "60");
@@ -1713,18 +1713,18 @@ TEST(arp_scheduling_with_note_length) {
     render_steps(4);  /* Render through 2-step note length */
     set_param("playing", "0");
 
-    /* 8 notes total: C-E-G-C-E-G-C-E (cycling 3-note pattern) */
+    /* 4 notes total: C-E-G-C (cycling 3-note pattern) */
     int count_60 = count_note_ons(60, 0);
     int count_64 = count_note_ons(64, 0);
     int count_67 = count_note_ons(67, 0);
 
-    /* 8 notes, pattern length 3: 8/3 = 2.67 cycles
-     * C: positions 0, 3, 6 = 3 times
-     * E: positions 1, 4, 7 = 3 times
-     * G: positions 2, 5 = 2 times */
-    ASSERT_EQ(count_60, 3);
-    ASSERT_EQ(count_64, 3);
-    ASSERT_EQ(count_67, 2);
+    /* 4 notes, pattern length 3: 4/3 = 1.33 cycles
+     * C: positions 0, 3 = 2 times
+     * E: position 1 = 1 time
+     * G: position 2 = 1 time */
+    ASSERT_EQ(count_60, 2);
+    ASSERT_EQ(count_64, 1);
+    ASSERT_EQ(count_67, 1);
 
     /* Clean up */
     set_param("track_0_step_0_clear", "1");
@@ -1735,7 +1735,7 @@ TEST(arp_scheduling_with_note_length) {
 TEST(arp_step_override) {
     /* Track has Up mode, step overrides to Down */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 notes per step */
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 notes per step */
     set_param("track_0_step_0_arp_mode", "2");  /* ARP_DOWN override */
 
     set_param("track_0_step_0_add_note", "60");
@@ -1759,7 +1759,7 @@ TEST(arp_step_override) {
 TEST(arp_ignores_ratchet) {
     /* When arp active, ratchet should be ignored */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 notes per step */
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 notes per step */
     set_param("track_0_step_0_ratchet", "4");  /* Would be 4 triggers if no arp */
 
     set_param("track_0_step_0_add_note", "60");
@@ -1783,7 +1783,7 @@ TEST(arp_ignores_ratchet) {
 TEST(arp_single_note_no_arp) {
     /* Single note should not arp (uses ratchet instead) */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "3"); /* 1/4 */
+    set_param("track_0_arp_speed", "0"); /* 1/32 */
     set_param("track_0_step_0_ratchet", "2");
 
     set_param("track_0_step_0_add_note", "60");  /* Only 1 note */
@@ -1806,7 +1806,7 @@ TEST(arp_single_note_no_arp) {
 TEST(arp_chord_mode) {
     /* Chord mode: all notes together, repeated at arp speed */
     set_param("track_0_arp_mode", "8");  /* ARP_CHORD */
-    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 hits per step */
+    set_param("track_0_arp_speed", "0"); /* 1/32 = 2 hits per step */
 
     set_param("track_0_step_0_add_note", "60");
     set_param("track_0_step_0_add_note", "64");
@@ -1834,12 +1834,14 @@ TEST(arp_chord_mode) {
 /* ============ Tests: Arpeggiator with Swing ============ */
 
 TEST(arp_with_swing) {
-    /* Arp notes should have swing applied based on global beat position */
+    /* Arp notes should have swing applied based on global beat position.
+     * Step 0 (downbeat) should NOT be delayed.
+     * Step 1 (upbeat) SHOULD be delayed by swing. */
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
-    set_param("track_0_arp_speed", "1"); /* 1/2 = 2 notes per step */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
     set_param("track_0_swing", "100");   /* Maximum swing */
 
-    /* Notes on step 0 (downbeat) and step 1 (upbeat) */
+    /* Single note on step 0 (downbeat) and step 1 (upbeat) */
     set_param("track_0_step_0_add_note", "60");
     set_param("track_0_step_0_add_note", "64");
     set_param("track_0_step_1_add_note", "67");
@@ -1860,6 +1862,19 @@ TEST(arp_with_swing) {
     ASSERT(count_64 >= 1);
     ASSERT(count_67 >= 1);
     ASSERT(count_71 >= 1);
+
+    /* Verify timing: step 0 notes (60,64) should come BEFORE step 1 notes (67,71)
+     * because step 1 is delayed by swing */
+    int idx_60 = -1, idx_67 = -1;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 60 && idx_60 < 0) idx_60 = i;
+            if (g_captured_notes[i].note == 67 && idx_67 < 0) idx_67 = i;
+        }
+    }
+    ASSERT(idx_60 >= 0);
+    ASSERT(idx_67 >= 0);
+    ASSERT(idx_60 < idx_67);  /* Step 0 notes before swung step 1 notes */
 
     /* Clean up */
     set_param("track_0_step_0_clear", "1");
@@ -1906,7 +1921,7 @@ TEST(arp_with_transpose) {
     /* Arp notes should be transposed when chord_follow enabled */
     set_param("track_4_chord_follow", "1");  /* Already default */
     set_param("track_4_arp_mode", "1");  /* ARP_UP */
-    set_param("track_4_arp_speed", "1"); /* 1/2 */
+    set_param("track_4_arp_speed", "0"); /* 1/32 = 2 notes per step */
     set_param("current_transpose", "5"); /* +5 semitones */
 
     set_param("track_4_step_0_add_note", "60");
@@ -1937,7 +1952,7 @@ TEST(arp_with_transpose) {
 TEST(arp_transpose_with_octave) {
     /* Arp octave extension + transpose */
     set_param("track_4_arp_mode", "1");
-    set_param("track_4_arp_speed", "0"); /* 1/1 = 1 note per step */
+    set_param("track_4_arp_speed", "2"); /* 1/16 = 1 note per step */
     set_param("track_4_arp_octave", "1"); /* +1 octave */
     set_param("current_transpose", "3");
 
@@ -1978,7 +1993,7 @@ TEST(arp_transpose_with_octave) {
 TEST(arp_no_transpose_on_drum_track) {
     /* Drum tracks don't transpose even with arp */
     set_param("track_0_arp_mode", "1");
-    set_param("track_0_arp_speed", "1");
+    set_param("track_0_arp_speed", "0"); /* 1/32 */
     set_param("current_transpose", "12");
 
     set_param("track_0_step_0_add_note", "36");
@@ -2018,7 +2033,7 @@ TEST(arp_params_persist) {
 
     /* Reset */
     set_param("track_0_arp_mode", "0");
-    set_param("track_0_arp_speed", "3");
+    set_param("track_0_arp_speed", "2"); /* default = 1/16 */
     set_param("track_0_arp_octave", "0");
 }
 
