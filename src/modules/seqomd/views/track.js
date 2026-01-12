@@ -155,25 +155,76 @@ export function onInput(data) {
     }
 
     /*
-     * Mode EXIT transitions
-     * Jog click, back button, or shift+step (same as entry) exits channel/speed/swing/arp modes
+     * Mode EXIT and CROSS-MODE transitions for channel/speed/swing/arp
+     * - Jog click or back button: exit to normal
+     * - Shift+same step: exit to normal
+     * - Shift+different step: switch directly to that mode
      */
     if (state.trackMode === 'channel' || state.trackMode === 'speed' || state.trackMode === 'swing' || state.trackMode === 'arp') {
         const isJogClick = isNote && note === MoveMainButton && isNoteOn && velocity > 0;
         const isBackButton = isCC && note === MoveBack && velocity > 0;
-        const isShiftStepExit = state.shiftHeld && isNote && isNoteOn && velocity > 0 && (
-            (state.trackMode === 'channel' && note === 17) ||
-            (state.trackMode === 'speed' && note === 20) ||
-            (state.trackMode === 'swing' && note === 22) ||
-            (state.trackMode === 'arp' && note === 26)
-        );
-        if (isJogClick || isBackButton || isShiftStepExit) {
+
+        /* Check for shift+step presses */
+        const isShiftStep = state.shiftHeld && isNote && isNoteOn && velocity > 0;
+        const isChannelStep = isShiftStep && note === 17;
+        const isSpeedStep = isShiftStep && note === 20;
+        const isSwingStep = isShiftStep && note === 22;
+        const isArpStep = isShiftStep && note === 26;
+
+        /* Exit current mode helper */
+        const exitCurrentMode = () => {
             modes[state.trackMode].onExit();
             if (state.trackMode === 'channel') exitChannelMode();
             else if (state.trackMode === 'speed') exitSpeedMode();
             else if (state.trackMode === 'swing') exitSwingMode();
             else exitArpMode();
+        };
+
+        /* Jog click or back: exit to normal */
+        if (isJogClick || isBackButton) {
+            exitCurrentMode();
             modes.normal.onEnter();
+            updateLEDs();
+            return true;
+        }
+
+        /* Shift+same step: exit to normal */
+        if ((state.trackMode === 'channel' && isChannelStep) ||
+            (state.trackMode === 'speed' && isSpeedStep) ||
+            (state.trackMode === 'swing' && isSwingStep) ||
+            (state.trackMode === 'arp' && isArpStep)) {
+            exitCurrentMode();
+            modes.normal.onEnter();
+            updateLEDs();
+            return true;
+        }
+
+        /* Shift+different step: cross-mode transition */
+        if (isChannelStep && state.trackMode !== 'channel') {
+            exitCurrentMode();
+            enterChannelMode();
+            modes.channel.onEnter();
+            updateLEDs();
+            return true;
+        }
+        if (isSpeedStep && state.trackMode !== 'speed') {
+            exitCurrentMode();
+            enterSpeedMode();
+            modes.speed.onEnter();
+            updateLEDs();
+            return true;
+        }
+        if (isSwingStep && state.trackMode !== 'swing') {
+            exitCurrentMode();
+            enterSwingMode();
+            modes.swing.onEnter();
+            updateLEDs();
+            return true;
+        }
+        if (isArpStep && state.trackMode !== 'arp') {
+            exitCurrentMode();
+            enterArpMode();
+            modes.arp.onEnter();
             updateLEDs();
             return true;
         }
