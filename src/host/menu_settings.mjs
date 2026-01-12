@@ -4,8 +4,9 @@
 
 import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../shared/menu_layout.mjs';
 
-const SETTINGS_COUNT = 5;
+const SETTINGS_COUNT = 6;
 const VELOCITY_CURVES = ['linear', 'soft', 'hard', 'full'];
+const PAD_LAYOUTS = ['chromatic', 'fourth'];
 const CLOCK_MODES = ['off', 'internal', 'external'];
 
 export function getSettings() {
@@ -13,6 +14,7 @@ export function getSettings() {
         velocity_curve: host_get_setting('velocity_curve') || 'linear',
         aftertouch_enabled: host_get_setting('aftertouch_enabled') ?? 1,
         aftertouch_deadzone: host_get_setting('aftertouch_deadzone') ?? 0,
+        pad_layout: host_get_setting('pad_layout') || 'chromatic',
         clock_mode: host_get_setting('clock_mode') || 'internal',
         tempo_bpm: host_get_setting('tempo_bpm') ?? 120
     };
@@ -36,6 +38,7 @@ export function drawSettings({ settingsIndex }) {
         { label: "Velocity", value: capitalize(settings.velocity_curve) },
         { label: "Aftertouch", value: settings.aftertouch_enabled ? "On" : "Off" },
         { label: "AT Deadzone", value: String(settings.aftertouch_deadzone) },
+        { label: "Pad Layout", value: capitalize(settings.pad_layout) },
         { label: "MIDI Clock", value: formatClockMode(settings.clock_mode) },
         { label: "Tempo BPM", value: String(settings.tempo_bpm) }
     ];
@@ -106,10 +109,14 @@ function changeSettingValue(settingsIndex, delta, shiftHeld) {
         if (dz > 50) dz = 50;
         host_set_setting('aftertouch_deadzone', dz);
     } else if (settingsIndex === 3) {
+        let idx = PAD_LAYOUTS.indexOf(settings.pad_layout);
+        idx = (idx + delta + PAD_LAYOUTS.length) % PAD_LAYOUTS.length;
+        host_set_setting('pad_layout', PAD_LAYOUTS[idx]);
+    } else if (settingsIndex === 4) {
         let idx = CLOCK_MODES.indexOf(settings.clock_mode);
         idx = (idx + delta + CLOCK_MODES.length) % CLOCK_MODES.length;
         host_set_setting('clock_mode', CLOCK_MODES[idx]);
-    } else if (settingsIndex === 4) {
+    } else if (settingsIndex === 5) {
         let bpm = settings.tempo_bpm;
         const step = shiftHeld ? 1 : 5;
         bpm = bpm + (delta * step);

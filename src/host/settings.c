@@ -22,10 +22,17 @@ static const char *clock_mode_names[] = {
     "external"
 };
 
+/* Pad layout names for display and parsing */
+static const char *pad_layout_names[] = {
+    "chromatic",
+    "fourth"
+};
+
 void settings_init(host_settings_t *s) {
     s->velocity_curve = VELOCITY_CURVE_LINEAR;
     s->aftertouch_enabled = 1;
     s->aftertouch_deadzone = 0;
+    s->pad_layout = PAD_LAYOUT_CHROMATIC;
     s->clock_mode = CLOCK_MODE_INTERNAL;
     s->tempo_bpm = 120;
 }
@@ -46,6 +53,24 @@ velocity_curve_t settings_parse_velocity_curve(const char *str) {
         }
     }
     return VELOCITY_CURVE_LINEAR;
+}
+
+const char* settings_pad_layout_name(pad_layout_t layout) {
+    if (layout >= 0 && layout < PAD_LAYOUT_COUNT) {
+        return pad_layout_names[layout];
+    }
+    return "chromatic";
+}
+
+pad_layout_t settings_parse_pad_layout(const char *str) {
+    if (!str) return PAD_LAYOUT_CHROMATIC;
+
+    for (int i = 0; i < PAD_LAYOUT_COUNT; i++) {
+        if (strcmp(str, pad_layout_names[i]) == 0) {
+            return (pad_layout_t)i;
+        }
+    }
+    return PAD_LAYOUT_CHROMATIC;
 }
 
 void settings_load(host_settings_t *s, const char *path) {
@@ -83,6 +108,8 @@ void settings_load(host_settings_t *s, const char *path) {
             if (dz < 0) dz = 0;
             if (dz > 50) dz = 50;
             s->aftertouch_deadzone = dz;
+        } else if (strcmp(key, "pad_layout") == 0) {
+            s->pad_layout = settings_parse_pad_layout(val);
         } else if (strcmp(key, "clock_mode") == 0) {
             for (int i = 0; i < CLOCK_MODE_COUNT; i++) {
                 if (strcmp(val, clock_mode_names[i]) == 0) {
@@ -99,10 +126,11 @@ void settings_load(host_settings_t *s, const char *path) {
     }
 
     fclose(f);
-    printf("settings: loaded velocity_curve=%s aftertouch=%s deadzone=%d clock=%s tempo=%d\n",
+    printf("settings: loaded velocity_curve=%s aftertouch=%s deadzone=%d pad_layout=%s clock=%s tempo=%d\n",
            settings_velocity_curve_name(s->velocity_curve),
            s->aftertouch_enabled ? "on" : "off",
            s->aftertouch_deadzone,
+           settings_pad_layout_name(s->pad_layout),
            clock_mode_names[s->clock_mode],
            s->tempo_bpm);
 }
@@ -117,6 +145,7 @@ int settings_save(const host_settings_t *s, const char *path) {
     fprintf(f, "velocity_curve=%s\n", settings_velocity_curve_name(s->velocity_curve));
     fprintf(f, "aftertouch_enabled=%d\n", s->aftertouch_enabled);
     fprintf(f, "aftertouch_deadzone=%d\n", s->aftertouch_deadzone);
+    fprintf(f, "pad_layout=%s\n", settings_pad_layout_name(s->pad_layout));
     fprintf(f, "clock_mode=%s\n", clock_mode_names[s->clock_mode]);
     fprintf(f, "tempo_bpm=%d\n", s->tempo_bpm);
 
