@@ -19,7 +19,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam } from '../../lib/helpers.js';
-import { saveCurrentSetToDisk } from '../../lib/persistence.js';
+import { markDirty } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
 
@@ -43,7 +43,7 @@ export function onInput(data) {
         }
         track.arpMode = mode;
         setParam(`track_${state.currentTrack}_arp_mode`, String(mode));
-        saveCurrentSetToDisk();
+        markDirty();
         updateDisplayContent();
         return true;
     }
@@ -58,7 +58,7 @@ export function onInput(data) {
         }
         track.arpSpeed = speed;
         setParam(`track_${state.currentTrack}_arp_speed`, String(speed));
-        saveCurrentSetToDisk();
+        markDirty();
         updateDisplayContent();
         return true;
     }
@@ -73,7 +73,7 @@ export function onInput(data) {
         }
         track.arpOctave = octave;
         setParam(`track_${state.currentTrack}_arp_octave`, String(octave));
-        saveCurrentSetToDisk();
+        markDirty();
         updateDisplayContent();
         return true;
     }
@@ -137,8 +137,8 @@ export function updateDisplayContent() {
     displayMessage(
         "ARP MODE",
         `Track ${state.currentTrack + 1}`,
-        `${modeName} | ${speedName} | Oct: ${octaveName}`,
-        "Knobs 1-3 to adjust"
+        `${modeName} | ${speedName}`,
+        `Octave: ${octaveName}`
     );
 }
 
