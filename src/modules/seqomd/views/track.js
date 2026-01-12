@@ -186,9 +186,13 @@ export function onInput(data) {
                 return true;
             } else if (state.trackMode === 'normal') {
                 state.captureHeld = true;
+                updateLEDs();  /* Show spark preview */
             }
         } else {
             state.captureHeld = false;
+            if (state.trackMode === 'normal') {
+                updateLEDs();  /* Restore normal view */
+            }
         }
         return true;
     }

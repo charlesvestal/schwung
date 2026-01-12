@@ -9,7 +9,7 @@
  */
 
 import {
-    Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed,
+    Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed, Purple,
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
@@ -625,7 +625,24 @@ function updateStepLEDs() {
         for (let i = 0; i < NUM_STEPS; i++) {
             setLED(MoveSteps[i], Black);
         }
-    } else {
+    }
+    /* When capture held, show steps with spark conditions */
+    else if (state.captureHeld) {
+        for (let i = 0; i < NUM_STEPS; i++) {
+            const step = pattern.steps[i];
+            const hasSpark = step.paramSpark > 0 || step.compSpark > 0 || step.jump >= 0;
+            const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
+
+            if (hasSpark) {
+                setLED(MoveSteps[i], Purple);
+            } else if (hasContent) {
+                setLED(MoveSteps[i], LightGrey);
+            } else {
+                setLED(MoveSteps[i], Black);
+            }
+        }
+    }
+    else {
         for (let i = 0; i < NUM_STEPS; i++) {
             let color = Black;
             const inLoop = i >= pattern.loopStart && i <= pattern.loopEnd;
