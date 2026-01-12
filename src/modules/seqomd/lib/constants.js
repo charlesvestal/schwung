@@ -24,7 +24,7 @@ export const HOLD_THRESHOLD_MS = 300;  // Time threshold for hold vs tap
 
 /* ============ Persistence ============ */
 
-export const DATA_DIR = '/data/UserData/move-anything-data/sequencer';
+export const DATA_DIR = '/data/UserData/move-anything-data/seqomd';
 export const SETS_DIR = DATA_DIR + '/sets';
 export const SETS_FILE = DATA_DIR + '/sets.json';  // Legacy, for migration
 
@@ -197,12 +197,16 @@ export const ARP_MODES = [
 ];
 
 export const ARP_SPEEDS = [
-    { name: '1/1', div: 1 },
-    { name: '1/2', div: 2 },
-    { name: '1/3', div: 3 },
-    { name: '1/4', div: 4 },
-    { name: '1/6', div: 6 },
-    { name: '1/8', div: 8 }
+    { name: '1/32', rate: 0.5 },      // 32nd notes (2 per step)
+    { name: '1/24', rate: 2/3 },      // Triplet 16ths
+    { name: '1/16', rate: 1 },        // 16th notes (1 per step)
+    { name: '1/12', rate: 4/3 },      // Triplet 8ths
+    { name: '1/8',  rate: 2 },        // 8th notes
+    { name: '1/6',  rate: 8/3 },      // Triplet quarters
+    { name: '1/4',  rate: 4 },        // Quarter notes
+    { name: '1/3',  rate: 16/3 },     // Triplet halves
+    { name: '1/2',  rate: 8 },        // Half notes
+    { name: '1/1',  rate: 16 }        // Whole notes
 ];
 
 export const ARP_OCTAVES = [
@@ -215,4 +219,4 @@ export const ARP_OCTAVES = [
     { name: '±2' }
 ];
 
-export const DEFAULT_ARP_SPEED = 3;  /* 1/4 */
+export const DEFAULT_ARP_SPEED = 2;  /* 1/16 */

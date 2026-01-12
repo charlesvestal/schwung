@@ -15,7 +15,7 @@ Move Anything is a framework for custom JavaScript and native DSP modules on Abl
 ### Architecture
 
 ```
-src/modules/sequencer/
+src/modules/seqomd/
   ui.js                    # Main router - delegates to views
   lib/
     constants.js           # Colors, speeds, conditions, etc.
@@ -119,7 +119,7 @@ When holding a step in normal track mode:
 ### Data Storage
 
 ```
-/data/UserData/move-anything-data/sequencer/
+/data/UserData/move-anything-data/seqomd/
   sets.json              # All 32 sets
 ```
 

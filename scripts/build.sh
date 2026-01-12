@@ -11,11 +11,7 @@ cd "$REPO_ROOT"
 mkdir -p ./build/
 mkdir -p ./build/host/
 mkdir -p ./build/shared/
-mkdir -p ./build/modules/sf2/
-mkdir -p ./build/modules/dx7/
-mkdir -p ./build/modules/m8/
-mkdir -p ./build/modules/controller/
-mkdir -p ./build/modules/sequencer/
+mkdir -p ./build/modules/seqomd/
 
 echo "Building host..."
 
@@ -34,34 +30,6 @@ echo "Building host..."
     -o build/move-anything-shim.so \
     src/move_anything_shim.c -ldl
 
-echo "Building SF2 module..."
-
-# Build SF2 DSP plugin
-"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/sf2/dsp/sf2_plugin.c \
-    -o build/modules/sf2/dsp.so \
-    -Isrc -Isrc/modules/sf2/dsp \
-    -lm
-
-echo "Building DX7 module..."
-
-# Build DX7 DSP plugin (C++)
-"${CROSS_PREFIX}g++" -g -O3 -shared -fPIC -std=c++14 \
-    src/modules/dx7/dsp/dx7_plugin.cpp \
-    src/modules/dx7/dsp/msfa/dx7note.cc \
-    src/modules/dx7/dsp/msfa/env.cc \
-    src/modules/dx7/dsp/msfa/exp2.cc \
-    src/modules/dx7/dsp/msfa/fm_core.cc \
-    src/modules/dx7/dsp/msfa/fm_op_kernel.cc \
-    src/modules/dx7/dsp/msfa/freqlut.cc \
-    src/modules/dx7/dsp/msfa/lfo.cc \
-    src/modules/dx7/dsp/msfa/pitchenv.cc \
-    src/modules/dx7/dsp/msfa/sin.cc \
-    src/modules/dx7/dsp/msfa/porta.cpp \
-    -o build/modules/dx7/dsp.so \
-    -Isrc -Isrc/modules/dx7/dsp \
-    -lm
-
 # Copy shared utilities
 cp ./src/shared/*.mjs ./build/shared/
 
@@ -72,54 +40,34 @@ cp ./src/host/menu_ui.js ./build/host/
 cp ./src/shim-entrypoint.sh ./build/
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
-# Font is now loaded from TTF at runtime (/opt/move/Fonts/unifont_jp-14.0.01.ttf)
-
-# Copy SF2 module files
-cp ./src/modules/sf2/module.json ./build/modules/sf2/
-cp ./src/modules/sf2/ui.js ./build/modules/sf2/
-
-# Copy DX7 module files
-cp ./src/modules/dx7/module.json ./build/modules/dx7/
-cp ./src/modules/dx7/ui.js ./build/modules/dx7/
-[ -f ./src/modules/dx7/patches.syx ] && cp ./src/modules/dx7/patches.syx ./build/modules/dx7/
-
-# Copy M8 module files
-cp ./src/modules/m8/module.json ./build/modules/m8/
-cp ./src/modules/m8/ui.js ./build/modules/m8/
-
-# Copy Controller module files
-cp ./src/modules/controller/module.json ./build/modules/controller/
-cp ./src/modules/controller/ui.js ./build/modules/controller/
 
 echo "Building Sequencer module..."
 
 # Build Sequencer DSP plugin
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/sequencer/dsp/seq_plugin.c \
-    -o build/modules/sequencer/dsp.so \
+    src/modules/seqomd/dsp/seq_plugin.c \
+    -o build/modules/seqomd/dsp.so \
     -Isrc \
     -lm
 
 # Copy Sequencer module files
-cp ./src/modules/sequencer/module.json ./build/modules/sequencer/
-cp ./src/modules/sequencer/ui.js ./build/modules/sequencer/
+cp ./src/modules/seqomd/module.json ./build/modules/seqomd/
+cp ./src/modules/seqomd/ui.js ./build/modules/seqomd/
 
-# Copy sequencer lib and views (if they exist)
-if [ -d ./src/modules/sequencer/lib ]; then
-    mkdir -p ./build/modules/sequencer/lib/
-    cp ./src/modules/sequencer/lib/*.js ./build/modules/sequencer/lib/
+# Copy seqomd lib and views (if they exist)
+if [ -d ./src/modules/seqomd/lib ]; then
+    mkdir -p ./build/modules/seqomd/lib/
+    cp ./src/modules/seqomd/lib/*.js ./build/modules/seqomd/lib/
 fi
-if [ -d ./src/modules/sequencer/views ]; then
-    cp -r ./src/modules/sequencer/views ./build/modules/sequencer/
+if [ -d ./src/modules/seqomd/views ]; then
+    cp -r ./src/modules/seqomd/views ./build/modules/seqomd/
 fi
 
 # Strip binaries to reduce size
 echo "Stripping binaries..."
 "${CROSS_PREFIX}strip" build/move-anything
 "${CROSS_PREFIX}strip" build/move-anything-shim.so
-"${CROSS_PREFIX}strip" build/modules/sf2/dsp.so
-"${CROSS_PREFIX}strip" build/modules/dx7/dsp.so
-"${CROSS_PREFIX}strip" build/modules/sequencer/dsp.so
+"${CROSS_PREFIX}strip" build/modules/seqomd/dsp.so
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"
