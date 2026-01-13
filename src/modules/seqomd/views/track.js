@@ -76,10 +76,9 @@ export function onInput(data) {
         const track = state.tracks[state.currentTrack];
         const currentPatternIdx = track.currentPattern;
 
-        /* Find next available pattern slot */
+        /* Find next available empty pattern slot */
         let nextPatternIdx = -1;
 
-        /* First try: find first empty pattern */
         for (let i = 0; i < NUM_PATTERNS; i++) {
             const pattern = track.patterns[i];
             const isEmpty = pattern.steps.every(s => s.notes.length === 0 && s.cc1 < 0 && s.cc2 < 0);
@@ -89,9 +88,15 @@ export function onInput(data) {
             }
         }
 
-        /* Second try: if all patterns have content, use next pattern (wrap around) */
+        /* If no empty slot found, show error and abort */
         if (nextPatternIdx === -1) {
-            nextPatternIdx = (currentPatternIdx + 1) % NUM_PATTERNS;
+            displayMessage(
+                "CANNOT COPY",
+                `Track ${state.currentTrack + 1}: All patterns full`,
+                "Delete patterns to free space",
+                ""
+            );
+            return true;
         }
 
         /* Copy current pattern to next slot */
