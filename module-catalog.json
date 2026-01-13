@@ -2,9 +2,9 @@
   "catalog_version": 1,
   "host": {
     "name": "Move Anything",
-    "latest_version": "1.0.1",
-    "min_host_version": "1.0.0",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v1.0.1/move-anything.tar.gz"
+    "latest_version": "0.1.0",
+    "min_host_version": "0.1.0",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.0/move-anything.tar.gz"
   },
   "modules": [
     {
@@ -23,9 +23,9 @@
       "description": "SoundFont (.sf2) synthesizer using TinySoundFont",
       "author": "TinySoundFont by schellingb (port: charlesvestal)",
       "component_type": "sound_generator",
-      "latest_version": "0.1.1",
+      "latest_version": "0.1.0",
       "min_host_version": "1.0.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-sf2/releases/download/v0.1.1/sf2-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-sf2/releases/download/v0.1.0/sf2-module.tar.gz"
     },
     {
       "id": "m8",
