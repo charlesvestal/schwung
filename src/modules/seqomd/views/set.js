@@ -7,7 +7,9 @@
 import {
     Black, White, Cyan, BrightGreen, BrightRed, VividYellow,
     MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveCopy,
-    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveDelete, MoveMainButton
+    MoveStep1UI, MoveStep2UI, MoveStep3UI, MoveStep4UI, MoveStep5UI, MoveStep6UI, MoveStep7UI, MoveStep8UI,
+    MoveStep9UI, MoveStep10UI, MoveStep11UI, MoveStep12UI, MoveStep13UI, MoveStep14UI, MoveStep15UI, MoveStep16UI,
+    MoveDelete, MoveMainButton
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -69,6 +71,7 @@ export function onInput(data) {
             /* Released without selecting a set - just update display */
             updateDisplayContent();
         }
+        updateLEDs();  // Update Delete button LED
         return true;
     }
 
@@ -265,15 +268,21 @@ export function updateLEDs() {
     updateTransportLEDs();
     updateCaptureLED();
     updateCopyLED();
+    updateDeleteLED();
     updateBackLED();
 }
 
 function updateStepUILEDs() {
-    /* Clear step UI mode icons - not used in set view */
-    setButtonLED(MoveStep1UI, Black);
-    setButtonLED(MoveStep2UI, Black);
-    setButtonLED(MoveStep5UI, Black);
-    setButtonLED(MoveStep7UI, Black);
+    /* Clear all step UI mode icons - not used in set view */
+    const stepUIButtons = [
+        MoveStep1UI, MoveStep2UI, MoveStep3UI, MoveStep4UI,
+        MoveStep5UI, MoveStep6UI, MoveStep7UI, MoveStep8UI,
+        MoveStep9UI, MoveStep10UI, MoveStep11UI, MoveStep12UI,
+        MoveStep13UI, MoveStep14UI, MoveStep15UI, MoveStep16UI
+    ];
+    for (const button of stepUIButtons) {
+        setButtonLED(button, Black);
+    }
 }
 
 /**
@@ -365,6 +374,12 @@ function updateCaptureLED() {
 function updateCopyLED() {
     /* Copy button lit to indicate copy functionality available */
     setButtonLED(MoveCopy, White);
+}
+
+function updateDeleteLED() {
+    /* Delete button lit when held or confirming deletion */
+    const isActive = deleteHeld || deleteConfirmSetIdx >= 0;
+    setButtonLED(MoveDelete, isActive ? BrightRed : Black);
 }
 
 function updateBackLED() {
