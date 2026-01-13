@@ -212,17 +212,27 @@ function loadCatalogFromCache() {
 /* Install a module */
 function installModule(mod) {
     state = STATE_INSTALLING;
-    loadingMessage = `Installing ${mod.name}...`;
+    loadingMessage = `Downloading ${mod.name}...`;
+
+    /* Force display update before blocking download */
+    draw();
+    host_flush_display();
 
     const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
 
     /* Download the module tarball */
+    console.log(`Downloading: ${mod.download_url}`);
     const downloadOk = host_http_download(mod.download_url, tarPath);
     if (!downloadOk) {
         state = STATE_RESULT;
-        resultMessage = 'Download failed';
+        resultMessage = 'Download failed (404?)';
+        console.log('Download failed');
         return;
     }
+
+    loadingMessage = `Installing ${mod.name}...`;
+    draw();
+    host_flush_display();
 
     /* Extract to modules directory */
     const extractOk = host_extract_tar(tarPath, MODULES_DIR);
