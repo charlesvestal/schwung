@@ -255,9 +255,8 @@ globalThis.onMidiMessageInternal = function(data) {
         if (velocity > 0) {
             const wasPlaying = state.playing;
             state.playing = !state.playing;
-            setParam("playing", state.playing ? "1" : "0");
 
-            /* Starting playback: check if shift is held */
+            /* Starting playback: set transpose sequence enabled BEFORE playing to avoid race condition */
             if (state.playing && !wasPlaying) {
                 if (state.shiftHeld) {
                     /* Shift + Play: disable transpose sequence automation */
@@ -269,6 +268,9 @@ globalThis.onMidiMessageInternal = function(data) {
                     setParam("transpose_sequence_enabled", "1");
                 }
             }
+
+            /* Now start/stop playback */
+            setParam("playing", state.playing ? "1" : "0");
 
             if (!state.playing) {
                 state.lastRecordedStep = -1;
