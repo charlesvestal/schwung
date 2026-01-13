@@ -755,3 +755,60 @@ Each module in `module-catalog.json`:
 | `audio_fx` | Audio effects that process audio |
 | `midi_fx` | MIDI effects that transform MIDI |
 | `midi_source` | Sequencers and generators that produce MIDI |
+
+## Host Updates
+
+The Move Anything host can also be updated via the Module Store. When an update is available, "Update Host" appears at the top of the Module Store category list.
+
+### Releasing a Host Update
+
+1. **Bump the version** in `src/host/version.txt`:
+   ```
+   1.0.1
+   ```
+
+2. **Build and package**:
+   ```bash
+   ./scripts/build.sh
+   ```
+
+3. **Create a GitHub release** with the tarball:
+   ```bash
+   gh release create v1.0.1 move-anything.tar.gz --title "v1.0.1" --notes "Release notes here"
+   ```
+
+4. **Update the catalog** in `module-catalog.json`:
+   ```json
+   {
+     "host": {
+       "name": "Move Anything",
+       "latest_version": "1.0.1",
+       "min_host_version": "1.0.0",
+       "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v1.0.1/move-anything.tar.gz"
+     }
+   }
+   ```
+
+5. **Push the catalog update**:
+   ```bash
+   git add module-catalog.json
+   git commit -m "Update host to v1.0.1"
+   git push
+   ```
+
+### How Updates Work
+
+1. Module Store fetches `module-catalog.json` from the main branch
+2. Compares `host.latest_version` to installed version in `/data/UserData/move-anything/host/version.txt`
+3. If different, shows "Update Host" option with version numbers
+4. Update downloads the tarball and extracts over the existing installation
+5. User must restart Move Anything for changes to take effect
+
+### Catalog Location
+
+The Module Store fetches the catalog from:
+```
+https://raw.githubusercontent.com/charlesvestal/move-anything/feature/module-store/module-catalog.json
+```
+
+Note: This URL should point to `main` branch for production releases.
