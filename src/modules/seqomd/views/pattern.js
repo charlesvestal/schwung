@@ -5,7 +5,7 @@
  */
 
 import {
-    Black, White, Cyan, BrightGreen, BrightRed, LightGrey, DarkGrey, VividYellow,
+    Black, White, Cyan, BrightGreen, BrightRed, LightGrey, DarkGrey, DarkPurple, VividYellow,
     MoveSteps, MovePads, MoveTracks, MoveMainKnob, MoveCopy,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
@@ -17,7 +17,7 @@ import {
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, MASTER_CC_CHANNEL,
     MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM
 } from '../lib/constants.js';
-import { state, displayMessage } from '../lib/state.js';
+import { state, displayMessage, displayTemporaryMessage } from '../lib/state.js';
 import { setParam, updateAndSendCC, getCurrentPattern, syncAllTracksToDSP } from '../lib/helpers.js';
 import { markDirty } from '../lib/persistence.js';
 import { clonePattern } from '../lib/data.js';
@@ -148,8 +148,8 @@ export function onInput(data) {
                         copiedPatternIdx = patternIdx;
                         displayMessage(
                             "PATTERN COPIED",
-                            `T${trackIdx + 1} P${patternIdx + 1}`,
-                            "Press another pad to paste",
+                            `T${trackIdx + 1} P${patternIdx + 1} - Hold Copy + press dest`,
+                            "",
                             ""
                         );
                         updatePadLEDs();
@@ -164,23 +164,24 @@ export function onInput(data) {
 
                         markDirty();
 
-                        displayMessage(
-                            "PATTERN PASTED",
-                            `T${copiedTrackIdx + 1} P${copiedPatternIdx + 1} -> T${trackIdx + 1} P${patternIdx + 1}`,
-                            "",
-                            ""
-                        );
+                        const srcTrackIdx = copiedTrackIdx;
+                        const srcPatternIdx = copiedPatternIdx;
 
                         /* Clear copy state after paste */
                         copiedPatternData = null;
                         copiedTrackIdx = -1;
                         copiedPatternIdx = -1;
 
-                        setTimeout(() => {
-                            updateDisplayContent();
-                            updatePadLEDs();
-                        }, 1000);
-                        updatePadLEDs();
+                        updateDisplayContent();  // Set normal display
+                        displayTemporaryMessage(
+                            "PATTERN PASTED",
+                            `T${srcTrackIdx + 1} P${srcPatternIdx + 1} → T${trackIdx + 1} P${patternIdx + 1}`,
+                            "",
+                            "",
+                            1000,
+                            updatePadLEDs
+                        );
+                        updatePadLEDs();  // Show message LEDs
                     }
                 } else if (state.shiftHeld) {
                     /* Shift held - immediate switch to pattern */
@@ -194,8 +195,8 @@ export function onInput(data) {
                     markDirty();
 
                     displayMessage(
-                        `IMMEDIATE SWITCH`,
-                        `Track ${trackIdx + 1} -> Pat ${patternIdx + 1}`,
+                        `PATTERN SWITCH`,
+                        `Track ${trackIdx + 1} → Pattern ${patternIdx + 1}`,
                         "",
                         ""
                     );
@@ -317,8 +318,8 @@ export function onInput(data) {
                 if (recallPatternSnapshot(stepIdx)) {
                     if (state.shiftHeld) {
                         displayMessage(
-                            `IMMEDIATE SWITCH`,
-                            `Recalled Snapshot ${stepIdx + 1}`,
+                            `SNAPSHOT RECALLED`,
+                            `Snapshot ${stepIdx + 1} → All tracks switched`,
                             "",
                             ""
                         );
@@ -496,8 +497,8 @@ function updateTransportLEDs() {
 }
 
 function updateCaptureLED() {
-    /* Capture button - lit when held for snapshot save mode */
-    setButtonLED(MoveCapture, state.captureHeld ? White : Black);
+    /* Capture button - dim purple when held (consistent with track view) */
+    setButtonLED(MoveCapture, state.captureHeld ? DarkPurple : Black);
 }
 
 function updateCopyLED() {

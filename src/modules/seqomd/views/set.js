@@ -13,7 +13,7 @@ import {
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
-import { state, displayMessage, enterTrackView } from '../lib/state.js';
+import { state, displayMessage, displayTemporaryMessage, enterTrackView } from '../lib/state.js';
 import * as trackView from './track.js';
 import { setParam, syncAllTracksToDSP } from '../lib/helpers.js';
 import { markDirty, flushDirty, loadSetToTracks, setHasContent, deleteSetFile, loadSetFromDisk, saveSetToDisk } from '../lib/persistence.js';
@@ -87,48 +87,46 @@ export function onInput(data) {
         if (deleteConfirmSetIdx >= 0) {
             /* Prevent deleting the currently loaded set */
             if (deleteConfirmSetIdx === state.currentSet) {
-                displayMessage(
-                    "CANNOT DELETE",
-                    `Set ${deleteConfirmSetIdx + 1} is loaded`,
-                    "Switch to another set first",
-                    ""
-                );
+                const setIdx = deleteConfirmSetIdx;
                 deleteConfirmSetIdx = -1;
                 deleteHeld = false;
-                setTimeout(() => {
-                    updateDisplayContent();
-                    updateLEDs();
-                }, 1500);
-                updateLEDs();
+                updateDisplayContent();  // Set normal display
+                displayTemporaryMessage(
+                    "CANNOT DELETE",
+                    `Set ${setIdx + 1} is loaded`,
+                    "Switch to another set first",
+                    "",
+                    1500,
+                    updateLEDs
+                );
+                updateLEDs();  // Show message LEDs
                 return true;
             }
 
             /* Confirm deletion */
-            deleteSetFile(deleteConfirmSetIdx);
+            const setIdx = deleteConfirmSetIdx;
+            deleteSetFile(setIdx);
 
             /* Clear in-memory cache if it exists */
-            if (state.sets[deleteConfirmSetIdx]) {
-                state.sets[deleteConfirmSetIdx] = null;
+            if (state.sets[setIdx]) {
+                state.sets[setIdx] = null;
             }
-
-            displayMessage(
-                "SET DELETED",
-                `Set ${deleteConfirmSetIdx + 1} deleted`,
-                "",
-                ""
-            );
 
             /* Clear confirmation state */
             deleteConfirmSetIdx = -1;
             deleteHeld = false;
 
-            /* Update LEDs after short delay to show confirmation message */
-            setTimeout(() => {
-                updateDisplayContent();
-                updateLEDs();
-            }, 1000);
+            updateDisplayContent();  // Set normal display
+            displayTemporaryMessage(
+                "SET DELETED",
+                `Set ${setIdx + 1} deleted`,
+                "",
+                "",
+                1000,
+                updateLEDs
+            );
 
-            updateLEDs();
+            updateLEDs();  // Show message LEDs
             return true;
         }
     }
@@ -166,8 +164,8 @@ export function onInput(data) {
                         copiedSetIdx = setIdx;
                         displayMessage(
                             "SET COPIED",
-                            `Set ${setIdx + 1}`,
-                            "Press another pad to paste",
+                            `Set ${setIdx + 1} - Hold Copy + press destination`,
+                            "",
                             ""
                         );
                         updateLEDs();
@@ -184,20 +182,22 @@ export function onInput(data) {
                     saveSetToDisk(setIdx, copiedSetData);
                     /* Update in-memory cache */
                     state.sets[setIdx] = copiedSetData;
-                    displayMessage(
-                        "SET PASTED",
-                        `Set ${copiedSetIdx + 1} -> Set ${setIdx + 1}`,
-                        "",
-                        ""
-                    );
+
+                    const sourceIdx = copiedSetIdx;
                     /* Clear copy state after paste */
                     copiedSetData = null;
                     copiedSetIdx = -1;
-                    setTimeout(() => {
-                        updateDisplayContent();
-                        updateLEDs();
-                    }, 1000);
-                    updateLEDs();
+
+                    updateDisplayContent();  // Set normal display
+                    displayTemporaryMessage(
+                        "SET PASTED",
+                        `Set ${sourceIdx + 1} → Set ${setIdx + 1}`,
+                        "",
+                        "",
+                        1000,
+                        updateLEDs
+                    );
+                    updateLEDs();  // Show message LEDs
                 }
                 return true;
             }

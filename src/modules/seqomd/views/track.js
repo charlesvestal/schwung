@@ -112,8 +112,8 @@ export function onInput(data) {
         markDirty();
 
         displayMessage(
-            `Pattern ${currentPatternIdx + 1} copied`,
-            `Track ${state.currentTrack + 1} -> Pattern ${nextPatternIdx + 1}`,
+            `AUTO-COPIED`,
+            `Pattern ${currentPatternIdx + 1} → ${nextPatternIdx + 1} (next empty)`,
             "",
             ""
         );
@@ -284,13 +284,18 @@ export function onInput(data) {
         }
     }
 
-    /* Loop button release exits loop mode */
-    if (state.trackMode === 'loop' && isCC && note === MoveLoop && velocity === 0) {
-        modes.loop.onExit();
-        exitLoopEdit();
-        modes.normal.onEnter();
-        updateLEDs();
-        return true;
+    /* Back button or Loop button release exits loop mode */
+    if (state.trackMode === 'loop') {
+        const isBackPress = isCC && note === MoveBack && velocity > 0;
+        const isLoopRelease = isCC && note === MoveLoop && velocity === 0;
+
+        if (isBackPress || isLoopRelease) {
+            modes.loop.onExit();
+            exitLoopEdit();
+            modes.normal.onEnter();
+            updateLEDs();
+            return true;
+        }
     }
 
     /* Capture button toggles spark mode */

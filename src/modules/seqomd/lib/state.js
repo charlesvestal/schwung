@@ -32,6 +32,7 @@ export const state = {
     stepPressTimes: {},        // Per-step press timestamps for quick tap detection
     stepPadPressed: {},        // Per-step flag if pad was pressed while held
     stepCopyBuffer: null,      // Copied step data for paste operations
+    copiedStepIdx: -1,         // Index of step in copy buffer (-1 = none)
     copyHoldDetected: {},      // Per-step flag: copy was triggered at 500ms
 
     /* Playhead */
@@ -83,6 +84,8 @@ export const state = {
     line2: "",
     line3: "",
     line4: "",
+    savedDisplayLines: null,   // Saved display for temp message restoration
+    tempMessageTimeout: null,  // Timeout ID for temp message auto-return
 
     /* Playback pad tracking */
     litPads: [],
@@ -142,6 +145,59 @@ export function displayMessage(l1, l2, l3, l4) {
     if (l2 !== undefined) state.line2 = l2;
     if (l3 !== undefined) state.line3 = l3;
     if (l4 !== undefined) state.line4 = l4;
+}
+
+/**
+ * Display a temporary message that auto-returns to previous display
+ * @param {string} l1 - Line 1 text
+ * @param {string} l2 - Line 2 text
+ * @param {string} l3 - Line 3 text
+ * @param {string} l4 - Line 4 text
+ * @param {number} delayMs - Delay before restoring (default 1000ms)
+ * @param {Function} callback - Optional callback to run after restore (e.g., updateLEDs)
+ */
+export function displayTemporaryMessage(l1, l2, l3, l4, delayMs = 1000, callback = null) {
+    // Clear any existing temp message timeout
+    if (state.tempMessageTimeout !== null) {
+        clearTimeout(state.tempMessageTimeout);
+        state.tempMessageTimeout = null;
+    }
+
+    // Save current display if not already saved
+    if (state.savedDisplayLines === null) {
+        state.savedDisplayLines = {
+            line1: state.line1,
+            line2: state.line2,
+            line3: state.line3,
+            line4: state.line4
+        };
+    }
+
+    // Show temporary message
+    displayMessage(l1, l2, l3, l4);
+
+    // Schedule restoration
+    state.tempMessageTimeout = setTimeout(() => {
+        restoreDisplay();
+        if (callback) callback();
+    }, delayMs);
+}
+
+/**
+ * Restore saved display after temporary message
+ */
+export function restoreDisplay() {
+    if (state.savedDisplayLines !== null) {
+        state.line1 = state.savedDisplayLines.line1;
+        state.line2 = state.savedDisplayLines.line2;
+        state.line3 = state.savedDisplayLines.line3;
+        state.line4 = state.savedDisplayLines.line4;
+        state.savedDisplayLines = null;
+    }
+    if (state.tempMessageTimeout !== null) {
+        clearTimeout(state.tempMessageTimeout);
+        state.tempMessageTimeout = null;
+    }
 }
 
 /* ============ Legacy Compatibility ============ */

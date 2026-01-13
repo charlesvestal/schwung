@@ -9,7 +9,7 @@
  */
 
 import {
-    Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed, Purple,
+    Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed, Purple, DarkPurple,
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
@@ -76,6 +76,7 @@ export function checkCopyHold() {
                 if (hasContent) {
                     // Copy step to buffer
                     state.stepCopyBuffer = cloneStep(step);
+                    state.copiedStepIdx = stepIdx;
                     state.copyHoldDetected[stepIdx] = true;
 
                     displayMessage(
@@ -359,6 +360,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
     // Cancel copy buffer on any pad press
     if (isNoteOn && velocity > 0 && state.stepCopyBuffer) {
         state.stepCopyBuffer = null;
+        state.copiedStepIdx = -1;
     }
 
     const baseNote = 36 + padIdx + (state.padOctaveOffset * 12);
@@ -893,6 +895,11 @@ function updateStepLEDs() {
                 color = trackColor;
             }
 
+            /* Copied step (show VividYellow indicator) */
+            if (i === state.copiedStepIdx && state.stepCopyBuffer !== null) {
+                color = VividYellow;
+            }
+
             setLED(MoveSteps[i], color);
         }
     }
@@ -989,7 +996,7 @@ function updateTransportLEDs() {
 
 function updateCaptureLED() {
     /* Dim purple - available for spark mode */
-    setButtonLED(MoveCapture, 107);
+    setButtonLED(MoveCapture, DarkPurple);
 }
 
 function updateBackLED() {
@@ -1073,4 +1080,5 @@ export function onEnter() {
 export function onExit() {
     state.heldStep = -1;
     state.stepCopyBuffer = null;
+    state.copiedStepIdx = -1;
 }

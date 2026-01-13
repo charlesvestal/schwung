@@ -128,9 +128,9 @@ export function updateLEDs() {
     setButtonLED(MoveRec, state.recording ? BrightRed : Black);
     setButtonLED(MoveLoop, Cyan);
 
-    /* Capture and Back - off */
+    /* Capture off, Back lit for exit */
     setButtonLED(MoveCapture, Black);
-    setButtonLED(MoveBack, Black);
+    setButtonLED(MoveBack, White);
 }
 
 /* ============ Playhead ============ */

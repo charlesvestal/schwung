@@ -4,7 +4,7 @@
  */
 
 import {
-    Black, White, LightGrey, DarkGrey, BrightGreen, Cyan, BrightRed, VividYellow, Purple,
+    Black, White, LightGrey, DarkGrey, BrightGreen, Cyan, BrightRed, VividYellow, Purple, DarkPurple,
     MoveSteps, MovePads, MoveTracks, MoveLoop, MovePlay, MoveRec, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveUp, MoveDown, MoveDelete, MoveMainKnob,
@@ -620,7 +620,8 @@ function updateTransportLEDs() {
 }
 
 function updateCaptureLED() {
-    setButtonLED(MoveCapture, Black);
+    /* Capture button - dim purple when held (consistent with track view) */
+    setButtonLED(MoveCapture, state.captureHeld ? DarkPurple : Black);
 }
 
 function updateBackLED() {
