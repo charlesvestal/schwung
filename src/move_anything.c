@@ -1732,6 +1732,53 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
     return (result == 0) ? JS_TRUE : JS_FALSE;
 }
 
+/* host_extract_tar_strip(tar_path, dest_dir, strip_components) -> bool */
+static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    if (argc < 3) {
+        return JS_FALSE;
+    }
+
+    const char *tar_path = JS_ToCString(ctx, argv[0]);
+    const char *dest_dir = JS_ToCString(ctx, argv[1]);
+    int strip = 0;
+    JS_ToInt32(ctx, &strip, argv[2]);
+
+    if (!tar_path || !dest_dir) {
+        if (tar_path) JS_FreeCString(ctx, tar_path);
+        if (dest_dir) JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate paths */
+    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
+        fprintf(stderr, "host_extract_tar_strip: invalid path(s)\n");
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate strip components (0-5 reasonable range) */
+    if (strip < 0 || strip > 5) {
+        fprintf(stderr, "host_extract_tar_strip: invalid strip value: %d\n", strip);
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Build tar command with --strip-components */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" --strip-components=%d 2>&1",
+             tar_path, dest_dir, strip);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, tar_path);
+    JS_FreeCString(ctx, dest_dir);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
 /* host_remove_dir(path) -> bool */
 static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -1956,6 +2003,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_extract_tar_func = JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2);
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", host_extract_tar_func);
+
+    JSValue host_extract_tar_strip_func = JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3);
+    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", host_extract_tar_strip_func);
 
     JSValue host_remove_dir_func = JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", host_remove_dir_func);
