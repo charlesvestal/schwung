@@ -175,6 +175,7 @@ export function drawMainMenu({ modules, selectedIndex, volume }) {
         },
         getLabel: (item) => item.label,
         getValue: (item) => item.type === 'category' ? '>' : '',
+        valueAlignRight: true,
         isHeader: () => false,
         isSelectable: () => true
     });
