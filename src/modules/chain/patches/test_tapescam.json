@@ -1,0 +1,22 @@
+{
+    "name": "Test TAPESCAM",
+    "version": 1,
+    "chain": {
+        "synth": {
+            "module": "sf2",
+            "preset": 0
+        },
+        "audio_fx": [
+            {
+                "type": "tapescam"
+            }
+        ],
+        "knob_mappings": [
+            {"cc": 71, "target": "synth", "param": "preset"},
+            {"cc": 72, "target": "fx1", "param": "drive"},
+            {"cc": 73, "target": "fx1", "param": "saturation"},
+            {"cc": 74, "target": "fx1", "param": "wobble"},
+            {"cc": 75, "target": "fx1", "param": "tone"}
+        ]
+    }
+}

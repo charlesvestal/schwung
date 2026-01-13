@@ -53,6 +53,43 @@ typedef enum {
 #define MOVE_STEP_NOTE_MIN 16
 #define MOVE_STEP_NOTE_MAX 31
 #define MOVE_PAD_NOTE_MIN 68
+
+/* Knob mapping constants */
+#define MAX_KNOB_MAPPINGS 8
+#define KNOB_CC_START 71
+#define KNOB_CC_END 78
+#define KNOB_STEP_FLOAT 0.05f  /* Step size for float params */
+#define KNOB_STEP_INT 1        /* Step size for int params */
+
+/* Knob mapping types */
+typedef enum {
+    KNOB_TYPE_FLOAT = 0,
+    KNOB_TYPE_INT = 1
+} knob_type_t;
+
+/* Knob mapping structure */
+typedef struct {
+    int cc;              /* CC number (71-78) */
+    char target[16];     /* "synth", "fx1", "fx2", "midi_fx" */
+    char param[32];      /* Parameter key */
+    knob_type_t type;    /* Parameter type (float or int) */
+    float min_val;       /* Minimum value */
+    float max_val;       /* Maximum value */
+    float current_value; /* Current parameter value */
+} knob_mapping_t;
+
+/* Chain parameter info from module.json */
+#define MAX_CHAIN_PARAMS 16
+typedef struct {
+    char key[32];           /* Parameter key (e.g., "preset", "decay") */
+    char name[32];          /* Display name */
+    knob_type_t type;       /* float or int */
+    float min_val;          /* Minimum value */
+    float max_val;          /* Maximum value (or -1 if dynamic via max_param) */
+    float default_val;      /* Default value */
+    char max_param[32];     /* Dynamic max param key (e.g., "preset_count") */
+} chain_param_info_t;
+
 #define MOVE_PAD_NOTE_MAX 99
 
 /* Patch info */
@@ -71,6 +108,8 @@ typedef struct {
     int arp_tempo_bpm;       /* BPM for arpeggiator */
     int arp_note_division;   /* 1=quarter, 2=8th, 4=16th */
     midi_input_t midi_input;
+    knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
+    int knob_mapping_count;
 } patch_info_t;
 
 /* Host API provided by main host */
@@ -89,6 +128,12 @@ static char g_current_source_module[MAX_NAME_LEN] = "";
 static void *g_fx_handles[MAX_AUDIO_FX];
 static audio_fx_api_v1_t *g_fx_plugins[MAX_AUDIO_FX];
 static int g_fx_count = 0;
+
+/* Module parameter info (from chain_params in module.json) */
+static chain_param_info_t g_synth_params[MAX_CHAIN_PARAMS];
+static int g_synth_param_count = 0;
+static chain_param_info_t g_fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS];
+static int g_fx_param_counts[MAX_AUDIO_FX] = {0};
 
 /* Patch state */
 static patch_info_t g_patches[MAX_PATCHES];
@@ -114,6 +159,10 @@ static int g_arp_samples_per_step = 0;
 static int8_t g_arp_last_note = -1;  /* Currently sounding arp note, -1 if none */
 static uint8_t g_arp_velocity = 100; /* Velocity for arp notes */
 
+/* Knob mapping state */
+static knob_mapping_t g_knob_mappings[MAX_KNOB_MAPPINGS];
+static int g_knob_mapping_count = 0;
+
 /* Mute countdown after patch switch (in blocks) to drain old audio */
 static int g_mute_countdown = 0;
 #define MUTE_BLOCKS_AFTER_SWITCH 8  /* ~23ms at 44100Hz, 128 frames/block */
@@ -134,6 +183,8 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source);
 static int midi_source_send(const uint8_t *msg, int len);
 static int scan_patches(const char *module_dir);
 static void unload_patch(void);
+static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
+static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -437,7 +488,10 @@ static int load_synth(const char *module_path, const char *config_json) {
         }
     }
 
-    chain_log("Synth loaded successfully");
+    /* Parse chain_params from module.json */
+    parse_chain_params(module_path, g_synth_params, &g_synth_param_count);
+    snprintf(msg, sizeof(msg), "Synth loaded successfully (%d params)", g_synth_param_count);
+    chain_log(msg);
     return 0;
 }
 
@@ -606,11 +660,19 @@ static int load_audio_fx(const char *fx_name) {
     }
 
     /* Store in array */
-    g_fx_handles[g_fx_count] = handle;
-    g_fx_plugins[g_fx_count] = fx;
+    int slot = g_fx_count;
+    g_fx_handles[slot] = handle;
+    g_fx_plugins[slot] = fx;
+
+    /* Parse chain_params from module.json */
+    char fx_dir[MAX_PATH_LEN];
+    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", g_module_dir, fx_name);
+    parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
+
     g_fx_count++;
 
-    snprintf(msg, sizeof(msg), "Audio FX loaded: %s (slot %d)", fx_name, g_fx_count - 1);
+    snprintf(msg, sizeof(msg), "Audio FX loaded: %s (slot %d, %d params)",
+             fx_name, slot, g_fx_param_counts[slot]);
     chain_log(msg);
 
     return 0;
@@ -625,6 +687,7 @@ static void unload_all_audio_fx(void) {
         if (g_fx_handles[i]) {
             dlclose(g_fx_handles[i]);
         }
+        g_fx_param_counts[i] = 0;
         g_fx_handles[i] = NULL;
         g_fx_plugins[i] = NULL;
     }
@@ -748,6 +811,183 @@ static int json_get_int_in_section(const char *json, const char *section_key,
     free(section);
     return ret;
 }
+
+/* Parse chain_params from module.json */
+static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count) {
+    char json_path[MAX_PATH_LEN];
+    snprintf(json_path, sizeof(json_path), "%s/module.json", module_path);
+
+    FILE *f = fopen(json_path, "r");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size > 8192) {
+        fclose(f);
+        return -1;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return -1;
+    }
+
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+
+    *count = 0;
+
+    /* Find chain_params array */
+    const char *chain_params = strstr(json, "\"chain_params\"");
+    if (!chain_params) {
+        free(json);
+        return 0;  /* No params is OK */
+    }
+
+    const char *arr_start = strchr(chain_params, '[');
+    if (!arr_start) {
+        free(json);
+        return 0;
+    }
+
+    /* Find matching ] */
+    int depth = 1;
+    const char *arr_end = arr_start + 1;
+    while (*arr_end && depth > 0) {
+        if (*arr_end == '[') depth++;
+        else if (*arr_end == ']') depth--;
+        arr_end++;
+    }
+
+    /* Parse each parameter object */
+    const char *pos = arr_start + 1;
+    while (pos < arr_end && *count < MAX_CHAIN_PARAMS) {
+        const char *obj_start = strchr(pos, '{');
+        if (!obj_start || obj_start >= arr_end) break;
+
+        const char *obj_end = strchr(obj_start, '}');
+        if (!obj_end || obj_end >= arr_end) break;
+
+        chain_param_info_t *p = &params[*count];
+        memset(p, 0, sizeof(*p));
+        p->type = KNOB_TYPE_FLOAT;  /* Default */
+        p->min_val = 0.0f;
+        p->max_val = 1.0f;
+
+        /* Parse key */
+        const char *key_pos = strstr(obj_start, "\"key\"");
+        if (key_pos && key_pos < obj_end) {
+            const char *q1 = strchr(key_pos + 5, '"');
+            if (q1 && q1 < obj_end) {
+                q1++;
+                const char *q2 = strchr(q1, '"');
+                if (q2 && q2 < obj_end) {
+                    int len = (int)(q2 - q1);
+                    if (len > 31) len = 31;
+                    strncpy(p->key, q1, len);
+                }
+            }
+        }
+
+        /* Parse name */
+        const char *name_pos = strstr(obj_start, "\"name\"");
+        if (name_pos && name_pos < obj_end) {
+            const char *q1 = strchr(name_pos + 6, '"');
+            if (q1 && q1 < obj_end) {
+                q1++;
+                const char *q2 = strchr(q1, '"');
+                if (q2 && q2 < obj_end) {
+                    int len = (int)(q2 - q1);
+                    if (len > 31) len = 31;
+                    strncpy(p->name, q1, len);
+                }
+            }
+        }
+
+        /* Parse type */
+        const char *type_pos = strstr(obj_start, "\"type\"");
+        if (type_pos && type_pos < obj_end) {
+            const char *q1 = strchr(type_pos + 6, '"');
+            if (q1 && q1 < obj_end) {
+                q1++;
+                if (strncmp(q1, "int", 3) == 0) {
+                    p->type = KNOB_TYPE_INT;
+                    p->max_val = 127.0f;  /* Default for int */
+                }
+            }
+        }
+
+        /* Parse min */
+        const char *min_pos = strstr(obj_start, "\"min\"");
+        if (min_pos && min_pos < obj_end) {
+            const char *colon = strchr(min_pos, ':');
+            if (colon && colon < obj_end) {
+                p->min_val = (float)atof(colon + 1);
+            }
+        }
+
+        /* Parse max */
+        const char *max_pos = strstr(obj_start, "\"max\"");
+        if (max_pos && max_pos < obj_end) {
+            /* Make sure it's not max_param */
+            if (strncmp(max_pos, "\"max_param\"", 11) != 0) {
+                const char *colon = strchr(max_pos, ':');
+                if (colon && colon < obj_end) {
+                    p->max_val = (float)atof(colon + 1);
+                }
+            }
+        }
+
+        /* Parse max_param (dynamic max) */
+        const char *max_param_pos = strstr(obj_start, "\"max_param\"");
+        if (max_param_pos && max_param_pos < obj_end) {
+            const char *q1 = strchr(max_param_pos + 11, '"');
+            if (q1 && q1 < obj_end) {
+                q1++;
+                const char *q2 = strchr(q1, '"');
+                if (q2 && q2 < obj_end) {
+                    int len = (int)(q2 - q1);
+                    if (len > 31) len = 31;
+                    strncpy(p->max_param, q1, len);
+                    p->max_val = -1.0f;  /* Marker for dynamic max */
+                }
+            }
+        }
+
+        /* Parse default */
+        const char *def_pos = strstr(obj_start, "\"default\"");
+        if (def_pos && def_pos < obj_end) {
+            const char *colon = strchr(def_pos, ':');
+            if (colon && colon < obj_end) {
+                p->default_val = (float)atof(colon + 1);
+            }
+        }
+
+        if (p->key[0]) {
+            (*count)++;
+        }
+
+        pos = obj_end + 1;
+    }
+
+    free(json);
+    return 0;
+}
+
+/* Look up parameter info by key in a param list */
+static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(params[i].key, key) == 0) {
+            return &params[i];
+        }
+    }
+    return NULL;
+}
+
 /* Parse a patch file and populate patch_info */
 static int parse_patch_file(const char *path, patch_info_t *patch) {
     char msg[256];
@@ -921,6 +1161,117 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
     /* Parse arp tempo and division */
     json_get_int(json, "arp_bpm", &patch->arp_tempo_bpm);
     json_get_int(json, "arp_division", &patch->arp_note_division);
+
+    /* Parse knob_mappings array */
+    patch->knob_mapping_count = 0;
+    const char *knob_pos = strstr(json, "\"knob_mappings\"");
+    if (knob_pos) {
+        const char *bracket = strchr(knob_pos, '[');
+        const char *end_bracket = strchr(knob_pos, ']');
+        if (bracket && end_bracket && bracket < end_bracket) {
+            bracket++;
+            while (patch->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                /* Find next object */
+                const char *obj_start = strchr(bracket, '{');
+                if (!obj_start || obj_start > end_bracket) break;
+
+                const char *obj_end = strchr(obj_start, '}');
+                if (!obj_end || obj_end > end_bracket) break;
+
+                /* Parse cc */
+                int cc = 0;
+                const char *cc_pos = strstr(obj_start, "\"cc\"");
+                if (cc_pos && cc_pos < obj_end) {
+                    const char *colon = strchr(cc_pos, ':');
+                    if (colon && colon < obj_end) {
+                        cc = atoi(colon + 1);
+                    }
+                }
+
+                /* Parse target */
+                char target[16] = "";
+                const char *target_pos = strstr(obj_start, "\"target\"");
+                if (target_pos && target_pos < obj_end) {
+                    const char *q1 = strchr(target_pos + 8, '"');
+                    if (q1 && q1 < obj_end) {
+                        q1++;
+                        const char *q2 = strchr(q1, '"');
+                        if (q2 && q2 < obj_end) {
+                            int len = q2 - q1;
+                            if (len > 0 && len < 16) {
+                                strncpy(target, q1, len);
+                                target[len] = '\0';
+                            }
+                        }
+                    }
+                }
+
+                /* Parse param */
+                char param[32] = "";
+                const char *param_pos = strstr(obj_start, "\"param\"");
+                if (param_pos && param_pos < obj_end) {
+                    const char *q1 = strchr(param_pos + 7, '"');
+                    if (q1 && q1 < obj_end) {
+                        q1++;
+                        const char *q2 = strchr(q1, '"');
+                        if (q2 && q2 < obj_end) {
+                            int len = q2 - q1;
+                            if (len > 0 && len < 32) {
+                                strncpy(param, q1, len);
+                                param[len] = '\0';
+                            }
+                        }
+                    }
+                }
+
+                /* Parse type (optional, default "float") */
+                knob_type_t type = KNOB_TYPE_FLOAT;
+                const char *type_pos = strstr(obj_start, "\"type\"");
+                if (type_pos && type_pos < obj_end) {
+                    const char *q1 = strchr(type_pos + 6, '"');
+                    if (q1 && q1 < obj_end) {
+                        q1++;
+                        if (strncmp(q1, "int", 3) == 0) {
+                            type = KNOB_TYPE_INT;
+                        }
+                    }
+                }
+
+                /* Parse min (optional) */
+                float min_val = (type == KNOB_TYPE_INT) ? 0.0f : 0.0f;
+                const char *min_pos = strstr(obj_start, "\"min\"");
+                if (min_pos && min_pos < obj_end) {
+                    const char *colon = strchr(min_pos, ':');
+                    if (colon && colon < obj_end) {
+                        min_val = (float)atof(colon + 1);
+                    }
+                }
+
+                /* Parse max (optional) */
+                float max_val = (type == KNOB_TYPE_INT) ? 127.0f : 1.0f;
+                const char *max_pos = strstr(obj_start, "\"max\"");
+                if (max_pos && max_pos < obj_end) {
+                    const char *colon = strchr(max_pos, ':');
+                    if (colon && colon < obj_end) {
+                        max_val = (float)atof(colon + 1);
+                    }
+                }
+
+                /* Store mapping if valid */
+                if (cc >= KNOB_CC_START && cc <= KNOB_CC_END && target[0] && param[0]) {
+                    patch->knob_mappings[patch->knob_mapping_count].cc = cc;
+                    strncpy(patch->knob_mappings[patch->knob_mapping_count].target, target, 15);
+                    strncpy(patch->knob_mappings[patch->knob_mapping_count].param, param, 31);
+                    patch->knob_mappings[patch->knob_mapping_count].type = type;
+                    patch->knob_mappings[patch->knob_mapping_count].min_val = min_val;
+                    patch->knob_mappings[patch->knob_mapping_count].max_val = max_val;
+                    patch->knob_mapping_count++;
+                }
+
+                bracket = obj_end + 1;
+            }
+        }
+    }
 
     free(json);
 
@@ -1208,6 +1559,7 @@ static void unload_patch(void) {
     g_arp_mode = ARP_OFF;
     arp_reset();
     g_arp_last_note = -1;
+    g_knob_mapping_count = 0;
     g_source_ui_active = 0;
     g_mute_countdown = 0;
     chain_log("Unloaded current patch");
@@ -1322,6 +1674,61 @@ static int load_patch(int index) {
     arp_reset();
     arp_set_tempo(patch->arp_tempo_bpm, patch->arp_note_division);
 
+    /* Copy knob mappings and initialize current values */
+    g_knob_mapping_count = patch->knob_mapping_count;
+    for (int i = 0; i < patch->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
+        g_knob_mappings[i] = patch->knob_mappings[i];
+
+        /* Look up param info from module to fill in missing type/min/max */
+        const char *target = g_knob_mappings[i].target;
+        const char *param = g_knob_mappings[i].param;
+        chain_param_info_t *pinfo = NULL;
+
+        if (strcmp(target, "synth") == 0) {
+            pinfo = find_param_info(g_synth_params, g_synth_param_count, param);
+        } else if (strcmp(target, "fx1") == 0 && g_fx_count > 0) {
+            pinfo = find_param_info(g_fx_params[0], g_fx_param_counts[0], param);
+        } else if (strcmp(target, "fx2") == 0 && g_fx_count > 1) {
+            pinfo = find_param_info(g_fx_params[1], g_fx_param_counts[1], param);
+        }
+
+        if (pinfo) {
+            /* Use module's param info (unless patch explicitly overrides) */
+            /* Check if patch had defaults - if so, use module's values */
+            if (patch->knob_mappings[i].type == KNOB_TYPE_FLOAT &&
+                patch->knob_mappings[i].min_val == 0.0f &&
+                patch->knob_mappings[i].max_val == 1.0f) {
+                g_knob_mappings[i].type = pinfo->type;
+                g_knob_mappings[i].min_val = pinfo->min_val;
+                /* Handle dynamic max (max_param like "preset_count") */
+                if (pinfo->max_val < 0 && pinfo->max_param[0]) {
+                    /* Query the module for the actual max value */
+                    char max_buf[32];
+                    int got_max = 0;
+                    if (strcmp(target, "synth") == 0 && g_synth_plugin && g_synth_plugin->get_param) {
+                        if (g_synth_plugin->get_param(pinfo->max_param, max_buf, sizeof(max_buf)) == 0) {
+                            g_knob_mappings[i].max_val = (float)(atoi(max_buf) - 1);
+                            got_max = 1;
+                        }
+                    }
+                    if (!got_max) {
+                        g_knob_mappings[i].max_val = 127.0f;  /* Fallback */
+                    }
+                } else {
+                    g_knob_mappings[i].max_val = pinfo->max_val;
+                }
+            }
+        }
+
+        /* Initialize to middle of min/max range based on type */
+        float mid = (g_knob_mappings[i].min_val + g_knob_mappings[i].max_val) / 2.0f;
+        if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
+            g_knob_mappings[i].current_value = (float)((int)mid);  /* Round to int */
+        } else {
+            g_knob_mappings[i].current_value = mid;
+        }
+    }
+
     /* Mute briefly to drain any old synth audio before FX process it */
     g_mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
@@ -1417,6 +1824,66 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
     if (len < 1) return;
+
+    /* Handle knob CC mappings (CC 71-78) - relative encoders */
+    if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
+        uint8_t cc = msg[1];
+        if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
+            for (int i = 0; i < g_knob_mapping_count; i++) {
+                if (g_knob_mappings[i].cc == cc) {
+                    /* Relative encoder: 1 = increment, 127 = decrement */
+                    /* Use type-appropriate step size */
+                    int is_int = (g_knob_mappings[i].type == KNOB_TYPE_INT);
+                    float delta = 0.0f;
+                    if (msg[2] == 1) {
+                        delta = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
+                    } else if (msg[2] == 127) {
+                        delta = is_int ? (float)(-KNOB_STEP_INT) : -KNOB_STEP_FLOAT;
+                    } else {
+                        return;  /* Ignore other values */
+                    }
+
+                    /* Update current value with min/max clamping */
+                    float new_val = g_knob_mappings[i].current_value + delta;
+                    if (new_val < g_knob_mappings[i].min_val) new_val = g_knob_mappings[i].min_val;
+                    if (new_val > g_knob_mappings[i].max_val) new_val = g_knob_mappings[i].max_val;
+                    if (is_int) new_val = (float)((int)new_val);  /* Round to int */
+                    g_knob_mappings[i].current_value = new_val;
+
+                    /* Convert to string for set_param - int or float format */
+                    char val_str[16];
+                    if (is_int) {
+                        snprintf(val_str, sizeof(val_str), "%d", (int)new_val);
+                    } else {
+                        snprintf(val_str, sizeof(val_str), "%.3f", new_val);
+                    }
+
+                    const char *target = g_knob_mappings[i].target;
+                    const char *param = g_knob_mappings[i].param;
+
+                    if (strcmp(target, "synth") == 0) {
+                        /* Route to synth */
+                        if (g_synth_plugin && g_synth_plugin->set_param) {
+                            g_synth_plugin->set_param(param, val_str);
+                        }
+                    } else if (strcmp(target, "fx1") == 0) {
+                        /* Route to first audio FX */
+                        if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->set_param) {
+                            g_fx_plugins[0]->set_param(param, val_str);
+                        }
+                    } else if (strcmp(target, "fx2") == 0) {
+                        /* Route to second audio FX */
+                        if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->set_param) {
+                            g_fx_plugins[1]->set_param(param, val_str);
+                        }
+                    } else if (strcmp(target, "midi_fx") == 0) {
+                        /* MIDI FX params handled separately */
+                    }
+                    return;  /* CC handled */
+                }
+            }
+        }
+    }
 
     if (g_source_plugin && g_source_plugin->on_midi && source != MOVE_MIDI_SOURCE_HOST) {
         g_source_plugin->on_midi(msg, len, source);
@@ -1609,14 +2076,33 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             }
             strcat(fx_json, "]");
 
+            /* Build knob_mappings JSON array with type/min/max */
+            char knob_json[1024] = "[";
+            for (int i = 0; i < p->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
+                if (i > 0) strcat(knob_json, ",");
+                char knob_item[192];
+                const char *type_str = (p->knob_mappings[i].type == KNOB_TYPE_INT) ? "int" : "float";
+                snprintf(knob_item, sizeof(knob_item),
+                    "{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"type\":\"%s\",\"min\":%.3f,\"max\":%.3f}",
+                    p->knob_mappings[i].cc,
+                    p->knob_mappings[i].target,
+                    p->knob_mappings[i].param,
+                    type_str,
+                    p->knob_mappings[i].min_val,
+                    p->knob_mappings[i].max_val);
+                strcat(knob_json, knob_item);
+            }
+            strcat(knob_json, "]");
+
             snprintf(buf, buf_len,
                 "{\"synth\":\"%s\",\"preset\":%d,\"source\":\"%s\","
                 "\"input\":\"%s\",\"chord\":\"%s\",\"arp\":\"%s\","
-                "\"arp_bpm\":%d,\"arp_div\":%d,\"audio_fx\":%s}",
+                "\"arp_bpm\":%d,\"arp_div\":%d,\"audio_fx\":%s,"
+                "\"knob_mappings\":%s}",
                 p->synth_module, p->synth_preset,
                 p->midi_source_module[0] ? p->midi_source_module : "",
                 input_str, chord_str, arp_str,
-                p->arp_tempo_bpm, p->arp_note_division, fx_json);
+                p->arp_tempo_bpm, p->arp_note_division, fx_json, knob_json);
             return 0;
         }
         return -1;

@@ -145,3 +145,80 @@ function truncateText(text, maxChars) {
     if (maxChars <= 3) return text.slice(0, maxChars);
     return `${text.slice(0, maxChars - 3)}...`;
 }
+
+/* === Parameter Overlay === */
+/* A centered overlay for showing parameter name and value feedback */
+
+const OVERLAY_DURATION_TICKS = 60;  /* ~1 second at 60fps */
+const OVERLAY_WIDTH = 120;
+const OVERLAY_HEIGHT = 28;
+
+let overlayActive = false;
+let overlayName = "";
+let overlayValue = "";
+let overlayTimeout = 0;
+
+/**
+ * Show the parameter overlay with a name and value
+ * @param {string} name - Parameter name to display
+ * @param {string} value - Value to display (e.g., "50%" or "3")
+ */
+export function showOverlay(name, value) {
+    overlayActive = true;
+    overlayName = name;
+    overlayValue = value;
+    overlayTimeout = OVERLAY_DURATION_TICKS;
+}
+
+/**
+ * Hide the overlay immediately
+ */
+export function hideOverlay() {
+    overlayActive = false;
+    overlayTimeout = 0;
+}
+
+/**
+ * Check if overlay is currently active
+ * @returns {boolean}
+ */
+export function isOverlayActive() {
+    return overlayActive;
+}
+
+/**
+ * Tick the overlay timer - call this in your tick() function
+ * @returns {boolean} true if overlay state changed (needs redraw)
+ */
+export function tickOverlay() {
+    if (overlayTimeout > 0) {
+        overlayTimeout--;
+        if (overlayTimeout === 0) {
+            overlayActive = false;
+            return true;  /* State changed, needs redraw */
+        }
+    }
+    return false;
+}
+
+/**
+ * Draw the overlay if active - call this at the end of your draw function
+ */
+export function drawOverlay() {
+    if (!overlayActive || !overlayName) return;
+
+    const boxX = (SCREEN_WIDTH - OVERLAY_WIDTH) / 2;
+    const boxY = (SCREEN_HEIGHT - OVERLAY_HEIGHT) / 2;
+
+    /* Background and border */
+    fill_rect(boxX, boxY, OVERLAY_WIDTH, OVERLAY_HEIGHT, 0);  /* Clear background */
+    fill_rect(boxX, boxY, OVERLAY_WIDTH, 1, 1);     /* Top border */
+    fill_rect(boxX, boxY + OVERLAY_HEIGHT - 1, OVERLAY_WIDTH, 1, 1);  /* Bottom border */
+    fill_rect(boxX, boxY, 1, OVERLAY_HEIGHT, 1);     /* Left border */
+    fill_rect(boxX + OVERLAY_WIDTH - 1, boxY, 1, OVERLAY_HEIGHT, 1);  /* Right border */
+
+    /* Parameter name and value */
+    const displayName = overlayName.length > 18 ? overlayName.substring(0, 18) : overlayName;
+    print(boxX + 4, boxY + 2, displayName, 1);
+    print(boxX + 4, boxY + 14, `Value: ${overlayValue}`, 1);
+}

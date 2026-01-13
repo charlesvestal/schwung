@@ -644,3 +644,10 @@ export const Blink16th = 0x0C;
 export const Blink8th = 0x0D;
 export const Blink4th = 0x0E;
 export const Blink2th = 0x0F;
+
+// White LED Brightness (for Menu, Back, Capture, Shift, arrows, etc.)
+// These buttons have white LEDs, not RGB - use brightness values 0-127
+export const WhiteLedOff = 0x00;
+export const WhiteLedDim = 0x10;      // 16 - subtle
+export const WhiteLedMedium = 0x40;   // 64 - medium
+export const WhiteLedBright = 0x7c;   // 124 - bright (max visible)
