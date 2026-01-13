@@ -251,6 +251,7 @@ static uint32_t g_transpose_total_steps = 0;    /* Sum of all durations */
 static int8_t *g_transpose_lookup = NULL;       /* Pre-computed lookup table (dynamically allocated) */
 static uint32_t g_transpose_lookup_size = 0;    /* Size of lookup table */
 static int g_transpose_lookup_valid = 0;        /* Is lookup table valid? */
+static int g_transpose_sequence_enabled = 1;    /* Enable/disable transpose sequence automation */
 
 /* Scale detection state */
 static int8_t g_detected_scale_root = -1;       /* 0-11, or -1 if none */
@@ -334,6 +335,10 @@ static void rebuild_transpose_lookup(void) {
  * Uses the internal lookup table - no UI round-trip.
  */
 static int8_t get_transpose_at_step(uint32_t step) {
+    /* If transpose sequence is disabled, return 0 (no automation) */
+    if (!g_transpose_sequence_enabled) {
+        return 0;
+    }
     if (!g_transpose_lookup_valid || g_transpose_total_steps == 0 || !g_transpose_lookup) {
         /* Fall back to legacy current_transpose when no sequence defined */
         return (int8_t)g_current_transpose;
@@ -1819,6 +1824,9 @@ static void set_transpose_param(const char *key, const char *val) {
     if (strcmp(key, "transpose_clear") == 0) {
         clear_transpose_sequence();
     }
+    else if (strcmp(key, "transpose_sequence_enabled") == 0) {
+        g_transpose_sequence_enabled = atoi(val) ? 1 : 0;
+    }
     else if (strcmp(key, "transpose_step_count") == 0) {
         int count = atoi(val);
         if (count >= 0 && count <= MAX_TRANSPOSE_STEPS) {
@@ -1868,6 +1876,9 @@ static int get_transpose_param(const char *key, char *buf, int buf_len) {
         uint32_t global_step = (uint32_t)g_global_phase;
         int step_idx = get_transpose_step_index(global_step);
         return snprintf(buf, buf_len, "%d", step_idx);
+    }
+    else if (strcmp(key, "transpose_sequence_enabled") == 0) {
+        return snprintf(buf, buf_len, "%d", g_transpose_sequence_enabled);
     }
     else if (strcmp(key, "transpose_step_count") == 0) {
         return snprintf(buf, buf_len, "%d", g_transpose_step_count);
@@ -2049,6 +2060,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     /* Transpose params */
     else if (strcmp(key, "current_transpose") == 0 ||
              strcmp(key, "current_transpose_step") == 0 ||
+             strcmp(key, "transpose_sequence_enabled") == 0 ||
              strcmp(key, "transpose_step_count") == 0 ||
              strcmp(key, "transpose_total_steps") == 0) {
         return get_transpose_param(key, buf, buf_len);

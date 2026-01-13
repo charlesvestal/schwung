@@ -104,6 +104,9 @@ export const state = {
     /* Current beat position in transpose sequence */
     currentTransposeBeat: 0,
 
+    /* Current transpose step index (0-15, or -1 if none) */
+    currentTransposeStep: -1,
+
     /* Cached scale detection result */
     detectedScale: null,
 

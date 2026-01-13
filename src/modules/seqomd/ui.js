@@ -95,6 +95,10 @@ globalThis.init = function() {
     setParam("send_clock", "1");
     state.sendClock = 1;
 
+    /* Enable transpose sequence automation by default */
+    state.transposeSequenceEnabled = true;
+    setParam("transpose_sequence_enabled", "1");
+
     state.currentTrack = 0;
     state.currentSet = -1;
 
@@ -108,6 +112,7 @@ globalThis.init = function() {
 /* Track state for playback display */
 let pendingPlayheadUpdate = null;  /* { oldStep, newStep } or null */
 let pendingPadUpdate = false;
+let pendingTransposeStepUpdate = false;
 
 globalThis.tick = function() {
     ledTickCounter++;
@@ -122,10 +127,21 @@ globalThis.tick = function() {
     }
 
     /* Poll DSP for playhead position when playing (always at full rate for timing) */
-    /* Note: Transpose is now computed internally by DSP - no polling needed */
     if (state.playing && state.heldStep < 0) {
         const stepStr = host_module_get_param(`track_${state.currentTrack}_current_step`);
         const newStep = stepStr ? parseInt(stepStr, 10) : -1;
+
+        /* Poll DSP for current transpose step index */
+        const transposeStepStr = host_module_get_param('current_transpose_step');
+        const newTransposeStep = transposeStepStr ? parseInt(transposeStepStr, 10) : -1;
+
+        /* Update transpose step for master view */
+        if (newTransposeStep !== state.currentTransposeStep) {
+            state.currentTransposeStep = newTransposeStep;
+            if (state.view === 'master') {
+                pendingTransposeStepUpdate = true;
+            }
+        }
 
         if (newStep !== state.currentPlayStep) {
             const oldStep = state.currentPlayStep;
@@ -186,6 +202,13 @@ globalThis.tick = function() {
             pendingPlayheadUpdate = { oldStep, newStep: -1 };
             pendingPadUpdate = true;
         }
+        /* Clear transpose step */
+        if (state.currentTransposeStep !== -1) {
+            state.currentTransposeStep = -1;
+            if (state.view === 'master') {
+                pendingTransposeStepUpdate = true;
+            }
+        }
     }
 
     /* Throttled LED updates */
@@ -197,6 +220,10 @@ globalThis.tick = function() {
         if (pendingPadUpdate && state.view === 'track') {
             updatePadLEDs();
             pendingPadUpdate = false;
+        }
+        if (pendingTransposeStepUpdate && state.view === 'master') {
+            masterView.updateStepLEDs();
+            pendingTransposeStepUpdate = false;
         }
     }
 };
@@ -226,8 +253,23 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Play button (CC 85) - global */
     if (isCC && note === MovePlay) {
         if (velocity > 0) {
+            const wasPlaying = state.playing;
             state.playing = !state.playing;
             setParam("playing", state.playing ? "1" : "0");
+
+            /* Starting playback: check if shift is held */
+            if (state.playing && !wasPlaying) {
+                if (state.shiftHeld) {
+                    /* Shift + Play: disable transpose sequence automation */
+                    state.transposeSequenceEnabled = false;
+                    setParam("transpose_sequence_enabled", "0");
+                } else {
+                    /* Normal Play: enable transpose sequence automation */
+                    state.transposeSequenceEnabled = true;
+                    setParam("transpose_sequence_enabled", "1");
+                }
+            }
+
             if (!state.playing) {
                 state.lastRecordedStep = -1;
                 flushDirty();  /* Save any changes made during playback */

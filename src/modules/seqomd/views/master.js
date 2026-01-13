@@ -8,7 +8,8 @@ import {
     MoveSteps, MovePads, MoveTracks, MoveLoop, MovePlay, MoveRec, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveUp, MoveDown, MoveDelete, MoveMainKnob,
-    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
+    MoveStep1UI, MoveStep2UI, MoveStep3UI, MoveStep4UI, MoveStep5UI, MoveStep6UI, MoveStep7UI, MoveStep8UI,
+    MoveStep9UI, MoveStep10UI, MoveStep11UI, MoveStep12UI, MoveStep13UI, MoveStep14UI, MoveStep15UI, MoveStep16UI
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -400,16 +401,28 @@ export function updateLEDs() {
 }
 
 function updateStepUILEDs() {
-    /* Clear step UI mode icons */
+    /* Clear all step UI mode icons */
     setButtonLED(MoveStep1UI, Black);
     setButtonLED(MoveStep2UI, Black);
+    setButtonLED(MoveStep3UI, Black);
+    setButtonLED(MoveStep4UI, Black);
     /* Step 5 UI shows BPM mode option when shift held, or lit when in BPM mode */
     setButtonLED(MoveStep5UI, (state.shiftHeld || bpmEditMode) ? Cyan : Black);
+    setButtonLED(MoveStep6UI, Black);
     setButtonLED(MoveStep7UI, Black);
+    setButtonLED(MoveStep8UI, Black);
+    setButtonLED(MoveStep9UI, Black);
+    setButtonLED(MoveStep10UI, Black);
+    setButtonLED(MoveStep11UI, Black);
+    setButtonLED(MoveStep12UI, Black);
+    setButtonLED(MoveStep13UI, Black);
+    setButtonLED(MoveStep14UI, Black);
+    setButtonLED(MoveStep15UI, Black);
+    setButtonLED(MoveStep16UI, Black);
 }
 
-function updateStepLEDs() {
-    const currentPlayingStep = state.playing ? getCurrentStepIndex(state.currentTransposeBeat) : -1;
+export function updateStepLEDs() {
+    const currentPlayingStep = state.playing ? state.currentTransposeStep : -1;
 
     for (let i = 0; i < NUM_STEPS; i++) {
         const step = getTransposeStep(i);
@@ -426,6 +439,8 @@ function updateStepLEDs() {
             }
         } else if (i === state.heldTransposeStep) {
             color = DarkGrey; /* Held but empty */
+        } else if (i === currentPlayingStep) {
+            color = White; /* Playhead on empty step */
         }
 
         setLED(MoveSteps[i], color);
@@ -488,8 +503,8 @@ function updatePadLEDs() {
             /* In scale */
             color = WHITE_KEY_PADS.includes(i) ? White : LightGrey;
         } else {
-            /* Out of scale or no detection */
-            color = WHITE_KEY_PADS.includes(i) ? DarkGrey : Black;
+            /* Out of scale or no detection - both white and black keys remain visible but dim */
+            color = DarkGrey;
         }
 
         setLED(padNote, color);
