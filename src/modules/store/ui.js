@@ -567,8 +567,6 @@ function drawModuleDetail() {
             print(68, y, `[${action2}]`, 1);
         }
     }
-
-    drawMenuFooter('Back:cancel');
 }
 
 /* Main draw function */
