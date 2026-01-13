@@ -137,10 +137,10 @@ function getChainUiPath(moduleId) {
 /* Built-in JS MIDI FX (not DSP modules) */
 const BUILTIN_MIDI_FX = [
     { id: "chord", name: "Chord", builtin: true, params: [
-        { key: "type", name: "Chord Type", type: "enum", options: ["none", "major", "minor", "power", "octave"], default: "none" }
+        { key: "type", name: "Chord Type", type: "enum", options: ["none", "major", "minor", "power", "octave"], default: "major" }
     ]},
     { id: "arp", name: "Arpeggiator", builtin: true, params: [
-        { key: "mode", name: "Mode", type: "enum", options: ["off", "up", "down", "up_down", "random"], default: "off" },
+        { key: "mode", name: "Mode", type: "enum", options: ["off", "up", "down", "up_down", "random"], default: "up" },
         { key: "bpm", name: "BPM", type: "int", min: 40, max: 240, default: 120, step: 1 },
         { key: "division", name: "Division", type: "enum", options: ["1/4", "1/8", "1/16"], default: "1/16" }
     ]}
@@ -1038,7 +1038,17 @@ function handleEditorSelect() {
             } else {
                 editorState.chain[slotType] = selected?.id || null;
             }
-            editorState.chain[slotType + "_config"] = {};
+
+            /* Populate config with default values from component params */
+            const config = {};
+            if (selected && selected.params) {
+                for (const param of selected.params) {
+                    if (param.default !== undefined) {
+                        config[param.key] = param.default;
+                    }
+                }
+            }
+            editorState.chain[slotType + "_config"] = config;
 
             if (editorState.isNew && slotType === "synth") {
                 editorState.view = EDITOR_VIEW.OVERVIEW;
