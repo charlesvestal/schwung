@@ -76,8 +76,7 @@ function buildMainMenuItems(byCategory) {
         items.push({
             type: 'category',
             categoryId: cat.id,
-            label: `${cat.name} >`,
-            count: mods.length
+            label: `${cat.name} >`
         });
     }
 
@@ -86,8 +85,7 @@ function buildMainMenuItems(byCategory) {
         items.push({
             type: 'category',
             categoryId: 'other',
-            label: `Other >`,
-            count: byCategory['other'].length
+            label: `Other >`
         });
     }
 
@@ -176,7 +174,7 @@ export function drawMainMenu({ modules, selectedIndex, volume }) {
             bottomY: hasFooter ? menuLayoutDefaults.listBottomWithFooter : menuLayoutDefaults.listBottomNoFooter
         },
         getLabel: (item) => item.label,
-        getValue: (item) => item.count ? `(${item.count})` : '',
+        getValue: () => '',
         isHeader: () => false,
         isSelectable: () => true
     });
@@ -208,8 +206,8 @@ export function handleMainMenuCC({ cc, value, selectedIndex, totalItems }) {
         nextIndex = Math.max(selectedIndex - 1, 0);
     } else if (cc === 3 && isDown) {
         didSelect = true;
-    } else if (cc === 1 && isDown) {
-        /* Back button */
+    } else if (cc === 51 && isDown) {
+        /* Back button (MoveBack) */
         didBack = true;
     }
 
