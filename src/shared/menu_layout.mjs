@@ -97,9 +97,10 @@ export function drawMenuList({
     }
     let endIdx = Math.min(startIdx + effectiveMaxVisible, totalItems);
 
-    /* Get label scroller for selected item */
+    /* Get label scroller for selected item and tick it */
     const labelScroller = getMenuLabelScroller();
     labelScroller.setSelected(selectedIndex);
+    labelScroller.tick();  /* Auto-tick during draw */
 
     for (let i = startIdx; i < endIdx; i++) {
         const y = resolvedTopY + (i - startIdx) * lineHeight;
@@ -243,13 +244,4 @@ export function drawOverlay() {
     print(boxX + 4, boxY + 14, `Value: ${overlayValue}`, 1);
 }
 
-/* === Label Scrolling === */
-
-/**
- * Tick the menu label scroller - call this in your tick() function
- * @returns {boolean} true if scroll position changed (needs redraw)
- */
-export function tickMenuLabelScroller() {
-    const scroller = getMenuLabelScroller();
-    return scroller.tick();
-}
+/* Note: Label scroller is auto-ticked inside drawMenuList() */
