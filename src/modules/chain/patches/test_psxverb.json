@@ -8,14 +8,23 @@
         },
         "audio_fx": [
             {
-                "type": "psxverb"
+                "type": "psxverb",
+                "params": {
+                    "preset": 4,
+                    "decay": 0.8,
+                    "input_gain": 0.5,
+                    "level": 0.5,
+                    "mix": 0.35
+                }
             }
         ],
         "knob_mappings": [
             {"cc": 71, "target": "synth", "param": "preset"},
             {"cc": 72, "target": "fx1", "param": "preset"},
-            {"cc": 73, "target": "fx1", "param": "decay"},
-            {"cc": 74, "target": "fx1", "param": "mix"}
+            {"cc": 73, "target": "fx1", "param": "input_gain"},
+            {"cc": 74, "target": "fx1", "param": "decay"},
+            {"cc": 75, "target": "fx1", "param": "level"},
+            {"cc": 76, "target": "fx1", "param": "mix"}
         ]
     }
 }

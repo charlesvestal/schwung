@@ -14,7 +14,6 @@ import {
 import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
 import { drawMainMenu, handleMainMenuCC } from './menu_main.mjs';
 import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
-import { tickMenuLabelScroller } from '../shared/menu_layout.mjs';
 
 /* State */
 let modules = [];
@@ -219,9 +218,6 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
-    /* Tick label scroller for marquee text */
-    tickMenuLabelScroller();
-
     if (settingsVisible) {
         renderSettingsScreen();
     } else if (menuVisible) {
