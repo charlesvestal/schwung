@@ -14,7 +14,7 @@ import {
     MoveLoop, MoveCapture, MoveMainButton, MoveBack, MoveCopy, White, Black
 } from "../../../shared/constants.mjs";
 
-import { updatePadLEDs, setParam, syncAllTracksToDSP } from '../lib/helpers.js';
+import { updatePadLEDs, setParam, syncAllTracksToDSP, updatePlayheadLED } from '../lib/helpers.js';
 import { clonePattern } from '../lib/data.js';
 import { setButtonLED } from '../../../shared/input_filter.mjs';
 import { NUM_PATTERNS } from '../lib/constants.js';
@@ -355,8 +355,12 @@ export function updateDisplayContent() {
  * Call this from tick() instead of full updateLEDs()
  */
 export function updatePlayhead(oldStep, newStep) {
+    /* Use mode-specific playhead update if available (loop, spark have custom colors) */
     if (modes[state.trackMode].updatePlayhead) {
         modes[state.trackMode].updatePlayhead(oldStep, newStep);
+    } else {
+        /* Default: restore old step to black, new step to white */
+        updatePlayheadLED(oldStep, newStep);
     }
 }
 

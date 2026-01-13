@@ -18,7 +18,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
-import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs, updatePlayheadLED } from '../../lib/helpers.js';
+import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs } from '../../lib/helpers.js';
 import { markDirty } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
@@ -74,15 +74,6 @@ export function updateLEDs() {
 
     /* Transport - standard pattern with Back lit */
     updateStandardTransportLEDs();
-}
-
-/* ============ Playhead ============ */
-
-/**
- * Lightweight playhead update - only updates the two step LEDs that changed
- */
-export function updatePlayhead(oldStep, newStep) {
-    updatePlayheadLED(oldStep, newStep);
 }
 
 /* ============ Display ============ */
