@@ -40,6 +40,7 @@ export const state = {
     /* Note selection */
     lastPlayedNote: -1,        // Last note that was played (for pad display)
     lastSelectedNote: -1,      // Last pad pressed (for quick step entry)
+    lastSelectedVelocity: 100, // Last pad velocity (for quick step entry)
 
     /* Recording */
     recording: false,

@@ -334,7 +334,7 @@ function handleStepRelease(stepIdx) {
             }
             // Add note if empty and note selected (existing behavior)
             else if (state.lastSelectedNote > 0) {
-                toggleStepNote(stepIdx, state.lastSelectedNote);
+                toggleStepNote(stepIdx, state.lastSelectedNote, state.lastSelectedVelocity);
                 changed = true;
             }
         }
@@ -367,8 +367,9 @@ function handlePad(padIdx, isNoteOn, velocity) {
     if (state.heldStep >= 0) {
         /* Holding a step: toggle notes */
         if (isNoteOn && velocity > 0) {
-            const wasAdded = toggleStepNote(state.heldStep, midiNote);
+            const wasAdded = toggleStepNote(state.heldStep, midiNote, velocity);
             state.stepPadPressed[state.heldStep] = true;
+            setParam(`track_${state.currentTrack}_preview_velocity`, String(velocity));
             setParam(`track_${state.currentTrack}_preview_note`, String(midiNote));
             markDirty();
 
@@ -377,7 +378,7 @@ function handlePad(padIdx, isNoteOn, velocity) {
                 undefined,
                 `Step ${state.heldStep + 1}`,
                 `Notes: ${notesToString(step.notes)}`,
-                wasAdded ? `Added ${noteToName(midiNote)}` : `Removed ${noteToName(midiNote)}`
+                wasAdded ? `Added ${noteToName(midiNote)} (vel ${step.velocity})` : `Removed ${noteToName(midiNote)}`
             );
             scheduleDisplayReturn();
             updateLEDs();
@@ -388,7 +389,9 @@ function handlePad(padIdx, isNoteOn, velocity) {
         /* No step held: select note for quick entry */
         if (isNoteOn && velocity > 0) {
             state.lastSelectedNote = midiNote;
+            state.lastSelectedVelocity = velocity;
             state.heldPads.add(midiNote);
+            setParam(`track_${state.currentTrack}_preview_velocity`, String(velocity));
             setParam(`track_${state.currentTrack}_preview_note`, String(midiNote));
             setLED(MovePads[padIdx], TRACK_COLORS[state.currentTrack]);
 
@@ -397,7 +400,10 @@ function handlePad(padIdx, isNoteOn, velocity) {
                 const step = getCurrentPattern(state.currentTrack).steps[state.currentPlayStep];
                 if (!step.notes.includes(midiNote) && step.notes.length < 7) {
                     step.notes.push(midiNote);
+                    /* Capture velocity from pad press */
+                    step.velocity = Math.max(1, Math.min(127, velocity));
                     setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_add_note`, String(midiNote));
+                    setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_velocity`, String(step.velocity));
                     markDirty();
                 }
                 state.lastRecordedStep = state.currentPlayStep;
@@ -674,7 +680,7 @@ function handleJogWheel(velocity) {
 
 /* ============ Step Helpers ============ */
 
-function toggleStepNote(stepIdx, note) {
+function toggleStepNote(stepIdx, note, velocity = 100) {
     const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
     const noteIdx = step.notes.indexOf(note);
 
@@ -685,7 +691,10 @@ function toggleStepNote(stepIdx, note) {
     } else {
         if (step.notes.length < 7) {
             step.notes.push(note);
+            /* Capture velocity from pad press */
+            step.velocity = Math.max(1, Math.min(127, velocity));
             setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, String(note));
+            setParam(`track_${state.currentTrack}_step_${stepIdx}_velocity`, String(step.velocity));
             /* Recalculate scale detection when note is added */
             if (state.chordFollow[state.currentTrack]) {
                 state.detectedScale = detectScale(state.tracks, state.chordFollow);

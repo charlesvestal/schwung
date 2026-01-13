@@ -211,6 +211,10 @@ export function syncAllTracksToDSP() {
                 setParam(`track_${t}_step_${s}_add_note`, String(note));
             }
 
+            /* Sync velocity (default to 100 if not set for backwards compatibility) */
+            const velocity = step.velocity !== undefined ? step.velocity : 100;
+            setParam(`track_${t}_step_${s}_velocity`, String(velocity));
+
             /* Sync other step params */
             if (step.cc1 >= 0) {
                 setParam(`track_${t}_step_${s}_cc1`, String(step.cc1));

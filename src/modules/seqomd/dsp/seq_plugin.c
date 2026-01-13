@@ -167,6 +167,8 @@ typedef struct {
     uint8_t arp_mode;            /* 0=Off, 1=Up, 2=Down, etc. */
     uint8_t arp_speed;           /* 0=1/1, 1=1/2, 2=1/3, etc. (default 3=1/4) */
     uint8_t arp_octave;          /* 0=none, 1=+1, 2=+2, 3=-1, 4=-2, 5=±1, 6=±2 */
+    /* Preview note velocity (for live pad audition) */
+    uint8_t preview_velocity;    /* Velocity for next preview note (1-127) */
 } track_t;
 
 /* ============ Centralized Note Scheduler ============ */
@@ -775,6 +777,7 @@ static void init_track(track_t *track, int channel) {
     track->arp_mode = ARP_OFF;
     track->arp_speed = DEFAULT_ARP_SPEED;
     track->arp_octave = ARP_OCT_NONE;
+    track->preview_velocity = DEFAULT_VELOCITY;
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -1564,6 +1567,12 @@ static void set_step_param(int track_idx, int step_idx, const char *param, const
             s->ratchet = ratch;
         }
     }
+    else if (strcmp(param, "velocity") == 0) {
+        int vel = atoi(val);
+        if (vel >= 1 && vel <= 127) {
+            s->velocity = vel;
+        }
+    }
     else if (strcmp(param, "length") == 0) {
         int len = atoi(val);
         if (len >= 1 && len <= 16) {
@@ -1716,10 +1725,16 @@ static void set_track_param(int track_idx, const char *param, const char *val) {
             track->current_pattern = pat;
         }
     }
+    else if (strcmp(param, "preview_velocity") == 0) {
+        int vel = atoi(val);
+        if (vel >= 1 && vel <= 127) {
+            track->preview_velocity = vel;
+        }
+    }
     else if (strcmp(param, "preview_note") == 0) {
         int note = atoi(val);
         if (note > 0 && note <= 127) {
-            send_note_on(note, DEFAULT_VELOCITY, track->midi_channel);
+            send_note_on(note, track->preview_velocity, track->midi_channel);
         }
     }
     else if (strcmp(param, "preview_note_off") == 0) {

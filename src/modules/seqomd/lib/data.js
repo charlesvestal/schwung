@@ -13,6 +13,7 @@ import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, DEFAULT_SPEED_INDEX, DEFAULT_ARP_S
 export function createEmptyStep() {
     return {
         notes: [],         // Array of MIDI notes
+        velocity: 100,     // MIDI velocity (1-127), captured from pad press
         cc1: -1,           // CC value for knob 1 (-1 = not set)
         cc2: -1,           // CC value for knob 2 (-1 = not set)
         probability: 100,  // 1-100%
@@ -36,6 +37,7 @@ export function createEmptyStep() {
 export function cloneStep(srcStep) {
     return {
         notes: [...srcStep.notes],
+        velocity: srcStep.velocity !== undefined ? srcStep.velocity : 100,
         cc1: srcStep.cc1,
         cc2: srcStep.cc2,
         probability: srcStep.probability,
