@@ -7,7 +7,7 @@
 import {
     Black, White, Cyan, BrightGreen, BrightRed,
     MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
-    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
+    MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveDelete, MoveMainButton
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -16,7 +16,12 @@ import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, enterTrackView } from '../lib/state.js';
 import * as trackView from './track.js';
 import { setParam, syncAllTracksToDSP } from '../lib/helpers.js';
-import { markDirty, flushDirty, loadSetToTracks, setHasContent } from '../lib/persistence.js';
+import { markDirty, flushDirty, loadSetToTracks, setHasContent, deleteSetFile } from '../lib/persistence.js';
+
+/* ============ Local State ============ */
+
+let deleteHeld = false;
+let deleteConfirmSetIdx = -1;  // Set pending deletion confirmation (-1 = none)
 
 /* ============ View Interface ============ */
 
@@ -24,6 +29,8 @@ import { markDirty, flushDirty, loadSetToTracks, setHasContent } from '../lib/pe
  * Called when entering set view
  */
 export function onEnter() {
+    deleteHeld = false;
+    deleteConfirmSetIdx = -1;
     updateDisplayContent();
 }
 
@@ -31,7 +38,8 @@ export function onEnter() {
  * Called when exiting set view
  */
 export function onExit() {
-    // Nothing special to clean up
+    deleteHeld = false;
+    deleteConfirmSetIdx = -1;
 }
 
 /**
@@ -45,7 +53,81 @@ export function onInput(data) {
     const note = data[1];
     const velocity = data[2];
 
-    /* Pads - select a set */
+    /* Delete button (CC 119) - track held state */
+    if (isCC && note === MoveDelete) {
+        deleteHeld = velocity > 0;
+        if (!deleteHeld && deleteConfirmSetIdx < 0) {
+            /* Released without selecting a set - just update display */
+            updateDisplayContent();
+        }
+        return true;
+    }
+
+    /* Main button (jog click) - confirm deletion */
+    if (isCC && note === MoveMainButton && velocity > 0) {
+        if (deleteConfirmSetIdx >= 0) {
+            /* Prevent deleting the currently loaded set */
+            if (deleteConfirmSetIdx === state.currentSet) {
+                displayMessage(
+                    "CANNOT DELETE",
+                    `Set ${deleteConfirmSetIdx + 1} is loaded`,
+                    "Switch to another set first",
+                    ""
+                );
+                deleteConfirmSetIdx = -1;
+                deleteHeld = false;
+                setTimeout(() => {
+                    updateDisplayContent();
+                    updateLEDs();
+                }, 1500);
+                updateLEDs();
+                return true;
+            }
+
+            /* Confirm deletion */
+            deleteSetFile(deleteConfirmSetIdx);
+
+            /* Clear in-memory cache if it exists */
+            if (state.sets[deleteConfirmSetIdx]) {
+                state.sets[deleteConfirmSetIdx] = null;
+            }
+
+            displayMessage(
+                "SET DELETED",
+                `Set ${deleteConfirmSetIdx + 1} deleted`,
+                "",
+                ""
+            );
+
+            /* Clear confirmation state */
+            deleteConfirmSetIdx = -1;
+            deleteHeld = false;
+
+            /* Update LEDs after short delay to show confirmation message */
+            setTimeout(() => {
+                updateDisplayContent();
+                updateLEDs();
+            }, 1000);
+
+            updateLEDs();
+            return true;
+        }
+    }
+
+    /* Back button - cancel deletion */
+    if (isCC && note === MoveBack && velocity > 0) {
+        if (deleteConfirmSetIdx >= 0) {
+            /* Cancel deletion */
+            deleteConfirmSetIdx = -1;
+            deleteHeld = false;
+            updateDisplayContent();
+            updateLEDs();
+            return true;
+        }
+        /* Otherwise let router handle (return to track view) */
+    }
+
+    /* Pads - select a set or request deletion */
     if (isNote && note >= 68 && note <= 99) {
         const padIdx = note - 68;
 
@@ -55,6 +137,20 @@ export function onInput(data) {
             const col = padIdx % 8;
             const setIdx = row * 8 + col;
 
+            /* Delete held - enter confirmation mode */
+            if (deleteHeld) {
+                deleteConfirmSetIdx = setIdx;
+                displayMessage(
+                    "DELETE SET?",
+                    `Set ${setIdx + 1}`,
+                    "Jog click: confirm",
+                    "Back: cancel"
+                );
+                updateLEDs();
+                return true;
+            }
+
+            /* Normal mode - load the set */
             /* Save current set if we have one loaded */
             if (state.currentSet >= 0) {
                 flushDirty();
@@ -152,9 +248,12 @@ function updatePadLEDs() {
 
         const isCurrentSet = state.currentSet === setIdx;
         const hasContent = setHasContent(setIdx);
+        const isPendingDelete = deleteConfirmSetIdx === setIdx;
 
         let color = Black;
-        if (isCurrentSet) {
+        if (isPendingDelete) {
+            color = BrightRed;  // Set pending deletion confirmation
+        } else if (isCurrentSet) {
             color = Cyan;  // Currently loaded set
         } else if (hasContent) {
             /* Use track colors cycling through for sets with content */

@@ -2111,9 +2111,20 @@ static void plugin_on_unload(void) {
 }
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
-    /* Currently no MIDI input handling - Move is master */
-    (void)msg;
-    (void)len;
+    /* Debug: Log CC button presses to identify buttons */
+    if (len >= 3) {
+        uint8_t status = msg[0];
+        uint8_t data1 = msg[1];
+        uint8_t data2 = msg[2];
+
+        /* Log CC messages (0xB0-0xBF) when pressed (velocity > 0) */
+        if ((status & 0xF0) == 0xB0 && data2 > 0) {
+            printf("[DSP] CC Button: %d (0x%02X) vel=%d source=%d\n",
+                   data1, data1, data2, source);
+        }
+    }
+
+    /* Currently no other MIDI input handling - Move is master */
     (void)source;
 }
 

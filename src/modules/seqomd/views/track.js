@@ -161,7 +161,7 @@ export function onInput(data) {
      * - Shift+different step: switch directly to that mode
      */
     if (state.trackMode === 'channel' || state.trackMode === 'speed' || state.trackMode === 'swing' || state.trackMode === 'arp') {
-        const isJogClick = isNote && note === MoveMainButton && isNoteOn && velocity > 0;
+        const isJogClick = isCC && note === MoveMainButton && velocity > 0;
         const isBackButton = isCC && note === MoveBack && velocity > 0;
 
         /* Check for shift+step presses */
