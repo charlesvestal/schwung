@@ -325,6 +325,7 @@ export function updateLEDs() {
     updateTrackButtonLEDs();
     updateTransportLEDs();
     updateCaptureLED();
+    updateCopyLED();
     updateBackLED();
 }
 
@@ -470,6 +471,11 @@ function updateTransportLEDs() {
 function updateCaptureLED() {
     /* Capture button - lit when held for snapshot save mode */
     setButtonLED(MoveCapture, state.captureHeld ? White : Black);
+}
+
+function updateCopyLED() {
+    /* Copy button lit to indicate copy functionality available */
+    setButtonLED(MoveCopy, White);
 }
 
 function updateBackLED() {

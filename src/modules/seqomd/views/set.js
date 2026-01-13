@@ -264,6 +264,7 @@ export function updateLEDs() {
     updateTrackButtonLEDs();
     updateTransportLEDs();
     updateCaptureLED();
+    updateCopyLED();
     updateBackLED();
 }
 
@@ -359,6 +360,11 @@ function updateTransportLEDs() {
 function updateCaptureLED() {
     /* Capture off in set view */
     setButtonLED(MoveCapture, Black);
+}
+
+function updateCopyLED() {
+    /* Copy button lit to indicate copy functionality available */
+    setButtonLED(MoveCopy, White);
 }
 
 function updateBackLED() {
