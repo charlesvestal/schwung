@@ -568,7 +568,7 @@ function drawModuleDetail() {
         }
     }
 
-    drawMenuFooter('Jog:select  Back:cancel');
+    drawMenuFooter('Back:cancel');
 }
 
 /* Main draw function */

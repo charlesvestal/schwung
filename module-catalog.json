@@ -33,9 +33,9 @@
       "description": "Novation Launchpad Pro emulation for Dirtywave M8",
       "author": "bobbydigitales",
       "component_type": "utility",
-      "latest_version": "1.0.0",
+      "latest_version": "0.1.0",
       "min_host_version": "1.0.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-m8/releases/download/v1.0.0/m8-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-m8/releases/download/v0.1.0/m8-module.tar.gz"
     },
     {
       "id": "jv880",
