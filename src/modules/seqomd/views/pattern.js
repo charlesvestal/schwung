@@ -5,8 +5,8 @@
  */
 
 import {
-    Black, White, Cyan, BrightGreen, BrightRed, LightGrey, DarkGrey,
-    MoveSteps, MovePads, MoveTracks, MoveMainKnob,
+    Black, White, Cyan, BrightGreen, BrightRed, LightGrey, DarkGrey, VividYellow,
+    MoveSteps, MovePads, MoveTracks, MoveMainKnob, MoveCopy,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
 } from "../../../shared/constants.mjs";
@@ -20,6 +20,14 @@ import {
 import { state, displayMessage } from '../lib/state.js';
 import { setParam, updateAndSendCC, getCurrentPattern, syncAllTracksToDSP } from '../lib/helpers.js';
 import { markDirty } from '../lib/persistence.js';
+import { clonePattern } from '../lib/data.js';
+
+/* ============ Local State ============ */
+
+let copyHeld = false;
+let copiedPatternData = null;  // Copied pattern data
+let copiedTrackIdx = -1;  // Source track index (-1 = none)
+let copiedPatternIdx = -1;  // Source pattern index (-1 = none)
 
 /* ============ Pattern Snapshots ============ */
 
@@ -79,6 +87,10 @@ function getTrackAtButton(btnPosition) {
  * Called when entering pattern view
  */
 export function onEnter() {
+    copyHeld = false;
+    copiedPatternData = null;
+    copiedTrackIdx = -1;
+    copiedPatternIdx = -1;
     updateDisplayContent();
 }
 
@@ -87,6 +99,10 @@ export function onEnter() {
  */
 export function onExit() {
     state.captureHeld = false;
+    copyHeld = false;
+    copiedPatternData = null;
+    copiedTrackIdx = -1;
+    copiedPatternIdx = -1;
 }
 
 /**
@@ -100,7 +116,17 @@ export function onInput(data) {
     const note = data[1];
     const velocity = data[2];
 
-    /* Pads - select pattern for track */
+    /* Copy button (CC 60) - track held state */
+    if (isCC && note === MoveCopy) {
+        copyHeld = velocity > 0;
+        if (!copyHeld && copiedPatternData === null) {
+            /* Released without copying - just update display */
+            updateDisplayContent();
+        }
+        return true;
+    }
+
+    /* Pads - select pattern for track or copy/paste */
     if (isNote && note >= 68 && note <= 99) {
         const padIdx = note - 68;
 
@@ -110,24 +136,71 @@ export function onInput(data) {
             const rowIdx = 3 - Math.floor(padIdx / 8);  // 0-3 from bottom
             const patternIdx = state.patternViewOffset + rowIdx;
 
-            /* Only select if track and pattern are in valid range */
+            /* Only process if track and pattern are in valid range */
             if (trackIdx < NUM_TRACKS && patternIdx < NUM_PATTERNS) {
-                state.tracks[trackIdx].currentPattern = patternIdx;
-                setParam(`track_${trackIdx}_pattern`, String(patternIdx));
-                state.activePatternSnapshot = -1;  /* Manual change invalidates active snapshot */
+                /* Copy held - copy or paste pattern */
+                if (copyHeld) {
+                    if (copiedPatternData === null) {
+                        /* First press: copy this pattern */
+                        const pattern = state.tracks[trackIdx].patterns[patternIdx];
+                        copiedPatternData = clonePattern(pattern);
+                        copiedTrackIdx = trackIdx;
+                        copiedPatternIdx = patternIdx;
+                        displayMessage(
+                            "PATTERN COPIED",
+                            `T${trackIdx + 1} P${patternIdx + 1}`,
+                            "Press another pad to paste",
+                            ""
+                        );
+                        updatePadLEDs();
+                    } else {
+                        /* Second press: paste to this pattern */
+                        state.tracks[trackIdx].patterns[patternIdx] = clonePattern(copiedPatternData);
 
-                /* Sync pattern data to DSP (notes, CCs, loop points for the new pattern) */
-                syncAllTracksToDSP();
+                        /* If this is the current pattern, sync to DSP */
+                        if (state.tracks[trackIdx].currentPattern === patternIdx) {
+                            syncAllTracksToDSP();
+                        }
 
-                markDirty();
+                        markDirty();
 
-                displayMessage(
-                    `PATTERNS      ${state.bpm} BPM`,
-                    `Track ${trackIdx + 1} -> Pat ${patternIdx + 1}`,
-                    "",
-                    ""
-                );
-                updatePadLEDs();
+                        displayMessage(
+                            "PATTERN PASTED",
+                            `T${copiedTrackIdx + 1} P${copiedPatternIdx + 1} -> T${trackIdx + 1} P${patternIdx + 1}`,
+                            "",
+                            ""
+                        );
+
+                        /* Clear copy state after paste */
+                        copiedPatternData = null;
+                        copiedTrackIdx = -1;
+                        copiedPatternIdx = -1;
+
+                        setTimeout(() => {
+                            updateDisplayContent();
+                            updatePadLEDs();
+                        }, 1000);
+                        updatePadLEDs();
+                    }
+                } else {
+                    /* Normal mode - select pattern */
+                    state.tracks[trackIdx].currentPattern = patternIdx;
+                    setParam(`track_${trackIdx}_pattern`, String(patternIdx));
+                    state.activePatternSnapshot = -1;  /* Manual change invalidates active snapshot */
+
+                    /* Sync pattern data to DSP (notes, CCs, loop points for the new pattern) */
+                    syncAllTracksToDSP();
+
+                    markDirty();
+
+                    displayMessage(
+                        `PATTERNS      ${state.bpm} BPM`,
+                        `Track ${trackIdx + 1} -> Pat ${patternIdx + 1}`,
+                        "",
+                        ""
+                    );
+                    updatePadLEDs();
+                }
             }
         }
         return true;
@@ -331,9 +404,12 @@ function updatePadLEDs() {
         const patternHasContent = state.tracks[trackIdx].patterns[patternIdx].steps.some(
             s => s.notes.length > 0 || s.cc1 >= 0 || s.cc2 >= 0
         );
+        const isCopied = (copiedTrackIdx === trackIdx && copiedPatternIdx === patternIdx);
 
         let color = Black;
-        if (isCurrentPattern) {
+        if (isCopied) {
+            color = VividYellow;  // Copied pattern
+        } else if (isCurrentPattern) {
             color = TRACK_COLORS[trackIdx];  // Bright = current
         } else if (patternHasContent) {
             color = TRACK_COLORS_DIM[trackIdx];  // Dim = has content

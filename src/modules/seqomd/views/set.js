@@ -5,8 +5,8 @@
  */
 
 import {
-    Black, White, Cyan, BrightGreen, BrightRed,
-    MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
+    Black, White, Cyan, BrightGreen, BrightRed, VividYellow,
+    MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveCopy,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveDelete, MoveMainButton
 } from "../../../shared/constants.mjs";
 
@@ -16,12 +16,15 @@ import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, enterTrackView } from '../lib/state.js';
 import * as trackView from './track.js';
 import { setParam, syncAllTracksToDSP } from '../lib/helpers.js';
-import { markDirty, flushDirty, loadSetToTracks, setHasContent, deleteSetFile } from '../lib/persistence.js';
+import { markDirty, flushDirty, loadSetToTracks, setHasContent, deleteSetFile, loadSetFromDisk, saveSetToDisk } from '../lib/persistence.js';
 
 /* ============ Local State ============ */
 
 let deleteHeld = false;
 let deleteConfirmSetIdx = -1;  // Set pending deletion confirmation (-1 = none)
+let copyHeld = false;
+let copiedSetData = null;  // Copied set data
+let copiedSetIdx = -1;  // Source set index for display (-1 = none)
 
 /* ============ View Interface ============ */
 
@@ -31,6 +34,9 @@ let deleteConfirmSetIdx = -1;  // Set pending deletion confirmation (-1 = none)
 export function onEnter() {
     deleteHeld = false;
     deleteConfirmSetIdx = -1;
+    copyHeld = false;
+    copiedSetData = null;
+    copiedSetIdx = -1;
     updateDisplayContent();
 }
 
@@ -40,6 +46,9 @@ export function onEnter() {
 export function onExit() {
     deleteHeld = false;
     deleteConfirmSetIdx = -1;
+    copyHeld = false;
+    copiedSetData = null;
+    copiedSetIdx = -1;
 }
 
 /**
@@ -58,6 +67,16 @@ export function onInput(data) {
         deleteHeld = velocity > 0;
         if (!deleteHeld && deleteConfirmSetIdx < 0) {
             /* Released without selecting a set - just update display */
+            updateDisplayContent();
+        }
+        return true;
+    }
+
+    /* Copy button (CC 60) - track held state */
+    if (isCC && note === MoveCopy) {
+        copyHeld = velocity > 0;
+        if (!copyHeld && copiedSetIdx < 0) {
+            /* Released without copying - just update display */
             updateDisplayContent();
         }
         return true;
@@ -136,6 +155,52 @@ export function onInput(data) {
             const row = 3 - Math.floor(padIdx / 8);  // Row 0 is bottom
             const col = padIdx % 8;
             const setIdx = row * 8 + col;
+
+            /* Copy held - copy or paste set */
+            if (copyHeld) {
+                if (copiedSetData === null) {
+                    /* First press: copy this set */
+                    const setData = loadSetFromDisk(setIdx);
+                    if (setData || state.sets[setIdx]) {
+                        copiedSetData = setData || state.sets[setIdx];
+                        copiedSetIdx = setIdx;
+                        displayMessage(
+                            "SET COPIED",
+                            `Set ${setIdx + 1}`,
+                            "Press another pad to paste",
+                            ""
+                        );
+                        updateLEDs();
+                    } else {
+                        displayMessage(
+                            "CANNOT COPY",
+                            `Set ${setIdx + 1} is empty`,
+                            "",
+                            ""
+                        );
+                    }
+                } else {
+                    /* Second press: paste to this set */
+                    saveSetToDisk(setIdx, copiedSetData);
+                    /* Update in-memory cache */
+                    state.sets[setIdx] = copiedSetData;
+                    displayMessage(
+                        "SET PASTED",
+                        `Set ${copiedSetIdx + 1} -> Set ${setIdx + 1}`,
+                        "",
+                        ""
+                    );
+                    /* Clear copy state after paste */
+                    copiedSetData = null;
+                    copiedSetIdx = -1;
+                    setTimeout(() => {
+                        updateDisplayContent();
+                        updateLEDs();
+                    }, 1000);
+                    updateLEDs();
+                }
+                return true;
+            }
 
             /* Delete held - enter confirmation mode */
             if (deleteHeld) {
@@ -249,10 +314,13 @@ function updatePadLEDs() {
         const isCurrentSet = state.currentSet === setIdx;
         const hasContent = setHasContent(setIdx);
         const isPendingDelete = deleteConfirmSetIdx === setIdx;
+        const isCopied = copiedSetIdx === setIdx;
 
         let color = Black;
         if (isPendingDelete) {
             color = BrightRed;  // Set pending deletion confirmation
+        } else if (isCopied) {
+            color = VividYellow;  // Copied set
         } else if (isCurrentSet) {
             color = Cyan;  // Currently loaded set
         } else if (hasContent) {

@@ -319,19 +319,9 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Copy button (CC 60) - toggle LED updates for performance testing */
+    /* Copy button (CC 60) - handled by views for copy/paste operations */
     if (isCC && note === MoveCopy) {
-        if (velocity > 0) {
-            const newState = !getLedsEnabled();
-            setLedsEnabled(newState);
-            console.log(`LEDs ${newState ? 'ENABLED' : 'DISABLED'}`);
-            /* Show feedback on display */
-            state.line1 = newState ? "LEDs ENABLED" : "LEDs DISABLED";
-            state.line2 = "Press Copy to toggle";
-            state.line3 = "";
-            state.line4 = "";
-        }
-        return;
+        /* Let views handle copy operations - don't consume the event */
     }
 
     /* Back button (CC 51) - return to track view, or let track view handle it */
