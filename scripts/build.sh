@@ -47,13 +47,11 @@ cd "$REPO_ROOT"
 mkdir -p ./build/
 mkdir -p ./build/host/
 mkdir -p ./build/shared/
-mkdir -p ./build/modules/sf2/
-mkdir -p ./build/modules/dx7/
-mkdir -p ./build/modules/m8/
+# Built-in modules only (chain, controller, store)
+# External modules (sf2, dx7, m8, jv880, obxd, clap) are in separate repos
 mkdir -p ./build/modules/controller/
 mkdir -p ./build/modules/chain/
-mkdir -p ./build/modules/jv880/
-mkdir -p ./build/modules/jv880/roms/
+mkdir -p ./build/modules/store/
 
 echo "Building host..."
 
@@ -72,54 +70,6 @@ echo "Building host..."
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c -ldl
-
-echo "Building SF2 module..."
-
-# Build SF2 DSP plugin
-"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/sf2/dsp/sf2_plugin.c \
-    -o build/modules/sf2/dsp.so \
-    -Isrc -Isrc/modules/sf2/dsp \
-    -lm
-
-echo "Building DX7 module..."
-
-# Build DX7 DSP plugin (C++)
-"${CROSS_PREFIX}g++" -g -O3 -shared -fPIC -std=c++14 \
-    src/modules/dx7/dsp/dx7_plugin.cpp \
-    src/modules/dx7/dsp/msfa/dx7note.cc \
-    src/modules/dx7/dsp/msfa/env.cc \
-    src/modules/dx7/dsp/msfa/exp2.cc \
-    src/modules/dx7/dsp/msfa/fm_core.cc \
-    src/modules/dx7/dsp/msfa/fm_op_kernel.cc \
-    src/modules/dx7/dsp/msfa/freqlut.cc \
-    src/modules/dx7/dsp/msfa/lfo.cc \
-    src/modules/dx7/dsp/msfa/pitchenv.cc \
-    src/modules/dx7/dsp/msfa/sin.cc \
-    src/modules/dx7/dsp/msfa/porta.cpp \
-    -o build/modules/dx7/dsp.so \
-    -Isrc -Isrc/modules/dx7/dsp \
-    -lm
-
-# JV-880 module is built from separate repo (move-anything-jv880)
-# Skip if source doesn't exist
-if [ -d "src/modules/jv880/dsp" ]; then
-    echo "Building JV-880 module..."
-    "${CROSS_PREFIX}g++" -Ofast -shared -fPIC -std=c++11 \
-        -march=armv8-a -mtune=cortex-a72 \
-        -fno-exceptions -fno-rtti \
-        -fomit-frame-pointer -fno-stack-protector \
-        -DNDEBUG \
-        src/modules/jv880/dsp/jv880_plugin.cpp \
-        src/modules/jv880/dsp/mcu.cpp \
-        src/modules/jv880/dsp/mcu_opcodes.cpp \
-        src/modules/jv880/dsp/pcm.cpp \
-        -o build/modules/jv880/dsp.so \
-        -Isrc -Isrc/modules/jv880/dsp \
-        -lm -lpthread
-else
-    echo "Skipping JV-880 module (external repo)"
-fi
 
 echo "Building Signal Chain module..."
 
@@ -163,31 +113,11 @@ cp ./src/shim-entrypoint.sh ./build/
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
 
-# Copy SF2 module files
-cp ./src/modules/sf2/module.json ./build/modules/sf2/
-cp ./src/modules/sf2/ui.js ./build/modules/sf2/
-
-# Copy DX7 module files
-cp ./src/modules/dx7/module.json ./build/modules/dx7/
-cp ./src/modules/dx7/ui.js ./build/modules/dx7/
-[ -f ./src/modules/dx7/patches.syx ] && cp ./src/modules/dx7/patches.syx ./build/modules/dx7/
-
-# Copy JV-880 module files (if present - external repo)
-if [ -d "src/modules/jv880" ]; then
-    cp ./src/modules/jv880/module.json ./build/modules/jv880/
-    cp ./src/modules/jv880/ui.js ./build/modules/jv880/
-fi
-
-# Copy M8 module files
-cp ./src/modules/m8/module.json ./build/modules/m8/
-cp ./src/modules/m8/ui.js ./build/modules/m8/
-
 # Copy Controller module files
 cp ./src/modules/controller/module.json ./build/modules/controller/
 cp ./src/modules/controller/ui.js ./build/modules/controller/
 
 # Copy Store module files
-mkdir -p ./build/modules/store/
 cp ./src/modules/store/module.json ./build/modules/store/
 cp ./src/modules/store/ui.js ./build/modules/store/
 

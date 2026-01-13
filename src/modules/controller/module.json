@@ -3,7 +3,7 @@
     "name": "MIDI Controller",
     "version": "1.0.0",
     "description": "Custom MIDI controller with 16 banks and configurable pads",
-    "author": "Move Anything",
+    "author": "chaolue",
     "ui": "ui.js",
     "api_version": 1
 }
