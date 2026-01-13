@@ -179,7 +179,7 @@ globalThis.tick = function() {
                          */
                         if (s <= newStep && newStep <= stepEnd && s >= lastCutStep) {
                             for (const note of step.notes) {
-                                if (note >= 36 && note < 68 && !playingNotes.includes(note)) {
+                                if (!playingNotes.includes(note)) {
                                     playingNotes.push(note);
                                 }
                             }
