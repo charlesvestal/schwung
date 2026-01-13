@@ -8,6 +8,36 @@
   },
   "modules": [
     {
+      "id": "dx7",
+      "name": "DX7 Synth",
+      "description": "Yamaha DX7 FM synthesizer emulator (Dexed/MSFA)",
+      "author": "Dexed/MSFA by google/asb2m10 (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "latest_version": "0.1.0",
+      "min_host_version": "1.0.0",
+      "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.1.0/dx7-module.tar.gz"
+    },
+    {
+      "id": "sf2",
+      "name": "SF2 Synth",
+      "description": "SoundFont (.sf2) synthesizer using TinySoundFont",
+      "author": "TinySoundFont by schellingb (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "latest_version": "0.1.0",
+      "min_host_version": "1.0.0",
+      "download_url": "https://github.com/charlesvestal/move-anything-sf2/releases/download/v0.1.0/sf2-module.tar.gz"
+    },
+    {
+      "id": "m8",
+      "name": "M8 LPP Emulator",
+      "description": "Novation Launchpad Pro emulation for Dirtywave M8",
+      "author": "bobbydigitales",
+      "component_type": "utility",
+      "latest_version": "1.0.0",
+      "min_host_version": "1.0.0",
+      "download_url": "https://github.com/charlesvestal/move-anything-m8/releases/download/v1.0.0/m8-module.tar.gz"
+    },
+    {
       "id": "jv880",
       "name": "JV-880",
       "description": "Roland JV-880 emulator (mini-jv880)",
