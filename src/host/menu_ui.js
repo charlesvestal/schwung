@@ -12,7 +12,7 @@ import {
 } from '../shared/constants.mjs';
 
 import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
-import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount } from './menu_main.mjs';
+import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount, enterCategory, exitCategory, isInCategory, resetToMain } from './menu_main.mjs';
 import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
 
 /* State */
@@ -123,6 +123,8 @@ function returnToMenu() {
     host_unload_module();
     menuVisible = true;
     settingsVisible = false;
+    resetToMain();
+    selectedIndex = 0;
     refreshModules();
     showStatus("Module unloaded");
 }
@@ -180,6 +182,14 @@ function handleCC(cc, value) {
         totalItems
     });
     selectedIndex = result.nextIndex;
+
+    /* Handle back button */
+    if (result.didBack && isInCategory()) {
+        exitCategory();
+        selectedIndex = 0;
+        return;
+    }
+
     if (result.didSelect) {
         const item = getSelectedItem(selectedIndex);
         if (!item) return;
@@ -189,6 +199,9 @@ function handleCC(cc, value) {
             initSettings();
         } else if (item.type === 'exit') {
             exit();
+        } else if (item.type === 'category') {
+            enterCategory(item.categoryId);
+            selectedIndex = 0;
         } else if (item.type === 'module') {
             loadModule(item.module);
         }

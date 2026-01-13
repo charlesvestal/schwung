@@ -2,43 +2,46 @@
  * Main menu screen renderer and input handler.
  *
  * Menu organization:
- * 1. Featured modules (Signal Chain, always first)
- * 2. Categories (Sound Generators, Audio FX, MIDI FX, Utilities) - sorted alphabetically
- * 3. System modules (Module Store, near end)
- * 4. Settings
- * 5. Return to Move
+ * - Featured modules (Signal Chain) - directly selectable
+ * - Categories (Sound Generators >, Audio FX >, etc.) - navigable submenus
+ * - System modules (Module Store) - directly selectable
+ * - Settings
+ * - Return to Move
  *
  * Categories are read from each module's component_type field in module.json.
  */
 
-import { drawMenuHeader, drawMenuList, menuLayoutDefaults } from '../shared/menu_layout.mjs';
+import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../shared/menu_layout.mjs';
 
 const MENU_LABEL = "Move Anything";
 
 /* Category display order and names - modules provide their own component_type */
 const CATEGORY_ORDER = [
-    { id: 'featured', name: null },           /* No header, just Signal Chain */
+    { id: 'featured', name: null },           /* No category entry, modules listed directly */
     { id: 'sound_generator', name: 'Sound Generators' },
     { id: 'audio_fx', name: 'Audio FX' },
     { id: 'midi_fx', name: 'MIDI FX' },
     { id: 'midi_source', name: 'MIDI Sources' },
     { id: 'utility', name: 'Utilities' },
-    { id: 'system', name: null },             /* No header, Module Store */
+    /* 'system' modules (Module Store) are listed directly at the end */
 ];
 
-/* Build organized menu items from module list */
-function organizeModules(modules) {
-    const items = [];
+/* Current view state */
+let currentView = 'main';      /* 'main' or category id */
+let menuItems = [];
+let selectableIndices = [];
+let modulesByCategory = {};    /* Cache of modules grouped by category */
 
-    /* Group modules by category (read from module's component_type) */
+/* Group modules by category */
+function groupModulesByCategory(modules) {
     const byCategory = {};
     for (const cat of CATEGORY_ORDER) {
         byCategory[cat.id] = [];
     }
-    byCategory['other'] = [];  /* Uncategorized */
+    byCategory['system'] = [];
+    byCategory['other'] = [];
 
     for (const mod of modules) {
-        /* Use component_type from module.json, fall back to 'other' if not set */
         const category = mod.component_type || 'other';
         if (byCategory[category]) {
             byCategory[category].push(mod);
@@ -52,88 +55,144 @@ function organizeModules(modules) {
         byCategory[cat].sort((a, b) => a.name.localeCompare(b.name));
     }
 
-    /* Build items list in order */
+    return byCategory;
+}
+
+/* Build main menu items */
+function buildMainMenuItems(byCategory) {
+    const items = [];
+
+    /* Featured modules (listed directly, no category entry) */
+    for (const mod of byCategory['featured']) {
+        items.push({ type: 'module', module: mod, label: mod.name });
+    }
+
+    /* Category entries (navigable with >) */
     for (const cat of CATEGORY_ORDER) {
+        if (!cat.name) continue;  /* Skip featured */
         const mods = byCategory[cat.id];
         if (mods.length === 0) continue;
 
-        /* Add category header if it has a name */
-        if (cat.name) {
-            items.push({ type: 'header', label: cat.name });
-        }
-
-        /* Add modules in this category */
-        for (const mod of mods) {
-            items.push({ type: 'module', module: mod, label: mod.name });
-        }
+        items.push({
+            type: 'category',
+            categoryId: cat.id,
+            label: `${cat.name} >`,
+            count: mods.length
+        });
     }
 
-    /* Add any uncategorized modules */
+    /* Other (uncategorized) as a category if any exist */
     if (byCategory['other'].length > 0) {
-        items.push({ type: 'header', label: 'Other' });
-        for (const mod of byCategory['other']) {
-            items.push({ type: 'module', module: mod, label: mod.name });
-        }
+        items.push({
+            type: 'category',
+            categoryId: 'other',
+            label: `Other >`,
+            count: byCategory['other'].length
+        });
     }
 
-    /* Add Settings and Return to Move */
+    /* System modules (listed directly) */
+    for (const mod of byCategory['system']) {
+        items.push({ type: 'module', module: mod, label: mod.name });
+    }
+
+    /* Settings and Return to Move */
     items.push({ type: 'settings', label: 'Settings' });
     items.push({ type: 'exit', label: 'Return to Move' });
 
     return items;
 }
 
-/* Get selectable items (skip headers) */
+/* Build category submenu items */
+function buildCategoryMenuItems(categoryId, byCategory) {
+    const items = [];
+    const mods = byCategory[categoryId] || [];
+
+    for (const mod of mods) {
+        items.push({ type: 'module', module: mod, label: mod.name });
+    }
+
+    return items;
+}
+
+/* Get selectable items (all items are selectable in new design) */
 function getSelectableIndices(items) {
     const indices = [];
     for (let i = 0; i < items.length; i++) {
-        if (items[i].type !== 'header') {
-            indices.push(i);
-        }
+        indices.push(i);
     }
     return indices;
 }
 
-/* Exported state for menu items */
-let menuItems = [];
-let selectableIndices = [];
+/* Get category name for display */
+function getCategoryName(categoryId) {
+    for (const cat of CATEGORY_ORDER) {
+        if (cat.id === categoryId) return cat.name;
+    }
+    if (categoryId === 'other') return 'Other';
+    return categoryId;
+}
 
 export function drawMainMenu({ modules, selectedIndex, volume }) {
-    /* Rebuild menu items (could cache this) */
-    menuItems = organizeModules(modules);
+    /* Group modules by category */
+    modulesByCategory = groupModulesByCategory(modules);
+
+    /* Build items based on current view */
+    if (currentView === 'main') {
+        menuItems = buildMainMenuItems(modulesByCategory);
+    } else {
+        menuItems = buildCategoryMenuItems(currentView, modulesByCategory);
+    }
     selectableIndices = getSelectableIndices(menuItems);
 
-    drawMenuHeader(MENU_LABEL, `Vol:${volume}`);
+    /* Header */
+    if (currentView === 'main') {
+        drawMenuHeader(MENU_LABEL, `Vol:${volume}`);
+    } else {
+        drawMenuHeader(getCategoryName(currentView), `Vol:${volume}`);
+    }
 
-    if (modules.length === 0) {
-        print(2, 24, "No modules found", 1);
-        print(2, 36, "Check modules/ dir", 1);
+    if (menuItems.length === 0) {
+        if (currentView === 'main') {
+            print(2, 24, "No modules found", 1);
+            print(2, 36, "Check modules/ dir", 1);
+        } else {
+            print(2, 24, "No modules in category", 1);
+        }
         return;
     }
 
-    /* Map selectedIndex to actual item index */
-    const actualIndex = selectableIndices[selectedIndex] || 0;
+    /* Clamp selectedIndex */
+    const maxIndex = selectableIndices.length - 1;
+    const clampedIndex = Math.min(selectedIndex, maxIndex);
 
+    /* Draw list */
+    const hasFooter = currentView !== 'main';
     drawMenuList({
         items: menuItems,
-        selectedIndex: actualIndex,
+        selectedIndex: clampedIndex,
         listArea: {
             topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomNoFooter
+            bottomY: hasFooter ? menuLayoutDefaults.listBottomWithFooter : menuLayoutDefaults.listBottomNoFooter
         },
         getLabel: (item) => item.label,
-        getValue: () => "",
-        isHeader: (item) => item.type === 'header',
-        isSelectable: (item) => item.type !== 'header'
+        getValue: (item) => item.count ? `(${item.count})` : '',
+        isHeader: () => false,
+        isSelectable: () => true
     });
+
+    /* Footer for category view */
+    if (currentView !== 'main') {
+        drawMenuFooter("Back: return");
+    }
 }
 
 export function handleMainMenuCC({ cc, value, selectedIndex, totalItems }) {
     const isDown = value > 0;
     let nextIndex = selectedIndex;
     let didSelect = false;
+    let didBack = false;
 
-    /* totalItems should be number of selectable items */
     const maxIndex = selectableIndices.length - 1;
 
     if (cc === 14) {
@@ -149,18 +208,45 @@ export function handleMainMenuCC({ cc, value, selectedIndex, totalItems }) {
         nextIndex = Math.max(selectedIndex - 1, 0);
     } else if (cc === 3 && isDown) {
         didSelect = true;
+    } else if (cc === 1 && isDown) {
+        /* Back button */
+        didBack = true;
     }
 
-    return { nextIndex, didSelect };
+    return { nextIndex, didSelect, didBack };
 }
 
 /* Get what was selected */
 export function getSelectedItem(selectedIndex) {
-    const actualIndex = selectableIndices[selectedIndex];
-    return menuItems[actualIndex];
+    return menuItems[selectedIndex];
 }
 
 /* Get total selectable items */
 export function getSelectableCount() {
     return selectableIndices.length;
+}
+
+/* Navigation: enter a category */
+export function enterCategory(categoryId) {
+    currentView = categoryId;
+}
+
+/* Navigation: return to main menu */
+export function exitCategory() {
+    currentView = 'main';
+}
+
+/* Check if in category view */
+export function isInCategory() {
+    return currentView !== 'main';
+}
+
+/* Get current view */
+export function getCurrentView() {
+    return currentView;
+}
+
+/* Reset to main view (called on module load/unload) */
+export function resetToMain() {
+    currentView = 'main';
 }
