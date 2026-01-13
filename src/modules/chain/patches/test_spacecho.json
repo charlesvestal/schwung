@@ -1,0 +1,23 @@
+{
+    "name": "Test Space Echo",
+    "version": 1,
+    "chain": {
+        "synth": {
+            "module": "sf2",
+            "preset": 0
+        },
+        "audio_fx": [
+            {
+                "type": "spacecho"
+            }
+        ],
+        "knob_mappings": [
+            {"cc": 71, "target": "synth", "param": "preset"},
+            {"cc": 72, "target": "fx1", "param": "time"},
+            {"cc": 73, "target": "fx1", "param": "feedback"},
+            {"cc": 74, "target": "fx1", "param": "mix"},
+            {"cc": 75, "target": "fx1", "param": "tone"},
+            {"cc": 76, "target": "fx1", "param": "flutter"}
+        ]
+    }
+}

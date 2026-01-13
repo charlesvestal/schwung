@@ -8,7 +8,7 @@ import * as std from 'std';
 import * as os from 'os';
 import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
 import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob } from '../../shared/constants.mjs';
-import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../../shared/menu_layout.mjs';
+import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults, showOverlay, tickOverlay, drawOverlay, isOverlayActive } from '../../shared/menu_layout.mjs';
 import { midiFxRegistry } from './midi_fx/index.mjs';
 
 /* State */
@@ -49,6 +49,11 @@ let availableComponents = {
 let needsRedraw = true;
 let tickCount = 0;
 const REDRAW_INTERVAL = 6;
+
+/* Knob feedback state */
+let currentKnobMappings = [];  /* Array of {cc, target, param, currentValue, type, min, max} for current patch */
+const KNOB_STEP_FLOAT = 0.05;  /* Step size for float params (must match DSP) */
+const KNOB_STEP_INT = 1;       /* Step size for int params */
 
 /* Display constants */
 const SCREEN_WIDTH = 128;
@@ -1465,6 +1470,13 @@ function handleCC(cc, val) {
         }
     }
 
+    /* Handle knob CCs for parameter feedback (CC 71-78) */
+    if (cc >= KNOB_CC_START && cc <= KNOB_CC_START + NUM_KNOBS - 1) {
+        if (viewMode === "patch" && !sourceUiActive) {
+            handleKnobFeedback(cc, val);
+        }
+    }
+
     return false;
 }
 
@@ -1605,7 +1617,103 @@ function drawUI() {
         print(2, 54, hint, 1);
     }
 
+    /* Draw shared overlay if active */
+    drawOverlay();
+
     needsRedraw = false;
+}
+
+/* Load knob mappings for current patch from DSP */
+function loadCurrentPatchKnobMappings() {
+    currentKnobMappings = [];
+
+    if (currentPatch < 0 || currentPatch >= patchCount) {
+        return;
+    }
+
+    const configJson = host_module_get_param(`patch_config_${currentPatch}`);
+    if (!configJson) return;
+
+    try {
+        const config = JSON.parse(configJson);
+        /* Config has: synth, preset, source, input, chord, arp, arp_bpm, arp_div, audio_fx, knob_mappings */
+        if (Array.isArray(config.knob_mappings)) {
+            /* Add currentValue field to each mapping, with type-appropriate defaults */
+            currentKnobMappings = config.knob_mappings.map(m => {
+                const type = m.type || "float";  /* Default to float */
+                const min = m.min !== undefined ? m.min : (type === "int" ? 0 : 0.0);
+                const max = m.max !== undefined ? m.max : (type === "int" ? 127 : 1.0);
+                const defaultVal = type === "int" ? Math.floor((min + max) / 2) : 0.5;
+                return {
+                    ...m,
+                    type,
+                    min,
+                    max,
+                    currentValue: defaultVal
+                };
+            });
+        }
+    } catch (e) {
+        /* Ignore parse errors */
+    }
+}
+
+/* Get display name for a knob mapping */
+function getKnobMappingDisplayName(mapping) {
+    if (!mapping) return "";
+    const slotNames = {
+        "synth": synthModule || "Synth",
+        "fx1": "FX1",
+        "fx2": "FX2",
+        "midi_fx": "MIDI FX"
+    };
+    const slotName = slotNames[mapping.target] || mapping.target;
+    return `${slotName}: ${mapping.param}`;
+}
+
+/* Handle knob CC for feedback display */
+function handleKnobFeedback(cc, value) {
+    const knobIndex = cc - KNOB_CC_START;
+    if (knobIndex < 0 || knobIndex >= NUM_KNOBS) return false;
+
+    /* Find mapping for this knob in current patch */
+    const mappingIndex = currentKnobMappings.findIndex(m => m.cc === cc);
+    if (mappingIndex < 0) return false;
+
+    const mapping = currentKnobMappings[mappingIndex];
+    const isInt = mapping.type === "int";
+
+    /* Relative encoder: 1 = increment, 127 = decrement */
+    let delta = 0;
+    if (value === 1) {
+        delta = isInt ? KNOB_STEP_INT : KNOB_STEP_FLOAT;
+    } else if (value === 127) {
+        delta = isInt ? -KNOB_STEP_INT : -KNOB_STEP_FLOAT;
+    } else {
+        return false;  /* Ignore other values */
+    }
+
+    /* Update current value with clamping to min/max */
+    let newValue = mapping.currentValue + delta;
+    if (newValue < mapping.min) newValue = mapping.min;
+    if (newValue > mapping.max) newValue = mapping.max;
+    if (isInt) newValue = Math.round(newValue);
+    currentKnobMappings[mappingIndex].currentValue = newValue;
+
+    /* Format display value based on type */
+    const displayName = getKnobMappingDisplayName(mapping);
+    let displayValue;
+    if (isInt) {
+        displayValue = String(Math.round(newValue));
+    } else {
+        displayValue = `${Math.round(newValue * 100)}%`;
+    }
+
+    /* Show feedback using shared overlay */
+    showOverlay(displayName, displayValue);
+    needsRedraw = true;
+
+    return true;
 }
 
 /* Update state from DSP */
@@ -1671,6 +1779,11 @@ function updateState() {
 
     refreshSourceUi(patchChanged);
 
+    /* Load knob mappings when patch changes */
+    if (patchChanged) {
+        loadCurrentPatchKnobMappings();
+    }
+
     if (patchChanged && viewMode === "patch" && sourceUi && !sourceUiActive) {
         enterSourceUi();
     }
@@ -1717,6 +1830,11 @@ globalThis.tick = function() {
             editorError = "";
             needsRedraw = true;
         }
+    }
+
+    /* Tick the shared overlay timer */
+    if (tickOverlay()) {
+        needsRedraw = true;
     }
 
     /* Set default octave on first tick */
