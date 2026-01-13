@@ -1,4 +1,5 @@
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -59,6 +60,12 @@ int g_silence_blocks = 0;
 
 /* Default modules directory */
 #define DEFAULT_MODULES_DIR "/data/UserData/move-anything/modules"
+
+/* Base directory for path validation */
+#define BASE_DIR "/data/UserData/move-anything"
+
+/* Bundled curl binary path */
+#define CURL_PATH "/data/UserData/move-anything/bin/curl"
 
 typedef struct FontChar {
   unsigned char* data;
@@ -1623,6 +1630,200 @@ static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* Helper: validate path is within BASE_DIR to prevent directory traversal */
+static int validate_path(const char *path) {
+    if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
+    if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
+    if (strstr(path, "..") != NULL) return 0;
+    return 1;
+}
+
+/* host_file_exists(path) -> bool */
+static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    struct stat st;
+    int exists = (stat(path, &st) == 0);
+
+    JS_FreeCString(ctx, path);
+    return exists ? JS_TRUE : JS_FALSE;
+}
+
+/* host_http_download(url, dest_path) -> bool */
+static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    if (argc < 2) {
+        return JS_FALSE;
+    }
+
+    const char *url = JS_ToCString(ctx, argv[0]);
+    const char *dest_path = JS_ToCString(ctx, argv[1]);
+
+    if (!url || !dest_path) {
+        if (url) JS_FreeCString(ctx, url);
+        if (dest_path) JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
+    /* Validate destination path */
+    if (!validate_path(dest_path)) {
+        fprintf(stderr, "host_http_download: invalid dest path: %s\n", dest_path);
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
+    /* Build curl command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "%s -fsSL -o \"%s\" \"%s\" 2>&1",
+             CURL_PATH, dest_path, url);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, dest_path);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_extract_tar(tar_path, dest_dir) -> bool */
+static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 2) {
+        return JS_FALSE;
+    }
+
+    const char *tar_path = JS_ToCString(ctx, argv[0]);
+    const char *dest_dir = JS_ToCString(ctx, argv[1]);
+
+    if (!tar_path || !dest_dir) {
+        if (tar_path) JS_FreeCString(ctx, tar_path);
+        if (dest_dir) JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate paths */
+    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
+        fprintf(stderr, "host_extract_tar: invalid path(s)\n");
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Build tar command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>&1",
+             tar_path, dest_dir);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, tar_path);
+    JS_FreeCString(ctx, dest_dir);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_remove_dir(path) -> bool */
+static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    /* Validate path - must be within modules directory for safety */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_remove_dir: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Additional safety: must be within modules directory */
+    if (strncmp(path, DEFAULT_MODULES_DIR, strlen(DEFAULT_MODULES_DIR)) != 0) {
+        fprintf(stderr, "host_remove_dir: path must be within modules dir: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Build rm command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>&1", path);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, path);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_read_file(path) -> string or null */
+static JSValue js_host_read_file(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_NULL;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_NULL;
+    }
+
+    /* Validate path */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_read_file: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    /* Get file size */
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    /* Limit to 1MB for safety */
+    if (size > 1024 * 1024) {
+        fprintf(stderr, "host_read_file: file too large: %s\n", path);
+        fclose(f);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    char *buf = malloc(size + 1);
+    if (!buf) {
+        fclose(f);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    size_t read = fread(buf, 1, size, f);
+    buf[read] = '\0';
+    fclose(f);
+
+    JSValue result = JS_NewString(ctx, buf);
+    free(buf);
+    JS_FreeCString(ctx, path);
+
+    return result;
+}
+
 void init_javascript(JSRuntime **prt, JSContext **pctx)
 {
 
@@ -1744,6 +1945,22 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_flush_display_func = JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", host_flush_display_func);
+
+    /* Store module functions */
+    JSValue host_file_exists_func = JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_file_exists", host_file_exists_func);
+
+    JSValue host_http_download_func = JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_http_download", host_http_download_func);
+
+    JSValue host_extract_tar_func = JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", host_extract_tar_func);
+
+    JSValue host_remove_dir_func = JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", host_remove_dir_func);
+
+    JSValue host_read_file_func = JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_read_file", host_read_file_func);
 
     JS_FreeValue(ctx, global_obj);
 

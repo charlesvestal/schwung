@@ -10,13 +10,15 @@ cd "$REPO_ROOT"
 
 # Create the tarball with the correct directory name
 cd ./build
+
+# Build list of items to package
+ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules"
+
+# Add bin directory if it exists (contains curl for store module)
+if [ -d "./bin" ]; then
+    ITEMS="$ITEMS ./bin"
+fi
+
 tar -czvf ../move-anything.tar.gz \
     --transform 's,^\.,move-anything,' \
-    ./move-anything \
-    ./move-anything-shim.so \
-    ./shim-entrypoint.sh \
-    ./start.sh \
-    ./stop.sh \
-    ./host \
-    ./shared \
-    ./modules
+    $ITEMS
