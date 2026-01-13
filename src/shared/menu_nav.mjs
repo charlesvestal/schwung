@@ -6,6 +6,7 @@
  */
 
 import { MenuItemType, isEditable, isSubmenu, isBack } from './menu_items.mjs';
+import { decodeDelta, decodeAcceleratedDelta } from './input_filter.mjs';
 
 /* CC values from constants.mjs */
 const CC_JOG_WHEEL = 14;
@@ -47,11 +48,16 @@ export function handleMenuInput({ cc, value, items, state, stack, onBack, shiftH
 
     /* Jog wheel - scroll or adjust value */
     if (cc === CC_JOG_WHEEL) {
-        const delta = decodeDelta(value);
-        if (delta !== 0) {
-            if (state.editing) {
+        if (state.editing) {
+            /* Use acceleration for value editing (smooth control) */
+            const delta = shiftHeld ? decodeDelta(value) : decodeAcceleratedDelta(value, 'menu_edit');
+            if (delta !== 0) {
                 needsRedraw = adjustValue(item, state, delta, shiftHeld);
-            } else {
+            }
+        } else {
+            /* Use simple delta for menu navigation (1 step at a time) */
+            const delta = decodeDelta(value);
+            if (delta !== 0) {
                 const newIndex = clamp(state.selectedIndex + delta, 0, items.length - 1);
                 if (newIndex !== state.selectedIndex) {
                     state.selectedIndex = newIndex;
@@ -203,13 +209,17 @@ function adjustValue(item, state, delta, shiftHeld) {
     let newVal;
 
     if (item.type === MenuItemType.VALUE) {
-        const step = shiftHeld ? (item.fineStep || 1) : (item.step || 1);
+        /* When shiftHeld, delta is ±1 so multiply by fineStep for fine control
+         * When not shiftHeld, delta is already accelerated so use directly */
+        const step = shiftHeld ? (item.fineStep || 1) : 1;
         newVal = clamp(currentVal + delta * step, item.min, item.max);
     } else if (item.type === MenuItemType.ENUM) {
+        /* For enums, use simple ±1 to cycle through options */
         const opts = item.options || [];
         if (opts.length === 0) return false;
         const idx = opts.indexOf(currentVal);
-        const newIdx = (idx + delta + opts.length) % opts.length;
+        const sign = delta > 0 ? 1 : -1;
+        const newIdx = (idx + sign + opts.length) % opts.length;
         newVal = opts[newIdx];
     } else {
         return false;
@@ -252,18 +262,6 @@ function applyValueChange(item, delta, shiftHeld) {
         return true;
     }
     return false;
-}
-
-/**
- * Decode jog wheel delta from CC value
- * @param {number} value - CC value (1-63 = clockwise, 65-127 = counter-clockwise)
- * @returns {number} Delta (-1, 0, or 1)
- */
-function decodeDelta(value) {
-    if (value === 0) return 0;
-    if (value >= 1 && value <= 63) return 1;
-    if (value >= 65 && value <= 127) return -1;
-    return 0;
 }
 
 /**
