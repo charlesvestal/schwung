@@ -47,7 +47,8 @@ const CATEGORIES = [
     { id: 'sound_generator', name: 'Sound Generators' },
     { id: 'audio_fx', name: 'Audio FX' },
     { id: 'midi_fx', name: 'MIDI FX' },
-    { id: 'midi_source', name: 'MIDI Sources' }
+    { id: 'midi_source', name: 'MIDI Sources' },
+    { id: 'utility', name: 'Utilities' }
 ];
 
 /* State */
