@@ -106,26 +106,6 @@
       "latest_version": "0.1.0",
       "min_host_version": "0.1.0",
       "download_url": "https://github.com/charlesvestal/move-anything-space-delay/releases/download/v0.1.0/spacecho-module.tar.gz"
-    },
-    {
-      "id": "foo",
-      "name": "Module Foo",
-      "description": "Test placeholder module - DELETE ME",
-      "author": "Test",
-      "component_type": "midi_fx",
-      "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://example.com/fake.tar.gz"
-    },
-    {
-      "id": "bar",
-      "name": "Module Bar",
-      "description": "Another test placeholder - DELETE ME",
-      "author": "Test",
-      "component_type": "midi_fx",
-      "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://example.com/fake2.tar.gz"
     }
   ]
 }
