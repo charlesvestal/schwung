@@ -12,7 +12,7 @@ import {
 } from '../shared/constants.mjs';
 
 import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
-import { drawMainMenu, handleMainMenuCC } from './menu_main.mjs';
+import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount } from './menu_main.mjs';
 import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
 
 /* State */
@@ -97,14 +97,13 @@ function drawModuleInfo() {
     print(2, 32, "Shift+Menu: back", 1);
 }
 
-/* Load the selected module */
-function loadSelectedModule() {
-    if (selectedIndex < 0 || selectedIndex >= modules.length) {
+/* Load a module */
+function loadModule(mod) {
+    if (!mod) {
         showStatus("No module selected");
         return;
     }
 
-    const mod = modules[selectedIndex];
     console.log(`Loading module: ${mod.id}`);
     showStatus(`Loading ${mod.name}...`);
 
@@ -173,7 +172,7 @@ function handleCC(cc, value) {
     /* Menu navigation (only when menu visible) */
     if (!menuVisible) return;
 
-    const totalItems = modules.length + 2;  /* +1 for Settings, +1 for Return to Move */
+    const totalItems = getSelectableCount();
     const result = handleMainMenuCC({
         cc,
         value,
@@ -182,13 +181,16 @@ function handleCC(cc, value) {
     });
     selectedIndex = result.nextIndex;
     if (result.didSelect) {
-        if (selectedIndex === modules.length) {
+        const item = getSelectedItem(selectedIndex);
+        if (!item) return;
+
+        if (item.type === 'settings') {
             settingsVisible = true;
             initSettings();
-        } else if (selectedIndex === modules.length + 1) {
+        } else if (item.type === 'exit') {
             exit();
-        } else {
-            loadSelectedModule();
+        } else if (item.type === 'module') {
+            loadModule(item.module);
         }
     }
 }

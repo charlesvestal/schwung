@@ -6,5 +6,6 @@
     "author": "Move Anything",
     "ui": "ui.js",
     "api_version": 1,
-    "raw_ui": true
+    "raw_ui": true,
+    "component_type": "system"
 }
