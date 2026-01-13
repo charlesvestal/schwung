@@ -1125,42 +1125,163 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         }
     }
 
-    /* Parse chord type from midi_fx section */
+    /* Parse MIDI FX from midi_fx array (new format) */
     patch->chord_type = CHORD_NONE;
-    char chord_str[MAX_NAME_LEN] = "";
-    if (json_get_string(json, "chord", chord_str, MAX_NAME_LEN) == 0) {
-        if (strcmp(chord_str, "major") == 0) {
-            patch->chord_type = CHORD_MAJOR;
-        } else if (strcmp(chord_str, "minor") == 0) {
-            patch->chord_type = CHORD_MINOR;
-        } else if (strcmp(chord_str, "power") == 0) {
-            patch->chord_type = CHORD_POWER;
-        } else if (strcmp(chord_str, "octave") == 0) {
-            patch->chord_type = CHORD_OCTAVE;
-        }
-    }
-
-    /* Parse arpeggiator settings from midi_fx section */
     patch->arp_mode = ARP_OFF;
     patch->arp_tempo_bpm = 120;
     patch->arp_note_division = 4;  /* 16th notes default */
 
-    char arp_str[MAX_NAME_LEN] = "";
-    if (json_get_string(json, "arp", arp_str, MAX_NAME_LEN) == 0) {
-        if (strcmp(arp_str, "up") == 0) {
-            patch->arp_mode = ARP_UP;
-        } else if (strcmp(arp_str, "down") == 0) {
-            patch->arp_mode = ARP_DOWN;
-        } else if (strcmp(arp_str, "up_down") == 0 || strcmp(arp_str, "updown") == 0) {
-            patch->arp_mode = ARP_UPDOWN;
-        } else if (strcmp(arp_str, "random") == 0) {
-            patch->arp_mode = ARP_RANDOM;
+    const char *midi_fx_pos = strstr(json, "\"midi_fx\"");
+    if (midi_fx_pos) {
+        const char *bracket = strchr(midi_fx_pos, '[');
+        if (bracket) {
+            const char *end_bracket = strchr(bracket, ']');
+            if (end_bracket) {
+                const char *obj_pos = bracket;
+                /* Iterate through objects in the array */
+                while (obj_pos && obj_pos < end_bracket) {
+                    const char *obj_start = strchr(obj_pos, '{');
+                    if (!obj_start || obj_start > end_bracket) break;
+
+                    const char *obj_end = strchr(obj_start, '}');
+                    if (!obj_end || obj_end > end_bracket) break;
+
+                    /* Extract type field */
+                    char fx_type[MAX_NAME_LEN] = "";
+                    const char *type_pos = strstr(obj_start, "\"type\"");
+                    if (type_pos && type_pos < obj_end) {
+                        const char *colon = strchr(type_pos, ':');
+                        if (colon && colon < obj_end) {
+                            const char *q1 = strchr(colon, '"');
+                            if (q1 && q1 < obj_end) {
+                                q1++;
+                                const char *q2 = strchr(q1, '"');
+                                if (q2 && q2 < obj_end) {
+                                    int len = q2 - q1;
+                                    if (len > 0 && len < MAX_NAME_LEN) {
+                                        strncpy(fx_type, q1, len);
+                                        fx_type[len] = '\0';
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    /* Parse based on type */
+                    if (strcmp(fx_type, "chord") == 0) {
+                        /* Extract chord value */
+                        const char *chord_pos = strstr(obj_start, "\"chord\"");
+                        if (chord_pos && chord_pos < obj_end) {
+                            const char *colon = strchr(chord_pos, ':');
+                            if (colon && colon < obj_end) {
+                                const char *q1 = strchr(colon, '"');
+                                if (q1 && q1 < obj_end) {
+                                    q1++;
+                                    const char *q2 = strchr(q1, '"');
+                                    if (q2 && q2 < obj_end) {
+                                        int len = q2 - q1;
+                                        char chord_str[MAX_NAME_LEN] = "";
+                                        if (len > 0 && len < MAX_NAME_LEN) {
+                                            strncpy(chord_str, q1, len);
+                                            chord_str[len] = '\0';
+                                            if (strcmp(chord_str, "major") == 0) {
+                                                patch->chord_type = CHORD_MAJOR;
+                                            } else if (strcmp(chord_str, "minor") == 0) {
+                                                patch->chord_type = CHORD_MINOR;
+                                            } else if (strcmp(chord_str, "power") == 0) {
+                                                patch->chord_type = CHORD_POWER;
+                                            } else if (strcmp(chord_str, "octave") == 0) {
+                                                patch->chord_type = CHORD_OCTAVE;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if (strcmp(fx_type, "arp") == 0) {
+                        /* Extract arp mode */
+                        const char *mode_pos = strstr(obj_start, "\"mode\"");
+                        if (mode_pos && mode_pos < obj_end) {
+                            const char *colon = strchr(mode_pos, ':');
+                            if (colon && colon < obj_end) {
+                                const char *q1 = strchr(colon, '"');
+                                if (q1 && q1 < obj_end) {
+                                    q1++;
+                                    const char *q2 = strchr(q1, '"');
+                                    if (q2 && q2 < obj_end) {
+                                        int len = q2 - q1;
+                                        char mode_str[MAX_NAME_LEN] = "";
+                                        if (len > 0 && len < MAX_NAME_LEN) {
+                                            strncpy(mode_str, q1, len);
+                                            mode_str[len] = '\0';
+                                            if (strcmp(mode_str, "up") == 0) {
+                                                patch->arp_mode = ARP_UP;
+                                            } else if (strcmp(mode_str, "down") == 0) {
+                                                patch->arp_mode = ARP_DOWN;
+                                            } else if (strcmp(mode_str, "up_down") == 0 || strcmp(mode_str, "updown") == 0) {
+                                                patch->arp_mode = ARP_UPDOWN;
+                                            } else if (strcmp(mode_str, "random") == 0) {
+                                                patch->arp_mode = ARP_RANDOM;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        /* Extract bpm */
+                        const char *bpm_pos = strstr(obj_start, "\"bpm\"");
+                        if (bpm_pos && bpm_pos < obj_end) {
+                            const char *colon = strchr(bpm_pos, ':');
+                            if (colon && colon < obj_end) {
+                                patch->arp_tempo_bpm = atoi(colon + 1);
+                            }
+                        }
+                        /* Extract division */
+                        const char *div_pos = strstr(obj_start, "\"division\"");
+                        if (div_pos && div_pos < obj_end) {
+                            const char *colon = strchr(div_pos, ':');
+                            if (colon && colon < obj_end) {
+                                patch->arp_note_division = atoi(colon + 1);
+                            }
+                        }
+                    }
+
+                    obj_pos = obj_end + 1;
+                }
+            }
         }
     }
 
-    /* Parse arp tempo and division */
-    json_get_int(json, "arp_bpm", &patch->arp_tempo_bpm);
-    json_get_int(json, "arp_division", &patch->arp_note_division);
+    /* Backward compatibility: try old flat format if midi_fx array not found */
+    if (patch->chord_type == CHORD_NONE && patch->arp_mode == ARP_OFF) {
+        char chord_str[MAX_NAME_LEN] = "";
+        if (json_get_string(json, "chord", chord_str, MAX_NAME_LEN) == 0) {
+            if (strcmp(chord_str, "major") == 0) {
+                patch->chord_type = CHORD_MAJOR;
+            } else if (strcmp(chord_str, "minor") == 0) {
+                patch->chord_type = CHORD_MINOR;
+            } else if (strcmp(chord_str, "power") == 0) {
+                patch->chord_type = CHORD_POWER;
+            } else if (strcmp(chord_str, "octave") == 0) {
+                patch->chord_type = CHORD_OCTAVE;
+            }
+        }
+
+        char arp_str[MAX_NAME_LEN] = "";
+        if (json_get_string(json, "arp", arp_str, MAX_NAME_LEN) == 0) {
+            if (strcmp(arp_str, "up") == 0) {
+                patch->arp_mode = ARP_UP;
+            } else if (strcmp(arp_str, "down") == 0) {
+                patch->arp_mode = ARP_DOWN;
+            } else if (strcmp(arp_str, "up_down") == 0 || strcmp(arp_str, "updown") == 0) {
+                patch->arp_mode = ARP_UPDOWN;
+            } else if (strcmp(arp_str, "random") == 0) {
+                patch->arp_mode = ARP_RANDOM;
+            }
+        }
+        json_get_int(json, "arp_bpm", &patch->arp_tempo_bpm);
+        json_get_int(json, "arp_division", &patch->arp_note_division);
+    }
 
     /* Parse knob_mappings array */
     patch->knob_mapping_count = 0;
@@ -1753,38 +1874,11 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
     load_module_settings(module_dir);
     g_source_ui_active = 0;
 
-    /* Scan for patches */
+    /* Scan for patches but don't load any - user will select from list */
     scan_patches(module_dir);
 
-    if (g_patch_count > 0) {
-        /* Load first patch - if it fails, try others or fallback */
-        if (load_patch(0) != 0) {
-            chain_log("Failed to load first patch, trying fallback");
-            goto fallback;
-        }
-    } else {
-        chain_log("No patches found, using Line In");
-        goto fallback;
-    }
-
-    chain_log("Chain host initialized with patches");
-    return 0;
-
-fallback:
-    /* Fallback: Load Line In (built-in) */
-    {
-        char synth_path[MAX_PATH_LEN];
-        snprintf(synth_path, sizeof(synth_path), "%s/sound_generators/linein", module_dir);
-
-        if (load_synth(synth_path, NULL) != 0) {
-            chain_log("Failed to load Line In - chain will have no synth");
-            /* Don't return error - allow chain to run without synth */
-        } else {
-            strncpy(g_current_synth_module, "linein", MAX_NAME_LEN - 1);
-        }
-    }
-
-    chain_log("Chain host initialized (fallback to Line In)");
+    snprintf(msg, sizeof(msg), "Chain host initialized, %d patches available", g_patch_count);
+    chain_log(msg);
     return 0;
 }
 

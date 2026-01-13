@@ -1236,11 +1236,12 @@ function buildChainJson() {
         patch.chain.synth.config = { ...chain.synth_config };
     }
 
-    /* MIDI FX */
+    /* MIDI FX - array of MIDI effect objects */
+    const midiFxArray = [];
     if (chain.midi_fx === "chord") {
         const type = chain.midi_fx_config?.type || "none";
         if (type !== "none") {
-            patch.chain.midi_fx = { chord: type };
+            midiFxArray.push({ type: "chord", chord: type });
         }
     }
     if (chain.midi_fx === "arp") {
@@ -1248,12 +1249,16 @@ function buildChainJson() {
         if (mode !== "off") {
             const div = chain.midi_fx_config?.division || "1/16";
             const divNum = div === "1/4" ? 1 : div === "1/8" ? 2 : 4;
-            patch.chain.midi_fx = {
-                arp: mode,
-                arp_bpm: chain.midi_fx_config?.bpm || 120,
-                arp_division: divNum
-            };
+            midiFxArray.push({
+                type: "arp",
+                mode: mode,
+                bpm: chain.midi_fx_config?.bpm || 120,
+                division: divNum
+            });
         }
+    }
+    if (midiFxArray.length > 0) {
+        patch.chain.midi_fx = midiFxArray;
     }
 
     /* Audio FX */
@@ -1290,7 +1295,8 @@ function buildChainJson() {
         }
     }
 
-    return JSON.stringify(patch, null, 4);
+    /* Return only the chain content - save_patch wraps with name/version */
+    return JSON.stringify(patch.chain, null, 4);
 }
 
 function showEditorError(msg) {
