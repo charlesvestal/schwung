@@ -73,6 +73,37 @@ import {
 } from '../../shared/menu_layout.mjs';
 ```
 
+## Encoder Utilities
+
+### Delta Decoding
+
+```javascript
+import { decodeDelta, decodeAcceleratedDelta } from '../../shared/input_filter.mjs';
+
+// Decode jog wheel CC value to simple ±1 delta
+const delta = decodeDelta(value);  // -1, 0, or 1
+
+// Decode with velocity-sensitive acceleration (for value editing)
+const accelDelta = decodeAcceleratedDelta(value, encoderId);  // -10 to +10
+```
+
+**Acceleration behavior:**
+- Slow turns (>150ms): step = 1
+- Fast turns (<25ms): step = 10
+- In between: interpolated
+
+### LED Control
+
+```javascript
+import { setLED, setButtonLED, clearAllLEDs } from '../../shared/input_filter.mjs';
+
+setLED(note, color);        // Set pad/step LED (uses note messages)
+setButtonLED(cc, color);    // Set button LED (uses CC messages)
+clearAllLEDs();             // Clear all LEDs
+```
+
+LED values are cached to avoid redundant MIDI sends.
+
 ## Host Functions (Module Management)
 
 ```javascript
