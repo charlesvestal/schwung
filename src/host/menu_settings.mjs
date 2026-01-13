@@ -109,6 +109,13 @@ export function getSettingsState() {
 }
 
 /**
+ * Check if currently editing a value
+ */
+export function isEditing() {
+    return settingsState.editing;
+}
+
+/**
  * Draw the settings screen
  */
 export function drawSettings() {
@@ -116,11 +123,15 @@ export function drawSettings() {
         settingsItems = getSettingsItems();
     }
 
+    const footer = settingsState.editing
+        ? 'Clk:Save Bck:Cancel'
+        : 'Clk:Edit </>:Change';
+
     drawHierarchicalMenu({
         title: 'Settings',
         items: settingsItems,
         state: settingsState,
-        footer: 'Click:edit  </>:adjust  Back:exit'
+        footer
     });
 }
 

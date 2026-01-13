@@ -63,7 +63,9 @@ export function handleMenuInput({ cc, value, items, state, stack, onBack, shiftH
 
     /* Jog click - enter submenu, start/confirm edit, execute action */
     if (cc === CC_JOG_CLICK && isDown) {
+        console.log('menu_nav: jog click, item type:', item ? item.type : 'null');
         needsRedraw = handleClick(item, state, stack, onBack);
+        console.log('menu_nav: after click, editing:', state.editing, 'editValue:', state.editValue);
     }
 
     /* Up/Down arrows - scroll list */
@@ -143,8 +145,10 @@ function handleClick(item, state, stack, onBack) {
 
         case MenuItemType.VALUE:
         case MenuItemType.ENUM:
+            console.log('handleClick: VALUE/ENUM, editing was:', state.editing);
             if (state.editing) {
                 /* Confirm edit - apply value */
+                console.log('handleClick: confirming edit, value:', state.editValue);
                 if (item.set && state.editValue !== null) {
                     item.set(state.editValue);
                 }
@@ -152,8 +156,10 @@ function handleClick(item, state, stack, onBack) {
                 state.editValue = null;
             } else {
                 /* Start edit */
+                console.log('handleClick: starting edit, calling item.get()');
                 state.editing = true;
                 state.editValue = item.get ? item.get() : null;
+                console.log('handleClick: editValue set to:', state.editValue);
             }
             return true;
 

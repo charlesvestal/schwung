@@ -13,7 +13,8 @@ import {
 
 import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
 import { drawMainMenu, handleMainMenuCC } from './menu_main.mjs';
-import { drawSettings, handleSettingsCC, initSettings } from './menu_settings.mjs';
+import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
+import { tickMenuLabelScroller } from '../shared/menu_layout.mjs';
 
 /* State */
 let modules = [];
@@ -150,8 +151,8 @@ function handleCC(cc, value) {
         return;
     }
 
-    /* Back button goes back from settings */
-    if (settingsVisible && cc === CC_BACK && value > 0) {
+    /* Back button goes back from settings (unless editing) */
+    if (settingsVisible && cc === CC_BACK && value > 0 && !isEditing()) {
         settingsVisible = false;
         return;
     }
@@ -218,6 +219,9 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
+    /* Tick label scroller for marquee text */
+    tickMenuLabelScroller();
+
     if (settingsVisible) {
         renderSettingsScreen();
     } else if (menuVisible) {
