@@ -324,13 +324,10 @@ function updatePadLEDs() {
         const isCurrentSet = state.currentSet === setIdx;
         const hasContent = setHasContent(setIdx);
         const isPendingDelete = deleteConfirmSetIdx === setIdx;
-        const isCopied = copiedSetIdx === setIdx;
 
         let color = Black;
         if (isPendingDelete) {
             color = BrightRed;  // Set pending deletion confirmation
-        } else if (isCopied) {
-            color = VividYellow;  // Copied set
         } else if (isCurrentSet) {
             color = Cyan;  // Currently loaded set
         } else if (hasContent) {
