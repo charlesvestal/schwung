@@ -35,9 +35,9 @@ if [ "${1:-}" = "local" ]; then
     fail "Local build not found. Run ./scripts/build.sh first."
   fi
 else
-  url=https://github.com/charlesvestal/move-anything/raw/main/
-  echo "Downloading build from $url$remote_filename"
-  curl -LO "$url$remote_filename"
+  url=https://github.com/charlesvestal/move-anything/releases/latest/download/
+  echo "Downloading latest release from $url$remote_filename"
+  curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
   local_file="$remote_filename"
 fi
 echo "Build MD5: $(md5sum "$local_file")"
