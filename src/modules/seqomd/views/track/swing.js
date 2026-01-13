@@ -18,8 +18,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
-import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs } from '../../lib/helpers.js';
-import { markDirty } from '../../lib/persistence.js';
+import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs, handleJogWheelTrackParam } from '../../lib/helpers.js';
 
 /* ============ Input Handling ============ */
 
@@ -34,16 +33,7 @@ export function onInput(data) {
 
     /* Jog wheel turn - adjust swing */
     if (isCC && note === MoveMainKnob) {
-        let swing = state.tracks[state.currentTrack].swing;
-        if (velocity >= 1 && velocity <= 63) {
-            swing = Math.min(swing + 1, 100);
-        } else if (velocity >= 65 && velocity <= 127) {
-            swing = Math.max(swing - 1, 0);
-        }
-        state.tracks[state.currentTrack].swing = swing;
-        setParam(`track_${state.currentTrack}_swing`, String(swing));
-        markDirty();
-        updateDisplayContent();
+        handleJogWheelTrackParam(velocity, 'swing', 'swing', { max: 100 }, null, updateDisplayContent);
         return true;
     }
 

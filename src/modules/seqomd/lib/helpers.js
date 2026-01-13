@@ -8,6 +8,7 @@ import { setLED, setButtonLED } from '../../../shared/input_filter.mjs';
 import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS, TRACK_COLORS, MoveKnobLEDs } from './constants.js';
 import { state } from './state.js';
 import { isRoot, isInScale } from './scale_detection.js';
+import { markDirty } from './persistence.js';
 
 /* ============ DSP Communication ============ */
 
@@ -392,6 +393,76 @@ export function updatePlayheadLED(oldStep, newStep, getOldStepColor = () => Blac
     }
     if (newStep >= 0 && newStep < NUM_STEPS) {
         setLED(MoveSteps[newStep], White);
+    }
+}
+
+/* ============ Jog Wheel Helpers ============ */
+
+/**
+ * Handle jog wheel parameter adjustment with bounds
+ * @param {number} velocity - MIDI velocity from jog wheel
+ * @param {number} currentValue - Current parameter value
+ * @param {Object} options - Configuration options
+ * @param {number} options.min - Minimum value (default 0)
+ * @param {number} options.max - Maximum value (required)
+ * @param {number} options.step - Step size for increment/decrement (default 1)
+ * @param {boolean} options.wrap - Use modulo wrapping instead of clamping (default false)
+ * @returns {number} - New parameter value after adjustment
+ */
+export function handleJogWheelAdjustment(velocity, currentValue, options) {
+    const { min = 0, max, step = 1, wrap = false } = options;
+
+    let newValue = currentValue;
+
+    /* Clockwise: increment */
+    if (velocity >= 1 && velocity <= 63) {
+        newValue = currentValue + step;
+    }
+    /* Counter-clockwise: decrement */
+    else if (velocity >= 65 && velocity <= 127) {
+        newValue = currentValue - step;
+    }
+
+    /* Apply bounds */
+    if (wrap) {
+        /* Modulo wrapping for circular parameters (e.g., MIDI channel) */
+        const range = max - min + 1;
+        newValue = ((newValue - min + range) % range) + min;
+    } else {
+        /* Clamping for linear parameters */
+        newValue = Math.max(min, Math.min(max, newValue));
+    }
+
+    return newValue;
+}
+
+/**
+ * Handle jog wheel input for track parameter adjustment
+ * Generic handler for channel/speed/swing modes
+ * @param {number} velocity - MIDI velocity from jog wheel
+ * @param {string} stateKey - Key in track object (e.g., 'channel', 'speedIndex', 'swing')
+ * @param {string} dspParam - DSP parameter name (e.g., 'channel', 'speed', 'swing')
+ * @param {Object} options - Configuration options (min, max, step, wrap)
+ * @param {Function} valueToDSP - Optional transform function for DSP value (e.g., speedIdx => SPEED_OPTIONS[speedIdx].mult)
+ * @param {Function} updateDisplay - Function to call after update (e.g., updateDisplayContent)
+ */
+export function handleJogWheelTrackParam(velocity, stateKey, dspParam, options, valueToDSP = null, updateDisplay = null) {
+    const track = state.tracks[state.currentTrack];
+    const currentValue = track[stateKey];
+
+    const newValue = handleJogWheelAdjustment(velocity, currentValue, options);
+
+    /* Update state */
+    track[stateKey] = newValue;
+
+    /* Update DSP */
+    const dspValue = valueToDSP ? valueToDSP(newValue) : newValue;
+    setParam(`track_${state.currentTrack}_${dspParam}`, String(dspValue));
+
+    /* Mark dirty and update display */
+    markDirty();
+    if (updateDisplay) {
+        updateDisplay();
     }
 }
 

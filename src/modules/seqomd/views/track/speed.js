@@ -18,8 +18,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs, SPEED_OPTIONS } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
-import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs } from '../../lib/helpers.js';
-import { markDirty } from '../../lib/persistence.js';
+import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs, handleJogWheelTrackParam } from '../../lib/helpers.js';
 
 /* ============ Input Handling ============ */
 
@@ -34,16 +33,14 @@ export function onInput(data) {
 
     /* Jog wheel turn - adjust speed */
     if (isCC && note === MoveMainKnob) {
-        let speedIdx = state.tracks[state.currentTrack].speedIndex;
-        if (velocity >= 1 && velocity <= 63) {
-            speedIdx = Math.min(speedIdx + 1, SPEED_OPTIONS.length - 1);
-        } else if (velocity >= 65 && velocity <= 127) {
-            speedIdx = Math.max(speedIdx - 1, 0);
-        }
-        state.tracks[state.currentTrack].speedIndex = speedIdx;
-        setParam(`track_${state.currentTrack}_speed`, String(SPEED_OPTIONS[speedIdx].mult));
-        markDirty();
-        updateDisplayContent();
+        handleJogWheelTrackParam(
+            velocity,
+            'speedIndex',
+            'speed',
+            { max: SPEED_OPTIONS.length - 1 },
+            (idx) => SPEED_OPTIONS[idx].mult,
+            updateDisplayContent
+        );
         return true;
     }
 

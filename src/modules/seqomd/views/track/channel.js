@@ -18,8 +18,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
-import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs } from '../../lib/helpers.js';
-import { markDirty } from '../../lib/persistence.js';
+import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs, handleJogWheelTrackParam } from '../../lib/helpers.js';
 
 /* ============ Input Handling ============ */
 
@@ -34,16 +33,7 @@ export function onInput(data) {
 
     /* Jog wheel turn - adjust channel */
     if (isCC && note === MoveMainKnob) {
-        let ch = state.tracks[state.currentTrack].channel;
-        if (velocity >= 1 && velocity <= 63) {
-            ch = (ch + 1) % 16;
-        } else if (velocity >= 65 && velocity <= 127) {
-            ch = (ch - 1 + 16) % 16;
-        }
-        state.tracks[state.currentTrack].channel = ch;
-        setParam(`track_${state.currentTrack}_channel`, String(ch));
-        markDirty();
-        updateDisplayContent();
+        handleJogWheelTrackParam(velocity, 'channel', 'channel', { max: 15, wrap: true }, null, updateDisplayContent);
         return true;
     }
 
