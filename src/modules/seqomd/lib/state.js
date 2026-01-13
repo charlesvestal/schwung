@@ -33,7 +33,6 @@ export const state = {
     stepPadPressed: {},        // Per-step flag if pad was pressed while held
     stepCopyBuffer: null,      // Copied step data for paste operations
     copiedStepIdx: -1,         // Index of step in copy buffer (-1 = none)
-    copyHoldDetected: {},      // Per-step flag: copy was triggered at 500ms
 
     /* Playhead */
     currentPlayStep: -1,       // Current playhead position (0-15)

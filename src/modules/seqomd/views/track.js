@@ -71,56 +71,7 @@ export function onInput(data) {
     const note = data[1];
     const velocity = data[2];
 
-    /* Copy button - copy current pattern to next available slot */
-    if (state.trackMode === 'normal' && isCC && note === MoveCopy && velocity > 0) {
-        const track = state.tracks[state.currentTrack];
-        const currentPatternIdx = track.currentPattern;
-
-        /* Find next available empty pattern slot */
-        let nextPatternIdx = -1;
-
-        for (let i = 0; i < NUM_PATTERNS; i++) {
-            const pattern = track.patterns[i];
-            const isEmpty = pattern.steps.every(s => s.notes.length === 0 && s.cc1 < 0 && s.cc2 < 0);
-            if (isEmpty) {
-                nextPatternIdx = i;
-                break;
-            }
-        }
-
-        /* If no empty slot found, show error and abort */
-        if (nextPatternIdx === -1) {
-            displayMessage(
-                "CANNOT COPY",
-                `Track ${state.currentTrack + 1}: All patterns full`,
-                "Delete patterns to free space",
-                ""
-            );
-            return true;
-        }
-
-        /* Copy current pattern to next slot */
-        track.patterns[nextPatternIdx] = clonePattern(track.patterns[currentPatternIdx]);
-
-        /* Switch to new pattern immediately */
-        track.currentPattern = nextPatternIdx;
-        setParam(`track_${state.currentTrack}_pattern`, String(nextPatternIdx));
-
-        /* Sync to DSP immediately (don't wait for bar end) */
-        syncAllTracksToDSP();
-
-        markDirty();
-
-        displayMessage(
-            `AUTO-COPIED`,
-            `Pattern ${currentPatternIdx + 1} → ${nextPatternIdx + 1} (next empty)`,
-            "",
-            ""
-        );
-
-        modes[state.trackMode].updateLEDs();
-        return true;
-    }
+    /* Copy button is now handled directly by normal mode for step copy/pattern copy */
 
     /*
      * Mode ENTRY transitions (from normal mode only)
@@ -371,9 +322,6 @@ export function tick() {
     if (state.trackMode === 'normal') {
         if (normal.checkDisplayReturn) {
             normal.checkDisplayReturn();
-        }
-        if (normal.checkCopyHold) {
-            normal.checkCopyHold();
         }
     }
 }

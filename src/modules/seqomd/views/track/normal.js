@@ -11,7 +11,7 @@
 import {
     Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed, Purple, DarkPurple,
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
-    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown,
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown, MoveCopy,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob7Touch, MoveKnob8Touch,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
@@ -20,7 +20,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 
 import {
-    NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, COPY_HOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
+    NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
     ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS,
     getRatchetDisplayName
@@ -29,12 +29,19 @@ import {
 import { state, displayMessage } from '../../lib/state.js';
 
 import {
-    setParam, getCurrentPattern, noteToName, notesToString, updateAndSendCC, getPadBaseColor, updatePadLEDs
+    setParam, getCurrentPattern, noteToName, notesToString, updateAndSendCC, getPadBaseColor, updatePadLEDs,
+    syncAllTracksToDSP
 } from '../../lib/helpers.js';
 
 import { detectScale } from '../../lib/scale_detection.js';
 import { markDirty } from '../../lib/persistence.js';
-import { cloneStep } from '../../lib/data.js';
+import { cloneStep, clonePattern } from '../../lib/data.js';
+
+/* ============ Copy Button State ============ */
+
+let copyHeld = false;              // Copy button is held
+let copyPressTime = 0;             // When Copy was pressed
+let stepCopiedThisHold = false;    // A step was copied during this Copy hold
 
 /* ============ Display Return Helper ============ */
 
@@ -57,41 +64,6 @@ export function checkDisplayReturn() {
     }
 }
 
-/**
- * Check if any held step has reached copy threshold and copy it.
- * Called from tick().
- */
-export function checkCopyHold() {
-    if (state.heldStep >= 0) {
-        const stepIdx = state.heldStep;
-        const pressTime = state.stepPressTimes[stepIdx];
-
-        if (pressTime !== undefined && !state.copyHoldDetected[stepIdx]) {
-            const holdDuration = Date.now() - pressTime;
-
-            if (holdDuration >= COPY_HOLD_MS) {
-                const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
-                const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
-
-                if (hasContent) {
-                    // Copy step to buffer
-                    state.stepCopyBuffer = cloneStep(step);
-                    state.copiedStepIdx = stepIdx;
-                    state.copyHoldDetected[stepIdx] = true;
-
-                    displayMessage(
-                        undefined,
-                        `Copied Step ${stepIdx + 1}`,
-                        "Tap empty step to paste",
-                        ""
-                    );
-                    scheduleDisplayReturn();
-                }
-            }
-        }
-    }
-}
-
 /* ============ Input Handling ============ */
 
 /**
@@ -106,6 +78,30 @@ export function onInput(data) {
 
     /* Knob touch for tap-to-clear */
     if (handleKnobTouch(data)) return true;
+
+    /* Copy button - track held state */
+    if (isCC && note === MoveCopy) {
+        if (velocity > 0) {
+            /* Copy pressed */
+            copyHeld = true;
+            copyPressTime = Date.now();
+            stepCopiedThisHold = false;
+        } else {
+            /* Copy released */
+            if (!stepCopiedThisHold && (Date.now() - copyPressTime) < 200) {
+                /* Quick tap - copy current pattern */
+                copyCurrentPattern();
+            }
+            /* Clear copy state */
+            copyHeld = false;
+            if (state.stepCopyBuffer) {
+                state.stepCopyBuffer = null;
+                state.copiedStepIdx = -1;
+                updateLEDs();
+            }
+        }
+        return true;
+    }
 
     /* Track buttons - select track */
     if (isCC && MoveTracks.includes(note)) {
@@ -273,6 +269,30 @@ function handleKnobTap(knobIdx) {
 
 function handleStepButton(stepIdx, isNoteOn, velocity) {
     if (isNoteOn && velocity > 0) {
+        /* Copy held - copy or paste step */
+        if (copyHeld) {
+            if (!state.stepCopyBuffer) {
+                /* First press: copy this step */
+                const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
+                state.stepCopyBuffer = cloneStep(step);
+                state.copiedStepIdx = stepIdx;
+                stepCopiedThisHold = true;
+                displayMessage(
+                    "STEP COPIED",
+                    `Step ${stepIdx + 1} - Hold Copy + press dest`,
+                    "",
+                    ""
+                );
+                updateLEDs();
+            } else {
+                /* Subsequent presses: paste to this step */
+                pasteStep(stepIdx);
+                markDirty();
+                updateLEDs();
+            }
+            return true;
+        }
+
         /* Check if setting length */
         if (state.heldStep >= 0 && state.heldStep !== stepIdx && stepIdx > state.heldStep) {
             return handleStepLength(stepIdx);
@@ -323,17 +343,12 @@ function handleStepRelease(stepIdx) {
             const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
             const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
 
-            // Paste if buffer exists and step is empty
-            if (state.stepCopyBuffer && !hasContent) {
-                pasteStep(stepIdx);
-                changed = true;
-            }
-            // Clear if has content (existing behavior)
-            else if (hasContent) {
+            // Clear if has content
+            if (hasContent) {
                 clearStep(stepIdx);
                 changed = true;
             }
-            // Add note if empty and note selected (existing behavior)
+            // Add note if empty and note selected
             else if (state.lastSelectedNote > 0) {
                 toggleStepNote(stepIdx, state.lastSelectedNote, state.lastSelectedVelocity);
                 changed = true;
@@ -343,7 +358,6 @@ function handleStepRelease(stepIdx) {
 
     delete state.stepPressTimes[stepIdx];
     delete state.stepPadPressed[stepIdx];
-    delete state.copyHoldDetected[stepIdx];
 
     if (state.heldStep === stepIdx) {
         state.heldStep = -1;
@@ -357,12 +371,6 @@ function handleStepRelease(stepIdx) {
 /* ============ Pad Handling ============ */
 
 function handlePad(padIdx, isNoteOn, velocity) {
-    // Cancel copy buffer on any pad press
-    if (isNoteOn && velocity > 0 && state.stepCopyBuffer) {
-        state.stepCopyBuffer = null;
-        state.copiedStepIdx = -1;
-    }
-
     const baseNote = 36 + padIdx + (state.padOctaveOffset * 12);
     const midiNote = Math.max(0, Math.min(127, baseNote));
 
@@ -822,6 +830,59 @@ function pasteStep(stepIdx) {
     return true;
 }
 
+/**
+ * Copy current pattern to next available empty slot
+ * Called when Copy button is tapped (not held)
+ */
+function copyCurrentPattern() {
+    const track = state.tracks[state.currentTrack];
+    const currentPatternIdx = track.currentPattern;
+
+    /* Find next available empty pattern slot */
+    let nextPatternIdx = -1;
+
+    for (let i = 0; i < NUM_PATTERNS; i++) {
+        const pattern = track.patterns[i];
+        const isEmpty = pattern.steps.every(s => s.notes.length === 0 && s.cc1 < 0 && s.cc2 < 0);
+        if (isEmpty) {
+            nextPatternIdx = i;
+            break;
+        }
+    }
+
+    /* If no empty slot found, show error and abort */
+    if (nextPatternIdx === -1) {
+        displayMessage(
+            "CANNOT COPY",
+            `Track ${state.currentTrack + 1}: All patterns full`,
+            "Delete patterns to free space",
+            ""
+        );
+        return;
+    }
+
+    /* Copy current pattern to next slot */
+    track.patterns[nextPatternIdx] = clonePattern(track.patterns[currentPatternIdx]);
+
+    /* Switch to new pattern immediately */
+    track.currentPattern = nextPatternIdx;
+    setParam(`track_${state.currentTrack}_pattern`, String(nextPatternIdx));
+
+    /* Sync to DSP immediately (don't wait for bar end) */
+    syncAllTracksToDSP();
+
+    markDirty();
+
+    displayMessage(
+        `AUTO-COPIED`,
+        `Pattern ${currentPatternIdx + 1} → ${nextPatternIdx + 1} (next empty)`,
+        "",
+        ""
+    );
+
+    updateLEDs();
+}
+
 /* ============ LED Updates ============ */
 
 /**
@@ -893,11 +954,6 @@ function updateStepLEDs() {
             /* Currently held step */
             if (i === state.heldStep) {
                 color = trackColor;
-            }
-
-            /* Copied step (show VividYellow indicator) */
-            if (i === state.copiedStepIdx && state.stepCopyBuffer !== null) {
-                color = VividYellow;
             }
 
             setLED(MoveSteps[i], color);
@@ -1081,4 +1137,6 @@ export function onExit() {
     state.heldStep = -1;
     state.stepCopyBuffer = null;
     state.copiedStepIdx = -1;
+    copyHeld = false;
+    stepCopiedThisHold = false;
 }
