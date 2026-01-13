@@ -75,6 +75,25 @@ const CC_BACK = MoveBack;
 const CC_UP = MoveUp;
 const CC_DOWN = MoveDown;
 
+/* Compare semver versions: returns 1 if a > b, -1 if a < b, 0 if equal */
+function compareVersions(a, b) {
+    const partsA = a.split('.').map(n => parseInt(n, 10) || 0);
+    const partsB = b.split('.').map(n => parseInt(n, 10) || 0);
+
+    for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+        const numA = partsA[i] || 0;
+        const numB = partsB[i] || 0;
+        if (numA > numB) return 1;
+        if (numA < numB) return -1;
+    }
+    return 0;
+}
+
+/* Check if version a is newer than version b */
+function isNewerVersion(a, b) {
+    return compareVersions(a, b) > 0;
+}
+
 /* Get current host version */
 function getHostVersion() {
     try {
@@ -96,7 +115,7 @@ function checkHostUpdate() {
         hostUpdateAvailable = false;
         return;
     }
-    hostUpdateAvailable = catalog.host.latest_version !== hostVersion;
+    hostUpdateAvailable = isNewerVersion(catalog.host.latest_version, hostVersion);
 }
 
 /* Update the host */
@@ -153,7 +172,7 @@ function getModuleStatus(mod) {
     if (!installedVersion) {
         return { installed: false, hasUpdate: false };
     }
-    const hasUpdate = installedVersion !== mod.latest_version;
+    const hasUpdate = isNewerVersion(mod.latest_version, installedVersion);
     return { installed: true, hasUpdate };
 }
 
