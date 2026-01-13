@@ -5,6 +5,7 @@
  */
 
 import * as std from 'std';
+import * as os from 'os';
 import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
 import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob } from '../../shared/constants.mjs';
 import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../../shared/menu_layout.mjs';
@@ -193,15 +194,27 @@ function getInstalledModules() {
 function scanChainSubdir(basePath, subdir) {
     /* Scan chain subdirectory for components (audio_fx, sound_generators, midi_fx) */
     const results = [];
-    const knownComponents = {
-        "audio_fx": ["freeverb"],
-        "sound_generators": ["linein"],
-        "midi_fx": ["chord", "arp"]
-    };
+    const dirPath = `${basePath}/${subdir}`;
 
-    const components = knownComponents[subdir] || [];
-    for (const name of components) {
-        const mod = scanModuleDir(`${basePath}/${subdir}/${name}`);
+    /* List directory contents dynamically */
+    /* os.readdir returns [names_array, error_code] */
+    let readdirResult = [];
+    try {
+        readdirResult = os.readdir(dirPath) || [];
+    } catch (e) {
+        return results;
+    }
+
+    /* Get the names array (first element of result) */
+    const names = readdirResult[0];
+    if (!names || !Array.isArray(names)) {
+        return results;
+    }
+
+    /* Filter out . and .. and try to load each as a module */
+    for (const name of names) {
+        if (name === "." || name === "..") continue;
+        const mod = scanModuleDir(`${dirPath}/${name}`);
         if (mod) {
             results.push(mod);
         }
