@@ -1706,7 +1706,7 @@ static int load_patch(int index) {
                     char max_buf[32];
                     int got_max = 0;
                     if (strcmp(target, "synth") == 0 && g_synth_plugin && g_synth_plugin->get_param) {
-                        if (g_synth_plugin->get_param(pinfo->max_param, max_buf, sizeof(max_buf)) == 0) {
+                        if (g_synth_plugin->get_param(pinfo->max_param, max_buf, sizeof(max_buf)) >= 0) {
                             g_knob_mappings[i].max_val = (float)(atoi(max_buf) - 1);
                             got_max = 1;
                         }

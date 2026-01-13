@@ -14,7 +14,7 @@ echo "=== Building curl $CURL_VERSION for ARM ==="
 
 # Create a temporary Dockerfile for curl build
 cat > /tmp/Dockerfile.curl << 'EOF'
-FROM debian:bookworm
+FROM debian:bullseye
 
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
