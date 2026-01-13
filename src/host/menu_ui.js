@@ -13,7 +13,7 @@ import {
 
 import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
 import { drawMainMenu, handleMainMenuCC } from './menu_main.mjs';
-import { drawSettings as renderSettings, handleSettingsCC } from './menu_settings.mjs';
+import { drawSettings, handleSettingsCC, initSettings } from './menu_settings.mjs';
 
 /* State */
 let modules = [];
@@ -25,7 +25,6 @@ let statusTimeout = 0;
 
 /* Settings state */
 let settingsVisible = false;
-let settingsIndex = 0;  /* 0=velocity, 1=aftertouch on/off, 2=deadzone, 3=clock, 4=tempo */
 
 /* Alias constants for clarity */
 const CC_JOG_WHEEL = MoveMainKnob;
@@ -61,9 +60,9 @@ function showStatus(msg, duration = 2000) {
 }
 
 /* Draw the settings screen */
-function drawSettings() {
+function renderSettingsScreen() {
     clear_screen();
-    renderSettings({ settingsIndex });
+    drawSettings();
 }
 
 /* Draw the menu screen */
@@ -162,11 +161,12 @@ function handleCC(cc, value) {
         const result = handleSettingsCC({
             cc,
             value,
-            settingsIndex,
             shiftHeld
         });
 
-        settingsIndex = result.nextIndex;
+        if (result.shouldExit) {
+            settingsVisible = false;
+        }
         return;
     }
 
@@ -184,7 +184,7 @@ function handleCC(cc, value) {
     if (result.didSelect) {
         if (selectedIndex === modules.length) {
             settingsVisible = true;
-            settingsIndex = 0;
+            initSettings();
         } else if (selectedIndex === modules.length + 1) {
             exit();
         } else {
@@ -219,7 +219,7 @@ globalThis.init = function() {
 
 globalThis.tick = function() {
     if (settingsVisible) {
-        drawSettings();
+        renderSettingsScreen();
     } else if (menuVisible) {
         drawMenu();
     } else {
