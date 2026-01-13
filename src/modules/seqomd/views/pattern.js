@@ -314,9 +314,14 @@ function updatePadLEDs() {
 }
 
 function updateKnobLEDs() {
-    /* All 8 knobs for CC in pattern mode */
+    /* Knobs match the track colors below them */
     for (let i = 0; i < 8; i++) {
-        setButtonLED(MoveKnobLEDs[i], Cyan);
+        const trackIdx = state.trackScrollPosition + i;
+        if (trackIdx < NUM_TRACKS) {
+            setButtonLED(MoveKnobLEDs[i], TRACK_COLORS[trackIdx]);
+        } else {
+            setButtonLED(MoveKnobLEDs[i], Black);
+        }
     }
 }
 
