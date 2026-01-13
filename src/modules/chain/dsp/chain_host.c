@@ -1757,13 +1757,13 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
     scan_patches(module_dir);
 
     if (g_patch_count > 0) {
-        /* Load first patch */
+        /* Load first patch - if it fails, try others or fallback */
         if (load_patch(0) != 0) {
-            chain_log("Failed to load first patch, falling back to SF2");
+            chain_log("Failed to load first patch, trying fallback");
             goto fallback;
         }
     } else {
-        chain_log("No patches found, using default SF2");
+        chain_log("No patches found, using Line In");
         goto fallback;
     }
 
@@ -1771,25 +1771,20 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
     return 0;
 
 fallback:
-    /* Fallback: Load SF2 directly */
+    /* Fallback: Load Line In (built-in) */
     {
         char synth_path[MAX_PATH_LEN];
-        strncpy(synth_path, module_dir, sizeof(synth_path) - 1);
-        char *last_slash = strrchr(synth_path, '/');
-        if (last_slash) {
-            strcpy(last_slash + 1, "sf2");
-        } else {
-            strcpy(synth_path, "modules/sf2");
-        }
+        snprintf(synth_path, sizeof(synth_path), "%s/sound_generators/linein", module_dir);
 
         if (load_synth(synth_path, NULL) != 0) {
-            chain_log("Failed to load SF2 synth");
-            return -1;
+            chain_log("Failed to load Line In - chain will have no synth");
+            /* Don't return error - allow chain to run without synth */
+        } else {
+            strncpy(g_current_synth_module, "linein", MAX_NAME_LEN - 1);
         }
-        strncpy(g_current_synth_module, "sf2", MAX_NAME_LEN - 1);
     }
 
-    chain_log("Chain host initialized (fallback)");
+    chain_log("Chain host initialized (fallback to Line In)");
     return 0;
 }
 
