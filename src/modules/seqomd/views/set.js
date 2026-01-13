@@ -191,6 +191,9 @@ export function onInput(data) {
                     copiedSetData = null;
                     copiedSetIdx = -1;
 
+                    /* Update LEDs immediately to show color on destination pad */
+                    updateLEDs();
+
                     updateDisplayContent();  // Set normal display
                     displayTemporaryMessage(
                         "SET PASTED",
@@ -200,7 +203,6 @@ export function onInput(data) {
                         1000,
                         updateLEDs
                     );
-                    updateLEDs();  // Show message LEDs
                 }
                 return true;
             }
