@@ -2,9 +2,9 @@
   "catalog_version": 1,
   "host": {
     "name": "Move Anything",
-    "latest_version": "0.1.1",
+    "latest_version": "0.1.2",
     "min_host_version": "0.1.0",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.1/move-anything.tar.gz"
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.2/move-anything.tar.gz"
   },
   "modules": [
     {
@@ -106,6 +106,16 @@
       "latest_version": "0.1.0",
       "min_host_version": "0.1.0",
       "download_url": "https://github.com/charlesvestal/move-anything-space-delay/releases/download/v0.1.0/spacecho-module.tar.gz"
+    },
+    {
+      "id": "sidcontrol",
+      "name": "SID Control",
+      "description": "MIDI controller for SIDaster III synthesizer",
+      "author": "charlesvestal",
+      "component_type": "utility",
+      "latest_version": "0.1.0",
+      "min_host_version": "0.1.0",
+      "download_url": "https://github.com/charlesvestal/move-anything-sidcontrol/releases/download/v0.1.0/sidcontrol-module.tar.gz"
     }
   ]
 }
