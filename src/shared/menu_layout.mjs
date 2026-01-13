@@ -2,6 +2,8 @@
  * Shared menu layout helpers for title/list/footer screens.
  */
 
+import { getMenuLabelScroller } from './text_scroll.mjs';
+
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
 const TITLE_Y = 2;
@@ -95,19 +97,37 @@ export function drawMenuList({
     }
     let endIdx = Math.min(startIdx + effectiveMaxVisible, totalItems);
 
+    /* Get label scroller for selected item */
+    const labelScroller = getMenuLabelScroller();
+    labelScroller.setSelected(selectedIndex);
+
     for (let i = startIdx; i < endIdx; i++) {
         const y = resolvedTopY + (i - startIdx) * lineHeight;
         const isSelected = i === selectedIndex;
         const labelPrefix = isSelected ? "> " : "  ";
-        let label = getLabel(items[i]);
-        const value = getValue ? getValue(items[i]) : "";
+        let label = getLabel(items[i], i);
+        const fullLabel = label; /* Keep original for scrolling */
+        const value = getValue ? getValue(items[i], i) : "";
         let resolvedValueX = valueX;
+        let maxLabelChars = 0;
+
         if (valueAlignRight && value) {
             resolvedValueX = SCREEN_WIDTH - (value.length * DEFAULT_CHAR_WIDTH) - valuePaddingRight;
             const maxLabelWidth = Math.max(0, resolvedValueX - labelX - labelGap);
-            const maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
-            if (maxLabelChars > 0) {
-                label = truncateText(label, maxLabelChars);
+            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
+        } else {
+            /* No value, label can use full width minus prefix and indicator */
+            const maxLabelWidth = indicatorX - labelX - labelGap;
+            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
+        }
+
+        if (maxLabelChars > 0) {
+            if (isSelected && fullLabel.length > maxLabelChars) {
+                /* Selected item with long text: use scroller */
+                label = labelScroller.getScrolledText(fullLabel, maxLabelChars);
+            } else {
+                /* Truncate non-selected or short text */
+                label = truncateText(fullLabel, maxLabelChars);
             }
         }
 
@@ -221,4 +241,15 @@ export function drawOverlay() {
     const displayName = overlayName.length > 18 ? overlayName.substring(0, 18) : overlayName;
     print(boxX + 4, boxY + 2, displayName, 1);
     print(boxX + 4, boxY + 14, `Value: ${overlayValue}`, 1);
+}
+
+/* === Label Scrolling === */
+
+/**
+ * Tick the menu label scroller - call this in your tick() function
+ * @returns {boolean} true if scroll position changed (needs redraw)
+ */
+export function tickMenuLabelScroller() {
+    const scroller = getMenuLabelScroller();
+    return scroller.tick();
 }
