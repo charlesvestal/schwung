@@ -23,7 +23,7 @@ import {
 } from '../../shared/menu_layout.mjs';
 
 /* Constants */
-const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-anything/feature/module-store/module-catalog.json';
+const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json';
 const CATALOG_CACHE_PATH = '/data/UserData/move-anything/catalog-cache.json';
 const MODULES_DIR = '/data/UserData/move-anything/modules';
 const BASE_DIR = '/data/UserData/move-anything';
@@ -120,8 +120,8 @@ function updateHost() {
         return;
     }
 
-    /* Extract over existing installation */
-    const extractOk = host_extract_tar(tarPath, BASE_DIR);
+    /* Extract over existing installation - strip move-anything/ prefix from tarball */
+    const extractOk = host_extract_tar_strip(tarPath, BASE_DIR, 1);
     if (!extractOk) {
         state = STATE_RESULT;
         resultMessage = 'Extract failed';
@@ -503,7 +503,7 @@ function drawModuleList() {
         const status = getModuleStatus(mod);
         let statusIcon = '';
         if (status.installed) {
-            statusIcon = status.hasUpdate ? '!' : '*';  /* ! = needs update, * = installed */
+            statusIcon = status.hasUpdate ? '^' : '*';  /* ^ = update available, * = installed */
         }
         return { ...mod, statusIcon };
     });

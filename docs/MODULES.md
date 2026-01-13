@@ -808,7 +808,5 @@ The Move Anything host can also be updated via the Module Store. When an update 
 
 The Module Store fetches the catalog from:
 ```
-https://raw.githubusercontent.com/charlesvestal/move-anything/feature/module-store/module-catalog.json
+https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json
 ```
-
-Note: This URL should point to `main` branch for production releases.
