@@ -57,28 +57,15 @@ function recallPatternSnapshot(stepIdx) {
 
 /**
  * Get the track index shown at a given button position.
- * Button 0 (top, CC 43): Selected track
- * Buttons 1-3: Tracks from scroll position, skipping selected track
+ * All 4 buttons show consecutive tracks from scroll position (0-3 or 8-11)
  */
 function getTrackAtButton(btnPosition) {
-    if (btnPosition === 0) {
-        return state.currentTrack;
+    /* Show 4 tracks from current scroll position (0-3 or 8-11) */
+    const trackIdx = state.trackScrollPosition + btnPosition;
+    if (trackIdx >= 0 && trackIdx < NUM_TRACKS) {
+        return trackIdx;
     }
-
-    /* Build list of tracks excluding selected */
-    const otherTracks = [];
-    for (let t = 0; t < NUM_TRACKS; t++) {
-        if (t !== state.currentTrack) {
-            otherTracks.push(t);
-        }
-    }
-
-    /* Get track from scroll position */
-    const scrollIdx = state.trackScrollPosition + (btnPosition - 1);
-    if (scrollIdx >= 0 && scrollIdx < otherTracks.length) {
-        return otherTracks[scrollIdx];
-    }
-    return -1;
+    return -1;  // Out of range
 }
 
 /* ============ View Interface ============ */
@@ -139,19 +126,22 @@ export function onInput(data) {
     /* Jog wheel - scroll tracks horizontally (1 at a time) */
     if (isCC && note === MoveMainKnob) {
         if (state.shiftHeld) {
-            /* Shift + jog: scroll patterns vertically */
+            /* Shift + jog: scroll patterns vertically (4 at a time) */
             if (velocity >= 1 && velocity <= 63) {
-                state.patternViewOffset = Math.min(state.patternViewOffset + 1, NUM_PATTERNS - 4);
+                /* Clockwise: increment by 4, cap at 12 */
+                state.patternViewOffset = Math.min(state.patternViewOffset + 4, 12);
             } else if (velocity >= 65 && velocity <= 127) {
-                state.patternViewOffset = Math.max(state.patternViewOffset - 1, 0);
+                /* Counter-clockwise: decrement by 4, floor at 0 */
+                state.patternViewOffset = Math.max(state.patternViewOffset - 4, 0);
             }
         } else {
-            /* Jog alone: scroll tracks horizontally (1 at a time, showing 8 tracks) */
-            const maxScroll = NUM_TRACKS - 8;  /* Can scroll 0-8 to show tracks 0-7 through 8-15 */
+            /* Jog alone: scroll tracks horizontally (toggle between tracks 1-8 and 9-16) */
             if (velocity >= 1 && velocity <= 63) {
-                state.trackScrollPosition = Math.min(state.trackScrollPosition + 1, maxScroll);
+                /* Clockwise: jump to tracks 9-16 */
+                state.trackScrollPosition = 8;
             } else if (velocity >= 65 && velocity <= 127) {
-                state.trackScrollPosition = Math.max(state.trackScrollPosition - 1, 0);
+                /* Counter-clockwise: jump to tracks 1-8 */
+                state.trackScrollPosition = 0;
             }
         }
         updateDisplayContent();
@@ -260,11 +250,13 @@ function updateStepUILEDs() {
  */
 export function updateDisplayContent() {
     const startTrack = state.trackScrollPosition + 1;
-    const endTrack = Math.min(state.trackScrollPosition + 8, NUM_TRACKS);
+    const endTrack = state.trackScrollPosition + 8;
     const trackRange = `${startTrack}-${endTrack}`;
     const patStr = state.tracks.slice(state.trackScrollPosition, state.trackScrollPosition + 8)
         .map(t => String(t.currentPattern + 1)).join(" ");
-    const viewRange = `P${state.patternViewOffset + 1}-${state.patternViewOffset + 4}`;
+    const startPattern = state.patternViewOffset + 1;
+    const endPattern = state.patternViewOffset + 4;
+    const viewRange = `P${startPattern}-${endPattern}`;
 
     displayMessage(
         `PATTERNS T${trackRange} ${viewRange}`,
@@ -329,7 +321,7 @@ function updateKnobLEDs() {
 }
 
 function updateTrackButtonLEDs() {
-    /* Track buttons use scroll navigation (selected at top + 3 scrollable) */
+    /* Track buttons show 4 tracks from scroll position, selected is brighter */
     for (let i = 0; i < 4; i++) {
         const btnPosition = 3 - i;  /* Top = 0, bottom = 3 */
         const trackIdx = getTrackAtButton(btnPosition);
@@ -342,14 +334,11 @@ function updateTrackButtonLEDs() {
         let color = Black;
 
         if (trackIdx === state.currentTrack) {
-            /* Selected track - always bright */
+            /* Selected track - bright */
             color = TRACK_COLORS[trackIdx];
-        } else if (getCurrentPattern(trackIdx).steps.some(s => s.notes.length > 0 || s.cc1 >= 0 || s.cc2 >= 0)) {
-            /* Has content - dim color */
-            color = TRACK_COLORS_DIM[trackIdx];
         } else {
-            /* Empty track - dark grey */
-            color = DarkGrey;
+            /* Non-selected track - dim color (shows track identity even when empty) */
+            color = TRACK_COLORS_DIM[trackIdx];
         }
 
         setButtonLED(MoveTracks[i], color);

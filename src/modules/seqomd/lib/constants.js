@@ -8,7 +8,8 @@ import {
     OrangeRed, VividYellow, RoyalBlue, Purple,
     NeonPink, BurntOrange, Lime, TealGreen, AzureBlue, Violet, HotMagenta,
     Rose, Mustard, OliveGreen, MutedTeal, MutedBlue, MutedViolet, DeepMagenta,
-    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
+    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
+    BlueViolet, SkyBlue, DeepBlue, DarkPurple, DarkViolet, LightYellow, Ochre
 } from "../../../shared/constants.mjs";
 
 /* ============ Core Constants ============ */
@@ -41,29 +42,27 @@ export const MoveKnobLEDs = [MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKno
 /* ============ Track Colors ============ */
 
 export const TRACK_COLORS = [
-    BrightRed,    // Track 1 - Kick
-    OrangeRed,    // Track 2 - Snare
-    VividYellow,  // Track 3 - Perc
-    BrightGreen,  // Track 4 - Sample
-    Cyan,         // Track 5 - Bass
-    RoyalBlue,    // Track 6 - Lead
-    Purple,       // Track 7 - Arp
-    White,        // Track 8 - Chord
-    NeonPink,     // Track 9 - Kick2
-    BurntOrange,  // Track 10 - Snare2
-    Lime,         // Track 11 - Perc2
-    TealGreen,    // Track 12 - Sample2
-    AzureBlue,    // Track 13 - Bass2
-    Violet,       // Track 14 - Lead2
-    HotMagenta,   // Track 15 - Arp2
-    LightGrey     // Track 16 - Chord2
+    BrightRed,    // Track 1
+    OrangeRed,    // Track 2
+    VividYellow,  // Track 3
+    BrightGreen,  // Track 4
+    Lime,         // Track 5 - warm green
+    BurntOrange,  // Track 6 - warm orange/brown
+    Rose,         // Track 7 - warm pink
+    LightYellow,  // Track 8 - warm yellow
+    Cyan,         // Track 9 - cold colors start
+    AzureBlue,    // Track 10
+    RoyalBlue,    // Track 11
+    Navy,         // Track 12
+    BlueViolet,   // Track 13
+    Violet,       // Track 14
+    Purple,       // Track 15
+    LightGrey     // Track 16
 ];
 
 export const TRACK_NAMES = [
-    "Kick", "Snare", "Perc", "Sample",
-    "Bass", "Lead", "Arp", "Chord",
-    "Kick2", "Snare2", "Perc2", "Sample2",
-    "Bass2", "Lead2", "Arp2", "Chord2"
+    "1", "2", "3", "4", "5", "6", "7", "8",
+    "9", "10", "11", "12", "13", "14", "15", "16"
 ];
 
 /* Dim versions of track colors for non-selected tracks with content */
@@ -72,18 +71,18 @@ export const TRACK_COLORS_DIM = [
     67,           // Brick (dim orange)
     73,           // Dull Yellow
     79,           // Dull Green
-    87,           // Dark Teal (dim cyan)
-    17,           // Navy (dim blue)
-    107,          // Dark Purple
-    118,          // Light Grey (dim white)
-    Rose,         // Dim pink
-    Mustard,      // Dim orange
-    OliveGreen,   // Dim lime
-    MutedTeal,    // Dim teal
-    MutedBlue,    // Dim azure
-    MutedViolet,  // Dim violet
-    DeepMagenta,  // Dim magenta
-    DarkGrey      // Dim grey
+    OliveGreen,   // Track 5 - dim lime
+    Mustard,      // Track 6 - dim burnt orange
+    Rose,         // Track 7 - dim rose (already muted)
+    Ochre,        // Track 8 - dim light yellow
+    MutedBlue,    // Track 9 - dim cold colors
+    SkyBlue,      // Track 10
+    Navy,         // Track 11
+    DeepBlue,     // Track 12
+    DarkPurple,   // Track 13
+    MutedViolet,  // Track 14
+    DarkViolet,   // Track 15
+    DarkGrey      // Track 16
 ];
 
 /* ============ Speed Options ============ */

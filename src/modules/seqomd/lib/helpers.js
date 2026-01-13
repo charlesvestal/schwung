@@ -119,9 +119,9 @@ export function getPadBaseColor(padIdx) {
     const detected = state.detectedScale;
     const isChordFollowTrack = state.chordFollow[state.currentTrack];
 
-    /* C notes are always prominent (VividYellow) */
+    /* C notes use the track's color for visual consistency */
     if (pitchClass === 0) {
-        return VividYellow;
+        return TRACK_COLORS[state.currentTrack];
     }
 
     if (isChordFollowTrack && detected) {

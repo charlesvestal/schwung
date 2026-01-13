@@ -157,29 +157,19 @@ export function onInput(data) {
 /* ============ Track Button Handling ============ */
 
 /**
- * Get the track index shown at a given button position.
- * Button 0 (top, CC 43): Selected track
- * Buttons 1-3: Tracks from scroll position, skipping selected track
+ * Get track index for a track button position
+ * All 4 buttons now show consecutive tracks from scroll position
+ * Button 0 (top, CC 43): trackScrollPosition + 0
+ * Button 1: trackScrollPosition + 1
+ * Button 2: trackScrollPosition + 2
+ * Button 3 (bottom): trackScrollPosition + 3
  */
 function getTrackAtButton(btnPosition) {
-    if (btnPosition === 0) {
-        return state.currentTrack;
+    const trackIdx = state.trackScrollPosition + btnPosition;
+    if (trackIdx >= 0 && trackIdx < NUM_TRACKS) {
+        return trackIdx;
     }
-
-    /* Build list of tracks excluding selected */
-    const otherTracks = [];
-    for (let t = 0; t < NUM_TRACKS; t++) {
-        if (t !== state.currentTrack) {
-            otherTracks.push(t);
-        }
-    }
-
-    /* Get track from scroll position */
-    const scrollIdx = state.trackScrollPosition + (btnPosition - 1);
-    if (scrollIdx >= 0 && scrollIdx < otherTracks.length) {
-        return otherTracks[scrollIdx];
-    }
-    return -1;
+    return -1;  // Out of range
 }
 
 function handleTrackButton(note, velocity) {
@@ -191,8 +181,9 @@ function handleTrackButton(note, velocity) {
     const trackIdx = getTrackAtButton(btnPosition);
     if (trackIdx >= 0 && trackIdx < NUM_TRACKS) {
         state.currentTrack = trackIdx;
-        /* Reset scroll position when selecting new track */
-        state.trackScrollPosition = 0;
+        /* Auto-scroll to ensure selected track is visible in 4-button window */
+        const group = Math.floor(trackIdx / 4) * 4;  // 0, 4, 8, or 12
+        state.trackScrollPosition = group;
         updateDisplayContent();
         updateLEDs();
     }
@@ -667,12 +658,14 @@ function handleJogWheel(velocity) {
         return true;
     }
 
-    /* Jog alone: scroll tracks */
-    const maxScroll = NUM_TRACKS - 4;  /* 15 other tracks, show 3 at a time */
+    /* Jog alone: scroll track buttons by 4 positions */
+    const maxScroll = NUM_TRACKS - 4;  /* Show 4 tracks at a time: positions 0, 4, 8, 12 */
     if (velocity >= 1 && velocity <= 63) {
-        state.trackScrollPosition = Math.min(state.trackScrollPosition + 1, maxScroll);
+        /* Clockwise: increment by 4 */
+        state.trackScrollPosition = Math.min(state.trackScrollPosition + 4, maxScroll);
     } else if (velocity >= 65 && velocity <= 127) {
-        state.trackScrollPosition = Math.max(state.trackScrollPosition - 1, 0);
+        /* Counter-clockwise: decrement by 4 */
+        state.trackScrollPosition = Math.max(state.trackScrollPosition - 4, 0);
     }
     updateTrackButtonLEDs();
     return true;
@@ -956,12 +949,9 @@ function updateTrackButtonLEDs() {
         if (trackIdx === state.currentTrack) {
             /* Selected track - always bright */
             color = TRACK_COLORS[trackIdx];
-        } else if (getCurrentPattern(trackIdx).steps.some(s => s.notes.length > 0 || s.cc1 >= 0 || s.cc2 >= 0)) {
-            /* Has content - dim color */
-            color = TRACK_COLORS_DIM[trackIdx];
         } else {
-            /* Empty track - very dim */
-            color = DarkGrey;
+            /* Non-selected track - dim color (shows track identity even when empty) */
+            color = TRACK_COLORS_DIM[trackIdx];
         }
 
         if (state.tracks[trackIdx] && state.tracks[trackIdx].muted) {

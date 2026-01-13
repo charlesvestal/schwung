@@ -132,12 +132,14 @@ export function cloneTrack(srcTrack) {
 /* ============ Tracks Collection ============ */
 
 /**
- * Create empty tracks structure (8 tracks)
+ * Create empty tracks structure (16 tracks)
  */
 export function createEmptyTracks() {
     const tracks = [];
     for (let t = 0; t < NUM_TRACKS; t++) {
-        tracks.push(createEmptyTrack(t));
+        /* Tracks 0-7: channels 0-7, Tracks 8-15: channel 9 (MIDI channel 10 - drums) */
+        const channel = t < 8 ? t : 9;
+        tracks.push(createEmptyTrack(channel));
     }
     return tracks;
 }
@@ -235,11 +237,12 @@ export function cloneTransposeSequence(seq) {
 }
 
 /**
- * Default chord follow settings (tracks 1-4 drums, 5-8 melodic, repeated for 9-16)
+ * Default chord follow settings (tracks 1-8 melodic, 9-16 drums)
  */
 export function getDefaultChordFollow() {
-    return [false, false, false, false, true, true, true, true,
-            false, false, false, false, true, true, true, true];
+    /* Tracks 1-8: transpose-follow enabled (melodic), Tracks 9-16: disabled (drums) */
+    return [true, true, true, true, true, true, true, true,
+            false, false, false, false, false, false, false, false];
 }
 
 /* ============ Helpers ============ */

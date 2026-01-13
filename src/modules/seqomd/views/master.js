@@ -241,12 +241,13 @@ export function onInput(data) {
             return true;
         }
 
-        /* Not holding step: scroll tracks for chord follow (1 at a time) */
-        const maxScroll = NUM_TRACKS - 8;  /* Can scroll 0-8 to show tracks 0-7 through 8-15 */
+        /* Not holding step: scroll tracks for chord follow (toggle between tracks 1-8 and 9-16) */
         if (velocity >= 1 && velocity <= 63) {
-            state.trackScrollPosition = Math.min(state.trackScrollPosition + 1, maxScroll);
+            /* Clockwise: jump to tracks 9-16 */
+            state.trackScrollPosition = 8;
         } else if (velocity >= 65 && velocity <= 127) {
-            state.trackScrollPosition = Math.max(state.trackScrollPosition - 1, 0);
+            /* Counter-clockwise: jump to tracks 1-8 */
+            state.trackScrollPosition = 0;
         }
         updateDisplayContent();
         updatePadLEDs();
@@ -430,7 +431,7 @@ function updatePadLEDs() {
                 continue;
             }
             const isFollowing = state.chordFollow[trackIdx];
-            setLED(padNote, isFollowing ? TRACK_COLORS[trackIdx] : DarkGrey);
+            setLED(padNote, isFollowing ? TRACK_COLORS[trackIdx] : TRACK_COLORS_DIM[trackIdx]);
             continue;
         }
 
@@ -528,7 +529,7 @@ export function updateDisplayContent() {
     const scaleName = getScaleDisplayName();
     const stepCount = getStepCount();
     const startTrack = state.trackScrollPosition + 1;
-    const endTrack = Math.min(state.trackScrollPosition + 8, NUM_TRACKS);
+    const endTrack = state.trackScrollPosition + 8;
     const trackRange = `${startTrack}-${endTrack}`;
 
     let line2, line3;
