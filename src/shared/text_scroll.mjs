@@ -7,9 +7,9 @@
  */
 
 /* Frame-based timing (assuming ~60fps tick rate) */
-const DEFAULT_DELAY_FRAMES = 180;      /* ~3 seconds before scrolling */
+const DEFAULT_DELAY_FRAMES = 120;      /* ~2 seconds before scrolling */
 const DEFAULT_SCROLL_INTERVAL = 6;     /* Frames between scroll steps (~100ms) */
-const DEFAULT_PAUSE_FRAMES = 180;      /* ~3 seconds pause at end */
+const DEFAULT_PAUSE_FRAMES = 120;      /* ~2 seconds pause at end */
 const DEFAULT_SCROLL_SPEED = 1;        /* Characters per scroll step */
 
 /**
