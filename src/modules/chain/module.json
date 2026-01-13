@@ -7,5 +7,6 @@
     "ui": "ui.js",
     "dsp": "dsp.so",
     "api_version": 1,
-    "raw_ui": true
+    "raw_ui": true,
+    "component_type": "featured"
 }

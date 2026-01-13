@@ -1177,6 +1177,7 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
         JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, info->name));
         JS_SetPropertyStr(ctx, obj, "version", JS_NewString(ctx, info->version));
         JS_SetPropertyStr(ctx, obj, "index", JS_NewInt32(ctx, i));
+        JS_SetPropertyStr(ctx, obj, "component_type", JS_NewString(ctx, info->component_type));
         JS_SetPropertyUint32(ctx, arr, i, obj);
     }
 

@@ -5,5 +5,6 @@
     "description": "Custom MIDI controller with 16 banks and configurable pads",
     "author": "chaolue",
     "ui": "ui.js",
-    "api_version": 1
+    "api_version": 1,
+    "component_type": "utility"
 }

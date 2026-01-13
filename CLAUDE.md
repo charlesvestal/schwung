@@ -48,14 +48,38 @@ Modules (src/modules/<id>/):
 ### Module Structure
 
 ```
-src/modules/sf2/
-  module.json       # Required
+src/modules/<id>/
+  module.json       # Required - metadata and capabilities
   ui.js             # JavaScript UI
-  dsp.so            # Native DSP (built from dsp/)
-  dsp/
-    sf2_plugin.c
-    third_party/tsf.h
+  dsp.so            # Optional native DSP plugin
 ```
+
+Built-in modules (in main repo):
+- `chain` - Signal Chain for combining components
+- `controller` - MIDI Controller with 16 banks
+- `store` - Module Store for downloading external modules
+
+### Module Categorization
+
+Modules declare their category via `component_type` in module.json:
+
+```json
+{
+    "id": "my-module",
+    "name": "My Module",
+    "component_type": "sound_generator"
+}
+```
+
+Valid component types:
+- `featured` - Featured modules (Signal Chain), shown first
+- `sound_generator` - Synths and samplers
+- `audio_fx` - Audio effects
+- `midi_fx` - MIDI processors
+- `utility` - Utility modules (MIDI Controller, M8 emulator)
+- `system` - System modules (Module Store), shown last
+
+The main menu automatically organizes modules by category, reading from each module's `component_type` field.
 
 ### Plugin API (v1)
 
@@ -77,7 +101,7 @@ Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
 
 ```javascript
 // Module management
-host_list_modules()           // -> [{id, name, version}, ...]
+host_list_modules()           // -> [{id, name, version, component_type}, ...]
 host_load_module(id_or_index)
 host_load_ui_module(path)
 host_unload_module()
@@ -146,8 +170,10 @@ On-device layout:
   move-anything-shim.so       # Shim (also at /usr/lib/)
   host/menu_ui.js
   shared/
-  modules/sf2/, m8/, controller/
+  modules/chain/, controller/, store/  # Built-in modules
 ```
+
+External modules are downloaded via Module Store to the same modules/ directory.
 
 Original Move preserved as `/opt/move/MoveOriginal`.
 
@@ -184,10 +210,33 @@ Component types: `sound_generator`, `audio_fx`, `midi_fx`
 
 ### External Modules
 
-External modules (JV-880, OB-Xd) install their own chain presets via their install scripts.
+External modules are maintained in separate repositories and available via Module Store:
+
+**Sound Generators:**
+- `sf2` - SoundFont synthesizer (TinySoundFont)
+- `dx7` - Yamaha DX7 FM synthesizer (Dexed/MSFA)
+- `jv880` - Roland JV-880 emulator
+- `obxd` - Oberheim OB-X emulator
+- `clap` - CLAP plugin host
+
+**Audio FX:**
+- `cloudseed` - Algorithmic reverb
+- `psxverb` - PlayStation SPU reverb
+- `tapescam` - Tape saturation
+- `spacecho` - RE-201 style tape delay
+
+**Utilities:**
+- `m8` - Dirtywave M8 Launchpad Pro emulator
+
+External modules install their own Signal Chain presets via their install scripts.
+
+## Module Store
+
+The Module Store (`store` module) downloads and installs external modules from GitHub releases. The catalog is fetched from:
+`https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json`
 
 ## Dependencies
 
 - QuickJS: libs/quickjs/
 - stb_image.h: src/lib/
-- TinySoundFont: src/modules/sf2/dsp/third_party/tsf.h
+- curl: libs/curl/ (for Module Store downloads)
