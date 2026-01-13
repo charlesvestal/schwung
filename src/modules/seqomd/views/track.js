@@ -11,10 +11,13 @@
  */
 
 import {
-    MoveLoop, MoveCapture, MoveMainButton, MoveBack
+    MoveLoop, MoveCapture, MoveMainButton, MoveBack, MoveCopy, White, Black
 } from "../../../shared/constants.mjs";
 
-import { updatePadLEDs, setParam } from '../lib/helpers.js';
+import { updatePadLEDs, setParam, syncAllTracksToDSP } from '../lib/helpers.js';
+import { clonePattern } from '../lib/data.js';
+import { setButtonLED } from '../../../shared/input_filter.mjs';
+import { NUM_PATTERNS } from '../lib/constants.js';
 
 import {
     state, displayMessage, enterSetView,
@@ -67,6 +70,52 @@ export function onInput(data) {
     const isCC = data[0] === 0xB0;
     const note = data[1];
     const velocity = data[2];
+
+    /* Copy button - copy current pattern to next available slot */
+    if (state.trackMode === 'normal' && isCC && note === MoveCopy && velocity > 0) {
+        const track = state.tracks[state.currentTrack];
+        const currentPatternIdx = track.currentPattern;
+
+        /* Find next available pattern slot */
+        let nextPatternIdx = -1;
+
+        /* First try: find first empty pattern */
+        for (let i = 0; i < NUM_PATTERNS; i++) {
+            const pattern = track.patterns[i];
+            const isEmpty = pattern.steps.every(s => s.notes.length === 0 && s.cc1 < 0 && s.cc2 < 0);
+            if (isEmpty) {
+                nextPatternIdx = i;
+                break;
+            }
+        }
+
+        /* Second try: if all patterns have content, use next pattern (wrap around) */
+        if (nextPatternIdx === -1) {
+            nextPatternIdx = (currentPatternIdx + 1) % NUM_PATTERNS;
+        }
+
+        /* Copy current pattern to next slot */
+        track.patterns[nextPatternIdx] = clonePattern(track.patterns[currentPatternIdx]);
+
+        /* Switch to new pattern immediately */
+        track.currentPattern = nextPatternIdx;
+        setParam(`track_${state.currentTrack}_pattern`, String(nextPatternIdx));
+
+        /* Sync to DSP immediately (don't wait for bar end) */
+        syncAllTracksToDSP();
+
+        markDirty();
+
+        displayMessage(
+            `Pattern ${currentPatternIdx + 1} copied`,
+            `Track ${state.currentTrack + 1} -> Pattern ${nextPatternIdx + 1}`,
+            "",
+            ""
+        );
+
+        modes[state.trackMode].updateLEDs();
+        return true;
+    }
 
     /*
      * Mode ENTRY transitions (from normal mode only)
@@ -275,6 +324,12 @@ export function onInput(data) {
 export function updateLEDs() {
     updatePadLEDs();  // View-level pad control
     modes[state.trackMode].updateLEDs();  // Sub-mode handles rest
+    updateCopyLED();  // Coordinator handles copy button
+}
+
+function updateCopyLED() {
+    /* Copy button lit in track view to show copy functionality available */
+    setButtonLED(MoveCopy, White);
 }
 
 
