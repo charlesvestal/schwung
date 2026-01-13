@@ -14,7 +14,7 @@ import { midiFxRegistry } from './midi_fx/index.mjs';
 /* State */
 let patchName = "";
 let patchCount = 0;
-let currentPatch = 0;
+let currentPatch = -1;  /* -1 = no patch loaded */
 let patchNames = [];
 let selectedPatch = -1;  /* -1 = New Chain item */
 let viewMode = "list";
@@ -1677,6 +1677,31 @@ function getKnobMappingDisplayName(mapping) {
     return `${slotName}: ${mapping.param}`;
 }
 
+/* Handle knob touch (capacitive touch notes 0-7) */
+function handleKnobTouch(knobIndex) {
+    if (knobIndex < 0 || knobIndex >= NUM_KNOBS) return false;
+    if (viewMode !== "patch" || sourceUiActive) return false;
+
+    /* Find mapping for this knob */
+    const cc = KNOB_CC_START + knobIndex;
+    const mapping = currentKnobMappings.find(m => m.cc === cc);
+    if (!mapping) return false;
+
+    /* Show current value on touch */
+    const displayName = getKnobMappingDisplayName(mapping);
+    const isInt = mapping.type === "int";
+    let displayValue;
+    if (isInt) {
+        displayValue = String(Math.round(mapping.currentValue));
+    } else {
+        displayValue = `${Math.round(mapping.currentValue * 100)}%`;
+    }
+
+    showOverlay(displayName, displayValue);
+    needsRedraw = true;
+    return true;
+}
+
 /* Handle knob CC for feedback display */
 function handleKnobFeedback(cc, value) {
     const knobIndex = cc - KNOB_CC_START;
@@ -1866,6 +1891,15 @@ globalThis.onMidiMessageInternal = function(data) {
     const useJsMidiFx = midiFxJsChain.length > 0;
     const isCap = isCapacitiveTouchMessage(data);
     const status = data[0] & 0xF0;
+    const note = data[1];
+
+    /* Handle knob touch (capacitive notes 0-7) before filtering */
+    if (status === 0x90 && note < 8 && data[2] > 0) {
+        if (handleKnobTouch(note)) {
+            return;
+        }
+    }
+
     if (status === 0xB0 && data[1] === CC_BACK && data[2] === 127) {
         handleCC(data[1], data[2]);
         return;
