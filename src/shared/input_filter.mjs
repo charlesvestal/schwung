@@ -82,3 +82,73 @@ export function clearAllLEDs() {
         setButtonLED(i, 0, true);
     }
 }
+
+/* ============ Encoder Delta Decoding ============ */
+
+/**
+ * Decode encoder/jog delta from CC value
+ * @param {number} value - CC value (1-63 = clockwise, 65-127 = counter-clockwise)
+ * @returns {number} Delta (-1, 0, or 1)
+ */
+export function decodeDelta(value) {
+    if (value === 0) return 0;
+    if (value >= 1 && value <= 63) return 1;
+    if (value >= 65 && value <= 127) return -1;
+    return 0;
+}
+
+/* ============ Encoder Acceleration ============ */
+
+/* Acceleration settings */
+const ACCEL_MIN_STEP = 1;
+const ACCEL_MAX_STEP = 10;
+const ACCEL_SLOW_THRESHOLD = 150;  /* ms - slower than this = min step */
+const ACCEL_FAST_THRESHOLD = 25;   /* ms - faster than this = max step */
+
+/* Track last event time per encoder */
+const encoderLastTime = new Map();
+
+/**
+ * Decode encoder delta with acceleration applied
+ * Slow turns = fine control (step 1), fast turns = coarse control (larger steps)
+ * @param {number} value - CC value from encoder
+ * @param {number} encoderId - Encoder identifier (CC number or index)
+ * @returns {number} Accelerated delta (signed, preserves direction)
+ */
+export function decodeAcceleratedDelta(value, encoderId = 0) {
+    const rawDelta = decodeDelta(value);
+    if (rawDelta === 0) return 0;
+
+    const now = Date.now();
+    const lastTime = encoderLastTime.get(encoderId) || 0;
+    const elapsed = now - lastTime;
+    encoderLastTime.set(encoderId, now);
+
+    /* Calculate step based on speed */
+    let step;
+    if (elapsed <= 0 || elapsed >= ACCEL_SLOW_THRESHOLD) {
+        step = ACCEL_MIN_STEP;
+    } else if (elapsed <= ACCEL_FAST_THRESHOLD) {
+        step = ACCEL_MAX_STEP;
+    } else {
+        const speedRatio = (ACCEL_SLOW_THRESHOLD - elapsed) / (ACCEL_SLOW_THRESHOLD - ACCEL_FAST_THRESHOLD);
+        step = Math.round(ACCEL_MIN_STEP + speedRatio * (ACCEL_MAX_STEP - ACCEL_MIN_STEP));
+    }
+
+    return rawDelta * step;
+}
+
+/**
+ * Reset acceleration tracking for an encoder
+ * @param {number} encoderId - Encoder identifier
+ */
+export function resetEncoderAccel(encoderId) {
+    encoderLastTime.delete(encoderId);
+}
+
+/**
+ * Reset all encoder acceleration tracking
+ */
+export function resetAllEncoderAccel() {
+    encoderLastTime.clear();
+}
