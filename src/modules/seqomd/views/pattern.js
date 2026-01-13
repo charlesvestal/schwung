@@ -18,7 +18,7 @@ import {
     MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM
 } from '../lib/constants.js';
 import { state, displayMessage } from '../lib/state.js';
-import { setParam, updateAndSendCC, getCurrentPattern } from '../lib/helpers.js';
+import { setParam, updateAndSendCC, getCurrentPattern, syncAllTracksToDSP } from '../lib/helpers.js';
 import { markDirty } from '../lib/persistence.js';
 
 /* ============ Pattern Snapshots ============ */
@@ -50,6 +50,10 @@ function recallPatternSnapshot(stepIdx) {
         setParam(`track_${t}_pattern`, String(snapshot[t]));
     }
     state.activePatternSnapshot = stepIdx;  /* Track which snapshot is active */
+
+    /* Sync all pattern data to DSP (notes, CCs, loop points, etc.) */
+    syncAllTracksToDSP();
+
     markDirty();
     return true;
 }
@@ -111,6 +115,10 @@ export function onInput(data) {
                 state.tracks[trackIdx].currentPattern = patternIdx;
                 setParam(`track_${trackIdx}_pattern`, String(patternIdx));
                 state.activePatternSnapshot = -1;  /* Manual change invalidates active snapshot */
+
+                /* Sync pattern data to DSP (notes, CCs, loop points for the new pattern) */
+                syncAllTracksToDSP();
+
                 markDirty();
 
                 displayMessage(
@@ -216,12 +224,10 @@ export function onInput(data) {
             } else {
                 /* Step alone: recall patterns from this slot */
                 if (recallPatternSnapshot(stepIdx)) {
-                    const patStr = state.tracks.slice(state.trackScrollPosition, state.trackScrollPosition + 8)
-                        .map(t => String(t.currentPattern + 1)).join(" ");
                     displayMessage(
                         `PATTERNS      ${state.bpm} BPM`,
                         `Recalled Snapshot ${stepIdx + 1}`,
-                        `Patterns: ${patStr}`,
+                        "",
                         ""
                     );
                     updatePadLEDs();
@@ -264,16 +270,14 @@ export function updateDisplayContent() {
     const startTrack = state.trackScrollPosition + 1;
     const endTrack = state.trackScrollPosition + 8;
     const trackRange = `${startTrack}-${endTrack}`;
-    const patStr = state.tracks.slice(state.trackScrollPosition, state.trackScrollPosition + 8)
-        .map(t => String(t.currentPattern + 1)).join(" ");
     const startPattern = state.patternViewOffset + 1;
     const endPattern = state.patternViewOffset + 4;
     const viewRange = `P${startPattern}-${endPattern}`;
 
     displayMessage(
         `PATTERNS T${trackRange} ${viewRange}`,
-        `Patterns: ${patStr}`,
         `Selected: Track ${state.currentTrack + 1}`,
+        "",
         `${state.bpm} BPM`
     );
 }

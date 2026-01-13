@@ -194,6 +194,11 @@ export function syncAllTracksToDSP() {
         setParam(`track_${t}_pattern`, String(track.currentPattern));
         setParam(`track_${t}_chord_follow`, state.chordFollow[t] ? "1" : "0");
 
+        /* Sync track-level arp settings */
+        setParam(`track_${t}_arp_mode`, String(track.arpMode || 0));
+        setParam(`track_${t}_arp_speed`, String(track.arpSpeed || 0));
+        setParam(`track_${t}_arp_octave`, String(track.arpOctave || 0));
+
         /* Sync current pattern's loop points */
         const pattern = track.patterns[track.currentPattern];
         setParam(`track_${t}_loop_start`, String(pattern.loopStart));

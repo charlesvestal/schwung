@@ -214,21 +214,19 @@ function clonePatternSnapshots(snapshots) {
  * Returns the set data for syncing to DSP
  */
 export function loadSetToTracks(setIdx) {
-    /* Try to load from disk first if not in memory */
-    if (!state.sets[setIdx]) {
-        const diskData = loadSetFromDisk(setIdx);
-        if (diskData) {
-            state.sets[setIdx] = diskData;
-        } else {
-            /* Create empty set */
-            state.sets[setIdx] = {
-                tracks: createEmptyTracks(),
-                bpm: 120,
-                transposeSequence: [],
-                chordFollow: getDefaultChordFollow(),
-                sequencerType: 0
-            };
-        }
+    /* Always load from disk to avoid stale cache */
+    const diskData = loadSetFromDisk(setIdx);
+    if (diskData) {
+        state.sets[setIdx] = diskData;
+    } else if (!state.sets[setIdx]) {
+        /* Create empty set only if no disk data AND not in memory */
+        state.sets[setIdx] = {
+            tracks: createEmptyTracks(),
+            bpm: 120,
+            transposeSequence: [],
+            chordFollow: getDefaultChordFollow(),
+            sequencerType: 0
+        };
     }
 
     /* Handle both old format (array) and new format ({tracks, bpm}) */
