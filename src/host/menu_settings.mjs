@@ -1,14 +1,22 @@
 /*
- * Settings screen renderer and input handler.
+ * Settings screen using shared menu components.
  */
 
-import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../shared/menu_layout.mjs';
+import { createValue, createEnum, createToggle, createBack } from '../shared/menu_items.mjs';
+import { createMenuState, handleMenuInput } from '../shared/menu_nav.mjs';
+import { drawHierarchicalMenu } from '../shared/menu_render.mjs';
 
-const SETTINGS_COUNT = 6;
 const VELOCITY_CURVES = ['linear', 'soft', 'hard', 'full'];
 const PAD_LAYOUTS = ['chromatic', 'fourth'];
 const CLOCK_MODES = ['off', 'internal', 'external'];
 
+/* Settings menu state */
+let settingsState = createMenuState();
+let settingsItems = null;
+
+/**
+ * Get current settings values
+ */
 export function getSettings() {
     return {
         velocity_curve: host_get_setting('velocity_curve') || 'linear',
@@ -20,110 +28,142 @@ export function getSettings() {
     };
 }
 
+/**
+ * Build settings menu items
+ */
+function getSettingsItems() {
+    return [
+        createEnum('Velocity', {
+            get: () => host_get_setting('velocity_curve') || 'linear',
+            set: (v) => {
+                host_set_setting('velocity_curve', v);
+                host_save_settings();
+            },
+            options: VELOCITY_CURVES,
+            format: capitalize
+        }),
+        createToggle('Aftertouch', {
+            get: () => !!(host_get_setting('aftertouch_enabled') ?? 1),
+            set: (v) => {
+                host_set_setting('aftertouch_enabled', v ? 1 : 0);
+                host_save_settings();
+            }
+        }),
+        createValue('AT Deadzone', {
+            get: () => host_get_setting('aftertouch_deadzone') ?? 0,
+            set: (v) => {
+                host_set_setting('aftertouch_deadzone', v);
+                host_save_settings();
+            },
+            min: 0,
+            max: 50,
+            step: 5,
+            fineStep: 1
+        }),
+        createEnum('Pad Layout', {
+            get: () => host_get_setting('pad_layout') || 'chromatic',
+            set: (v) => {
+                host_set_setting('pad_layout', v);
+                host_save_settings();
+            },
+            options: PAD_LAYOUTS,
+            format: capitalize
+        }),
+        createEnum('MIDI Clock', {
+            get: () => host_get_setting('clock_mode') || 'internal',
+            set: (v) => {
+                host_set_setting('clock_mode', v);
+                host_save_settings();
+            },
+            options: CLOCK_MODES,
+            format: formatClockMode
+        }),
+        createValue('Tempo BPM', {
+            get: () => host_get_setting('tempo_bpm') ?? 120,
+            set: (v) => {
+                host_set_setting('tempo_bpm', v);
+                host_save_settings();
+            },
+            min: 20,
+            max: 300,
+            step: 5,
+            fineStep: 1
+        }),
+        createBack()
+    ];
+}
+
+/**
+ * Initialize settings menu
+ */
+export function initSettings() {
+    settingsState = createMenuState();
+    settingsItems = getSettingsItems();
+}
+
+/**
+ * Get current settings state (for external access)
+ */
+export function getSettingsState() {
+    return settingsState;
+}
+
+/**
+ * Draw the settings screen
+ */
+export function drawSettings() {
+    if (!settingsItems) {
+        settingsItems = getSettingsItems();
+    }
+
+    drawHierarchicalMenu({
+        title: 'Settings',
+        items: settingsItems,
+        state: settingsState,
+        footer: 'Click:edit  </>:adjust  Back:exit'
+    });
+}
+
+/**
+ * Handle settings input
+ * @returns {Object} Result with needsRedraw and shouldExit flags
+ */
+export function handleSettingsCC({ cc, value, shiftHeld }) {
+    if (!settingsItems) {
+        settingsItems = getSettingsItems();
+    }
+
+    const result = handleMenuInput({
+        cc,
+        value,
+        items: settingsItems,
+        state: settingsState,
+        stack: null,  /* Settings is flat, no stack needed */
+        onBack: null, /* Let caller handle back from settings */
+        shiftHeld
+    });
+
+    /* Check if user clicked [Back] item */
+    const item = settingsItems[settingsState.selectedIndex];
+    let shouldExit = false;
+    if (item && item.type === 'back' && cc === 3 && value > 0) {
+        shouldExit = true;
+    }
+
+    return {
+        needsRedraw: result.needsRedraw,
+        shouldExit
+    };
+}
+
+/* Helpers */
 function capitalize(s) {
+    if (!s) return '';
     return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function formatClockMode(mode) {
-    if (mode === "internal") return "INT";
-    if (mode === "external") return "EXT";
-    return "OFF";
-}
-
-export function drawSettings({ settingsIndex }) {
-    drawMenuHeader("Settings");
-
-    const settings = getSettings();
-    const items = [
-        { label: "Velocity", value: capitalize(settings.velocity_curve) },
-        { label: "Aftertouch", value: settings.aftertouch_enabled ? "On" : "Off" },
-        { label: "AT Deadzone", value: String(settings.aftertouch_deadzone) },
-        { label: "Pad Layout", value: capitalize(settings.pad_layout) },
-        { label: "MIDI Clock", value: formatClockMode(settings.clock_mode) },
-        { label: "Tempo BPM", value: String(settings.tempo_bpm) }
-    ];
-
-    drawMenuList({
-        items,
-        selectedIndex: settingsIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        valueAlignRight: true,
-        getLabel: (item) => `${item.label}:`,
-        getValue: (item) => item.value
-    });
-
-    drawMenuFooter("Back:back  </>:change");
-}
-
-export function handleSettingsCC({ cc, value, settingsIndex, shiftHeld }) {
-    const isDown = value > 0;
-    let nextIndex = settingsIndex;
-
-    if (cc === 14) {
-        if (value === 1) {
-            nextIndex = Math.min(settingsIndex + 1, SETTINGS_COUNT - 1);
-        } else if (value === 127 || value === 65) {
-            nextIndex = Math.max(settingsIndex - 1, 0);
-        }
-        return { nextIndex };
-    }
-
-    if (cc === 54 && isDown) {
-        nextIndex = Math.min(settingsIndex + 1, SETTINGS_COUNT - 1);
-        return { nextIndex };
-    }
-    if (cc === 55 && isDown) {
-        nextIndex = Math.max(settingsIndex - 1, 0);
-        return { nextIndex };
-    }
-
-    if (cc === 62 && isDown) {
-        changeSettingValue(settingsIndex, -1, shiftHeld);
-        return { nextIndex };
-    }
-    if (cc === 63 && isDown) {
-        changeSettingValue(settingsIndex, 1, shiftHeld);
-        return { nextIndex };
-    }
-
-    return { nextIndex };
-}
-
-function changeSettingValue(settingsIndex, delta, shiftHeld) {
-    const settings = getSettings();
-
-    if (settingsIndex === 0) {
-        let idx = VELOCITY_CURVES.indexOf(settings.velocity_curve);
-        idx = (idx + delta + VELOCITY_CURVES.length) % VELOCITY_CURVES.length;
-        host_set_setting('velocity_curve', VELOCITY_CURVES[idx]);
-    } else if (settingsIndex === 1) {
-        host_set_setting('aftertouch_enabled', settings.aftertouch_enabled ? 0 : 1);
-    } else if (settingsIndex === 2) {
-        let dz = settings.aftertouch_deadzone;
-        const step = shiftHeld ? 1 : 5;
-        dz = dz + (delta * step);
-        if (dz < 0) dz = 0;
-        if (dz > 50) dz = 50;
-        host_set_setting('aftertouch_deadzone', dz);
-    } else if (settingsIndex === 3) {
-        let idx = PAD_LAYOUTS.indexOf(settings.pad_layout);
-        idx = (idx + delta + PAD_LAYOUTS.length) % PAD_LAYOUTS.length;
-        host_set_setting('pad_layout', PAD_LAYOUTS[idx]);
-    } else if (settingsIndex === 4) {
-        let idx = CLOCK_MODES.indexOf(settings.clock_mode);
-        idx = (idx + delta + CLOCK_MODES.length) % CLOCK_MODES.length;
-        host_set_setting('clock_mode', CLOCK_MODES[idx]);
-    } else if (settingsIndex === 5) {
-        let bpm = settings.tempo_bpm;
-        const step = shiftHeld ? 1 : 5;
-        bpm = bpm + (delta * step);
-        if (bpm < 20) bpm = 20;
-        if (bpm > 300) bpm = 300;
-        host_set_setting('tempo_bpm', bpm);
-    }
-
-    host_save_settings();
+    if (mode === 'internal') return 'INT';
+    if (mode === 'external') return 'EXT';
+    return 'OFF';
 }
