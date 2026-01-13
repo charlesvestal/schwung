@@ -182,6 +182,24 @@ export function onInput(data) {
                         }, 1000);
                         updatePadLEDs();
                     }
+                } else if (state.shiftHeld) {
+                    /* Shift held - immediate switch to pattern */
+                    state.tracks[trackIdx].currentPattern = patternIdx;
+                    setParam(`track_${trackIdx}_pattern`, String(patternIdx));
+                    state.activePatternSnapshot = -1;  /* Manual change invalidates active snapshot */
+
+                    /* Sync pattern data to DSP immediately */
+                    syncAllTracksToDSP();
+
+                    markDirty();
+
+                    displayMessage(
+                        `IMMEDIATE SWITCH`,
+                        `Track ${trackIdx + 1} -> Pat ${patternIdx + 1}`,
+                        "",
+                        ""
+                    );
+                    updatePadLEDs();
                 } else {
                     /* Normal mode - select pattern */
                     state.tracks[trackIdx].currentPattern = patternIdx;
@@ -295,14 +313,23 @@ export function onInput(data) {
                     ""
                 );
             } else {
-                /* Step alone: recall patterns from this slot */
+                /* Step alone or Shift + Step: recall patterns from this slot */
                 if (recallPatternSnapshot(stepIdx)) {
-                    displayMessage(
-                        `PATTERNS      ${state.bpm} BPM`,
-                        `Recalled Snapshot ${stepIdx + 1}`,
-                        "",
-                        ""
-                    );
+                    if (state.shiftHeld) {
+                        displayMessage(
+                            `IMMEDIATE SWITCH`,
+                            `Recalled Snapshot ${stepIdx + 1}`,
+                            "",
+                            ""
+                        );
+                    } else {
+                        displayMessage(
+                            `PATTERNS      ${state.bpm} BPM`,
+                            `Recalled Snapshot ${stepIdx + 1}`,
+                            "",
+                            ""
+                        );
+                    }
                     updatePadLEDs();
                 }
             }
