@@ -1470,43 +1470,43 @@ static void trigger_track_step(track_t *track, int track_idx, double step_start_
         }
     }
 
-    /* Skip notes if step has none */
-    if (step->num_notes == 0) return;
-
-    /* Check if this step should trigger (probability + conditions / trigger spark) */
-    if (!should_step_trigger(step, track)) return;
-
-    /* Check comp_spark - should ratchet/arp apply this loop? */
+    /* Check comp_spark early - needed for both notes and jumps */
     int comp_spark_pass = check_spark_condition(
         step->comp_spark_n, step->comp_spark_m, step->comp_spark_not, track);
 
-    /* Apply micro-timing offset */
-    double offset_phase = (double)step->offset / 48.0;
-    double note_phase = step_start_phase + offset_phase;
+    /* Handle note scheduling if step has notes */
+    if (step->num_notes > 0) {
+        /* Check if this step should trigger (probability + conditions / trigger spark) */
+        if (should_step_trigger(step, track)) {
+            /* Apply micro-timing offset */
+            double offset_phase = (double)step->offset / 48.0;
+            double note_phase = step_start_phase + offset_phase;
 
-    /* Determine if arp is active (step override or track default) */
-    int arp_mode = step->arp_mode >= 0 ? step->arp_mode : track->arp_mode;
-    int use_arp = (arp_mode > ARP_OFF) && (step->num_notes >= 1);
+            /* Determine if arp is active (step override or track default) */
+            int arp_mode = step->arp_mode >= 0 ? step->arp_mode : track->arp_mode;
+            int use_arp = (arp_mode > ARP_OFF) && (step->num_notes >= 1);
 
-    /* Handle arp layer mode - Cut cancels previous notes before scheduling new ones.
-     * This applies to both arp and non-arp steps (a non-arp step can cut a running arp) */
-    if (step->arp_layer == ARP_LAYER_CUT) {
-        cut_channel_notes(track->midi_channel);
+            /* Handle arp layer mode - Cut cancels previous notes before scheduling new ones.
+             * This applies to both arp and non-arp steps (a non-arp step can cut a running arp) */
+            if (step->arp_layer == ARP_LAYER_CUT) {
+                cut_channel_notes(track->midi_channel);
+            }
+
+            /* Schedule notes - arp takes priority over ratchet when active */
+            if (use_arp) {
+                /* Arp is active - use arp scheduling (ignores ratchet) */
+                schedule_step_notes(track, track_idx, step, note_phase, 1, 0);
+            } else if (comp_spark_pass && step->ratchet > 1) {
+                /* No arp, use ratchets */
+                schedule_step_notes(track, track_idx, step, note_phase, 0, 1);
+            } else {
+                /* Single trigger (no arp, no ratchet) */
+                schedule_step_notes(track, track_idx, step, note_phase, 0, 0);
+            }
+        }
     }
 
-    /* Schedule notes - arp takes priority over ratchet when active */
-    if (use_arp) {
-        /* Arp is active - use arp scheduling (ignores ratchet) */
-        schedule_step_notes(track, track_idx, step, note_phase, 1, 0);
-    } else if (comp_spark_pass && step->ratchet > 1) {
-        /* No arp, use ratchets */
-        schedule_step_notes(track, track_idx, step, note_phase, 0, 1);
-    } else {
-        /* Single trigger (no arp, no ratchet) */
-        schedule_step_notes(track, track_idx, step, note_phase, 0, 0);
-    }
-
-    /* Handle jump (only if comp_spark passes) */
+    /* Handle jump (only if comp_spark passes) - works on empty steps too */
     if (comp_spark_pass && step->jump >= 0 && step->jump < NUM_STEPS) {
         /* Jump to target step on next advance */
         /* We set current_step to jump-1 because advance_track will increment it */
