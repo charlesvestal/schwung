@@ -31,25 +31,21 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 - **Back**: Return to the host menu (unless a module sets `raw_ui`)
 - **Settings**: Menu → Settings for velocity/aftertouch; "Return to Move" exits to the stock app
 
-## Included Modules
+## Built-in Modules
 
 | Module | Description |
 |--------|-------------|
 | **Signal Chain** | Modular signal chain with synths, MIDI FX, and audio FX |
-| DX7 Synth | 6-operator FM synthesizer (Yamaha DX7), loads .syx patches |
-| SF2 Synth | SoundFont synthesizer with preset/octave control |
-| M8 LPP | Dirtywave M8 Launchpad Pro emulation |
-| Controller | MIDI controller with 16 banks |
+| **MIDI Controller** | MIDI controller with 16 banks |
+| **Module Store** | Browse, install, and update external modules |
 
 ### Signal Chain
 
 The Signal Chain module lets you combine MIDI sources, MIDI effects, sound generators, and audio effects into patches:
 
 **Sound Generators:**
-- SF2 (SoundFont synth)
-- DX7 (FM synth)
-- Line In (external audio input)
-- External modules (OB-Xd, JV-880) when installed
+- Line In (external audio input, built-in)
+- SF2, DX7, OB-Xd, JV-880, CLAP (install via Module Store)
 - Any module marked chainable as a sound generator
 
 **MIDI Sources:**
@@ -61,18 +57,36 @@ The Signal Chain module lets you combine MIDI sources, MIDI effects, sound gener
 - JavaScript MIDI FX (per-patch registry)
 
 **Audio Effects:**
-- Freeverb (Schroeder-Moorer reverb)
+- Freeverb (Schroeder-Moorer reverb, built-in)
+- CloudSeed, PSX Verb, TAPESCAM, Space Echo (install via Module Store)
 
 Patches are JSON files in `modules/chain/patches/`. Use the jog wheel to highlight, click to load, Up/Down for octave control in the patch view, and Back to return to the list. Modules that provide a chain UI can be entered with Menu. External modules add their own chain presets when installed.
 
-## Additional Modules
+## External Modules (via Module Store)
 
-These modules are maintained in separate repositories:
+Install these from the Module Store on your device:
 
-| Module | Description | Repository |
-|--------|-------------|------------|
-| **OB-Xd** | Oberheim OB-X synthesizer emulator | [move-anything-obxd](https://github.com/charlesvestal/move-anything-obxd) |
-| **JV-880** | Roland JV-880 rompler emulator | [move-anything-jv880](https://github.com/charlesvestal/move-anything-jv880) |
+**Sound Generators:**
+| Module | Description |
+|--------|-------------|
+| SF2 Synth | SoundFont (.sf2) synthesizer |
+| DX7 Synth | Yamaha DX7 FM synthesizer (loads .syx patches) |
+| OB-Xd | Oberheim OB-X synthesizer emulator |
+| JV-880 | Roland JV-880 rompler (requires ROM files) |
+| CLAP Host | Host for CLAP audio plugins |
+
+**Audio FX:**
+| Module | Description |
+|--------|-------------|
+| CloudSeed | Algorithmic reverb |
+| PSX Verb | PlayStation 1 SPU reverb emulation |
+| TAPESCAM | Tape saturation and degradation |
+| Space Echo | RE-201 style tape delay |
+
+**Utilities:**
+| Module | Description |
+|--------|-------------|
+| M8 LPP | Dirtywave M8 Launchpad Pro emulation |
 
 ## Uninstall
 
@@ -89,8 +103,6 @@ See [BUILDING.md](BUILDING.md) for build instructions.
 - [Hardware API Reference](docs/API.md)
 - [Module Development Guide](docs/MODULES.md)
 - [Signal Chain Module Notes](src/modules/chain/README.md)
-- [DX7 Module Notes](src/modules/dx7/README.md)
-- [SF2 Module Notes](src/modules/sf2/README.md)
 
 ## Project Structure
 
