@@ -258,6 +258,19 @@ export function syncAllTracksToDSP() {
             if (step.jump >= 0) {
                 setParam(`track_${t}_step_${s}_jump`, String(step.jump));
             }
+            /* Sync arp overrides */
+            if (step.arpMode !== undefined) {
+                setParam(`track_${t}_step_${s}_arp_mode`, String(step.arpMode));
+            }
+            if (step.arpSpeed !== undefined) {
+                setParam(`track_${t}_step_${s}_arp_speed`, String(step.arpSpeed));
+            }
+            if (step.arpOctave !== undefined) {
+                setParam(`track_${t}_step_${s}_arp_octave`, String(step.arpOctave));
+            }
+            if (step.arpLayer !== undefined) {
+                setParam(`track_${t}_step_${s}_arp_layer`, String(step.arpLayer));
+            }
         }
     }
 
@@ -275,14 +288,39 @@ export function syncTransposeSequenceToDSP() {
     /* Clear existing sequence in DSP */
     setParam("transpose_clear", "1");
 
-    /* Send each step */
+    /* Build mapping from UI indices to DSP indices */
+    const uiToDspIndex = new Map();
+    let dspIdx = 0;
+    for (let uiIdx = 0; uiIdx < state.transposeSequence.length; uiIdx++) {
+        if (state.transposeSequence[uiIdx]) {
+            uiToDspIndex.set(uiIdx, dspIdx);
+            dspIdx++;
+        }
+    }
+
+    /* Send each step with remapped jump indices */
     let stepIdx = 0;
-    for (const step of state.transposeSequence) {
+    for (let uiIdx = 0; uiIdx < state.transposeSequence.length; uiIdx++) {
+        const step = state.transposeSequence[uiIdx];
         if (step) {
             setParam(`transpose_step_${stepIdx}_transpose`, String(step.transpose));
             /* Duration is stored in beats in JS, but DSP wants steps (1 beat = 4 steps) */
             const durationInSteps = step.duration * 4;
             setParam(`transpose_step_${stepIdx}_duration`, String(durationInSteps));
+
+            /* Remap jump target from UI index to DSP index */
+            let jumpDsp = -1;
+            if (step.jump !== undefined && step.jump >= 0 && uiToDspIndex.has(step.jump)) {
+                jumpDsp = uiToDspIndex.get(step.jump);
+            }
+
+            /* Spark parameters - use remapped jump index */
+            setParam(`transpose_step_${stepIdx}_jump`, String(jumpDsp));
+            const cond = CONDITIONS[step.condition || 0];
+            setParam(`transpose_step_${stepIdx}_condition_n`, String(cond.n));
+            setParam(`transpose_step_${stepIdx}_condition_m`, String(cond.m));
+            setParam(`transpose_step_${stepIdx}_condition_not`, cond.not ? "1" : "0");
+
             stepIdx++;
         }
     }

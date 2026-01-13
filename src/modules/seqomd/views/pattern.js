@@ -49,6 +49,7 @@ function recallPatternSnapshot(stepIdx) {
         state.tracks[t].currentPattern = snapshot[t];
         setParam(`track_${t}_pattern`, String(snapshot[t]));
     }
+    state.activePatternSnapshot = stepIdx;  /* Track which snapshot is active */
     markDirty();
     return true;
 }
@@ -81,7 +82,7 @@ export function onEnter() {
  * Called when exiting pattern view
  */
 export function onExit() {
-    state.recHeld = false;
+    state.captureHeld = false;
 }
 
 /**
@@ -109,6 +110,7 @@ export function onInput(data) {
             if (trackIdx < NUM_TRACKS && patternIdx < NUM_PATTERNS) {
                 state.tracks[trackIdx].currentPattern = patternIdx;
                 setParam(`track_${trackIdx}_pattern`, String(patternIdx));
+                state.activePatternSnapshot = -1;  /* Manual change invalidates active snapshot */
                 markDirty();
 
                 displayMessage(
@@ -181,10 +183,20 @@ export function onInput(data) {
         return true;
     }
 
-    /* Rec button - track hold state */
-    if (isCC && note === MoveRec) {
-        state.recHeld = velocity > 0;
-        updateTransportLEDs();
+    /* Capture button - track hold state for snapshot save mode */
+    if (isCC && note === MoveCapture) {
+        state.captureHeld = velocity > 0;
+        if (state.captureHeld) {
+            displayMessage(
+                "SNAPSHOT SAVE MODE",
+                "Press a step to save",
+                "current pattern selection",
+                ""
+            );
+        } else {
+            updateDisplayContent();  /* Return to normal display */
+        }
+        updateLEDs();
         return true;
     }
 
@@ -192,8 +204,8 @@ export function onInput(data) {
     if (isNote && note >= 16 && note <= 31) {
         const stepIdx = note - 16;
         if (isNoteOn && velocity > 0) {
-            if (state.recHeld) {
-                /* Rec + Step: save current patterns to this slot */
+            if (state.captureHeld) {
+                /* Capture + Step: save current patterns to this slot */
                 savePatternSnapshot(stepIdx);
                 displayMessage(
                     `PATTERNS      ${state.bpm} BPM`,
@@ -272,7 +284,21 @@ function updateStepLEDs() {
     /* Steps show saved pattern snapshots */
     for (let i = 0; i < NUM_STEPS; i++) {
         const hasSnapshot = state.patternSnapshots[i] !== null && state.patternSnapshots[i] !== undefined;
-        setLED(MoveSteps[i], hasSnapshot ? Cyan : Black);
+        const isActive = state.activePatternSnapshot === i;
+
+        if (state.captureHeld) {
+            /* Capture held: show all steps lit to indicate save mode */
+            setLED(MoveSteps[i], hasSnapshot ? BrightRed : White);
+        } else {
+            /* Normal mode: show saved snapshots, highlight active one */
+            if (isActive) {
+                setLED(MoveSteps[i], BrightGreen);  /* Active snapshot = bright green */
+            } else if (hasSnapshot) {
+                setLED(MoveSteps[i], Cyan);  /* Saved snapshot = cyan */
+            } else {
+                setLED(MoveSteps[i], Black);  /* Empty = black */
+            }
+        }
     }
 }
 
@@ -357,13 +383,13 @@ function updateTransportLEDs() {
     /* Loop button - off in pattern view */
     setButtonLED(MoveLoop, Black);
 
-    /* Record button - lit when held for snapshot save */
-    setButtonLED(MoveRec, state.recHeld ? BrightRed : (state.recording ? BrightRed : Black));
+    /* Rec button - shows recording state */
+    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
 }
 
 function updateCaptureLED() {
-    /* Capture off in pattern view */
-    setButtonLED(MoveCapture, Black);
+    /* Capture button - lit when held for snapshot save mode */
+    setButtonLED(MoveCapture, state.captureHeld ? White : Black);
 }
 
 function updateBackLED() {

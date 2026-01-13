@@ -8,7 +8,8 @@ import * as os from 'os';
 
 import { DATA_DIR, SETS_DIR, SETS_FILE, NUM_SETS } from './constants.js';
 import { state } from './state.js';
-import { createEmptyTracks, deepCloneTracks, migrateTrackData, cloneTransposeSequence, getDefaultChordFollow } from './data.js';
+import { createEmptyTracks, deepCloneTracks, migrateTrackData, cloneTransposeSequence, migrateTransposeSequence, getDefaultChordFollow } from './data.js';
+import { syncTransposeSequenceToDSP } from './helpers.js';
 
 /* ============ Directory Setup ============ */
 
@@ -177,7 +178,8 @@ export function saveCurrentSetToDisk() {
         transposeSequence: state.transposeSequence,
         chordFollow: state.chordFollow,
         sequencerType: state.sequencerType,
-        patternSnapshots: state.patternSnapshots
+        patternSnapshots: state.patternSnapshots,
+        activePatternSnapshot: state.activePatternSnapshot
     };
     return saveSetToDisk(state.currentSet, setData);
 }
@@ -194,7 +196,8 @@ export function saveCurrentSet() {
         transposeSequence: cloneTransposeSequence(state.transposeSequence),
         chordFollow: [...state.chordFollow],
         sequencerType: state.sequencerType,
-        patternSnapshots: clonePatternSnapshots(state.patternSnapshots)
+        patternSnapshots: clonePatternSnapshots(state.patternSnapshots),
+        activePatternSnapshot: state.activePatternSnapshot
     };
 }
 
@@ -241,7 +244,12 @@ export function loadSetToTracks(setIdx) {
     state.currentSet = setIdx;
 
     /* Load transpose/chord follow with defaults for old sets */
-    state.transposeSequence = cloneTransposeSequence(setData.transposeSequence || []);
+    let transposeSeq = setData.transposeSequence || [];
+    transposeSeq = migrateTransposeSequence(transposeSeq);  /* Add jump/condition fields if missing */
+    state.transposeSequence = cloneTransposeSequence(transposeSeq);
+
+    /* Sync transpose sequence to DSP (including jump/condition parameters) */
+    syncTransposeSequenceToDSP();
 
     /* Handle chordFollow migration (8 -> 16 tracks) */
     if (setData.chordFollow && setData.chordFollow.length >= 8) {
@@ -259,6 +267,10 @@ export function loadSetToTracks(setIdx) {
     /* Load pattern snapshots with default empty array */
     state.patternSnapshots = setData.patternSnapshots ?
         setData.patternSnapshots.map(s => s ? [...s] : null) : [];
+
+    /* Load active pattern snapshot (default to -1 if not saved) */
+    state.activePatternSnapshot = setData.activePatternSnapshot !== undefined ?
+        setData.activePatternSnapshot : -1;
 
     /* Reset transpose playback position */
     state.currentTransposeBeat = 0;

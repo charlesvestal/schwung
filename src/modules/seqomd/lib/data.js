@@ -224,8 +224,10 @@ export function migrateTrackData(trackData) {
  */
 export function createTransposeStep(transpose = 0, duration = 4) {
     return {
-        transpose: transpose,
-        duration: duration
+        transpose: transpose,    // -24 to +24 semitones
+        duration: duration,      // 1-64 beats
+        jump: -1,               // Jump target step (-1 = no jump, 0-15 = step index)
+        condition: 0            // Index into CONDITIONS array (0-72, 0 = always)
     };
 }
 
@@ -234,8 +236,31 @@ export function createTransposeStep(transpose = 0, duration = 4) {
  */
 export function cloneTransposeSequence(seq) {
     if (!seq) return [];
-    return seq.map(step => step ? { transpose: step.transpose, duration: step.duration } : null)
-              .filter(s => s !== null);
+    return seq.map(step => step ? {
+        transpose: step.transpose,
+        duration: step.duration,
+        jump: step.jump !== undefined ? step.jump : -1,
+        condition: step.condition !== undefined ? step.condition : 0
+    } : null).filter(s => s !== null);
+}
+
+/**
+ * Migrate old transpose sequence data to current format
+ * - Adds jump field if missing (defaults to -1)
+ * - Adds condition field if missing (defaults to 0)
+ */
+export function migrateTransposeSequence(seq) {
+    if (!seq) return [];
+    return seq.map(step => {
+        if (!step) return null;
+        if (step.jump === undefined) {
+            step.jump = -1;
+        }
+        if (step.condition === undefined) {
+            step.condition = 0;
+        }
+        return step;
+    });
 }
 
 /**

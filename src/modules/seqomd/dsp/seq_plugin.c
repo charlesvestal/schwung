@@ -192,6 +192,10 @@ typedef struct {
 typedef struct {
     int8_t transpose;       /* -24 to +24 semitones */
     uint16_t duration;      /* Duration in steps (1-256) */
+    int8_t jump;            /* Jump target (-1 = no jump, 0-15 = target step) */
+    int8_t condition_n;     /* 0=always, >0=every N loops */
+    int8_t condition_m;     /* Which iteration (1 to N) */
+    uint8_t condition_not;  /* Negate condition */
 } transpose_step_t;
 
 /* Scale template for scale detection */
@@ -252,6 +256,10 @@ static int8_t *g_transpose_lookup = NULL;       /* Pre-computed lookup table (dy
 static uint32_t g_transpose_lookup_size = 0;    /* Size of lookup table */
 static int g_transpose_lookup_valid = 0;        /* Is lookup table valid? */
 static int g_transpose_sequence_enabled = 1;    /* Enable/disable transpose sequence automation */
+static uint32_t g_transpose_step_iteration[MAX_TRANSPOSE_STEPS];  /* Per-step iteration counter for conditions */
+static int g_transpose_virtual_step = 0;        /* Virtual playhead for jumps (0 to step_count-1) */
+static uint32_t g_transpose_virtual_entry_step = 0;  /* Beat position when we entered current virtual step */
+static int g_transpose_first_call = 1;          /* First call flag for initialization */
 
 /* Scale detection state */
 static int8_t g_detected_scale_root = -1;       /* 0-11, or -1 if none */
@@ -330,21 +338,120 @@ static void rebuild_transpose_lookup(void) {
     g_transpose_lookup_valid = 1;
 }
 
+/* Forward declaration for condition checking */
+static int check_transpose_condition(int step_index, transpose_step_t *step);
+
 /**
- * Get transpose value for a given step position (handles looping).
- * Uses the internal lookup table - no UI round-trip.
+ * Update the transpose virtual playhead (called every frame).
+ * This ensures jumps execute even when no notes are triggering.
+ */
+static void update_transpose_virtual_playhead(uint32_t step) {
+    /* If transpose sequence is disabled or empty, nothing to do */
+    if (!g_transpose_sequence_enabled) {
+        static int logged_disabled = 0;
+        if (!logged_disabled) {
+            printf("[TRANSPOSE] Sequence DISABLED\n");
+            logged_disabled = 1;
+        }
+        return;
+    }
+    if (g_transpose_step_count == 0 || g_transpose_total_steps == 0) {
+        static int logged_empty = 0;
+        if (!logged_empty) {
+            printf("[TRANSPOSE] Empty sequence: step_count=%d, total_steps=%u\n",
+                   g_transpose_step_count, g_transpose_total_steps);
+            logged_empty = 1;
+        }
+        return;
+    }
+
+    /* Initialize on first call */
+    if (g_transpose_first_call) {
+        printf("[TRANSPOSE] INIT: virtual_step=0, entry_step=%u, step_count=%d\n",
+               step, g_transpose_step_count);
+        for (int i = 0; i < g_transpose_step_count; i++) {
+            printf("[TRANSPOSE] Step %d: transpose=%d, duration=%u, jump=%d, cond_n=%d, cond_m=%d, cond_not=%d\n",
+                   i, g_transpose_sequence[i].transpose, g_transpose_sequence[i].duration,
+                   g_transpose_sequence[i].jump, g_transpose_sequence[i].condition_n,
+                   g_transpose_sequence[i].condition_m, g_transpose_sequence[i].condition_not);
+        }
+        g_transpose_virtual_step = 0;
+        g_transpose_virtual_entry_step = step;
+        g_transpose_first_call = 0;
+        return;
+    }
+
+    /* Get current virtual step and its duration */
+    transpose_step_t *current_virtual = &g_transpose_sequence[g_transpose_virtual_step];
+    uint32_t duration_in_steps = current_virtual->duration;  /* Already in steps (JS converts beats*4) */
+
+    /* Check if we've been in this virtual step long enough to advance */
+    uint32_t steps_in_current = step - g_transpose_virtual_entry_step;
+
+    if (steps_in_current >= duration_in_steps) {
+        printf("[TRANSPOSE] Step %u: virtual_step=%d finished (duration=%u)\n",
+               step, g_transpose_virtual_step, duration_in_steps);
+
+        /* Step finished playing - check for jump BEFORE advancing */
+        if (current_virtual->jump >= 0 && current_virtual->jump < g_transpose_step_count) {
+            printf("[TRANSPOSE] Checking jump: jump=%d, step_count=%d, cond_n=%d\n",
+                   current_virtual->jump, g_transpose_step_count, current_virtual->condition_n);
+
+            if (check_transpose_condition(g_transpose_virtual_step, current_virtual)) {
+                printf("[TRANSPOSE] JUMP EXECUTED: %d -> %d\n",
+                       g_transpose_virtual_step, current_virtual->jump);
+
+                /* Increment this step's iteration counter - we've evaluated this condition */
+                g_transpose_step_iteration[g_transpose_virtual_step]++;
+                printf("[TRANSPOSE] Step %d iteration count incremented to %u\n",
+                       g_transpose_virtual_step, g_transpose_step_iteration[g_transpose_virtual_step]);
+
+                /* Jump: go to target step */
+                g_transpose_virtual_step = current_virtual->jump;
+                g_transpose_virtual_entry_step = step;
+                return;
+            } else {
+                printf("[TRANSPOSE] Jump condition FAILED\n");
+
+                /* Still increment - we evaluated the condition */
+                g_transpose_step_iteration[g_transpose_virtual_step]++;
+                printf("[TRANSPOSE] Step %d iteration count incremented to %u\n",
+                       g_transpose_virtual_step, g_transpose_step_iteration[g_transpose_virtual_step]);
+            }
+        } else {
+            printf("[TRANSPOSE] No jump: jump=%d, step_count=%d\n",
+                   current_virtual->jump, g_transpose_step_count);
+        }
+
+        /* No jump or condition failed - advance normally */
+        int next_virtual = g_transpose_virtual_step + 1;
+
+        /* Handle wraparound */
+        if (next_virtual >= g_transpose_step_count) {
+            next_virtual = 0;
+        }
+
+        g_transpose_virtual_step = next_virtual;
+        g_transpose_virtual_entry_step = step;
+    }
+}
+
+/**
+ * Get transpose value for a given step position.
+ * Now just returns the current transpose value without advancing the playhead.
  */
 static int8_t get_transpose_at_step(uint32_t step) {
     /* If transpose sequence is disabled, return 0 (no automation) */
     if (!g_transpose_sequence_enabled) {
         return 0;
     }
-    if (!g_transpose_lookup_valid || g_transpose_total_steps == 0 || !g_transpose_lookup) {
+    if (g_transpose_step_count == 0 || g_transpose_total_steps == 0) {
         /* Fall back to legacy current_transpose when no sequence defined */
         return (int8_t)g_current_transpose;
     }
-    uint32_t looped_step = step % g_transpose_total_steps;
-    return g_transpose_lookup[looped_step];
+
+    /* Return transpose value of current virtual step */
+    return g_transpose_sequence[g_transpose_virtual_step].transpose;
 }
 
 /**
@@ -374,7 +481,43 @@ static void clear_transpose_sequence(void) {
     g_transpose_step_count = 0;
     g_transpose_total_steps = 0;
     g_transpose_lookup_valid = 0;
+    memset(g_transpose_step_iteration, 0, sizeof(g_transpose_step_iteration));
+    g_transpose_virtual_step = 0;
+    g_transpose_virtual_entry_step = 0;
+    g_transpose_first_call = 1;
     memset(g_transpose_sequence, 0, sizeof(g_transpose_sequence));
+    /* Initialize jump to -1 (no jump) for all steps */
+    for (int i = 0; i < MAX_TRANSPOSE_STEPS; i++) {
+        g_transpose_sequence[i].jump = -1;
+    }
+}
+
+/**
+ * Check if a transpose step's condition passes based on its iteration count.
+ * Returns 1 if condition passes, 0 otherwise.
+ */
+static int check_transpose_condition(int step_index, transpose_step_t *step) {
+    if (step->condition_n <= 0) {
+        printf("[CONDITION] Step %d: No condition set (n=%d), always passes\n", step_index, step->condition_n);
+        return 1;  /* No condition (n=0) always passes */
+    }
+
+    /* Calculate which iteration of the cycle we're in (1-indexed) */
+    uint32_t step_iter = g_transpose_step_iteration[step_index];
+    int iteration = (step_iter % step->condition_n) + 1;
+    int should_apply = (iteration == step->condition_m);
+
+    printf("[CONDITION] Step %d: iteration_count=%u, n=%d, m=%d, iteration=%d, match=%d, NOT=%d\n",
+           step_index, step_iter, step->condition_n, step->condition_m,
+           iteration, should_apply, step->condition_not);
+
+    /* Apply NOT flag if set */
+    if (step->condition_not) {
+        should_apply = !should_apply;
+    }
+
+    printf("[CONDITION] Step %d final result: %s\n", step_index, should_apply ? "PASS" : "FAIL");
+    return should_apply;
 }
 
 /* ============ Scale Detection Functions ============ */
@@ -1832,6 +1975,16 @@ static void set_transpose_param(const char *key, const char *val) {
         if (count >= 0 && count <= MAX_TRANSPOSE_STEPS) {
             g_transpose_step_count = count;
             rebuild_transpose_lookup();
+            printf("[TRANSPOSE] Set step_count = %d, total_steps = %u\n",
+                   count, g_transpose_total_steps);
+
+            /* Log current jump values */
+            for (int i = 0; i < count; i++) {
+                if (g_transpose_sequence[i].jump >= 0) {
+                    printf("[TRANSPOSE] Step %d has jump = %d\n",
+                           i, g_transpose_sequence[i].jump);
+                }
+            }
         }
     }
     else if (strncmp(key, "transpose_step_", 15) == 0) {
@@ -1857,6 +2010,28 @@ static void set_transpose_param(const char *key, const char *val) {
                         rebuild_transpose_lookup();
                     }
                 }
+                else if (strcmp(param, "jump") == 0) {
+                    int j = atoi(val);
+                    if (j >= -1 && j < MAX_TRANSPOSE_STEPS) {
+                        g_transpose_sequence[step_idx].jump = j;
+                        printf("[TRANSPOSE] Set step %d jump = %d\n", step_idx, j);
+                    }
+                }
+                else if (strcmp(param, "condition_n") == 0) {
+                    int n = atoi(val);
+                    if (n >= 0 && n <= 127) {
+                        g_transpose_sequence[step_idx].condition_n = n;
+                    }
+                }
+                else if (strcmp(param, "condition_m") == 0) {
+                    int m = atoi(val);
+                    if (m >= 0 && m <= 127) {
+                        g_transpose_sequence[step_idx].condition_m = m;
+                    }
+                }
+                else if (strcmp(param, "condition_not") == 0) {
+                    g_transpose_sequence[step_idx].condition_not = (strcmp(val, "1") == 0) ? 1 : 0;
+                }
             }
         }
     }
@@ -1873,9 +2048,8 @@ static int get_transpose_param(const char *key, char *buf, int buf_len) {
         return snprintf(buf, buf_len, "%d", transpose);
     }
     else if (strcmp(key, "current_transpose_step") == 0) {
-        uint32_t global_step = (uint32_t)g_global_phase;
-        int step_idx = get_transpose_step_index(global_step);
-        return snprintf(buf, buf_len, "%d", step_idx);
+        /* Return virtual step position (after jumps), not real time-based position */
+        return snprintf(buf, buf_len, "%d", g_transpose_virtual_step);
     }
     else if (strcmp(key, "transpose_sequence_enabled") == 0) {
         return snprintf(buf, buf_len, "%d", g_transpose_sequence_enabled);
@@ -1949,11 +2123,13 @@ static void plugin_set_param(const char *key, const char *val) {
         int new_bpm = atoi(val);
         if (new_bpm >= 20 && new_bpm <= 300) {
             g_bpm = new_bpm;
+            printf("[TEST] ===== BPM SET TO %d =====\n", new_bpm);
         }
     }
     else if (strcmp(key, "playing") == 0) {
         int new_playing = atoi(val);
         if (new_playing && !g_playing) {
+            printf("[TEST] ===== PLAYBACK STARTING =====\n");
             /* Starting playback - clear scheduler and reset all tracks */
             clear_scheduled_notes();
             for (int t = 0; t < NUM_TRACKS; t++) {
@@ -1966,6 +2142,11 @@ static void plugin_set_param(const char *key, const char *val) {
             g_global_phase = 0.0;
             g_beat_count = 0;
             g_random_state = 12345;
+            /* Reset transpose virtual playhead and per-step iteration counters */
+            g_transpose_virtual_step = 0;
+            g_transpose_virtual_entry_step = 0;
+            memset(g_transpose_step_iteration, 0, sizeof(g_transpose_step_iteration));
+            g_transpose_first_call = 1;
             if (g_send_clock) {
                 send_midi_start();
                 send_midi_clock();
@@ -2099,6 +2280,8 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
 }
 
 static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
+    static int render_call_count = 0;
+
     /* Safety check */
     if (!out_interleaved_lr || frames <= 0) {
         return;
@@ -2109,6 +2292,12 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
 
     if (!g_playing || !g_host) {
         return;
+    }
+
+    /* Log every 100 render calls when playing */
+    render_call_count++;
+    if (render_call_count % 100 == 0) {
+        printf("[TEST] Render called %d times, g_playing=%d\n", render_call_count, g_playing);
     }
 
     /* Phase increments (drift-free timing) */
@@ -2129,6 +2318,14 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         if (curr_beat > prev_beat) {
             g_beat_count = curr_beat;
         }
+
+        /* Update transpose virtual playhead when we cross a step boundary */
+        uint32_t prev_step = (uint32_t)prev_global_phase;
+        uint32_t curr_step = (uint32_t)g_global_phase;
+        if (curr_step > prev_step) {
+            update_transpose_virtual_playhead(curr_step);
+        }
+
         prev_global_phase = g_global_phase;
 
         /* Send MIDI clock at 24 PPQN */

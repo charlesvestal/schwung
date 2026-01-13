@@ -50,6 +50,7 @@ export const state = {
 
     /* Pattern snapshots (16 slots, each stores pattern indices for all tracks) */
     patternSnapshots: [],      // Array of 16 slots, each null or [pattern indices]
+    activePatternSnapshot: -1, // Currently active snapshot (-1 = none)
 
     /* Loop editing */
     loopEditFirst: -1,         // First step pressed while in loop edit
@@ -115,6 +116,9 @@ export const state = {
 
     /* Master view: held piano pad for live transpose (-1 = none) */
     heldLiveTransposePad: -1,
+
+    /* Master view: transpose spark mode selection */
+    transposeSparkSelectedSteps: new Set(),
 
     /* Step arp parameter selection (0=mode, 1=speed, 2=octave, 3=layer) */
     stepArpParam: 0,

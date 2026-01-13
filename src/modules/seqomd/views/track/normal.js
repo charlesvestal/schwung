@@ -608,17 +608,15 @@ function displayStepArpParams() {
     const octaveName = step.arpOctave < 0 ? "Track" : ARP_OCTAVES[step.arpOctave].name;
     const layerName = ARP_LAYERS[step.arpLayer].name;  /* No track default for layer */
 
-    const modePrefix = state.stepArpParam === 0 ? ">" : " ";
-    const speedPrefix = state.stepArpParam === 1 ? ">" : " ";
-    const octavePrefix = state.stepArpParam === 2 ? ">" : " ";
-    const layerPrefix = state.stepArpParam === 3 ? ">" : " ";
+    /* Show one parameter per line for better readability */
+    const lines = [
+        `Mode${state.stepArpParam === 0 ? ">" : ""}: ${modeName}`,
+        `Speed${state.stepArpParam === 1 ? ">" : ""}: ${speedName}`,
+        `Octave${state.stepArpParam === 2 ? ">" : ""}: ${octaveName}`,
+        `Layer${state.stepArpParam === 3 ? ">" : ""}: ${layerName}`
+    ];
 
-    displayMessage(
-        `${modePrefix}Mode:${modeName} ${speedPrefix}Spd:${speedName}`,
-        `${octavePrefix}Oct:${octaveName} ${layerPrefix}Lyr:${layerName}`,
-        "",
-        ""
-    );
+    displayMessage(lines[0], lines[1], lines[2], lines[3]);
     updateLEDs();
 }
 

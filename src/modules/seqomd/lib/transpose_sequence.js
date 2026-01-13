@@ -21,7 +21,9 @@ const MAX_TRANSPOSE = 24;   /* 2 octaves up */
 export function createTransposeStep(transpose = 0, duration = DEFAULT_DURATION) {
     return {
         transpose: Math.max(MIN_TRANSPOSE, Math.min(MAX_TRANSPOSE, transpose)),
-        duration: Math.max(MIN_DURATION, Math.min(MAX_DURATION, duration))
+        duration: Math.max(MIN_DURATION, Math.min(MAX_DURATION, duration)),
+        jump: -1,      /* No jump by default */
+        condition: 0   /* No condition by default */
     };
 }
 
@@ -71,9 +73,11 @@ export function setTransposeDuration(index, duration) {
 }
 
 /**
- * Adjust the duration of a transpose step by delta
+ * Adjust the duration of a transpose step with smart increments
+ * - 1-3 beats: increment by 1 beat (1→2→3→4)
+ * - 4+ beats: increment by 4 beats (1 bar → 2 bars → 3 bars...)
  * @param {number} index - Step index
- * @param {number} delta - Change amount (positive or negative)
+ * @param {number} delta - Direction (+1 or -1)
  * @returns {number|null} New duration or null if failed
  */
 export function adjustTransposeDuration(index, delta) {
@@ -81,7 +85,30 @@ export function adjustTransposeDuration(index, delta) {
     if (!state.transposeSequence[index]) return null;
 
     const step = state.transposeSequence[index];
-    step.duration = Math.max(MIN_DURATION, Math.min(MAX_DURATION, step.duration + delta));
+    let newDuration = step.duration;
+
+    if (delta > 0) {
+        /* Increase */
+        if (newDuration < 4) {
+            /* Individual beats: 1→2→3→4 (1 bar) */
+            newDuration += 1;
+        } else {
+            /* Bars: 1 bar→2 bars→3 bars... (increment by 1 bar = 4 beats) */
+            newDuration += 4;
+        }
+    } else if (delta < 0) {
+        /* Decrease */
+        if (newDuration <= 4) {
+            /* Individual beats: 4→3→2→1 */
+            newDuration -= 1;
+        } else {
+            /* Bars: 16 bars→15 bars→14 bars... (decrement by 1 bar = 4 beats) */
+            newDuration -= 4;
+        }
+    }
+
+    /* Clamp to valid range */
+    step.duration = Math.max(MIN_DURATION, Math.min(MAX_DURATION, newDuration));
     return step.duration;
 }
 

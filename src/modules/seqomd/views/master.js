@@ -4,7 +4,7 @@
  */
 
 import {
-    Black, White, LightGrey, DarkGrey, BrightGreen, Cyan, BrightRed, VividYellow,
+    Black, White, LightGrey, DarkGrey, BrightGreen, Cyan, BrightRed, VividYellow, Purple,
     MoveSteps, MovePads, MoveTracks, MoveLoop, MovePlay, MoveRec, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveUp, MoveDown, MoveDelete, MoveMainKnob,
@@ -15,6 +15,7 @@ import {
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
 
 import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM } from '../lib/constants.js';
+import * as spark from './master/spark.js';
 import { state, displayMessage } from '../lib/state.js';
 import { setParam, getParam, syncTransposeSequenceToDSP, updateBpm } from '../lib/helpers.js';
 import { isRoot, isInScale, NOTE_NAMES, SCALES } from '../lib/scale_detection.js';
@@ -98,6 +99,9 @@ function getScaleDisplayName() {
 /* BPM edit mode flag (local to master view) */
 let bpmEditMode = false;
 
+/* Transpose spark mode flag (local to master view) */
+let transposeSparkMode = false;
+
 /**
  * Called when entering master view
  */
@@ -107,6 +111,7 @@ export function onEnter() {
     state.heldTransposeStep = -1;
     state.heldLiveTransposePad = -1;
     bpmEditMode = false;
+    transposeSparkMode = false;
     updateDisplayContent();
 }
 
@@ -119,6 +124,8 @@ export function onExit() {
     /* Clear live transpose when exiting master view */
     setParam("live_transpose", "0");
     bpmEditMode = false;
+    transposeSparkMode = false;
+    state.transposeSparkSelectedSteps.clear();
 }
 
 /**
@@ -131,6 +138,33 @@ export function onInput(data) {
     const note = data[1];
     const velocity = data[2];
 
+    /* Capture button handling */
+    if (isCC && note === MoveCapture) {
+        if (velocity > 0) {
+            /* Capture PRESS */
+            if (transposeSparkMode) {
+                /* Already in spark mode - exit it */
+                transposeSparkMode = false;
+                state.transposeSparkSelectedSteps.clear();
+                spark.onExit();
+                updateLEDs();
+                updateDisplayContent();
+                return true;
+            } else {
+                /* Normal mode - set held flag for preview */
+                state.captureHeld = true;
+                updateLEDs();  /* Show spark preview */
+            }
+        } else {
+            /* Capture RELEASE - just clear held flag (don't exit spark mode) */
+            state.captureHeld = false;
+            if (!transposeSparkMode) {
+                updateLEDs();  /* Restore normal view if not in spark mode */
+            }
+        }
+        return true;
+    }
+
     /* Step 5 (note 20) with shift - enter BPM mode */
     if (isNote && note === 20 && state.shiftHeld) {
         if (isNoteOn && velocity > 0) {
@@ -141,9 +175,41 @@ export function onInput(data) {
         return true;
     }
 
-    /* Step buttons - transpose sequence (only when not in BPM mode) */
-    if (isNote && note >= 16 && note <= 31 && !bpmEditMode) {
+    /* Capture + Step enters transpose spark mode */
+    if (!transposeSparkMode && state.captureHeld && isNote &&
+        note >= 16 && note <= 31 && isNoteOn && velocity > 0 && !bpmEditMode) {
+        const stepIdx = note - 16;
+        transposeSparkMode = true;
+        state.transposeSparkSelectedSteps.add(stepIdx);
+        spark.onEnter();
+        spark.updateLEDs();
+        spark.updateDisplayContent();
+        return true;
+    }
+
+    /* Back button exits spark mode */
+    if (transposeSparkMode && isCC && note === MoveBack && velocity > 0) {
+        transposeSparkMode = false;
+        state.transposeSparkSelectedSteps.clear();
+        spark.onExit();
+        updateLEDs();
+        updateDisplayContent();
+        return true;
+    }
+
+    /* Route all input to spark module when in spark mode */
+    if (transposeSparkMode) {
+        return spark.onInput(data);
+    }
+
+    /* Step buttons - transpose sequence (only when not in BPM mode and Capture not held) */
+    if (isNote && note >= 16 && note <= 31 && !bpmEditMode && !state.captureHeld) {
         return handleStepButton(note - 16, isNoteOn, velocity);
+    }
+
+    /* Capture held without pressing step - just ignore other step button presses */
+    if (isNote && note >= 16 && note <= 31 && state.captureHeld && !transposeSparkMode) {
+        return true;  /* Consume the event */
     }
 
     /* Pads - piano (rows 3-4) and chord follow (row 1) */
@@ -389,6 +455,12 @@ function handlePadRelease(padIdx) {
 /* ============ LED Updates ============ */
 
 export function updateLEDs() {
+    /* Delegate to spark module if in spark mode */
+    if (transposeSparkMode) {
+        spark.updateLEDs();
+        return;
+    }
+
     updateStepLEDs();
     updateStepUILEDs();
     updatePadLEDs();
@@ -428,12 +500,25 @@ export function updateStepLEDs() {
         const step = getTransposeStep(i);
         let color = Black;
 
-        if (step) {
-            /* Step exists */
+        /* Spark preview mode - show which steps have sparks when Capture held */
+        if (state.captureHeld && !transposeSparkMode) {
+            if (step && (step.jump >= 0 || step.condition > 0)) {
+                color = Purple;  /* Has spark settings */
+            } else if (step) {
+                color = LightGrey;  /* Has content but no spark */
+            }
+            /* Playhead overlay */
+            if (i === currentPlayingStep) {
+                color = White;
+            }
+        } else if (step) {
+            /* Normal mode - step exists */
             if (i === state.heldTransposeStep) {
                 color = White; /* Currently held */
             } else if (i === currentPlayingStep) {
                 color = BrightGreen; /* Currently playing */
+            } else if (step.jump >= 0 || step.condition > 0) {
+                color = Cyan; /* Has content with spark */
             } else {
                 color = Cyan; /* Has content */
             }
@@ -551,6 +636,12 @@ function updateOctaveLEDs() {
 /* ============ Display ============ */
 
 export function updateDisplayContent() {
+    /* Transpose spark mode display */
+    if (transposeSparkMode) {
+        spark.updateDisplayContent();
+        return;
+    }
+
     /* BPM edit mode display */
     if (bpmEditMode) {
         displayMessage(
