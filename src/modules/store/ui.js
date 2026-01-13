@@ -493,7 +493,7 @@ function drawModuleList() {
         const status = getModuleStatus(mod);
         let statusIcon = '';
         if (status.installed) {
-            statusIcon = status.hasUpdate ? '*' : '\u2713';  /* checkmark */
+            statusIcon = status.hasUpdate ? '!' : '*';  /* ! = needs update, * = installed */
         }
         return { ...mod, statusIcon };
     });
