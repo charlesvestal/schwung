@@ -104,6 +104,7 @@ export function onEnter() {
     /* Read scale detection from DSP */
     updateDetectedScaleFromDSP();
     state.heldTransposeStep = -1;
+    state.heldLiveTransposePad = -1;
     bpmEditMode = false;
     updateDisplayContent();
 }
@@ -113,6 +114,9 @@ export function onEnter() {
  */
 export function onExit() {
     state.heldTransposeStep = -1;
+    state.heldLiveTransposePad = -1;
+    /* Clear live transpose when exiting master view */
+    setParam("live_transpose", "0");
     bpmEditMode = false;
 }
 
@@ -359,12 +363,25 @@ function handlePadPress(padIdx) {
         updateDisplayContent();
         updateStepLEDs();
         updatePadLEDs();
+    } else {
+        /* No step held - activate live transpose */
+        state.heldLiveTransposePad = padIdx;
+        setParam("live_transpose", String(transpose));
+        updateDisplayContent();
+        updatePadLEDs();
     }
 
     return true;
 }
 
 function handlePadRelease(padIdx) {
+    /* If releasing the held live transpose pad, clear it */
+    if (state.heldLiveTransposePad === padIdx) {
+        state.heldLiveTransposePad = -1;
+        setParam("live_transpose", "0");
+        updateDisplayContent();
+        updatePadLEDs();
+    }
     return true;
 }
 
@@ -457,8 +474,12 @@ function updatePadLEDs() {
         /* Determine color */
         let color;
 
+        /* Check if this is the held live transpose pad */
+        if (state.heldLiveTransposePad === i) {
+            color = BrightGreen; /* Bright green for active live transpose */
+        }
         /* Check if this is the held step's transpose value */
-        if (heldTranspose !== null && actualSemitone === heldTranspose) {
+        else if (heldTranspose !== null && actualSemitone === heldTranspose) {
             color = TRACK_COLORS[state.currentTrack];
         } else if (detected && isRoot(pitchClass, detected)) {
             /* Root note */
@@ -534,7 +555,15 @@ export function updateDisplayContent() {
 
     let line2, line3;
 
-    if (state.heldTransposeStep >= 0) {
+    if (state.heldLiveTransposePad >= 0) {
+        /* Live transpose mode - show current transpose value */
+        const semitone = PAD_TO_SEMITONE[state.heldLiveTransposePad];
+        const transpose = semitone + (state.transposeOctaveOffset * 12);
+        const noteName = NOTE_NAMES[((transpose % 12) + 12) % 12];
+        const octaveStr = transpose >= 0 ? `+${transpose}` : `${transpose}`;
+        line2 = `LIVE TRANSPOSE: ${noteName} (${octaveStr})`;
+        line3 = "Release pad to stop";
+    } else if (state.heldTransposeStep >= 0) {
         const step = getTransposeStep(state.heldTransposeStep);
         if (step) {
             const noteName = NOTE_NAMES[((step.transpose % 12) + 12) % 12];

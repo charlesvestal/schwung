@@ -239,6 +239,7 @@ static double g_global_phase = 0.0;  /* Master clock for all timing */
 /* Transpose/chord follow state */
 static int g_chord_follow[NUM_TRACKS] = {0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1};  /* Tracks 5-8, 13-16 follow by default */
 static int g_current_transpose = 0;  /* Current transpose offset in semitones (legacy, kept for compatibility) */
+static int g_live_transpose = 0;     /* Live transpose offset (-24 to +24) applied on top of sequence */
 static uint32_t g_beat_count = 0;    /* Global beat counter for UI sync */
 
 /* Transpose sequence - managed internally by DSP */
@@ -1148,8 +1149,12 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
     int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
 
     /* Calculate transpose offset for this track using internal lookup */
+    /* Live transpose takes precedence over scheduled transpose when active */
     uint32_t global_step = (uint32_t)g_global_phase;
-    int transpose = g_chord_follow[track_idx] ? get_transpose_at_step(global_step) : 0;
+    int transpose = 0;
+    if (g_chord_follow[track_idx]) {
+        transpose = (g_live_transpose != 0) ? g_live_transpose : get_transpose_at_step(global_step);
+    }
 
     if (use_arp && step->num_notes >= 1) {
         /* Arpeggiator scheduling - ignore ratchet when arp is active */
@@ -1917,6 +1922,13 @@ static void plugin_set_param(const char *key, const char *val) {
     else if (strcmp(key, "current_transpose") == 0) {
         g_current_transpose = atoi(val);
     }
+    else if (strcmp(key, "live_transpose") == 0) {
+        int val_int = atoi(val);
+        /* Clamp to -24..+24 range */
+        if (val_int < -24) val_int = -24;
+        if (val_int > 24) val_int = 24;
+        g_live_transpose = val_int;
+    }
     /* Transpose sequence params */
     else if (strncmp(key, "transpose_", 10) == 0) {
         set_transpose_param(key, val);
@@ -1986,6 +1998,9 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
              strcmp(key, "transpose_step_count") == 0 ||
              strcmp(key, "transpose_total_steps") == 0) {
         return get_transpose_param(key, buf, buf_len);
+    }
+    else if (strcmp(key, "live_transpose") == 0) {
+        return snprintf(buf, buf_len, "%d", g_live_transpose);
     }
     /* Scale detection params */
     else if (strcmp(key, "detected_scale_root") == 0) {

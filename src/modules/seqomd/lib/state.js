@@ -109,6 +109,9 @@ export const state = {
     /* Master view: held transpose step for editing (-1 = none) */
     heldTransposeStep: -1,
 
+    /* Master view: held piano pad for live transpose (-1 = none) */
+    heldLiveTransposePad: -1,
+
     /* Step arp parameter selection (0=mode, 1=speed, 2=octave, 3=layer) */
     stepArpParam: 0,
 
