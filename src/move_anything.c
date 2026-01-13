@@ -1681,9 +1681,9 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build curl command */
+    /* Build curl command - use -k to skip SSL verification for now */
     char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "%s -fsSL -o \"%s\" \"%s\" 2>&1",
+    snprintf(cmd, sizeof(cmd), "%s -fsSLk -o \"%s\" \"%s\" 2>&1",
              CURL_PATH, dest_path, url);
 
     int result = system(cmd);

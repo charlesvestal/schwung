@@ -23,7 +23,7 @@ import {
 } from '../../shared/menu_layout.mjs';
 
 /* Constants */
-const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json';
+const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-anything/feature/module-store/module-catalog.json';
 const CATALOG_CACHE_PATH = '/data/UserData/move-anything/catalog-cache.json';
 const MODULES_DIR = '/data/UserData/move-anything/modules';
 const BASE_DIR = '/data/UserData/move-anything';
