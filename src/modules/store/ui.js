@@ -557,7 +557,7 @@ function drawModuleDetail() {
         }
     }
 
-    drawMenuFooter('Back:list');
+    drawMenuFooter('Jog:select  Back:cancel');
 }
 
 /* Main draw function */
