@@ -3,9 +3,9 @@
  * Shared utility functions used by views and router
  */
 
-import { VividYellow, LightGrey, DarkGrey, White, MovePads } from '../../../shared/constants.mjs';
-import { setLED } from '../../../shared/input_filter.mjs';
-import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS, TRACK_COLORS } from './constants.js';
+import { VividYellow, LightGrey, DarkGrey, White, Black, BrightGreen, BrightRed, MovePads, MoveSteps, MoveTracks, MoveLoop, MoveCapture, MovePlay, MoveRec, MoveBack } from '../../../shared/constants.mjs';
+import { setLED, setButtonLED } from '../../../shared/input_filter.mjs';
+import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS, TRACK_COLORS, MoveKnobLEDs } from './constants.js';
 import { state } from './state.js';
 import { isRoot, isInScale } from './scale_detection.js';
 
@@ -330,5 +330,68 @@ export function syncTransposeSequenceToDSP() {
         }
     }
     setParam("transpose_step_count", String(stepIdx));
+}
+
+/* ============ LED Helpers ============ */
+
+/**
+ * Clear step LEDs, optionally showing playhead
+ * @param {boolean} showPlayhead - If true, show playhead as White (default true)
+ */
+export function clearStepLEDs(showPlayhead = true) {
+    for (let i = 0; i < NUM_STEPS; i++) {
+        const isPlayhead = showPlayhead && state.playing && i === state.currentPlayStep;
+        setLED(MoveSteps[i], isPlayhead ? White : Black);
+    }
+}
+
+/**
+ * Clear all knob LEDs
+ */
+export function clearKnobLEDs() {
+    for (let i = 0; i < 8; i++) {
+        setButtonLED(MoveKnobLEDs[i], Black);
+    }
+}
+
+/**
+ * Clear all track button LEDs
+ */
+export function clearTrackButtonLEDs() {
+    for (let i = 0; i < 4; i++) {
+        setButtonLED(MoveTracks[i], Black);
+    }
+}
+
+/**
+ * Update transport LEDs with standard pattern
+ * @param {Object} overrides - Optional overrides for specific buttons
+ *   - overrides.play: Override for play button (default: state.playing ? BrightGreen : Black)
+ *   - overrides.rec: Override for rec button (default: state.recording ? BrightRed : Black)
+ *   - overrides.loop: Override for loop button (default: Black)
+ *   - overrides.capture: Override for capture button (default: Black)
+ *   - overrides.back: Override for back button (default: White)
+ */
+export function updateStandardTransportLEDs(overrides = {}) {
+    setButtonLED(MovePlay, overrides.play !== undefined ? overrides.play : (state.playing ? BrightGreen : Black));
+    setButtonLED(MoveRec, overrides.rec !== undefined ? overrides.rec : (state.recording ? BrightRed : Black));
+    setButtonLED(MoveLoop, overrides.loop !== undefined ? overrides.loop : Black);
+    setButtonLED(MoveCapture, overrides.capture !== undefined ? overrides.capture : Black);
+    setButtonLED(MoveBack, overrides.back !== undefined ? overrides.back : White);
+}
+
+/**
+ * Update playhead position with two LED updates
+ * @param {number} oldStep - Previous step index
+ * @param {number} newStep - New step index
+ * @param {Function} getOldStepColor - Optional function to get old step color (default: () => Black)
+ */
+export function updatePlayheadLED(oldStep, newStep, getOldStepColor = () => Black) {
+    if (oldStep >= 0 && oldStep < NUM_STEPS) {
+        setLED(MoveSteps[oldStep], getOldStepColor(oldStep));
+    }
+    if (newStep >= 0 && newStep < NUM_STEPS) {
+        setLED(MoveSteps[newStep], White);
+    }
 }
 

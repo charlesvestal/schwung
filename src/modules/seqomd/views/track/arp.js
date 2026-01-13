@@ -18,7 +18,7 @@ import {
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
-import { setParam } from '../../lib/helpers.js';
+import { setParam, clearStepLEDs, updateStandardTransportLEDs, updatePlayheadLED } from '../../lib/helpers.js';
 import { markDirty } from '../../lib/persistence.js';
 
 /* ============ Input Handling ============ */
@@ -91,11 +91,8 @@ export function onInput(data) {
 export function updateLEDs() {
     const track = state.tracks[state.currentTrack];
 
-    /* Steps - all black, playhead handled separately */
-    for (let i = 0; i < NUM_STEPS; i++) {
-        const isPlayhead = state.playing && i === state.currentPlayStep;
-        setLED(MoveSteps[i], isPlayhead ? White : Black);
-    }
+    /* Steps - clear with playhead */
+    clearStepLEDs(true);
 
     /* Step 11 UI lit to show we're in arp mode */
     setButtonLED(MoveStep11UI, White);
@@ -117,14 +114,8 @@ export function updateLEDs() {
         setButtonLED(MoveTracks[i], Black);
     }
 
-    /* Transport - only play/rec reflect global state */
-    setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
-    setButtonLED(MoveRec, state.recording ? BrightRed : Black);
-    setButtonLED(MoveLoop, Black);
-
-    /* Capture off, Back lit to show exit option */
-    setButtonLED(MoveCapture, Black);
-    setButtonLED(MoveBack, White);
+    /* Transport - standard pattern with Back lit */
+    updateStandardTransportLEDs();
 }
 
 /* ============ Playhead ============ */
@@ -133,14 +124,7 @@ export function updateLEDs() {
  * Lightweight playhead update - only updates the two step LEDs that changed
  */
 export function updatePlayhead(oldStep, newStep) {
-    /* Restore old step to black */
-    if (oldStep >= 0 && oldStep < NUM_STEPS) {
-        setLED(MoveSteps[oldStep], Black);
-    }
-    /* Set new step to playhead */
-    if (newStep >= 0 && newStep < NUM_STEPS) {
-        setLED(MoveSteps[newStep], White);
-    }
+    updatePlayheadLED(oldStep, newStep);
 }
 
 /* ============ Display ============ */
