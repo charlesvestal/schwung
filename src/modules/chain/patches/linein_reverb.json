@@ -12,10 +12,17 @@
                 "type": "freeverb",
                 "params": {
                     "room_size": 0.7,
-                    "wet": 0.4,
-                    "dry": 0.6
+                    "damping": 0.5,
+                    "wet": 0.35,
+                    "dry": 0.65
                 }
             }
+        ],
+        "knob_mappings": [
+            {"cc": 71, "target": "fx1", "param": "room_size"},
+            {"cc": 72, "target": "fx1", "param": "damping"},
+            {"cc": 73, "target": "fx1", "param": "wet"},
+            {"cc": 74, "target": "fx1", "param": "dry"}
         ]
     }
 }
