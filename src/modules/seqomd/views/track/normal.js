@@ -736,6 +736,7 @@ function pasteStep(stepIdx) {
 
     // Copy all properties
     step.notes = [...srcStep.notes];
+    step.velocity = srcStep.velocity !== undefined ? srcStep.velocity : 100;
     step.cc1 = srcStep.cc1;
     step.cc2 = srcStep.cc2;
     step.probability = srcStep.probability;
@@ -758,6 +759,9 @@ function pasteStep(stepIdx) {
     for (const note of step.notes) {
         setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, String(note));
     }
+
+    // Sync velocity
+    setParam(`track_${state.currentTrack}_step_${stepIdx}_velocity`, String(step.velocity));
 
     // Sync CCs
     if (step.cc1 >= 0) {
