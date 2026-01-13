@@ -167,10 +167,8 @@ function fetchCatalog() {
     state = STATE_LOADING;
     loadingMessage = 'Fetching catalog...';
 
-    /* Try to download fresh catalog - add cache buster to avoid CDN caching */
-    const cacheBuster = Date.now();
-    const url = `${CATALOG_URL}?_=${cacheBuster}`;
-    const success = host_http_download(url, CATALOG_CACHE_PATH);
+    /* Try to download fresh catalog (GitHub CDN caches ~5 min) */
+    const success = host_http_download(CATALOG_URL, CATALOG_CACHE_PATH);
 
     if (success) {
         loadCatalogFromCache();
