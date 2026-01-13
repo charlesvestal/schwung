@@ -158,7 +158,7 @@ export function updatePadLEDs() {
         : [];
 
     for (let i = 0; i < 32; i++) {
-        const midiNote = 36 + i;
+        const midiNote = 36 + i + (state.padOctaveOffset * 12);
 
         /* Check if this note is in the held step */
         const isInStep = stepNotes.includes(midiNote);
