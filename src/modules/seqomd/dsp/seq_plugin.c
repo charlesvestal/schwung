@@ -1228,15 +1228,49 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
         }
     } else {
         /* Standard ratchet scheduling (no arp, or single note) */
-        int ratchet_count = (use_ratchet && step->ratchet > 0) ? step->ratchet : 1;
 
-        /* For ratchets, divide the step into equal parts */
-        double ratchet_step = 1.0 / ratchet_count;
-        /* Ratchet note length is proportional to gate but divided by ratchet count */
+        /* Decode ratchet mode and count from parameter value:
+         * 1-8: Regular ratchet (1x-8x)
+         * 10-16: Velocity Ramp Up (2x-8x) - count = value - 8
+         * 20-26: Velocity Ramp Down (2x-8x) - count = value - 18
+         */
+        int ratchet_value = (use_ratchet && step->ratchet > 0) ? step->ratchet : 1;
+        int ratchet_count = 1;
+        int ratchet_mode = 0;  /* 0=regular, 1=ramp_up, 2=ramp_down */
+
+        if (ratchet_value >= 20) {
+            ratchet_mode = 2;  /* ramp_down */
+            ratchet_count = ratchet_value - 18;
+        } else if (ratchet_value >= 10) {
+            ratchet_mode = 1;  /* ramp_up */
+            ratchet_count = ratchet_value - 8;
+        } else {
+            ratchet_mode = 0;  /* regular */
+            ratchet_count = ratchet_value;
+        }
+
+        /* For ratchets, divide the NOTE LENGTH into equal parts (not just one step) */
+        double ratchet_step = (double)note_length / ratchet_count;
+        /* Each ratchet note gets equal length */
         double ratchet_length = (double)note_length / ratchet_count;
 
         for (int r = 0; r < ratchet_count; r++) {
             double note_on_phase = base_phase + (r * ratchet_step);
+
+            /* Calculate velocity for this ratchet based on mode */
+            uint8_t ratchet_velocity = step->velocity;
+
+            if (ratchet_mode == 1) {
+                /* Ramp Up: velocity increases from low to target */
+                /* First note starts at velocity/count, last note is full velocity */
+                ratchet_velocity = (uint8_t)(((r + 1) * step->velocity) / ratchet_count);
+                if (ratchet_velocity < 1) ratchet_velocity = 1;
+            } else if (ratchet_mode == 2) {
+                /* Ramp Down: velocity decreases from target to low */
+                /* First note is full velocity, last note is velocity/count */
+                ratchet_velocity = (uint8_t)(((ratchet_count - r) * step->velocity) / ratchet_count);
+                if (ratchet_velocity < 1) ratchet_velocity = 1;
+            }
 
             /* Schedule each note in the step */
             for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
@@ -1248,7 +1282,7 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
 
                     schedule_note(
                         transposed_note,
-                        step->velocity,
+                        ratchet_velocity,
                         track->midi_channel,
                         track->swing,
                         note_on_phase,
@@ -1521,7 +1555,12 @@ static void set_step_param(int track_idx, int step_idx, const char *param, const
     }
     else if (strcmp(param, "ratchet") == 0) {
         int ratch = atoi(val);
-        if (ratch >= 1 && ratch <= 8) {
+        /* Accept three ranges:
+         * 1-8: Regular ratchet
+         * 10-16: Velocity ramp up (2x-8x)
+         * 20-26: Velocity ramp down (2x-8x)
+         */
+        if ((ratch >= 1 && ratch <= 8) || (ratch >= 10 && ratch <= 16) || (ratch >= 20 && ratch <= 26)) {
             s->ratchet = ratch;
         }
     }

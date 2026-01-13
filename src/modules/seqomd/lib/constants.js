@@ -102,7 +102,44 @@ export const DEFAULT_SPEED_INDEX = 4;  // 1x
 
 /* ============ Ratchet Options ============ */
 
-export const RATCHET_VALUES = [1, 2, 3, 4, 6, 8];
+/*
+ * Ratchet encoding scheme for three modes:
+ * - Values 1-8: Regular ratchet (1x-8x)
+ * - Values 10-16: Velocity Ramp Up (2x-8x) - count = value - 8
+ * - Values 20-26: Velocity Ramp Down (2x-8x) - count = value - 18
+ *
+ * DSP decoding:
+ *   if (val >= 20) → mode=RAMP_DOWN, count = val - 18
+ *   else if (val >= 10) → mode=RAMP_UP, count = val - 8
+ *   else → mode=REGULAR, count = val
+ */
+export const RATCHET_VALUES = [
+    1, 2, 3, 4, 5, 6, 7, 8,        // Regular: 1x-8x (indices 0-7)
+    10, 11, 12, 13, 14, 15, 16,    // Ramp Up: 2x-8x (indices 8-14)
+    20, 21, 22, 23, 24, 25, 26     // Ramp Down: 2x-8x (indices 15-21)
+];
+
+/* Helper functions to decode ratchet values */
+export function getRatchetMode(value) {
+    if (value >= 20) return 'ramp_down';
+    if (value >= 10) return 'ramp_up';
+    return 'regular';
+}
+
+export function getRatchetCount(value) {
+    if (value >= 20) return value - 18;
+    if (value >= 10) return value - 8;
+    return value;
+}
+
+export function getRatchetDisplayName(value) {
+    const count = getRatchetCount(value);
+    const mode = getRatchetMode(value);
+
+    if (mode === 'ramp_up') return `Ramp Up: ${count}x`;
+    if (mode === 'ramp_down') return `Ramp Dn: ${count}x`;
+    return `Ratchet: ${count}x`;
+}
 
 /* ============ Condition Options ============ */
 

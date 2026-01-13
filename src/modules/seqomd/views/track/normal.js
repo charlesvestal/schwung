@@ -22,7 +22,8 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import {
     NUM_TRACKS, NUM_STEPS, HOLD_THRESHOLD_MS, COPY_HOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
-    ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS
+    ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS,
+    getRatchetDisplayName
 } from '../../lib/constants.js';
 
 import { state, displayMessage } from '../../lib/state.js';
@@ -249,7 +250,7 @@ function handleKnobTap(knobIdx) {
     } else if (knobIdx === 6 && step.ratchet > 0) {
         step.ratchet = 0;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, "1");
-        displayMessage(undefined, `Step ${state.heldStep + 1}`, "Ratchet: 1x", "");
+        displayMessage(undefined, `Step ${state.heldStep + 1}`, getRatchetDisplayName(1), "");
         scheduleDisplayReturn();
         changed = true;
     } else if (knobIdx === 7) {
@@ -556,7 +557,7 @@ function handleStepKnob(knobIdx, velocity) {
         }
         step.ratchet = ratchIdx;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, String(RATCHET_VALUES[ratchIdx]));
-        displayMessage(`Step ${state.heldStep + 1}`, `Ratchet: ${RATCHET_VALUES[ratchIdx]}x`, "", "");
+        displayMessage(`Step ${state.heldStep + 1}`, getRatchetDisplayName(RATCHET_VALUES[ratchIdx]), "", "");
     } else if (knobIdx === 7) {
         /* Probability / Condition */
         if (velocity >= 65 && velocity <= 127) {
