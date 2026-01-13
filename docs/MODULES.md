@@ -209,6 +209,176 @@ drawMenuFooter("Back:back  </>:change");
 
 `drawMenuList` will derive row count from the list area and scroll automatically. When `valueAlignRight` is enabled, labels are truncated with `...` if they would overlap the value.
 
+## Menu System
+
+For modules that need hierarchical settings menus, the shared menu system provides a complete solution for navigation, input handling, and rendering.
+
+### Menu Item Types
+
+Import factory functions from `menu_items.mjs`:
+
+```javascript
+import {
+    MenuItemType,
+    createSubmenu,
+    createValue,
+    createEnum,
+    createToggle,
+    createAction,
+    createBack,
+    formatItemValue,
+    isEditable
+} from '../../shared/menu_items.mjs';
+```
+
+| Type | Factory | Description |
+|------|---------|-------------|
+| `SUBMENU` | `createSubmenu(label, getMenu)` | Navigate to child menu |
+| `VALUE` | `createValue(label, {get, set, min, max, step, fineStep, format})` | Numeric value with range |
+| `ENUM` | `createEnum(label, {get, set, options, format})` | Cycle through string options |
+| `TOGGLE` | `createToggle(label, {get, set, onLabel, offLabel})` | Boolean on/off |
+| `ACTION` | `createAction(label, onAction)` | Execute callback on click |
+| `BACK` | `createBack(label)` | Return to parent menu |
+
+Example menu definition:
+
+```javascript
+function getSettingsMenu() {
+    return [
+        createEnum('Velocity', {
+            get: () => host_get_setting('velocity_curve'),
+            set: (v) => { host_set_setting('velocity_curve', v); host_save_settings(); },
+            options: ['linear', 'soft', 'hard', 'full']
+        }),
+        createValue('AT Deadzone', {
+            get: () => host_get_setting('aftertouch_deadzone'),
+            set: (v) => { host_set_setting('aftertouch_deadzone', v); host_save_settings(); },
+            min: 0, max: 50, step: 5, fineStep: 1
+        }),
+        createToggle('Aftertouch', {
+            get: () => host_get_setting('aftertouch_enabled') === 1,
+            set: (v) => { host_set_setting('aftertouch_enabled', v ? 1 : 0); host_save_settings(); }
+        }),
+        createSubmenu('Advanced', () => getAdvancedMenu()),
+        createBack()
+    ];
+}
+```
+
+### Menu Navigation
+
+The `menu_nav.mjs` module handles all input for menu navigation:
+
+```javascript
+import { createMenuState, handleMenuInput } from '../../shared/menu_nav.mjs';
+import { createMenuStack } from '../../shared/menu_stack.mjs';
+
+const menuState = createMenuState();
+const menuStack = createMenuStack();
+
+// Initialize with root menu
+menuStack.push({ title: 'Settings', items: getSettingsMenu() });
+
+// In onMidiMessageInternal:
+function onMidiMessageInternal(data) {
+    if ((data[0] & 0xF0) === 0xB0) {  // CC message
+        const cc = data[1];
+        const value = data[2];
+        const current = menuStack.current();
+
+        const result = handleMenuInput({
+            cc, value,
+            items: current.items,
+            state: menuState,
+            stack: menuStack,
+            shiftHeld: isShiftHeld,
+            onBack: () => host_return_to_menu()
+        });
+
+        if (result.needsRedraw) {
+            redraw();
+        }
+    }
+}
+```
+
+**Navigation behavior:**
+- **Jog wheel**: Scroll list (navigation) or adjust value (editing)
+- **Jog click**: Enter submenu, start/confirm edit, execute action
+- **Up/Down arrows**: Scroll list
+- **Left/Right arrows**: Quick-adjust values without entering edit mode
+- **Back button**: Cancel edit or go back in menu stack
+
+### Encoder Acceleration
+
+When editing numeric values with the jog wheel, acceleration provides smooth control:
+
+```javascript
+import { decodeDelta, decodeAcceleratedDelta } from '../../shared/input_filter.mjs';
+
+// Simple delta (±1) for navigation
+const delta = decodeDelta(ccValue);
+
+// Accelerated delta for value editing
+// Slow turns = step 1, fast turns = step up to 10
+const accelDelta = decodeAcceleratedDelta(ccValue, 'my_encoder');
+```
+
+- Slow turns (<150ms between events): step = 1 (fine control)
+- Fast turns (<25ms between events): step = 10 (coarse control)
+- In between: interpolated step size
+- Hold **Shift** for fine control (always step 1)
+
+### Text Scrolling
+
+Long labels automatically scroll after a delay:
+
+```javascript
+import { createTextScroller, getMenuLabelScroller } from '../../shared/text_scroll.mjs';
+
+// Use singleton for menu labels
+const scroller = getMenuLabelScroller();
+
+// In tick():
+scroller.setSelected(selectedIndex);  // Reset scroll on selection change
+if (scroller.tick()) {
+    redraw();  // Scroll position changed
+}
+
+// When rendering:
+const displayText = scroller.getScrolledText(fullLabel, maxChars);
+```
+
+**Scroll behavior:**
+- 2 second delay before scrolling starts
+- ~100ms between scroll steps
+- 2 second pause at end, then reset
+
+### Menu Stack
+
+For hierarchical menus with back navigation:
+
+```javascript
+import { createMenuStack } from '../../shared/menu_stack.mjs';
+
+const stack = createMenuStack();
+
+// Push root menu
+stack.push({ title: 'Main', items: mainMenuItems });
+
+// Navigate to submenu
+stack.push({ title: 'Settings', items: settingsItems, selectedIndex: 0 });
+
+// Go back
+stack.pop();
+
+// Get current menu
+const current = stack.current();  // { title, items, selectedIndex }
+
+// Get breadcrumb path
+const path = stack.getPath();  // ['Main', 'Settings']
+```
+
 ## Native DSP Plugin
 
 For audio synthesis/processing, create a native plugin implementing the C API.
@@ -294,10 +464,14 @@ Import path from modules: `../../shared/<file>.mjs`
 | File | Contents |
 |------|----------|
 | `constants.mjs` | Hardware constants (pads, buttons, knobs), MIDI message types, colors |
-| `input_filter.mjs` | Capacitive touch filtering |
-| `midi_messages.mjs` | MIDI helper functions |
-| `move_display.mjs` | Display utilities |
+| `input_filter.mjs` | Capacitive touch filtering, LED control, encoder delta decoding with acceleration |
+| `menu_items.mjs` | Menu item types and factory functions |
+| `menu_nav.mjs` | Menu input handling (jog wheel, arrows, back button) |
+| `menu_stack.mjs` | Hierarchical menu navigation stack |
+| `menu_render.mjs` | Menu rendering with scroll support |
 | `menu_layout.mjs` | Title/list/footer menu layout helpers |
+| `text_scroll.mjs` | Marquee scrolling for long text |
+| `move_display.mjs` | Display utilities |
 
 ### Common Imports
 
