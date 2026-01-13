@@ -138,8 +138,9 @@ See [BUILDING.md](BUILDING.md) for build instructions.
 
 ## Documentation
 
-- [Hardware API Reference](docs/API.md)
-- [Module Development Guide](docs/MODULES.md)
+- [How It Works](docs/ARCHITECTURE.md) - System architecture and module loading
+- [Hardware API Reference](docs/API.md) - JavaScript API for modules
+- [Module Development Guide](docs/MODULES.md) - Creating your own modules
 - [Signal Chain Module Notes](src/modules/chain/README.md)
 
 ## Project Structure
