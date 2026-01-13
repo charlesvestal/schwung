@@ -76,7 +76,7 @@ function buildMainMenuItems(byCategory) {
         items.push({
             type: 'category',
             categoryId: cat.id,
-            label: `${cat.name} >`
+            label: cat.name
         });
     }
 
@@ -85,7 +85,7 @@ function buildMainMenuItems(byCategory) {
         items.push({
             type: 'category',
             categoryId: 'other',
-            label: `Other >`
+            label: 'Other'
         });
     }
 
@@ -174,7 +174,7 @@ export function drawMainMenu({ modules, selectedIndex, volume }) {
             bottomY: hasFooter ? menuLayoutDefaults.listBottomWithFooter : menuLayoutDefaults.listBottomNoFooter
         },
         getLabel: (item) => item.label,
-        getValue: () => '',
+        getValue: (item) => item.type === 'category' ? '>' : '',
         isHeader: () => false,
         isSelectable: () => true
     });
