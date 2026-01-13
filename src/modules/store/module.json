@@ -1,0 +1,10 @@
+{
+    "id": "store",
+    "name": "Module Store",
+    "version": "1.0.0",
+    "description": "Browse and install modules",
+    "author": "Move Anything",
+    "ui": "ui.js",
+    "api_version": 1,
+    "raw_ui": true
+}

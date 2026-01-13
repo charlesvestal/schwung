@@ -156,6 +156,7 @@ cp ./src/shared/*.mjs ./build/shared/
 # Copy host files
 cp ./src/host/menu_ui.js ./build/host/
 cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
+cp ./src/host/version.txt ./build/host/
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
@@ -185,6 +186,11 @@ cp ./src/modules/m8/ui.js ./build/modules/m8/
 cp ./src/modules/controller/module.json ./build/modules/controller/
 cp ./src/modules/controller/ui.js ./build/modules/controller/
 
+# Copy Store module files
+mkdir -p ./build/modules/store/
+cp ./src/modules/store/module.json ./build/modules/store/
+cp ./src/modules/store/ui.js ./build/modules/store/
+
 # Copy Signal Chain module files
 cp ./src/modules/chain/module.json ./build/modules/chain/
 cp ./src/modules/chain/ui.js ./build/modules/chain/
@@ -200,6 +206,15 @@ mkdir -p ./build/modules/chain/midi_fx/chord/
 cp ./src/modules/chain/midi_fx/chord/module.json ./build/modules/chain/midi_fx/chord/ 2>/dev/null || true
 mkdir -p ./build/modules/chain/midi_fx/arp/
 cp ./src/modules/chain/midi_fx/arp/module.json ./build/modules/chain/midi_fx/arp/ 2>/dev/null || true
+
+# Copy curl binary for store module (if present)
+if [ -f "./libs/curl/curl" ]; then
+    mkdir -p ./build/bin/
+    cp ./libs/curl/curl ./build/bin/
+    echo "Bundled curl binary"
+else
+    echo "Warning: libs/curl/curl not found - store module will not work without it"
+fi
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"

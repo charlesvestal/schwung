@@ -630,3 +630,128 @@ audio_fx_api_v1_t* move_audio_fx_init_v1(const host_api_v1_t *host);
 - Block size: 128 frames
 - Latency: ~3ms
 - Format: Stereo interleaved int16
+
+## Publishing to Module Store
+
+External modules can be distributed via the built-in Module Store. Users can browse, install, update, and remove modules directly from their Move device.
+
+### Requirements
+
+1. Module builds as a self-contained tarball: `<id>-module.tar.gz`
+2. Tarball extracts to a folder matching the module ID (e.g., `jv880/`)
+3. GitHub repository with releases enabled
+4. GitHub Actions workflow for automated builds
+
+### Tarball Structure
+
+```
+<id>-module.tar.gz
+  └── <id>/
+      ├── module.json       # Required
+      ├── ui.js             # Optional: JavaScript UI
+      ├── dsp.so            # Optional: Native DSP plugin
+      └── ...               # Other module files
+```
+
+### Release Workflow
+
+1. **Make changes and update version** in `src/module.json`:
+   ```json
+   {
+     "version": "0.2.0"
+   }
+   ```
+
+2. **Commit and tag the release**:
+   ```bash
+   git add .
+   git commit -m "Release v0.2.0"
+   git tag v0.2.0
+   git push && git push --tags
+   ```
+
+3. **GitHub Actions automatically**:
+   - Builds the module using Docker cross-compilation
+   - Creates `<id>-module.tar.gz`
+   - Attaches it to the GitHub release
+
+4. **Update the catalog** in `move-anything/module-catalog.json`:
+   ```json
+   {
+     "id": "your-module",
+     "latest_version": "0.2.0",
+     "download_url": "https://github.com/user/repo/releases/download/v0.2.0/your-module.tar.gz"
+   }
+   ```
+
+5. **Commit catalog update**:
+   ```bash
+   cd move-anything
+   git add module-catalog.json
+   git commit -m "Update your-module to v0.2.0"
+   git push
+   ```
+
+### GitHub Actions Workflow Template
+
+Add `.github/workflows/release.yml` to your module repository:
+
+```yaml
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build module
+        run: ./scripts/build.sh
+
+      - name: Package module
+        run: |
+          cd dist
+          tar -czvf ../${{ github.event.repository.name }}-module.tar.gz */
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ github.event.repository.name }}-module.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Catalog Entry Schema
+
+Each module in `module-catalog.json`:
+
+```json
+{
+  "id": "module-id",
+  "name": "Display Name",
+  "description": "Short description",
+  "author": "Author Name",
+  "component_type": "sound_generator|audio_fx|midi_fx|midi_source",
+  "latest_version": "1.0.0",
+  "min_host_version": "1.0.0",
+  "download_url": "https://github.com/user/repo/releases/download/v1.0.0/module.tar.gz"
+}
+```
+
+### Component Types
+
+| Type | Description |
+|------|-------------|
+| `sound_generator` | Synthesizers and samplers that produce audio |
+| `audio_fx` | Audio effects that process audio |
+| `midi_fx` | MIDI effects that transform MIDI |
+| `midi_source` | Sequencers and generators that produce MIDI |
