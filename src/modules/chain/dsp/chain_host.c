@@ -606,10 +606,12 @@ static int load_audio_fx(const char *fx_name) {
         return -1;
     }
 
-    /* Build path to FX .so - look in chain/audio_fx/<name>/<name>.so */
+    /* Build path to FX .so - try chain/audio_fx/<name>/<name>.so first (built-in) */
     char fx_path[MAX_PATH_LEN];
+    char fx_dir[MAX_PATH_LEN];
     snprintf(fx_path, sizeof(fx_path), "%s/audio_fx/%s/%s.so",
              g_module_dir, fx_name, fx_name);
+    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", g_module_dir, fx_name);
 
     snprintf(msg, sizeof(msg), "Loading audio FX: %s", fx_path);
     chain_log(msg);
@@ -617,9 +619,20 @@ static int load_audio_fx(const char *fx_name) {
     /* Open the shared library */
     void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
-        snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
+        /* Try external module path: modules/<name>/<name>.so (Store-installed) */
+        snprintf(fx_path, sizeof(fx_path), "%s/../%s/%s.so",
+                 g_module_dir, fx_name, fx_name);
+        snprintf(fx_dir, sizeof(fx_dir), "%s/../%s", g_module_dir, fx_name);
+
+        snprintf(msg, sizeof(msg), "Trying external path: %s", fx_path);
         chain_log(msg);
-        return -1;
+
+        handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
+        if (!handle) {
+            snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
+            chain_log(msg);
+            return -1;
+        }
     }
 
     /* Get init function */
@@ -648,10 +661,8 @@ static int load_audio_fx(const char *fx_name) {
         return -1;
     }
 
-    /* Call on_load */
+    /* Call on_load - fx_dir was already set above based on where we found the .so */
     if (fx->on_load) {
-        char fx_dir[MAX_PATH_LEN];
-        snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", g_module_dir, fx_name);
         if (fx->on_load(fx_dir, NULL) != 0) {
             chain_log("FX on_load failed");
             dlclose(handle);
@@ -664,9 +675,7 @@ static int load_audio_fx(const char *fx_name) {
     g_fx_handles[slot] = handle;
     g_fx_plugins[slot] = fx;
 
-    /* Parse chain_params from module.json */
-    char fx_dir[MAX_PATH_LEN];
-    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", g_module_dir, fx_name);
+    /* Parse chain_params from module.json - fx_dir was set above */
     parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
 
     g_fx_count++;
