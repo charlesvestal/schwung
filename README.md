@@ -67,6 +67,15 @@ The Signal Chain module lets you combine MIDI sources, MIDI effects, sound gener
 - Freeverb (Schroeder-Moorer reverb, built-in)
 - CloudSeed, PSX Verb, TAPESCAM, Space Echo (install via Module Store)
 
+#### Recording
+
+Signal Chain can record audio output to WAV files:
+
+- **Record Button**: Toggle recording on/off (requires a patch to be loaded)
+- **LED Feedback**: Off (no patch), White (ready), Red (recording)
+- **Output**: `/data/UserData/move-anything/recordings/rec_YYYYMMDD_HHMMSS.wav`
+- **Format**: 44.1kHz, 16-bit stereo WAV
+
 #### Creating Custom Patches
 
 Patches are JSON files in `modules/chain/patches/`. Create your own:
