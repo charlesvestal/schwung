@@ -161,9 +161,9 @@ export function handleTextEntryMidi(msg) {
         if (delta !== 0) {
             const totalItems = getCurrentPageChars().length + NUM_SPECIALS;
             let newIndex = state.selectedIndex + delta;
-            /* Wrap around */
-            if (newIndex < 0) newIndex = totalItems - 1;
-            if (newIndex >= totalItems) newIndex = 0;
+            /* Clamp to edges (no wrap) - allows slamming left/right to reach a or OK */
+            if (newIndex < 0) newIndex = 0;
+            if (newIndex >= totalItems) newIndex = totalItems - 1;
             state.selectedIndex = newIndex;
         }
         return true;
@@ -208,11 +208,9 @@ function handleSelection() {
             case SPECIAL_PAGE:
                 /* Cycle to next page */
                 state.page = (state.page + 1) % PAGES.length;
-                /* Keep selection in bounds for new page */
+                /* Keep page button selected on new page */
                 const newChars = getCurrentPageChars();
-                if (state.selectedIndex >= newChars.length + NUM_SPECIALS) {
-                    state.selectedIndex = 0;
-                }
+                state.selectedIndex = newChars.length + SPECIAL_PAGE;
                 break;
             case SPECIAL_SPACE:
                 appendToBuffer(' ');
