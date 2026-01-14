@@ -223,6 +223,10 @@ static int g_raw_midi = 0;
 
 /* Source UI state (used to suppress pad-thru when editing) */
 static int g_source_ui_active = 0;
+
+/* Component UI mode - when set, bypass knob CC macro mappings */
+/* 0 = normal (macro mode), 1 = synth, 2 = fx1, 3 = fx2 */
+static int g_component_ui_mode = 0;
 /* Our host API for sub-plugins (forwards to main host) */
 static host_api_v1_t g_subplugin_host_api;
 static host_api_v1_t g_source_host_api;
@@ -1683,6 +1687,16 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
                     }
                 }
 
+                /* Parse saved value (optional) - used for "save current state" */
+                float saved_value = -999999.0f;  /* Sentinel for "not set" */
+                const char *value_pos = strstr(obj_start, "\"value\"");
+                if (value_pos && value_pos < obj_end) {
+                    const char *colon = strchr(value_pos, ':');
+                    if (colon && colon < obj_end) {
+                        saved_value = (float)atof(colon + 1);
+                    }
+                }
+
                 /* Store mapping if valid */
                 if (cc >= KNOB_CC_START && cc <= KNOB_CC_END && target[0] && param[0]) {
                     patch->knob_mappings[patch->knob_mapping_count].cc = cc;
@@ -1691,6 +1705,7 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
                     patch->knob_mappings[patch->knob_mapping_count].type = type;
                     patch->knob_mappings[patch->knob_mapping_count].min_val = min_val;
                     patch->knob_mappings[patch->knob_mapping_count].max_val = max_val;
+                    patch->knob_mappings[patch->knob_mapping_count].current_value = saved_value;
                     patch->knob_mapping_count++;
                 }
 
@@ -2148,12 +2163,55 @@ static int load_patch(int index) {
             }
         }
 
-        /* Initialize to middle of min/max range based on type */
-        float mid = (g_knob_mappings[i].min_val + g_knob_mappings[i].max_val) / 2.0f;
-        if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
-            g_knob_mappings[i].current_value = (float)((int)mid);  /* Round to int */
+        /* Use saved value if present, otherwise initialize to middle of range */
+        float saved = patch->knob_mappings[i].current_value;
+        if (saved > -999998.0f) {
+            /* Has saved value - use it (clamp to valid range) */
+            if (saved < g_knob_mappings[i].min_val) saved = g_knob_mappings[i].min_val;
+            if (saved > g_knob_mappings[i].max_val) saved = g_knob_mappings[i].max_val;
+            if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
+                g_knob_mappings[i].current_value = (float)((int)saved);
+            } else {
+                g_knob_mappings[i].current_value = saved;
+            }
         } else {
-            g_knob_mappings[i].current_value = mid;
+            /* No saved value - initialize to middle of min/max range */
+            float mid = (g_knob_mappings[i].min_val + g_knob_mappings[i].max_val) / 2.0f;
+            if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
+                g_knob_mappings[i].current_value = (float)((int)mid);  /* Round to int */
+            } else {
+                g_knob_mappings[i].current_value = mid;
+            }
+        }
+    }
+
+    /* Apply saved knob values to their targets */
+    for (int i = 0; i < g_knob_mapping_count; i++) {
+        const char *target = g_knob_mappings[i].target;
+        const char *param = g_knob_mappings[i].param;
+        float value = g_knob_mappings[i].current_value;
+
+        /* Format value string */
+        char val_str[32];
+        if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
+            snprintf(val_str, sizeof(val_str), "%d", (int)value);
+        } else {
+            snprintf(val_str, sizeof(val_str), "%.3f", value);
+        }
+
+        /* Send to appropriate target */
+        if (strcmp(target, "synth") == 0) {
+            if (g_synth_plugin && g_synth_plugin->set_param) {
+                g_synth_plugin->set_param(param, val_str);
+            }
+        } else if (strcmp(target, "fx1") == 0) {
+            if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->set_param) {
+                g_fx_plugins[0]->set_param(param, val_str);
+            }
+        } else if (strcmp(target, "fx2") == 0) {
+            if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->set_param) {
+                g_fx_plugins[1]->set_param(param, val_str);
+            }
         }
     }
 
@@ -2244,7 +2302,8 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
 
     /* Handle knob CC mappings (CC 71-78) - relative encoders */
-    if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
+    /* Skip if in component UI mode (UI handles knobs directly) */
+    if (len >= 3 && (msg[0] & 0xF0) == 0xB0 && g_component_ui_mode == 0) {
         uint8_t cc = msg[1];
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < g_knob_mapping_count; i++) {
@@ -2374,6 +2433,21 @@ static void plugin_set_param(const char *key, const char *val) {
         return;
     }
 
+    /* Component UI mode - bypasses knob macro mappings */
+    /* 0 = normal, 1 = synth, 2 = fx1, 3 = fx2 */
+    if (strcmp(key, "component_ui_mode") == 0) {
+        if (strcmp(val, "synth") == 0) {
+            g_component_ui_mode = 1;
+        } else if (strcmp(val, "fx1") == 0) {
+            g_component_ui_mode = 2;
+        } else if (strcmp(val, "fx2") == 0) {
+            g_component_ui_mode = 3;
+        } else {
+            g_component_ui_mode = 0;  /* "none" or any other value */
+        }
+        return;
+    }
+
     /* Recording control */
     if (strcmp(key, "recording") == 0) {
         int new_state = atoi(val);
@@ -2402,6 +2476,33 @@ static void plugin_set_param(const char *key, const char *val) {
         const char *subkey = key + 7;
         if (g_source_plugin && g_source_plugin->set_param && subkey[0] != '\0') {
             g_source_plugin->set_param(subkey, val);
+        }
+        return;
+    }
+
+    /* Route to synth with synth: prefix */
+    if (strncmp(key, "synth:", 6) == 0) {
+        const char *subkey = key + 6;
+        if (g_synth_plugin && g_synth_plugin->set_param && subkey[0] != '\0') {
+            g_synth_plugin->set_param(subkey, val);
+        }
+        return;
+    }
+
+    /* Route to FX1 with fx1: prefix */
+    if (strncmp(key, "fx1:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->set_param && subkey[0] != '\0') {
+            g_fx_plugins[0]->set_param(subkey, val);
+        }
+        return;
+    }
+
+    /* Route to FX2 with fx2: prefix */
+    if (strncmp(key, "fx2:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->set_param && subkey[0] != '\0') {
+            g_fx_plugins[1]->set_param(subkey, val);
         }
         return;
     }
@@ -2449,6 +2550,40 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             return g_source_plugin->get_param(subkey, buf, buf_len);
         }
         return -1;
+    }
+
+    /* Route to synth with synth: prefix */
+    if (strncmp(key, "synth:", 6) == 0) {
+        const char *subkey = key + 6;
+        if (g_synth_plugin && g_synth_plugin->get_param && subkey[0] != '\0') {
+            return g_synth_plugin->get_param(subkey, buf, buf_len);
+        }
+        return -1;
+    }
+
+    /* Route to FX1 with fx1: prefix */
+    if (strncmp(key, "fx1:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->get_param && subkey[0] != '\0') {
+            return g_fx_plugins[0]->get_param(subkey, buf, buf_len);
+        }
+        return -1;
+    }
+
+    /* Route to FX2 with fx2: prefix */
+    if (strncmp(key, "fx2:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->get_param && subkey[0] != '\0') {
+            return g_fx_plugins[1]->get_param(subkey, buf, buf_len);
+        }
+        return -1;
+    }
+
+    /* Component UI mode */
+    if (strcmp(key, "component_ui_mode") == 0) {
+        const char *modes[] = {"none", "synth", "fx1", "fx2"};
+        snprintf(buf, buf_len, "%s", modes[g_component_ui_mode]);
+        return 0;
     }
 
     /* Recording state */
@@ -2571,6 +2706,24 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         snprintf(buf, buf_len, "%s", g_current_source_module);
         return 0;
     }
+    if (strcmp(key, "fx1_module") == 0) {
+        if (g_current_patch >= 0 && g_current_patch < g_patch_count &&
+            g_patches[g_current_patch].audio_fx_count > 0) {
+            snprintf(buf, buf_len, "%s", g_patches[g_current_patch].audio_fx[0]);
+        } else {
+            buf[0] = '\0';
+        }
+        return 0;
+    }
+    if (strcmp(key, "fx2_module") == 0) {
+        if (g_current_patch >= 0 && g_current_patch < g_patch_count &&
+            g_patches[g_current_patch].audio_fx_count > 1) {
+            snprintf(buf, buf_len, "%s", g_patches[g_current_patch].audio_fx[1]);
+        } else {
+            buf[0] = '\0';
+        }
+        return 0;
+    }
     if (strcmp(key, "raw_midi") == 0) {
         snprintf(buf, buf_len, "%d", g_raw_midi);
         return 0;
@@ -2583,6 +2736,84 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             input = "external";
         }
         snprintf(buf, buf_len, "%s", input);
+        return 0;
+    }
+
+    /* Get live configuration (current state) for saving */
+    if (strcmp(key, "get_live_config") == 0) {
+        if (g_current_patch < 0 || g_current_patch >= g_patch_count) {
+            buf[0] = '\0';
+            return -1;
+        }
+        patch_info_t *p = &g_patches[g_current_patch];
+
+        /* Get current synth preset */
+        int current_preset = p->synth_preset;
+        if (g_synth_plugin && g_synth_plugin->get_param) {
+            char preset_buf[32];
+            if (g_synth_plugin->get_param("preset", preset_buf, sizeof(preset_buf)) >= 0) {
+                current_preset = atoi(preset_buf);
+            }
+        }
+
+        /* Build input string */
+        const char *input_str = "both";
+        if (g_midi_input == MIDI_INPUT_PADS) input_str = "pads";
+        else if (g_midi_input == MIDI_INPUT_EXTERNAL) input_str = "external";
+
+        /* Build chord string */
+        const char *chord_str = "none";
+        if (g_chord_type == CHORD_MAJOR) chord_str = "major";
+        else if (g_chord_type == CHORD_MINOR) chord_str = "minor";
+        else if (g_chord_type == CHORD_POWER) chord_str = "power";
+        else if (g_chord_type == CHORD_OCTAVE) chord_str = "octave";
+
+        /* Build arp string */
+        const char *arp_str = "off";
+        if (g_arp_mode == ARP_UP) arp_str = "up";
+        else if (g_arp_mode == ARP_DOWN) arp_str = "down";
+        else if (g_arp_mode == ARP_UPDOWN) arp_str = "up_down";
+        else if (g_arp_mode == ARP_RANDOM) arp_str = "random";
+
+        /* Build audio_fx JSON array */
+        char fx_json[512] = "[";
+        for (int i = 0; i < p->audio_fx_count && i < MAX_AUDIO_FX; i++) {
+            if (i > 0) strcat(fx_json, ",");
+            char fx_item[64];
+            snprintf(fx_item, sizeof(fx_item), "{\"type\":\"%s\"}", p->audio_fx[i]);
+            strcat(fx_json, fx_item);
+        }
+        strcat(fx_json, "]");
+
+        /* Build knob_mappings JSON array with CURRENT values */
+        char knob_json[2048] = "[";
+        for (int i = 0; i < g_knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
+            if (i > 0) strcat(knob_json, ",");
+            char knob_item[256];
+            const char *type_str = (g_knob_mappings[i].type == KNOB_TYPE_INT) ? "int" : "float";
+            snprintf(knob_item, sizeof(knob_item),
+                "{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"type\":\"%s\",\"min\":%.3f,\"max\":%.3f,\"value\":%.3f}",
+                g_knob_mappings[i].cc,
+                g_knob_mappings[i].target,
+                g_knob_mappings[i].param,
+                type_str,
+                g_knob_mappings[i].min_val,
+                g_knob_mappings[i].max_val,
+                g_knob_mappings[i].current_value);
+            strcat(knob_json, knob_item);
+        }
+        strcat(knob_json, "]");
+
+        /* Build final JSON */
+        snprintf(buf, buf_len,
+            "{\"synth\":{\"module\":\"%s\"},\"config\":{\"preset\":%d},"
+            "\"source\":\"%s\",\"input\":\"%s\",\"chord\":\"%s\",\"arp\":\"%s\","
+            "\"arp_bpm\":%d,\"arp_div\":%d,\"audio_fx\":%s,"
+            "\"knob_mappings\":%s}",
+            g_current_synth_module, current_preset,
+            g_current_source_module,
+            input_str, chord_str, arp_str,
+            p->arp_tempo_bpm, p->arp_note_division, fx_json, knob_json);
         return 0;
     }
 
