@@ -2141,6 +2141,15 @@ TEST(arp_layer_cut_cancels) {
     int count_64 = count_note_ons(64, 0);
     int count_67 = count_note_ons(67, 0);
 
+    /* Debug: print all captured notes */
+    printf("[TEST] Captured %d notes:\n", g_num_captured);
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            printf("  [%d] Note %d\n", i, g_captured_notes[i].note);
+        }
+    }
+    printf("[TEST] Counts: C=%d, E=%d, G=%d\n", count_60, count_64, count_67);
+
     ASSERT_EQ(count_60, 1);  /* C plays only once (step 0) */
     ASSERT_EQ(count_64, 1);  /* E plays only once (step 1) */
     ASSERT_EQ(count_67, 2);  /* G plays twice (step 2's arp takes over) */

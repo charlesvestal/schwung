@@ -79,7 +79,8 @@ static const double ARP_STEP_RATES[] = {
 /* Arp layer modes - step-only (no track default) */
 #define ARP_LAYER_LAYER   0  /* Arps play over each other (default) */
 #define ARP_LAYER_CUT     1  /* New step kills previous arp notes */
-#define NUM_ARP_LAYERS    2
+#define ARP_LAYER_LEGATO  2  /* Legato mode - smooth transition (not yet implemented, behaves like Layer) */
+#define NUM_ARP_LAYERS    3
 
 /* Max arp pattern length (4 notes * 3 octaves * 2 for ping-pong) */
 #define MAX_ARP_PATTERN   64
@@ -365,18 +366,35 @@ static void update_transpose_virtual_playhead(uint32_t step) {
         return;
     }
 
-    /* Initialize on first call */
+    /* Initialize on first call - calculate which virtual step we should be at */
     if (g_transpose_first_call) {
-        printf("[TRANSPOSE] INIT: virtual_step=0, entry_step=%u, step_count=%d\n",
-               step, g_transpose_step_count);
+        printf("[TRANSPOSE] INIT at global_step=%u, step_count=%d, total_steps=%u\n",
+               step, g_transpose_step_count, g_transpose_total_steps);
         for (int i = 0; i < g_transpose_step_count; i++) {
             printf("[TRANSPOSE] Step %d: transpose=%d, duration=%u, jump=%d, cond_n=%d, cond_m=%d, cond_not=%d\n",
                    i, g_transpose_sequence[i].transpose, g_transpose_sequence[i].duration,
                    g_transpose_sequence[i].jump, g_transpose_sequence[i].condition_n,
                    g_transpose_sequence[i].condition_m, g_transpose_sequence[i].condition_not);
         }
+
+        /* Calculate which virtual step corresponds to the current global step */
+        uint32_t looped_step = step % g_transpose_total_steps;
+        uint32_t accumulated = 0;
         g_transpose_virtual_step = 0;
-        g_transpose_virtual_entry_step = step;
+
+        for (int i = 0; i < g_transpose_step_count; i++) {
+            uint32_t next_accumulated = accumulated + g_transpose_sequence[i].duration;
+            if (looped_step < next_accumulated) {
+                /* This is the virtual step we should be in */
+                g_transpose_virtual_step = i;
+                g_transpose_virtual_entry_step = step - (looped_step - accumulated);
+                printf("[TRANSPOSE] Starting at virtual_step=%d, entry_step=%u (looped_step=%u, step_offset=%u)\n",
+                       g_transpose_virtual_step, g_transpose_virtual_entry_step, looped_step, looped_step - accumulated);
+                break;
+            }
+            accumulated = next_accumulated;
+        }
+
         g_transpose_first_call = 0;
         return;
     }
@@ -756,6 +774,12 @@ static void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
     double note_duration = length * gate_mult;
     double off_phase = swung_on_phase + note_duration;
 
+    /* Debug: log scheduling for testing */
+    if (note >= 60 && note <= 67) {
+        printf("[SCHEDULE] Note %d on_phase=%.2f off_phase=%.2f (global_phase=%.2f)\n",
+               note, swung_on_phase, off_phase, g_global_phase);
+    }
+
     /* Check for conflicting note (same note+channel already playing) */
     int conflict_idx = find_conflicting_note(note, channel);
     if (conflict_idx >= 0) {
@@ -807,6 +831,10 @@ static void process_scheduled_notes(void) {
 
         /* Send note-on at the scheduled time */
         if (!sn->on_sent && g_global_phase >= sn->on_phase) {
+            if (sn->note >= 60 && sn->note <= 67) {
+                printf("[SEND] Note %d at phase=%.2f (on_phase=%.2f)\n",
+                       sn->note, g_global_phase, sn->on_phase);
+            }
             send_note_on(sn->note, sn->velocity, sn->channel);
             sn->on_sent = 1;
         }
@@ -840,6 +868,7 @@ static void clear_scheduled_notes(void) {
  * Sends note-off for any currently playing notes and cancels pending notes.
  */
 static void cut_channel_notes(uint8_t channel) {
+    int cancelled_count = 0;
     for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
         scheduled_note_t *sn = &g_scheduled_notes[i];
         if (sn->active && sn->channel == channel) {
@@ -851,7 +880,12 @@ static void cut_channel_notes(uint8_t channel) {
             sn->active = 0;
             sn->on_sent = 0;
             sn->off_sent = 0;
+            cancelled_count++;
         }
+    }
+    if (cancelled_count > 0) {
+        printf("[CUT] Cancelled %d notes on channel %d at phase=%.2f\n",
+               cancelled_count, channel, g_global_phase);
     }
 }
 
@@ -2345,10 +2379,9 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
             send_midi_clock();
         }
 
-        /* Process scheduled notes - handles note-on/off timing for ALL tracks */
-        process_scheduled_notes();
-
-        /* Process each track - advance steps and schedule notes */
+        /* Process each track FIRST - advance steps and schedule notes (including Cut)
+         * IMPORTANT: This must happen before process_scheduled_notes() so that
+         * Cut mode can cancel notes before they are sent */
         for (int t = 0; t < NUM_TRACKS; t++) {
             track_t *track = &g_tracks[t];
 
@@ -2362,6 +2395,10 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
                 advance_track(track, t);
             }
         }
+
+        /* Process scheduled notes - handles note-on/off timing for ALL tracks
+         * This happens AFTER track advancement so Cut mode can prevent notes from being sent */
+        process_scheduled_notes();
     }
 }
 

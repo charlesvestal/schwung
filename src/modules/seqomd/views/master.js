@@ -416,8 +416,9 @@ function handlePadPress(padIdx) {
         return true; /* Gap pad */
     }
 
-    /* Calculate actual transpose value with octave offset */
-    const transpose = semitone + (state.transposeOctaveOffset * 12);
+    /* Calculate actual transpose value relative to detected scale root (or C if no scale) */
+    const rootSemitone = state.detectedScale ? state.detectedScale.root : 0;
+    const transpose = (semitone - rootSemitone) + (state.transposeOctaveOffset * 12);
 
     /* If holding a step, set its transpose */
     if (state.heldTransposeStep >= 0) {
