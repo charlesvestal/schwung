@@ -11,7 +11,8 @@ export const MenuItemType = {
     ENUM: 'enum',
     TOGGLE: 'toggle',
     ACTION: 'action',
-    BACK: 'back'
+    BACK: 'back',
+    INFO: 'info'
 };
 
 /**
@@ -124,6 +125,20 @@ export function createBack(label = '[Back]') {
 }
 
 /**
+ * Create a read-only info item (displays label: value)
+ * @param {string} label - Display label
+ * @param {string} value - Display value
+ * @returns {Object} Info item
+ */
+export function createInfo(label, value) {
+    return {
+        type: MenuItemType.INFO,
+        label,
+        value
+    };
+}
+
+/**
  * Format a menu item's value for display
  * @param {Object} item - Menu item
  * @param {boolean} [editing=false] - Whether item is being edited
@@ -153,6 +168,9 @@ export function formatItemValue(item, editing = false, editValue = null) {
 
         case MenuItemType.SUBMENU:
             return '>';
+
+        case MenuItemType.INFO:
+            return item.value || '';
 
         case MenuItemType.ACTION:
         case MenuItemType.BACK:

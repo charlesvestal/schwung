@@ -4,8 +4,8 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.1.4",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.4/move-anything.tar.gz",
+    "latest_version": "0.1.5",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.5/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -17,8 +17,6 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-dx7",
       "asset_name": "dx7-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.1.0/dx7-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -29,8 +27,6 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-sf2",
       "asset_name": "sf2-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-sf2/releases/download/v0.1.0/sf2-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -41,8 +37,6 @@
       "component_type": "utility",
       "github_repo": "charlesvestal/move-anything-m8",
       "asset_name": "m8-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-m8/releases/download/v0.1.0/m8-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -53,8 +47,6 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-jv880",
       "asset_name": "jv880-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-jv880/releases/download/v0.1.0/jv880-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -65,8 +57,6 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-obxd",
       "asset_name": "obxd-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-obxd/releases/download/v0.1.0/obxd-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -77,8 +67,6 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-clap",
       "asset_name": "clap-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-clap/releases/download/v0.1.0/clap-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -89,8 +77,6 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-cloudseed",
       "asset_name": "cloudseed-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-cloudseed/releases/download/v0.1.0/cloudseed-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -101,8 +87,6 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-tapescam",
       "asset_name": "tapescam-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-tapescam/releases/download/v0.1.0/tapescam-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -113,8 +97,6 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-psxverb",
       "asset_name": "psxverb-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-psxverb/releases/download/v0.1.0/psxverb-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -125,8 +107,6 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-space-delay",
       "asset_name": "spacecho-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-space-delay/releases/download/v0.1.0/spacecho-module.tar.gz",
       "min_host_version": "0.1.0"
     },
     {
@@ -137,8 +117,6 @@
       "component_type": "utility",
       "github_repo": "charlesvestal/move-anything-sidcontrol",
       "asset_name": "sidcontrol-module.tar.gz",
-      "latest_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-sidcontrol/releases/download/v0.1.0/sidcontrol-module.tar.gz",
       "min_host_version": "0.1.0"
     }
   ]

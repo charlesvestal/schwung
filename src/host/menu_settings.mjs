@@ -2,16 +2,62 @@
  * Settings screen using shared menu components.
  */
 
-import { createValue, createEnum, createToggle, createBack } from '../shared/menu_items.mjs';
+import { createValue, createEnum, createToggle, createBack, createSubmenu, createInfo } from '../shared/menu_items.mjs';
 import { createMenuState, handleMenuInput } from '../shared/menu_nav.mjs';
-import { drawHierarchicalMenu } from '../shared/menu_render.mjs';
+import { createMenuStack } from '../shared/menu_stack.mjs';
+import { drawStackMenu } from '../shared/menu_render.mjs';
+
+import * as std from 'std';
 
 const VELOCITY_CURVES = ['linear', 'soft', 'hard', 'full'];
 const PAD_LAYOUTS = ['chromatic', 'fourth'];
 const CLOCK_MODES = ['off', 'internal', 'external'];
+const HOST_VERSION_FILE = '/data/UserData/move-anything/host/version.txt';
+
+/**
+ * Get host version from version.txt
+ */
+function getHostVersion() {
+    try {
+        const versionStr = std.loadFile(HOST_VERSION_FILE);
+        if (versionStr) {
+            return versionStr.trim();
+        }
+    } catch (e) {
+        /* Fall through */
+    }
+    return 'unknown';
+}
+
+/**
+ * Build About submenu items
+ */
+function getAboutItems() {
+    const items = [];
+
+    /* Host version */
+    items.push(createInfo('Host', `v${getHostVersion()}`));
+
+    /* Get installed modules */
+    const modules = host_list_modules();
+    if (modules && modules.length > 0) {
+        /* Sort by name */
+        modules.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+
+        for (const mod of modules) {
+            const name = mod.name || mod.id;
+            const version = mod.version || '?';
+            items.push(createInfo(name, `v${version}`));
+        }
+    }
+
+    items.push(createBack());
+    return items;
+}
 
 /* Settings menu state */
 let settingsState = createMenuState();
+let settingsStack = null;
 let settingsItems = null;
 
 /**
@@ -89,6 +135,7 @@ function getSettingsItems() {
             step: 5,
             fineStep: 1
         }),
+        createSubmenu('About', getAboutItems),
         createBack()
     ];
 }
@@ -99,6 +146,12 @@ function getSettingsItems() {
 export function initSettings() {
     settingsState = createMenuState();
     settingsItems = getSettingsItems();
+    settingsStack = createMenuStack();
+    settingsStack.push({
+        title: 'Settings',
+        items: settingsItems,
+        selectedIndex: 0
+    });
 }
 
 /**
@@ -119,17 +172,16 @@ export function isEditing() {
  * Draw the settings screen
  */
 export function drawSettings() {
-    if (!settingsItems) {
-        settingsItems = getSettingsItems();
+    if (!settingsStack || settingsStack.depth() === 0) {
+        initSettings();
     }
 
     const footer = settingsState.editing
         ? 'Clk:Save Bck:Cancel'
         : 'Clk:Edit </>:Change';
 
-    drawHierarchicalMenu({
-        title: 'Settings',
-        items: settingsItems,
+    drawStackMenu({
+        stack: settingsStack,
         state: settingsState,
         footer
     });
@@ -140,24 +192,27 @@ export function drawSettings() {
  * @returns {Object} Result with needsRedraw and shouldExit flags
  */
 export function handleSettingsCC({ cc, value, shiftHeld }) {
-    if (!settingsItems) {
-        settingsItems = getSettingsItems();
+    if (!settingsStack || settingsStack.depth() === 0) {
+        initSettings();
     }
+
+    const current = settingsStack.current();
+    const items = current ? current.items : settingsItems;
 
     const result = handleMenuInput({
         cc,
         value,
-        items: settingsItems,
+        items,
         state: settingsState,
-        stack: null,  /* Settings is flat, no stack needed */
+        stack: settingsStack,
         onBack: null, /* Let caller handle back from settings */
         shiftHeld
     });
 
-    /* Check if user clicked [Back] item */
-    const item = settingsItems[settingsState.selectedIndex];
+    /* Check if user clicked [Back] item at root level */
+    const item = items[settingsState.selectedIndex];
     let shouldExit = false;
-    if (item && item.type === 'back' && cc === 3 && value > 0) {
+    if (item && item.type === 'back' && cc === 3 && value > 0 && settingsStack.depth() <= 1) {
         shouldExit = true;
     }
 
