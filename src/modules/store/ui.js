@@ -19,6 +19,7 @@ import {
     drawMenuHeader,
     drawMenuList,
     drawMenuFooter,
+    drawStatusOverlay,
     menuLayoutDefaults
 } from '../../shared/menu_layout.mjs';
 
@@ -66,7 +67,8 @@ let currentModule = null;
 let errorMessage = '';
 let resultMessage = '';
 let shiftHeld = false;
-let loadingMessage = 'Fetching catalog...';
+let loadingTitle = 'Module Store';
+let loadingMessage = 'Loading...';
 
 /* CC constants */
 const CC_JOG_WHEEL = MoveMainKnob;
@@ -148,7 +150,8 @@ function fetchAllReleaseInfo() {
 
     /* Fetch host release info */
     if (catalog.host && catalog.host.github_repo) {
-        loadingMessage = 'Checking host version...';
+        loadingTitle = 'Loading Catalog';
+        loadingMessage = 'Checking host...';
         draw();
         host_flush_display();
 
@@ -165,7 +168,8 @@ function fetchAllReleaseInfo() {
         for (let i = 0; i < catalog.modules.length; i++) {
             const mod = catalog.modules[i];
             if (mod.github_repo) {
-                loadingMessage = `Checking ${mod.name}...`;
+                loadingTitle = 'Loading Catalog';
+                loadingMessage = mod.name;
                 draw();
                 host_flush_display();
 
@@ -223,7 +227,8 @@ function updateHost() {
     }
 
     state = STATE_UPDATING_HOST;
-    loadingMessage = 'Updating host...';
+    loadingTitle = 'Updating Host';
+    loadingMessage = `v${catalog.host.latest_version}`;
 
     const tarPath = `${TMP_DIR}/move-anything.tar.gz`;
 
@@ -280,7 +285,8 @@ function getCategoryCount(categoryId) {
 /* Fetch catalog from network */
 function fetchCatalog() {
     state = STATE_LOADING;
-    loadingMessage = 'Fetching catalog...';
+    loadingTitle = 'Loading Catalog';
+    loadingMessage = 'Fetching...';
 
     /* Try to download fresh catalog (GitHub CDN caches ~5 min) */
     const success = host_http_download(CATALOG_URL, CATALOG_CACHE_PATH);
@@ -340,7 +346,8 @@ function installModule(mod) {
     }
 
     state = STATE_INSTALLING;
-    loadingMessage = `Downloading ${mod.name}...`;
+    loadingTitle = 'Downloading';
+    loadingMessage = `${mod.name} v${mod.latest_version}`;
 
     /* Force display update before blocking download */
     draw();
@@ -358,7 +365,8 @@ function installModule(mod) {
         return;
     }
 
-    loadingMessage = `Installing ${mod.name}...`;
+    loadingTitle = 'Installing';
+    loadingMessage = `${mod.name} v${mod.latest_version}`;
     draw();
     host_flush_display();
 
@@ -381,7 +389,8 @@ function installModule(mod) {
 /* Remove a module */
 function removeModule(mod) {
     state = STATE_REMOVING;
-    loadingMessage = `Removing ${mod.name}...`;
+    loadingTitle = 'Removing';
+    loadingMessage = mod.name;
 
     const modulePath = `${MODULES_DIR}/${mod.id}`;
 
@@ -534,11 +543,10 @@ function handleBack() {
     }
 }
 
-/* Draw loading screen */
+/* Draw loading overlay */
 function drawLoading() {
     clear_screen();
-    drawMenuHeader('Module Store');
-    print(2, 30, loadingMessage, 1);
+    drawStatusOverlay(loadingTitle, loadingMessage);
 }
 
 /* Draw error screen */
