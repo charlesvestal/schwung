@@ -252,6 +252,14 @@ export function drawOverlay() {
 const STATUS_OVERLAY_WIDTH = 120;
 const STATUS_OVERLAY_HEIGHT = 40;
 
+/* Helper to draw rectangle outline using fill_rect */
+function drawRect(x, y, w, h, color) {
+    fill_rect(x, y, w, 1, color);           /* Top */
+    fill_rect(x, y + h - 1, w, 1, color);   /* Bottom */
+    fill_rect(x, y, 1, h, color);           /* Left */
+    fill_rect(x + w - 1, y, 1, h, color);   /* Right */
+}
+
 /**
  * Draw a centered status overlay with title and message
  * Used for loading states, installation progress, etc.
@@ -264,8 +272,8 @@ export function drawStatusOverlay(title, message) {
 
     /* Background and double border */
     fill_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, STATUS_OVERLAY_HEIGHT, 0);
-    draw_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, STATUS_OVERLAY_HEIGHT, 1);
-    draw_rect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, STATUS_OVERLAY_HEIGHT - 2, 1);
+    drawRect(boxX, boxY, STATUS_OVERLAY_WIDTH, STATUS_OVERLAY_HEIGHT, 1);
+    drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, STATUS_OVERLAY_HEIGHT - 2, 1);
 
     /* Center title */
     const titleW = title.length * 6;
