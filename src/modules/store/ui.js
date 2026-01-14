@@ -97,8 +97,16 @@ function isNewerVersion(a, b) {
     return compareVersions(a, b) > 0;
 }
 
+/* Track rate limit status */
+let rateLimited = false;
+
 /* Fetch latest release info from GitHub API */
 function fetchGitHubRelease(github_repo, asset_name) {
+    /* Skip if already rate limited */
+    if (rateLimited) {
+        return null;
+    }
+
     const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
     const apiUrl = `${GITHUB_API_BASE}/${github_repo}/releases/latest`;
 
@@ -114,6 +122,13 @@ function fetchGitHubRelease(github_repo, asset_name) {
         if (!jsonStr) return null;
 
         const release = JSON.parse(jsonStr);
+
+        /* Check for rate limit error */
+        if (release.message && release.message.includes('rate limit')) {
+            console.log('GitHub API rate limit exceeded');
+            rateLimited = true;
+            return null;
+        }
 
         /* Extract version from tag_name (strip 'v' prefix if present) */
         let version = release.tag_name || '';
@@ -325,6 +340,14 @@ function loadCatalogFromCache() {
         }
 
         checkHostUpdate();
+
+        /* Check if we hit rate limit during fetching */
+        if (rateLimited) {
+            state = STATE_ERROR;
+            errorMessage = 'GitHub rate limited. Wait 1hr.';
+            return;
+        }
+
         state = STATE_CATEGORIES;
         if (hostUpdateAvailable) {
             console.log(`Host update available: ${hostVersion} -> ${catalog.host.latest_version}`);
