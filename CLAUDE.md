@@ -246,6 +246,101 @@ External modules install their own Signal Chain presets via their install script
 The Module Store (`store` module) downloads and installs external modules from GitHub releases. The catalog is fetched from:
 `https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json`
 
+### How the Store Works
+
+1. Fetches `module-catalog.json` for list of available modules
+2. For each module, queries GitHub API for latest release
+3. Looks for asset matching `<module-id>-module.tar.gz`
+4. Compares release version to installed version
+5. Downloads and extracts tarball to `modules/` directory
+
+### Adding a Module to the Catalog
+
+Edit `module-catalog.json` and add an entry:
+```json
+{
+  "id": "mymodule",
+  "name": "My Module",
+  "description": "What it does",
+  "author": "Your Name",
+  "component_type": "sound_generator",
+  "github_repo": "username/move-anything-mymodule",
+  "asset_name": "mymodule-module.tar.gz",
+  "min_host_version": "0.1.0"
+}
+```
+
+## External Module Development
+
+External modules live in separate repos (e.g., `move-anything-sf2`, `move-anything-dx7`).
+
+### Module Repo Structure
+
+```
+move-anything-<id>/
+  src/
+    module.json       # Module metadata (id, name, version, capabilities)
+    ui.js             # JavaScript UI
+    dsp/              # Native DSP code (if applicable)
+      plugin.c/cpp
+  scripts/
+    build.sh          # Build script (creates dist/ and tarball)
+    install.sh        # Deploy to Move device
+    Dockerfile        # Cross-compilation environment
+  .github/
+    workflows/
+      release.yml     # Automated release on tag push
+```
+
+### Build Script Requirements
+
+`scripts/build.sh` must:
+1. Cross-compile DSP code for ARM64 (via Docker)
+2. Package files to `dist/<module-id>/`
+3. Create tarball at `dist/<module-id>-module.tar.gz`
+
+Example tarball creation (at end of build.sh):
+```bash
+# Create tarball for release
+cd dist
+tar -czvf mymodule-module.tar.gz mymodule/
+cd ..
+```
+
+### Release Workflow
+
+`.github/workflows/release.yml` triggers on version tags:
+```yaml
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: |
+          docker build -t module-builder -f scripts/Dockerfile .
+          docker run --rm -v "$PWD:/build" -w /build module-builder ./scripts/build.sh
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: dist/<module-id>-module.tar.gz
+```
+
+### Releasing a New Version
+
+1. Update version in `src/module.json`
+2. Commit: `git commit -am "bump version to 0.2.0"`
+3. Tag and push: `git tag v0.2.0 && git push --tags`
+4. GitHub Actions builds and uploads tarball to release
+
+The Module Store will see the new version within minutes.
+
+See `BUILDING.md` for detailed documentation.
+
 ## Dependencies
 
 - QuickJS: libs/quickjs/
