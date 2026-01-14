@@ -185,6 +185,79 @@ Version is stored in `src/host/version.txt`. Follow semantic versioning:
 
 GitHub Actions will automatically create a release when you push a tag matching `v*`. See `.github/workflows/release.yml`.
 
+## External Module Releases
+
+External modules (SF2, DX7, JV-880, etc.) are built and released separately. Each module repo has its own release workflow.
+
+### Build Script Requirements
+
+Each external module's `scripts/build.sh` must:
+
+1. Build the module to `dist/<module-id>/`
+2. Create a tarball at `dist/<module-id>-module.tar.gz`
+
+Example tarball creation (add at end of build.sh, after packaging):
+```bash
+# Create tarball for release
+cd dist
+tar -czvf mymodule-module.tar.gz mymodule/
+cd ..
+
+echo "Tarball: dist/mymodule-module.tar.gz"
+```
+
+### Release Workflow
+
+Each module should have `.github/workflows/release.yml`:
+```yaml
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build with Docker
+        run: |
+          docker build -t module-builder -f scripts/Dockerfile .
+          docker run --rm -v "$PWD:/build" -w /build module-builder ./scripts/build.sh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/<module-id>-module.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Version Management
+
+1. Update `src/module.json` version before tagging
+2. Create and push a version tag: `git tag v0.2.0 && git push --tags`
+3. The release workflow builds and uploads the tarball automatically
+
+### Module Store Integration
+
+The Module Store fetches release info from GitHub API:
+- Reads `tag_name` for version (strips `v` prefix)
+- Looks for asset matching `<module-id>-module.tar.gz`
+- If asset not found, shows version as "0.0.0"
+
+The `module-catalog.json` in this repo lists all available modules. The store uses the `github_repo` and `asset_name` fields to locate releases.
+
 ## Architecture
 
 - **Target**: Ableton Move (aarch64 Linux, glibc)
