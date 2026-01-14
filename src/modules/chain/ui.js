@@ -7,8 +7,9 @@
 import * as std from 'std';
 import * as os from 'os';
 import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
-import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob } from '../../shared/constants.mjs';
+import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob, MoveShift } from '../../shared/constants.mjs';
 import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults, showOverlay, tickOverlay, drawOverlay, isOverlayActive } from '../../shared/menu_layout.mjs';
+import { createTextScroller } from '../../shared/text_scroll.mjs';
 import { midiFxRegistry } from './midi_fx/index.mjs';
 
 /* State */
@@ -33,6 +34,20 @@ let sourceUiActive = false;
 let sourceUiReady = false;
 let sourceUi = null;
 let sourceUiLoadError = false;
+
+/* Shift state */
+let shiftHeld = false;
+const CC_SHIFT = MoveShift;
+
+/* Component UI state */
+let componentUiActive = false;       /* true when showing a component's native UI */
+let componentUiMode = "none";        /* "synth", "fx1", "fx2" */
+let componentUi = null;              /* loaded component UI module */
+let componentUiReady = false;        /* has init() been called? */
+let componentSelectorActive = false; /* true when showing the component selector */
+let componentSelectorIndex = 0;      /* selected component in selector */
+let originalReturnToMenu = null;     /* saved host_return_to_menu for interception */
+const componentSelectorScroller = createTextScroller(); /* scroller for header title */
 
 /* Editor state */
 let editorMode = false;
@@ -98,6 +113,47 @@ function disableSourceHostRouting() {
     globalThis.host_module_get_param = hostFns.getParam;
     globalThis.host_module_send_midi = hostFns.sendMidi;
     sourceHostActive = false;
+}
+
+/* Component UI routing - routes params with prefix (synth:, fx1:, fx2:) */
+function componentKey(key) {
+    if (typeof key !== "string") return key;
+    if (componentUiMode === "synth") return `synth:${key}`;
+    if (componentUiMode === "fx1") return `fx1:${key}`;
+    if (componentUiMode === "fx2") return `fx2:${key}`;
+    return key;
+}
+
+function enableComponentHostRouting() {
+    if (!componentUiActive) return;
+    /* Save original host_return_to_menu if not already saved */
+    if (!originalReturnToMenu) {
+        originalReturnToMenu = globalThis.host_return_to_menu;
+    }
+    /* Override param functions to route with prefix */
+    globalThis.host_module_set_param = (key, val) => hostFns.setParam(componentKey(key), val);
+    globalThis.host_module_get_param = (key) => hostFns.getParam(componentKey(key));
+    globalThis.host_module_send_midi = hostFns.sendMidi;
+    /* Override host_return_to_menu to exit component mode instead */
+    globalThis.host_return_to_menu = () => {
+        exitComponentUi();
+    };
+    /* Tell DSP we're in component mode (bypasses knob macro mappings) */
+    hostFns.setParam("component_ui_mode", componentUiMode);
+}
+
+function disableComponentHostRouting() {
+    /* Restore original functions */
+    globalThis.host_module_set_param = hostFns.setParam;
+    globalThis.host_module_get_param = hostFns.getParam;
+    globalThis.host_module_send_midi = hostFns.sendMidi;
+    /* Restore original host_return_to_menu */
+    if (originalReturnToMenu) {
+        globalThis.host_return_to_menu = originalReturnToMenu;
+        originalReturnToMenu = null;
+    }
+    /* Tell DSP we're back in normal mode */
+    hostFns.setParam("component_ui_mode", "none");
 }
 
 function getModulesRoot() {
@@ -333,6 +389,7 @@ function createEditorState(existingPatch = null) {
             confirmIndex: 0,
             knobIndex: 0,
             knobParamIndex: 0,
+            knobParamFolder: null,  /* null = main view, or slot name */
             chain: {
                 source: source,
                 source_config: {},
@@ -359,6 +416,7 @@ function createEditorState(existingPatch = null) {
         confirmIndex: 0,
         knobIndex: 0,
         knobParamIndex: 0,
+        knobParamFolder: null,
         chain: {
             source: "both",
             source_config: {},
@@ -399,6 +457,7 @@ function enterEditor(patchIndex = -1) {
             confirmIndex: 0,
             knobIndex: 0,
             knobParamIndex: 0,
+            knobParamFolder: null,
             chain: {
                 source: config.source || null,
                 midi_fx: null,
@@ -745,52 +804,57 @@ function getKnobAssignmentLabel(knobAssignment) {
     return `${slotLabel}: ${knobAssignment.param}`;
 }
 
-function getAllAssignableParams() {
-    /* Get all parameters from all configured components */
-    const params = [];
+/* Get module folders for knob param picker main view */
+function getKnobParamFolders() {
+    const folders = [];
     const chain = editorState.chain;
 
-    /* Add synth params */
     if (chain.synth) {
         const component = findComponent("synth", chain.synth);
-        if (component && component.params) {
-            for (const p of component.params) {
-                params.push({ slot: "synth", param: p.key, name: `${component.name}: ${p.name}` });
-            }
+        if (component && component.params && component.params.length > 0) {
+            folders.push({ type: "folder", slot: "synth", name: component.name });
         }
     }
 
-    /* Add MIDI FX params */
     if (chain.midi_fx) {
         const component = findComponent("midi_fx", chain.midi_fx);
-        if (component && component.params) {
-            for (const p of component.params) {
-                params.push({ slot: "midi_fx", param: p.key, name: `${component.name}: ${p.name}` });
-            }
+        if (component && component.params && component.params.length > 0) {
+            folders.push({ type: "folder", slot: "midi_fx", name: `MIDI FX: ${component.name}` });
         }
     }
 
-    /* Add FX1 params */
     if (chain.fx1) {
         const component = findComponent("fx1", chain.fx1);
-        if (component && component.params) {
-            for (const p of component.params) {
-                params.push({ slot: "fx1", param: p.key, name: `FX1 ${component.name}: ${p.name}` });
-            }
+        if (component && component.params && component.params.length > 0) {
+            folders.push({ type: "folder", slot: "fx1", name: `FX1: ${component.name}` });
         }
     }
 
-    /* Add FX2 params */
     if (chain.fx2) {
         const component = findComponent("fx2", chain.fx2);
-        if (component && component.params) {
-            for (const p of component.params) {
-                params.push({ slot: "fx2", param: p.key, name: `FX2 ${component.name}: ${p.name}` });
-            }
+        if (component && component.params && component.params.length > 0) {
+            folders.push({ type: "folder", slot: "fx2", name: `FX2: ${component.name}` });
         }
     }
 
-    return params;
+    return folders;
+}
+
+/* Get params for a specific slot */
+function getParamsForSlot(slot) {
+    const chain = editorState.chain;
+    const componentId = chain[slot];
+    if (!componentId) return [];
+
+    const component = findComponent(slot, componentId);
+    if (!component || !component.params) return [];
+
+    return component.params.map(p => ({
+        type: "param",
+        slot: slot,
+        param: p.key,
+        name: p.name
+    }));
 }
 
 function drawKnobEditor() {
@@ -802,7 +866,7 @@ function drawKnobEditor() {
         items.push({
             type: "knob",
             index: i,
-            label: `Knob ${i + 1}`,
+            label: `${i + 1}`,
             assignment: knob
         });
     }
@@ -831,25 +895,49 @@ function drawKnobEditor() {
 
 function drawKnobParamPicker() {
     const knobNum = editorState.knobIndex + 1;
-    drawMenuHeader(`Knob ${knobNum} Param`);
+    const inFolder = editorState.knobParamFolder !== null;
 
-    const params = getAllAssignableParams();
-    const items = [
-        { type: "clear", name: "[Clear]" },
-        ...params.map(p => ({ type: "param", ...p }))
-    ];
+    if (inFolder) {
+        /* Show params for the selected module */
+        const component = findComponent(editorState.knobParamFolder, editorState.chain[editorState.knobParamFolder]);
+        const title = component ? component.name : editorState.knobParamFolder;
+        drawMenuHeader(title);
 
-    drawMenuList({
-        items,
-        selectedIndex: editorState.knobParamIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        getLabel: (item) => item.name
-    });
+        const params = getParamsForSlot(editorState.knobParamFolder);
+        drawMenuList({
+            items: params,
+            selectedIndex: editorState.knobParamIndex,
+            listArea: {
+                topY: menuLayoutDefaults.listTopY,
+                bottomY: menuLayoutDefaults.listBottomWithFooter
+            },
+            getLabel: (item) => item.name
+        });
 
-    drawMenuFooter("Click:select Back:cancel");
+        drawMenuFooter("Click:select Back:return");
+    } else {
+        /* Show main view with [Clear] and module folders */
+        drawMenuHeader(`Knob ${knobNum} Param`);
+
+        const folders = getKnobParamFolders();
+        const items = [
+            { type: "clear", name: "[Clear]" },
+            ...folders
+        ];
+
+        drawMenuList({
+            items,
+            selectedIndex: editorState.knobParamIndex,
+            listArea: {
+                topY: menuLayoutDefaults.listTopY,
+                bottomY: menuLayoutDefaults.listBottomWithFooter
+            },
+            getLabel: (item) => item.name,
+            getValue: (item) => item.type === "folder" ? ">" : ""
+        });
+
+        drawMenuFooter("Click:select Back:cancel");
+    }
 }
 
 function handleEditorJog(delta) {
@@ -883,10 +971,17 @@ function handleEditorJog(delta) {
             break;
         }
         case EDITOR_VIEW.KNOB_PARAM_PICKER: {
-            /* Clear + all assignable params */
-            const params = getAllAssignableParams();
-            const maxItems = 1 + params.length;
-            editorState.knobParamIndex = Math.max(0, Math.min(maxItems - 1, editorState.knobParamIndex + delta));
+            if (editorState.knobParamFolder !== null) {
+                /* Inside a folder - navigate params */
+                const params = getParamsForSlot(editorState.knobParamFolder);
+                const maxItems = params.length;
+                editorState.knobParamIndex = Math.max(0, Math.min(maxItems - 1, editorState.knobParamIndex + delta));
+            } else {
+                /* Main view - navigate [Clear] + folders */
+                const folders = getKnobParamFolders();
+                const maxItems = 1 + folders.length;  /* [Clear] + folders */
+                editorState.knobParamIndex = Math.max(0, Math.min(maxItems - 1, editorState.knobParamIndex + delta));
+            }
             break;
         }
         case EDITOR_VIEW.CONFIRM_DELETE: {
@@ -1074,19 +1169,35 @@ function handleEditorSelect() {
             break;
         }
         case EDITOR_VIEW.KNOB_PARAM_PICKER: {
-            const params = getAllAssignableParams();
-            if (editorState.knobParamIndex === 0) {
-                /* Clear */
-                editorState.chain.knobs[editorState.knobIndex] = { slot: null, param: null };
+            if (editorState.knobParamFolder !== null) {
+                /* Inside a folder - select a param */
+                const params = getParamsForSlot(editorState.knobParamFolder);
+                const selected = params[editorState.knobParamIndex];
+                if (selected) {
+                    editorState.chain.knobs[editorState.knobIndex] = {
+                        slot: selected.slot,
+                        param: selected.param
+                    };
+                }
+                editorState.knobParamFolder = null;
+                editorState.knobParamIndex = 0;
+                editorState.view = EDITOR_VIEW.KNOB_EDITOR;
             } else {
-                /* Assign param */
-                const selected = params[editorState.knobParamIndex - 1];
-                editorState.chain.knobs[editorState.knobIndex] = {
-                    slot: selected.slot,
-                    param: selected.param
-                };
+                /* Main view - handle [Clear] or enter folder */
+                const folders = getKnobParamFolders();
+                if (editorState.knobParamIndex === 0) {
+                    /* [Clear] selected */
+                    editorState.chain.knobs[editorState.knobIndex] = { slot: null, param: null };
+                    editorState.view = EDITOR_VIEW.KNOB_EDITOR;
+                } else {
+                    /* Enter a folder */
+                    const folder = folders[editorState.knobParamIndex - 1];
+                    if (folder) {
+                        editorState.knobParamFolder = folder.slot;
+                        editorState.knobParamIndex = 0;
+                    }
+                }
             }
-            editorState.view = EDITOR_VIEW.KNOB_EDITOR;
             break;
         }
         case EDITOR_VIEW.CONFIRM_DELETE: {
@@ -1136,7 +1247,14 @@ function handleEditorCC(cc, val) {
                 editorState.view = EDITOR_VIEW.OVERVIEW;
                 break;
             case EDITOR_VIEW.KNOB_PARAM_PICKER:
-                editorState.view = EDITOR_VIEW.KNOB_EDITOR;
+                if (editorState.knobParamFolder !== null) {
+                    /* Exit folder back to main view */
+                    editorState.knobParamFolder = null;
+                    editorState.knobParamIndex = 0;
+                } else {
+                    /* Exit picker back to knob editor */
+                    editorState.view = EDITOR_VIEW.KNOB_EDITOR;
+                }
                 break;
         }
         needsRedraw = true;
@@ -1402,10 +1520,276 @@ function exitSourceUi() {
     needsRedraw = true;
 }
 
+/* === Component UI Functions === */
+
+/* Get the UI path for a component module */
+function getComponentUiPath(moduleId) {
+    const root = getModulesRoot();
+    if (!root || !moduleId) return "";
+    const moduleDir = `${root}/${moduleId}`;
+    return `${moduleDir}/ui.js`;
+}
+
+/* Load a component's native UI */
+function loadComponentUi(moduleId) {
+    if (!moduleId) return null;
+    const path = getComponentUiPath(moduleId);
+    if (!path) return null;
+
+    /* Use host_load_ui_module to load the UI file */
+    if (typeof host_load_ui_module !== "function") {
+        console.log("Chain UI: host_load_ui_module not available");
+        return null;
+    }
+
+    /* The module will set globalThis.init, globalThis.tick, etc */
+    /* We need to capture these before they get overwritten */
+    const savedInit = globalThis.init;
+    const savedTick = globalThis.tick;
+    const savedOnMidiInternal = globalThis.onMidiMessageInternal;
+    const savedOnMidiExternal = globalThis.onMidiMessageExternal;
+
+    const ok = host_load_ui_module(path);
+    if (!ok) {
+        console.log(`Chain UI: failed to load component UI: ${path}`);
+        return null;
+    }
+
+    /* Capture the loaded module's functions */
+    const ui = {
+        init: globalThis.init,
+        tick: globalThis.tick,
+        onMidiMessageInternal: globalThis.onMidiMessageInternal,
+        onMidiMessageExternal: globalThis.onMidiMessageExternal
+    };
+
+    /* Restore our functions */
+    globalThis.init = savedInit;
+    globalThis.tick = savedTick;
+    globalThis.onMidiMessageInternal = savedOnMidiInternal;
+    globalThis.onMidiMessageExternal = savedOnMidiExternal;
+
+    return ui;
+}
+
+/* Get the module ID for a component slot */
+function getComponentModuleId(mode) {
+    if (mode === "synth") {
+        return host_module_get_param("synth_module") || "";
+    }
+    if (mode === "fx1") {
+        return host_module_get_param("fx1_module") || "";
+    }
+    if (mode === "fx2") {
+        return host_module_get_param("fx2_module") || "";
+    }
+    return "";
+}
+
+/* Enter component UI mode */
+function enterComponentUi(mode) {
+    const moduleId = getComponentModuleId(mode);
+    if (!moduleId) {
+        console.log(`Chain UI: no module for ${mode}`);
+        return false;
+    }
+
+    /* Load the component's UI */
+    const ui = loadComponentUi(moduleId);
+    if (!ui) {
+        console.log(`Chain UI: failed to load UI for ${moduleId}`);
+        return false;
+    }
+
+    /* Exit source UI if active */
+    if (sourceUiActive) {
+        exitSourceUi();
+    }
+
+    componentUi = ui;
+    componentUiMode = mode;
+    componentUiActive = true;
+    componentUiReady = false;
+
+    /* Enable routing to the component */
+    enableComponentHostRouting();
+
+    /* Initialize the UI */
+    if (typeof componentUi.init === "function") {
+        componentUi.init();
+        componentUiReady = true;
+    }
+
+    needsRedraw = true;
+    return true;
+}
+
+/* Exit component UI mode */
+function exitComponentUi() {
+    if (!componentUiActive) return;
+
+    disableComponentHostRouting();
+
+    componentUiActive = false;
+    componentUiMode = "none";
+    componentUi = null;
+    componentUiReady = false;
+
+    needsRedraw = true;
+}
+
+/* Component selector - get list of available components */
+function getComponentSelectorItems() {
+    const items = [];
+    const synth = host_module_get_param("synth_module") || "";
+    const fx1 = host_module_get_param("fx1_module") || "";
+    const fx2 = host_module_get_param("fx2_module") || "";
+
+    if (synth) {
+        items.push({ mode: "synth", label: "Synth", value: synth });
+    }
+    if (fx1) {
+        items.push({ mode: "fx1", label: "FX 1", value: fx1 });
+    }
+    if (fx2) {
+        items.push({ mode: "fx2", label: "FX 2", value: fx2 });
+    }
+    /* Add save option */
+    items.push({ mode: "save", label: "[Save]", value: "" });
+    /* Always add return option at the end */
+    items.push({ mode: "return", label: "[Return]", value: "" });
+    return items;
+}
+
+/* Show the component selector overlay */
+function showComponentSelector() {
+    componentSelectorActive = true;
+    componentSelectorIndex = 0;
+    componentSelectorScroller.reset(); /* Reset scroller for fresh start */
+    needsRedraw = true;
+}
+
+/* Hide the component selector */
+function hideComponentSelector() {
+    componentSelectorActive = false;
+    componentSelectorScroller.reset();
+    needsRedraw = true;
+}
+
+/* Handle CC for component selector */
+function handleComponentSelectorCC(cc, val) {
+    if (!componentSelectorActive) return false;
+
+    const items = getComponentSelectorItems();
+    if (items.length === 0) {
+        hideComponentSelector();
+        return true;
+    }
+
+    if (cc === CC_BACK && val === 127) {
+        hideComponentSelector();
+        return true;
+    }
+
+    /* Jog wheel for selection */
+    if (cc === CC_JOG) {
+        const delta = val < 64 ? val : val - 128;
+        if (delta !== 0) {
+            componentSelectorIndex = componentSelectorIndex + (delta > 0 ? 1 : -1);
+            if (componentSelectorIndex < 0) componentSelectorIndex = items.length - 1;
+            if (componentSelectorIndex >= items.length) componentSelectorIndex = 0;
+            needsRedraw = true;
+        }
+        return true;
+    }
+
+    /* Click or Menu to select */
+    if ((cc === CC_JOG_CLICK || cc === CC_MENU) && val === 127) {
+        const item = items[componentSelectorIndex];
+        if (item) {
+            hideComponentSelector();
+            if (item.mode === "save") {
+                /* Save current state as new patch */
+                const liveConfig = host_module_get_param("get_live_config");
+                if (liveConfig) {
+                    host_module_set_param("save_patch", liveConfig);
+                    /* Refresh patch list */
+                    patchCount = parseInt(host_module_get_param("patch_count") || "0", 10);
+                }
+            } else if (item.mode !== "return") {
+                enterComponentUi(item.mode);
+            }
+            /* "return" mode just hides the selector, which we already did */
+        }
+        return true;
+    }
+
+    return false;
+}
+
+/* Draw the component selector overlay */
+function drawComponentSelector() {
+    if (!componentSelectorActive) return;
+
+    const items = getComponentSelectorItems();
+
+    /* Draw header with fixed "Chain:" prefix and scrolling name */
+    const prefix = "Chain: ";
+    const chainName = patchName || "Untitled";
+    const prefixWidth = prefix.length * 6; /* 6px per char */
+    const maxNameChars = Math.floor((SCREEN_WIDTH - prefixWidth - 4) / 6); /* remaining space for name */
+
+    /* Tick the scroller and get scrolled chain name */
+    componentSelectorScroller.setSelected("component_selector_header");
+    componentSelectorScroller.tick();
+    const displayName = componentSelectorScroller.getScrolledText(chainName, maxNameChars);
+
+    /* Draw fixed prefix */
+    print(2, 2, prefix, 1);
+    /* Draw scrolling chain name after prefix */
+    print(2 + prefixWidth, 2, displayName, 1);
+    /* Draw header rule */
+    fill_rect(0, 12, SCREEN_WIDTH, 1, 1);
+
+    /* Draw list of components */
+    drawMenuList({
+        items,
+        selectedIndex: componentSelectorIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomNoFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value
+    });
+}
+
 function handleCC(cc, val) {
-    /* Handle editor mode first */
+    /* Track shift state */
+    if (cc === CC_SHIFT) {
+        shiftHeld = (val > 0);
+        return true;
+    }
+
+    /* Handle component selector if active */
+    if (componentSelectorActive) {
+        return handleComponentSelectorCC(cc, val);
+    }
+
+    /* Handle editor mode */
     if (editorMode) {
         return handleEditorCC(cc, val);
+    }
+
+    /* Handle component UI mode - pass all CCs through to component except Shift+Menu */
+    if (componentUiActive) {
+        /* Shift+Menu opens component selector to jump to another component or return */
+        if (cc === CC_MENU && val === 127 && shiftHeld) {
+            showComponentSelector();
+            return true;
+        }
+        /* Let component handle all other CCs - it will get them via onMidiMessage */
+        return false;
     }
 
     if (cc === CC_BACK && val === 127) {
@@ -1422,6 +1806,14 @@ function handleCC(cc, val) {
         }
         host_return_to_menu();
         return true;
+    }
+
+    /* Shift+Menu opens component selector (only in patch view) */
+    if (cc === CC_MENU && val === 127 && shiftHeld) {
+        if (viewMode === "patch") {
+            showComponentSelector();
+            return true;
+        }
     }
 
     if (cc === CC_MENU && val === 127) {
@@ -1553,6 +1945,13 @@ function midiSourceAllowed(source) {
 /* Draw the UI */
 function drawUI() {
     clear_screen();
+
+    /* Component selector overlay */
+    if (componentSelectorActive) {
+        drawComponentSelector();
+        needsRedraw = false;
+        return;
+    }
 
     if (editorMode && editorState) {
         switch (editorState.view) {
@@ -1857,6 +2256,14 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
+    /* Component UI mode - delegate to component */
+    if (componentUiActive) {
+        if (componentUi && typeof componentUi.tick === "function") {
+            componentUi.tick();
+        }
+        return;
+    }
+
     if (sourceUiActive) {
         if (typeof sourceUi.tick === "function") {
             sourceUi.tick();
@@ -1902,12 +2309,41 @@ globalThis.onMidiMessageInternal = function(data) {
     const isCap = isCapacitiveTouchMessage(data);
     const status = data[0] & 0xF0;
     const note = data[1];
+    const cc = data[1];
+    const val = data[2];
+
+    /* Track shift state for all modes */
+    if (status === 0xB0 && cc === CC_SHIFT) {
+        shiftHeld = (val > 0);
+    }
 
     /* Handle knob touch (capacitive notes 0-7) before filtering */
     if (status === 0x90 && note < 8 && data[2] > 0) {
         if (handleKnobTouch(note)) {
             return;
         }
+    }
+
+    /* Component selector takes priority over component UI */
+    if (componentSelectorActive) {
+        if (status === 0xB0) {
+            handleComponentSelectorCC(cc, val);
+        }
+        return;
+    }
+
+    /* Component UI mode - check for Shift+Menu, then delegate to component */
+    if (componentUiActive) {
+        /* Shift+Menu opens component selector to jump to another component or return */
+        if (status === 0xB0 && cc === CC_MENU && val === 127 && shiftHeld) {
+            showComponentSelector();
+            return;
+        }
+        /* Pass all other messages to component UI */
+        if (componentUi && typeof componentUi.onMidiMessageInternal === "function") {
+            componentUi.onMidiMessageInternal(data);
+        }
+        return;
     }
 
     if (status === 0xB0 && data[1] === CC_BACK && data[2] === 127) {
@@ -1944,6 +2380,14 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
+    /* Component UI mode - delegate to component */
+    if (componentUiActive) {
+        if (componentUi && typeof componentUi.onMidiMessageExternal === "function") {
+            componentUi.onMidiMessageExternal(data);
+        }
+        return;
+    }
+
     if (sourceUiActive) {
         if (typeof sourceUi.onMidiMessageExternal === "function") {
             sourceUi.onMidiMessageExternal(data);
