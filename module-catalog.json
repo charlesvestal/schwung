@@ -1,10 +1,12 @@
 {
-  "catalog_version": 1,
+  "catalog_version": 2,
   "host": {
     "name": "Move Anything",
-    "latest_version": "0.1.3",
-    "min_host_version": "0.1.0",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.3/move-anything.tar.gz"
+    "github_repo": "charlesvestal/move-anything",
+    "asset_name": "move-anything.tar.gz",
+    "latest_version": "0.1.4",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.4/move-anything.tar.gz",
+    "min_host_version": "0.1.0"
   },
   "modules": [
     {
@@ -13,9 +15,11 @@
       "description": "Yamaha DX7 FM synthesizer emulator (Dexed/MSFA)",
       "author": "Dexed/MSFA by google/asb2m10 (port: charlesvestal)",
       "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-dx7",
+      "asset_name": "dx7-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.1.0/dx7-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.1.0/dx7-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "sf2",
@@ -23,9 +27,11 @@
       "description": "SoundFont (.sf2) synthesizer using TinySoundFont",
       "author": "TinySoundFont by schellingb (port: charlesvestal)",
       "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-sf2",
+      "asset_name": "sf2-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-sf2/releases/download/v0.1.0/sf2-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-sf2/releases/download/v0.1.0/sf2-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "m8",
@@ -33,9 +39,11 @@
       "description": "Novation Launchpad Pro emulation for Dirtywave M8",
       "author": "bobbydigitales",
       "component_type": "utility",
+      "github_repo": "charlesvestal/move-anything-m8",
+      "asset_name": "m8-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-m8/releases/download/v0.1.0/m8-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-m8/releases/download/v0.1.0/m8-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "jv880",
@@ -43,9 +51,11 @@
       "description": "Roland JV-880 emulator (mini-jv880)",
       "author": "nukeykt/giulioz",
       "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-jv880",
+      "asset_name": "jv880-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-jv880/releases/download/v0.1.0/jv880-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-jv880/releases/download/v0.1.0/jv880-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "obxd",
@@ -53,9 +63,11 @@
       "description": "Virtual analog synthesizer based on Oberheim OB-X",
       "author": "reales",
       "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-obxd",
+      "asset_name": "obxd-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-obxd/releases/download/v0.1.0/obxd-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-obxd/releases/download/v0.1.0/obxd-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "clap",
@@ -63,9 +75,11 @@
       "description": "Host for CLAP audio plugins",
       "author": "Move Anything",
       "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-clap",
+      "asset_name": "clap-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-clap/releases/download/v0.1.0/clap-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-clap/releases/download/v0.1.0/clap-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "cloudseed",
@@ -73,9 +87,11 @@
       "description": "Algorithmic reverb by Ghost Note Audio",
       "author": "Ghost Note Audio",
       "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-cloudseed",
+      "asset_name": "cloudseed-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-cloudseed/releases/download/v0.1.0/cloudseed-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-cloudseed/releases/download/v0.1.0/cloudseed-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "tapescam",
@@ -83,9 +99,11 @@
       "description": "Tape saturation and degradation effect",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-tapescam",
+      "asset_name": "tapescam-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-tapescam/releases/download/v0.1.0/tapescam-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-tapescam/releases/download/v0.1.0/tapescam-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "psxverb",
@@ -93,9 +111,11 @@
       "description": "PlayStation 1 SPU reverb emulation",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-psxverb",
+      "asset_name": "psxverb-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-psxverb/releases/download/v0.1.0/psxverb-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-psxverb/releases/download/v0.1.0/psxverb-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "spacecho",
@@ -103,9 +123,11 @@
       "description": "RE-201 style tape delay",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-space-delay",
+      "asset_name": "spacecho-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-space-delay/releases/download/v0.1.0/spacecho-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-space-delay/releases/download/v0.1.0/spacecho-module.tar.gz",
+      "min_host_version": "0.1.0"
     },
     {
       "id": "sidcontrol",
@@ -113,9 +135,11 @@
       "description": "MIDI controller for SIDaster III synthesizer",
       "author": "charlesvestal",
       "component_type": "utility",
+      "github_repo": "charlesvestal/move-anything-sidcontrol",
+      "asset_name": "sidcontrol-module.tar.gz",
       "latest_version": "0.1.0",
-      "min_host_version": "0.1.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-sidcontrol/releases/download/v0.1.0/sidcontrol-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-sidcontrol/releases/download/v0.1.0/sidcontrol-module.tar.gz",
+      "min_host_version": "0.1.0"
     }
   ]
 }

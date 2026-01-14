@@ -29,6 +29,7 @@ const MODULES_DIR = '/data/UserData/move-anything/modules';
 const BASE_DIR = '/data/UserData/move-anything';
 const TMP_DIR = '/data/UserData/move-anything/tmp';
 const HOST_VERSION_FILE = '/data/UserData/move-anything/host/version.txt';
+const GITHUB_API_BASE = 'https://api.github.com/repos';
 
 /* UI States */
 const STATE_LOADING = 'loading';
@@ -94,6 +95,95 @@ function isNewerVersion(a, b) {
     return compareVersions(a, b) > 0;
 }
 
+/* Fetch latest release info from GitHub API */
+function fetchGitHubRelease(github_repo, asset_name) {
+    const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
+    const apiUrl = `${GITHUB_API_BASE}/${github_repo}/releases/latest`;
+
+    /* Download release info to cache file */
+    const success = host_http_download(apiUrl, cacheFile);
+    if (!success) {
+        console.log(`Failed to fetch release for ${github_repo}`);
+        return null;
+    }
+
+    try {
+        const jsonStr = std.loadFile(cacheFile);
+        if (!jsonStr) return null;
+
+        const release = JSON.parse(jsonStr);
+
+        /* Extract version from tag_name (strip 'v' prefix if present) */
+        let version = release.tag_name || '';
+        if (version.startsWith('v')) {
+            version = version.substring(1);
+        }
+
+        /* Find the asset matching asset_name */
+        let download_url = null;
+        if (release.assets && Array.isArray(release.assets)) {
+            for (const asset of release.assets) {
+                if (asset.name === asset_name) {
+                    download_url = asset.browser_download_url;
+                    break;
+                }
+            }
+        }
+
+        if (!download_url) {
+            console.log(`Asset ${asset_name} not found in release for ${github_repo}`);
+            return null;
+        }
+
+        return { version, download_url };
+    } catch (e) {
+        console.log(`Failed to parse release for ${github_repo}: ${e}`);
+        return null;
+    }
+}
+
+/* Fetch release info for all modules in catalog */
+function fetchAllReleaseInfo() {
+    if (!catalog) return;
+
+    /* Fetch host release info */
+    if (catalog.host && catalog.host.github_repo) {
+        loadingMessage = 'Checking host version...';
+        draw();
+        host_flush_display();
+
+        const hostRelease = fetchGitHubRelease(catalog.host.github_repo, catalog.host.asset_name);
+        if (hostRelease) {
+            catalog.host.latest_version = hostRelease.version;
+            catalog.host.download_url = hostRelease.download_url;
+            console.log(`Host latest: ${hostRelease.version}`);
+        }
+    }
+
+    /* Fetch module release info */
+    if (catalog.modules) {
+        for (let i = 0; i < catalog.modules.length; i++) {
+            const mod = catalog.modules[i];
+            if (mod.github_repo) {
+                loadingMessage = `Checking ${mod.name}...`;
+                draw();
+                host_flush_display();
+
+                const release = fetchGitHubRelease(mod.github_repo, mod.asset_name);
+                if (release) {
+                    mod.latest_version = release.version;
+                    mod.download_url = release.download_url;
+                    console.log(`${mod.id} latest: ${release.version}`);
+                } else {
+                    /* Fallback: module has no releases yet */
+                    mod.latest_version = '0.0.0';
+                    mod.download_url = null;
+                }
+            }
+        }
+    }
+}
+
 /* Get current host version */
 function getHostVersion() {
     try {
@@ -123,6 +213,12 @@ function updateHost() {
     if (!catalog || !catalog.host) {
         state = STATE_RESULT;
         resultMessage = 'No host info';
+        return;
+    }
+
+    if (!catalog.host.download_url) {
+        state = STATE_RESULT;
+        resultMessage = 'No release available';
         return;
     }
 
@@ -215,9 +311,15 @@ function loadCatalogFromCache() {
         }
 
         catalog = JSON.parse(jsonStr);
+        console.log(`Loaded catalog with ${catalog.modules ? catalog.modules.length : 0} modules`);
+
+        /* For catalog v2+, fetch release info from GitHub */
+        if (catalog.catalog_version >= 2) {
+            fetchAllReleaseInfo();
+        }
+
         checkHostUpdate();
         state = STATE_CATEGORIES;
-        console.log(`Loaded catalog with ${catalog.modules ? catalog.modules.length : 0} modules`);
         if (hostUpdateAvailable) {
             console.log(`Host update available: ${hostVersion} -> ${catalog.host.latest_version}`);
         }
@@ -230,6 +332,13 @@ function loadCatalogFromCache() {
 
 /* Install a module */
 function installModule(mod) {
+    /* Check if module has a download URL */
+    if (!mod.download_url) {
+        state = STATE_RESULT;
+        resultMessage = 'No release available';
+        return;
+    }
+
     state = STATE_INSTALLING;
     loadingMessage = `Downloading ${mod.name}...`;
 
