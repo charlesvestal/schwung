@@ -525,11 +525,30 @@ function enterEditor(patchIndex = -1) {
     needsRedraw = true;
 }
 
+/* Enter editor from active chain (via component selector) - no delete, reload on exit */
+function enterEditorFromActive(patchIndex) {
+    enterEditor(patchIndex);
+    if (editorState) {
+        editorState.editFromActive = true;
+    }
+}
+
 function exitEditor() {
+    /* Check if we need to reload the active chain after editing */
+    const shouldReload = editorState && editorState.editFromActive;
+    const reloadIndex = shouldReload ? editorState.editIndex : -1;
+
     editorMode = false;
     editorState = null;
     editorError = "";
     editorErrorTimeout = 0;
+
+    if (shouldReload && reloadIndex >= 0) {
+        /* Reload the edited chain to apply changes */
+        host_module_set_param("patch", String(reloadIndex));
+        viewMode = "patch";
+    }
+
     needsRedraw = true;
 }
 
@@ -591,9 +610,12 @@ function drawEditorOverview() {
     ];
 
     if (!editorState.isNew) {
-        /* Add Rename and Delete for existing chains */
+        /* Add Rename for existing chains */
         items.splice(items.length - 1, 0, { type: "action", action: "rename", label: "[Rename]" });
-        items.push({ type: "action", action: "delete", label: "[Delete]" });
+        /* Only show Delete when not editing from active chain */
+        if (!editorState.editFromActive) {
+            items.push({ type: "action", action: "delete", label: "[Delete]" });
+        }
     }
 
     drawMenuList({
@@ -1511,6 +1533,7 @@ function saveChain() {
     const chainJson = buildChainJson();
     host_module_set_param("save_patch", chainJson);
 
+    refreshPatchList();
     exitEditor();
 }
 
@@ -1523,6 +1546,13 @@ function saveChainAsNew() {
 
     const chainJson = buildChainJson();
     host_module_set_param("save_patch", chainJson);
+
+    refreshPatchList();
+
+    /* If editing from active chain, load the newly created patch */
+    if (editorState.editFromActive) {
+        editorState.editIndex = patchCount - 1;  /* New patch is at the end */
+    }
 
     exitEditor();
 }
@@ -1544,6 +1574,7 @@ function updateCurrentPatch() {
     /* Pass the patch index to update the existing file */
     host_module_set_param("update_patch", `${editorState.editIndex}:${chainJson}`);
 
+    refreshPatchList();
     exitEditor();
 }
 
@@ -1556,6 +1587,7 @@ function deleteChain() {
 
     host_module_set_param("delete_patch", String(editorState.editIndex));
 
+    refreshPatchList();
     exitEditor();
 }
 
@@ -1757,7 +1789,8 @@ function getComponentSelectorItems() {
     if (fx2) {
         items.push({ mode: "fx2", label: "FX 2", value: fx2 });
     }
-    /* Add save option */
+    /* Add edit and save options */
+    items.push({ mode: "edit", label: "[Edit]", value: "" });
     items.push({ mode: "save", label: "[Save]", value: "" });
     /* Always add return option at the end */
     items.push({ mode: "return", label: "[Return]", value: "" });
@@ -1811,7 +1844,13 @@ function handleComponentSelectorCC(cc, val) {
         const item = items[componentSelectorIndex];
         if (item) {
             hideComponentSelector();
-            if (item.mode === "save") {
+            if (item.mode === "edit") {
+                /* Edit the active chain - no delete option, reload after */
+                if (componentUiActive) {
+                    exitComponentUi();
+                }
+                enterEditorFromActive(currentPatch);
+            } else if (item.mode === "save") {
                 /* Save current state as new patch - use hostFns to bypass component routing */
                 const liveConfig = hostFns.getParam("get_live_config");
                 if (liveConfig) {
@@ -2261,6 +2300,21 @@ function handleKnobFeedback(cc, value) {
     needsRedraw = true;
 
     return true;
+}
+
+/* Force refresh patch list from DSP (after save/rename/delete) */
+function refreshPatchList() {
+    const pc = host_module_get_param("patch_count");
+    patchCount = parseInt(pc) || 0;
+    patchNames = [];
+    for (let i = 0; i < patchCount; i++) {
+        const name = host_module_get_param(`patch_name_${i}`);
+        patchNames.push(name || `Patch ${i + 1}`);
+    }
+    if (selectedPatch >= patchCount) {
+        selectedPatch = Math.max(-1, patchCount - 1);
+    }
+    needsRedraw = true;
 }
 
 /* Update state from DSP */
