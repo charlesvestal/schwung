@@ -208,6 +208,17 @@ Component types: `sound_generator`, `audio_fx`, `midi_fx`
 - Audio FX: freeverb
 - MIDI sources (optional): DSP modules that generate MIDI; can provide `ui_chain.js` for full-screen chain UI
 
+### Recording
+
+Signal Chain supports recording audio output to WAV files:
+
+- **Record Button** (CC 118): Toggles recording on/off
+- **LED States**: Off (no patch), White (patch loaded), Red (recording)
+- **Output**: Recordings saved to `/data/UserData/move-anything/recordings/rec_YYYYMMDD_HHMMSS.wav`
+- **Format**: 44.1kHz, 16-bit stereo WAV
+
+Recording uses a background thread with a 2-second ring buffer to prevent audio dropouts during disk I/O. Recording requires a patch to be loaded.
+
 ### External Modules
 
 External modules are maintained in separate repositories and available via Module Store:
