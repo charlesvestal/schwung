@@ -69,17 +69,18 @@ build/
   host/menu_ui.js            # Host menu
   shared/                    # Shared JS utilities
   modules/
-    sf2/                     # SF2 synth module
-    dx7/                     # DX7 FM synth module
-    m8/                      # M8 LPP emulator
-    controller/              # MIDI controller
     chain/                   # Signal Chain module
       audio_fx/              # Audio FX plugins (Freeverb)
       sound_generators/      # Sound generators (Line In)
+      midi_fx/               # MIDI FX (Chord, Arp)
       patches/               # Chain patches
+    controller/              # MIDI controller
+    store/                   # Module Store
 
 move-anything.tar.gz         # Deployable package
 ```
+
+**Note:** Sound generators (SF2, DX7, JV-880, OB-Xd) and audio effects (CloudSeed, PSX Verb, etc.) are external modules installed via the Module Store, not built with the host.
 
 ## Troubleshooting
 

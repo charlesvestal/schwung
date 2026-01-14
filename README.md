@@ -41,26 +41,50 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 ### Signal Chain
 
-The Signal Chain module lets you combine MIDI sources, MIDI effects, sound generators, and audio effects into patches:
+The Signal Chain module lets you combine MIDI sources, MIDI effects, sound generators, and audio effects into patches.
+
+#### Quick Start
+
+1. Select **Signal Chain** from the main menu
+2. Use **jog wheel** to browse patches
+3. **Click jog** to load a patch
+4. **Play pads** to hear sound
+5. Press **Menu** to access the synth's UI (if available)
+6. Press **Back** to return to patch list
+7. **Up/Down** to transpose octave while playing
+
+#### Components
 
 **Sound Generators:**
 - Line In (external audio input, built-in)
 - SF2, DX7, OB-Xd, JV-880, CLAP (install via Module Store)
-- Any module marked chainable as a sound generator
-
-**MIDI Sources:**
-- Sequencers or other modules that generate MIDI (via `midi_source` in a patch)
 
 **MIDI Effects:**
 - Chord generator (major, minor, power, octave)
 - Arpeggiator (up, down, up-down, random)
-- JavaScript MIDI FX (per-patch registry)
 
 **Audio Effects:**
 - Freeverb (Schroeder-Moorer reverb, built-in)
 - CloudSeed, PSX Verb, TAPESCAM, Space Echo (install via Module Store)
 
-Patches are JSON files in `modules/chain/patches/`. Use the jog wheel to highlight, click to load, Up/Down for octave control in the patch view, and Back to return to the list. Modules that provide a chain UI can be entered with Menu. External modules add their own chain presets when installed.
+#### Creating Custom Patches
+
+Patches are JSON files in `modules/chain/patches/`. Create your own:
+
+```json
+{
+  "name": "My Patch",
+  "version": 1,
+  "chain": {
+    "synth": { "module": "dx7" },
+    "audio_fx": [
+      { "type": "freeverb", "params": { "wet": 0.3 } }
+    ]
+  }
+}
+```
+
+Restart Signal Chain to pick up new patches.
 
 ## External Modules (via Module Store)
 
@@ -87,6 +111,20 @@ Install these from the Module Store on your device:
 | Module | Description |
 |--------|-------------|
 | M8 LPP | Dirtywave M8 Launchpad Pro emulation |
+
+### Using the Module Store
+
+1. Select **Module Store** from the main menu
+2. Browse by category: Sound Generators, Audio FX, Utilities
+3. Use **jog wheel** to highlight a module
+4. **Click jog** to see module details
+5. Select **Install** to download and install
+
+**Updating modules:** Modules with available updates show a version badge. Select the module and choose **Update**.
+
+**Removing modules:** Select an installed module and choose **Remove**.
+
+Installed modules appear in the main menu immediately after installation.
 
 ## Uninstall
 
