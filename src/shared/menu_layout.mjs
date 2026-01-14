@@ -78,9 +78,7 @@ export function drawMenuList({
     indicatorX = LIST_INDICATOR_X,
     indicatorBottomY = LIST_INDICATOR_BOTTOM_Y,
     getLabel,
-    getValue,
-    isHeader = () => false,
-    isSelectable = () => true
+    getValue
 }) {
     const totalItems = items.length;
     const resolvedTopY = listArea?.topY ?? topY;
@@ -107,17 +105,7 @@ export function drawMenuList({
     for (let i = startIdx; i < endIdx; i++) {
         const y = resolvedTopY + (i - startIdx) * lineHeight;
         const item = items[i];
-        const itemIsHeader = isHeader(item);
-        const isSelected = i === selectedIndex && !itemIsHeader;
-
-        /* Headers get special formatting */
-        if (itemIsHeader) {
-            let label = getLabel(item, i);
-            /* Draw header with underline, no prefix */
-            print(2, y, label, 1);
-            fill_rect(2, y + 9, label.length * DEFAULT_CHAR_WIDTH, 1, 1);
-            continue;
-        }
+        const isSelected = i === selectedIndex;
 
         const labelPrefix = isSelected ? "> " : "  ";
         let label = getLabel(item, i);
