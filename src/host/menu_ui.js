@@ -11,7 +11,7 @@ import {
     MoveLeft, MoveRight, MoveUp, MoveDown
 } from '../shared/constants.mjs';
 
-import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
+import { isCapacitiveTouchMessage, clearAllLEDs } from '../shared/input_filter.mjs';
 import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount, enterCategory, exitCategory, isInCategory, resetToMain } from './menu_main.mjs';
 import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
 
@@ -121,6 +121,7 @@ function loadModule(mod) {
 /* Unload current module and return to menu */
 function returnToMenu() {
     host_unload_module();
+    clearAllLEDs();
     menuVisible = true;
     settingsVisible = false;
     resetToMain();
@@ -218,6 +219,7 @@ function handleNote(note, velocity) {
 
 globalThis.init = function() {
     console.log("Menu UI initializing...");
+    clearAllLEDs();
     refreshModules();
 
     if (modules.length > 0) {
