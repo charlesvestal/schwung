@@ -1225,7 +1225,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
                 q1++;
                 if (strncmp(q1, "int", 3) == 0) {
                     p->type = KNOB_TYPE_INT;
-                    p->max_val = 127.0f;  /* Default for int */
+                    p->max_val = 9999.0f;  /* Default for int */
                 }
             }
         }
@@ -1678,7 +1678,7 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
                 }
 
                 /* Parse max (optional) */
-                float max_val = (type == KNOB_TYPE_INT) ? 127.0f : 1.0f;
+                float max_val = (type == KNOB_TYPE_INT) ? 9999.0f : 1.0f;
                 const char *max_pos = strstr(obj_start, "\"max\"");
                 if (max_pos && max_pos < obj_end) {
                     const char *colon = strchr(max_pos, ':');
@@ -2208,7 +2208,7 @@ static int load_patch(int index) {
                         }
                     }
                     if (!got_max) {
-                        g_knob_mappings[i].max_val = 127.0f;  /* Fallback */
+                        g_knob_mappings[i].max_val = 9999.0f;  /* Fallback */
                     }
                 } else {
                     g_knob_mappings[i].max_val = pinfo->max_val;

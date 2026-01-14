@@ -1050,7 +1050,7 @@ function handleParamJog(delta) {
     switch (param.type) {
         case "int": {
             const step = param.step || 1;
-            value = Math.max(param.min, Math.min(param.max || 127, value + delta * step));
+            value = Math.max(param.min, Math.min(param.max || 9999, value + delta * step));
             break;
         }
         case "float": {
@@ -2203,7 +2203,7 @@ function loadCurrentPatchKnobMappings() {
             currentKnobMappings = config.knob_mappings.map(m => {
                 const type = m.type || "float";  /* Default to float */
                 const min = m.min !== undefined ? m.min : (type === "int" ? 0 : 0.0);
-                const max = m.max !== undefined ? m.max : (type === "int" ? 127 : 1.0);
+                const max = m.max !== undefined ? m.max : (type === "int" ? 9999 : 1.0);
                 const defaultVal = type === "int" ? Math.floor((min + max) / 2) : 0.5;
                 return {
                     ...m,
