@@ -8,3 +8,4 @@
 /libs/quickjs/quickjs-2025-04-26/libquickjs.a
 /.worktrees
 docs/.DS_Store
+*.tar.gz
