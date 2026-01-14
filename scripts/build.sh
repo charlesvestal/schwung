@@ -47,11 +47,8 @@ cd "$REPO_ROOT"
 mkdir -p ./build/
 mkdir -p ./build/host/
 mkdir -p ./build/shared/
-# Built-in modules only (chain, controller, store)
+# Module directories are created automatically when copying files
 # External modules (sf2, dx7, m8, jv880, obxd, clap) are in separate repos
-mkdir -p ./build/modules/controller/
-mkdir -p ./build/modules/chain/
-mkdir -p ./build/modules/store/
 
 echo "Building host..."
 
@@ -74,6 +71,7 @@ echo "Building host..."
 echo "Building Signal Chain module..."
 
 # Build Signal Chain DSP plugin
+mkdir -p ./build/modules/chain/
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
     src/modules/chain/dsp/chain_host.c \
     -o build/modules/chain/dsp.so \
@@ -113,29 +111,14 @@ cp ./src/shim-entrypoint.sh ./build/
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
 
-# Copy Controller module files
-cp ./src/modules/controller/module.json ./build/modules/controller/
-cp ./src/modules/controller/ui.js ./build/modules/controller/
-
-# Copy Store module files
-cp ./src/modules/store/module.json ./build/modules/store/
-cp ./src/modules/store/ui.js ./build/modules/store/
-
-# Copy Signal Chain module files
-cp ./src/modules/chain/module.json ./build/modules/chain/
-cp ./src/modules/chain/ui.js ./build/modules/chain/
-mkdir -p ./build/modules/chain/midi_fx/
-cp ./src/modules/chain/midi_fx/*.mjs ./build/modules/chain/midi_fx/ 2>/dev/null || true
-mkdir -p ./build/modules/chain/patches/
-cp ./src/modules/chain/patches/*.json ./build/modules/chain/patches/ 2>/dev/null || true
-
-# Copy chain component module.json files for dynamic discovery
-cp ./src/modules/chain/audio_fx/freeverb/module.json ./build/modules/chain/audio_fx/freeverb/ 2>/dev/null || true
-cp ./src/modules/chain/sound_generators/linein/module.json ./build/modules/chain/sound_generators/linein/ 2>/dev/null || true
-mkdir -p ./build/modules/chain/midi_fx/chord/
-cp ./src/modules/chain/midi_fx/chord/module.json ./build/modules/chain/midi_fx/chord/ 2>/dev/null || true
-mkdir -p ./build/modules/chain/midi_fx/arp/
-cp ./src/modules/chain/midi_fx/arp/module.json ./build/modules/chain/midi_fx/arp/ 2>/dev/null || true
+# Copy all module files (js, mjs, json) - preserves directory structure
+# Compiled .so files are built separately above
+echo "Copying module files..."
+find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while read src; do
+    dest="./build/${src#./src/}"
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+done
 
 # Copy curl binary for store module (if present)
 if [ -f "./libs/curl/curl" ]; then
