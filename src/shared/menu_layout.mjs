@@ -246,4 +246,34 @@ export function drawOverlay() {
     print(boxX + 4, boxY + 14, `Value: ${overlayValue}`, 1);
 }
 
+/* === Status Overlay === */
+/* A centered overlay for status/loading messages */
+
+const STATUS_OVERLAY_WIDTH = 120;
+const STATUS_OVERLAY_HEIGHT = 40;
+
+/**
+ * Draw a centered status overlay with title and message
+ * Used for loading states, installation progress, etc.
+ * @param {string} title - Title text (e.g., "Installing")
+ * @param {string} message - Message text (e.g., "JV-880 v0.2.0")
+ */
+export function drawStatusOverlay(title, message) {
+    const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;
+    const boxY = (SCREEN_HEIGHT - STATUS_OVERLAY_HEIGHT) / 2;
+
+    /* Background and double border */
+    fill_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, STATUS_OVERLAY_HEIGHT, 0);
+    draw_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, STATUS_OVERLAY_HEIGHT, 1);
+    draw_rect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, STATUS_OVERLAY_HEIGHT - 2, 1);
+
+    /* Center title */
+    const titleW = title.length * 6;
+    print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 10, title, 1);
+
+    /* Center message */
+    const msgW = message.length * 6;
+    print(Math.floor((SCREEN_WIDTH - msgW) / 2), boxY + 24, message, 1);
+}
+
 /* Note: Label scroller is auto-ticked inside drawMenuList() */
