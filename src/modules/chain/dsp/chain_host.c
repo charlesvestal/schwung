@@ -2806,7 +2806,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
 
         /* Build final JSON */
         snprintf(buf, buf_len,
-            "{\"synth\":{\"module\":\"%s\"},\"config\":{\"preset\":%d},"
+            "{\"synth\":{\"module\":\"%s\",\"preset\":%d},"
             "\"source\":\"%s\",\"input\":\"%s\",\"chord\":\"%s\",\"arp\":\"%s\","
             "\"arp_bpm\":%d,\"arp_div\":%d,\"audio_fx\":%s,"
             "\"knob_mappings\":%s}",

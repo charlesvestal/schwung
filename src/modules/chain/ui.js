@@ -1641,9 +1641,10 @@ function exitComponentUi() {
 /* Component selector - get list of available components */
 function getComponentSelectorItems() {
     const items = [];
-    const synth = host_module_get_param("synth_module") || "";
-    const fx1 = host_module_get_param("fx1_module") || "";
-    const fx2 = host_module_get_param("fx2_module") || "";
+    /* Use hostFns.getParam directly to bypass component routing */
+    const synth = hostFns.getParam("synth_module") || "";
+    const fx1 = hostFns.getParam("fx1_module") || "";
+    const fx2 = hostFns.getParam("fx2_module") || "";
 
     if (synth) {
         items.push({ mode: "synth", label: "Synth", value: synth });
@@ -1709,17 +1710,21 @@ function handleComponentSelectorCC(cc, val) {
         if (item) {
             hideComponentSelector();
             if (item.mode === "save") {
-                /* Save current state as new patch */
-                const liveConfig = host_module_get_param("get_live_config");
+                /* Save current state as new patch - use hostFns to bypass component routing */
+                const liveConfig = hostFns.getParam("get_live_config");
                 if (liveConfig) {
-                    host_module_set_param("save_patch", liveConfig);
+                    hostFns.setParam("save_patch", liveConfig);
                     /* Refresh patch list */
-                    patchCount = parseInt(host_module_get_param("patch_count") || "0", 10);
+                    patchCount = parseInt(hostFns.getParam("patch_count") || "0", 10);
                 }
-            } else if (item.mode !== "return") {
+            } else if (item.mode === "return") {
+                /* Exit component UI if active, return to macro screen */
+                if (componentUiActive) {
+                    exitComponentUi();
+                }
+            } else {
                 enterComponentUi(item.mode);
             }
-            /* "return" mode just hides the selector, which we already did */
         }
         return true;
     }
@@ -2256,8 +2261,14 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
-    /* Component UI mode - delegate to component */
+    /* Component UI mode - delegate to component, but overlay selector if active */
     if (componentUiActive) {
+        if (componentSelectorActive) {
+            /* Draw selector overlay instead of component */
+            clear_screen();
+            drawComponentSelector();
+            return;
+        }
         if (componentUi && typeof componentUi.tick === "function") {
             componentUi.tick();
         }
