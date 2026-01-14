@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "dsp": "freeverb.so",
   "api_version": 1,
+  "component_type": "audio_fx",
   "capabilities": {
     "chainable": true,
     "component_type": "audio_fx",

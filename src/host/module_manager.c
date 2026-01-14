@@ -201,21 +201,20 @@ void mm_init(module_manager_t *mm, uint8_t *mapped_memory,
     mm->host_api.midi_send_external = midi_send_external;
 }
 
-int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
-    mm->module_count = 0;
-
-    DIR *dir = opendir(modules_dir);
+/* Helper to scan a single directory for modules */
+static int scan_directory(module_manager_t *mm, const char *dir_path) {
+    DIR *dir = opendir(dir_path);
     if (!dir) {
-        printf("mm: cannot open modules directory: %s\n", modules_dir);
-        return -1;
+        return 0;  /* Not an error - directory may not exist */
     }
 
+    int found = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL && mm->module_count < MAX_MODULES) {
         if (entry->d_name[0] == '.') continue;
 
         char module_path[MAX_PATH_LEN];
-        snprintf(module_path, sizeof(module_path), "%s/%s", modules_dir, entry->d_name);
+        snprintf(module_path, sizeof(module_path), "%s/%s", dir_path, entry->d_name);
 
         struct stat st;
         if (stat(module_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
@@ -227,10 +226,28 @@ int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
 
         if (parse_module_json(module_path, &mm->modules[mm->module_count]) == 0) {
             mm->module_count++;
+            found++;
         }
     }
 
     closedir(dir);
+    return found;
+}
+
+int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
+    mm->module_count = 0;
+
+    /* Scan main modules directory */
+    int main_count = scan_directory(mm, modules_dir);
+    if (main_count < 0) {
+        printf("mm: cannot open modules directory: %s\n", modules_dir);
+    }
+
+    /* Also scan chain/audio_fx for built-in audio effects */
+    char audio_fx_dir[MAX_PATH_LEN];
+    snprintf(audio_fx_dir, sizeof(audio_fx_dir), "%s/chain/audio_fx", modules_dir);
+    scan_directory(mm, audio_fx_dir);
+
     printf("mm: found %d modules\n", mm->module_count);
     return mm->module_count;
 }
