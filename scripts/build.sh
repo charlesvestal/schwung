@@ -78,7 +78,7 @@ echo "Building Signal Chain module..."
     src/modules/chain/dsp/chain_host.c \
     -o build/modules/chain/dsp.so \
     -Isrc \
-    -lm -ldl
+    -lm -ldl -lpthread
 
 echo "Building Audio FX plugins..."
 

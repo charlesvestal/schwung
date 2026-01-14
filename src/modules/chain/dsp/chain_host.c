@@ -10,9 +10,41 @@
 #include <string.h>
 #include <dlfcn.h>
 #include <dirent.h>
+#include <time.h>
+#include <pthread.h>
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v1.h"
+
+/* Recording constants */
+#define RECORDINGS_DIR "/data/UserData/move-anything/recordings"
+#define NUM_CHANNELS 2
+#define BITS_PER_SAMPLE 16
+#define CC_RECORD_BUTTON 118
+#define LED_COLOR_RED 1
+#define LED_COLOR_WHITE 120
+#define LED_COLOR_OFF 0
+
+/* Ring buffer for threaded recording (2 seconds of stereo audio) */
+#define RING_BUFFER_SAMPLES (SAMPLE_RATE * 2)
+#define RING_BUFFER_SIZE (RING_BUFFER_SAMPLES * NUM_CHANNELS * sizeof(int16_t))
+
+/* WAV file header structure */
+typedef struct {
+    char riff_id[4];        /* "RIFF" */
+    uint32_t file_size;     /* File size - 8 */
+    char wave_id[4];        /* "WAVE" */
+    char fmt_id[4];         /* "fmt " */
+    uint32_t fmt_size;      /* 16 for PCM */
+    uint16_t audio_format;  /* 1 for PCM */
+    uint16_t num_channels;
+    uint32_t sample_rate;
+    uint32_t byte_rate;
+    uint16_t block_align;
+    uint16_t bits_per_sample;
+    char data_id[4];        /* "data" */
+    uint32_t data_size;     /* Number of bytes of audio data */
+} wav_header_t;
 
 /* Limits */
 #define MAX_PATCHES 32      /* Max patches to list in browser */
@@ -167,6 +199,22 @@ static int g_knob_mapping_count = 0;
 static int g_mute_countdown = 0;
 #define MUTE_BLOCKS_AFTER_SWITCH 8  /* ~23ms at 44100Hz, 128 frames/block */
 
+/* Recording state */
+static int g_recording = 0;
+static FILE *g_wav_file = NULL;
+static uint32_t g_samples_written = 0;
+static char g_current_recording[MAX_PATH_LEN] = "";
+
+/* Ring buffer for threaded recording */
+static int16_t *g_ring_buffer = NULL;
+static volatile size_t g_ring_write_pos = 0;
+static volatile size_t g_ring_read_pos = 0;
+static pthread_t g_writer_thread;
+static pthread_mutex_t g_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_ring_cond = PTHREAD_COND_INITIALIZER;
+static volatile int g_writer_running = 0;
+static volatile int g_writer_should_exit = 0;
+
 /* MIDI input filter (per patch) */
 static midi_input_t g_midi_input = MIDI_INPUT_ANY;
 
@@ -199,6 +247,254 @@ static void chain_log(const char *msg) {
         printf("[chain] %s\n", msg);
     }
 }
+
+/* === Recording Functions === */
+
+static void write_wav_header(FILE *f, uint32_t data_size) {
+    wav_header_t header;
+
+    memcpy(header.riff_id, "RIFF", 4);
+    header.file_size = 36 + data_size;
+    memcpy(header.wave_id, "WAVE", 4);
+
+    memcpy(header.fmt_id, "fmt ", 4);
+    header.fmt_size = 16;
+    header.audio_format = 1;  /* PCM */
+    header.num_channels = NUM_CHANNELS;
+    header.sample_rate = SAMPLE_RATE;
+    header.byte_rate = SAMPLE_RATE * NUM_CHANNELS * (BITS_PER_SAMPLE / 8);
+    header.block_align = NUM_CHANNELS * (BITS_PER_SAMPLE / 8);
+    header.bits_per_sample = BITS_PER_SAMPLE;
+
+    memcpy(header.data_id, "data", 4);
+    header.data_size = data_size;
+
+    fseek(f, 0, SEEK_SET);
+    fwrite(&header, sizeof(header), 1, f);
+}
+
+/* Ring buffer helpers - lock-free for single producer (audio thread) */
+static size_t ring_available_write(void) {
+    size_t write_pos = g_ring_write_pos;
+    size_t read_pos = g_ring_read_pos;
+    size_t buffer_samples = RING_BUFFER_SAMPLES * NUM_CHANNELS;
+
+    if (write_pos >= read_pos) {
+        return buffer_samples - (write_pos - read_pos) - 1;
+    } else {
+        return read_pos - write_pos - 1;
+    }
+}
+
+static size_t ring_available_read(void) {
+    size_t write_pos = g_ring_write_pos;
+    size_t read_pos = g_ring_read_pos;
+    size_t buffer_samples = RING_BUFFER_SAMPLES * NUM_CHANNELS;
+
+    if (write_pos >= read_pos) {
+        return write_pos - read_pos;
+    } else {
+        return buffer_samples - (read_pos - write_pos);
+    }
+}
+
+/* Writer thread - runs in background, writes buffered audio to disk */
+static void *writer_thread_func(void *arg) {
+    (void)arg;
+    size_t buffer_samples = RING_BUFFER_SAMPLES * NUM_CHANNELS;
+    size_t write_chunk = SAMPLE_RATE * NUM_CHANNELS / 4;  /* Write ~250ms at a time */
+
+    while (1) {
+        pthread_mutex_lock(&g_ring_mutex);
+
+        /* Wait for data or exit signal */
+        while (ring_available_read() < write_chunk && !g_writer_should_exit) {
+            pthread_cond_wait(&g_ring_cond, &g_ring_mutex);
+        }
+
+        int should_exit = g_writer_should_exit;
+        pthread_mutex_unlock(&g_ring_mutex);
+
+        /* Write available data to file */
+        size_t available = ring_available_read();
+        while (available > 0 && g_wav_file) {
+            size_t read_pos = g_ring_read_pos;
+            size_t to_end = buffer_samples - read_pos;
+            size_t to_write = (available < to_end) ? available : to_end;
+
+            fwrite(&g_ring_buffer[read_pos], sizeof(int16_t), to_write, g_wav_file);
+            g_samples_written += to_write / NUM_CHANNELS;
+
+            g_ring_read_pos = (read_pos + to_write) % buffer_samples;
+            available = ring_available_read();
+        }
+
+        if (should_exit) {
+            break;
+        }
+    }
+
+    return NULL;
+}
+
+static void start_recording(void) {
+    if (g_writer_running) {
+        /* Already recording */
+        return;
+    }
+
+    /* Create recordings directory */
+    char mkdir_cmd[512];
+    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", RECORDINGS_DIR);
+    system(mkdir_cmd);
+
+    /* Generate filename with timestamp */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+
+    snprintf(g_current_recording, sizeof(g_current_recording),
+             "%s/rec_%04d%02d%02d_%02d%02d%02d.wav",
+             RECORDINGS_DIR,
+             tm_info->tm_year + 1900,
+             tm_info->tm_mon + 1,
+             tm_info->tm_mday,
+             tm_info->tm_hour,
+             tm_info->tm_min,
+             tm_info->tm_sec);
+
+    /* Allocate ring buffer */
+    g_ring_buffer = malloc(RING_BUFFER_SIZE);
+    if (!g_ring_buffer) {
+        chain_log("Failed to allocate ring buffer for recording");
+        return;
+    }
+
+    /* Open file for writing */
+    g_wav_file = fopen(g_current_recording, "wb");
+    if (!g_wav_file) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "Failed to open recording file: %s", g_current_recording);
+        chain_log(msg);
+        free(g_ring_buffer);
+        g_ring_buffer = NULL;
+        return;
+    }
+
+    /* Initialize state */
+    g_samples_written = 0;
+    g_ring_write_pos = 0;
+    g_ring_read_pos = 0;
+    g_writer_should_exit = 0;
+
+    /* Write placeholder header */
+    write_wav_header(g_wav_file, 0);
+
+    /* Start writer thread */
+    if (pthread_create(&g_writer_thread, NULL, writer_thread_func, NULL) != 0) {
+        chain_log("Failed to create writer thread");
+        fclose(g_wav_file);
+        g_wav_file = NULL;
+        free(g_ring_buffer);
+        g_ring_buffer = NULL;
+        return;
+    }
+
+    g_writer_running = 1;
+
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Recording started: %s", g_current_recording);
+    chain_log(msg);
+}
+
+static void stop_recording(void) {
+    if (!g_writer_running) {
+        chain_log("stop_recording called but writer not running");
+        return;
+    }
+
+    chain_log("Stopping recording - signaling writer thread");
+
+    /* Signal writer thread to exit */
+    pthread_mutex_lock(&g_ring_mutex);
+    g_writer_should_exit = 1;
+    pthread_cond_signal(&g_ring_cond);
+    pthread_mutex_unlock(&g_ring_mutex);
+
+    /* Wait for writer thread to finish */
+    chain_log("Waiting for writer thread to finish");
+    pthread_join(g_writer_thread, NULL);
+    g_writer_running = 0;
+    chain_log("Writer thread finished");
+
+    /* Update WAV header with final size */
+    if (g_wav_file) {
+        uint32_t data_size = g_samples_written * NUM_CHANNELS * (BITS_PER_SAMPLE / 8);
+        write_wav_header(g_wav_file, data_size);
+        fclose(g_wav_file);
+        g_wav_file = NULL;
+    }
+
+    /* Free ring buffer */
+    if (g_ring_buffer) {
+        free(g_ring_buffer);
+        g_ring_buffer = NULL;
+    }
+
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Recording stopped: %s (%u samples, %.1f seconds)",
+             g_current_recording, g_samples_written,
+             (float)g_samples_written / SAMPLE_RATE);
+    chain_log(msg);
+
+    g_current_recording[0] = '\0';
+}
+
+static void update_record_led(void) {
+    if (!g_host || !g_host->midi_send_internal) return;
+
+    /* Determine LED color based on state:
+     * - Off (black) when no patch loaded
+     * - White when patch loaded but not recording
+     * - Red when recording
+     */
+    uint8_t color;
+    if (!g_synth_plugin) {
+        color = LED_COLOR_OFF;
+    } else if (g_recording) {
+        color = LED_COLOR_RED;
+    } else {
+        color = LED_COLOR_WHITE;
+    }
+
+    /* Send CC to set record LED color */
+    /* USB-MIDI packet: [cable|CIN, status, cc, value] */
+    uint8_t msg[4] = {
+        0x0B,  /* Cable 0, CIN = Control Change */
+        0xB0,  /* CC on channel 0 */
+        CC_RECORD_BUTTON,
+        color
+    };
+    g_host->midi_send_internal(msg, 4);
+}
+
+static void toggle_recording(void) {
+    /* Don't allow recording without a patch loaded */
+    if (!g_synth_plugin) {
+        chain_log("Cannot record - no patch loaded");
+        return;
+    }
+
+    if (g_recording) {
+        stop_recording();
+        g_recording = 0;
+    } else {
+        g_recording = 1;
+        start_recording();
+    }
+    update_record_led();
+}
+
+/* === End Recording Functions === */
 
 static int json_get_bool(const char *json, const char *key, int *out) {
     char search[128];
@@ -1693,6 +1989,8 @@ static void unload_patch(void) {
     g_source_ui_active = 0;
     g_mute_countdown = 0;
     chain_log("Unloaded current patch");
+    /* Update record button LED (off when no patch) */
+    update_record_led();
 }
 
 /* Load a patch by index */
@@ -1866,6 +2164,9 @@ static int load_patch(int index) {
              index, patch->name, g_fx_count, g_arp_mode);
     chain_log(msg);
 
+    /* Update record button LED (white when patch loaded) */
+    update_record_led();
+
     return 0;
 }
 
@@ -1893,9 +2194,19 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
 
 static void plugin_on_unload(void) {
     chain_log("Chain host unloading");
+
+    /* Stop any active recording - always try, stop_recording handles the check */
+    if (g_recording || g_writer_running) {
+        chain_log("Stopping recording on unload");
+        stop_recording();
+        g_recording = 0;
+    }
+
     unload_all_audio_fx();
     unload_synth();
     unload_midi_source();
+
+    chain_log("Chain host unloaded");
 }
 
 /* Send a note message to synth with optional interval offset */
@@ -1920,8 +2231,17 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 }
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
-    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
     if (len < 1) return;
+
+    /* Handle record button (CC 118) - toggle recording on press */
+    /* This must be before the synth check so recording works even without a patch loaded */
+    if (len >= 3 && (msg[0] & 0xF0) == 0xB0 && msg[1] == CC_RECORD_BUTTON && msg[2] > 0) {
+        chain_log("Record button pressed - toggling recording");
+        toggle_recording();
+        return;  /* Don't pass record button to synth */
+    }
+
+    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
 
     /* Handle knob CC mappings (CC 71-78) - relative encoders */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
@@ -2054,6 +2374,19 @@ static void plugin_set_param(const char *key, const char *val) {
         return;
     }
 
+    /* Recording control */
+    if (strcmp(key, "recording") == 0) {
+        int new_state = atoi(val);
+        if (new_state && !g_recording) {
+            g_recording = 1;
+            start_recording();
+        } else if (!new_state && g_recording) {
+            stop_recording();
+            g_recording = 0;
+        }
+        return;
+    }
+
     if (strcmp(key, "save_patch") == 0) {
         save_patch(val);
         return;
@@ -2116,6 +2449,16 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             return g_source_plugin->get_param(subkey, buf, buf_len);
         }
         return -1;
+    }
+
+    /* Recording state */
+    if (strcmp(key, "recording") == 0) {
+        snprintf(buf, buf_len, "%d", g_recording);
+        return 0;
+    }
+    if (strcmp(key, "recording_file") == 0) {
+        snprintf(buf, buf_len, "%s", g_current_recording);
+        return 0;
     }
 
     /* Handle chain-level params */
@@ -2280,6 +2623,30 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
     } else {
         /* No synth loaded - output silence */
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+    }
+
+    /* Write to ring buffer if recording */
+    if (g_recording && g_ring_buffer) {
+        size_t samples_to_write = frames * NUM_CHANNELS;
+        size_t buffer_samples = RING_BUFFER_SAMPLES * NUM_CHANNELS;
+
+        /* Check if we have space (drop samples if buffer is full to avoid blocking) */
+        if (ring_available_write() >= samples_to_write) {
+            size_t write_pos = g_ring_write_pos;
+
+            for (size_t i = 0; i < samples_to_write; i++) {
+                g_ring_buffer[write_pos] = out_interleaved_lr[i];
+                write_pos = (write_pos + 1) % buffer_samples;
+            }
+
+            g_ring_write_pos = write_pos;
+
+            /* Signal writer thread that data is available */
+            pthread_mutex_lock(&g_ring_mutex);
+            pthread_cond_signal(&g_ring_cond);
+            pthread_mutex_unlock(&g_ring_mutex);
+        }
+        /* If buffer is full, we drop samples rather than block the audio thread */
     }
 }
 
