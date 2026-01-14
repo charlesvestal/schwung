@@ -1845,9 +1845,12 @@ static int save_patch(const char *json_data) {
         }
     }
 
-    /* Generate name */
+    /* Check for custom name first, otherwise generate from components */
     char name[MAX_NAME_LEN];
-    generate_patch_name(name, sizeof(name), synth, preset, fx1, fx2);
+    if (json_get_string(json_data, "custom_name", name, sizeof(name)) != 0) {
+        /* No custom name - generate from components */
+        generate_patch_name(name, sizeof(name), synth, preset, fx1, fx2);
+    }
 
     /* Sanitize to filename */
     char base_filename[MAX_NAME_LEN];
@@ -1894,6 +1897,56 @@ static int save_patch(const char *json_data) {
     chain_log(msg);
 
     /* Rescan patches */
+    scan_patches(g_module_dir);
+
+    return 0;
+}
+
+/* Update an existing patch at the given index */
+static int update_patch(int index, const char *json_data) {
+    char msg[256];
+
+    if (index < 0 || index >= g_patch_count) {
+        snprintf(msg, sizeof(msg), "Invalid patch index for update: %d", index);
+        chain_log(msg);
+        return -1;
+    }
+
+    const char *filepath = g_patches[index].path;
+
+    /* Check for custom name, otherwise keep existing name */
+    char name[MAX_NAME_LEN];
+    if (json_get_string(json_data, "custom_name", name, sizeof(name)) != 0) {
+        /* No custom name - use existing patch name */
+        strncpy(name, g_patches[index].name, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+    }
+
+    /* Build final JSON with name */
+    char final_json[4096];
+    snprintf(final_json, sizeof(final_json),
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"chain\": %s\n"
+        "}\n",
+        name, json_data);
+
+    /* Write file */
+    FILE *f = fopen(filepath, "w");
+    if (!f) {
+        snprintf(msg, sizeof(msg), "Failed to update patch file: %s", filepath);
+        chain_log(msg);
+        return -1;
+    }
+
+    fwrite(final_json, 1, strlen(final_json), f);
+    fclose(f);
+
+    snprintf(msg, sizeof(msg), "Updated patch: %s", filepath);
+    chain_log(msg);
+
+    /* Rescan patches to reload the updated data */
     scan_patches(g_module_dir);
 
     return 0;
@@ -2469,6 +2522,16 @@ static void plugin_set_param(const char *key, const char *val) {
     if (strcmp(key, "delete_patch") == 0) {
         int index = atoi(val);
         delete_patch(index);
+        return;
+    }
+
+    if (strcmp(key, "update_patch") == 0) {
+        /* Format: "index:json_data" */
+        const char *colon = strchr(val, ':');
+        if (colon) {
+            int index = atoi(val);
+            update_patch(index, colon + 1);
+        }
         return;
     }
 
