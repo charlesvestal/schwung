@@ -30,8 +30,6 @@ const MODULES_DIR = '/data/UserData/move-anything/modules';
 const BASE_DIR = '/data/UserData/move-anything';
 const TMP_DIR = '/data/UserData/move-anything/tmp';
 const HOST_VERSION_FILE = '/data/UserData/move-anything/host/version.txt';
-const GITHUB_API_BASE = 'https://api.github.com/repos';
-
 /* UI States */
 const STATE_LOADING = 'loading';
 const STATE_ERROR = 'error';
@@ -97,23 +95,15 @@ function isNewerVersion(a, b) {
     return compareVersions(a, b) > 0;
 }
 
-/* Track rate limit status */
-let rateLimited = false;
-
-/* Fetch latest release info from GitHub API */
-function fetchGitHubRelease(github_repo, asset_name) {
-    /* Skip if already rate limited */
-    if (rateLimited) {
-        return null;
-    }
-
+/* Fetch release info from release.json in repo (high rate limits via raw.githubusercontent.com) */
+function fetchReleaseJson(github_repo) {
     const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
-    const apiUrl = `${GITHUB_API_BASE}/${github_repo}/releases/latest`;
+    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
 
-    /* Download release info to cache file */
-    const success = host_http_download(apiUrl, cacheFile);
+    /* Download release.json */
+    const success = host_http_download(releaseUrl, cacheFile);
     if (!success) {
-        console.log(`Failed to fetch release for ${github_repo}`);
+        console.log(`Failed to fetch release.json for ${github_repo}`);
         return null;
     }
 
@@ -123,38 +113,15 @@ function fetchGitHubRelease(github_repo, asset_name) {
 
         const release = JSON.parse(jsonStr);
 
-        /* Check for rate limit error */
-        if (release.message && release.message.includes('rate limit')) {
-            console.log('GitHub API rate limit exceeded');
-            rateLimited = true;
+        /* release.json format: { "version": "x.y.z", "download_url": "..." } */
+        if (!release.version || !release.download_url) {
+            console.log(`Invalid release.json format for ${github_repo}`);
             return null;
         }
 
-        /* Extract version from tag_name (strip 'v' prefix if present) */
-        let version = release.tag_name || '';
-        if (version.startsWith('v')) {
-            version = version.substring(1);
-        }
-
-        /* Find the asset matching asset_name */
-        let download_url = null;
-        if (release.assets && Array.isArray(release.assets)) {
-            for (const asset of release.assets) {
-                if (asset.name === asset_name) {
-                    download_url = asset.browser_download_url;
-                    break;
-                }
-            }
-        }
-
-        if (!download_url) {
-            console.log(`Asset ${asset_name} not found in release for ${github_repo}`);
-            return null;
-        }
-
-        return { version, download_url };
+        return { version: release.version, download_url: release.download_url };
     } catch (e) {
-        console.log(`Failed to parse release for ${github_repo}: ${e}`);
+        console.log(`Failed to parse release.json for ${github_repo}: ${e}`);
         return null;
     }
 }
@@ -170,7 +137,7 @@ function fetchAllReleaseInfo() {
         draw();
         host_flush_display();
 
-        const hostRelease = fetchGitHubRelease(catalog.host.github_repo, catalog.host.asset_name);
+        const hostRelease = fetchReleaseJson(catalog.host.github_repo);
         if (hostRelease) {
             catalog.host.latest_version = hostRelease.version;
             catalog.host.download_url = hostRelease.download_url;
@@ -188,13 +155,13 @@ function fetchAllReleaseInfo() {
                 draw();
                 host_flush_display();
 
-                const release = fetchGitHubRelease(mod.github_repo, mod.asset_name);
+                const release = fetchReleaseJson(mod.github_repo);
                 if (release) {
                     mod.latest_version = release.version;
                     mod.download_url = release.download_url;
                     console.log(`${mod.id} latest: ${release.version}`);
                 } else {
-                    /* Fallback: module has no releases yet */
+                    /* Fallback: module has no release.json yet */
                     mod.latest_version = '0.0.0';
                     mod.download_url = null;
                 }
@@ -303,6 +270,10 @@ function fetchCatalog() {
     loadingTitle = 'Loading Catalog';
     loadingMessage = 'Fetching...';
 
+    /* Force display update before blocking download */
+    draw();
+    host_flush_display();
+
     /* Try to download fresh catalog (GitHub CDN caches ~5 min) */
     const success = host_http_download(CATALOG_URL, CATALOG_CACHE_PATH);
 
@@ -334,20 +305,12 @@ function loadCatalogFromCache() {
         catalog = JSON.parse(jsonStr);
         console.log(`Loaded catalog with ${catalog.modules ? catalog.modules.length : 0} modules`);
 
-        /* For catalog v2+, fetch release info from GitHub */
+        /* For catalog v2+, fetch release info from release.json files */
         if (catalog.catalog_version >= 2) {
             fetchAllReleaseInfo();
         }
 
         checkHostUpdate();
-
-        /* Check if we hit rate limit during fetching */
-        if (rateLimited) {
-            state = STATE_ERROR;
-            errorMessage = 'GitHub rate limited. Wait 1hr.';
-            return;
-        }
-
         state = STATE_CATEGORIES;
         if (hostUpdateAvailable) {
             console.log(`Host update available: ${hostVersion} -> ${catalog.host.latest_version}`);
@@ -414,6 +377,10 @@ function removeModule(mod) {
     state = STATE_REMOVING;
     loadingTitle = 'Removing';
     loadingMessage = mod.name;
+
+    /* Force display update before blocking operation */
+    draw();
+    host_flush_display();
 
     const modulePath = `${MODULES_DIR}/${mod.id}`;
 
@@ -815,6 +782,13 @@ globalThis.onMidiMessageInternal = function(data) {
 /* Init */
 globalThis.init = function() {
     console.log('Module Store starting...');
+
+    /* Show loading immediately */
+    state = STATE_LOADING;
+    loadingTitle = 'Module Store';
+    loadingMessage = 'Loading...';
+    draw();
+    host_flush_display();
 
     /* Get current host version */
     getHostVersion();

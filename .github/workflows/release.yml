@@ -34,3 +34,23 @@ jobs:
           files: move-anything.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update release.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > release.json << EOF
+          {
+            "version": "${VERSION}",
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/move-anything.tar.gz"
+          }
+          EOF
+
+      - name: Commit release.json
+        run: |
+          git fetch origin main
+          git checkout main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add release.json
+          git commit -m "chore: update release.json for ${{ github.ref_name }}"
+          git push origin main
