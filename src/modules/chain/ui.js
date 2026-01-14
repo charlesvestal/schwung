@@ -10,6 +10,7 @@ import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
 import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob, MoveShift } from '../../shared/constants.mjs';
 import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults, showOverlay, tickOverlay, drawOverlay, isOverlayActive } from '../../shared/menu_layout.mjs';
 import { createTextScroller } from '../../shared/text_scroll.mjs';
+import { openTextEntry, isTextEntryActive, handleTextEntryMidi, drawTextEntry, tickTextEntry } from '../../shared/text_entry.mjs';
 import { midiFxRegistry } from './midi_fx/index.mjs';
 
 /* State */
@@ -391,6 +392,7 @@ function createEditorState(existingPatch = null) {
             knobParamIndex: 0,
             knobParamFolder: null,  /* null = main view, or slot name */
             chain: {
+                customName: existingPatch.name || "",
                 source: source,
                 source_config: {},
                 midi_fx: existingPatch.chord_type || existingPatch.arp_mode ? "chord" : null,
@@ -417,7 +419,9 @@ function createEditorState(existingPatch = null) {
         knobIndex: 0,
         knobParamIndex: 0,
         knobParamFolder: null,
+        editorMenuIndex: 0,
         chain: {
+            customName: "",  /* Empty until user sets one */
             source: "both",
             source_config: {},
             midi_fx: null,
@@ -445,6 +449,9 @@ function enterEditor(patchIndex = -1) {
             config = {};
         }
 
+        /* Get current patch name for editing */
+        const existingName = host_module_get_param(`patch_name_${patchIndex}`) || "";
+
         editorState = {
             isNew: false,
             originalPath: "",
@@ -459,6 +466,7 @@ function enterEditor(patchIndex = -1) {
             knobParamIndex: 0,
             knobParamFolder: null,
             chain: {
+                customName: existingName,  /* Store custom name for rename */
                 source: config.source || null,
                 midi_fx: null,
                 midi_fx_config: {},
@@ -578,10 +586,13 @@ function drawEditorOverview() {
         ...SLOT_TYPES.map(slot => ({ type: "slot", slot })),
         { type: "knobs", label: "Knobs" },
         { type: "action", action: "save", label: "[Save]" },
+        { type: "action", action: "save_new", label: "[Save new...]" },
         { type: "action", action: "cancel", label: "[Cancel]" }
     ];
 
     if (!editorState.isNew) {
+        /* Add Rename and Delete for existing chains */
+        items.splice(items.length - 1, 0, { type: "action", action: "rename", label: "[Rename]" });
         items.push({ type: "action", action: "delete", label: "[Delete]" });
     }
 
@@ -943,8 +954,8 @@ function drawKnobParamPicker() {
 function handleEditorJog(delta) {
     switch (editorState.view) {
         case EDITOR_VIEW.OVERVIEW: {
-            /* SLOT_TYPES + Knobs + Save + Cancel + (Delete if editing) */
-            const maxItems = SLOT_TYPES.length + 1 + 2 + (editorState.isNew ? 0 : 1);
+            /* SLOT_TYPES + Knobs + Save + Save new + Cancel + (Rename + Delete if editing) */
+            const maxItems = SLOT_TYPES.length + 1 + 3 + (editorState.isNew ? 0 : 2);
             editorState.selectedSlot = Math.max(0, Math.min(maxItems - 1, editorState.selectedSlot + delta));
             break;
         }
@@ -1068,15 +1079,67 @@ function handleEditorSelect() {
                 editorState.view = EDITOR_VIEW.KNOB_EDITOR;
                 editorState.knobIndex = 0;
             } else {
-                /* Actions: Save, Cancel, Delete */
+                /* Actions depend on whether editing existing or new chain */
                 const actionIndex = editorState.selectedSlot - SLOT_TYPES.length - 1;
-                if (actionIndex === 0) {
-                    saveChain();
-                } else if (actionIndex === 1) {
-                    exitEditor();
-                } else if (actionIndex === 2) {
-                    editorState.view = EDITOR_VIEW.CONFIRM_DELETE;
-                    editorState.confirmIndex = 0;
+                if (editorState.isNew) {
+                    /* New chain: Save(0), Save new(1), Cancel(2) */
+                    if (actionIndex === 0) {
+                        saveChain();
+                    } else if (actionIndex === 1) {
+                        /* Save new - open text entry for name */
+                        const defaultName = editorState.chain.customName || generateChainName();
+                        openTextEntry({
+                            title: "Save As",
+                            initialText: defaultName,
+                            onConfirm: (newName) => {
+                                editorState.chain.customName = newName;
+                                saveChainAsNew();
+                            },
+                            onCancel: () => {
+                                needsRedraw = true;
+                            }
+                        });
+                    } else if (actionIndex === 2) {
+                        exitEditor();
+                    }
+                } else {
+                    /* Existing chain: Save(0), Save new(1), Rename(2), Cancel(3), Delete(4) */
+                    if (actionIndex === 0) {
+                        updateCurrentPatch();
+                    } else if (actionIndex === 1) {
+                        /* Save new - open text entry for name */
+                        const defaultName = editorState.chain.customName || generateChainName();
+                        openTextEntry({
+                            title: "Save As",
+                            initialText: defaultName,
+                            onConfirm: (newName) => {
+                                editorState.chain.customName = newName;
+                                saveChainAsNew();
+                            },
+                            onCancel: () => {
+                                needsRedraw = true;
+                            }
+                        });
+                    } else if (actionIndex === 2) {
+                        /* Rename - open text entry */
+                        const currentName = editorState.chain.customName || generateChainName();
+                        openTextEntry({
+                            title: "Rename Chain",
+                            initialText: currentName,
+                            onConfirm: (newName) => {
+                                editorState.chain.customName = newName;
+                                updateCurrentPatch();
+                            },
+                            onCancel: () => {
+                                needsRedraw = true;
+                            }
+                        });
+                    } else if (actionIndex === 3) {
+                        exitEditor();
+                    } else if (actionIndex === 4) {
+                        editorState.view = EDITOR_VIEW.CONFIRM_DELETE;
+                        editorState.confirmIndex = 0;
+                    }
                 }
             }
             break;
@@ -1334,7 +1397,8 @@ function generateChainName() {
 
 function buildChainJson() {
     const chain = editorState.chain;
-    const name = generateChainName();
+    /* Use custom name if set, otherwise generate from components */
+    const name = chain.customName || generateChainName();
 
     const patch = {
         name: name,
@@ -1423,6 +1487,11 @@ function buildChainJson() {
         }
     }
 
+    /* Include custom name if set - DSP will use it instead of auto-generating */
+    if (chain.customName) {
+        patch.chain.custom_name = chain.customName;
+    }
+
     /* Return only the chain content - save_patch wraps with name/version */
     return JSON.stringify(patch.chain, null, 4);
 }
@@ -1441,6 +1510,39 @@ function saveChain() {
 
     const chainJson = buildChainJson();
     host_module_set_param("save_patch", chainJson);
+
+    exitEditor();
+}
+
+/* Save as a new patch (always creates new file) */
+function saveChainAsNew() {
+    if (!editorState.chain.synth) {
+        showEditorError("Select a synth first");
+        return;
+    }
+
+    const chainJson = buildChainJson();
+    host_module_set_param("save_patch", chainJson);
+
+    exitEditor();
+}
+
+/* Update/overwrite the current patch */
+function updateCurrentPatch() {
+    if (!editorState.chain.synth) {
+        showEditorError("Select a synth first");
+        return;
+    }
+
+    if (editorState.isNew || editorState.editIndex === undefined) {
+        /* For new chains, fall back to save as new */
+        saveChainAsNew();
+        return;
+    }
+
+    const chainJson = buildChainJson();
+    /* Pass the patch index to update the existing file */
+    host_module_set_param("update_patch", `${editorState.editIndex}:${chainJson}`);
 
     exitEditor();
 }
@@ -2261,6 +2363,13 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
+    /* Text entry takes priority - draw keyboard/preview */
+    if (isTextEntryActive()) {
+        tickTextEntry();
+        drawTextEntry();
+        return;
+    }
+
     /* Component UI mode - delegate to component, but overlay selector if active */
     if (componentUiActive) {
         if (componentSelectorActive) {
@@ -2326,6 +2435,13 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Track shift state for all modes */
     if (status === 0xB0 && cc === CC_SHIFT) {
         shiftHeld = (val > 0);
+    }
+
+    /* Text entry takes priority over everything */
+    if (isTextEntryActive()) {
+        handleTextEntryMidi(data);
+        needsRedraw = true;
+        return;
     }
 
     /* Handle knob touch (capacitive notes 0-7) before filtering */
