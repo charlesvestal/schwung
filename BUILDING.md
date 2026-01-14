@@ -130,6 +130,55 @@ aarch64-linux-gnu-gcc -g -O3 -shared -fPIC \
 scp build/modules/sf2/dsp.so ableton@move.local:~/move-anything/modules/sf2/
 ```
 
+## Releasing
+
+### Version Numbering
+
+Version is stored in `src/host/version.txt`. Follow semantic versioning:
+- **Patch** (0.1.2 → 0.1.3): Bug fixes, minor changes
+- **Minor** (0.1.x → 0.2.0): New features, backward compatible
+- **Major** (0.x.x → 1.0.0): Breaking changes
+
+### Creating a Release
+
+1. **Update version**
+   ```bash
+   echo "0.1.3" > src/host/version.txt
+   ```
+
+2. **Build and test**
+   ```bash
+   ./scripts/build.sh
+   ./scripts/install.sh local
+   # Test on device
+   ```
+
+3. **Commit and tag**
+   ```bash
+   git add -A
+   git commit -m "fix: description of changes"
+   git tag v0.1.3
+   git push origin main --tags
+   ```
+
+4. **Create GitHub release**
+   ```bash
+   gh release create v0.1.3 ./move-anything.tar.gz \
+       --repo charlesvestal/move-anything \
+       --title "v0.1.3" \
+       --notes "Release notes here"
+   ```
+
+   **Note:** The `--repo charlesvestal/move-anything` flag is required because this repo has multiple remotes configured.
+
+5. **Update module catalog** (if needed)
+
+   Edit `module-catalog.json` to update the host version info so the Module Store shows the update.
+
+### Automated Releases
+
+GitHub Actions will automatically create a release when you push a tag matching `v*`. See `.github/workflows/release.yml`.
+
 ## Architecture
 
 - **Target**: Ableton Move (aarch64 Linux, glibc)
