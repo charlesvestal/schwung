@@ -97,6 +97,9 @@ int display_countdown = 0;         /* Countdown to next allowed refresh */
 int display_refresh_interval = 30; /* Ticks between refreshes (~11Hz at 344Hz loop) */
 int display_force_flush = 0;       /* Force immediate flush */
 
+/* Forward declarations */
+void push_screen(int sync);
+
 struct SPI_Memory
 {
     unsigned char outgoing_midi[256];
@@ -1627,7 +1630,22 @@ static JSValue js_host_get_refresh_rate(JSContext *ctx, JSValueConst this_val,
 /* host_flush_display() - force immediate display update */
 static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
-    display_force_flush = 1;
+    /* Synchronously push all 6 display slices */
+    for (int sync = 1; sync <= 6; sync++) {
+        push_screen(sync);
+        /* Trigger hardware to read the slice */
+        if (global_fd >= 0) {
+            ioctl(global_fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+        }
+        /* Delay to let hardware process each slice */
+        struct timespec ts = { 0, 3000000 };  /* 3ms per slice */
+        nanosleep(&ts, NULL);
+    }
+    /* Extra delay after full flush to ensure display is updated */
+    struct timespec final_delay = { 0, 50000000 };  /* 50ms */
+    nanosleep(&final_delay, NULL);
+    display_pending = 0;
+    screen_dirty = 0;
     return JS_UNDEFINED;
 }
 

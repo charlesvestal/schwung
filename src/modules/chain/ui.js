@@ -467,7 +467,8 @@ function enterEditor(patchIndex = -1) {
             knobParamFolder: null,
             chain: {
                 customName: existingName,  /* Store custom name for rename */
-                source: config.source || null,
+                /* source holds either a MIDI source module ID or an input option (pads/external/both) */
+                source: config.source || config.input || "both",
                 midi_fx: null,
                 midi_fx_config: {},
                 synth: config.synth || "sf2",
@@ -476,7 +477,6 @@ function enterEditor(patchIndex = -1) {
                 fx1_config: {},
                 fx2: null,
                 fx2_config: {},
-                input: config.input || "both",
                 knobs: config.knobs || createEmptyKnobs()
             }
         };
