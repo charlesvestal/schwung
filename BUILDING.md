@@ -141,9 +141,19 @@ Version is stored in `src/host/version.txt`. Follow semantic versioning:
 
 ### Creating a Release
 
-1. **Update version**
+1. **Update versions**
    ```bash
+   # Host version
    echo "0.1.3" > src/host/version.txt
+
+   # Built-in module versions (keep in sync with host)
+   # Edit these files and update "version" field:
+   #   src/modules/chain/module.json
+   #   src/modules/controller/module.json
+   #   src/modules/store/module.json
+
+   # Module catalog (for backward compatibility with older hosts)
+   # Edit module-catalog.json: update host.latest_version and host.download_url
    ```
 
 2. **Build and test**
@@ -170,10 +180,6 @@ Version is stored in `src/host/version.txt`. Follow semantic versioning:
    ```
 
    **Note:** The `--repo charlesvestal/move-anything` flag is required because this repo has multiple remotes configured.
-
-5. **Update module catalog** (if needed)
-
-   Edit `module-catalog.json` to update the host version info so the Module Store shows the update.
 
 ### Automated Releases
 
