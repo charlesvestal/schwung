@@ -2467,6 +2467,243 @@ TEST(scheduler_conflict_frees_slot_immediately) {
     set_param("track_0_step_1_clear", "1");
 }
 
+/* ============ Loop Boundary Clamping Tests ============ */
+
+TEST(loop_clamp_basic) {
+    /* Note length should be clamped to not extend past loop end.
+     * With default loop (0-15), a 16-step note starting at step 12 should be clamped to 4 steps. */
+
+    /* Ensure clean state - clear ALL steps to avoid leftover notes */
+    for (int i = 0; i < 16; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "15");
+
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Step 12: C-E chord with 16-step length (would extend past loop end) */
+    set_param("track_0_step_12_add_note", "60");
+    set_param("track_0_step_12_add_note", "64");
+    set_param("track_0_step_12_length", "16");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(16);  /* One full loop */
+    set_param("playing", "0");
+
+    /* With loop 0-15, step 12 has 4 remaining steps (12,13,14,15).
+     * So arp should only play 4 notes, not 16. */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int total = count_60 + count_64;
+
+    /* 4 arp notes cycling through C, E, C, E */
+    ASSERT_EQ(total, 4);
+
+    /* Clean up */
+    set_param("track_0_step_12_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(loop_clamp_custom_loop_start) {
+    /* With custom loop start, notes should still be clamped to loop end. */
+
+    /* Ensure clean state */
+    set_param("track_0_step_4_clear", "1");
+
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Set custom loop: start at 4, end at 7 (4 step loop) */
+    set_param("track_0_loop_start", "4");
+    set_param("track_0_loop_end", "7");
+
+    /* Step 4: C-E chord with 8-step length (would extend past loop end at 7) */
+    set_param("track_0_step_4_add_note", "60");
+    set_param("track_0_step_4_add_note", "64");
+    set_param("track_0_step_4_length", "8");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(4);  /* One loop (steps 4-7) */
+    set_param("playing", "0");
+
+    /* With loop 4-7, step 4 has 4 remaining steps (4,5,6,7).
+     * 8-step length is clamped to 4 steps, so 4 arp notes. */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int total = count_60 + count_64;
+
+    ASSERT_EQ(total, 4);
+
+    /* Clean up */
+    set_param("track_0_step_4_clear", "1");
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "15");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(loop_clamp_no_overlap_on_loop) {
+    /* When track loops, arps from previous iteration should not overlap with new iteration.
+     * This test verifies that clamping prevents the overlap. */
+
+    /* Ensure clean state - clear all steps in the loop range */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_step_3_clear", "1");
+
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Set short loop: 0-3 (4 step loop) */
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "3");
+
+    /* Step 0: C-E chord with 8-step length (would cause overlap without clamping) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_length", "8");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(8);  /* Two loops */
+    set_param("playing", "0");
+
+    /* With clamping, each loop iteration plays 4 arp notes (not 8).
+     * After 2 loops: 2 iterations * 4 notes = 8 total notes.
+     * Without clamping, first iteration would play 8 notes overlapping with second's 8. */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int total = count_60 + count_64;
+
+    ASSERT_EQ(total, 8);  /* 4 per loop * 2 loops */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "15");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(loop_clamp_mid_loop_step) {
+    /* Test clamping for a step in the middle of a custom loop */
+
+    /* Ensure clean state */
+    set_param("track_0_step_4_clear", "1");
+
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Set loop: 2-5 (4 step loop) */
+    set_param("track_0_loop_start", "2");
+    set_param("track_0_loop_end", "5");
+
+    /* Step 4: C-E chord with 4-step length (would extend past end at 5) */
+    set_param("track_0_step_4_add_note", "60");
+    set_param("track_0_step_4_add_note", "64");
+    set_param("track_0_step_4_length", "4");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(4);  /* One loop */
+    set_param("playing", "0");
+
+    /* Step 4 has only 2 remaining steps (4,5) before loop end.
+     * 4-step length is clamped to 2, so 2 arp notes. */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int total = count_60 + count_64;
+
+    ASSERT_EQ(total, 2);
+
+    /* Clean up */
+    set_param("track_0_step_4_clear", "1");
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "15");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(loop_clamp_ratchet) {
+    /* Ratchets should also be clamped to loop boundary */
+
+    /* Ensure clean state */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");  /* Disable arp for ratchet test */
+
+    /* Set short loop: 0-1 (2 step loop) */
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "1");
+
+    /* Step 0: single note with 4-step length and 4x ratchet */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_length", "4");
+    set_param("track_0_step_0_ratchet", "4");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);  /* One loop */
+    set_param("playing", "0");
+
+    /* With loop 0-1, step 0 has only 2 remaining steps.
+     * 4-step length is clamped to 2.
+     * With 4x ratchet spread over 2 steps, we get 4 notes in 2 steps. */
+    int count_60 = count_note_ons(60, 0);
+
+    /* 4 ratchet hits, but spread over the clamped 2-step duration */
+    ASSERT_EQ(count_60, 4);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "15");
+}
+
+TEST(loop_clamp_last_step) {
+    /* Step at loop end should still play (1 step remaining) */
+
+    /* Ensure clean state - clear multiple steps that might have leftover notes */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_1_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_step_3_clear", "1");
+
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+
+    /* Set loop: 0-3 */
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "3");
+
+    /* Step 3 (last step): C-E chord with 4-step length */
+    set_param("track_0_step_3_add_note", "60");
+    set_param("track_0_step_3_add_note", "64");
+    set_param("track_0_step_3_length", "4");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(4);  /* One loop */
+    set_param("playing", "0");
+
+    /* Step 3 has only 1 remaining step before loop wraps.
+     * Length clamped to 1, so only 1 arp note plays. */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int total = count_60 + count_64;
+
+    ASSERT_EQ(total, 1);
+
+    /* Clean up */
+    set_param("track_0_step_3_clear", "1");
+    set_param("track_0_loop_start", "0");
+    set_param("track_0_loop_end", "15");
+    set_param("track_0_arp_mode", "0");
+}
+
 /* ============ Test Runner ============ */
 
 int main(int argc, char **argv) {
@@ -2620,6 +2857,14 @@ int main(int argc, char **argv) {
     printf("\nScheduler Integrity:\n");
     RUN_TEST(scheduler_no_leak_on_conflict);
     RUN_TEST(scheduler_conflict_frees_slot_immediately);
+
+    printf("\nLoop Boundary Clamping:\n");
+    RUN_TEST(loop_clamp_basic);
+    RUN_TEST(loop_clamp_custom_loop_start);
+    RUN_TEST(loop_clamp_no_overlap_on_loop);
+    RUN_TEST(loop_clamp_mid_loop_step);
+    RUN_TEST(loop_clamp_ratchet);
+    RUN_TEST(loop_clamp_last_step);
 
     cleanup_plugin();
 
