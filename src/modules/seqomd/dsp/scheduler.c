@@ -145,10 +145,12 @@ void process_scheduled_notes(void) {
             /* Apply transpose at send time (not schedule time) */
             int final_note = sn->note;
             if (g_chord_follow[sn->track_idx]) {
-                /* Live transpose takes precedence over sequence transpose */
+                /* Live transpose takes precedence over sequence transpose.
+                 * Sequence transpose is looked up now (at send time) to support
+                 * long notes/arps that span multiple transpose steps. */
                 int transpose = (g_live_transpose != 0)
                     ? g_live_transpose
-                    : sn->sequence_transpose;
+                    : get_transpose_at_step((uint32_t)g_global_phase);
                 final_note = sn->note + transpose;
                 if (final_note < 0) final_note = 0;
                 if (final_note > 127) final_note = 127;
