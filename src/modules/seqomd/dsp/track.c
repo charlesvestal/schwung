@@ -12,9 +12,9 @@ void init_pattern(pattern_t *pattern) {
     for (int i = 0; i < NUM_STEPS; i++) {
         for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
             pattern->steps[i].notes[n] = 0;
+            pattern->steps[i].velocities[n] = DEFAULT_VELOCITY;
         }
         pattern->steps[i].num_notes = 0;
-        pattern->steps[i].velocity = DEFAULT_VELOCITY;
         pattern->steps[i].gate = DEFAULT_GATE;
         pattern->steps[i].cc1 = -1;  /* Not set */
         pattern->steps[i].cc2 = -1;  /* Not set */
@@ -198,7 +198,7 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
                     if (step->notes[n] > 0) {
                         schedule_note(
                             step->notes[n],  /* Original note - transpose applied at send time */
-                            step->velocity,
+                            step->velocities[n],  /* Per-note velocity */
                             track->midi_channel,
                             track->swing,
                             note_phase,
@@ -216,10 +216,13 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
                 double note_phase = base_phase + (i * note_duration);
                 int pattern_idx = i % pattern_len;
                 int note_value = arp_pattern[pattern_idx];
+                /* Cycle through velocities based on source note index */
+                int vel_idx = (step->num_notes > 0) ? (i % step->num_notes) : 0;
+                uint8_t velocity = (step->num_notes > 0) ? step->velocities[vel_idx] : DEFAULT_VELOCITY;
 
                 schedule_note(
                     note_value,  /* Original note from arp pattern - transpose applied at send time */
-                    step->velocity,
+                    velocity,    /* Per-note velocity, cycling through source notes */
                     track->midi_channel,
                     track->swing,
                     note_phase,
@@ -264,27 +267,28 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
         for (int r = 0; r < ratchet_count; r++) {
             double note_on_phase = base_phase + (r * ratchet_step);
 
-            /* Calculate velocity for this ratchet based on mode */
-            uint8_t ratchet_velocity = step->velocity;
-
+            /* Calculate velocity scale factor for this ratchet based on mode */
+            int vel_numerator = ratchet_count;  /* Default: full velocity (factor = 1) */
             if (ratchet_mode == 1) {
                 /* Ramp Up: velocity increases from low to target */
-                /* First note starts at velocity/count, last note is full velocity */
-                ratchet_velocity = (uint8_t)(((r + 1) * step->velocity) / ratchet_count);
-                if (ratchet_velocity < 1) ratchet_velocity = 1;
+                vel_numerator = r + 1;
             } else if (ratchet_mode == 2) {
                 /* Ramp Down: velocity decreases from target to low */
-                /* First note is full velocity, last note is velocity/count */
-                ratchet_velocity = (uint8_t)(((ratchet_count - r) * step->velocity) / ratchet_count);
-                if (ratchet_velocity < 1) ratchet_velocity = 1;
+                vel_numerator = ratchet_count - r;
             }
 
-            /* Schedule each note in the step */
+            /* Schedule each note in the step with its per-note velocity */
             for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
                 if (step->notes[n] > 0) {
+                    /* Apply ratchet velocity scaling to per-note velocity */
+                    uint8_t note_velocity = step->velocities[n];
+                    if (ratchet_mode != 0) {
+                        note_velocity = (uint8_t)((vel_numerator * step->velocities[n]) / ratchet_count);
+                        if (note_velocity < 1) note_velocity = 1;
+                    }
                     schedule_note(
                         step->notes[n],  /* Original note - transpose applied at send time */
-                        ratchet_velocity,
+                        note_velocity,   /* Per-note velocity with ratchet scaling */
                         track->midi_channel,
                         track->swing,
                         note_on_phase,

@@ -101,11 +101,13 @@ When holding a step in normal track mode:
 |------|-----------|-------|
 | Knob 1 | CC1 value | 0-127 (tap to clear) |
 | Knob 2 | CC2 value | 0-127 (tap to clear) |
-| Knob 7 | Ratchet | 1x, 2x, 3x, 4x, 6x, 8x |
-| Knob 8 | Probability/Condition | 5-100% / 1:2, 1:3, etc. |
+| Knob 3 | Arp override | Mode/Speed/Octave/Layer (tap to cycle) |
+| Knob 6 | Ratchet | 1x, 2x, 3x, 4x, 6x, 8x (tap to reset) |
+| Knob 7 | Probability/Condition | 5-100% / 1:2, 1:3, etc. (tap to clear) |
+| Knob 8 | Velocity | 1-127, adjusts all notes (tap to reset to 100) |
 | Jog wheel | Micro-timing offset | -24 to +24 ticks |
 | Tap another step | Note length | 1-16 steps |
-| Pads | Toggle notes | Up to 4 per step |
+| Pads | Toggle notes | Up to 7 per step, each with own velocity |
 
 ### LED Conventions
 
@@ -203,3 +205,17 @@ setButtonLED(cc, color)   // CC-based button LEDs (transport, knobs, etc.)
 - Sample rate: 44100 Hz
 - Block size: 128 frames
 - Format: Stereo interleaved int16
+
+## Testing
+
+### SEQOMD DSP Tests
+
+To compile and run the DSP unit tests:
+
+```bash
+cd src/modules/seqomd/dsp
+gcc -o test_seq_plugin test_seq_plugin.c -I. -I../../.. -lm
+./test_seq_plugin
+```
+
+The test file includes all DSP source files via `#include` directives, so only compile the test file itself.

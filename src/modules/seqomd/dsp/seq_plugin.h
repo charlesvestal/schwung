@@ -92,9 +92,9 @@ extern const double ARP_STEP_RATES[];
 
 /* Step data */
 typedef struct {
-    uint8_t notes[MAX_NOTES_PER_STEP];  /* Up to 7 notes per step (0 = empty slot) */
-    uint8_t num_notes;                   /* Number of active notes */
-    uint8_t velocity;                    /* 1-127 */
+    uint8_t notes[MAX_NOTES_PER_STEP];       /* Up to 7 notes per step (0 = empty slot) */
+    uint8_t velocities[MAX_NOTES_PER_STEP];  /* Per-note velocity (1-127), parallel to notes */
+    uint8_t num_notes;                       /* Number of active notes */
     uint8_t gate;                        /* Gate length as % of step (1-100) */
     int8_t cc1;                          /* CC1 value (-1 = not set, 0-127 = value) */
     int8_t cc2;                          /* CC2 value (-1 = not set, 0-127 = value) */

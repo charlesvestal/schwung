@@ -13,7 +13,7 @@ import {
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown, MoveCopy,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob7Touch, MoveKnob8Touch,
+    MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
 } from "../../../../shared/constants.mjs";
 
@@ -197,8 +197,8 @@ function handleKnobTouch(data) {
     const note = data[1];
     const velocity = data[2];
 
-    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob7Touch, MoveKnob8Touch];
-    const touchKnobIndices = [0, 1, 2, 6, 7];
+    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch];
+    const touchKnobIndices = [0, 1, 2, 5, 6, 7];
 
     if (isNote && touchKnobs.includes(note)) {
         const touchIdx = touchKnobs.indexOf(note);
@@ -244,13 +244,13 @@ function handleKnobTap(knobIdx) {
         state.stepArpParam = (state.stepArpParam + 1) % 4;
         displayStepArpParams();
         scheduleDisplayReturn();
-    } else if (knobIdx === 6 && step.ratchet > 0) {
+    } else if (knobIdx === 5 && step.ratchet > 0) {
         step.ratchet = 0;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, "1");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, getRatchetDisplayName(1), "");
         scheduleDisplayReturn();
         changed = true;
-    } else if (knobIdx === 7) {
+    } else if (knobIdx === 6) {
         step.condition = 0;
         step.probability = 100;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_n`, "0");
@@ -258,6 +258,15 @@ function handleKnobTap(knobIdx) {
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_not`, "0");
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_probability`, "100");
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "Cond/Prob cleared", "");
+        scheduleDisplayReturn();
+        changed = true;
+    } else if (knobIdx === 7 && step.velocities && step.velocities.length > 0) {
+        /* Reset all velocities to 100 */
+        for (let i = 0; i < step.velocities.length; i++) {
+            step.velocities[i] = 100;
+        }
+        setParam(`track_${state.currentTrack}_step_${state.heldStep}_velocity`, "100");
+        displayMessage(undefined, `Step ${state.heldStep + 1}`, "Velocity reset to 100", "");
         scheduleDisplayReturn();
         changed = true;
     }
@@ -384,11 +393,12 @@ function handlePad(padIdx, isNoteOn, velocity) {
             markDirty();
 
             const step = getCurrentPattern(state.currentTrack).steps[state.heldStep];
+            const lastVel = step.velocities && step.velocities.length > 0 ? step.velocities[step.velocities.length - 1] : velocity;
             displayMessage(
                 undefined,
                 `Step ${state.heldStep + 1}`,
                 `Notes: ${notesToString(step.notes)}`,
-                wasAdded ? `Added ${noteToName(midiNote)} (vel ${step.velocity})` : `Removed ${noteToName(midiNote)}`
+                wasAdded ? `Added ${noteToName(midiNote)} (vel ${lastVel})` : `Removed ${noteToName(midiNote)}`
             );
             scheduleDisplayReturn();
             updateLEDs();
@@ -409,11 +419,13 @@ function handlePad(padIdx, isNoteOn, velocity) {
             if (state.recording && state.playing && state.currentPlayStep >= 0) {
                 const step = getCurrentPattern(state.currentTrack).steps[state.currentPlayStep];
                 if (!step.notes.includes(midiNote) && step.notes.length < 7) {
-                    step.notes.push(midiNote);
+                    /* Ensure velocities array exists */
+                    if (!step.velocities) step.velocities = [];
                     /* Capture velocity from pad press */
-                    step.velocity = Math.max(1, Math.min(127, velocity));
-                    setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_add_note`, String(midiNote));
-                    setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_velocity`, String(step.velocity));
+                    const clampedVel = Math.max(1, Math.min(127, velocity));
+                    step.notes.push(midiNote);
+                    step.velocities.push(clampedVel);
+                    setParam(`track_${state.currentTrack}_step_${state.currentPlayStep}_add_note`, `${midiNote},${clampedVel}`);
                     markDirty();
                 }
                 state.lastRecordedStep = state.currentPlayStep;
@@ -437,7 +449,7 @@ function handleKnob(knobIdx, velocity) {
         return handleShiftKnob(knobIdx, velocity);
     }
 
-    if (state.heldStep >= 0 && (knobIdx < 3 || knobIdx === 6 || knobIdx === 7)) {
+    if (state.heldStep >= 0 && (knobIdx < 3 || knobIdx >= 5)) {
         return handleStepKnob(knobIdx, velocity);
     }
 
@@ -563,7 +575,7 @@ function handleStepKnob(knobIdx, velocity) {
             setParam(`track_${state.currentTrack}_step_${state.heldStep}_arp_layer`, String(layer));
         }
         displayStepArpParams();
-    } else if (knobIdx === 6) {
+    } else if (knobIdx === 5) {
         /* Ratchet */
         let ratchIdx = step.ratchet;
         if (velocity >= 1 && velocity <= 63) {
@@ -574,7 +586,7 @@ function handleStepKnob(knobIdx, velocity) {
         step.ratchet = ratchIdx;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, String(RATCHET_VALUES[ratchIdx]));
         displayMessage(`Step ${state.heldStep + 1}`, getRatchetDisplayName(RATCHET_VALUES[ratchIdx]), "", "");
-    } else if (knobIdx === 7) {
+    } else if (knobIdx === 6) {
         /* Probability / Condition */
         if (velocity >= 65 && velocity <= 127) {
             step.condition = 0;
@@ -597,6 +609,37 @@ function handleStepKnob(knobIdx, velocity) {
                 desc = cond.not ? `Skip loop ${cond.m} of ${cond.n}` : `Play on loop ${cond.m} of ${cond.n}`;
             }
             displayMessage(`Step ${state.heldStep + 1}`, `Condition: ${cond.name}`, desc, "");
+        }
+    } else if (knobIdx === 7) {
+        /* Velocity - adjust all note velocities together */
+        if (!step.velocities || step.velocities.length === 0) {
+            displayMessage(`Step ${state.heldStep + 1}`, "No notes", "Add notes first", "");
+        } else {
+            /* Calculate delta based on knob direction */
+            let delta = 0;
+            if (velocity >= 1 && velocity <= 63) {
+                delta = 1;  /* Clockwise = increase */
+            } else if (velocity >= 65 && velocity <= 127) {
+                delta = -1;  /* Counter-clockwise = decrease */
+            }
+
+            if (delta !== 0) {
+                /* Apply delta to all velocities with clamping */
+                for (let i = 0; i < step.velocities.length; i++) {
+                    step.velocities[i] = Math.max(1, Math.min(127, step.velocities[i] + delta));
+                }
+                /* Send delta to DSP for real-time update */
+                setParam(`track_${state.currentTrack}_step_${state.heldStep}_velocity_delta`, String(delta));
+
+                /* Display velocity info */
+                const minVel = Math.min(...step.velocities);
+                const maxVel = Math.max(...step.velocities);
+                if (minVel === maxVel) {
+                    displayMessage(`Step ${state.heldStep + 1}`, `Velocity: ${minVel}`, "", "");
+                } else {
+                    displayMessage(`Step ${state.heldStep + 1}`, `Velocity: ${minVel}-${maxVel}`, "", "");
+                }
+            }
         }
     }
 
@@ -692,17 +735,25 @@ function toggleStepNote(stepIdx, note, velocity = 100) {
     const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
     const noteIdx = step.notes.indexOf(note);
 
+    /* Ensure velocities array exists */
+    if (!step.velocities) {
+        step.velocities = [];
+    }
+
     if (noteIdx >= 0) {
+        /* Remove note and its velocity */
         step.notes.splice(noteIdx, 1);
+        step.velocities.splice(noteIdx, 1);
         setParam(`track_${state.currentTrack}_step_${stepIdx}_remove_note`, String(note));
         return false;
     } else {
         if (step.notes.length < 7) {
+            /* Add note with its velocity */
+            const clampedVel = Math.max(1, Math.min(127, velocity));
             step.notes.push(note);
-            /* Capture velocity from pad press */
-            step.velocity = Math.max(1, Math.min(127, velocity));
-            setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, String(note));
-            setParam(`track_${state.currentTrack}_step_${stepIdx}_velocity`, String(step.velocity));
+            step.velocities.push(clampedVel);
+            /* Send note with velocity in "note,velocity" format */
+            setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, `${note},${clampedVel}`);
             /* Recalculate scale detection when note is added */
             if (state.chordFollow[state.currentTrack]) {
                 state.detectedScale = detectScale(state.tracks, state.chordFollow);
@@ -716,6 +767,7 @@ function toggleStepNote(stepIdx, note, velocity = 100) {
 function clearStep(stepIdx) {
     const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
     step.notes = [];
+    step.velocities = [];
     step.cc1 = -1;
     step.cc2 = -1;
     step.probability = 100;
@@ -744,7 +796,13 @@ function pasteStep(stepIdx) {
 
     // Copy all properties
     step.notes = [...srcStep.notes];
-    step.velocity = srcStep.velocity !== undefined ? srcStep.velocity : 100;
+    /* Copy velocities array, migrate from old single velocity if needed */
+    if (srcStep.velocities && srcStep.velocities.length > 0) {
+        step.velocities = [...srcStep.velocities];
+    } else {
+        const vel = srcStep.velocity !== undefined ? srcStep.velocity : 100;
+        step.velocities = srcStep.notes.map(() => vel);
+    }
     step.cc1 = srcStep.cc1;
     step.cc2 = srcStep.cc2;
     step.probability = srcStep.probability;
@@ -763,13 +821,12 @@ function pasteStep(stepIdx) {
     // Sync ALL parameters to DSP
     setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
 
-    // Add notes
-    for (const note of step.notes) {
-        setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, String(note));
+    // Add notes with their velocities
+    for (let n = 0; n < step.notes.length; n++) {
+        const note = step.notes[n];
+        const vel = step.velocities[n] || 100;
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, `${note},${vel}`);
     }
-
-    // Sync velocity
-    setParam(`track_${state.currentTrack}_step_${stepIdx}_velocity`, String(step.velocity));
 
     // Sync CCs
     if (step.cc1 >= 0) {
@@ -993,11 +1050,15 @@ function updateKnobLEDs() {
         setButtonLED(MoveKnobLEDs[2], STEP_ARP_COLORS[state.stepArpParam]);
         setButtonLED(MoveKnobLEDs[3], Black);
         setButtonLED(MoveKnobLEDs[4], Black);
-        setButtonLED(MoveKnobLEDs[5], Black);
-        setButtonLED(MoveKnobLEDs[6], step.ratchet > 0 ? trackColor : LightGrey);
+        /* Knob 6: ratchet */
+        setButtonLED(MoveKnobLEDs[5], step.ratchet > 0 ? trackColor : LightGrey);
+        /* Knob 7: probability/condition */
         const hasProb = step.probability < 100;
         const hasCond = step.condition > 0;
-        setButtonLED(MoveKnobLEDs[7], (hasProb || hasCond) ? trackColor : LightGrey);
+        setButtonLED(MoveKnobLEDs[6], (hasProb || hasCond) ? trackColor : LightGrey);
+        /* Knob 8: velocity */
+        const hasVelocity = step.velocities && step.velocities.length > 0;
+        setButtonLED(MoveKnobLEDs[7], hasVelocity ? trackColor : LightGrey);
         return;
     }
 

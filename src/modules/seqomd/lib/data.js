@@ -13,7 +13,7 @@ import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, DEFAULT_SPEED_INDEX, DEFAULT_ARP_S
 export function createEmptyStep() {
     return {
         notes: [],         // Array of MIDI notes
-        velocity: 100,     // MIDI velocity (1-127), captured from pad press
+        velocities: [],    // Per-note velocity (1-127), parallel to notes array
         cc1: -1,           // CC value for knob 1 (-1 = not set)
         cc2: -1,           // CC value for knob 2 (-1 = not set)
         probability: 100,  // 1-100%
@@ -35,9 +35,18 @@ export function createEmptyStep() {
  * Deep clone a step
  */
 export function cloneStep(srcStep) {
+    /* Migrate old single velocity to per-note velocities array */
+    let velocities;
+    if (srcStep.velocities && srcStep.velocities.length > 0) {
+        velocities = [...srcStep.velocities];
+    } else {
+        /* Old format: create velocities array from single velocity */
+        const vel = srcStep.velocity !== undefined ? srcStep.velocity : 100;
+        velocities = srcStep.notes.map(() => vel);
+    }
     return {
         notes: [...srcStep.notes],
-        velocity: srcStep.velocity !== undefined ? srcStep.velocity : 100,
+        velocities: velocities,
         cc1: srcStep.cc1,
         cc2: srcStep.cc2,
         probability: srcStep.probability,
@@ -196,9 +205,10 @@ export function migrateTrackData(trackData) {
         if (track.arpOctave === undefined) {
             track.arpOctave = 0;
         }
-        /* Migrate step arp fields */
+        /* Migrate step fields */
         for (const pattern of track.patterns) {
             for (const step of pattern.steps) {
+                /* Migrate arp fields */
                 if (step.arpMode === undefined) {
                     step.arpMode = -1;
                 }
@@ -210,6 +220,12 @@ export function migrateTrackData(trackData) {
                 }
                 if (step.arpLayer === undefined) {
                     step.arpLayer = 0;
+                }
+                /* Migrate velocity: old single velocity -> per-note velocities array */
+                if (!step.velocities) {
+                    const vel = step.velocity !== undefined ? step.velocity : 100;
+                    step.velocities = step.notes.map(() => vel);
+                    delete step.velocity;
                 }
             }
         }

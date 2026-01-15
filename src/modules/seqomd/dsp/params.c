@@ -29,19 +29,33 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
             }
         }
     }
-    /* Add a note to the step (for chords) */
+    /* Add a note to the step (for chords) - format: "note" or "note,velocity" */
     else if (strcmp(param, "add_note") == 0) {
-        int note = atoi(val);
+        int note = 0;
+        int velocity = DEFAULT_VELOCITY;
+        /* Parse "note,velocity" format */
+        const char *comma = strchr(val, ',');
+        if (comma) {
+            note = atoi(val);
+            velocity = atoi(comma + 1);
+        } else {
+            note = atoi(val);
+        }
         if (note >= 1 && note <= 127) {
+            if (velocity < 1) velocity = 1;
+            if (velocity > 127) velocity = 127;
             int exists = 0;
             for (int n = 0; n < s->num_notes; n++) {
                 if (s->notes[n] == note) {
+                    /* Note exists - update its velocity */
+                    s->velocities[n] = velocity;
                     exists = 1;
                     break;
                 }
             }
             if (!exists && s->num_notes < MAX_NOTES_PER_STEP) {
                 s->notes[s->num_notes] = note;
+                s->velocities[s->num_notes] = velocity;
                 s->num_notes++;
                 if (g_chord_follow[track_idx]) {
                     g_scale_dirty = 1;
@@ -57,8 +71,10 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
                 if (s->notes[n] == note) {
                     for (int m = n; m < s->num_notes - 1; m++) {
                         s->notes[m] = s->notes[m + 1];
+                        s->velocities[m] = s->velocities[m + 1];
                     }
                     s->notes[s->num_notes - 1] = 0;
+                    s->velocities[s->num_notes - 1] = DEFAULT_VELOCITY;
                     s->num_notes--;
                     if (g_chord_follow[track_idx]) {
                         g_scale_dirty = 1;
@@ -73,6 +89,7 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
         s->num_notes = 0;
         for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
             s->notes[n] = 0;
+            s->velocities[n] = DEFAULT_VELOCITY;
         }
         s->cc1 = -1;
         s->cc2 = -1;
@@ -97,10 +114,23 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
             g_scale_dirty = 1;
         }
     }
+    /* Set all note velocities to the same value (backward compat) */
     else if (strcmp(param, "vel") == 0) {
         int vel = atoi(val);
         if (vel >= 1 && vel <= 127) {
-            s->velocity = vel;
+            for (int n = 0; n < s->num_notes; n++) {
+                s->velocities[n] = vel;
+            }
+        }
+    }
+    /* Apply delta to all note velocities (for knob adjustment) */
+    else if (strcmp(param, "velocity_delta") == 0) {
+        int delta = atoi(val);
+        for (int n = 0; n < s->num_notes; n++) {
+            int new_vel = (int)s->velocities[n] + delta;
+            if (new_vel < 1) new_vel = 1;
+            if (new_vel > 127) new_vel = 127;
+            s->velocities[n] = new_vel;
         }
     }
     else if (strcmp(param, "gate") == 0) {
@@ -171,10 +201,13 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
             s->ratchet = ratch;
         }
     }
+    /* Set all note velocities to the same value (backward compat) */
     else if (strcmp(param, "velocity") == 0) {
         int vel = atoi(val);
         if (vel >= 1 && vel <= 127) {
-            s->velocity = vel;
+            for (int n = 0; n < s->num_notes; n++) {
+                s->velocities[n] = vel;
+            }
         }
     }
     else if (strcmp(param, "length") == 0) {
@@ -236,7 +269,9 @@ int get_step_param(int track_idx, int step_idx, const char *param, char *buf, in
         return snprintf(buf, buf_len, "%d", s->num_notes);
     }
     else if (strcmp(param, "vel") == 0) {
-        return snprintf(buf, buf_len, "%d", s->velocity);
+        /* Return first note's velocity, or default if no notes */
+        int vel = (s->num_notes > 0) ? s->velocities[0] : DEFAULT_VELOCITY;
+        return snprintf(buf, buf_len, "%d", vel);
     }
     else if (strcmp(param, "gate") == 0) {
         return snprintf(buf, buf_len, "%d", s->gate);

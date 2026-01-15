@@ -212,14 +212,18 @@ export function syncAllTracksToDSP() {
             /* Clear step first, then add notes */
             setParam(`track_${t}_step_${s}_clear`, "1");
 
-            /* Add each note */
-            for (const note of step.notes) {
-                setParam(`track_${t}_step_${s}_add_note`, String(note));
+            /* Add each note with its velocity */
+            for (let n = 0; n < step.notes.length; n++) {
+                const note = step.notes[n];
+                /* Get per-note velocity (migrate from old single velocity if needed) */
+                let vel = 100;
+                if (step.velocities && step.velocities[n] !== undefined) {
+                    vel = step.velocities[n];
+                } else if (step.velocity !== undefined) {
+                    vel = step.velocity;  /* Old format fallback */
+                }
+                setParam(`track_${t}_step_${s}_add_note`, `${note},${vel}`);
             }
-
-            /* Sync velocity (default to 100 if not set for backwards compatibility) */
-            const velocity = step.velocity !== undefined ? step.velocity : 100;
-            setParam(`track_${t}_step_${s}_velocity`, String(velocity));
 
             /* Sync other step params */
             if (step.cc1 >= 0) {
