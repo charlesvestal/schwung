@@ -1397,6 +1397,149 @@ TEST(transpose_sequence_drum_track_not_affected) {
     set_param("transpose_clear", "1");
 }
 
+/* ============ Tests: Live Transpose at Send Time ============ */
+
+TEST(live_transpose_applies_mid_playback) {
+    /* Test that live transpose applies immediately to already-scheduled notes.
+     * This is the core feature: pressing a piano key should transpose
+     * pending notes, not just future scheduled notes. */
+
+    /* Setup: Track 5 (chord_follow=1), note with 8-step length */
+    set_param("track_4_step_0_add_note", "60");
+    set_param("track_4_step_0_length", "8");
+    set_param("track_4_arp_mode", "1");   /* Arp Up */
+    set_param("track_4_arp_speed", "4");  /* 1/16 - fast arp for multiple notes */
+    set_param("live_transpose", "0");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);  /* First arp notes at transpose +0 */
+
+    set_param("live_transpose", "12");  /* Change mid-arp */
+    render_steps(6);  /* Remaining notes should be +12 */
+
+    set_param("playing", "0");
+    set_param("live_transpose", "0");
+
+    /* Verify: early notes = 60, later notes = 72 */
+    int found_60 = 0, found_72 = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on) {
+            if (g_captured_notes[i].note == 60) found_60 = 1;
+            if (g_captured_notes[i].note == 72) found_72 = 1;
+        }
+    }
+    ASSERT(found_60);  /* Early notes before transpose change */
+    ASSERT(found_72);  /* Later notes after transpose change */
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("track_4_arp_mode", "0");
+}
+
+TEST(live_transpose_sequence_still_works) {
+    /* Test that sequence transpose still works when live transpose is 0 */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "5");
+    set_param("transpose_step_0_duration", "16");
+    set_param("transpose_step_count", "1");
+
+    set_param("track_4_step_0_add_note", "60");
+    set_param("live_transpose", "0");  /* No live transpose */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+
+    /* Note should be 60 + 5 = 65 (sequence transpose) */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 65);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(live_transpose_overrides_sequence) {
+    /* Test that live transpose takes precedence over sequence transpose */
+    set_param("transpose_clear", "1");
+    set_param("transpose_step_0_transpose", "5");
+    set_param("transpose_step_0_duration", "16");
+    set_param("transpose_step_count", "1");
+
+    set_param("track_4_step_0_add_note", "60");
+    set_param("live_transpose", "7");  /* Live takes precedence */
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+    set_param("live_transpose", "0");
+
+    /* Note should be 60 + 7 = 67 (live), not 60 + 5 = 65 (sequence) */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 67);
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("transpose_clear", "1");
+}
+
+TEST(live_transpose_note_off_matches_note_on) {
+    /* Test that note-off matches note-on even after transpose changes.
+     * This is critical for proper MIDI behavior. */
+    set_param("track_4_step_0_add_note", "60");
+    set_param("track_4_step_0_length", "4");
+    set_param("live_transpose", "0");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);  /* Note-on at 60 */
+    set_param("live_transpose", "12");  /* Change transpose while note playing */
+    render_steps(4);  /* Note-off should still be 60 */
+    set_param("playing", "0");
+    set_param("live_transpose", "0");
+
+    /* Find note-on and note-off */
+    int note_on_note = -1, note_off_note = -1;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (g_captured_notes[i].is_note_on && note_on_note < 0) {
+            note_on_note = g_captured_notes[i].note;
+        }
+        if (!g_captured_notes[i].is_note_on && note_off_note < 0) {
+            note_off_note = g_captured_notes[i].note;
+        }
+    }
+
+    ASSERT(note_on_note >= 0);
+    ASSERT(note_off_note >= 0);
+    ASSERT_EQ(note_on_note, note_off_note);  /* Must match! */
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+}
+
+TEST(live_transpose_non_chord_follow_ignores) {
+    /* Test that non-chord-follow tracks ignore transpose */
+    set_param("track_0_chord_follow", "0");  /* Track 1, no follow */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("live_transpose", "12");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(2);
+    set_param("playing", "0");
+    set_param("live_transpose", "0");
+
+    /* Note should be 60, not 72 */
+    ASSERT(g_num_captured >= 1);
+    ASSERT_EQ(g_captured_notes[0].note, 60);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
 /* ============ Tests: Scale Detection ============ */
 
 TEST(scale_detection_no_notes) {
@@ -2411,6 +2554,13 @@ int main(int argc, char **argv) {
     RUN_TEST(transpose_sequence_loop);
     RUN_TEST(transpose_sequence_long_duration);
     RUN_TEST(transpose_sequence_drum_track_not_affected);
+
+    printf("\nLive Transpose at Send Time:\n");
+    RUN_TEST(live_transpose_applies_mid_playback);
+    RUN_TEST(live_transpose_sequence_still_works);
+    RUN_TEST(live_transpose_overrides_sequence);
+    RUN_TEST(live_transpose_note_off_matches_note_on);
+    RUN_TEST(live_transpose_non_chord_follow_ignores);
 
     printf("\nScale Detection:\n");
     RUN_TEST(scale_detection_no_notes);

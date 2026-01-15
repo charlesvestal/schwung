@@ -179,7 +179,7 @@ typedef struct {
  * 3. Manages note-on and note-off timing
  */
 typedef struct {
-    uint8_t note;
+    uint8_t note;           /* Original untransposed note */
     uint8_t channel;
     uint8_t velocity;
     double on_phase;        /* Global phase when note-on should fire */
@@ -187,6 +187,9 @@ typedef struct {
     uint8_t on_sent;        /* Has note-on been sent? */
     uint8_t off_sent;       /* Has note-off been sent? */
     uint8_t active;         /* Is this slot in use? */
+    uint8_t track_idx;      /* Track index for chord_follow lookup */
+    int8_t sequence_transpose;  /* Sequence transpose value at schedule time */
+    uint8_t sent_note;      /* Actual note sent (for note-off matching) */
 } scheduled_note_t;
 
 /* Transpose step - one entry in the transpose sequence */
@@ -754,17 +757,21 @@ static int find_free_slot(void) {
 /**
  * Schedule a note to be played.
  * Handles swing application and note conflicts automatically.
+ * Transpose is applied at send time, not schedule time, to support live transpose.
  *
- * @param note      MIDI note number
+ * @param note      Original (untransposed) MIDI note number
  * @param velocity  Note velocity
  * @param channel   MIDI channel
  * @param swing     Swing amount (50 = no swing)
  * @param on_phase  Global phase when note should start (before swing)
  * @param length    Note length in steps
  * @param gate      Gate percentage (1-100)
+ * @param track_idx Track index (for chord_follow lookup at send time)
+ * @param sequence_transpose  Sequence transpose value at schedule time
  */
 static void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
-                          int swing, double on_phase, double length, int gate) {
+                          int swing, double on_phase, double length, int gate,
+                          uint8_t track_idx, int8_t sequence_transpose) {
     /* Apply swing delay based on global phase */
     double swing_delay = calculate_swing_delay(swing, on_phase);
     double swung_on_phase = on_phase + swing_delay;
@@ -793,7 +800,7 @@ static void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
             } else {
                 /* Old note should end now - send immediate note-off if on was sent */
                 if (conflict->on_sent && !conflict->off_sent) {
-                    send_note_off(conflict->note, conflict->channel);
+                    send_note_off(conflict->sent_note, conflict->channel);
                     conflict->off_sent = 1;
                     conflict->active = 0;  /* Free the slot to prevent leak */
                 }
@@ -818,11 +825,15 @@ static void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
     sn->on_sent = 0;
     sn->off_sent = 0;
     sn->active = 1;
+    sn->track_idx = track_idx;
+    sn->sequence_transpose = sequence_transpose;
+    sn->sent_note = 0;  /* Will be set when note-on is sent */
 }
 
 /**
  * Process all scheduled notes - send note-on/off at the right time.
  * Called every sample from render_block.
+ * Transpose is applied at send time to support immediate live transpose.
  */
 static void process_scheduled_notes(void) {
     for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
@@ -831,17 +842,30 @@ static void process_scheduled_notes(void) {
 
         /* Send note-on at the scheduled time */
         if (!sn->on_sent && g_global_phase >= sn->on_phase) {
-            if (sn->note >= 60 && sn->note <= 67) {
-                printf("[SEND] Note %d at phase=%.2f (on_phase=%.2f)\n",
-                       sn->note, g_global_phase, sn->on_phase);
+            /* Apply transpose at send time (not schedule time) */
+            int final_note = sn->note;
+            if (g_chord_follow[sn->track_idx]) {
+                /* Live transpose takes precedence over sequence transpose */
+                int transpose = (g_live_transpose != 0)
+                    ? g_live_transpose
+                    : sn->sequence_transpose;
+                final_note = sn->note + transpose;
+                if (final_note < 0) final_note = 0;
+                if (final_note > 127) final_note = 127;
             }
-            send_note_on(sn->note, sn->velocity, sn->channel);
+
+            if (sn->note >= 60 && sn->note <= 67) {
+                printf("[SEND] Note %d (orig=%d) at phase=%.2f (on_phase=%.2f)\n",
+                       final_note, sn->note, g_global_phase, sn->on_phase);
+            }
+            send_note_on(final_note, sn->velocity, sn->channel);
+            sn->sent_note = (uint8_t)final_note;  /* Remember for note-off */
             sn->on_sent = 1;
         }
 
         /* Send note-off at the scheduled time */
         if (sn->on_sent && !sn->off_sent && g_global_phase >= sn->off_phase) {
-            send_note_off(sn->note, sn->channel);
+            send_note_off(sn->sent_note, sn->channel);
             sn->off_sent = 1;
             sn->active = 0;  /* Free the slot */
         }
@@ -855,7 +879,7 @@ static void clear_scheduled_notes(void) {
     for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
         scheduled_note_t *sn = &g_scheduled_notes[i];
         if (sn->active && sn->on_sent && !sn->off_sent) {
-            send_note_off(sn->note, sn->channel);
+            send_note_off(sn->sent_note, sn->channel);
         }
         sn->active = 0;
         sn->on_sent = 0;
@@ -874,7 +898,7 @@ static void cut_channel_notes(uint8_t channel) {
         if (sn->active && sn->channel == channel) {
             /* Send note-off for any note that has started but not ended */
             if (sn->on_sent && !sn->off_sent) {
-                send_note_off(sn->note, sn->channel);
+                send_note_off(sn->sent_note, sn->channel);
             }
             /* Cancel the slot */
             sn->active = 0;
@@ -1333,12 +1357,13 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
     int note_length = step->length > 0 ? step->length : 1;
     int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
 
-    /* Calculate transpose offset for this track using internal lookup */
-    /* Live transpose takes precedence over scheduled transpose when active */
+    /* Get sequence transpose for this track (will be applied at send time).
+     * We only store the sequence transpose here; live transpose is checked at send time
+     * so it can respond immediately when the user changes it. */
     uint32_t global_step = (uint32_t)g_global_phase;
-    int transpose = 0;
+    int8_t sequence_transpose = 0;
     if (g_chord_follow[track_idx]) {
-        transpose = (g_live_transpose != 0) ? g_live_transpose : get_transpose_at_step(global_step);
+        sequence_transpose = get_transpose_at_step(global_step);
     }
 
     if (use_arp && step->num_notes >= 1) {
@@ -1372,18 +1397,16 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
                 /* Play all notes as chord */
                 for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
                     if (step->notes[n] > 0) {
-                        int transposed_note = step->notes[n] + transpose;
-                        if (transposed_note < 0) transposed_note = 0;
-                        if (transposed_note > 127) transposed_note = 127;
-
                         schedule_note(
-                            transposed_note,
+                            step->notes[n],  /* Original note - transpose applied at send time */
                             step->velocity,
                             track->midi_channel,
                             track->swing,
                             note_phase,
                             note_duration,
-                            gate
+                            gate,
+                            track_idx,
+                            sequence_transpose
                         );
                     }
                 }
@@ -1395,19 +1418,16 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
                 int pattern_idx = i % pattern_len;
                 int note_value = arp_pattern[pattern_idx];
 
-                /* Apply transpose and clamp */
-                int transposed_note = note_value + transpose;
-                if (transposed_note < 0) transposed_note = 0;
-                if (transposed_note > 127) transposed_note = 127;
-
                 schedule_note(
-                    transposed_note,
+                    note_value,  /* Original note from arp pattern - transpose applied at send time */
                     step->velocity,
                     track->midi_channel,
                     track->swing,
                     note_phase,
                     note_duration,
-                    gate
+                    gate,
+                    track_idx,
+                    sequence_transpose
                 );
             }
         }
@@ -1460,19 +1480,16 @@ static void schedule_step_notes(track_t *track, int track_idx, step_t *step, dou
             /* Schedule each note in the step */
             for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
                 if (step->notes[n] > 0) {
-                    /* Apply transpose and clamp to valid MIDI range */
-                    int transposed_note = step->notes[n] + transpose;
-                    if (transposed_note < 0) transposed_note = 0;
-                    if (transposed_note > 127) transposed_note = 127;
-
                     schedule_note(
-                        transposed_note,
+                        step->notes[n],  /* Original note - transpose applied at send time */
                         ratchet_velocity,
                         track->midi_channel,
                         track->swing,
                         note_on_phase,
                         ratchet_length,
-                        gate
+                        gate,
+                        track_idx,
+                        sequence_transpose
                     );
                 }
             }
