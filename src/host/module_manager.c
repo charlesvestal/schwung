@@ -281,10 +281,11 @@ int mm_load_module(module_manager_t *mm, int index) {
 
     module_info_t *info = &mm->modules[index];
 
-    /* Check API version */
-    if (info->api_version != MOVE_PLUGIN_API_VERSION) {
-        printf("mm: module '%s' requires API v%d, host has v%d\n",
-               info->id, info->api_version, MOVE_PLUGIN_API_VERSION);
+    /* Check API version - support both v1 and v2 */
+    if (info->api_version != MOVE_PLUGIN_API_VERSION &&
+        info->api_version != MOVE_PLUGIN_API_VERSION_2) {
+        printf("mm: module '%s' requires API v%d, host supports v%d and v%d\n",
+               info->id, info->api_version, MOVE_PLUGIN_API_VERSION, MOVE_PLUGIN_API_VERSION_2);
         return -1;
     }
 
@@ -301,45 +302,68 @@ int mm_load_module(module_manager_t *mm, int index) {
             return -1;
         }
 
-        /* Get init function */
-        move_plugin_init_v1_fn init_fn = (move_plugin_init_v1_fn)dlsym(mm->dsp_handle, MOVE_PLUGIN_INIT_SYMBOL);
-        if (!init_fn) {
-            printf("mm: dlsym failed for %s: %s\n", MOVE_PLUGIN_INIT_SYMBOL, dlerror());
-            dlclose(mm->dsp_handle);
-            mm->dsp_handle = NULL;
-            return -1;
+        const char *defaults = info->defaults_json[0] ? info->defaults_json : NULL;
+        int plugin_loaded = 0;
+
+        /* Try v2 API first */
+        move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(mm->dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
+        if (init_v2) {
+            mm->plugin_v2 = init_v2(&mm->host_api);
+            if (mm->plugin_v2 && mm->plugin_v2->api_version == MOVE_PLUGIN_API_VERSION_2) {
+                mm->plugin_instance = mm->plugin_v2->create_instance(info->module_dir, defaults);
+                if (mm->plugin_instance) {
+                    printf("mm: loaded v2 plugin for '%s'\n", info->id);
+                    plugin_loaded = 1;
+                } else {
+                    printf("mm: v2 create_instance failed, trying v1\n");
+                    mm->plugin_v2 = NULL;
+                }
+            } else {
+                mm->plugin_v2 = NULL;
+            }
         }
 
-        /* Initialize plugin */
-        mm->plugin = init_fn(&mm->host_api);
-        if (!mm->plugin) {
-            printf("mm: plugin init returned NULL\n");
-            dlclose(mm->dsp_handle);
-            mm->dsp_handle = NULL;
-            return -1;
-        }
+        /* Fall back to v1 API */
+        if (!plugin_loaded) {
+            move_plugin_init_v1_fn init_fn = (move_plugin_init_v1_fn)dlsym(mm->dsp_handle, MOVE_PLUGIN_INIT_SYMBOL);
+            if (!init_fn) {
+                printf("mm: dlsym failed for %s: %s\n", MOVE_PLUGIN_INIT_SYMBOL, dlerror());
+                dlclose(mm->dsp_handle);
+                mm->dsp_handle = NULL;
+                return -1;
+            }
 
-        /* Verify plugin API version */
-        if (mm->plugin->api_version != MOVE_PLUGIN_API_VERSION) {
-            printf("mm: plugin reports API v%d, expected v%d\n",
-                   mm->plugin->api_version, MOVE_PLUGIN_API_VERSION);
-            dlclose(mm->dsp_handle);
-            mm->dsp_handle = NULL;
-            mm->plugin = NULL;
-            return -1;
-        }
+            /* Initialize plugin */
+            mm->plugin = init_fn(&mm->host_api);
+            if (!mm->plugin) {
+                printf("mm: plugin init returned NULL\n");
+                dlclose(mm->dsp_handle);
+                mm->dsp_handle = NULL;
+                return -1;
+            }
 
-        /* Call on_load */
-        if (mm->plugin->on_load) {
-            const char *defaults = info->defaults_json[0] ? info->defaults_json : NULL;
-            int ret = mm->plugin->on_load(info->module_dir, defaults);
-            if (ret != 0) {
-                printf("mm: plugin on_load failed with %d\n", ret);
+            /* Verify plugin API version */
+            if (mm->plugin->api_version != MOVE_PLUGIN_API_VERSION) {
+                printf("mm: plugin reports API v%d, expected v%d\n",
+                       mm->plugin->api_version, MOVE_PLUGIN_API_VERSION);
                 dlclose(mm->dsp_handle);
                 mm->dsp_handle = NULL;
                 mm->plugin = NULL;
                 return -1;
             }
+
+            /* Call on_load */
+            if (mm->plugin->on_load) {
+                int ret = mm->plugin->on_load(info->module_dir, defaults);
+                if (ret != 0) {
+                    printf("mm: plugin on_load failed with %d\n", ret);
+                    dlclose(mm->dsp_handle);
+                    mm->dsp_handle = NULL;
+                    mm->plugin = NULL;
+                    return -1;
+                }
+            }
+            printf("mm: loaded v1 plugin for '%s'\n", info->id);
         }
     } else {
         printf("mm: no DSP plugin for module '%s' (UI-only)\n", info->id);
@@ -360,16 +384,26 @@ int mm_load_module_by_id(module_manager_t *mm, const char *module_id) {
 }
 
 void mm_unload_module(module_manager_t *mm) {
+    /* Clean up v2 plugin */
+    if (mm->plugin_v2 && mm->plugin_instance) {
+        if (mm->plugin_v2->destroy_instance) {
+            mm->plugin_v2->destroy_instance(mm->plugin_instance);
+        }
+        mm->plugin_instance = NULL;
+        mm->plugin_v2 = NULL;
+    }
+
+    /* Clean up v1 plugin */
     if (mm->plugin && mm->plugin->on_unload) {
         mm->plugin->on_unload();
     }
+    mm->plugin = NULL;
 
     if (mm->dsp_handle) {
         dlclose(mm->dsp_handle);
         mm->dsp_handle = NULL;
     }
 
-    mm->plugin = NULL;
     mm->current_module_index = -1;
 }
 
@@ -383,30 +417,38 @@ const module_info_t* mm_get_current_module(module_manager_t *mm) {
 }
 
 void mm_on_midi(module_manager_t *mm, const uint8_t *msg, int len, int source) {
-    if (mm->plugin && mm->plugin->on_midi) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->on_midi) {
+        mm->plugin_v2->on_midi(mm->plugin_instance, msg, len, source);
+    } else if (mm->plugin && mm->plugin->on_midi) {
         mm->plugin->on_midi(msg, len, source);
     }
 }
 
 void mm_set_param(module_manager_t *mm, const char *key, const char *val) {
-    if (mm->plugin && mm->plugin->set_param) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->set_param) {
+        mm->plugin_v2->set_param(mm->plugin_instance, key, val);
+    } else if (mm->plugin && mm->plugin->set_param) {
         mm->plugin->set_param(key, val);
     }
 }
 
 int mm_get_param(module_manager_t *mm, const char *key, char *buf, int buf_len) {
-    if (mm->plugin && mm->plugin->get_param) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->get_param) {
+        return mm->plugin_v2->get_param(mm->plugin_instance, key, buf, buf_len);
+    } else if (mm->plugin && mm->plugin->get_param) {
         return mm->plugin->get_param(key, buf, buf_len);
     }
     return -1;
 }
 
 void mm_render_block(module_manager_t *mm) {
-    if (!mm->plugin || !mm->plugin->render_block) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->render_block) {
+        mm->plugin_v2->render_block(mm->plugin_instance, mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
+    } else if (mm->plugin && mm->plugin->render_block) {
+        mm->plugin->render_block(mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
+    } else {
         /* No plugin or no render function - output silence */
         memset(mm->audio_out_buffer, 0, sizeof(mm->audio_out_buffer));
-    } else {
-        mm->plugin->render_block(mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
     }
 
     /* Apply host volume if not at 100% */

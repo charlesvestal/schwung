@@ -41,6 +41,7 @@ const NOTE_JOG_TOUCH = MoveMainTouch;
 let shiftHeld = false;
 
 /* Display constants */
+const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
 
 /* Refresh module list from host */
