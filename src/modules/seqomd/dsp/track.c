@@ -72,6 +72,8 @@ void init_track(track_t *track, int channel) {
     /* Track CC defaults */
     track->cc1_default = 64;
     track->cc2_default = 64;
+    track->cc1_steps_remaining = 0;
+    track->cc2_steps_remaining = 0;
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -317,19 +319,34 @@ void trigger_track_step(track_t *track, int track_idx, double step_start_phase) 
     int param_spark_pass = check_spark_condition(
         step->param_spark_n, step->param_spark_m, step->param_spark_not, track);
 
-    /* CC handling: step CC overrides track default.
-     * If step has CC, send it. Otherwise send track default. */
+    /* CC handling: step CC overrides track default for step->length duration.
+     * Decrement remaining counter first, then check if step has CC or if we need default. */
+
+    /* Decrement remaining counters */
+    if (track->cc1_steps_remaining > 0) track->cc1_steps_remaining--;
+    if (track->cc2_steps_remaining > 0) track->cc2_steps_remaining--;
+
     if (param_spark_pass) {
-        int cc1 = 20 + (track_idx * 2);
-        int cc2 = cc1 + 1;
+        int cc1_num = 20 + (track_idx * 2);
+        int cc2_num = cc1_num + 1;
 
-        /* CC1: step override or track default */
-        int cc1_val = (step->cc1 >= 0) ? step->cc1 : track->cc1_default;
-        send_cc(cc1, cc1_val, track->midi_channel);
+        /* CC1: step override sets new value for step->length duration */
+        if (step->cc1 >= 0) {
+            send_cc(cc1_num, step->cc1, track->midi_channel);
+            track->cc1_steps_remaining = step->length;
+        } else if (track->cc1_steps_remaining == 0) {
+            /* Override expired, send track default */
+            send_cc(cc1_num, track->cc1_default, track->midi_channel);
+        }
 
-        /* CC2: step override or track default */
-        int cc2_val = (step->cc2 >= 0) ? step->cc2 : track->cc2_default;
-        send_cc(cc2, cc2_val, track->midi_channel);
+        /* CC2: step override sets new value for step->length duration */
+        if (step->cc2 >= 0) {
+            send_cc(cc2_num, step->cc2, track->midi_channel);
+            track->cc2_steps_remaining = step->length;
+        } else if (track->cc2_steps_remaining == 0) {
+            /* Override expired, send track default */
+            send_cc(cc2_num, track->cc2_default, track->midi_channel);
+        }
     }
 
     /* Check comp_spark early - needed for both notes and jumps */

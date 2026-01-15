@@ -165,6 +165,8 @@ typedef struct {
     /* Track-level CC defaults */
     uint8_t cc1_default;         /* Default CC1 value (0-127) */
     uint8_t cc2_default;         /* Default CC2 value (0-127) */
+    uint8_t cc1_steps_remaining; /* Steps remaining for CC1 override (0 = use default) */
+    uint8_t cc2_steps_remaining; /* Steps remaining for CC2 override (0 = use default) */
 } track_t;
 
 /* Centralized Note Scheduler */
