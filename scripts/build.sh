@@ -63,10 +63,20 @@ echo "Building host..."
     -Llibs/quickjs/quickjs-2025-04-26 \
     -lquickjs -lm -ldl
 
-# Build shim
+# Build shim (with shared memory support for shadow instrument)
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
-    src/move_anything_shim.c -ldl
+    src/move_anything_shim.c -ldl -lrt
+
+echo "Building Shadow POC..."
+
+# Build Shadow Instrument POC
+mkdir -p ./build/shadow/
+"${CROSS_PREFIX}gcc" -g -O3 \
+    src/shadow/shadow_poc.c \
+    -o build/shadow/shadow_poc \
+    -Isrc \
+    -lm -ldl -lrt
 
 echo "Building Signal Chain module..."
 
