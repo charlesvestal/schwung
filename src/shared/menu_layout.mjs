@@ -172,7 +172,7 @@ function truncateText(text, maxChars) {
 /* === Parameter Overlay === */
 /* A centered overlay for showing parameter name and value feedback */
 
-const OVERLAY_DURATION_TICKS = 60;  /* ~1 second at 60fps */
+const OVERLAY_DURATION_TICKS = 240;  /* ~4 seconds at 60fps, dismissed on UI interaction */
 const OVERLAY_WIDTH = 120;
 const OVERLAY_HEIGHT = 28;
 
@@ -199,6 +199,31 @@ export function showOverlay(name, value) {
 export function hideOverlay() {
     overlayActive = false;
     overlayTimeout = 0;
+}
+
+/**
+ * Check if a MIDI message should dismiss the overlay, and dismiss if so.
+ * Call this at the start of onMidiMessage handlers.
+ * @param {Uint8Array} msg - MIDI message
+ * @returns {boolean} true if overlay was dismissed (caller should return early to consume input)
+ */
+export function dismissOverlayOnInput(msg) {
+    if (!overlayActive || !msg || msg.length < 3) return false;
+
+    const status = msg[0] & 0xF0;
+    const data1 = msg[1];
+    const data2 = msg[2];
+
+    /* Dismiss on button press (CC with value > 63), note on, or knob turn */
+    const isButtonPress = (status === 0xB0 && data2 > 63);
+    const isNoteOn = (status === 0x90 && data2 > 0);
+    const isKnobTurn = (status === 0xB0 && data1 >= 71 && data1 <= 79);
+
+    if (isButtonPress || isNoteOn || isKnobTurn) {
+        hideOverlay();
+        return true;
+    }
+    return false;
 }
 
 /**
