@@ -575,12 +575,15 @@ function updatePadLEDs() {
         /* Determine color */
         let color;
 
+        /* Calculate root offset for transpose comparison */
+        const rootSemitone = detected ? detected.root : 0;
+
         /* Check if this is the held live transpose pad */
         if (state.heldLiveTransposePad === i) {
             color = BrightGreen; /* Bright green for active live transpose */
         }
         /* Check if this is the held step's transpose value */
-        else if (heldTranspose !== null && actualSemitone === heldTranspose) {
+        else if (heldTranspose !== null && actualSemitone === heldTranspose + rootSemitone) {
             color = TRACK_COLORS[state.currentTrack];
         } else if (detected && isRoot(pitchClass, detected)) {
             /* Root note */
