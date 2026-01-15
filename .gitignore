@@ -9,3 +9,6 @@
 /.worktrees
 docs/.DS_Store
 *.tar.gz
+
+# Test patches (kept locally, not committed)
+/src/modules/chain/test_patches/

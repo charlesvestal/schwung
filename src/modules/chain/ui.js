@@ -1497,11 +1497,18 @@ function buildChainJson() {
         for (let i = 0; i < NUM_KNOBS; i++) {
             const knob = chain.knobs[i];
             if (knob && knob.slot && knob.param) {
-                knobs.push({
+                const mapping = {
                     cc: KNOB_CC_START + i,
                     target: knob.slot,
                     param: knob.param
-                });
+                };
+                /* Preset param needs integer type and dynamic max from synth */
+                if (knob.param === "preset") {
+                    mapping.type = "int";
+                    mapping.min = 0;
+                    mapping.max_param = "preset_count";
+                }
+                knobs.push(mapping);
             }
         }
         if (knobs.length > 0) {
@@ -1927,12 +1934,17 @@ function handleCC(cc, val) {
         return handleEditorCC(cc, val);
     }
 
-    /* Handle component UI mode - pass all CCs through to component except Shift+Menu */
+    /* Handle component UI mode - pass most CCs through to component except Shift+Menu and knobs */
     if (componentUiActive) {
         /* Shift+Menu opens component selector to jump to another component or return */
         if (cc === CC_MENU && val === 127 && shiftHeld) {
             showComponentSelector();
             return true;
+        }
+        /* Handle knob CCs for parameter feedback overlay even in component UI mode */
+        if (cc >= KNOB_CC_START && cc <= KNOB_CC_START + NUM_KNOBS - 1) {
+            handleKnobFeedback(cc, val);
+            /* Still pass through to component - don't return true */
         }
         /* Let component handle all other CCs - it will get them via onMidiMessage */
         return false;
@@ -2435,12 +2447,22 @@ globalThis.tick = function() {
         if (componentUi && typeof componentUi.tick === "function") {
             componentUi.tick();
         }
+        /* Tick and draw knob feedback overlay on top of component UI */
+        tickOverlay();
+        if (isOverlayActive()) {
+            drawOverlay();
+        }
         return;
     }
 
     if (sourceUiActive) {
         if (typeof sourceUi.tick === "function") {
             sourceUi.tick();
+        }
+        /* Tick and draw knob feedback overlay on top of source UI */
+        tickOverlay();
+        if (isOverlayActive()) {
+            drawOverlay();
         }
         return;
     }

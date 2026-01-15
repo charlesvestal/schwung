@@ -4,8 +4,8 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.1.6",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.1.6/move-anything.tar.gz",
+    "latest_version": "0.2.0",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.2.0/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -17,7 +17,7 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-dx7",
       "asset_name": "dx7-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "sf2",
@@ -27,7 +27,7 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-sf2",
       "asset_name": "sf2-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "m8",
@@ -47,7 +47,7 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-jv880",
       "asset_name": "jv880-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "obxd",
@@ -57,7 +57,7 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-obxd",
       "asset_name": "obxd-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "cloudseed",
@@ -67,7 +67,7 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-cloudseed",
       "asset_name": "cloudseed-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "tapescam",
@@ -77,7 +77,7 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-tapescam",
       "asset_name": "tapescam-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "psxverb",
@@ -87,7 +87,7 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-psxverb",
       "asset_name": "psxverb-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "spacecho",
@@ -97,7 +97,7 @@
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-space-delay",
       "asset_name": "spacecho-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.2.0"
     },
     {
       "id": "sidcontrol",
