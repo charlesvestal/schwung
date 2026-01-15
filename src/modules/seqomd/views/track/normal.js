@@ -37,6 +37,62 @@ import { detectScale } from '../../lib/scale_detection.js';
 import { markDirty } from '../../lib/persistence.js';
 import { cloneStep, clonePattern } from '../../lib/data.js';
 
+/* ============ Probability/Condition Unified Index ============ */
+
+/*
+ * Unified index for probability and conditions:
+ * - Index 0-19: probability values (5%, 10%, 15%, ..., 100%)
+ * - Index 20-80: conditions (CONDITIONS[1] through CONDITIONS[61])
+ *
+ * This allows bidirectional navigation through all values with a single knob.
+ */
+
+const PROB_COUNT = 20;  // 5% to 100% in steps of 5
+const MAX_UNIFIED_INDEX = PROB_COUNT + CONDITIONS.length - 2;  // -1 for CONDITIONS[0] being "---", -1 for 0-based
+
+/**
+ * Convert step's probability/condition to unified index
+ */
+function getProbCondIndex(step) {
+    if (step.condition > 0) {
+        // Condition mode: index 20+ maps to CONDITIONS[1+]
+        return PROB_COUNT + step.condition - 1;
+    }
+    // Probability mode: 5% = 0, 10% = 1, ..., 100% = 19
+    return Math.round((step.probability - 5) / 5);
+}
+
+/**
+ * Apply unified index to step, updating probability and condition
+ */
+function applyProbCondIndex(step, index, trackIdx, stepIdx) {
+    // Clamp index to valid range
+    index = Math.max(0, Math.min(index, MAX_UNIFIED_INDEX));
+
+    if (index < PROB_COUNT) {
+        // Probability mode: index 0-19 → 5%-100%
+        step.condition = 0;
+        step.probability = (index + 1) * 5;
+        setParam(`track_${trackIdx}_step_${stepIdx}_probability`, String(step.probability));
+        setParam(`track_${trackIdx}_step_${stepIdx}_condition_n`, "0");
+        setParam(`track_${trackIdx}_step_${stepIdx}_condition_m`, "0");
+        setParam(`track_${trackIdx}_step_${stepIdx}_condition_not`, "0");
+
+        return { type: 'probability', value: step.probability };
+    } else {
+        // Condition mode: index 20+ → CONDITIONS[1+]
+        step.probability = 100;
+        step.condition = index - PROB_COUNT + 1;
+        const cond = CONDITIONS[step.condition];
+        setParam(`track_${trackIdx}_step_${stepIdx}_probability`, "100");
+        setParam(`track_${trackIdx}_step_${stepIdx}_condition_n`, String(cond.n));
+        setParam(`track_${trackIdx}_step_${stepIdx}_condition_m`, String(cond.m));
+        setParam(`track_${trackIdx}_step_${stepIdx}_condition_not`, cond.not ? "1" : "0");
+
+        return { type: 'condition', cond };
+    }
+}
+
 /* ============ Copy Button State ============ */
 
 let copyHeld = false;              // Copy button is held
@@ -587,28 +643,29 @@ function handleStepKnob(knobIdx, velocity) {
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, String(RATCHET_VALUES[ratchIdx]));
         displayMessage(`Step ${state.heldStep + 1}`, getRatchetDisplayName(RATCHET_VALUES[ratchIdx]), "", "");
     } else if (knobIdx === 6) {
-        /* Probability / Condition */
-        if (velocity >= 65 && velocity <= 127) {
-            step.condition = 0;
-            step.probability = Math.max(step.probability - 5, 5);
-            setParam(`track_${state.currentTrack}_step_${state.heldStep}_probability`, String(step.probability));
-            setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_n`, "0");
-            setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_m`, "0");
-            displayMessage(`Step ${state.heldStep + 1}`, `Probability: ${step.probability}%`, "", "");
-        } else if (velocity >= 1 && velocity <= 63) {
-            step.probability = 100;
-            step.condition = Math.min(step.condition + 1, CONDITIONS.length - 1);
-            const cond = CONDITIONS[step.condition];
-            setParam(`track_${state.currentTrack}_step_${state.heldStep}_probability`, "100");
-            setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_n`, String(cond.n));
-            setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_m`, String(cond.m));
-            setParam(`track_${state.currentTrack}_step_${state.heldStep}_condition_not`, cond.not ? "1" : "0");
+        /* Probability / Condition - unified bidirectional navigation */
+        let currentIndex = getProbCondIndex(step);
+        let delta = 0;
 
-            let desc = "Always";
-            if (step.condition > 0) {
-                desc = cond.not ? `Skip loop ${cond.m} of ${cond.n}` : `Play on loop ${cond.m} of ${cond.n}`;
+        if (velocity >= 1 && velocity <= 63) {
+            delta = 1;  // Clockwise: move towards conditions
+        } else if (velocity >= 65 && velocity <= 127) {
+            delta = -1;  // Counter-clockwise: move towards lower probability
+        }
+
+        if (delta !== 0) {
+            const newIndex = currentIndex + delta;
+            const result = applyProbCondIndex(step, newIndex, state.currentTrack, state.heldStep);
+
+            if (result.type === 'probability') {
+                displayMessage(`Step ${state.heldStep + 1}`, `Probability: ${result.value}%`, "", "");
+            } else {
+                const cond = result.cond;
+                let desc = cond.not
+                    ? `Skip loop ${cond.m} of ${cond.n}`
+                    : `Play on loop ${cond.m} of ${cond.n}`;
+                displayMessage(`Step ${state.heldStep + 1}`, `Condition: ${cond.name}`, desc, "");
             }
-            displayMessage(`Step ${state.heldStep + 1}`, `Condition: ${cond.name}`, desc, "");
         }
     } else if (knobIdx === 7) {
         /* Velocity - adjust all note velocities together */

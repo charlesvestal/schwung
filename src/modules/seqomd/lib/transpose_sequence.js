@@ -9,6 +9,7 @@ const MAX_TRANSPOSE_STEPS = 16;
 const DEFAULT_DURATION = 4; /* 1 bar = 4 beats */
 const MIN_DURATION = 1;     /* 1 beat */
 const MAX_DURATION = 64;    /* 16 bars */
+const BEAT_GRANULARITY_MAX = 20; /* 5 bars - beat granularity up to here, then bar granularity */
 const MIN_TRANSPOSE = -24;  /* 2 octaves down */
 const MAX_TRANSPOSE = 24;   /* 2 octaves up */
 
@@ -74,8 +75,8 @@ export function setTransposeDuration(index, duration) {
 
 /**
  * Adjust the duration of a transpose step with smart increments
- * - 1-3 beats: increment by 1 beat (1→2→3→4)
- * - 4+ beats: increment by 4 beats (1 bar → 2 bars → 3 bars...)
+ * - 1 beat to 5 bars (20 beats): increment by 1 beat
+ * - 5 bars to 16 bars: increment by 1 bar (4 beats)
  * @param {number} index - Step index
  * @param {number} delta - Direction (+1 or -1)
  * @returns {number|null} New duration or null if failed
@@ -89,21 +90,24 @@ export function adjustTransposeDuration(index, delta) {
 
     if (delta > 0) {
         /* Increase */
-        if (newDuration < 4) {
-            /* Individual beats: 1→2→3→4 (1 bar) */
+        if (newDuration < BEAT_GRANULARITY_MAX) {
+            /* Beat granularity: 1 beat → 5 bars */
             newDuration += 1;
         } else {
-            /* Bars: 1 bar→2 bars→3 bars... (increment by 1 bar = 4 beats) */
+            /* Bar granularity: 5 bars → 6 bars → ... → 16 bars */
             newDuration += 4;
         }
     } else if (delta < 0) {
         /* Decrease */
-        if (newDuration <= 4) {
-            /* Individual beats: 4→3→2→1 */
+        if (newDuration <= BEAT_GRANULARITY_MAX) {
+            /* Beat granularity */
             newDuration -= 1;
         } else {
-            /* Bars: 16 bars→15 bars→14 bars... (decrement by 1 bar = 4 beats) */
+            /* Bar granularity - but snap to 5 bars if going below 6 bars */
             newDuration -= 4;
+            if (newDuration < BEAT_GRANULARITY_MAX) {
+                newDuration = BEAT_GRANULARITY_MAX;
+            }
         }
     }
 
@@ -252,7 +256,7 @@ export function formatDuration(beats) {
     } else {
         const bars = Math.floor(beats / 4);
         const remainingBeats = beats % 4;
-        return `${bars}b ${remainingBeats}bt`;
+        return `${bars} bar${bars !== 1 ? 's' : ''} ${remainingBeats} beat${remainingBeats !== 1 ? 's' : ''}`;
     }
 }
 
