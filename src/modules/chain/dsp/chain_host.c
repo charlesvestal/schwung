@@ -1346,9 +1346,13 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
     }
 
     patch->midi_source_module[0] = '\0';
-    if (json_get_string_in_section(json, "midi_source", "module",
-                                   patch->midi_source_module, MAX_NAME_LEN) != 0) {
-        json_get_string(json, "midi_source", patch->midi_source_module, MAX_NAME_LEN);
+    /* Try current format first: "midi_source_module": "module_id" */
+    if (json_get_string(json, "midi_source_module", patch->midi_source_module, MAX_NAME_LEN) != 0) {
+        /* Fall back to legacy formats for backward compat */
+        if (json_get_string_in_section(json, "midi_source", "module",
+                                       patch->midi_source_module, MAX_NAME_LEN) != 0) {
+            json_get_string(json, "midi_source", patch->midi_source_module, MAX_NAME_LEN);
+        }
     }
 
     /* Parse MIDI input filter */
