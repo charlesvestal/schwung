@@ -142,6 +142,14 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
     int note_length = step->length > 0 ? step->length : 1;
     int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
 
+    /* Clamp note length to not extend past the loop end.
+     * This prevents arp/notes from overlapping when the track loops back. */
+    pattern_t *pattern = get_current_pattern(track);
+    int remaining_steps = pattern->loop_end - track->current_step + 1;
+    if (note_length > remaining_steps) {
+        note_length = remaining_steps;
+    }
+
     /* Get sequence transpose for this track (will be applied at send time).
      * We only store the sequence transpose here; live transpose is checked at send time
      * so it can respond immediately when the user changes it. */
