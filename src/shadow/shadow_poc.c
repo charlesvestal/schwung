@@ -284,8 +284,17 @@ static int open_shm(void) {
  * ============================================================================ */
 
 static int load_synth(const char *soundfont_path) {
+    /* Try DX7 first for cleaner test (algorithmic, no sample rate issues) */
+    /* Set to 0 to use SF2, 1 to use DX7 */
+    #define USE_DX7 1
+
+    #if USE_DX7
+    const char *module_path = "/data/UserData/move-anything/modules/dx7/dsp.so";
+    const char *module_dir = "/data/UserData/move-anything/modules/dx7";
+    #else
     const char *module_path = "/data/UserData/move-anything/modules/sf2/dsp.so";
     const char *module_dir = "/data/UserData/move-anything/modules/sf2";
+    #endif
 
     printf("Loading synth from %s\n", module_path);
 
@@ -334,11 +343,16 @@ static int load_synth(const char *soundfont_path) {
         }
     }
 
-    /* Set soundfont if provided */
+    /* Set soundfont if SF2 (DX7 doesn't need one) */
+    #if !USE_DX7
     if (soundfont_path && synth_plugin->set_param) {
         printf("Setting soundfont: %s\n", soundfont_path);
         synth_plugin->set_param("soundfont_path", soundfont_path);
     }
+    #else
+    (void)soundfont_path;  /* Unused for DX7 */
+    printf("DX7 synth loaded (no soundfont needed)\n");
+    #endif
 
     printf("Synth loaded successfully\n");
     return 0;

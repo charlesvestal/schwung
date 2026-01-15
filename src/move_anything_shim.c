@@ -600,6 +600,33 @@ void midi_monitor()
     }
 }
 
+/* Log unique ioctl requests to discover XMOS configuration commands */
+static FILE *ioctl_log = NULL;
+static int ioctl_log_count = 0;
+static unsigned long last_request = 0;
+
+static void log_ioctl(unsigned long request, char *argp) {
+    /* Only log after SPI device is mapped (indicates this is the Move process) */
+    if (!global_mmap_addr) return;
+
+    /* Only log SPI-related ioctls (small request numbers) - skip terminal ioctls like 0x5413 */
+    if (request > 0x100) return;
+
+    /* Only log first 500 calls */
+    if (ioctl_log_count > 500) return;
+
+    if (!ioctl_log) {
+        ioctl_log = fopen("/data/UserData/move-anything/ioctl_log.txt", "w");
+    }
+    if (ioctl_log) {
+        /* Just log request code and argp pointer - don't dereference to avoid crashes */
+        fprintf(ioctl_log, "[%d] ioctl request=0x%lx (dec=%lu) argp=%p\n",
+                ioctl_log_count, request, request, (void*)argp);
+        fflush(ioctl_log);
+    }
+    ioctl_log_count++;
+}
+
 // unsigned long ioctlCounter = 0;
 int ioctl(int fd, unsigned long request, char *argp)
 {
@@ -612,6 +639,9 @@ int ioctl(int fd, unsigned long request, char *argp)
             exit(1);
         }
     }
+
+    /* Log ioctl commands to discover XMOS config */
+    log_ioctl(request, argp);
 
     // print_mem();
     // write_mem();
