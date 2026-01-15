@@ -15,6 +15,7 @@
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v1.h"
+#include "host/audio_fx_api_v2.h"
 
 /* Recording constants */
 #define RECORDINGS_DIR "/data/UserData/move-anything/recordings"
@@ -144,6 +145,109 @@ typedef struct {
     int knob_mapping_count;
 } patch_info_t;
 
+/* ============================================================================
+ * V2 Instance-Based API
+ * ============================================================================ */
+
+/* Chain instance state - contains all per-instance data for v2 API */
+typedef struct chain_instance {
+    /* Module directory */
+    char module_dir[MAX_PATH_LEN];
+
+    /* Sub-plugin state - Synth */
+    void *synth_handle;
+    plugin_api_v1_t *synth_plugin;
+    plugin_api_v2_t *synth_plugin_v2;
+    void *synth_instance;
+    char current_synth_module[MAX_NAME_LEN];
+
+    /* Sub-plugin state - MIDI Source */
+    void *source_handle;
+    plugin_api_v1_t *source_plugin;
+    char current_source_module[MAX_NAME_LEN];
+
+    /* Audio FX state */
+    void *fx_handles[MAX_AUDIO_FX];
+    audio_fx_api_v1_t *fx_plugins[MAX_AUDIO_FX];
+    audio_fx_api_v2_t *fx_plugins_v2[MAX_AUDIO_FX];
+    void *fx_instances[MAX_AUDIO_FX];
+    int fx_is_v2[MAX_AUDIO_FX];
+    int fx_count;
+
+    /* Module parameter info */
+    chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
+    int synth_param_count;
+    chain_param_info_t fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS];
+    int fx_param_counts[MAX_AUDIO_FX];
+
+    /* Patch state */
+    patch_info_t patches[MAX_PATCHES];
+    int patch_count;
+    int current_patch;
+
+    /* MIDI FX state - Chords */
+    chord_type_t chord_type;
+
+    /* JS MIDI FX state */
+    int js_midi_fx_enabled;
+
+    /* MIDI FX state - Arpeggiator */
+    arp_mode_t arp_mode;
+    uint8_t arp_held_notes[MAX_ARP_NOTES];
+    uint8_t arp_held_velocities[MAX_ARP_NOTES];
+    int arp_held_count;
+    int arp_step;
+    int arp_direction;
+    int arp_sample_counter;
+    int arp_samples_per_step;
+    int8_t arp_last_note;
+    uint8_t arp_velocity;
+
+    /* Knob mapping state */
+    knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
+    int knob_mapping_count;
+
+    /* Mute countdown after patch switch */
+    int mute_countdown;
+
+    /* Recording state */
+    int recording;
+    FILE *wav_file;
+    uint32_t samples_written;
+    char current_recording[MAX_PATH_LEN];
+    int16_t *ring_buffer;
+    volatile size_t ring_write_pos;
+    volatile size_t ring_read_pos;
+    pthread_t writer_thread;
+    pthread_mutex_t ring_mutex;
+    pthread_cond_t ring_cond;
+    volatile int writer_running;
+    volatile int writer_should_exit;
+
+    /* MIDI input filter */
+    midi_input_t midi_input;
+
+    /* Raw MIDI bypass */
+    int raw_midi;
+
+    /* Source UI state */
+    int source_ui_active;
+
+    /* Component UI mode */
+    int component_ui_mode;
+
+    /* Host APIs for sub-plugins */
+    host_api_v1_t subplugin_host_api;
+    host_api_v1_t source_host_api;
+
+    /* Reference to host API (shared) */
+    const host_api_v1_t *host;
+} chain_instance_t;
+
+/* ============================================================================
+ * Global State (v1 compatibility)
+ * ============================================================================ */
+
 /* Host API provided by main host */
 static const host_api_v1_t *g_host = NULL;
 
@@ -158,7 +262,10 @@ static char g_current_source_module[MAX_NAME_LEN] = "";
 
 /* Audio FX state */
 static void *g_fx_handles[MAX_AUDIO_FX];
-static audio_fx_api_v1_t *g_fx_plugins[MAX_AUDIO_FX];
+static audio_fx_api_v1_t *g_fx_plugins[MAX_AUDIO_FX];        /* v1 API */
+static audio_fx_api_v2_t *g_fx_plugins_v2[MAX_AUDIO_FX];     /* v2 API */
+static void *g_fx_instances[MAX_AUDIO_FX];                   /* v2 instances */
+static int g_fx_is_v2[MAX_AUDIO_FX];                         /* 1 if using v2 */
 static int g_fx_count = 0;
 
 /* Module parameter info (from chain_params in module.json) */
@@ -935,7 +1042,33 @@ static int load_audio_fx(const char *fx_name) {
         }
     }
 
-    /* Get init function */
+    int slot = g_fx_count;
+
+    /* Try v2 API first */
+    audio_fx_init_v2_fn init_v2_fn = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
+    if (init_v2_fn) {
+        audio_fx_api_v2_t *fx_v2 = init_v2_fn(&g_subplugin_host_api);
+        if (fx_v2 && fx_v2->api_version == AUDIO_FX_API_VERSION_2) {
+            void *instance = fx_v2->create_instance(fx_dir, NULL);
+            if (instance) {
+                g_fx_handles[slot] = handle;
+                g_fx_plugins[slot] = NULL;
+                g_fx_plugins_v2[slot] = fx_v2;
+                g_fx_instances[slot] = instance;
+                g_fx_is_v2[slot] = 1;
+
+                parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
+                g_fx_count++;
+
+                snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)",
+                         fx_name, slot, g_fx_param_counts[slot]);
+                chain_log(msg);
+                return 0;
+            }
+        }
+    }
+
+    /* Fall back to v1 API */
     audio_fx_init_v1_fn init_fn = (audio_fx_init_v1_fn)dlsym(handle, AUDIO_FX_INIT_SYMBOL);
     if (!init_fn) {
         snprintf(msg, sizeof(msg), "dlsym failed: %s", dlerror());
@@ -944,7 +1077,6 @@ static int load_audio_fx(const char *fx_name) {
         return -1;
     }
 
-    /* Initialize FX plugin */
     audio_fx_api_v1_t *fx = init_fn(&g_subplugin_host_api);
     if (!fx) {
         chain_log("FX plugin init returned NULL");
@@ -952,7 +1084,6 @@ static int load_audio_fx(const char *fx_name) {
         return -1;
     }
 
-    /* Verify API version */
     if (fx->api_version != AUDIO_FX_API_VERSION) {
         snprintf(msg, sizeof(msg), "FX API version mismatch: %d vs %d",
                  fx->api_version, AUDIO_FX_API_VERSION);
@@ -961,7 +1092,6 @@ static int load_audio_fx(const char *fx_name) {
         return -1;
     }
 
-    /* Call on_load - fx_dir was already set above based on where we found the .so */
     if (fx->on_load) {
         if (fx->on_load(fx_dir, NULL) != 0) {
             chain_log("FX on_load failed");
@@ -970,17 +1100,16 @@ static int load_audio_fx(const char *fx_name) {
         }
     }
 
-    /* Store in array */
-    int slot = g_fx_count;
     g_fx_handles[slot] = handle;
     g_fx_plugins[slot] = fx;
+    g_fx_plugins_v2[slot] = NULL;
+    g_fx_instances[slot] = NULL;
+    g_fx_is_v2[slot] = 0;
 
-    /* Parse chain_params from module.json - fx_dir was set above */
     parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
-
     g_fx_count++;
 
-    snprintf(msg, sizeof(msg), "Audio FX loaded: %s (slot %d, %d params)",
+    snprintf(msg, sizeof(msg), "Audio FX v1 loaded: %s (slot %d, %d params)",
              fx_name, slot, g_fx_param_counts[slot]);
     chain_log(msg);
 
@@ -990,8 +1119,16 @@ static int load_audio_fx(const char *fx_name) {
 /* Unload all audio FX */
 static void unload_all_audio_fx(void) {
     for (int i = 0; i < g_fx_count; i++) {
-        if (g_fx_plugins[i] && g_fx_plugins[i]->on_unload) {
-            g_fx_plugins[i]->on_unload();
+        if (g_fx_is_v2[i]) {
+            /* v2 API - destroy instance */
+            if (g_fx_plugins_v2[i] && g_fx_instances[i] && g_fx_plugins_v2[i]->destroy_instance) {
+                g_fx_plugins_v2[i]->destroy_instance(g_fx_instances[i]);
+            }
+        } else {
+            /* v1 API - call on_unload */
+            if (g_fx_plugins[i] && g_fx_plugins[i]->on_unload) {
+                g_fx_plugins[i]->on_unload();
+            }
         }
         if (g_fx_handles[i]) {
             dlclose(g_fx_handles[i]);
@@ -999,6 +1136,9 @@ static void unload_all_audio_fx(void) {
         g_fx_param_counts[i] = 0;
         g_fx_handles[i] = NULL;
         g_fx_plugins[i] = NULL;
+        g_fx_plugins_v2[i] = NULL;
+        g_fx_instances[i] = NULL;
+        g_fx_is_v2[i] = 0;
     }
     g_fx_count = 0;
     chain_log("All audio FX unloaded");
@@ -1990,6 +2130,13 @@ static int delete_patch(int index) {
 }
 
 /* Scan patches directory and populate patch list */
+/* Compare function for sorting patches alphabetically by name */
+static int compare_patches(const void *a, const void *b) {
+    const patch_info_t *pa = (const patch_info_t *)a;
+    const patch_info_t *pb = (const patch_info_t *)b;
+    return strcasecmp(pa->name, pb->name);
+}
+
 static int scan_patches(const char *module_dir) {
     char patches_dir[MAX_PATH_LEN];
     char msg[256];
@@ -2022,6 +2169,11 @@ static int scan_patches(const char *module_dir) {
     }
 
     closedir(dir);
+
+    /* Sort patches alphabetically by name */
+    if (g_patch_count > 1) {
+        qsort(g_patches, g_patch_count, sizeof(patch_info_t), compare_patches);
+    }
 
     snprintf(msg, sizeof(msg), "Found %d patches", g_patch_count);
     chain_log(msg);
@@ -2262,12 +2414,20 @@ static int load_patch(int index) {
                 g_synth_plugin->set_param(param, val_str);
             }
         } else if (strcmp(target, "fx1") == 0) {
-            if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->set_param) {
-                g_fx_plugins[0]->set_param(param, val_str);
+            if (g_fx_count > 0) {
+                if (g_fx_is_v2[0] && g_fx_plugins_v2[0] && g_fx_instances[0] && g_fx_plugins_v2[0]->set_param) {
+                    g_fx_plugins_v2[0]->set_param(g_fx_instances[0], param, val_str);
+                } else if (g_fx_plugins[0] && g_fx_plugins[0]->set_param) {
+                    g_fx_plugins[0]->set_param(param, val_str);
+                }
             }
         } else if (strcmp(target, "fx2") == 0) {
-            if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->set_param) {
-                g_fx_plugins[1]->set_param(param, val_str);
+            if (g_fx_count > 1) {
+                if (g_fx_is_v2[1] && g_fx_plugins_v2[1] && g_fx_instances[1] && g_fx_plugins_v2[1]->set_param) {
+                    g_fx_plugins_v2[1]->set_param(g_fx_instances[1], param, val_str);
+                } else if (g_fx_plugins[1] && g_fx_plugins[1]->set_param) {
+                    g_fx_plugins[1]->set_param(param, val_str);
+                }
             }
         }
     }
@@ -2402,13 +2562,21 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
                         }
                     } else if (strcmp(target, "fx1") == 0) {
                         /* Route to first audio FX */
-                        if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->set_param) {
-                            g_fx_plugins[0]->set_param(param, val_str);
+                        if (g_fx_count > 0) {
+                            if (g_fx_is_v2[0] && g_fx_plugins_v2[0] && g_fx_instances[0] && g_fx_plugins_v2[0]->set_param) {
+                                g_fx_plugins_v2[0]->set_param(g_fx_instances[0], param, val_str);
+                            } else if (g_fx_plugins[0] && g_fx_plugins[0]->set_param) {
+                                g_fx_plugins[0]->set_param(param, val_str);
+                            }
                         }
                     } else if (strcmp(target, "fx2") == 0) {
                         /* Route to second audio FX */
-                        if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->set_param) {
-                            g_fx_plugins[1]->set_param(param, val_str);
+                        if (g_fx_count > 1) {
+                            if (g_fx_is_v2[1] && g_fx_plugins_v2[1] && g_fx_instances[1] && g_fx_plugins_v2[1]->set_param) {
+                                g_fx_plugins_v2[1]->set_param(g_fx_instances[1], param, val_str);
+                            } else if (g_fx_plugins[1] && g_fx_plugins[1]->set_param) {
+                                g_fx_plugins[1]->set_param(param, val_str);
+                            }
                         }
                     } else if (strcmp(target, "midi_fx") == 0) {
                         /* MIDI FX params handled separately */
@@ -2559,8 +2727,12 @@ static void plugin_set_param(const char *key, const char *val) {
     /* Route to FX1 with fx1: prefix */
     if (strncmp(key, "fx1:", 4) == 0) {
         const char *subkey = key + 4;
-        if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->set_param && subkey[0] != '\0') {
-            g_fx_plugins[0]->set_param(subkey, val);
+        if (g_fx_count > 0 && subkey[0] != '\0') {
+            if (g_fx_is_v2[0] && g_fx_plugins_v2[0] && g_fx_instances[0] && g_fx_plugins_v2[0]->set_param) {
+                g_fx_plugins_v2[0]->set_param(g_fx_instances[0], subkey, val);
+            } else if (g_fx_plugins[0] && g_fx_plugins[0]->set_param) {
+                g_fx_plugins[0]->set_param(subkey, val);
+            }
         }
         return;
     }
@@ -2568,8 +2740,12 @@ static void plugin_set_param(const char *key, const char *val) {
     /* Route to FX2 with fx2: prefix */
     if (strncmp(key, "fx2:", 4) == 0) {
         const char *subkey = key + 4;
-        if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->set_param && subkey[0] != '\0') {
-            g_fx_plugins[1]->set_param(subkey, val);
+        if (g_fx_count > 1 && subkey[0] != '\0') {
+            if (g_fx_is_v2[1] && g_fx_plugins_v2[1] && g_fx_instances[1] && g_fx_plugins_v2[1]->set_param) {
+                g_fx_plugins_v2[1]->set_param(g_fx_instances[1], subkey, val);
+            } else if (g_fx_plugins[1] && g_fx_plugins[1]->set_param) {
+                g_fx_plugins[1]->set_param(subkey, val);
+            }
         }
         return;
     }
@@ -2631,8 +2807,12 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     /* Route to FX1 with fx1: prefix */
     if (strncmp(key, "fx1:", 4) == 0) {
         const char *subkey = key + 4;
-        if (g_fx_count > 0 && g_fx_plugins[0] && g_fx_plugins[0]->get_param && subkey[0] != '\0') {
-            return g_fx_plugins[0]->get_param(subkey, buf, buf_len);
+        if (g_fx_count > 0 && subkey[0] != '\0') {
+            if (g_fx_is_v2[0] && g_fx_plugins_v2[0] && g_fx_instances[0] && g_fx_plugins_v2[0]->get_param) {
+                return g_fx_plugins_v2[0]->get_param(g_fx_instances[0], subkey, buf, buf_len);
+            } else if (g_fx_plugins[0] && g_fx_plugins[0]->get_param) {
+                return g_fx_plugins[0]->get_param(subkey, buf, buf_len);
+            }
         }
         return -1;
     }
@@ -2640,8 +2820,12 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     /* Route to FX2 with fx2: prefix */
     if (strncmp(key, "fx2:", 4) == 0) {
         const char *subkey = key + 4;
-        if (g_fx_count > 1 && g_fx_plugins[1] && g_fx_plugins[1]->get_param && subkey[0] != '\0') {
-            return g_fx_plugins[1]->get_param(subkey, buf, buf_len);
+        if (g_fx_count > 1 && subkey[0] != '\0') {
+            if (g_fx_is_v2[1] && g_fx_plugins_v2[1] && g_fx_instances[1] && g_fx_plugins_v2[1]->get_param) {
+                return g_fx_plugins_v2[1]->get_param(g_fx_instances[1], subkey, buf, buf_len);
+            } else if (g_fx_plugins[1] && g_fx_plugins[1]->get_param) {
+                return g_fx_plugins[1]->get_param(subkey, buf, buf_len);
+            }
         }
         return -1;
     }
@@ -2914,8 +3098,14 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
 
         /* Process through audio FX chain */
         for (int i = 0; i < g_fx_count; i++) {
-            if (g_fx_plugins[i] && g_fx_plugins[i]->process_block) {
-                g_fx_plugins[i]->process_block(out_interleaved_lr, frames);
+            if (g_fx_is_v2[i]) {
+                if (g_fx_plugins_v2[i] && g_fx_instances[i] && g_fx_plugins_v2[i]->process_block) {
+                    g_fx_plugins_v2[i]->process_block(g_fx_instances[i], out_interleaved_lr, frames);
+                }
+            } else {
+                if (g_fx_plugins[i] && g_fx_plugins[i]->process_block) {
+                    g_fx_plugins[i]->process_block(out_interleaved_lr, frames);
+                }
             }
         }
     } else {
@@ -2981,4 +3171,918 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
     chain_log("Chain host plugin initialized");
 
     return &g_plugin_api;
+}
+
+/* ============================================================================
+ * V2 Instance-Based API Implementation
+ * ============================================================================ */
+
+/* Global instance used by v1 API (for backwards compatibility) */
+static chain_instance_t *g_v1_instance = NULL;
+
+static void v2_chain_log(chain_instance_t *inst, const char *msg) {
+    if (inst && inst->host && inst->host->log) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[chain-v2] %s", msg);
+        inst->host->log(buf);
+    }
+}
+
+/* Forward declarations for v2 helper functions */
+static void v2_synth_panic(chain_instance_t *inst);
+static void v2_unload_synth(chain_instance_t *inst);
+static void v2_unload_all_audio_fx(chain_instance_t *inst);
+static void v2_unload_midi_source(chain_instance_t *inst);
+static void v2_arp_reset(chain_instance_t *inst);
+static int v2_load_synth(chain_instance_t *inst, const char *module_name);
+static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name);
+static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch);
+static int v2_scan_patches(chain_instance_t *inst);
+static int v2_load_patch(chain_instance_t *inst, int patch_idx);
+
+/* Create a new chain instance */
+static void* v2_create_instance(const char *module_dir, const char *config_json) {
+    (void)config_json;
+
+    chain_instance_t *inst = calloc(1, sizeof(chain_instance_t));
+    if (!inst) return NULL;
+
+    strncpy(inst->module_dir, module_dir, MAX_PATH_LEN - 1);
+
+    /* Initialize mutex and condition for recording thread */
+    pthread_mutex_init(&inst->ring_mutex, NULL);
+    pthread_cond_init(&inst->ring_cond, NULL);
+
+    /* Default arpeggiator settings */
+    inst->arp_velocity = 100;
+    inst->arp_last_note = -1;
+    inst->arp_direction = 1;
+
+    /* Set up host API for sub-plugins */
+    if (g_host) {
+        inst->host = g_host;
+        memcpy(&inst->subplugin_host_api, g_host, sizeof(host_api_v1_t));
+        memcpy(&inst->source_host_api, g_host, sizeof(host_api_v1_t));
+        /* Note: MIDI source routing would need instance-specific handling for full v2 */
+    }
+
+    /* Scan patches */
+    v2_scan_patches(inst);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Instance created, found %d patches", inst->patch_count);
+    v2_chain_log(inst, msg);
+
+    return inst;
+}
+
+/* Destroy a chain instance */
+static void v2_destroy_instance(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+
+    v2_chain_log(inst, "Destroying instance");
+
+    /* Stop recording if active */
+    if (inst->writer_running) {
+        pthread_mutex_lock(&inst->ring_mutex);
+        inst->writer_should_exit = 1;
+        pthread_cond_signal(&inst->ring_cond);
+        pthread_mutex_unlock(&inst->ring_mutex);
+        pthread_join(inst->writer_thread, NULL);
+        inst->writer_running = 0;
+    }
+
+    if (inst->wav_file) {
+        fclose(inst->wav_file);
+        inst->wav_file = NULL;
+    }
+
+    if (inst->ring_buffer) {
+        free(inst->ring_buffer);
+        inst->ring_buffer = NULL;
+    }
+
+    /* Unload all plugins */
+    v2_synth_panic(inst);
+    v2_unload_all_audio_fx(inst);
+    v2_unload_synth(inst);
+    v2_unload_midi_source(inst);
+
+    /* Cleanup mutex/cond */
+    pthread_mutex_destroy(&inst->ring_mutex);
+    pthread_cond_destroy(&inst->ring_cond);
+
+    free(inst);
+}
+
+/* V2 synth panic - send all notes off */
+static void v2_synth_panic(chain_instance_t *inst) {
+    if (!inst) return;
+
+    for (int ch = 0; ch < 16; ch++) {
+        uint8_t msg[3] = {(uint8_t)(0xB0 | ch), 123, 0};  /* All notes off */
+
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+            inst->synth_plugin_v2->on_midi(inst->synth_instance, msg, 3, MOVE_MIDI_SOURCE_HOST);
+        } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+            inst->synth_plugin->on_midi(msg, 3, MOVE_MIDI_SOURCE_HOST);
+        }
+    }
+}
+
+/* V2 unload synth */
+static void v2_unload_synth(chain_instance_t *inst) {
+    if (!inst) return;
+
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->destroy_instance) {
+        inst->synth_plugin_v2->destroy_instance(inst->synth_instance);
+    } else if (inst->synth_plugin && inst->synth_plugin->on_unload) {
+        inst->synth_plugin->on_unload();
+    }
+
+    if (inst->synth_handle) {
+        dlclose(inst->synth_handle);
+    }
+
+    inst->synth_handle = NULL;
+    inst->synth_plugin = NULL;
+    inst->synth_plugin_v2 = NULL;
+    inst->synth_instance = NULL;
+    inst->current_synth_module[0] = '\0';
+    inst->synth_param_count = 0;
+}
+
+/* V2 unload all audio FX */
+static void v2_unload_all_audio_fx(chain_instance_t *inst) {
+    if (!inst) return;
+
+    for (int i = 0; i < inst->fx_count; i++) {
+        if (inst->fx_is_v2[i]) {
+            if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->destroy_instance) {
+                inst->fx_plugins_v2[i]->destroy_instance(inst->fx_instances[i]);
+            }
+        } else {
+            if (inst->fx_plugins[i] && inst->fx_plugins[i]->on_unload) {
+                inst->fx_plugins[i]->on_unload();
+            }
+        }
+
+        if (inst->fx_handles[i]) {
+            dlclose(inst->fx_handles[i]);
+        }
+
+        inst->fx_handles[i] = NULL;
+        inst->fx_plugins[i] = NULL;
+        inst->fx_plugins_v2[i] = NULL;
+        inst->fx_instances[i] = NULL;
+        inst->fx_is_v2[i] = 0;
+        inst->fx_param_counts[i] = 0;
+    }
+    inst->fx_count = 0;
+}
+
+/* V2 unload MIDI source */
+static void v2_unload_midi_source(chain_instance_t *inst) {
+    if (!inst) return;
+
+    if (inst->source_plugin && inst->source_plugin->on_unload) {
+        inst->source_plugin->on_unload();
+    }
+
+    if (inst->source_handle) {
+        dlclose(inst->source_handle);
+    }
+
+    inst->source_handle = NULL;
+    inst->source_plugin = NULL;
+    inst->current_source_module[0] = '\0';
+}
+
+/* V2 arpeggiator reset */
+static void v2_arp_reset(chain_instance_t *inst) {
+    if (!inst) return;
+
+    /* Send note off for any playing arp note */
+    if (inst->arp_last_note >= 0) {
+        uint8_t msg[3] = {0x80, (uint8_t)inst->arp_last_note, 0};
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+            inst->synth_plugin_v2->on_midi(inst->synth_instance, msg, 3, MOVE_MIDI_SOURCE_HOST);
+        } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+            inst->synth_plugin->on_midi(msg, 3, MOVE_MIDI_SOURCE_HOST);
+        }
+    }
+
+    inst->arp_held_count = 0;
+    inst->arp_step = 0;
+    inst->arp_direction = 1;
+    inst->arp_sample_counter = 0;
+    inst->arp_last_note = -1;
+}
+
+/* V2 load synth - loads a sound generator module */
+static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
+    char msg[256];
+    char synth_path[MAX_PATH_LEN];
+
+    if (!inst) return -1;
+
+    /* Build path to synth module */
+    if (strcmp(module_name, "linein") == 0) {
+        /* Internal sound generator */
+        snprintf(synth_path, sizeof(synth_path), "%s/sound_generators/%s",
+                 inst->module_dir, module_name);
+    } else {
+        /* External module - go up to modules dir */
+        char *modules_dir = strdup(inst->module_dir);
+        char *last_slash = strrchr(modules_dir, '/');
+        if (last_slash) *last_slash = '\0';
+        snprintf(synth_path, sizeof(synth_path), "%s/%s", modules_dir, module_name);
+        free(modules_dir);
+    }
+
+    char dsp_path[MAX_PATH_LEN];
+    snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", synth_path);
+
+    snprintf(msg, sizeof(msg), "Loading synth: %s", dsp_path);
+    v2_chain_log(inst, msg);
+
+    /* Open shared library */
+    void *handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    /* Try v2 API first */
+    move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
+    if (init_v2) {
+        plugin_api_v2_t *api = init_v2(&inst->subplugin_host_api);
+        if (api && api->api_version == MOVE_PLUGIN_API_VERSION_2) {
+            void *synth_inst = api->create_instance(synth_path, NULL);
+            if (synth_inst) {
+                inst->synth_handle = handle;
+                inst->synth_plugin = NULL;
+                inst->synth_plugin_v2 = api;
+                inst->synth_instance = synth_inst;
+                strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
+
+                snprintf(msg, sizeof(msg), "Synth v2 loaded: %s", module_name);
+                v2_chain_log(inst, msg);
+                return 0;
+            }
+        }
+        /* v2 failed, fall through to v1 */
+    }
+
+    /* Fall back to v1 API */
+    move_plugin_init_v1_fn init_v1 = (move_plugin_init_v1_fn)dlsym(handle, MOVE_PLUGIN_INIT_SYMBOL);
+    if (!init_v1) {
+        snprintf(msg, sizeof(msg), "No v1 or v2 entry point found");
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    plugin_api_v1_t *api = init_v1(&inst->subplugin_host_api);
+    if (!api) {
+        v2_chain_log(inst, "Synth init returned NULL");
+        dlclose(handle);
+        return -1;
+    }
+
+    /* Call on_load */
+    if (api->on_load) {
+        int ret = api->on_load(synth_path, NULL);
+        if (ret != 0) {
+            snprintf(msg, sizeof(msg), "Synth on_load failed: %d", ret);
+            v2_chain_log(inst, msg);
+            dlclose(handle);
+            return -1;
+        }
+    }
+
+    inst->synth_handle = handle;
+    inst->synth_plugin = api;
+    inst->synth_plugin_v2 = NULL;
+    inst->synth_instance = NULL;
+    strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
+
+    snprintf(msg, sizeof(msg), "Synth v1 loaded: %s", module_name);
+    v2_chain_log(inst, msg);
+
+    return 0;
+}
+
+/* V2 load audio FX */
+static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
+    char msg[256];
+    char fx_path[MAX_PATH_LEN];
+    char fx_dir[MAX_PATH_LEN];
+
+    if (!inst || inst->fx_count >= MAX_AUDIO_FX) return -1;
+
+    /* Build path to FX - try chain/audio_fx first, then external */
+    snprintf(fx_path, sizeof(fx_path), "%s/audio_fx/%s/%s.so",
+             inst->module_dir, fx_name, fx_name);
+    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", inst->module_dir, fx_name);
+
+    /* Check if exists, if not try external modules dir */
+    void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        /* Try external modules */
+        char *modules_dir = strdup(inst->module_dir);
+        char *last_slash = strrchr(modules_dir, '/');
+        if (last_slash) *last_slash = '\0';
+
+        snprintf(fx_path, sizeof(fx_path), "%s/%s/%s.so", modules_dir, fx_name, fx_name);
+        snprintf(fx_dir, sizeof(fx_dir), "%s/%s", modules_dir, fx_name);
+        free(modules_dir);
+
+        handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
+    }
+
+    if (!handle) {
+        snprintf(msg, sizeof(msg), "dlopen failed for FX %s: %s", fx_name, dlerror());
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    int slot = inst->fx_count;
+
+    /* Try v2 API first */
+    audio_fx_init_v2_fn init_v2 = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
+    if (init_v2) {
+        audio_fx_api_v2_t *api = init_v2(&inst->subplugin_host_api);
+        if (api && api->api_version == AUDIO_FX_API_VERSION_2) {
+            void *fx_inst = api->create_instance(fx_dir, NULL);
+            if (fx_inst) {
+                inst->fx_handles[slot] = handle;
+                inst->fx_plugins[slot] = NULL;
+                inst->fx_plugins_v2[slot] = api;
+                inst->fx_instances[slot] = fx_inst;
+                inst->fx_is_v2[slot] = 1;
+                inst->fx_count++;
+
+                snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d)", fx_name, slot);
+                v2_chain_log(inst, msg);
+                return 0;
+            }
+        }
+    }
+
+    /* Fall back to v1 API */
+    audio_fx_init_v1_fn init_v1 = (audio_fx_init_v1_fn)dlsym(handle, AUDIO_FX_INIT_SYMBOL);
+    if (!init_v1) {
+        dlclose(handle);
+        return -1;
+    }
+
+    audio_fx_api_v1_t *api = init_v1(&inst->subplugin_host_api);
+    if (!api) {
+        dlclose(handle);
+        return -1;
+    }
+
+    if (api->on_load) {
+        int ret = api->on_load(fx_dir, NULL);
+        if (ret != 0) {
+            dlclose(handle);
+            return -1;
+        }
+    }
+
+    inst->fx_handles[slot] = handle;
+    inst->fx_plugins[slot] = api;
+    inst->fx_plugins_v2[slot] = NULL;
+    inst->fx_instances[slot] = NULL;
+    inst->fx_is_v2[slot] = 0;
+    inst->fx_count++;
+
+    snprintf(msg, sizeof(msg), "Audio FX v1 loaded: %s (slot %d)", fx_name, slot);
+    v2_chain_log(inst, msg);
+
+    return 0;
+}
+
+/* V2 scan patches - simple version */
+static int v2_scan_patches(chain_instance_t *inst) {
+    char patches_dir[MAX_PATH_LEN];
+    char msg[256];
+
+    if (!inst) return -1;
+
+    snprintf(patches_dir, sizeof(patches_dir), "%s/patches", inst->module_dir);
+    inst->patch_count = 0;
+
+    DIR *dir = opendir(patches_dir);
+    if (!dir) {
+        snprintf(msg, sizeof(msg), "Cannot open patches dir: %s", patches_dir);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && inst->patch_count < MAX_PATCHES) {
+        if (entry->d_name[0] == '.') continue;
+
+        size_t len = strlen(entry->d_name);
+        if (len < 5 || strcmp(entry->d_name + len - 5, ".json") != 0) continue;
+
+        char path[MAX_PATH_LEN];
+        snprintf(path, sizeof(path), "%s/%s", patches_dir, entry->d_name);
+
+        patch_info_t *patch = &inst->patches[inst->patch_count];
+        if (v2_parse_patch_file(inst, path, patch) == 0) {
+            strncpy(patch->path, path, MAX_PATH_LEN - 1);
+            inst->patch_count++;
+        }
+    }
+
+    closedir(dir);
+
+    /* Sort patches alphabetically by name */
+    if (inst->patch_count > 1) {
+        qsort(inst->patches, inst->patch_count, sizeof(patch_info_t), compare_patches);
+    }
+
+    return inst->patch_count;
+}
+
+/* V2 parse patch file - simplified version */
+static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch) {
+    (void)inst;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size <= 0 || size > 8192) {
+        fclose(f);
+        return -1;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return -1;
+    }
+
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+
+    memset(patch, 0, sizeof(*patch));
+
+    /* Parse name */
+    json_get_string(json, "name", patch->name, MAX_NAME_LEN);
+    if (!patch->name[0]) {
+        /* Use filename as name */
+        const char *slash = strrchr(path, '/');
+        const char *base = slash ? slash + 1 : path;
+        strncpy(patch->name, base, MAX_NAME_LEN - 1);
+        char *dot = strrchr(patch->name, '.');
+        if (dot) *dot = '\0';
+    }
+
+    /* Parse synth */
+    json_get_string_in_section(json, "synth", "module", patch->synth_module, MAX_NAME_LEN);
+    json_get_int_in_section(json, "synth", "preset", &patch->synth_preset);
+
+    /* Parse audio_fx array */
+    const char *fx_pos = strstr(json, "\"audio_fx\"");
+    if (fx_pos) {
+        const char *bracket = strchr(fx_pos, '[');
+        if (bracket) {
+            bracket++;
+            while (patch->audio_fx_count < MAX_AUDIO_FX) {
+                const char *type_pos = strstr(bracket, "\"type\"");
+                if (!type_pos) break;
+
+                const char *colon = strchr(type_pos, ':');
+                if (!colon) break;
+
+                const char *quote1 = strchr(colon, '"');
+                if (!quote1) break;
+                quote1++;
+
+                const char *quote2 = strchr(quote1, '"');
+                if (!quote2) break;
+
+                int len = quote2 - quote1;
+                if (len > 0 && len < MAX_NAME_LEN) {
+                    strncpy(patch->audio_fx[patch->audio_fx_count], quote1, len);
+                    patch->audio_fx[patch->audio_fx_count][len] = '\0';
+                    patch->audio_fx_count++;
+                }
+
+                bracket = quote2 + 1;
+            }
+        }
+    }
+
+    /* Parse knob_mappings - simplified */
+    const char *mappings_pos = strstr(json, "\"knob_mappings\"");
+    if (mappings_pos) {
+        const char *arr_start = strchr(mappings_pos, '[');
+        const char *arr_end = arr_start ? strchr(arr_start, ']') : NULL;
+
+        if (arr_start && arr_end) {
+            const char *obj_start = arr_start;
+            while (patch->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                obj_start = strchr(obj_start + 1, '{');
+                if (!obj_start || obj_start > arr_end) break;
+
+                const char *obj_end = strchr(obj_start, '}');
+                if (!obj_end || obj_end > arr_end) break;
+
+                knob_mapping_t *m = &patch->knob_mappings[patch->knob_mapping_count];
+
+                /* Parse cc */
+                const char *cc_pos = strstr(obj_start, "\"cc\"");
+                if (cc_pos && cc_pos < obj_end) {
+                    const char *colon = strchr(cc_pos, ':');
+                    if (colon) m->cc = atoi(colon + 1);
+                }
+
+                /* Parse target */
+                const char *target_pos = strstr(obj_start, "\"target\"");
+                if (target_pos && target_pos < obj_end) {
+                    const char *q1 = strchr(strchr(target_pos, ':'), '"');
+                    if (q1 && q1 < obj_end) {
+                        const char *q2 = strchr(q1 + 1, '"');
+                        if (q2 && q2 < obj_end) {
+                            int len = q2 - q1 - 1;
+                            if (len > 15) len = 15;
+                            strncpy(m->target, q1 + 1, len);
+                        }
+                    }
+                }
+
+                /* Parse param */
+                const char *param_pos = strstr(obj_start, "\"param\"");
+                if (param_pos && param_pos < obj_end) {
+                    const char *q1 = strchr(strchr(param_pos, ':'), '"');
+                    if (q1 && q1 < obj_end) {
+                        const char *q2 = strchr(q1 + 1, '"');
+                        if (q2 && q2 < obj_end) {
+                            int len = q2 - q1 - 1;
+                            if (len > 31) len = 31;
+                            strncpy(m->param, q1 + 1, len);
+                        }
+                    }
+                }
+
+                /* Defaults */
+                m->min_val = 0.0f;
+                m->max_val = 1.0f;
+                m->current_value = 0.5f;
+
+                if (m->cc >= KNOB_CC_START && m->cc <= KNOB_CC_END && m->param[0]) {
+                    patch->knob_mapping_count++;
+                }
+
+                obj_start = obj_end;
+            }
+        }
+    }
+
+    free(json);
+    return 0;
+}
+
+/* V2 load patch */
+static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
+    char msg[256];
+
+    if (!inst || patch_idx < 0 || patch_idx >= inst->patch_count) {
+        return -1;
+    }
+
+    patch_info_t *patch = &inst->patches[patch_idx];
+
+    snprintf(msg, sizeof(msg), "Loading patch: %s (synth=%s, %d FX)",
+             patch->name, patch->synth_module, patch->audio_fx_count);
+    v2_chain_log(inst, msg);
+
+    /* Unload existing */
+    v2_synth_panic(inst);
+    v2_arp_reset(inst);
+    v2_unload_all_audio_fx(inst);
+    v2_unload_synth(inst);
+
+    /* Load synth */
+    if (patch->synth_module[0]) {
+        if (v2_load_synth(inst, patch->synth_module) != 0) {
+            snprintf(msg, sizeof(msg), "Failed to load synth: %s", patch->synth_module);
+            v2_chain_log(inst, msg);
+            return -1;
+        }
+
+        /* Set preset */
+        char preset_str[16];
+        snprintf(preset_str, sizeof(preset_str), "%d", patch->synth_preset);
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+            inst->synth_plugin_v2->set_param(inst->synth_instance, "preset", preset_str);
+        } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+            inst->synth_plugin->set_param("preset", preset_str);
+        }
+    }
+
+    /* Load audio FX */
+    for (int i = 0; i < patch->audio_fx_count; i++) {
+        if (v2_load_audio_fx(inst, patch->audio_fx[i]) != 0) {
+            snprintf(msg, sizeof(msg), "Failed to load FX: %s", patch->audio_fx[i]);
+            v2_chain_log(inst, msg);
+            /* Continue loading other FX */
+        }
+    }
+
+    /* Copy knob mappings to instance */
+    inst->knob_mapping_count = patch->knob_mapping_count;
+    memcpy(inst->knob_mappings, patch->knob_mappings,
+           sizeof(knob_mapping_t) * patch->knob_mapping_count);
+
+    /* Copy other settings */
+    inst->chord_type = patch->chord_type;
+    inst->arp_mode = patch->arp_mode;
+    inst->midi_input = patch->midi_input;
+
+    inst->current_patch = patch_idx;
+    inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
+
+    snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
+    v2_chain_log(inst, msg);
+
+    return 0;
+}
+
+/* V2 on_midi handler */
+static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || len < 1) return;
+
+    /* Handle knob CC mappings */
+    if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
+        uint8_t cc = msg[1];
+        if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
+            for (int i = 0; i < inst->knob_mapping_count; i++) {
+                if (inst->knob_mappings[i].cc == cc) {
+                    /* Relative encoder handling */
+                    float delta = 0.0f;
+                    if (msg[2] == 1) delta = KNOB_STEP_FLOAT;
+                    else if (msg[2] == 127) delta = -KNOB_STEP_FLOAT;
+                    else if (msg[2] < 64) delta = KNOB_STEP_FLOAT * msg[2];
+                    else delta = -KNOB_STEP_FLOAT * (128 - msg[2]);
+
+                    float new_val = inst->knob_mappings[i].current_value + delta;
+                    if (new_val < inst->knob_mappings[i].min_val) new_val = inst->knob_mappings[i].min_val;
+                    if (new_val > inst->knob_mappings[i].max_val) new_val = inst->knob_mappings[i].max_val;
+                    inst->knob_mappings[i].current_value = new_val;
+
+                    char val_str[16];
+                    snprintf(val_str, sizeof(val_str), "%.3f", new_val);
+
+                    /* Route to target */
+                    const char *target = inst->knob_mappings[i].target;
+                    const char *param = inst->knob_mappings[i].param;
+
+                    if (strcmp(target, "synth") == 0) {
+                        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+                            inst->synth_plugin_v2->set_param(inst->synth_instance, param, val_str);
+                        } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+                            inst->synth_plugin->set_param(param, val_str);
+                        }
+                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                        if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
+                            inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], param, val_str);
+                        } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
+                            inst->fx_plugins[0]->set_param(param, val_str);
+                        }
+                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                        if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
+                            inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], param, val_str);
+                        } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
+                            inst->fx_plugins[1]->set_param(param, val_str);
+                        }
+                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
+                        if (inst->fx_is_v2[2] && inst->fx_plugins_v2[2] && inst->fx_instances[2]) {
+                            inst->fx_plugins_v2[2]->set_param(inst->fx_instances[2], param, val_str);
+                        } else if (inst->fx_plugins[2] && inst->fx_plugins[2]->set_param) {
+                            inst->fx_plugins[2]->set_param(param, val_str);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /* Forward MIDI to synth */
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+        inst->synth_plugin_v2->on_midi(inst->synth_instance, msg, len, source);
+    } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+        inst->synth_plugin->on_midi(msg, len, source);
+    }
+}
+
+/* V2 set_param handler */
+static void v2_set_param(void *instance, const char *key, const char *val) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+
+    if (strcmp(key, "load_patch") == 0) {
+        int idx = atoi(val);
+        v2_load_patch(inst, idx);
+    }
+    else if (strncmp(key, "synth:", 6) == 0) {
+        const char *subkey = key + 6;
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+            inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
+        } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+            inst->synth_plugin->set_param(subkey, val);
+        }
+    }
+    else if (strncmp(key, "fx1:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (inst->fx_count > 0) {
+            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
+                inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
+            } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
+                inst->fx_plugins[0]->set_param(subkey, val);
+            }
+        }
+    }
+    else if (strncmp(key, "fx2:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (inst->fx_count > 1) {
+            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
+                inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
+            } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
+                inst->fx_plugins[1]->set_param(subkey, val);
+            }
+        }
+    }
+    /* Forward to synth by default */
+    else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+        inst->synth_plugin_v2->set_param(inst->synth_instance, key, val);
+    } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+        inst->synth_plugin->set_param(key, val);
+    }
+}
+
+/* V2 get_param handler */
+static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return -1;
+
+    if (strcmp(key, "patch_count") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->patch_count);
+    }
+    if (strcmp(key, "current_patch") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->current_patch);
+    }
+    if (strncmp(key, "patch_name_", 11) == 0) {
+        int idx = atoi(key + 11);
+        if (idx >= 0 && idx < inst->patch_count) {
+            return snprintf(buf, buf_len, "%s", inst->patches[idx].name);
+        }
+        return -1;
+    }
+    if (strcmp(key, "synth_module") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->current_synth_module);
+    }
+    if (strcmp(key, "fx_count") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->fx_count);
+    }
+
+    /* Knob mapping info */
+    if (strcmp(key, "knob_mapping_count") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->knob_mapping_count);
+    }
+    if (strncmp(key, "knob_", 5) == 0) {
+        /* knob_N_param format (N is 1-8 for knobs, mapping to CC 71-78) */
+        int knob_num;
+        char query_param[32];
+        if (sscanf(key + 5, "%d_%31s", &knob_num, query_param) == 2) {
+            /* Find mapping for this knob (CC = 70 + knob_num) */
+            int cc = 70 + knob_num;
+            for (int i = 0; i < inst->knob_mapping_count; i++) {
+                if (inst->knob_mappings[i].cc == cc) {
+                    if (strcmp(query_param, "name") == 0) {
+                        /* Construct display name from target and param */
+                        return snprintf(buf, buf_len, "%s: %s",
+                                        inst->knob_mappings[i].target,
+                                        inst->knob_mappings[i].param);
+                    }
+                    else if (strcmp(query_param, "target") == 0) {
+                        return snprintf(buf, buf_len, "%s", inst->knob_mappings[i].target);
+                    }
+                    else if (strcmp(query_param, "param") == 0) {
+                        return snprintf(buf, buf_len, "%s", inst->knob_mappings[i].param);
+                    }
+                    else if (strcmp(query_param, "value") == 0) {
+                        if (inst->knob_mappings[i].type == KNOB_TYPE_INT) {
+                            return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].current_value);
+                        } else {
+                            return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].current_value);
+                        }
+                    }
+                    else if (strcmp(query_param, "min") == 0) {
+                        return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].min_val);
+                    }
+                    else if (strcmp(query_param, "max") == 0) {
+                        return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].max_val);
+                    }
+                    else if (strcmp(query_param, "type") == 0) {
+                        return snprintf(buf, buf_len, "%s",
+                                        inst->knob_mappings[i].type == KNOB_TYPE_INT ? "int" : "float");
+                    }
+                    break;
+                }
+            }
+        }
+        return -1;  /* Knob not mapped */
+    }
+
+    /* Forward to synth */
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+        return inst->synth_plugin_v2->get_param(inst->synth_instance, key, buf, buf_len);
+    } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
+        return inst->synth_plugin->get_param(key, buf, buf_len);
+    }
+
+    return -1;
+}
+
+/* V2 render_block handler */
+static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int frames) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) {
+        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+        return;
+    }
+
+    /* Mute briefly after patch switch */
+    if (inst->mute_countdown > 0) {
+        inst->mute_countdown--;
+        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+        return;
+    }
+
+    /* TODO: Process arpeggiator timing here if needed */
+
+    /* Render synth */
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {
+        inst->synth_plugin_v2->render_block(inst->synth_instance, out_interleaved_lr, frames);
+    } else if (inst->synth_plugin && inst->synth_plugin->render_block) {
+        inst->synth_plugin->render_block(out_interleaved_lr, frames);
+    } else {
+        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+    }
+
+    /* Process through audio FX chain */
+    for (int i = 0; i < inst->fx_count; i++) {
+        if (inst->fx_is_v2[i]) {
+            if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
+                inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], out_interleaved_lr, frames);
+            }
+        } else {
+            if (inst->fx_plugins[i] && inst->fx_plugins[i]->process_block) {
+                inst->fx_plugins[i]->process_block(out_interleaved_lr, frames);
+            }
+        }
+    }
+}
+
+/* V2 Plugin API structure */
+static plugin_api_v2_t g_plugin_api_v2 = {
+    .api_version = MOVE_PLUGIN_API_VERSION,
+    .create_instance = v2_create_instance,
+    .destroy_instance = v2_destroy_instance,
+    .on_midi = v2_on_midi,
+    .set_param = v2_set_param,
+    .get_param = v2_get_param,
+    .render_block = v2_render_block
+};
+
+/* V2 Entry Point */
+plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
+    g_host = host;
+
+    if (host->api_version != MOVE_PLUGIN_API_VERSION) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[chain-v2] API version mismatch: host=%d, plugin=%d",
+                 host->api_version, MOVE_PLUGIN_API_VERSION);
+        if (host->log) host->log(msg);
+        return NULL;
+    }
+
+    if (host->log) host->log("[chain-v2] Plugin v2 API initialized");
+
+    return &g_plugin_api_v2;
 }
