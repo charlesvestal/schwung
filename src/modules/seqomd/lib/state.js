@@ -121,8 +121,11 @@ export const state = {
     /* Master view: transpose spark mode selection */
     transposeSparkSelectedSteps: new Set(),
 
-    /* Step arp parameter selection (0=mode, 1=speed, 2=octave, 3=layer) */
+    /* Step arp parameter selection (0=mode, 1=speed, 2=octave, 3=layer) - legacy */
     stepArpParam: 0,
+
+    /* Step arp edit mode - which step is being edited (-1 = none) */
+    stepArpEditStep: -1,
 
     /* Pad octave offset for track view (-2 to +2) */
     padOctaveOffset: 0,
@@ -228,6 +231,10 @@ export function isArpMode() {
     return state.view === 'track' && state.trackMode === 'arp';
 }
 
+export function isStepArpMode() {
+    return state.view === 'track' && state.trackMode === 'steparpm';
+}
+
 export function isTrackNormalMode() {
     return state.view === 'track' && state.trackMode === 'normal';
 }
@@ -319,4 +326,15 @@ export function enterArpMode() {
 
 export function exitArpMode() {
     state.trackMode = 'normal';
+}
+
+export function enterStepArpMode(stepIdx) {
+    state.view = 'track';
+    state.trackMode = 'steparpm';
+    state.stepArpEditStep = stepIdx;
+}
+
+export function exitStepArpMode() {
+    state.trackMode = 'normal';
+    state.stepArpEditStep = -1;
 }

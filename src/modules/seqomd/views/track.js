@@ -11,7 +11,8 @@
  */
 
 import {
-    MoveLoop, MoveCapture, MoveMainButton, MoveBack, MoveCopy, White, Black
+    MoveLoop, MoveCapture, MoveMainButton, MoveBack, MoveCopy, White, Black,
+    MoveKnob3Touch
 } from "../../../shared/constants.mjs";
 
 import { updatePadLEDs, setParam, syncAllTracksToDSP, updatePlayheadLED } from '../lib/helpers.js';
@@ -26,7 +27,8 @@ import {
     enterSwingMode, exitSwingMode,
     enterSpeedMode, exitSpeedMode,
     enterChannelMode, exitChannelMode,
-    enterArpMode, exitArpMode
+    enterArpMode, exitArpMode,
+    enterStepArpMode, exitStepArpMode
 } from '../lib/state.js';
 
 import { markDirty } from '../lib/persistence.js';
@@ -40,8 +42,9 @@ import * as swing from './track/swing.js';
 import * as speed from './track/speed.js';
 import * as channel from './track/channel.js';
 import * as arp from './track/arp.js';
+import * as steparpm from './track/steparpm.js';
 
-const modes = { normal, loop, spark, swing, speed, channel, arp };
+const modes = { normal, loop, spark, swing, speed, channel, arp, steparpm };
 
 /* ============ View Interface ============ */
 
@@ -157,6 +160,30 @@ export function onInput(data) {
         modes.spark.onEnter();
         updateLEDs();
         return true;
+    }
+
+    /* Knob 3 touch while holding step enters step arp mode */
+    if (state.trackMode === 'normal' && state.heldStep >= 0 && isNote && note === MoveKnob3Touch && isNoteOn && velocity > 0) {
+        const stepIdx = state.heldStep;
+        modes.normal.onExit();
+        enterStepArpMode(stepIdx);
+        modes.steparpm.onEnter();
+        updateLEDs();
+        return true;
+    }
+
+    /*
+     * Step arp mode exit - Back button only
+     */
+    if (state.trackMode === 'steparpm') {
+        const isBackButton = isCC && note === MoveBack && velocity > 0;
+        if (isBackButton) {
+            modes.steparpm.onExit();
+            exitStepArpMode();
+            modes.normal.onEnter();
+            updateLEDs();
+            return true;
+        }
     }
 
     /*
