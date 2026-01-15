@@ -10,6 +10,16 @@
   },
   "modules": [
     {
+      "id": "fourtrack",
+      "name": "Four Track",
+      "description": "Four-track recorder with signal chain integration",
+      "author": "Move Anything",
+      "component_type": "featured",
+      "github_repo": "charlesvestal/move-anything-fourtrack",
+      "asset_name": "fourtrack-module.tar.gz",
+      "min_host_version": "0.1.0"
+    },
+    {
       "id": "dx7",
       "name": "DX7 Synth",
       "description": "Yamaha DX7 FM synthesizer emulator (Dexed/MSFA)",

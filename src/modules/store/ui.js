@@ -324,6 +324,13 @@ function loadCatalogFromCache() {
 
 /* Install a module */
 function installModule(mod) {
+    /* Check host version compatibility */
+    if (mod.min_host_version && compareVersions(mod.min_host_version, hostVersion) > 0) {
+        state = STATE_RESULT;
+        resultMessage = `Requires host v${mod.min_host_version}`;
+        return;
+    }
+
     /* Check if module has a download URL */
     if (!mod.download_url) {
         state = STATE_RESULT;
