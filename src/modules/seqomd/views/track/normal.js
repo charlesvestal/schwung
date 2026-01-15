@@ -29,7 +29,7 @@ import {
 import { state, displayMessage } from '../../lib/state.js';
 
 import {
-    setParam, getCurrentPattern, noteToName, notesToString, updateAndSendCC, getPadBaseColor, updatePadLEDs,
+    setParam, getCurrentPattern, noteToName, notesToString, sendCCExternal, getPadBaseColor, updatePadLEDs,
     syncAllTracksToDSP
 } from '../../lib/helpers.js';
 
@@ -509,12 +509,35 @@ function handleKnob(knobIdx, velocity) {
         return handleStepKnob(knobIdx, velocity);
     }
 
-    /* Track mode: knobs 1-2 send CCs */
+    /* Track mode: knobs 1-2 set track CC defaults */
     if (knobIdx < 2) {
+        const track = state.tracks[state.currentTrack];
         const cc = 20 + (state.currentTrack * 2) + knobIdx;
-        const ccValIdx = state.currentTrack * 2 + knobIdx;
-        const channel = state.tracks[state.currentTrack].channel;
-        const val = updateAndSendCC(state.trackCCValues, ccValIdx, velocity, cc, channel);
+        const channel = track.channel;
+
+        /* Get current value */
+        let val = knobIdx === 0 ? track.cc1Default : track.cc2Default;
+
+        /* Update based on knob direction */
+        if (velocity >= 1 && velocity <= 63) {
+            val = Math.min(val + 1, 127);
+        } else if (velocity >= 65 && velocity <= 127) {
+            val = Math.max(val - 1, 0);
+        }
+
+        /* Store in track and sync to DSP */
+        if (knobIdx === 0) {
+            track.cc1Default = val;
+            setParam(`track_${state.currentTrack}_cc1_default`, String(val));
+        } else {
+            track.cc2Default = val;
+            setParam(`track_${state.currentTrack}_cc2_default`, String(val));
+        }
+
+        /* Send CC immediately for live feedback */
+        sendCCExternal(cc, val, channel);
+        markDirty();
+
         displayMessage(
             `Track ${state.currentTrack + 1}`,
             `Knob ${knobIdx + 1}: CC ${cc}`,

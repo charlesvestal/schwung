@@ -200,6 +200,10 @@ export function syncAllTracksToDSP() {
         setParam(`track_${t}_arp_speed`, String(track.arpSpeed || 0));
         setParam(`track_${t}_arp_octave`, String(track.arpOctave || 0));
 
+        /* Sync track-level CC defaults */
+        setParam(`track_${t}_cc1_default`, String(track.cc1Default !== undefined ? track.cc1Default : 64));
+        setParam(`track_${t}_cc2_default`, String(track.cc2Default !== undefined ? track.cc2Default : 64));
+
         /* Sync current pattern's loop points */
         const pattern = track.patterns[track.currentPattern];
         setParam(`track_${t}_loop_start`, String(pattern.loopStart));

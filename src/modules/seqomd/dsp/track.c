@@ -69,6 +69,9 @@ void init_track(track_t *track, int channel) {
     track->arp_speed = DEFAULT_ARP_SPEED;
     track->arp_octave = ARP_OCT_NONE;
     track->preview_velocity = DEFAULT_VELOCITY;
+    /* Track CC defaults */
+    track->cc1_default = 64;
+    track->cc2_default = 64;
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -314,17 +317,19 @@ void trigger_track_step(track_t *track, int track_idx, double step_start_phase) 
     int param_spark_pass = check_spark_condition(
         step->param_spark_n, step->param_spark_m, step->param_spark_not, track);
 
-    /* Send CC values if set AND param_spark passes */
-    /* Note: CCs are sent immediately, not scheduled (they don't need swing) */
+    /* CC handling: step CC overrides track default.
+     * If step has CC, send it. Otherwise send track default. */
     if (param_spark_pass) {
-        if (step->cc1 >= 0) {
-            int cc = 20 + (track_idx * 2);
-            send_cc(cc, step->cc1, track->midi_channel);
-        }
-        if (step->cc2 >= 0) {
-            int cc = 20 + (track_idx * 2) + 1;
-            send_cc(cc, step->cc2, track->midi_channel);
-        }
+        int cc1 = 20 + (track_idx * 2);
+        int cc2 = cc1 + 1;
+
+        /* CC1: step override or track default */
+        int cc1_val = (step->cc1 >= 0) ? step->cc1 : track->cc1_default;
+        send_cc(cc1, cc1_val, track->midi_channel);
+
+        /* CC2: step override or track default */
+        int cc2_val = (step->cc2 >= 0) ? step->cc2 : track->cc2_default;
+        send_cc(cc2, cc2_val, track->midi_channel);
     }
 
     /* Check comp_spark early - needed for both notes and jumps */

@@ -382,6 +382,18 @@ void set_track_param(int track_idx, const char *param, const char *val) {
             send_note_off(note, track->midi_channel);
         }
     }
+    else if (strcmp(param, "cc1_default") == 0) {
+        int cc = atoi(val);
+        if (cc >= 0 && cc <= 127) {
+            track->cc1_default = cc;
+        }
+    }
+    else if (strcmp(param, "cc2_default") == 0) {
+        int cc = atoi(val);
+        if (cc >= 0 && cc <= 127) {
+            track->cc2_default = cc;
+        }
+    }
     /* Step-level params: step_S_param */
     else if (strncmp(param, "step_", 5) == 0) {
         int step = atoi(param + 5);

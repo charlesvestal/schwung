@@ -111,7 +111,9 @@ export function createEmptyTrack(channel) {
         swing: 50,
         arpMode: 0,                   // 0 = Off, 1+ = arp mode
         arpSpeed: DEFAULT_ARP_SPEED,  // Index into ARP_SPEEDS
-        arpOctave: 0                  // Index into ARP_OCTAVES
+        arpOctave: 0,                 // Index into ARP_OCTAVES
+        cc1Default: 64,               // Track-level CC1 default (0-127)
+        cc2Default: 64                // Track-level CC2 default (0-127)
     };
     for (let p = 0; p < NUM_PATTERNS; p++) {
         track.patterns.push(createEmptyPattern());
@@ -132,7 +134,9 @@ export function cloneTrack(srcTrack) {
         swing: srcTrack.swing !== undefined ? srcTrack.swing : 50,
         arpMode: srcTrack.arpMode !== undefined ? srcTrack.arpMode : 0,
         arpSpeed: srcTrack.arpSpeed !== undefined ? srcTrack.arpSpeed : DEFAULT_ARP_SPEED,
-        arpOctave: srcTrack.arpOctave !== undefined ? srcTrack.arpOctave : 0
+        arpOctave: srcTrack.arpOctave !== undefined ? srcTrack.arpOctave : 0,
+        cc1Default: srcTrack.cc1Default !== undefined ? srcTrack.cc1Default : 64,
+        cc2Default: srcTrack.cc2Default !== undefined ? srcTrack.cc2Default : 64
     };
     for (let p = 0; p < NUM_PATTERNS; p++) {
         clone.patterns.push(clonePattern(srcTrack.patterns[p]));
@@ -204,6 +208,13 @@ export function migrateTrackData(trackData) {
         }
         if (track.arpOctave === undefined) {
             track.arpOctave = 0;
+        }
+        /* Ensure track CC defaults exist */
+        if (track.cc1Default === undefined) {
+            track.cc1Default = 64;
+        }
+        if (track.cc2Default === undefined) {
+            track.cc2Default = 64;
         }
         /* Migrate step fields */
         for (const pattern of track.patterns) {

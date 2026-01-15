@@ -162,6 +162,9 @@ typedef struct {
     uint8_t arp_octave;          /* 0=none, 1=+1, 2=+2, 3=-1, 4=-2, 5=±1, 6=±2 */
     /* Preview note velocity (for live pad audition) */
     uint8_t preview_velocity;    /* Velocity for next preview note (1-127) */
+    /* Track-level CC defaults */
+    uint8_t cc1_default;         /* Default CC1 value (0-127) */
+    uint8_t cc2_default;         /* Default CC2 value (0-127) */
 } track_t;
 
 /* Centralized Note Scheduler */

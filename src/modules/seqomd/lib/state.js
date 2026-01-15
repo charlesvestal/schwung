@@ -66,7 +66,6 @@ export const state = {
 
     /* CC output values */
     patternCCValues: [64, 64, 64, 64, 64, 64, 64, 64],
-    trackCCValues: [],         // Initialized below
 
     /* Knob touch tracking */
     knobTouchTime: {},
@@ -131,11 +130,6 @@ export const state = {
     /* Display auto-return timeout (timestamp when to return to default display, 0 = disabled) */
     displayReturnTime: 0
 };
-
-/* Initialize track CC values */
-for (let t = 0; t < NUM_TRACKS; t++) {
-    state.trackCCValues.push(64, 64);
-}
 
 /* ============ Display Helper ============ */
 
