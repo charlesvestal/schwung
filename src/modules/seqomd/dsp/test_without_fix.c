@@ -12,6 +12,13 @@ static host_api_v1_t g_mock_host;
 
 // Temporarily undefine to include seq_plugin with modified code
 #include "seq_plugin.c"
+#include "midi.c"
+#include "scheduler.c"
+#include "transpose.c"
+#include "scale.c"
+#include "arpeggiator.c"
+#include "track.c"
+#include "params.c"
 
 // Override the schedule_note function to simulate the BUG
 #undef schedule_note

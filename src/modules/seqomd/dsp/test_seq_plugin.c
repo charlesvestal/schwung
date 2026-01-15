@@ -103,8 +103,15 @@ static int mock_midi_send_external(const uint8_t *msg, int len) {
 /* Create mock host - will be initialized after function declarations */
 static host_api_v1_t g_mock_host;
 
-/* Include the plugin source directly for testing static functions */
+/* Include the plugin source files directly for testing static functions */
 #include "seq_plugin.c"
+#include "midi.c"
+#include "scheduler.c"
+#include "transpose.c"
+#include "scale.c"
+#include "arpeggiator.c"
+#include "track.c"
+#include "params.c"
 
 /* Now initialize mock host (after functions are defined) */
 static void init_mock_host(void) {

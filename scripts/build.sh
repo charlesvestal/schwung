@@ -43,9 +43,16 @@ cp ./src/stop.sh ./build/ 2>/dev/null || true
 
 echo "Building Sequencer module..."
 
-# Build Sequencer DSP plugin
+# Build Sequencer DSP plugin (all .c files in dsp directory)
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
     src/modules/seqomd/dsp/seq_plugin.c \
+    src/modules/seqomd/dsp/midi.c \
+    src/modules/seqomd/dsp/scheduler.c \
+    src/modules/seqomd/dsp/transpose.c \
+    src/modules/seqomd/dsp/scale.c \
+    src/modules/seqomd/dsp/arpeggiator.c \
+    src/modules/seqomd/dsp/track.c \
+    src/modules/seqomd/dsp/params.c \
     -o build/modules/seqomd/dsp.so \
     -Isrc \
     -lm

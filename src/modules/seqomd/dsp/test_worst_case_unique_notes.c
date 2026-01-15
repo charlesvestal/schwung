@@ -10,6 +10,13 @@ static int mock_midi_send_external(const uint8_t *msg, int len) { (void)msg; (vo
 #include "host/plugin_api_v1.h"
 static host_api_v1_t g_mock_host;
 #include "seq_plugin.c"
+#include "midi.c"
+#include "scheduler.c"
+#include "transpose.c"
+#include "scale.c"
+#include "arpeggiator.c"
+#include "track.c"
+#include "params.c"
 
 static int count_active_scheduler_slots(void) {
     int count = 0;

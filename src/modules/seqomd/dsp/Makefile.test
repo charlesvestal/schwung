@@ -8,8 +8,9 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O0 -I../../..
 
-# Source files (seq_plugin.c is #included by the test)
+# Source files
 TEST_SRC = test_seq_plugin.c
+DSP_SRC = seq_plugin.c midi.c scheduler.c transpose.c scale.c arpeggiator.c track.c params.c
 
 # Output
 TEST_BIN = test_seq_plugin
@@ -18,7 +19,7 @@ TEST_BIN = test_seq_plugin
 
 all: $(TEST_BIN)
 
-$(TEST_BIN): $(TEST_SRC) seq_plugin.c
+$(TEST_BIN): $(TEST_SRC) $(DSP_SRC) seq_plugin.h
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRC) -lm
 
 run: $(TEST_BIN)
