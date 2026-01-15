@@ -48,18 +48,27 @@ typedef struct {
     volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
     volatile uint8_t should_exit;     /* 1 to signal shadow to exit */
     volatile uint8_t midi_ready;      /* increments when new MIDI available */
-    volatile uint8_t audio_ready;     /* 1 when new audio available, 0 when consumed */
-    volatile uint8_t reserved[59];
+    volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
+    volatile uint8_t read_idx;        /* triple buffer: shim reads here */
+    volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
+    volatile uint8_t reserved[53];
 } shadow_control_t;
+
+#define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
+#define SHM_SHADOW_MOVEIN "/move-shadow-movein"  /* Move's audio for mixing */
 
 /* ============================================================================
  * Global State
  * ============================================================================ */
 
 static int16_t *shadow_audio_shm = NULL;
+static int16_t *shadow_movein_shm = NULL;  /* Move's audio for mixing */
 static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_control_t *shadow_control = NULL;
+
+/* Drift correction state */
+static uint32_t last_shim_counter = 0;
 
 static void *synth_handle = NULL;
 static plugin_api_v1_t *synth_plugin = NULL;
@@ -215,19 +224,34 @@ static void render_shadow_display(void) {
 
 static int open_shm(void) {
     int fd;
+    size_t triple_audio_size = AUDIO_BUFFER_SIZE * NUM_AUDIO_BUFFERS;
 
-    /* Open audio shared memory */
+    /* Open audio shared memory - triple buffered */
     fd = shm_open(SHM_SHADOW_AUDIO, O_RDWR, 0666);
     if (fd < 0) {
         perror("Failed to open audio shm");
         return -1;
     }
-    shadow_audio_shm = (int16_t *)mmap(NULL, AUDIO_BUFFER_SIZE,
+    shadow_audio_shm = (int16_t *)mmap(NULL, triple_audio_size,
                                         PROT_READ | PROT_WRITE,
                                         MAP_SHARED, fd, 0);
     close(fd);
     if (shadow_audio_shm == MAP_FAILED) {
         perror("Failed to mmap audio shm");
+        return -1;
+    }
+
+    /* Open Move audio input shared memory */
+    fd = shm_open(SHM_SHADOW_MOVEIN, O_RDONLY, 0666);
+    if (fd < 0) {
+        perror("Failed to open movein shm");
+        return -1;
+    }
+    shadow_movein_shm = (int16_t *)mmap(NULL, AUDIO_BUFFER_SIZE,
+                                         PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+    if (shadow_movein_shm == MAP_FAILED) {
+        perror("Failed to mmap movein shm");
         return -1;
     }
 
@@ -284,7 +308,6 @@ static int open_shm(void) {
  * ============================================================================ */
 
 static int load_synth(const char *soundfont_path) {
-    /* Try DX7 first for cleaner test (algorithmic, no sample rate issues) */
     /* Set to 0 to use SF2, 1 to use DX7 */
     #define USE_DX7 1
 
@@ -331,9 +354,15 @@ static int load_synth(const char *soundfont_path) {
         return -1;
     }
 
-    /* Call on_load */
+    /* Call on_load with JSON defaults */
     if (synth_plugin->on_load) {
-        int result = synth_plugin->on_load(module_dir, NULL);
+        #if USE_DX7
+        const char *json_defaults = "{\"syx_path\":\"/data/UserData/move-anything/modules/dx7/patches.syx\",\"preset\":0}";
+        #else
+        const char *json_defaults = NULL;
+        #endif
+        printf("Calling on_load with defaults: %s\n", json_defaults ? json_defaults : "(none)");
+        int result = synth_plugin->on_load(module_dir, json_defaults);
         if (result != 0) {
             fprintf(stderr, "Plugin on_load failed: %d\n", result);
             dlclose(synth_handle);
@@ -343,15 +372,20 @@ static int load_synth(const char *soundfont_path) {
         }
     }
 
-    /* Set soundfont if SF2 (DX7 doesn't need one) */
+    /* Set soundfont/patches depending on synth type */
     #if !USE_DX7
     if (soundfont_path && synth_plugin->set_param) {
         printf("Setting soundfont: %s\n", soundfont_path);
         synth_plugin->set_param("soundfont_path", soundfont_path);
     }
     #else
-    (void)soundfont_path;  /* Unused for DX7 */
-    printf("DX7 synth loaded (no soundfont needed)\n");
+    (void)soundfont_path;
+    /* Load DX7 patches */
+    if (synth_plugin->set_param) {
+        const char *syx_path = "/data/UserData/move-anything/modules/dx7/patches.syx";
+        printf("Loading DX7 patches: %s\n", syx_path);
+        synth_plugin->set_param("syx_path", syx_path);
+    }
     #endif
 
     printf("Synth loaded successfully\n");
@@ -432,26 +466,53 @@ static void process_midi(void) {
 }
 
 /* ============================================================================
- * Audio Rendering
+ * Audio Rendering - TRIPLE BUFFERED WITH DRIFT CORRECTION
  * ============================================================================ */
 
 static void render_audio(void) {
     if (!shadow_audio_shm || !shadow_control) return;
 
     /*
-     * Render continuously - don't wait for shim to consume.
-     * The shim grabs whatever is in the buffer at ioctl time.
-     * This free-running approach avoids timing dependencies.
+     * Drift correction: Check how many blocks the shim has advanced.
+     * If shim_counter jumped by more than 1, we're behind and need to catch up.
+     * If shim_counter hasn't changed, we're ahead and should wait.
      */
-    int16_t render_buffer[FRAMES_PER_BLOCK * 2];
-    memset(render_buffer, 0, sizeof(render_buffer));
+    uint32_t current_counter = shadow_control->shim_counter;
+    uint32_t blocks_to_render = current_counter - last_shim_counter;
 
-    if (synth_plugin && synth_plugin->render_block) {
-        synth_plugin->render_block(render_buffer, FRAMES_PER_BLOCK);
+    if (blocks_to_render == 0) {
+        /* Shim hasn't advanced - we're ahead, don't render */
+        return;
     }
 
-    /* Copy to shared memory */
-    memcpy(shadow_audio_shm, render_buffer, AUDIO_BUFFER_SIZE);
+    /* Update our tracking counter */
+    last_shim_counter = current_counter;
+
+    /* Cap catch-up to prevent runaway (e.g., if we were paused) */
+    if (blocks_to_render > NUM_AUDIO_BUFFERS) {
+        blocks_to_render = 1;  /* Just render one to catch up gradually */
+    }
+
+    /* Render the required number of blocks */
+    for (uint32_t b = 0; b < blocks_to_render; b++) {
+        int16_t render_buffer[FRAMES_PER_BLOCK * 2];
+        memset(render_buffer, 0, sizeof(render_buffer));
+
+        /* Render synth audio */
+        if (synth_plugin && synth_plugin->render_block) {
+            synth_plugin->render_block(render_buffer, FRAMES_PER_BLOCK);
+        }
+
+        /* Get pointer to current write buffer */
+        uint8_t write_idx = shadow_control->write_idx;
+        int16_t *dest_buffer = shadow_audio_shm + (write_idx * FRAMES_PER_BLOCK * 2);
+
+        /* Copy rendered audio to the triple buffer */
+        memcpy(dest_buffer, render_buffer, AUDIO_BUFFER_SIZE);
+
+        /* Advance write index (wrapping) */
+        shadow_control->write_idx = (write_idx + 1) % NUM_AUDIO_BUFFERS;
+    }
 }
 
 /* ============================================================================
@@ -532,7 +593,8 @@ int main(int argc, char *argv[]) {
     unload_synth();
 
     /* Unmap shared memory */
-    if (shadow_audio_shm) munmap(shadow_audio_shm, AUDIO_BUFFER_SIZE);
+    if (shadow_audio_shm) munmap(shadow_audio_shm, AUDIO_BUFFER_SIZE * NUM_AUDIO_BUFFERS);
+    if (shadow_movein_shm) munmap((void*)shadow_movein_shm, AUDIO_BUFFER_SIZE);
     if (shadow_midi_shm) munmap((void*)shadow_midi_shm, MIDI_BUFFER_SIZE);
     if (shadow_display_shm) munmap(shadow_display_shm, DISPLAY_BUFFER_SIZE);
     if (shadow_control) munmap(shadow_control, CONTROL_BUFFER_SIZE);

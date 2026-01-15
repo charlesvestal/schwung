@@ -39,10 +39,11 @@ int frame_counter = 0;
 #define FRAMES_PER_BLOCK 128
 
 /* Shared memory segment names */
-#define SHM_SHADOW_AUDIO   "/move-shadow-audio"
-#define SHM_SHADOW_MIDI    "/move-shadow-midi"
-#define SHM_SHADOW_DISPLAY "/move-shadow-display"
-#define SHM_SHADOW_CONTROL "/move-shadow-control"
+#define SHM_SHADOW_AUDIO    "/move-shadow-audio"    /* Shadow's mixed output */
+#define SHM_SHADOW_MIDI     "/move-shadow-midi"
+#define SHM_SHADOW_DISPLAY  "/move-shadow-display"
+#define SHM_SHADOW_CONTROL  "/move-shadow-control"
+#define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow to read */
 
 /* Shadow control structure - shared between shim and shadow process */
 typedef struct {
@@ -50,18 +51,24 @@ typedef struct {
     volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
     volatile uint8_t should_exit;     /* 1 to signal shadow to exit */
     volatile uint8_t midi_ready;      /* increments when new MIDI available */
-    volatile uint8_t audio_ready;     /* 1 when new audio available, 0 when consumed */
-    volatile uint8_t reserved[59];    /* padding for future use */
+    volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
+    volatile uint8_t read_idx;        /* triple buffer: shim reads here */
+    volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
+    volatile uint8_t reserved[53];    /* padding for future use */
 } shadow_control_t;
 
+#define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
+
 /* Shadow shared memory pointers */
-static int16_t *shadow_audio_shm = NULL;
+static int16_t *shadow_audio_shm = NULL;    /* Shadow's mixed output */
+static int16_t *shadow_movein_shm = NULL;   /* Move's audio for shadow to read */
 static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_control_t *shadow_control = NULL;
 
 /* Shadow shared memory file descriptors */
 static int shm_audio_fd = -1;
+static int shm_movein_fd = -1;
 static int shm_midi_fd = -1;
 static int shm_display_fd = -1;
 static int shm_control_fd = -1;
@@ -76,21 +83,39 @@ static void init_shadow_shm(void)
 
     printf("Shadow: Initializing shared memory...\n");
 
-    /* Create/open audio shared memory */
+    /* Create/open audio shared memory - triple buffered */
+    size_t triple_audio_size = AUDIO_BUFFER_SIZE * NUM_AUDIO_BUFFERS;
     shm_audio_fd = shm_open(SHM_SHADOW_AUDIO, O_CREAT | O_RDWR, 0666);
     if (shm_audio_fd >= 0) {
-        ftruncate(shm_audio_fd, AUDIO_BUFFER_SIZE);
-        shadow_audio_shm = (int16_t *)mmap(NULL, AUDIO_BUFFER_SIZE,
+        ftruncate(shm_audio_fd, triple_audio_size);
+        shadow_audio_shm = (int16_t *)mmap(NULL, triple_audio_size,
                                             PROT_READ | PROT_WRITE,
                                             MAP_SHARED, shm_audio_fd, 0);
         if (shadow_audio_shm == MAP_FAILED) {
             shadow_audio_shm = NULL;
             printf("Shadow: Failed to mmap audio shm\n");
         } else {
-            memset(shadow_audio_shm, 0, AUDIO_BUFFER_SIZE);
+            memset(shadow_audio_shm, 0, triple_audio_size);
         }
     } else {
         printf("Shadow: Failed to create audio shm\n");
+    }
+
+    /* Create/open Move audio input shared memory (for shadow to read Move's audio) */
+    shm_movein_fd = shm_open(SHM_SHADOW_MOVEIN, O_CREAT | O_RDWR, 0666);
+    if (shm_movein_fd >= 0) {
+        ftruncate(shm_movein_fd, AUDIO_BUFFER_SIZE);
+        shadow_movein_shm = (int16_t *)mmap(NULL, AUDIO_BUFFER_SIZE,
+                                             PROT_READ | PROT_WRITE,
+                                             MAP_SHARED, shm_movein_fd, 0);
+        if (shadow_movein_shm == MAP_FAILED) {
+            shadow_movein_shm = NULL;
+            printf("Shadow: Failed to mmap movein shm\n");
+        } else {
+            memset(shadow_movein_shm, 0, AUDIO_BUFFER_SIZE);
+        }
+    } else {
+        printf("Shadow: Failed to create movein shm\n");
     }
 
     /* Create/open MIDI shared memory */
@@ -192,7 +217,7 @@ static void debug_audio_offset(void) {
     return;
 }
 
-/* Mix shadow audio into mailbox audio buffer */
+/* Mix shadow audio into mailbox audio buffer - TRIPLE BUFFERED */
 static void shadow_mix_audio(void)
 {
     if (!shadow_audio_shm || !global_mmap_addr) return;
@@ -200,18 +225,44 @@ static void shadow_mix_audio(void)
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
 
+    /* Increment shim counter for shadow's drift correction */
+    shadow_control->shim_counter++;
+
+    /* Copy Move's audio to shared memory so shadow can mix it */
+    if (shadow_movein_shm) {
+        memcpy(shadow_movein_shm, mailbox_audio, AUDIO_BUFFER_SIZE);
+    }
+
     /*
-     * Stock Move DOES write audio to offset 256!
-     * We need to MIX (add) our audio with what's already there,
-     * not replace it. This way both audio streams play together.
+     * Triple buffering read strategy:
+     * - Read from buffer that's 2 behind write (gives shadow time to render)
+     * - This adds ~6ms latency but smooths out timing jitter
      */
+    uint8_t write_idx = shadow_control->write_idx;
+    uint8_t read_idx = (write_idx + NUM_AUDIO_BUFFERS - 2) % NUM_AUDIO_BUFFERS;
+
+    /* Update read index for shadow's reference */
+    shadow_control->read_idx = read_idx;
+
+    /* Get pointer to the buffer we should read */
+    int16_t *src_buffer = shadow_audio_shm + (read_idx * FRAMES_PER_BLOCK * 2);
+
+    /* 0 = mix shadow with Move, 1 = replace Move audio entirely */
+    #define SHADOW_AUDIO_REPLACE 0
+
+    #if SHADOW_AUDIO_REPLACE
+    /* Replace Move's audio entirely with shadow audio */
+    memcpy(mailbox_audio, src_buffer, AUDIO_BUFFER_SIZE);
+    #else
+    /* Mix shadow audio with Move's audio */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)shadow_audio_shm[i];
+        int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)src_buffer[i];
         /* Clip to int16 range */
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
     }
+    #endif
 }
 
 /* Copy incoming MIDI from mailbox to shadow shared memory */
@@ -600,33 +651,6 @@ void midi_monitor()
     }
 }
 
-/* Log unique ioctl requests to discover XMOS configuration commands */
-static FILE *ioctl_log = NULL;
-static int ioctl_log_count = 0;
-static unsigned long last_request = 0;
-
-static void log_ioctl(unsigned long request, char *argp) {
-    /* Only log after SPI device is mapped (indicates this is the Move process) */
-    if (!global_mmap_addr) return;
-
-    /* Only log SPI-related ioctls (small request numbers) - skip terminal ioctls like 0x5413 */
-    if (request > 0x100) return;
-
-    /* Only log first 500 calls */
-    if (ioctl_log_count > 500) return;
-
-    if (!ioctl_log) {
-        ioctl_log = fopen("/data/UserData/move-anything/ioctl_log.txt", "w");
-    }
-    if (ioctl_log) {
-        /* Just log request code and argp pointer - don't dereference to avoid crashes */
-        fprintf(ioctl_log, "[%d] ioctl request=0x%lx (dec=%lu) argp=%p\n",
-                ioctl_log_count, request, request, (void*)argp);
-        fflush(ioctl_log);
-    }
-    ioctl_log_count++;
-}
-
 // unsigned long ioctlCounter = 0;
 int ioctl(int fd, unsigned long request, char *argp)
 {
@@ -639,9 +663,6 @@ int ioctl(int fd, unsigned long request, char *argp)
             exit(1);
         }
     }
-
-    /* Log ioctl commands to discover XMOS config */
-    log_ioctl(request, argp);
 
     // print_mem();
     // write_mem();
