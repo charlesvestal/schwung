@@ -50,7 +50,8 @@ typedef struct {
     volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
     volatile uint8_t should_exit;     /* 1 to signal shadow to exit */
     volatile uint8_t midi_ready;      /* increments when new MIDI available */
-    volatile uint8_t reserved[60];    /* padding for future use */
+    volatile uint8_t audio_ready;     /* 1 when new audio available, 0 when consumed */
+    volatile uint8_t reserved[59];    /* padding for future use */
 } shadow_control_t;
 
 /* Shadow shared memory pointers */
@@ -126,7 +127,7 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create display shm\n");
     }
 
-    /* Create/open control shared memory */
+    /* Create/open control shared memory - DON'T zero it, shadow_poc owns the state */
     shm_control_fd = shm_open(SHM_SHADOW_CONTROL, O_CREAT | O_RDWR, 0666);
     if (shm_control_fd >= 0) {
         ftruncate(shm_control_fd, CONTROL_BUFFER_SIZE);
@@ -136,9 +137,8 @@ static void init_shadow_shm(void)
         if (shadow_control == MAP_FAILED) {
             shadow_control = NULL;
             printf("Shadow: Failed to mmap control shm\n");
-        } else {
-            memset(shadow_control, 0, CONTROL_BUFFER_SIZE);
         }
+        /* Note: We intentionally don't memset control - shadow_poc sets shadow_ready */
     } else {
         printf("Shadow: Failed to create control shm\n");
     }
@@ -146,6 +146,50 @@ static void init_shadow_shm(void)
     shadow_shm_initialized = 1;
     printf("Shadow: Shared memory initialized (audio=%p, midi=%p, display=%p, control=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_display_shm, shadow_control);
+}
+
+/* Debug: detailed dump of control regions and offset 256 area */
+static void debug_full_mailbox_dump(void) {
+    static int dump_count = 0;
+    static FILE *dump_file = NULL;
+
+    /* Only dump occasionally */
+    if (dump_count++ % 10000 != 0 || dump_count > 50000) return;
+
+    if (!dump_file) {
+        dump_file = fopen("/data/UserData/move-anything/mailbox_dump.log", "a");
+    }
+
+    if (dump_file && global_mmap_addr) {
+        fprintf(dump_file, "\n=== Dump %d ===\n", dump_count);
+
+        /* Dump first 512 bytes in detail (includes offset 256 audio area) */
+        fprintf(dump_file, "First 512 bytes (includes audio out @ 256):\n");
+        for (int row = 0; row < 512; row += 32) {
+            fprintf(dump_file, "%4d: ", row);
+            for (int i = 0; i < 32; i++) {
+                fprintf(dump_file, "%02x ", global_mmap_addr[row + i]);
+            }
+            fprintf(dump_file, "\n");
+        }
+
+        /* Dump last 128 bytes (offset 3968-4095) for control flags */
+        fprintf(dump_file, "\nLast 128 bytes (control region?):\n");
+        for (int row = 3968; row < 4096; row += 32) {
+            fprintf(dump_file, "%4d: ", row);
+            for (int i = 0; i < 32; i++) {
+                fprintf(dump_file, "%02x ", global_mmap_addr[row + i]);
+            }
+            fprintf(dump_file, "\n");
+        }
+        fflush(dump_file);
+    }
+}
+
+/* Debug: continuously log non-zero audio regions */
+static void debug_audio_offset(void) {
+    /* DISABLED - using ioctl logging instead */
+    return;
 }
 
 /* Mix shadow audio into mailbox audio buffer */
@@ -156,9 +200,14 @@ static void shadow_mix_audio(void)
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
 
-    /* Mix shadow audio into mailbox with saturation */
+    /*
+     * Stock Move DOES write audio to offset 256!
+     * We need to MIX (add) our audio with what's already there,
+     * not replace it. This way both audio streams play together.
+     */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)shadow_audio_shm[i];
+        /* Clip to int16 range */
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
@@ -171,22 +220,91 @@ static void shadow_forward_midi(void)
     if (!shadow_midi_shm || !global_mmap_addr) return;
     if (!shadow_control) return;
 
-    /* Copy MIDI data from mailbox to shared memory */
-    memcpy(shadow_midi_shm, global_mmap_addr + MIDI_IN_OFFSET, MIDI_BUFFER_SIZE);
+    uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
 
-    /* Signal that new MIDI is available */
-    shadow_control->midi_ready++;
+    /* Only copy if there's actual MIDI data (check first 64 bytes for non-zero) */
+    int has_midi = 0;
+    for (int i = 0; i < 64 && !has_midi; i += 4) {
+        /* Look for valid USB-MIDI packets (CIN in byte 0) */
+        uint8_t cin = src[i] & 0x0F;
+        if (cin >= 0x08 && cin <= 0x0E) {
+            has_midi = 1;
+        }
+    }
+
+    if (has_midi) {
+        /* Copy MIDI data from mailbox to shared memory */
+        memcpy(shadow_midi_shm, src, MIDI_BUFFER_SIZE);
+        /* Signal that new MIDI is available */
+        shadow_control->midi_ready++;
+    }
 }
+
+/* Debug counter for display swap */
+static int display_swap_debug_counter = 0;
 
 /* Swap display buffer if in shadow mode */
 static void shadow_swap_display(void)
 {
-    if (!shadow_display_shm || !global_mmap_addr) return;
-    if (!shadow_control || !shadow_control->shadow_ready) return;
-    if (!shadow_control->display_mode) return;  /* Not in shadow mode */
+    static FILE *debug_log = NULL;
+
+    if (!shadow_display_shm || !global_mmap_addr) {
+        return;
+    }
+    if (!shadow_control || !shadow_control->shadow_ready) {
+        return;
+    }
+    if (!shadow_control->display_mode) {
+        return;  /* Not in shadow mode */
+    }
+
+    /* Log every 100th swap attempt */
+    if (display_swap_debug_counter++ % 100 == 0) {
+        if (!debug_log) {
+            debug_log = fopen("/data/UserData/move-anything/shadow_debug.log", "a");
+        }
+        if (debug_log) {
+            fprintf(debug_log, "swap #%d: display_shm=%p, mailbox=%p, display_mode=%d, shadow_ready=%d\n",
+                    display_swap_debug_counter, shadow_display_shm, global_mmap_addr,
+                    shadow_control->display_mode, shadow_control->shadow_ready);
+            fflush(debug_log);
+        }
+    }
 
     /* Overwrite mailbox display with shadow display */
+    /* Try offset 84 where Move Anything writes display (sliced at 172 bytes per frame) */
+    /* Also try offset 768 where we see stock Move data */
+    static int slice = 0;
+    int slice_offset = slice * 172;
+    int slice_bytes = (slice == 5) ? 164 : 172;  /* Last slice is smaller */
+
+    /* Write slice indicator at offset 80 */
+    global_mmap_addr[80] = slice + 1;
+
+    /* Write display slice to offset 84 */
+    if (slice_offset + slice_bytes <= DISPLAY_BUFFER_SIZE) {
+        memcpy(global_mmap_addr + 84, shadow_display_shm + slice_offset, slice_bytes);
+    }
+
+    slice = (slice + 1) % 6;
+
+    /* Also write to offset 768 in case that's where stock Move reads */
     memcpy(global_mmap_addr + DISPLAY_OFFSET, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+
+    /* Dump full mailbox once to find display location */
+    static int test_counter = 0;
+    if (test_counter++ == 1000) {  /* After some time so Move has drawn something */
+        FILE *dump = fopen("/data/UserData/move-anything/mailbox_full.log", "w");
+        if (dump) {
+            fprintf(dump, "Full mailbox dump (4096 bytes):\n");
+            for (int i = 0; i < 4096; i++) {
+                if (i % 256 == 0) fprintf(dump, "\n=== OFFSET %d (0x%x) ===\n", i, i);
+                fprintf(dump, "%02x ", (unsigned char)global_mmap_addr[i]);
+                if ((i+1) % 32 == 0) fprintf(dump, "\n");
+            }
+            fclose(dump);
+        }
+    }
 }
 
 void print_mem()
@@ -446,6 +564,22 @@ void midi_monitor()
         }
 
         /* Shadow mode toggle: Shift + Volume + Knob 1 */
+        /* Debug: Log hotkey state every so often */
+        {
+            static int hotkey_log_counter = 0;
+            static FILE *hotkey_debug = NULL;
+            if (hotkey_log_counter++ % 500 == 0) {
+                if (!hotkey_debug) {
+                    hotkey_debug = fopen("/data/UserData/move-anything/hotkey_debug.log", "a");
+                }
+                if (hotkey_debug) {
+                    fprintf(hotkey_debug, "hotkey #%d: shift=%d vol=%d knob1=%d knob8=%d debounce=%d\n",
+                            hotkey_log_counter, shiftHeld, volumeTouched, knob1touched, knob8touched, shadowModeDebounce);
+                    fflush(hotkey_debug);
+                }
+            }
+        }
+
         if (shiftHeld && volumeTouched && knob1touched && !shadowModeDebounce)
         {
             shadowModeDebounce = 1;
@@ -486,6 +620,9 @@ int ioctl(int fd, unsigned long request, char *argp)
     midi_monitor();
 
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
+    /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
+    shadow_forward_midi();
+
     /* Mix shadow audio into mailbox BEFORE hardware transaction */
     shadow_mix_audio();
 
@@ -494,10 +631,6 @@ int ioctl(int fd, unsigned long request, char *argp)
 
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
-
-    /* === SHADOW INSTRUMENT: POST-IOCTL PROCESSING === */
-    /* Forward incoming MIDI to shadow process AFTER hardware writes it */
-    shadow_forward_midi();
 
     return result;
 }

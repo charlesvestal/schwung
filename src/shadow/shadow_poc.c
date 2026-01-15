@@ -48,7 +48,8 @@ typedef struct {
     volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
     volatile uint8_t should_exit;     /* 1 to signal shadow to exit */
     volatile uint8_t midi_ready;      /* increments when new MIDI available */
-    volatile uint8_t reserved[60];
+    volatile uint8_t audio_ready;     /* 1 when new audio available, 0 when consumed */
+    volatile uint8_t reserved[59];
 } shadow_control_t;
 
 /* ============================================================================
@@ -358,8 +359,15 @@ static void unload_synth(void) {
  * MIDI Processing
  * ============================================================================ */
 
+static FILE *midi_debug_log = NULL;
+
 static void process_midi(void) {
     if (!shadow_midi_shm || !synth_plugin || !synth_plugin->on_midi) return;
+
+    /* Open debug log once */
+    if (!midi_debug_log) {
+        midi_debug_log = fopen("/data/UserData/move-anything/shadow_midi_debug.log", "a");
+    }
 
     /* Process all MIDI packets in the buffer */
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
@@ -374,11 +382,35 @@ static void process_midi(void) {
         uint8_t cable = (pkt[0] >> 4) & 0x0F;
         uint8_t cin = pkt[0] & 0x0F;
 
+        /* Skip Active Sense (0xFE) and other system real-time messages */
+        if (pkt[1] == 0xFE || pkt[1] == 0xF8 || cin == 0x0F) {
+            continue;
+        }
+
+        /* Log interesting MIDI packets for debugging */
+        if (midi_debug_log) {
+            fprintf(midi_debug_log, "MIDI pkt[%d]: %02x %02x %02x %02x (cable=%d cin=%d)\n",
+                    i, pkt[0], pkt[1], pkt[2], pkt[3], cable, cin);
+            fflush(midi_debug_log);
+        }
+
         /* Only process internal MIDI (cable 0) for POC */
         if (cable != 0) continue;
 
         /* Skip system messages and invalid CINs */
         if (cin < 0x08 || cin > 0x0E) continue;
+
+        /* POC: Accept ALL notes (was filtering for note 68 only) */
+        uint8_t status = pkt[1];
+        uint8_t note = pkt[2];
+        uint8_t velocity = pkt[3];
+
+        /* Log notes that pass the filter */
+        if (midi_debug_log && ((status & 0xF0) == 0x90 || (status & 0xF0) == 0x80)) {
+            fprintf(midi_debug_log, "  -> Note %s: note=%d vel=%d\n",
+                    (status & 0xF0) == 0x90 ? "ON" : "OFF", note, velocity);
+            fflush(midi_debug_log);
+        }
 
         /* Forward to synth (3-byte MIDI message) */
         synth_plugin->on_midi(&pkt[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
@@ -390,8 +422,13 @@ static void process_midi(void) {
  * ============================================================================ */
 
 static void render_audio(void) {
-    if (!shadow_audio_shm) return;
+    if (!shadow_audio_shm || !shadow_control) return;
 
+    /*
+     * Render continuously - don't wait for shim to consume.
+     * The shim grabs whatever is in the buffer at ioctl time.
+     * This free-running approach avoids timing dependencies.
+     */
     int16_t render_buffer[FRAMES_PER_BLOCK * 2];
     memset(render_buffer, 0, sizeof(render_buffer));
 
