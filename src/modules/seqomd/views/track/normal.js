@@ -21,7 +21,7 @@ import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 
 import {
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
-    TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
+    TRACK_COLORS, TRACK_COLORS_DIM, TRACK_COLORS_VERY_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
     ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS,
     getRatchetDisplayName, DEFAULT_SPEED_INDEX
 } from '../../lib/constants.js';
@@ -1017,6 +1017,7 @@ function updateStepLEDs() {
     const pattern = getCurrentPattern(state.currentTrack);
     const trackColor = TRACK_COLORS[state.currentTrack];
     const dimColor = TRACK_COLORS_DIM[state.currentTrack];
+    const veryDimColor = TRACK_COLORS_VERY_DIM[state.currentTrack];
 
     /* When shift held, only show mode icons - no track pattern */
     if (state.shiftHeld) {
@@ -1046,8 +1047,13 @@ function updateStepLEDs() {
             const inLoop = i >= pattern.loopStart && i <= pattern.loopEnd;
             const step = pattern.steps[i];
 
-            if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+            const hasNotes = step.notes.length > 0;
+            const hasCCOnly = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0);
+
+            if (hasNotes) {
                 color = inLoop ? dimColor : Navy;
+            } else if (hasCCOnly) {
+                color = inLoop ? veryDimColor : Navy;
             }
 
             /* Length visualization when holding a step */
@@ -1199,14 +1205,19 @@ function updateOctaveLEDs() {
 export function updatePlayhead(oldStep, newStep) {
     const pattern = getCurrentPattern(state.currentTrack);
     const dimColor = TRACK_COLORS_DIM[state.currentTrack];
+    const veryDimColor = TRACK_COLORS_VERY_DIM[state.currentTrack];
 
     /* Restore old step to its normal color */
     if (oldStep >= 0 && oldStep < NUM_STEPS) {
         const inLoop = oldStep >= pattern.loopStart && oldStep <= pattern.loopEnd;
         const step = pattern.steps[oldStep];
         let color = Black;
-        if (step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0) {
+        const hasNotes = step.notes.length > 0;
+        const hasCCOnly = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0);
+        if (hasNotes) {
             color = inLoop ? dimColor : Navy;
+        } else if (hasCCOnly) {
+            color = inLoop ? veryDimColor : Navy;
         }
         setLED(MoveSteps[oldStep], color);
     }

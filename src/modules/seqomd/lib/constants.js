@@ -9,7 +9,9 @@ import {
     NeonPink, BurntOrange, Lime, TealGreen, AzureBlue, Violet, HotMagenta,
     Rose, Mustard, OliveGreen, MutedTeal, MutedBlue, MutedViolet, DeepMagenta,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    BlueViolet, SkyBlue, DeepBlue, DarkPurple, DarkViolet, LightYellow, Ochre
+    BlueViolet, SkyBlue, DeepBlue, DarkPurple, DarkViolet, LightYellow, Ochre,
+    VeryDarkRed, VeryDarkYellow, VeryDarkGreen, DarkOliveGreen, DeepBrownYellow,
+    DeepTeal, DarkBlue, DeepBlueIndigo, DeepViolet, DeepPlum, ShadowMauve
 } from "../../../shared/constants.mjs";
 
 /* ============ Core Constants ============ */
@@ -83,6 +85,26 @@ export const TRACK_COLORS_DIM = [
     MutedViolet,  // Track 14
     DarkViolet,   // Track 15
     DarkGrey      // Track 16
+];
+
+/* Very dim versions of track colors for CC-only steps (no notes) */
+export const TRACK_COLORS_VERY_DIM = [
+    VeryDarkRed,      // Track 1
+    VeryDarkRed,      // Track 2 - similar to track 1
+    VeryDarkYellow,   // Track 3
+    VeryDarkGreen,    // Track 4
+    DarkOliveGreen,   // Track 5
+    DeepBrownYellow,  // Track 6
+    ShadowMauve,      // Track 7
+    VeryDarkYellow,   // Track 8
+    DeepTeal,         // Track 9
+    DarkBlue,         // Track 10
+    DarkBlue,         // Track 11
+    DarkBlue,         // Track 12
+    DeepBlueIndigo,   // Track 13
+    DeepViolet,       // Track 14
+    DeepPlum,         // Track 15
+    DarkGrey          // Track 16
 ];
 
 /* ============ Speed Options ============ */
