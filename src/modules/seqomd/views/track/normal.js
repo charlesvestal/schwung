@@ -11,7 +11,7 @@
 import {
     Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed, Purple, DarkPurple,
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
-    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown, MoveCopy,
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown, MoveCopy, MoveShift,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
@@ -23,7 +23,7 @@ import {
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
     ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS,
-    getRatchetDisplayName
+    getRatchetDisplayName, DEFAULT_SPEED_INDEX
 } from '../../lib/constants.js';
 
 import { state, displayMessage } from '../../lib/state.js';
@@ -1017,11 +1017,15 @@ function updateStepLEDs() {
         }
     }
 
-    /* Step UI icons - show available modes when shift held */
+    /* Step UI icons - show available modes when shift held, or highlight when non-default */
     setButtonLED(MoveStep1UI, state.shiftHeld ? White : Black);         /* Set view */
     setButtonLED(MoveStep2UI, state.shiftHeld ? White : Black);   /* Channel */
-    setButtonLED(MoveStep5UI, state.shiftHeld ? White : Black);          /* Speed */
-    setButtonLED(MoveStep7UI, state.shiftHeld ? White : Black);   /* Swing */
+    /* Speed - highlight when track has non-default speed */
+    const trackSpeedChanged = state.tracks[state.currentTrack].speedIndex !== DEFAULT_SPEED_INDEX;
+    setButtonLED(MoveStep5UI, state.shiftHeld ? White : (trackSpeedChanged ? Cyan : Black));
+    /* Swing - highlight when track has non-default swing */
+    const trackSwingChanged = state.tracks[state.currentTrack].swing !== 50;
+    setButtonLED(MoveStep7UI, state.shiftHeld ? White : (trackSwingChanged ? Cyan : Black));
     /* Transpose toggle - lit when shift held OR when current track has chordFollow */
     const trackTransposed = state.chordFollow[state.currentTrack];
     setButtonLED(MoveStep8UI, state.shiftHeld ? White : (trackTransposed ? Cyan : Black));
@@ -1102,13 +1106,16 @@ function updateTransportLEDs() {
     /* Play button */
     setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
 
-    /* Loop button - shows custom loop indicator */
+    /* Loop button - dim when available, bright when custom loop active */
     const pattern = getCurrentPattern(state.currentTrack);
     const hasCustomLoop = pattern.loopStart > 0 || pattern.loopEnd < NUM_STEPS - 1;
-    setButtonLED(MoveLoop, hasCustomLoop ? TRACK_COLORS[state.currentTrack] : Black);
+    setButtonLED(MoveLoop, hasCustomLoop ? 127 : 40);
 
     /* Record button */
     setButtonLED(MoveRec, state.recording ? BrightRed : Black);
+
+    /* Shift button - dim to show it's available */
+    setButtonLED(MoveShift, 40);
 }
 
 function updateCaptureLED() {
