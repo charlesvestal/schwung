@@ -167,12 +167,18 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
         if (pattern_len == 0) return;
 
         /* Calculate arp timing using musical note values
-         * ARP_STEP_RATES[speed] = steps per arp note
-         * e.g., 1/32 = 0.5 (2 notes per step), 1/4 = 4.0 (1 note per 4 steps) */
+         * ARP_STEP_RATES[speed] = steps per arp note (in global phase)
+         * e.g., 1/32 = 0.5 (2 notes per step), 1/4 = 4.0 (1 note per 4 steps)
+         *
+         * Arp speed is tempo-relative, so it stays constant regardless of track speed.
+         * But the total duration the arp plays scales with track speed:
+         * at 0.5x speed, a 16-step note spans 32 global steps, so more arp notes play. */
+        double speed_scale = 1.0 / track->speed;
+        double effective_length = note_length * speed_scale;  /* Length in global steps */
         double steps_per_note = ARP_STEP_RATES[arp_speed];
-        int total_arp_notes = (int)(note_length / steps_per_note + 0.5);
+        int total_arp_notes = (int)(effective_length / steps_per_note + 0.5);
         if (total_arp_notes < 1) total_arp_notes = 1;
-        double note_duration = (double)note_length / total_arp_notes;
+        double note_duration = steps_per_note;  /* Each arp note is the musical note value */
 
         /* Handle ARP_CHORD mode - all notes together at each arp position */
         if (arp_mode == ARP_CHORD) {
@@ -239,10 +245,13 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
             ratchet_count = ratchet_value;
         }
 
+        /* Scale by track speed: at 0.5x speed, each track step takes 2 global steps */
+        double speed_scale = 1.0 / track->speed;
+
         /* For ratchets, divide the NOTE LENGTH into equal parts (not just one step) */
-        double ratchet_step = (double)note_length / ratchet_count;
+        double ratchet_step = ((double)note_length / ratchet_count) * speed_scale;
         /* Each ratchet note gets equal length */
-        double ratchet_length = (double)note_length / ratchet_count;
+        double ratchet_length = ((double)note_length / ratchet_count) * speed_scale;
 
         for (int r = 0; r < ratchet_count; r++) {
             double note_on_phase = base_phase + (r * ratchet_step);
