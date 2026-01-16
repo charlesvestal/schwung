@@ -674,7 +674,8 @@ static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
     static FILE *forward_log = NULL;
-    int ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
+    const uint8_t ch_min = 0x04; /* MIDI channel 5 */
+    const uint8_t ch_max = 0x07; /* MIDI channel 8 */
 
     const uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
@@ -687,14 +688,10 @@ static void shadow_inprocess_process_midi(void) {
         if (pkt[1] == 0xFE || pkt[1] == 0xF8 || cin == 0x0F) continue;
         if (cable != 0) continue;
         if (cin < 0x08 || cin > 0x0E) continue;
-        if (ch3_only) {
-            uint8_t status = pkt[1];
-            if ((status & 0xF0) >= 0x80 && (status & 0xF0) <= 0xE0) {
-                if ((status & 0x0F) != 0x02) continue;
-            } else {
-                continue;
-            }
-        }
+        uint8_t status = pkt[1];
+        if ((status & 0xF0) < 0x80 || (status & 0xF0) > 0xE0) continue;
+        uint8_t ch = status & 0x0F;
+        if (ch < ch_min || ch > ch_max) continue;
 
         if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
             shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
@@ -714,15 +711,9 @@ static void shadow_inprocess_process_midi(void) {
         uint8_t status_raw = pkt[0];
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
-            if (ch3_only) {
-                if ((status_usb & 0xF0) >= 0x80 && (status_usb & 0xF0) <= 0xE0) {
-                    if ((status_usb & 0x0F) != 0x02) {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-            }
+            if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
+            uint8_t ch = status_usb & 0x0F;
+            if (ch < ch_min || ch > ch_max) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
                 shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
                                           MOVE_MIDI_SOURCE_INTERNAL);
@@ -739,9 +730,8 @@ static void shadow_inprocess_process_midi(void) {
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             uint8_t msg[3] = { status_raw, pkt[1], pkt[2] };
             if (msg[1] <= 0x7F && msg[2] <= 0x7F) {
-                if (ch3_only && ((msg[0] & 0x0F) != 0x02)) {
-                    continue;
-                }
+                uint8_t ch = msg[0] & 0x0F;
+                if (ch < ch_min || ch > ch_max) continue;
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
                     shadow_plugin_v2->on_midi(shadow_plugin_instance, msg, 3,
                                               MOVE_MIDI_SOURCE_INTERNAL);

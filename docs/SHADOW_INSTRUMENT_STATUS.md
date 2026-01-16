@@ -20,6 +20,15 @@ Stock Move (ioctl) → Shim (LD_PRELOAD) → SPI Mailbox
                     DX7/SF2 synth module
 ```
 
+### In-Process Shadow Mode (Autostart)
+
+The shim can also load and run the DX7 DSP **inside MoveOriginal** without the
+separate `shadow_poc` process. This mode autostarts when the shim sees the SPI
+mailbox `mmap()` and mixes the DX7 audio directly into the mailbox.
+
+**MIDI filter:** Only channel **5–8** messages are forwarded to the in-process
+DX7. Set the Move track MIDI channel to 5, 6, 7, or 8 to drive the shadow synth.
+
 ### Components
 
 1. **move_anything_shim.so** - LD_PRELOAD library that:
@@ -53,6 +62,7 @@ Stock Move (ioctl) → Shim (LD_PRELOAD) → SPI Mailbox
 - ✅ Audio renders and can be heard
 - ✅ Triple buffering implemented
 - ✅ Drift correction via shim_counter
+- ✅ In-process shadow DSP autostarts and filters MIDI to channels 5–8
 
 ## The Problem
 
