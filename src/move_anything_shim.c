@@ -601,11 +601,19 @@ typedef struct shadow_chain_slot_t {
 static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 
 static const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
-    "DX7 + Freeverb",
+    "SF2 + Freeverb (Preset 1)",
     "SF2 + Freeverb",
     "OB-Xd + Freeverb",
     "JV-880 + Freeverb"
 };
+
+static int shadow_chain_parse_channel(int ch) {
+    /* Config uses 1-based MIDI channels; convert to 0-based for status nibble. */
+    if (ch >= 1 && ch <= 16) {
+        return ch - 1;
+    }
+    return ch;
+}
 
 static void shadow_log(const char *msg) {
     FILE *log = fopen("/data/UserData/move-anything/shadow_inprocess.log", "a");
@@ -620,7 +628,7 @@ static void shadow_chain_defaults(void) {
         shadow_chain_slots[i].instance = NULL;
         shadow_chain_slots[i].active = 0;
         shadow_chain_slots[i].patch_index = -1;
-        shadow_chain_slots[i].channel = 5 + i;
+        shadow_chain_slots[i].channel = shadow_chain_parse_channel(5 + i);
         strncpy(shadow_chain_slots[i].patch_name,
                 shadow_chain_default_patches[i],
                 sizeof(shadow_chain_slots[i].patch_name) - 1);
@@ -680,8 +688,8 @@ static void shadow_chain_load_config(void) {
             char *chan_colon = strchr(chan_pos, ':');
             if (chan_colon) {
                 int ch = atoi(chan_colon + 1);
-                if (ch >= 5 && ch <= 8) {
-                    shadow_chain_slots[i].channel = ch;
+                if (ch >= 1 && ch <= 16) {
+                    shadow_chain_slots[i].channel = shadow_chain_parse_channel(ch);
                 }
             }
             cursor = chan_pos + 8;
