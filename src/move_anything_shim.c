@@ -42,7 +42,6 @@ int frame_counter = 0;
 #define MIDI_BUFFER_SIZE 256
 #define DISPLAY_BUFFER_SIZE 1024   /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
-#define SHADOW_UI_BUFFER_SIZE 512
 #define FRAMES_PER_BLOCK 128
 
 /* Move host shortcut CCs (mirror move_anything.c) */
@@ -84,30 +83,11 @@ typedef struct shadow_control_t {
     volatile uint8_t midi_ready;      /* increments when new MIDI available */
     volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
     volatile uint8_t read_idx;        /* triple buffer: shim reads here */
-    volatile uint8_t ui_slot;         /* shadow UI slot selection (0-3) */
-    volatile uint8_t ui_flags;        /* reserved for UI flags */
-    volatile uint16_t ui_patch_index; /* shadow UI patch index */
-    volatile uint16_t reserved16;     /* padding/alignment */
-    volatile uint32_t ui_request_id;  /* increment to request patch change */
     volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
-    volatile uint8_t reserved[44];    /* padding for future use */
+    volatile uint8_t reserved[53];    /* padding for future use */
 } shadow_control_t;
 
 static shadow_control_t *shadow_control = NULL;
-typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
-
-#define SHADOW_UI_NAME_LEN 64
-#define SHADOW_UI_SLOTS 4
-typedef struct shadow_ui_state_t {
-    uint32_t version;
-    uint8_t slot_count;
-    uint8_t reserved[3];
-    uint8_t slot_channels[SHADOW_UI_SLOTS];
-    char slot_names[SHADOW_UI_SLOTS][SHADOW_UI_NAME_LEN];
-} shadow_ui_state_t;
-
-static shadow_ui_state_t *shadow_ui_state = NULL;
-typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 
 /* ============================================================================
  * MIDI DEVICE TRACE (DISCOVERY)
@@ -656,30 +636,11 @@ static void shadow_chain_defaults(void) {
     }
 }
 
-static void shadow_ui_state_update_slot(int slot) {
-    if (!shadow_ui_state) return;
-    if (slot < 0 || slot >= SHADOW_UI_SLOTS) return;
-    shadow_ui_state->slot_channels[slot] = (uint8_t)(shadow_chain_slots[slot].channel + 1);
-    strncpy(shadow_ui_state->slot_names[slot],
-            shadow_chain_slots[slot].patch_name,
-            SHADOW_UI_NAME_LEN - 1);
-    shadow_ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
-}
-
-static void shadow_ui_state_refresh(void) {
-    if (!shadow_ui_state) return;
-    shadow_ui_state->slot_count = SHADOW_UI_SLOTS;
-    for (int i = 0; i < SHADOW_UI_SLOTS; i++) {
-        shadow_ui_state_update_slot(i);
-    }
-}
-
 static void shadow_chain_load_config(void) {
     shadow_chain_defaults();
 
     FILE *f = fopen(SHADOW_CHAIN_CONFIG_PATH, "r");
     if (!f) {
-        shadow_ui_state_refresh();
         return;
     }
 
@@ -689,14 +650,12 @@ static void shadow_chain_load_config(void) {
 
     if (size <= 0 || size > 4096) {
         fclose(f);
-        shadow_ui_state_refresh();
         return;
     }
 
     char *json = malloc(size + 1);
     if (!json) {
         fclose(f);
-        shadow_ui_state_refresh();
         return;
     }
 
@@ -740,7 +699,6 @@ static void shadow_chain_load_config(void) {
     }
 
     free(json);
-    shadow_ui_state_refresh();
 }
 
 static int shadow_chain_find_patch_index(void *instance, const char *name) {
@@ -827,13 +785,11 @@ static int shadow_inprocess_load_chain(void) {
         }
     }
 
-    shadow_ui_state_refresh();
     shadow_inprocess_ready = 1;
     if (shadow_control) {
         /* Allow display hotkey when running in-process DSP. */
         shadow_control->shadow_ready = 1;
     }
-    launch_shadow_ui();
     shadow_log("Shadow inprocess: chain loaded");
     return 0;
 }
@@ -849,55 +805,6 @@ static int shadow_chain_slot_for_channel(int ch) {
 
 static inline uint8_t shadow_chain_force_channel_1(uint8_t status) {
     return (status & 0xF0) | 0x00;
-}
-
-static uint32_t shadow_ui_request_seen = 0;
-static void shadow_inprocess_handle_ui_request(void) {
-    if (!shadow_control || !shadow_plugin_v2 || !shadow_plugin_v2->set_param) return;
-
-    uint32_t request_id = shadow_control->ui_request_id;
-    if (request_id == shadow_ui_request_seen) return;
-    shadow_ui_request_seen = request_id;
-
-    int slot = shadow_control->ui_slot;
-    int patch_index = shadow_control->ui_patch_index;
-    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
-    if (patch_index < 0) return;
-    if (!shadow_chain_slots[slot].instance) return;
-
-    if (shadow_plugin_v2->get_param) {
-        char buf[32];
-        int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                                              "patch_count", buf, sizeof(buf));
-        if (len > 0) {
-            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-            int patch_count = atoi(buf);
-            if (patch_count > 0 && patch_index >= patch_count) {
-                return;
-            }
-        }
-    }
-
-    char idx_str[16];
-    snprintf(idx_str, sizeof(idx_str), "%d", patch_index);
-    shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "load_patch", idx_str);
-    shadow_chain_slots[slot].patch_index = patch_index;
-    shadow_chain_slots[slot].active = 1;
-
-    if (shadow_plugin_v2->get_param) {
-        char key[32];
-        char buf[128];
-        int len = 0;
-        snprintf(key, sizeof(key), "patch_name_%d", patch_index);
-        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
-        if (len > 0) {
-            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-            strncpy(shadow_chain_slots[slot].patch_name, buf, sizeof(shadow_chain_slots[slot].patch_name) - 1);
-            shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
-        }
-    }
-
-    shadow_ui_state_update_slot(slot);
 }
 
 static void shadow_inprocess_process_midi(void) {
@@ -995,7 +902,6 @@ static void shadow_inprocess_mix_audio(void) {
 #define SHM_SHADOW_DISPLAY  "/move-shadow-display"
 #define SHM_SHADOW_CONTROL  "/move-shadow-control"
 #define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow to read */
-#define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
 
 
 #define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
@@ -1012,7 +918,6 @@ static int shm_movein_fd = -1;
 static int shm_midi_fd = -1;
 static int shm_display_fd = -1;
 static int shm_control_fd = -1;
-static int shm_ui_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -1109,28 +1014,9 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create control shm\n");
     }
 
-    /* Create/open UI shared memory (slot labels/state) */
-    shm_ui_fd = shm_open(SHM_SHADOW_UI, O_CREAT | O_RDWR, 0666);
-    if (shm_ui_fd >= 0) {
-        ftruncate(shm_ui_fd, SHADOW_UI_BUFFER_SIZE);
-        shadow_ui_state = (shadow_ui_state_t *)mmap(NULL, SHADOW_UI_BUFFER_SIZE,
-                                                    PROT_READ | PROT_WRITE,
-                                                    MAP_SHARED, shm_ui_fd, 0);
-        if (shadow_ui_state == MAP_FAILED) {
-            shadow_ui_state = NULL;
-            printf("Shadow: Failed to mmap UI shm\n");
-        } else {
-            memset(shadow_ui_state, 0, SHADOW_UI_BUFFER_SIZE);
-            shadow_ui_state->version = 1;
-            shadow_ui_state->slot_count = SHADOW_UI_SLOTS;
-        }
-    } else {
-        printf("Shadow: Failed to create UI shm\n");
-    }
-
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, display=%p, control=%p, ui=%p)\n",
-           shadow_audio_shm, shadow_midi_shm, shadow_display_shm, shadow_control, shadow_ui_state);
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, display=%p, control=%p)\n",
+           shadow_audio_shm, shadow_midi_shm, shadow_display_shm, shadow_control);
 }
 
 /* Debug: detailed dump of control regions and offset 256 area */
@@ -1332,53 +1218,6 @@ static void shadow_forward_midi(void)
         memcpy(shadow_midi_shm, filtered, MIDI_BUFFER_SIZE);
         shadow_control->midi_ready++;
     }
-}
-
-static int shadow_is_transport_cc(uint8_t cc)
-{
-    return cc == CC_PLAY || cc == CC_REC || cc == CC_MUTE || cc == CC_RECORD;
-}
-
-static void shadow_capture_midi_for_ui(void)
-{
-    if (!shadow_midi_shm || !shadow_control || !global_mmap_addr) return;
-    if (!shadow_control->display_mode) return;
-    memcpy(shadow_midi_shm, global_mmap_addr + MIDI_IN_OFFSET, MIDI_BUFFER_SIZE);
-    shadow_control->midi_ready++;
-}
-
-static void shadow_filter_move_input(void)
-{
-    if (!shadow_control || !shadow_control->display_mode) return;
-    if (!global_mmap_addr) return;
-
-    uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-    uint8_t filtered[MIDI_BUFFER_SIZE];
-    memset(filtered, 0, sizeof(filtered));
-
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        uint8_t cin = src[i] & 0x0F;
-        uint8_t cable = (src[i] >> 4) & 0x0F;
-        if (cin < 0x08 || cin > 0x0E) {
-            continue;
-        }
-
-        if (cable != 0x00) {
-            memcpy(&filtered[i], &src[i], 4);
-            continue;
-        }
-
-        uint8_t status = src[i + 1];
-        uint8_t type = status & 0xF0;
-        if (type == 0xB0) {
-            uint8_t cc = src[i + 2];
-            if (shadow_is_transport_cc(cc)) {
-                memcpy(&filtered[i], &src[i], 4);
-            }
-        }
-    }
-
-    memcpy(src, filtered, MIDI_BUFFER_SIZE);
 }
 
 static int is_usb_midi_data(uint8_t cin)
@@ -1864,30 +1703,6 @@ void launchChildAndKillThisProcess(char *pBinPath, char*pBinName, char* pArgs)
     }
 }
 
-static int shadow_ui_started = 0;
-static void launch_shadow_ui(void)
-{
-    if (shadow_ui_started) return;
-    if (access("/data/UserData/move-anything/shadow/shadow_ui", X_OK) != 0) {
-        return;
-    }
-
-    int pid = fork();
-    if (pid < 0) {
-        return;
-    }
-    if (pid == 0) {
-        setsid();
-        int fdlimit = (int)sysconf(_SC_OPEN_MAX);
-        for (int i = STDERR_FILENO + 1; i < fdlimit; i++) {
-            close(i);
-        }
-        execl("/data/UserData/move-anything/shadow/shadow_ui", "shadow_ui", (char *)0);
-        _exit(1);
-    }
-    shadow_ui_started = 1;
-}
-
 int (*real_ioctl)(int, unsigned long, ...) = NULL;
 
 int shiftHeld = 0;
@@ -2155,7 +1970,6 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_mix_audio();
 
 #if SHADOW_INPROCESS_POC
-    shadow_inprocess_handle_ui_request();
     shadow_inprocess_process_midi();
     shadow_inprocess_mix_audio();
 #endif
@@ -2165,10 +1979,6 @@ int ioctl(int fd, unsigned long request, ...)
 
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
-
-    /* Capture input for shadow UI and optionally block Move UI while shadow display is active. */
-    shadow_capture_midi_for_ui();
-    shadow_filter_move_input();
 
     return result;
 }
