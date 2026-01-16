@@ -403,20 +403,12 @@ function applyColorToSet(setIdx, color) {
 
 /**
  * Get the color for a set (custom color or default)
+ * Only uses cached data - does NOT read from disk to avoid slow LED updates
  */
 function getSetColor(setIdx) {
-    /* Check in-memory cache first */
+    /* Check in-memory cache only - no disk reads here */
     if (state.sets[setIdx] && state.sets[setIdx].color !== undefined) {
         return state.sets[setIdx].color;
-    }
-    /* Check disk and cache result */
-    const setData = loadSetFromDisk(setIdx);
-    if (setData) {
-        /* Cache the loaded data */
-        state.sets[setIdx] = setData;
-        if (setData.color !== undefined) {
-            return setData.color;
-        }
     }
     /* Default: cycle through track colors */
     return TRACK_COLORS[setIdx % 8];
