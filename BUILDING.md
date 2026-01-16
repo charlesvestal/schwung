@@ -258,6 +258,117 @@ The Module Store fetches release info from GitHub API:
 
 The `module-catalog.json` in this repo lists all available modules. The store uses the `github_repo` and `asset_name` fields to locate releases.
 
+## Plugin API Versions
+
+The host supports two plugin APIs. **All new modules should use V2.**
+
+### Plugin API v2 (Recommended)
+
+V2 supports multiple instances and is required for Signal Chain integration.
+
+```c
+#include "host/plugin_api_v2.h"
+
+typedef struct plugin_api_v2 {
+    uint32_t api_version;              // Must be 2
+    void* (*create_instance)(const char *module_dir, const char *json_defaults);
+    void (*destroy_instance)(void *instance);
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
+    void (*set_param)(void *instance, const char *key, const char *val);
+    int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+    void (*render_block)(void *instance, int16_t *out_lr, int frames);
+} plugin_api_v2_t;
+
+// Entry point - export this function
+extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host);
+```
+
+### Plugin API v1 (Deprecated)
+
+V1 is a singleton API - only one instance can exist. **Do not use for new modules.**
+
+```c
+typedef struct plugin_api_v1 {
+    uint32_t api_version;              // Must be 1
+    int (*on_load)(const char *module_dir, const char *json_defaults);
+    void (*on_unload)(void);
+    void (*on_midi)(const uint8_t *msg, int len, int source);
+    void (*set_param)(const char *key, const char *val);
+    int (*get_param)(const char *key, char *buf, int buf_len);
+    void (*render_block)(int16_t *out_lr, int frames);
+} plugin_api_v1_t;
+
+// V1 entry point (deprecated)
+extern "C" plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host);
+```
+
+### Migration from V1 to V2
+
+1. Replace singleton state with instance struct
+2. Update all functions to take `void *instance` as first parameter
+3. Implement `create_instance()` and `destroy_instance()`
+4. Export `move_plugin_init_v2()` instead of `move_plugin_init_v1()`
+
+## Module Store and release.json
+
+External modules can specify where they should be installed via `release.json`.
+
+### release.json Format
+
+```json
+{
+  "version": "0.2.1",
+  "download_url": "https://github.com/user/repo/releases/download/v0.2.1/module.tar.gz",
+  "install_path": "chain/audio_fx"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `version` | Yes | Semantic version (without `v` prefix) |
+| `download_url` | Yes | Direct link to release tarball |
+| `install_path` | No | Subdirectory under `modules/` for extraction |
+
+### Install Paths by Module Type
+
+| Module Type | install_path | Extracts To |
+|-------------|--------------|-------------|
+| Standalone synth | (omit field) | `modules/<id>/` |
+| Audio FX | `chain/audio_fx` | `modules/chain/audio_fx/<id>/` |
+| MIDI FX | `chain/midi_fx` | `modules/chain/midi_fx/<id>/` |
+| Sound generator (chain-only) | `chain/sound_generators` | `modules/chain/sound_generators/<id>/` |
+
+**Standalone modules** (synths like SF2, DX7, JV-880, OB-Xd, CLAP) should NOT specify `install_path`. They implement the full plugin API and can be loaded directly by the host.
+
+**Chain-only components** (audio FX, MIDI FX) MUST specify `install_path` so they're installed in the correct Signal Chain subdirectory.
+
+### GitHub Actions Workflow
+
+The release workflow should preserve `install_path` when updating release.json:
+
+```yaml
+- name: Update release.json
+  run: |
+    VERSION="${GITHUB_REF_NAME#v}"
+    INSTALL_PATH=$(jq -r '.install_path // empty' release.json 2>/dev/null || echo "")
+    if [ -n "$INSTALL_PATH" ]; then
+      cat > release.json << EOFJ
+    {
+      "version": "${VERSION}",
+      "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/<id>-module.tar.gz",
+      "install_path": "${INSTALL_PATH}"
+    }
+    EOFJ
+    else
+      cat > release.json << EOFJ
+    {
+      "version": "${VERSION}",
+      "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/<id>-module.tar.gz"
+    }
+    EOFJ
+    fi
+```
+
 ## Architecture
 
 - **Target**: Ableton Move (aarch64 Linux, glibc)
