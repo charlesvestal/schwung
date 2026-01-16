@@ -3,7 +3,7 @@
     "input": "both",
     "synth": {
         "module": "jv880",
-        "preset": 0
+        "preset": 40
     },
     "audio_fx": [
         { "type": "freeverb" }
