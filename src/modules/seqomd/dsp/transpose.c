@@ -55,7 +55,6 @@ void rebuild_transpose_lookup(void) {
  */
 int check_transpose_condition(int step_index, transpose_step_t *step) {
     if (step->condition_n <= 0) {
-        printf("[CONDITION] Step %d: No condition set (n=%d), always passes\n", step_index, step->condition_n);
         return 1;  /* No condition (n=0) always passes */
     }
 
@@ -64,16 +63,11 @@ int check_transpose_condition(int step_index, transpose_step_t *step) {
     int iteration = (step_iter % step->condition_n) + 1;
     int should_apply = (iteration == step->condition_m);
 
-    printf("[CONDITION] Step %d: iteration_count=%u, n=%d, m=%d, iteration=%d, match=%d, NOT=%d\n",
-           step_index, step_iter, step->condition_n, step->condition_m,
-           iteration, should_apply, step->condition_not);
-
     /* Apply NOT flag if set */
     if (step->condition_not) {
         should_apply = !should_apply;
     }
 
-    printf("[CONDITION] Step %d final result: %s\n", step_index, should_apply ? "PASS" : "FAIL");
     return should_apply;
 }
 
@@ -84,34 +78,14 @@ int check_transpose_condition(int step_index, transpose_step_t *step) {
 void update_transpose_virtual_playhead(uint32_t step) {
     /* If transpose sequence is disabled or empty, nothing to do */
     if (!g_transpose_sequence_enabled) {
-        static int logged_disabled = 0;
-        if (!logged_disabled) {
-            printf("[TRANSPOSE] Sequence DISABLED\n");
-            logged_disabled = 1;
-        }
         return;
     }
     if (g_transpose_step_count == 0 || g_transpose_total_steps == 0) {
-        static int logged_empty = 0;
-        if (!logged_empty) {
-            printf("[TRANSPOSE] Empty sequence: step_count=%d, total_steps=%u\n",
-                   g_transpose_step_count, g_transpose_total_steps);
-            logged_empty = 1;
-        }
         return;
     }
 
     /* Initialize on first call - calculate which virtual step we should be at */
     if (g_transpose_first_call) {
-        printf("[TRANSPOSE] INIT at global_step=%u, step_count=%d, total_steps=%u\n",
-               step, g_transpose_step_count, g_transpose_total_steps);
-        for (int i = 0; i < g_transpose_step_count; i++) {
-            printf("[TRANSPOSE] Step %d: transpose=%d, duration=%u, jump=%d, cond_n=%d, cond_m=%d, cond_not=%d\n",
-                   i, g_transpose_sequence[i].transpose, g_transpose_sequence[i].duration,
-                   g_transpose_sequence[i].jump, g_transpose_sequence[i].condition_n,
-                   g_transpose_sequence[i].condition_m, g_transpose_sequence[i].condition_not);
-        }
-
         /* Calculate which virtual step corresponds to the current global step */
         uint32_t looped_step = step % g_transpose_total_steps;
         uint32_t accumulated = 0;
@@ -123,8 +97,6 @@ void update_transpose_virtual_playhead(uint32_t step) {
                 /* This is the virtual step we should be in */
                 g_transpose_virtual_step = i;
                 g_transpose_virtual_entry_step = step - (looped_step - accumulated);
-                printf("[TRANSPOSE] Starting at virtual_step=%d, entry_step=%u (looped_step=%u, step_offset=%u)\n",
-                       g_transpose_virtual_step, g_transpose_virtual_entry_step, looped_step, looped_step - accumulated);
                 break;
             }
             accumulated = next_accumulated;
@@ -136,44 +108,26 @@ void update_transpose_virtual_playhead(uint32_t step) {
 
     /* Get current virtual step and its duration */
     transpose_step_t *current_virtual = &g_transpose_sequence[g_transpose_virtual_step];
-    uint32_t duration_in_steps = current_virtual->duration;  /* Already in steps (JS converts beats*4) */
+    uint32_t duration_in_steps = current_virtual->duration;
 
     /* Check if we've been in this virtual step long enough to advance */
     uint32_t steps_in_current = step - g_transpose_virtual_entry_step;
 
     if (steps_in_current >= duration_in_steps) {
-        printf("[TRANSPOSE] Step %u: virtual_step=%d finished (duration=%u)\n",
-               step, g_transpose_virtual_step, duration_in_steps);
-
         /* Step finished playing - check for jump BEFORE advancing */
         if (current_virtual->jump >= 0 && current_virtual->jump < g_transpose_step_count) {
-            printf("[TRANSPOSE] Checking jump: jump=%d, step_count=%d, cond_n=%d\n",
-                   current_virtual->jump, g_transpose_step_count, current_virtual->condition_n);
-
             if (check_transpose_condition(g_transpose_virtual_step, current_virtual)) {
-                printf("[TRANSPOSE] JUMP EXECUTED: %d -> %d\n",
-                       g_transpose_virtual_step, current_virtual->jump);
-
                 /* Increment this step's iteration counter - we've evaluated this condition */
                 g_transpose_step_iteration[g_transpose_virtual_step]++;
-                printf("[TRANSPOSE] Step %d iteration count incremented to %u\n",
-                       g_transpose_virtual_step, g_transpose_step_iteration[g_transpose_virtual_step]);
 
                 /* Jump: go to target step */
                 g_transpose_virtual_step = current_virtual->jump;
                 g_transpose_virtual_entry_step = step;
                 return;
             } else {
-                printf("[TRANSPOSE] Jump condition FAILED\n");
-
                 /* Still increment - we evaluated the condition */
                 g_transpose_step_iteration[g_transpose_virtual_step]++;
-                printf("[TRANSPOSE] Step %d iteration count incremented to %u\n",
-                       g_transpose_virtual_step, g_transpose_step_iteration[g_transpose_virtual_step]);
             }
-        } else {
-            printf("[TRANSPOSE] No jump: jump=%d, step_count=%d\n",
-                   current_virtual->jump, g_transpose_step_count);
         }
 
         /* No jump or condition failed - advance normally */

@@ -527,16 +527,6 @@ void set_transpose_param(const char *key, const char *val) {
         if (count >= 0 && count <= MAX_TRANSPOSE_STEPS) {
             g_transpose_step_count = count;
             rebuild_transpose_lookup();
-            printf("[TRANSPOSE] Set step_count = %d, total_steps = %u\n",
-                   count, g_transpose_total_steps);
-
-            /* Log current jump values */
-            for (int i = 0; i < count; i++) {
-                if (g_transpose_sequence[i].jump >= 0) {
-                    printf("[TRANSPOSE] Step %d has jump = %d\n",
-                           i, g_transpose_sequence[i].jump);
-                }
-            }
         }
     }
     else if (strncmp(key, "transpose_step_", 15) == 0) {
@@ -566,7 +556,6 @@ void set_transpose_param(const char *key, const char *val) {
                     int j = atoi(val);
                     if (j >= -1 && j < MAX_TRANSPOSE_STEPS) {
                         g_transpose_sequence[step_idx].jump = j;
-                        printf("[TRANSPOSE] Set step %d jump = %d\n", step_idx, j);
                     }
                 }
                 else if (strcmp(param, "condition_n") == 0) {

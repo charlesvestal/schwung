@@ -158,20 +158,9 @@ static void plugin_on_unload(void) {
 }
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
-    /* Debug: Log CC button presses to identify buttons */
-    if (len >= 3) {
-        uint8_t status = msg[0];
-        uint8_t data1 = msg[1];
-        uint8_t data2 = msg[2];
-
-        /* Log CC messages (0xB0-0xBF) when pressed (velocity > 0) */
-        if ((status & 0xF0) == 0xB0 && data2 > 0) {
-            printf("[DSP] CC Button: %d (0x%02X) vel=%d source=%d\n",
-                   data1, data1, data2, source);
-        }
-    }
-
-    /* Currently no other MIDI input handling - Move is master */
+    /* Currently no MIDI input handling - Move is master */
+    (void)msg;
+    (void)len;
     (void)source;
 }
 
@@ -181,13 +170,11 @@ static void plugin_set_param(const char *key, const char *val) {
         int new_bpm = atoi(val);
         if (new_bpm >= 20 && new_bpm <= 300) {
             g_bpm = new_bpm;
-            printf("[TEST] ===== BPM SET TO %d =====\n", new_bpm);
         }
     }
     else if (strcmp(key, "playing") == 0) {
         int new_playing = atoi(val);
         if (new_playing && !g_playing) {
-            printf("[TEST] ===== PLAYBACK STARTING =====\n");
             /* Starting playback - clear scheduler and reset all tracks */
             clear_scheduled_notes();
             for (int t = 0; t < NUM_TRACKS; t++) {
@@ -338,8 +325,6 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
 }
 
 static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
-    static int render_call_count = 0;
-
     /* Safety check */
     if (!out_interleaved_lr || frames <= 0) {
         return;
@@ -350,12 +335,6 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
 
     if (!g_playing || !g_host) {
         return;
-    }
-
-    /* Log every 100 render calls when playing */
-    render_call_count++;
-    if (render_call_count % 100 == 0) {
-        printf("[TEST] Render called %d times, g_playing=%d\n", render_call_count, g_playing);
     }
 
     /* Phase increments (drift-free timing) */

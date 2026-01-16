@@ -12,7 +12,7 @@ import {
     MoveStep9UI, MoveStep10UI, MoveStep11UI, MoveStep12UI, MoveStep13UI, MoveStep14UI, MoveStep15UI, MoveStep16UI
 } from "../../../shared/constants.mjs";
 
-import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
+import { setLED, setButtonLED, setLedsEnabled, getLedsEnabled } from "../../../shared/input_filter.mjs";
 
 import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM } from '../lib/constants.js';
 import * as spark from './master/spark.js';
@@ -171,6 +171,21 @@ export function onInput(data) {
             bpmEditMode = true;
             updateDisplayContent();
             updateLEDs();
+        }
+        return true;
+    }
+
+    /* Step 2 (note 17) with shift - toggle LED updates */
+    if (isNote && note === 17 && state.shiftHeld) {
+        if (isNoteOn && velocity > 0) {
+            const newState = !getLedsEnabled();
+            setLedsEnabled(newState);
+            displayMessage(
+                "LED DEBUG",
+                newState ? "LEDs: ENABLED" : "LEDs: DISABLED",
+                "Shift+Step2 to toggle",
+                ""
+            );
         }
         return true;
     }
@@ -476,7 +491,9 @@ export function updateLEDs() {
 function updateStepUILEDs() {
     /* Clear all step UI mode icons */
     setButtonLED(MoveStep1UI, Black);
-    setButtonLED(MoveStep2UI, Black);
+    /* Step 2 UI shows LED toggle option when shift held, colored based on LED state */
+    const ledsEnabled = getLedsEnabled();
+    setButtonLED(MoveStep2UI, state.shiftHeld ? (ledsEnabled ? BrightGreen : BrightRed) : Black);
     setButtonLED(MoveStep3UI, Black);
     setButtonLED(MoveStep4UI, Black);
     /* Step 5 UI shows BPM mode option when shift held, or lit when in BPM mode */

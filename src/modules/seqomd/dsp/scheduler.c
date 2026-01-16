@@ -81,12 +81,6 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
     double note_duration = length * gate_mult;
     double off_phase = swung_on_phase + note_duration;
 
-    /* Debug: log scheduling for testing */
-    if (note >= 60 && note <= 67) {
-        printf("[SCHEDULE] Note %d on_phase=%.2f off_phase=%.2f (global_phase=%.2f)\n",
-               note, swung_on_phase, off_phase, g_global_phase);
-    }
-
     /* Check for conflicting note (same note+channel already playing) */
     int conflict_idx = find_conflicting_note(note, channel);
     if (conflict_idx >= 0) {
@@ -156,10 +150,6 @@ void process_scheduled_notes(void) {
                 if (final_note > 127) final_note = 127;
             }
 
-            if (sn->note >= 60 && sn->note <= 67) {
-                printf("[SEND] Note %d (orig=%d) at phase=%.2f (on_phase=%.2f)\n",
-                       final_note, sn->note, g_global_phase, sn->on_phase);
-            }
             send_note_on(final_note, sn->velocity, sn->channel);
             sn->sent_note = (uint8_t)final_note;  /* Remember for note-off */
             sn->on_sent = 1;
@@ -194,7 +184,6 @@ void clear_scheduled_notes(void) {
  * Sends note-off for any currently playing notes and cancels pending notes.
  */
 void cut_channel_notes(uint8_t channel) {
-    int cancelled_count = 0;
     for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
         scheduled_note_t *sn = &g_scheduled_notes[i];
         if (sn->active && sn->channel == channel) {
@@ -206,12 +195,7 @@ void cut_channel_notes(uint8_t channel) {
             sn->active = 0;
             sn->on_sent = 0;
             sn->off_sent = 0;
-            cancelled_count++;
         }
-    }
-    if (cancelled_count > 0) {
-        printf("[CUT] Cancelled %d notes on channel %d at phase=%.2f\n",
-               cancelled_count, channel, g_global_phase);
     }
 }
 
