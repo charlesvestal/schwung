@@ -12,7 +12,7 @@ cd "$REPO_ROOT"
 cd ./build
 
 # Build list of items to package
-ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules"
+ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow"
 
 # Add bin directory if it exists (contains curl for store module)
 if [ -d "./bin" ]; then

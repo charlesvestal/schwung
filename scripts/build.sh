@@ -78,6 +78,17 @@ mkdir -p ./build/shadow/
     -Isrc \
     -lm -ldl -lrt
 
+echo "Building Shadow UI..."
+
+# Build Shadow UI host
+"${CROSS_PREFIX}gcc" -g -O3 \
+    src/shadow/shadow_ui.c \
+    -o build/shadow/shadow_ui \
+    -Isrc -Isrc/lib \
+    -Ilibs/quickjs/quickjs-2025-04-26 \
+    -Llibs/quickjs/quickjs-2025-04-26 \
+    -lquickjs -lm -ldl -lrt
+
 echo "Building Signal Chain module..."
 
 # Build Signal Chain DSP plugin
@@ -115,6 +126,9 @@ cp ./src/shared/*.mjs ./build/shared/
 cp ./src/host/menu_ui.js ./build/host/
 cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
 cp ./src/host/version.txt ./build/host/
+
+# Copy shadow UI files
+cp ./src/shadow/shadow_ui.js ./build/shadow/
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
