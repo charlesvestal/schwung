@@ -143,15 +143,21 @@ export function onInput(data) {
             stepCopiedThisHold = false;
         } else {
             /* Copy released */
-            if (!stepCopiedThisHold && (Date.now() - copyPressTime) < 200) {
+            const wasQuickTap = (Date.now() - copyPressTime) < 200;
+            if (!stepCopiedThisHold && wasQuickTap) {
                 /* Quick tap - copy current pattern */
                 copyCurrentPattern();
             }
             /* Clear copy state */
+            const hadCopyBuffer = state.stepCopyBuffer !== null;
             copyHeld = false;
             if (state.stepCopyBuffer) {
                 state.stepCopyBuffer = null;
                 state.copiedStepIdx = -1;
+            }
+            /* Update display and LEDs when exiting copy mode */
+            if (hadCopyBuffer || stepCopiedThisHold || !wasQuickTap) {
+                updateDisplayContent();
                 updateLEDs();
             }
         }
