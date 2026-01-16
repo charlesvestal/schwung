@@ -9,9 +9,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <signal.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/ioctl.h>
+#include <linux/spi/spidev.h>
 
 #include "host/plugin_api_v1.h"
 
@@ -41,6 +44,38 @@ int frame_counter = 0;
 #define CONTROL_BUFFER_SIZE 64
 #define FRAMES_PER_BLOCK 128
 
+/* Move host shortcut CCs (mirror move_anything.c) */
+#define CC_SHIFT 49
+#define CC_JOG_CLICK 3
+#define CC_BACK 51
+#define CC_MASTER_KNOB 79
+#define CC_UP 55
+#define CC_DOWN 54
+#define CC_MENU 50
+#define CC_CAPTURE 52
+#define CC_UNDO 56
+#define CC_LOOP 58
+#define CC_COPY 60
+#define CC_LEFT 62
+#define CC_RIGHT 63
+#define CC_KNOB1 71
+#define CC_KNOB2 72
+#define CC_KNOB3 73
+#define CC_KNOB4 74
+#define CC_KNOB5 75
+#define CC_KNOB6 76
+#define CC_KNOB7 77
+#define CC_KNOB8 78
+#define CC_PLAY 85
+#define CC_REC 86
+#define CC_MUTE 88
+#define CC_MIC_IN_DETECT 114
+#define CC_LINE_OUT_DETECT 115
+#define CC_RECORD 118
+#define CC_DELETE 119
+#define CC_STEP_UI_FIRST 16
+#define CC_STEP_UI_LAST 31
+
 typedef struct shadow_control_t {
     volatile uint8_t display_mode;    /* 0=stock Move, 1=shadow display */
     volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
@@ -53,6 +88,489 @@ typedef struct shadow_control_t {
 } shadow_control_t;
 
 static shadow_control_t *shadow_control = NULL;
+
+/* ============================================================================
+ * MIDI DEVICE TRACE (DISCOVERY)
+ * ============================================================================
+ * Track open/read/write on MIDI-ish device nodes to discover where Move sends
+ * external MIDI. Enabled by creating midi_fd_trace_on.
+ * ============================================================================ */
+
+#define MAX_TRACKED_FDS 32
+typedef struct {
+    int fd;
+    char path[128];
+} tracked_fd_t;
+
+static tracked_fd_t tracked_fds[MAX_TRACKED_FDS];
+static FILE *midi_fd_trace_log = NULL;
+static FILE *spi_io_log = NULL;
+
+static int trace_midi_fd_enabled(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 200 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/midi_fd_trace_on", F_OK) == 0);
+    }
+    return enabled;
+}
+
+static void midi_fd_trace_log_open(void)
+{
+    if (!midi_fd_trace_log) {
+        midi_fd_trace_log = fopen("/data/UserData/move-anything/midi_fd_trace.log", "a");
+    }
+}
+
+static int trace_spi_io_enabled(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 200 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/spi_io_on", F_OK) == 0);
+    }
+    return enabled;
+}
+
+static void spi_io_log_open(void)
+{
+    if (!spi_io_log) {
+        spi_io_log = fopen("/data/UserData/move-anything/spi_io.log", "a");
+    }
+}
+
+static void str_to_lower(char *dst, size_t dst_size, const char *src)
+{
+    size_t i = 0;
+    if (!dst_size) return;
+    for (; i + 1 < dst_size && src[i]; i++) {
+        char c = src[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        dst[i] = c;
+    }
+    dst[i] = '\0';
+}
+
+static int path_matches_midi(const char *path)
+{
+    if (!path || !*path) return 0;
+    char lower[256];
+    str_to_lower(lower, sizeof(lower), path);
+    return strstr(lower, "midi") || strstr(lower, "snd") ||
+           strstr(lower, "seq") || strstr(lower, "usb");
+}
+
+static int path_matches_spi(const char *path)
+{
+    if (!path || !*path) return 0;
+    char lower[256];
+    str_to_lower(lower, sizeof(lower), path);
+    return strstr(lower, "ablspi") || strstr(lower, "spidev") ||
+           strstr(lower, "/spi");
+}
+
+static void track_fd(int fd, const char *path)
+{
+    if (fd < 0 || !path) return;
+    for (int i = 0; i < MAX_TRACKED_FDS; i++) {
+        if (tracked_fds[i].fd == 0) {
+            tracked_fds[i].fd = fd;
+            strncpy(tracked_fds[i].path, path, sizeof(tracked_fds[i].path) - 1);
+            tracked_fds[i].path[sizeof(tracked_fds[i].path) - 1] = '\0';
+            return;
+        }
+    }
+}
+
+static void untrack_fd(int fd)
+{
+    for (int i = 0; i < MAX_TRACKED_FDS; i++) {
+        if (tracked_fds[i].fd == fd) {
+            tracked_fds[i].fd = 0;
+            tracked_fds[i].path[0] = '\0';
+            return;
+        }
+    }
+}
+
+static const char *tracked_path_for_fd(int fd)
+{
+    for (int i = 0; i < MAX_TRACKED_FDS; i++) {
+        if (tracked_fds[i].fd == fd) {
+            return tracked_fds[i].path;
+        }
+    }
+    return NULL;
+}
+
+static void log_fd_bytes(const char *tag, int fd, const char *path,
+                         const unsigned char *buf, size_t len)
+{
+    size_t max = len > 64 ? 64 : len;
+    if (path_matches_midi(path)) {
+        if (!trace_midi_fd_enabled()) return;
+        midi_fd_trace_log_open();
+        if (!midi_fd_trace_log) return;
+        fprintf(midi_fd_trace_log, "%s fd=%d path=%s len=%zu bytes:", tag, fd, path, len);
+        for (size_t i = 0; i < max; i++) {
+            fprintf(midi_fd_trace_log, " %02x", buf[i]);
+        }
+        if (len > max) fprintf(midi_fd_trace_log, " ...");
+        fprintf(midi_fd_trace_log, "\n");
+        fflush(midi_fd_trace_log);
+    }
+    if (path_matches_spi(path)) {
+        if (!trace_spi_io_enabled()) return;
+        spi_io_log_open();
+        if (!spi_io_log) return;
+        fprintf(spi_io_log, "%s fd=%d path=%s len=%zu bytes:", tag, fd, path, len);
+        for (size_t i = 0; i < max; i++) {
+            fprintf(spi_io_log, " %02x", buf[i]);
+        }
+        if (len > max) fprintf(spi_io_log, " ...");
+        fprintf(spi_io_log, "\n");
+        fflush(spi_io_log);
+    }
+}
+
+/* ============================================================================
+ * MAILBOX DIFF PROBE (XMOS PATH DISCOVERY)
+ * ============================================================================
+ * Compare mailbox snapshots to find where MIDI-like bytes appear when playing.
+ * Enabled by creating mailbox_diff_on; optional mailbox_snapshot_on dumps once.
+ * ============================================================================ */
+
+static FILE *mailbox_diff_log = NULL;
+static void mailbox_diff_log_open(void)
+{
+    if (!mailbox_diff_log) {
+        mailbox_diff_log = fopen("/data/UserData/move-anything/mailbox_diff.log", "a");
+    }
+}
+
+static int mailbox_diff_enabled(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 200 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/mailbox_diff_on", F_OK) == 0);
+    }
+    return enabled;
+}
+
+static void mailbox_snapshot_once(void)
+{
+    if (!global_mmap_addr) return;
+    if (access("/data/UserData/move-anything/mailbox_snapshot_on", F_OK) != 0) return;
+
+    FILE *snap = fopen("/data/UserData/move-anything/mailbox_snapshot.log", "w");
+    if (snap) {
+        fprintf(snap, "Mailbox snapshot (4096 bytes):\n");
+        for (int i = 0; i < MAILBOX_SIZE; i++) {
+            if (i % 256 == 0) fprintf(snap, "\n=== OFFSET %d (0x%x) ===\n", i, i);
+            fprintf(snap, "%02x ", (unsigned char)global_mmap_addr[i]);
+            if ((i + 1) % 32 == 0) fprintf(snap, "\n");
+        }
+        fclose(snap);
+    }
+    unlink("/data/UserData/move-anything/mailbox_snapshot_on");
+}
+
+static void mailbox_diff_probe(void)
+{
+    static unsigned char prev[MAILBOX_SIZE];
+    static int has_prev = 0;
+    static unsigned int counter = 0;
+
+    if (!global_mmap_addr) return;
+    mailbox_snapshot_once();
+
+    if (!mailbox_diff_enabled()) return;
+    if (++counter % 10 != 0) return;
+
+    mailbox_diff_log_open();
+    if (!mailbox_diff_log) return;
+
+    if (!has_prev) {
+        memcpy(prev, global_mmap_addr, MAILBOX_SIZE);
+        fprintf(mailbox_diff_log, "INIT snapshot\n");
+        fflush(mailbox_diff_log);
+        has_prev = 1;
+        return;
+    }
+
+    for (int i = 0; i < MAILBOX_SIZE - 2; i++) {
+        unsigned char b = global_mmap_addr[i];
+        unsigned char p = prev[i];
+        if (b == p) continue;
+
+        if ((b >= 0x80 && b <= 0xEF) || (p >= 0x80 && p <= 0xEF)) {
+            fprintf(mailbox_diff_log,
+                    "DIFF[%d]: %02x->%02x next=%02x %02x\n",
+                    i, p, b, global_mmap_addr[i + 1], global_mmap_addr[i + 2]);
+        }
+    }
+
+    fflush(mailbox_diff_log);
+    memcpy(prev, global_mmap_addr, MAILBOX_SIZE);
+}
+
+/* Scan full mailbox for strict 3-byte MIDI with channel 3 status bytes. */
+static FILE *mailbox_midi_log = NULL;
+static void mailbox_midi_scan_strict(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 200 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/midi_strict_on", F_OK) == 0);
+    }
+
+    if (!enabled || !global_mmap_addr) return;
+
+    if (!mailbox_midi_log) {
+        mailbox_midi_log = fopen("/data/UserData/move-anything/midi_strict.log", "a");
+    }
+    if (!mailbox_midi_log) return;
+
+    for (int i = 0; i < MAILBOX_SIZE - 2; i++) {
+        uint8_t status = global_mmap_addr[i];
+        if (status != 0x92 && status != 0x82) continue;
+
+        uint8_t d1 = global_mmap_addr[i + 1];
+        uint8_t d2 = global_mmap_addr[i + 2];
+        if (d1 >= 0x80 || d2 >= 0x80) continue;
+
+        const char *region = "OTHER";
+        if (i >= MIDI_OUT_OFFSET && i < MIDI_OUT_OFFSET + MIDI_BUFFER_SIZE) {
+            region = "MIDI_OUT";
+        } else if (i >= MIDI_IN_OFFSET && i < MIDI_IN_OFFSET + MIDI_BUFFER_SIZE) {
+            region = "MIDI_IN";
+        } else if (i >= AUDIO_OUT_OFFSET && i < AUDIO_OUT_OFFSET + AUDIO_BUFFER_SIZE) {
+            region = "AUDIO_OUT";
+        } else if (i >= AUDIO_IN_OFFSET && i < AUDIO_IN_OFFSET + AUDIO_BUFFER_SIZE) {
+            region = "AUDIO_IN";
+        }
+
+        if (i > 0) {
+            uint8_t b0 = global_mmap_addr[i - 1];
+            fprintf(mailbox_midi_log, "MIDI[%d] %s: %02x %02x %02x %02x\n",
+                    i, region, b0, status, d1, d2);
+        } else {
+            fprintf(mailbox_midi_log, "MIDI[%d] %s: %02x %02x %02x\n",
+                    i, region, status, d1, d2);
+        }
+    }
+
+    fflush(mailbox_midi_log);
+}
+
+/* Scan for USB-MIDI 4-byte packets anywhere in the mailbox. */
+static FILE *mailbox_usb_log = NULL;
+static void mailbox_usb_midi_scan(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 200 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/usb_midi_on", F_OK) == 0);
+    }
+
+    if (!enabled || !global_mmap_addr) return;
+
+    if (!mailbox_usb_log) {
+        mailbox_usb_log = fopen("/data/UserData/move-anything/usb_midi.log", "a");
+    }
+    if (!mailbox_usb_log) return;
+
+    for (int i = 0; i < MAILBOX_SIZE - 4; i += 4) {
+        uint8_t cin = global_mmap_addr[i] & 0x0F;
+        if (cin < 0x08 || cin > 0x0E) continue;
+
+        uint8_t status = global_mmap_addr[i + 1];
+        uint8_t d1 = global_mmap_addr[i + 2];
+        uint8_t d2 = global_mmap_addr[i + 3];
+        if (status < 0x80 || status > 0xEF) continue;
+        if (d1 >= 0x80 || d2 >= 0x80) continue;
+
+        const char *region = "OTHER";
+        if (i >= MIDI_OUT_OFFSET && i < MIDI_OUT_OFFSET + MIDI_BUFFER_SIZE) {
+            region = "MIDI_OUT";
+        } else if (i >= MIDI_IN_OFFSET && i < MIDI_IN_OFFSET + MIDI_BUFFER_SIZE) {
+            region = "MIDI_IN";
+        } else if (i >= AUDIO_OUT_OFFSET && i < AUDIO_OUT_OFFSET + AUDIO_BUFFER_SIZE) {
+            region = "AUDIO_OUT";
+        } else if (i >= AUDIO_IN_OFFSET && i < AUDIO_IN_OFFSET + AUDIO_BUFFER_SIZE) {
+            region = "AUDIO_IN";
+        }
+
+        fprintf(mailbox_usb_log, "USB[%d] %s: %02x %02x %02x %02x\n",
+                i, region,
+                global_mmap_addr[i],
+                status, d1, d2);
+    }
+
+    fflush(mailbox_usb_log);
+}
+
+/* Scan MIDI_IN/OUT regions only for strict 3-byte MIDI status/data patterns. */
+static FILE *midi_region_log = NULL;
+static void mailbox_midi_region_scan(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 200 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/midi_region_on", F_OK) == 0);
+    }
+
+    if (!enabled || !global_mmap_addr) return;
+
+    if (!midi_region_log) {
+        midi_region_log = fopen("/data/UserData/move-anything/midi_region.log", "a");
+    }
+    if (!midi_region_log) return;
+
+    for (int i = 0; i < MIDI_BUFFER_SIZE - 2; i++) {
+        uint8_t status = global_mmap_addr[MIDI_OUT_OFFSET + i];
+        uint8_t d1 = global_mmap_addr[MIDI_OUT_OFFSET + i + 1];
+        uint8_t d2 = global_mmap_addr[MIDI_OUT_OFFSET + i + 2];
+        if (status >= 0x80 && status <= 0xEF && d1 < 0x80 && d2 < 0x80) {
+            fprintf(midi_region_log, "OUT[%d]: %02x %02x %02x\n", i, status, d1, d2);
+        }
+    }
+
+    for (int i = 0; i < MIDI_BUFFER_SIZE - 2; i++) {
+        uint8_t status = global_mmap_addr[MIDI_IN_OFFSET + i];
+        uint8_t d1 = global_mmap_addr[MIDI_IN_OFFSET + i + 1];
+        uint8_t d2 = global_mmap_addr[MIDI_IN_OFFSET + i + 2];
+        if (status >= 0x80 && status <= 0xEF && d1 < 0x80 && d2 < 0x80) {
+            fprintf(midi_region_log, "IN [%d]: %02x %02x %02x\n", i, status, d1, d2);
+        }
+    }
+
+    fflush(midi_region_log);
+}
+
+/* Log MIDI_OUT changes across frames to reverse-engineer encoding. */
+static FILE *midi_frame_log = NULL;
+static void mailbox_midi_out_frame_log(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    static int frame_count = 0;
+    static uint8_t prev[MIDI_BUFFER_SIZE];
+    static int has_prev = 0;
+
+    if (check_counter++ % 50 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/midi_frame_on", F_OK) == 0);
+        if (!enabled) {
+            frame_count = 0;
+            has_prev = 0;
+        }
+    }
+
+    if (!enabled || !global_mmap_addr) return;
+
+    if (!midi_frame_log) {
+        midi_frame_log = fopen("/data/UserData/move-anything/midi_frame.log", "a");
+    }
+    if (!midi_frame_log) return;
+
+    uint8_t *src = global_mmap_addr + MIDI_OUT_OFFSET;
+    if (!has_prev) {
+        memcpy(prev, src, MIDI_BUFFER_SIZE);
+        fprintf(midi_frame_log, "FRAME %d (init)\n", frame_count);
+        fflush(midi_frame_log);
+        has_prev = 1;
+        return;
+    }
+
+    fprintf(midi_frame_log, "FRAME %d\n", frame_count);
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i++) {
+        if (prev[i] != src[i]) {
+            fprintf(midi_frame_log, "  %03d %02x->%02x\n", i, prev[i], src[i]);
+        }
+    }
+    fflush(midi_frame_log);
+    memcpy(prev, src, MIDI_BUFFER_SIZE);
+
+    frame_count++;
+    if (frame_count >= 30) {
+        unlink("/data/UserData/move-anything/midi_frame_on");
+    }
+}
+
+/* ============================================================================
+ * SPI IOCTL TRACE (XMOS PATH DISCOVERY)
+ * ============================================================================
+ * Log SPI transfers when enabled by spi_trace_on to locate MIDI bytes.
+ * ============================================================================ */
+
+static FILE *spi_trace_log = NULL;
+static void spi_trace_log_open(void)
+{
+    if (!spi_trace_log) {
+        spi_trace_log = fopen("/data/UserData/move-anything/spi_trace.log", "a");
+    }
+}
+
+static int spi_trace_enabled(void)
+{
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 200 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/spi_trace_on", F_OK) == 0);
+    }
+    return enabled;
+}
+
+static void spi_trace_log_buf(const char *tag, const uint8_t *buf, size_t len)
+{
+    if (!spi_trace_log) return;
+    size_t max = len > 64 ? 64 : len;
+    fprintf(spi_trace_log, "%s len=%zu bytes:", tag, len);
+    for (size_t i = 0; i < max; i++) {
+        fprintf(spi_trace_log, " %02x", buf[i]);
+    }
+    if (len > max) fprintf(spi_trace_log, " ...");
+    fprintf(spi_trace_log, "\n");
+}
+
+static void spi_trace_ioctl(unsigned long request, char *argp)
+{
+    if (!spi_trace_enabled()) return;
+    spi_trace_log_open();
+    if (!spi_trace_log) return;
+
+    static unsigned int counter = 0;
+    if (++counter % 10 != 0) return;
+
+    unsigned int size = _IOC_SIZE(request);
+    fprintf(spi_trace_log, "IOCTL req=0x%lx size=%u\n", request, size);
+
+    if (_IOC_TYPE(request) == SPI_IOC_MAGIC && size >= sizeof(struct spi_ioc_transfer)) {
+        int n = (int)(size / sizeof(struct spi_ioc_transfer));
+        struct spi_ioc_transfer *xfers = (struct spi_ioc_transfer *)argp;
+        for (int i = 0; i < n; i++) {
+            const struct spi_ioc_transfer *x = &xfers[i];
+            fprintf(spi_trace_log, "  XFER[%d] len=%u tx=%p rx=%p\n",
+                    i, x->len, (void *)(uintptr_t)x->tx_buf, (void *)(uintptr_t)x->rx_buf);
+            if (x->tx_buf && x->len) {
+                uint8_t tmp[256];
+                size_t copy_len = x->len > sizeof(tmp) ? sizeof(tmp) : x->len;
+                memcpy(tmp, (const void *)(uintptr_t)x->tx_buf, copy_len);
+                spi_trace_log_buf("  TX", tmp, copy_len);
+            }
+            if (x->rx_buf && x->len) {
+                uint8_t tmp[256];
+                size_t copy_len = x->len > sizeof(tmp) ? sizeof(tmp) : x->len;
+                memcpy(tmp, (const void *)(uintptr_t)x->rx_buf, copy_len);
+                spi_trace_log_buf("  RX", tmp, copy_len);
+            }
+        }
+    }
+
+    fflush(spi_trace_log);
+}
 
 /* ============================================================================
  * IN-PROCESS SHADOW SYNTH (DX7 POC)
@@ -156,6 +674,7 @@ static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
     static FILE *forward_log = NULL;
+    int ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
 
     const uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
@@ -168,6 +687,14 @@ static void shadow_inprocess_process_midi(void) {
         if (pkt[1] == 0xFE || pkt[1] == 0xF8 || cin == 0x0F) continue;
         if (cable != 0) continue;
         if (cin < 0x08 || cin > 0x0E) continue;
+        if (ch3_only) {
+            uint8_t status = pkt[1];
+            if ((status & 0xF0) >= 0x80 && (status & 0xF0) <= 0xE0) {
+                if ((status & 0x0F) != 0x02) continue;
+            } else {
+                continue;
+            }
+        }
 
         if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
             shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
@@ -187,6 +714,15 @@ static void shadow_inprocess_process_midi(void) {
         uint8_t status_raw = pkt[0];
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
+            if (ch3_only) {
+                if ((status_usb & 0xF0) >= 0x80 && (status_usb & 0xF0) <= 0xE0) {
+                    if ((status_usb & 0x0F) != 0x02) {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
                 shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
                                           MOVE_MIDI_SOURCE_INTERNAL);
@@ -203,6 +739,9 @@ static void shadow_inprocess_process_midi(void) {
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             uint8_t msg[3] = { status_raw, pkt[1], pkt[2] };
             if (msg[1] <= 0x7F && msg[2] <= 0x7F) {
+                if (ch3_only && ((msg[0] & 0x0F) != 0x02)) {
+                    continue;
+                }
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
                     shadow_plugin_v2->on_midi(shadow_plugin_instance, msg, 3,
                                               MOVE_MIDI_SOURCE_INTERNAL);
@@ -468,21 +1007,104 @@ static void shadow_forward_midi(void)
     if (!shadow_control) return;
 
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    int ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
+    int block_ch1 = (access("/data/UserData/move-anything/shadow_midi_block_ch1", F_OK) == 0);
+    int allow_ch5_8 = (access("/data/UserData/move-anything/shadow_midi_allow_ch5_8", F_OK) == 0);
+    int notes_only = (access("/data/UserData/move-anything/shadow_midi_notes_only", F_OK) == 0);
+    int allow_cable0 = (access("/data/UserData/move-anything/shadow_midi_allow_cable0", F_OK) == 0);
+    int drop_cable_f = (access("/data/UserData/move-anything/shadow_midi_drop_cable_f", F_OK) == 0);
+    int log_on = (access("/data/UserData/move-anything/shadow_midi_log_on", F_OK) == 0);
+    int drop_ui = (access("/data/UserData/move-anything/shadow_midi_drop_ui", F_OK) == 0);
+    static FILE *log = NULL;
 
     /* Only copy if there's actual MIDI data (check first 64 bytes for non-zero) */
     int has_midi = 0;
-    for (int i = 0; i < 64 && !has_midi; i += 4) {
-        /* Look for valid USB-MIDI packets (CIN in byte 0) */
+    uint8_t filtered[MIDI_BUFFER_SIZE];
+    memset(filtered, 0, sizeof(filtered));
+
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cin = src[i] & 0x0F;
-        if (cin >= 0x08 && cin <= 0x0E) {
-            has_midi = 1;
+        uint8_t cable = (src[i] >> 4) & 0x0F;
+        if (cin < 0x08 || cin > 0x0E) {
+            continue;
         }
+        if (allow_cable0 && cable != 0x00) {
+            continue;
+        }
+        if (drop_cable_f && cable == 0x0F) {
+            continue;
+        }
+        uint8_t status = src[i + 1];
+        if (cable == 0x00) {
+            uint8_t type = status & 0xF0;
+            if (drop_ui) {
+                if ((type == 0x90 || type == 0x80) && src[i + 2] < 10) {
+                    continue; /* Filter knob-touch notes from internal MIDI */
+                }
+                if (type == 0xB0) {
+                    uint8_t cc = src[i + 2];
+                    if ((cc >= CC_STEP_UI_FIRST && cc <= CC_STEP_UI_LAST) ||
+                        cc == CC_SHIFT || cc == CC_JOG_CLICK || cc == CC_BACK ||
+                        cc == CC_MENU || cc == CC_CAPTURE || cc == CC_UP ||
+                        cc == CC_DOWN || cc == CC_UNDO || cc == CC_LOOP ||
+                        cc == CC_COPY || cc == CC_LEFT || cc == CC_RIGHT ||
+                        cc == CC_KNOB1 || cc == CC_KNOB2 || cc == CC_KNOB3 ||
+                        cc == CC_KNOB4 || cc == CC_KNOB5 || cc == CC_KNOB6 ||
+                        cc == CC_KNOB7 || cc == CC_KNOB8 || cc == CC_MASTER_KNOB ||
+                        cc == CC_PLAY || cc == CC_REC || cc == CC_MUTE ||
+                        cc == CC_RECORD || cc == CC_DELETE ||
+                        cc == CC_MIC_IN_DETECT || cc == CC_LINE_OUT_DETECT) {
+                        continue; /* Filter UI CCs and LED-only controls */
+                    }
+                }
+            }
+        }
+        if (notes_only) {
+            if ((status & 0xF0) != 0x90 && (status & 0xF0) != 0x80) {
+                continue;
+            }
+        }
+        if (ch3_only) {
+            if ((status & 0x80) == 0) {
+                continue;
+            }
+            if ((status & 0x0F) != 0x02) {
+                continue;
+            }
+        } else if (block_ch1) {
+            if ((status & 0x80) != 0 && (status & 0xF0) < 0xF0 && (status & 0x0F) == 0x00) {
+                continue;
+            }
+        } else if (allow_ch5_8) {
+            if ((status & 0x80) == 0) {
+                continue;
+            }
+            if ((status & 0xF0) < 0xF0) {
+                uint8_t ch = status & 0x0F;
+                if (ch < 0x04 || ch > 0x07) {
+                    continue;
+                }
+            }
+        }
+        filtered[i] = src[i];
+        filtered[i + 1] = src[i + 1];
+        filtered[i + 2] = src[i + 2];
+        filtered[i + 3] = src[i + 3];
+        if (log_on) {
+            if (!log) {
+                log = fopen("/data/UserData/move-anything/shadow_midi_forward.log", "a");
+            }
+            if (log) {
+                fprintf(log, "fwd: idx=%d cable=%u cin=%u status=%02x d1=%02x d2=%02x\n",
+                        i, cable, cin, src[i + 1], src[i + 2], src[i + 3]);
+                fflush(log);
+            }
+        }
+        has_midi = 1;
     }
 
     if (has_midi) {
-        /* Copy MIDI data from mailbox to shared memory */
-        memcpy(shadow_midi_shm, src, MIDI_BUFFER_SIZE);
-        /* Signal that new MIDI is available */
+        memcpy(shadow_midi_shm, filtered, MIDI_BUFFER_SIZE);
         shadow_control->midi_ready++;
     }
 }
@@ -498,17 +1120,37 @@ static void shadow_scan_mailbox_raw(void)
 {
     if (!global_mmap_addr) return;
 
+    static int scan_enabled = -1;
+    static int scan_check_counter = 0;
+    if (scan_check_counter++ % 200 == 0 || scan_enabled < 0) {
+        scan_enabled = (access("/data/UserData/move-anything/midi_scan_on", F_OK) == 0);
+    }
+
+    if (!scan_enabled) return;
+
     if (!midi_scan_log) {
         midi_scan_log = fopen("/data/UserData/move-anything/midi_scan.log", "a");
     }
 
     if (!midi_scan_log) return;
 
-    for (int i = 0; i < MAILBOX_SIZE - 2; i++) {
-        uint8_t status = global_mmap_addr[i];
-        if ((status & 0xF0) == 0x90 || (status & 0xF0) == 0x80) {
-            fprintf(midi_scan_log, "RAW[%d]: %02x %02x %02x\n",
-                    i, status, global_mmap_addr[i + 1], global_mmap_addr[i + 2]);
+    for (int i = 0; i < MIDI_BUFFER_SIZE - 2; i++) {
+        uint8_t status = global_mmap_addr[MIDI_OUT_OFFSET + i];
+        if (status == 0x92 || status == 0x82) {
+            fprintf(midi_scan_log, "OUT[%d]: %02x %02x %02x\n",
+                    i, status,
+                    global_mmap_addr[MIDI_OUT_OFFSET + i + 1],
+                    global_mmap_addr[MIDI_OUT_OFFSET + i + 2]);
+        }
+    }
+
+    for (int i = 0; i < MIDI_BUFFER_SIZE - 2; i++) {
+        uint8_t status = global_mmap_addr[MIDI_IN_OFFSET + i];
+        if (status == 0x92 || status == 0x82) {
+            fprintf(midi_scan_log, "IN [%d]: %02x %02x %02x\n",
+                    i, status,
+                    global_mmap_addr[MIDI_IN_OFFSET + i + 1],
+                    global_mmap_addr[MIDI_IN_OFFSET + i + 2]);
         }
     }
 
@@ -684,6 +1326,13 @@ void write_mem()
 }
 
 void *(*real_mmap)(void *, size_t, int, int, int, off_t) = NULL;
+static int (*real_open)(const char *pathname, int flags, ...) = NULL;
+static int (*real_openat)(int dirfd, const char *pathname, int flags, ...) = NULL;
+static int (*real_open64)(const char *pathname, int flags, ...) = NULL;
+static int (*real_openat64)(int dirfd, const char *pathname, int flags, ...) = NULL;
+static int (*real_close)(int fd) = NULL;
+static ssize_t (*real_write)(int fd, const void *buf, size_t count) = NULL;
+static ssize_t (*real_read)(int fd, void *buf, size_t count) = NULL;
 
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
@@ -717,6 +1366,180 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
     // output_file = fopen("spi_memory.txt", "w+");
 
     return result;
+}
+
+static int open_common(const char *pathname, int flags, va_list ap, int use_openat, int dirfd)
+{
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        mode = (mode_t)va_arg(ap, int);
+    }
+
+    int fd;
+    if (use_openat) {
+        if (!real_openat) {
+            real_openat = dlsym(RTLD_NEXT, "openat");
+        }
+        fd = real_openat ? real_openat(dirfd, pathname, flags, mode) : -1;
+    } else {
+        if (!real_open) {
+            real_open = dlsym(RTLD_NEXT, "open");
+        }
+        fd = real_open ? real_open(pathname, flags, mode) : -1;
+    }
+
+    if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
+        track_fd(fd, pathname);
+        if (path_matches_midi(pathname) && trace_midi_fd_enabled()) {
+            midi_fd_trace_log_open();
+            if (midi_fd_trace_log) {
+                fprintf(midi_fd_trace_log, "OPEN fd=%d path=%s\n", fd, pathname);
+                fflush(midi_fd_trace_log);
+            }
+        }
+        if (path_matches_spi(pathname) && trace_spi_io_enabled()) {
+            spi_io_log_open();
+            if (spi_io_log) {
+                fprintf(spi_io_log, "OPEN fd=%d path=%s\n", fd, pathname);
+                fflush(spi_io_log);
+            }
+        }
+    }
+
+    return fd;
+}
+
+int open(const char *pathname, int flags, ...)
+{
+    va_list ap;
+    va_start(ap, flags);
+    int fd = open_common(pathname, flags, ap, 0, AT_FDCWD);
+    va_end(ap);
+    return fd;
+}
+
+int open64(const char *pathname, int flags, ...)
+{
+    if (!real_open64) {
+        real_open64 = dlsym(RTLD_NEXT, "open64");
+    }
+    va_list ap;
+    va_start(ap, flags);
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        mode = (mode_t)va_arg(ap, int);
+    }
+    int fd = real_open64 ? real_open64(pathname, flags, mode) : -1;
+    va_end(ap);
+    if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
+        track_fd(fd, pathname);
+        if (path_matches_midi(pathname) && trace_midi_fd_enabled()) {
+            midi_fd_trace_log_open();
+            if (midi_fd_trace_log) {
+                fprintf(midi_fd_trace_log, "OPEN64 fd=%d path=%s\n", fd, pathname);
+                fflush(midi_fd_trace_log);
+            }
+        }
+        if (path_matches_spi(pathname) && trace_spi_io_enabled()) {
+            spi_io_log_open();
+            if (spi_io_log) {
+                fprintf(spi_io_log, "OPEN64 fd=%d path=%s\n", fd, pathname);
+                fflush(spi_io_log);
+            }
+        }
+    }
+    return fd;
+}
+
+int openat(int dirfd, const char *pathname, int flags, ...)
+{
+    va_list ap;
+    va_start(ap, flags);
+    int fd = open_common(pathname, flags, ap, 1, dirfd);
+    va_end(ap);
+    return fd;
+}
+
+int openat64(int dirfd, const char *pathname, int flags, ...)
+{
+    if (!real_openat64) {
+        real_openat64 = dlsym(RTLD_NEXT, "openat64");
+    }
+    va_list ap;
+    va_start(ap, flags);
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        mode = (mode_t)va_arg(ap, int);
+    }
+    int fd = real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
+    va_end(ap);
+    if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
+        track_fd(fd, pathname);
+        if (path_matches_midi(pathname) && trace_midi_fd_enabled()) {
+            midi_fd_trace_log_open();
+            if (midi_fd_trace_log) {
+                fprintf(midi_fd_trace_log, "OPENAT64 fd=%d path=%s\n", fd, pathname);
+                fflush(midi_fd_trace_log);
+            }
+        }
+        if (path_matches_spi(pathname) && trace_spi_io_enabled()) {
+            spi_io_log_open();
+            if (spi_io_log) {
+                fprintf(spi_io_log, "OPENAT64 fd=%d path=%s\n", fd, pathname);
+                fflush(spi_io_log);
+            }
+        }
+    }
+    return fd;
+}
+
+int close(int fd)
+{
+    if (!real_close) {
+        real_close = dlsym(RTLD_NEXT, "close");
+    }
+    const char *path = tracked_path_for_fd(fd);
+    if (path && path_matches_midi(path) && trace_midi_fd_enabled()) {
+        midi_fd_trace_log_open();
+        if (midi_fd_trace_log) {
+            fprintf(midi_fd_trace_log, "CLOSE fd=%d path=%s\n", fd, path);
+            fflush(midi_fd_trace_log);
+        }
+    }
+    if (path && path_matches_spi(path) && trace_spi_io_enabled()) {
+        spi_io_log_open();
+        if (spi_io_log) {
+            fprintf(spi_io_log, "CLOSE fd=%d path=%s\n", fd, path);
+            fflush(spi_io_log);
+        }
+    }
+    untrack_fd(fd);
+    return real_close ? real_close(fd) : -1;
+}
+
+ssize_t write(int fd, const void *buf, size_t count)
+{
+    if (!real_write) {
+        real_write = dlsym(RTLD_NEXT, "write");
+    }
+    const char *path = tracked_path_for_fd(fd);
+    if (path && buf && count > 0) {
+        log_fd_bytes("WRITE", fd, path, (const unsigned char *)buf, count);
+    }
+    return real_write ? real_write(fd, buf, count) : -1;
+}
+
+ssize_t read(int fd, void *buf, size_t count)
+{
+    if (!real_read) {
+        real_read = dlsym(RTLD_NEXT, "read");
+    }
+    ssize_t ret = real_read ? real_read(fd, buf, count) : -1;
+    const char *path = tracked_path_for_fd(fd);
+    if (path && buf && ret > 0) {
+        log_fd_bytes("READ ", fd, path, (const unsigned char *)buf, (size_t)ret);
+    }
+    return ret;
 }
 
 void launchChildAndKillThisProcess(char *pBinPath, char*pBinName, char* pArgs)
@@ -756,7 +1579,7 @@ void launchChildAndKillThisProcess(char *pBinPath, char*pBinName, char* pArgs)
     }
 }
 
-int (*real_ioctl)(int, unsigned long, char *) = NULL;
+int (*real_ioctl)(int, unsigned long, ...) = NULL;
 
 int shiftHeld = 0;
 int volumeTouched = 0;
@@ -984,7 +1807,7 @@ void midi_monitor()
 }
 
 // unsigned long ioctlCounter = 0;
-int ioctl(int fd, unsigned long request, char *argp)
+int ioctl(int fd, unsigned long request, ...)
 {
     if (!real_ioctl)
     {
@@ -996,16 +1819,29 @@ int ioctl(int fd, unsigned long request, char *argp)
         }
     }
 
+    va_list ap;
+    void *argp = NULL;
+    va_start(ap, request);
+    argp = va_arg(ap, void *);
+    va_end(ap);
+
     // print_mem();
     // write_mem();
 
     // TODO: Consider using move-anything host code and quickjs for flexibility
     midi_monitor();
 
+    spi_trace_ioctl(request, (char *)argp);
+
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
     /* Capture outgoing/incoming MIDI before hardware clears the buffer */
     shadow_capture_midi_probe();
     shadow_scan_mailbox_raw();
+    mailbox_diff_probe();
+    mailbox_midi_scan_strict();
+    mailbox_usb_midi_scan();
+    mailbox_midi_region_scan();
+    mailbox_midi_out_frame_log();
 
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     shadow_forward_midi();
