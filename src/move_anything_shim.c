@@ -155,9 +155,11 @@ static int shadow_inprocess_load_dx7(void) {
 static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
-    const uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    static FILE *forward_log = NULL;
+
+    const uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        const uint8_t *pkt = &src[i];
+        const uint8_t *pkt = &in_src[i];
         if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
 
         uint8_t cable = (pkt[0] >> 4) & 0x0F;
@@ -173,6 +175,53 @@ static void shadow_inprocess_process_midi(void) {
         } else if (shadow_plugin_v1 && shadow_plugin_v1->on_midi) {
             shadow_plugin_v1->on_midi(&pkt[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
         }
+    }
+
+    const uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        const uint8_t *pkt = &out_src[i];
+        if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
+
+        uint8_t cin = pkt[0] & 0x0F;
+        uint8_t status_usb = pkt[1];
+        uint8_t status_raw = pkt[0];
+
+        if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
+            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
+                shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
+                                          MOVE_MIDI_SOURCE_INTERNAL);
+            } else if (shadow_plugin_v1 && shadow_plugin_v1->on_midi) {
+                shadow_plugin_v1->on_midi(&pkt[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
+            }
+            if (!forward_log) {
+                forward_log = fopen("/data/UserData/move-anything/midi_forward.log", "a");
+            }
+            if (forward_log) {
+                fprintf(forward_log, "OUT_USB[%d]: %02x %02x %02x %02x\n",
+                        i, pkt[0], pkt[1], pkt[2], pkt[3]);
+            }
+        } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
+            uint8_t msg[3] = { status_raw, pkt[1], pkt[2] };
+            if (msg[1] <= 0x7F && msg[2] <= 0x7F) {
+                if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
+                    shadow_plugin_v2->on_midi(shadow_plugin_instance, msg, 3,
+                                              MOVE_MIDI_SOURCE_INTERNAL);
+                } else if (shadow_plugin_v1 && shadow_plugin_v1->on_midi) {
+                    shadow_plugin_v1->on_midi(msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
+                }
+                if (!forward_log) {
+                    forward_log = fopen("/data/UserData/move-anything/midi_forward.log", "a");
+                }
+                if (forward_log) {
+                    fprintf(forward_log, "OUT_RAW[%d]: %02x %02x %02x\n",
+                            i, msg[0], msg[1], msg[2]);
+                }
+            }
+        }
+    }
+
+    if (forward_log) {
+        fflush(forward_log);
     }
 }
 
@@ -438,31 +487,73 @@ static void shadow_forward_midi(void)
     }
 }
 
-/* Log outgoing MIDI from Move to hardware (USB-MIDI packets) */
-static FILE *midi_out_log = NULL;
-static void shadow_capture_midi_out(void)
+static int is_usb_midi_data(uint8_t cin)
+{
+    return cin >= 0x08 && cin <= 0x0E;
+}
+
+/* Scan mailbox for raw MIDI status bytes (e.g., 0x92 for channel 3 note-on). */
+static FILE *midi_scan_log = NULL;
+static void shadow_scan_mailbox_raw(void)
 {
     if (!global_mmap_addr) return;
 
-    if (!midi_out_log) {
-        midi_out_log = fopen("/data/UserData/move-anything/midi_out.log", "a");
+    if (!midi_scan_log) {
+        midi_scan_log = fopen("/data/UserData/move-anything/midi_scan.log", "a");
     }
 
-    uint8_t *src = global_mmap_addr + MIDI_OUT_OFFSET;
+    if (!midi_scan_log) return;
+
+    for (int i = 0; i < MAILBOX_SIZE - 2; i++) {
+        uint8_t status = global_mmap_addr[i];
+        if ((status & 0xF0) == 0x90 || (status & 0xF0) == 0x80) {
+            fprintf(midi_scan_log, "RAW[%d]: %02x %02x %02x\n",
+                    i, status, global_mmap_addr[i + 1], global_mmap_addr[i + 2]);
+        }
+    }
+
+    fflush(midi_scan_log);
+}
+
+/* Log outgoing/incoming MIDI packets with valid CIN for probing */
+static FILE *midi_probe_log = NULL;
+static void shadow_capture_midi_probe(void)
+{
+    if (!global_mmap_addr) return;
+
+    if (!midi_probe_log) {
+        midi_probe_log = fopen("/data/UserData/move-anything/midi_probe.log", "a");
+    }
+
+    uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
+    uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
+
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        uint8_t *pkt = &src[i];
-        if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) {
-            continue;
-        }
+        uint8_t *out_pkt = &out_src[i];
+        uint8_t *in_pkt = &in_src[i];
+        uint8_t out_cin = out_pkt[0] & 0x0F;
+        uint8_t in_cin = in_pkt[0] & 0x0F;
 
-        if (midi_out_log) {
-            fprintf(midi_out_log, "OUT[%d]: %02x %02x %02x %02x\n",
-                    i, pkt[0], pkt[1], pkt[2], pkt[3]);
+        if (midi_probe_log && is_usb_midi_data(out_cin)) {
+            fprintf(midi_probe_log, "OUT[%d]: %02x %02x %02x %02x\n",
+                    i, out_pkt[0], out_pkt[1], out_pkt[2], out_pkt[3]);
+        }
+        if (midi_probe_log && is_usb_midi_data(out_pkt[1] & 0x0F)) {
+            fprintf(midi_probe_log, "OUT1[%d]: %02x %02x %02x %02x\n",
+                    i, out_pkt[0], out_pkt[1], out_pkt[2], out_pkt[3]);
+        }
+        if (midi_probe_log && is_usb_midi_data(in_cin)) {
+            fprintf(midi_probe_log, "IN [%d]: %02x %02x %02x %02x\n",
+                    i, in_pkt[0], in_pkt[1], in_pkt[2], in_pkt[3]);
+        }
+        if (midi_probe_log && is_usb_midi_data(in_pkt[1] & 0x0F)) {
+            fprintf(midi_probe_log, "IN1[%d]: %02x %02x %02x %02x\n",
+                    i, in_pkt[0], in_pkt[1], in_pkt[2], in_pkt[3]);
         }
     }
 
-    if (midi_out_log) {
-        fflush(midi_out_log);
+    if (midi_probe_log) {
+        fflush(midi_probe_log);
     }
 }
 
@@ -912,8 +1003,9 @@ int ioctl(int fd, unsigned long request, char *argp)
     midi_monitor();
 
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
-    /* Capture outgoing MIDI before hardware clears the buffer */
-    shadow_capture_midi_out();
+    /* Capture outgoing/incoming MIDI before hardware clears the buffer */
+    shadow_capture_midi_probe();
+    shadow_scan_mailbox_raw();
 
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     shadow_forward_midi();
