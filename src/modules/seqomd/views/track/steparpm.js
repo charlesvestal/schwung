@@ -285,10 +285,10 @@ export function updateDisplayContent() {
     }
 
     displayMessage(
-        `Arp: ${modeName} Spd: ${speedName}`,
-        `Oct: ${octaveName} Layer: ${layerName}`,
-        `Play: ${playStepsDisplay}`,
-        `Step ${state.stepArpEditStep + 1}`
+        `Arp: ${modeName}`,
+        `Spd: ${speedName} Oct: ${octaveName}`,
+        `Layer: ${layerName}`,
+        `Play: ${playStepsDisplay}`
     );
 }
 
