@@ -668,7 +668,7 @@ static int within_window(uint64_t now, uint64_t ts, uint64_t window_ms)
 
 static void maybe_toggle_shadow(void)
 {
-    const uint64_t window_ms = 500;
+    const uint64_t window_ms = 600;
     const uint64_t now = now_mono_ms();
 
     if (shadowModeDebounce) return;
@@ -757,6 +757,7 @@ void midi_monitor()
                     printf("Shift off\n");
 
                     shiftHeld = 0;
+                    shift_on_ms = 0;
                     log_hotkey_state("shift_off");
                 }
             }
@@ -793,6 +794,7 @@ void midi_monitor()
             {
                 knob1touched = 0;
                 printf("Knob 1 touch stop\n");
+                knob1_on_ms = 0;
                 log_hotkey_state("knob1_off");
             }
         }
@@ -808,6 +810,7 @@ void midi_monitor()
             else
             {
                 volumeTouched = 0;
+                vol_on_ms = 0;
                 log_hotkey_state("vol_off");
             }
         }
