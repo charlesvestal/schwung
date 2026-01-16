@@ -438,6 +438,34 @@ static void shadow_forward_midi(void)
     }
 }
 
+/* Log outgoing MIDI from Move to hardware (USB-MIDI packets) */
+static FILE *midi_out_log = NULL;
+static void shadow_capture_midi_out(void)
+{
+    if (!global_mmap_addr) return;
+
+    if (!midi_out_log) {
+        midi_out_log = fopen("/data/UserData/move-anything/midi_out.log", "a");
+    }
+
+    uint8_t *src = global_mmap_addr + MIDI_OUT_OFFSET;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t *pkt = &src[i];
+        if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) {
+            continue;
+        }
+
+        if (midi_out_log) {
+            fprintf(midi_out_log, "OUT[%d]: %02x %02x %02x %02x\n",
+                    i, pkt[0], pkt[1], pkt[2], pkt[3]);
+        }
+    }
+
+    if (midi_out_log) {
+        fflush(midi_out_log);
+    }
+}
+
 /* Debug counter for display swap */
 static int display_swap_debug_counter = 0;
 
@@ -884,6 +912,9 @@ int ioctl(int fd, unsigned long request, char *argp)
     midi_monitor();
 
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
+    /* Capture outgoing MIDI before hardware clears the buffer */
+    shadow_capture_midi_out();
+
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     shadow_forward_midi();
 
