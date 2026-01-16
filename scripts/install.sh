@@ -71,7 +71,7 @@ else
 fi
 
 # killall returns non-zero if a process isn't running; don't treat that as fatal
-$ssh_ableton "killall MoveLauncher Move MoveOriginal move-anything || true"
+$ssh_ableton "killall MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything || true"
 
 $ssh_root cp -aL /data/UserData/move-anything/move-anything-shim.so /usr/lib/
 $ssh_root chmod u+s /usr/lib/move-anything-shim.so
@@ -95,8 +95,8 @@ $ssh_root md5sum /usr/lib/move-anything-shim.so
 
 echo "Restarting Move binary with shim installed..."
 
-$ssh_ableton "test -x /opt/move/MoveLauncher" || fail "Missing /opt/move/MoveLauncher"
-$ssh_ableton "nohup /opt/move/MoveLauncher 2>/dev/null 1>/dev/null &" &
+$ssh_ableton "test -x /opt/move/MoveOriginal" || fail "Missing /opt/move/MoveOriginal"
+$ssh_ableton "nohup /opt/move/MoveOriginal 2>/dev/null 1>/dev/null &" &
 
 echo
 echo "Done!"
