@@ -4,7 +4,7 @@
  * Passes through audio input for processing by the signal chain.
  * Use with audio FX to process external audio sources.
  *
- * Supports both v1 (single instance) and v2 (multi-instance) APIs.
+ * V2 API - Instance-based (V1 API removed)
  */
 
 #include <stdio.h>
@@ -131,80 +131,4 @@ plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
     g_host = host;
     linein_log("Line In plugin initialized (v2)");
     return &g_plugin_api_v2;
-}
-
-/* === v1 Legacy API (for backwards compatibility) === */
-
-static float g_input_gain = 1.0f;  /* v1 global state */
-
-static int v1_on_load(const char *module_dir, const char *json_defaults) {
-    (void)module_dir;
-    (void)json_defaults;
-    linein_log("Line In plugin loaded");
-    return 0;
-}
-
-static void v1_on_unload(void) {
-    linein_log("Line In plugin unloading");
-}
-
-static void v1_on_midi(const uint8_t *msg, int len, int source) {
-    (void)msg; (void)len; (void)source;
-}
-
-static void v1_set_param(const char *key, const char *val) {
-    if (strcmp(key, "gain") == 0) {
-        float v = atof(val);
-        g_input_gain = (v < 0.0f) ? 0.0f : (v > 2.0f) ? 2.0f : v;
-    }
-}
-
-static int v1_get_param(const char *key, char *buf, int buf_len) {
-    if (strcmp(key, "gain") == 0) {
-        return snprintf(buf, buf_len, "%.2f", g_input_gain);
-    }
-    if (strcmp(key, "preset_name") == 0 || strcmp(key, "name") == 0) {
-        return snprintf(buf, buf_len, "Line In");
-    }
-    if (strcmp(key, "polyphony") == 0) {
-        return snprintf(buf, buf_len, "0");
-    }
-    return -1;
-}
-
-static void v1_render_block(int16_t *out_interleaved_lr, int frames) {
-    if (!g_host || !g_host->mapped_memory) {
-        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
-        return;
-    }
-
-    int16_t *audio_in = (int16_t *)(g_host->mapped_memory + g_host->audio_in_offset);
-
-    if (g_input_gain == 1.0f) {
-        memcpy(out_interleaved_lr, audio_in, frames * 2 * sizeof(int16_t));
-    } else {
-        for (int i = 0; i < frames * 2; i++) {
-            float sample = audio_in[i] * g_input_gain;
-            if (sample > 32767.0f) sample = 32767.0f;
-            if (sample < -32768.0f) sample = -32768.0f;
-            out_interleaved_lr[i] = (int16_t)sample;
-        }
-    }
-}
-
-static plugin_api_v1_t g_plugin_api_v1 = {
-    .api_version = MOVE_PLUGIN_API_VERSION,
-    .on_load = v1_on_load,
-    .on_unload = v1_on_unload,
-    .on_midi = v1_on_midi,
-    .set_param = v1_set_param,
-    .get_param = v1_get_param,
-    .render_block = v1_render_block
-};
-
-/* v1 Entry Point */
-plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
-    g_host = host;
-    linein_log("Line In plugin initialized (v1)");
-    return &g_plugin_api_v1;
 }

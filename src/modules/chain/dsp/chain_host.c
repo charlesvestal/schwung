@@ -896,72 +896,35 @@ static int load_synth(const char *module_path, const char *config_json) {
 
     int plugin_loaded = 0;
 
-    /* Try V2 API first */
+    /* V2 API required */
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(g_synth_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
-    if (init_v2) {
-        g_synth_plugin_v2 = init_v2(&g_subplugin_host_api);
-        if (g_synth_plugin_v2 && g_synth_plugin_v2->api_version == MOVE_PLUGIN_API_VERSION_2) {
-            g_synth_instance = g_synth_plugin_v2->create_instance(module_path, config_json);
-            if (g_synth_instance) {
-                g_synth_is_v2 = 1;
-                plugin_loaded = 1;
-                chain_log("Synth loaded with V2 API");
-            } else {
-                chain_log("V2 create_instance failed, trying V1");
-                g_synth_plugin_v2 = NULL;
-            }
-        } else {
-            g_synth_plugin_v2 = NULL;
-        }
+    if (!init_v2) {
+        chain_log("Synth plugin does not support V2 API (V2 required)");
+        dlclose(g_synth_handle);
+        g_synth_handle = NULL;
+        return -1;
     }
 
-    /* Fall back to V1 API */
-    if (!plugin_loaded) {
-        move_plugin_init_v1_fn init_fn = (move_plugin_init_v1_fn)dlsym(g_synth_handle, MOVE_PLUGIN_INIT_SYMBOL);
-        if (!init_fn) {
-            snprintf(msg, sizeof(msg), "dlsym failed: %s", dlerror());
-            chain_log(msg);
-            dlclose(g_synth_handle);
-            g_synth_handle = NULL;
-            return -1;
-        }
-
-        /* Initialize sub-plugin with our forwarding host API */
-        g_synth_plugin = init_fn(&g_subplugin_host_api);
-        if (!g_synth_plugin) {
-            chain_log("Synth plugin init returned NULL");
-            dlclose(g_synth_handle);
-            g_synth_handle = NULL;
-            return -1;
-        }
-
-        /* Verify API version */
-        if (g_synth_plugin->api_version != MOVE_PLUGIN_API_VERSION) {
-            snprintf(msg, sizeof(msg), "Synth API version mismatch: %d vs %d",
-                     g_synth_plugin->api_version, MOVE_PLUGIN_API_VERSION);
-            chain_log(msg);
-            dlclose(g_synth_handle);
-            g_synth_handle = NULL;
-            g_synth_plugin = NULL;
-            return -1;
-        }
-
-        /* Call on_load */
-        if (g_synth_plugin->on_load) {
-            int ret = g_synth_plugin->on_load(module_path, config_json);
-            if (ret != 0) {
-                snprintf(msg, sizeof(msg), "Synth on_load failed: %d", ret);
-                chain_log(msg);
-                dlclose(g_synth_handle);
-                g_synth_handle = NULL;
-                g_synth_plugin = NULL;
-                return -1;
-            }
-        }
-
-        g_synth_is_v2 = 0;
-        chain_log("Synth loaded with V1 API");
+    g_synth_plugin_v2 = init_v2(&g_subplugin_host_api);
+    if (!g_synth_plugin_v2 || g_synth_plugin_v2->api_version != MOVE_PLUGIN_API_VERSION_2) {
+        chain_log("Synth V2 API version mismatch");
+        dlclose(g_synth_handle);
+        g_synth_handle = NULL;
+        return -1;
     }
+
+    g_synth_instance = g_synth_plugin_v2->create_instance(module_path, config_json);
+    if (!g_synth_instance) {
+        chain_log("Synth V2 create_instance failed");
+        dlclose(g_synth_handle);
+        g_synth_handle = NULL;
+        g_synth_plugin_v2 = NULL;
+        return -1;
+    }
+
+    g_synth_is_v2 = 1;
+    plugin_loaded = 1;
+    chain_log("Synth loaded with V2 API");
 
     /* Parse chain_params from module.json */
     parse_chain_params(module_path, g_synth_params, &g_synth_param_count);
@@ -1123,75 +1086,43 @@ static int load_audio_fx(const char *fx_name) {
 
     int slot = g_fx_count;
 
-    /* Try v2 API first */
+    /* V2 API required */
     audio_fx_init_v2_fn init_v2_fn = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
-    if (init_v2_fn) {
-        audio_fx_api_v2_t *fx_v2 = init_v2_fn(&g_subplugin_host_api);
-        if (fx_v2 && fx_v2->api_version == AUDIO_FX_API_VERSION_2) {
-            void *instance = fx_v2->create_instance(fx_dir, NULL);
-            if (instance) {
-                g_fx_handles[slot] = handle;
-                g_fx_plugins[slot] = NULL;
-                g_fx_plugins_v2[slot] = fx_v2;
-                g_fx_instances[slot] = instance;
-                g_fx_is_v2[slot] = 1;
-
-                parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
-                g_fx_count++;
-
-                snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)",
-                         fx_name, slot, g_fx_param_counts[slot]);
-                chain_log(msg);
-                return 0;
-            }
-        }
-    }
-
-    /* Fall back to v1 API */
-    audio_fx_init_v1_fn init_fn = (audio_fx_init_v1_fn)dlsym(handle, AUDIO_FX_INIT_SYMBOL);
-    if (!init_fn) {
-        snprintf(msg, sizeof(msg), "dlsym failed: %s", dlerror());
+    if (!init_v2_fn) {
+        snprintf(msg, sizeof(msg), "Audio FX %s does not support V2 API (V2 required)", fx_name);
         chain_log(msg);
         dlclose(handle);
         return -1;
     }
 
-    audio_fx_api_v1_t *fx = init_fn(&g_subplugin_host_api);
-    if (!fx) {
-        chain_log("FX plugin init returned NULL");
-        dlclose(handle);
-        return -1;
-    }
-
-    if (fx->api_version != AUDIO_FX_API_VERSION) {
-        snprintf(msg, sizeof(msg), "FX API version mismatch: %d vs %d",
-                 fx->api_version, AUDIO_FX_API_VERSION);
+    audio_fx_api_v2_t *fx_v2 = init_v2_fn(&g_subplugin_host_api);
+    if (!fx_v2 || fx_v2->api_version != AUDIO_FX_API_VERSION_2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 API version mismatch", fx_name);
         chain_log(msg);
         dlclose(handle);
         return -1;
     }
 
-    if (fx->on_load) {
-        if (fx->on_load(fx_dir, NULL) != 0) {
-            chain_log("FX on_load failed");
-            dlclose(handle);
-            return -1;
-        }
+    void *instance = fx_v2->create_instance(fx_dir, NULL);
+    if (!instance) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 create_instance failed", fx_name);
+        chain_log(msg);
+        dlclose(handle);
+        return -1;
     }
 
     g_fx_handles[slot] = handle;
-    g_fx_plugins[slot] = fx;
-    g_fx_plugins_v2[slot] = NULL;
-    g_fx_instances[slot] = NULL;
-    g_fx_is_v2[slot] = 0;
+    g_fx_plugins[slot] = NULL;
+    g_fx_plugins_v2[slot] = fx_v2;
+    g_fx_instances[slot] = instance;
+    g_fx_is_v2[slot] = 1;
 
     parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
     g_fx_count++;
 
-    snprintf(msg, sizeof(msg), "Audio FX v1 loaded: %s (slot %d, %d params)",
+    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)",
              fx_name, slot, g_fx_param_counts[slot]);
     chain_log(msg);
-
     return 0;
 }
 
@@ -3494,63 +3425,39 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         return -1;
     }
 
-    /* Try v2 API first */
+    /* V2 API required */
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
-    if (init_v2) {
-        plugin_api_v2_t *api = init_v2(&inst->subplugin_host_api);
-        if (api && api->api_version == MOVE_PLUGIN_API_VERSION_2) {
-            void *synth_inst = api->create_instance(synth_path, NULL);
-            if (synth_inst) {
-                inst->synth_handle = handle;
-                inst->synth_plugin = NULL;
-                inst->synth_plugin_v2 = api;
-                inst->synth_instance = synth_inst;
-                strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
-
-                snprintf(msg, sizeof(msg), "Synth v2 loaded: %s", module_name);
-                v2_chain_log(inst, msg);
-                return 0;
-            }
-        }
-        /* v2 failed, fall through to v1 */
-    }
-
-    /* Fall back to v1 API */
-    move_plugin_init_v1_fn init_v1 = (move_plugin_init_v1_fn)dlsym(handle, MOVE_PLUGIN_INIT_SYMBOL);
-    if (!init_v1) {
-        snprintf(msg, sizeof(msg), "No v1 or v2 entry point found");
+    if (!init_v2) {
+        snprintf(msg, sizeof(msg), "Synth %s does not support V2 API (V2 required)", module_name);
         v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    plugin_api_v1_t *api = init_v1(&inst->subplugin_host_api);
-    if (!api) {
-        v2_chain_log(inst, "Synth init returned NULL");
+    plugin_api_v2_t *api = init_v2(&inst->subplugin_host_api);
+    if (!api || api->api_version != MOVE_PLUGIN_API_VERSION_2) {
+        snprintf(msg, sizeof(msg), "Synth %s V2 API version mismatch", module_name);
+        v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    /* Call on_load */
-    if (api->on_load) {
-        int ret = api->on_load(synth_path, NULL);
-        if (ret != 0) {
-            snprintf(msg, sizeof(msg), "Synth on_load failed: %d", ret);
-            v2_chain_log(inst, msg);
-            dlclose(handle);
-            return -1;
-        }
+    void *synth_inst = api->create_instance(synth_path, NULL);
+    if (!synth_inst) {
+        snprintf(msg, sizeof(msg), "Synth %s V2 create_instance failed", module_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
     }
 
     inst->synth_handle = handle;
-    inst->synth_plugin = api;
-    inst->synth_plugin_v2 = NULL;
-    inst->synth_instance = NULL;
+    inst->synth_plugin = NULL;
+    inst->synth_plugin_v2 = api;
+    inst->synth_instance = synth_inst;
     strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
 
-    snprintf(msg, sizeof(msg), "Synth v1 loaded: %s", module_name);
+    snprintf(msg, sizeof(msg), "Synth v2 loaded: %s", module_name);
     v2_chain_log(inst, msg);
-
     return 0;
 }
 
@@ -3590,58 +3497,40 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
 
     int slot = inst->fx_count;
 
-    /* Try v2 API first */
+    /* V2 API required */
     audio_fx_init_v2_fn init_v2 = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
-    if (init_v2) {
-        audio_fx_api_v2_t *api = init_v2(&inst->subplugin_host_api);
-        if (api && api->api_version == AUDIO_FX_API_VERSION_2) {
-            void *fx_inst = api->create_instance(fx_dir, NULL);
-            if (fx_inst) {
-                inst->fx_handles[slot] = handle;
-                inst->fx_plugins[slot] = NULL;
-                inst->fx_plugins_v2[slot] = api;
-                inst->fx_instances[slot] = fx_inst;
-                inst->fx_is_v2[slot] = 1;
-                inst->fx_count++;
-
-                snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d)", fx_name, slot);
-                v2_chain_log(inst, msg);
-                return 0;
-            }
-        }
-    }
-
-    /* Fall back to v1 API */
-    audio_fx_init_v1_fn init_v1 = (audio_fx_init_v1_fn)dlsym(handle, AUDIO_FX_INIT_SYMBOL);
-    if (!init_v1) {
+    if (!init_v2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s does not support V2 API (V2 required)", fx_name);
+        v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    audio_fx_api_v1_t *api = init_v1(&inst->subplugin_host_api);
-    if (!api) {
+    audio_fx_api_v2_t *api = init_v2(&inst->subplugin_host_api);
+    if (!api || api->api_version != AUDIO_FX_API_VERSION_2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 API version mismatch", fx_name);
+        v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    if (api->on_load) {
-        int ret = api->on_load(fx_dir, NULL);
-        if (ret != 0) {
-            dlclose(handle);
-            return -1;
-        }
+    void *fx_inst = api->create_instance(fx_dir, NULL);
+    if (!fx_inst) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 create_instance failed", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
     }
 
     inst->fx_handles[slot] = handle;
-    inst->fx_plugins[slot] = api;
-    inst->fx_plugins_v2[slot] = NULL;
-    inst->fx_instances[slot] = NULL;
-    inst->fx_is_v2[slot] = 0;
+    inst->fx_plugins[slot] = NULL;
+    inst->fx_plugins_v2[slot] = api;
+    inst->fx_instances[slot] = fx_inst;
+    inst->fx_is_v2[slot] = 1;
     inst->fx_count++;
 
-    snprintf(msg, sizeof(msg), "Audio FX v1 loaded: %s (slot %d)", fx_name, slot);
+    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d)", fx_name, slot);
     v2_chain_log(inst, msg);
-
     return 0;
 }
 
