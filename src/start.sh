@@ -8,6 +8,7 @@ cd /data/UserData/move-anything
 mkdir -p /data/UserData/move-anything/tmp
 LOG=/data/UserData/move-anything/move-anything.log
 ./move-anything ./host/menu_ui.js > "$LOG" 2>&1
-# move-anything has exited, restart MoveLauncher for normal Move operation
-echo "Move Anything exited, restarting MoveLauncher..."
-/opt/move/MoveLauncher
+# move-anything has exited, restart Move with shim (avoid MoveLauncher error screen)
+echo "Move Anything exited, restarting Move..."
+killall MoveLauncher MoveMessageDisplay Move || true
+exec /opt/move/Move
