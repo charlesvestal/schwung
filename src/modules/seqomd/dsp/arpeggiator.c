@@ -6,6 +6,21 @@
 
 #include "seq_plugin.h"
 
+/**
+ * Get the pattern length from play_steps value (highest set bit position + 1).
+ * @param play_steps Value 1-255
+ * @return Pattern length in bits (1-8)
+ */
+int get_play_steps_length(uint8_t play_steps) {
+    if (play_steps == 0) return 1;
+    int len = 0;
+    while (play_steps > 0) {
+        len++;
+        play_steps >>= 1;
+    }
+    return len;
+}
+
 /* Helper: sort notes by pitch (insertion sort, small arrays) */
 void sort_notes(uint8_t *notes, int count) {
     for (int i = 1; i < count; i++) {

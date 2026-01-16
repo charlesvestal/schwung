@@ -9,17 +9,17 @@
  */
 
 import {
-    Cyan, BrightGreen, BrightRed, Black, White, VividYellow, Purple,
+    Cyan, BrightGreen, BrightRed, Black, White, VividYellow, Purple, Rose, LightGrey,
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
-    MoveStep11UI, MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4
+    MoveStep11UI, MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
-import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, TRACK_COLORS } from '../../lib/constants.js';
+import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, TRACK_COLORS, getRotatedPlaySteps } from '../../lib/constants.js';
 
 /* Knob colors for each arp parameter - matches step arp mode */
-const ARP_PARAM_COLORS = [Cyan, VividYellow, Purple, BrightGreen];
+const ARP_PARAM_COLORS = [Cyan, VividYellow, Purple, BrightGreen, Rose, LightGrey];
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, clearStepLEDs, updateStandardTransportLEDs } from '../../lib/helpers.js';
 import { markDirty } from '../../lib/persistence.js';
@@ -91,6 +91,36 @@ export function onInput(data) {
         return true;
     }
 
+    /* Knob 5 - Play Steps (1-255) */
+    if (isCC && note === MoveKnob5) {
+        let playSteps = track.arpPlaySteps;
+        if (velocity >= 1 && velocity <= 63) {
+            playSteps = Math.min(playSteps + 1, 255);
+        } else if (velocity >= 65 && velocity <= 127) {
+            playSteps = Math.max(playSteps - 1, 1);
+        }
+        track.arpPlaySteps = playSteps;
+        setParam(`track_${state.currentTrack}_arp_play_steps`, String(playSteps));
+        markDirty();
+        updateDisplayContent();
+        return true;
+    }
+
+    /* Knob 6 - Play Start (0-7) */
+    if (isCC && note === MoveKnob6) {
+        let playStart = track.arpPlayStart;
+        if (velocity >= 1 && velocity <= 63) {
+            playStart = Math.min(playStart + 1, 7);
+        } else if (velocity >= 65 && velocity <= 127) {
+            playStart = Math.max(playStart - 1, 0);
+        }
+        track.arpPlayStart = playStart;
+        setParam(`track_${state.currentTrack}_arp_play_start`, String(playStart));
+        markDirty();
+        updateDisplayContent();
+        return true;
+    }
+
     /* Ignore all other input - mode is focused */
     return true;
 }
@@ -112,9 +142,9 @@ export function updateLEDs() {
 
     /* Pads owned by track.js coordinator */
 
-    /* Knobs 1-4 lit with arp param colors, 5-8 off */
+    /* Knobs 1-6 lit with arp param colors, 7-8 off */
     for (let i = 0; i < 8; i++) {
-        if (i < 4) {
+        if (i < 6) {
             setButtonLED(MoveKnobLEDs[i], ARP_PARAM_COLORS[i]);
         } else {
             setButtonLED(MoveKnobLEDs[i], Black);
@@ -138,12 +168,13 @@ export function updateDisplayContent() {
     const speedName = ARP_SPEEDS[track.arpSpeed].name;
     const octaveName = ARP_OCTAVES[track.arpOctave].name;
     const contName = track.arpContinuous ? 'On' : 'Off';
+    const playStepsPattern = getRotatedPlaySteps(track.arpPlaySteps, track.arpPlayStart);
 
     displayMessage(
         `Arp: ${modeName}`,
         `Spd: ${speedName} Oct: ${octaveName}`,
         `Continuous: ${contName}`,
-        `Track ${state.currentTrack + 1}`
+        `Play: ${playStepsPattern}`
     );
 }
 

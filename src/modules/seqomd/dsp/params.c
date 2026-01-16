@@ -240,6 +240,18 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
             s->arp_layer = layer;
         }
     }
+    else if (strcmp(param, "arp_play_steps") == 0) {
+        int play_steps = atoi(val);
+        if (play_steps >= -1 && play_steps <= 255) {
+            s->arp_play_steps = play_steps;
+        }
+    }
+    else if (strcmp(param, "arp_play_start") == 0) {
+        int play_start = atoi(val);
+        if (play_start >= -1 && play_start <= 7) {
+            s->arp_play_start = play_start;
+        }
+    }
 }
 
 /**
@@ -284,6 +296,12 @@ int get_step_param(int track_idx, int step_idx, const char *param, char *buf, in
     }
     else if (strcmp(param, "arp_layer") == 0) {
         return snprintf(buf, buf_len, "%d", s->arp_layer);
+    }
+    else if (strcmp(param, "arp_play_steps") == 0) {
+        return snprintf(buf, buf_len, "%d", s->arp_play_steps);
+    }
+    else if (strcmp(param, "arp_play_start") == 0) {
+        return snprintf(buf, buf_len, "%d", s->arp_play_start);
     }
 
     return -1;
@@ -351,6 +369,20 @@ void set_track_param(int track_idx, const char *param, const char *val) {
         /* Reset pattern index when toggling continuous mode */
         track->arp_pattern_idx = 0;
         track->arp_last_num_notes = 0;
+    }
+    else if (strcmp(param, "arp_play_steps") == 0) {
+        int play_steps = atoi(val);
+        if (play_steps >= 1 && play_steps <= 255) {
+            track->arp_play_steps = play_steps;
+            /* Reset skip index when pattern changes */
+            track->arp_skip_idx = 0;
+        }
+    }
+    else if (strcmp(param, "arp_play_start") == 0) {
+        int play_start = atoi(val);
+        if (play_start >= 0 && play_start <= 7) {
+            track->arp_play_start = play_start;
+        }
     }
     else if (strcmp(param, "loop_start") == 0) {
         int start = atoi(val);
@@ -457,6 +489,12 @@ int get_track_param(int track_idx, const char *param, char *buf, int buf_len) {
     }
     else if (strcmp(param, "arp_continuous") == 0) {
         return snprintf(buf, buf_len, "%d", track->arp_continuous);
+    }
+    else if (strcmp(param, "arp_play_steps") == 0) {
+        return snprintf(buf, buf_len, "%d", track->arp_play_steps);
+    }
+    else if (strcmp(param, "arp_play_start") == 0) {
+        return snprintf(buf, buf_len, "%d", track->arp_play_start);
     }
     /* Step-level params: step_S_param */
     else if (strncmp(param, "step_", 5) == 0) {

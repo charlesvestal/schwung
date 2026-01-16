@@ -10,24 +10,24 @@
  */
 
 import {
-    Black, White, Cyan, VividYellow, Purple, BrightGreen, BrightRed,
+    Black, White, Cyan, VividYellow, Purple, BrightGreen, BrightRed, Rose, LightGrey,
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
-    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
-    MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob4Touch
+    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6,
+    MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob4Touch, MoveKnob5Touch, MoveKnob6Touch
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import {
     NUM_STEPS, MoveKnobLEDs, TRACK_COLORS,
-    ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS
+    ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS, getRotatedPlaySteps
 } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, getCurrentPattern } from '../../lib/helpers.js';
 import { markDirty } from '../../lib/persistence.js';
 
 /* Knob colors for each arp parameter */
-const ARP_PARAM_COLORS = [Cyan, VividYellow, Purple, BrightGreen];
+const ARP_PARAM_COLORS = [Cyan, VividYellow, Purple, BrightGreen, Rose, LightGrey];
 
 /* Touch tracking for tap detection */
 const HOLD_THRESHOLD_MS = 300;
@@ -48,7 +48,7 @@ export function onInput(data) {
     const velocity = data[2];
 
     /* Handle knob touch for tap detection */
-    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob4Touch];
+    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob4Touch, MoveKnob5Touch, MoveKnob6Touch];
     if (isNote && touchKnobs.includes(note)) {
         const knobIdx = touchKnobs.indexOf(note);
         if (isNoteOn && velocity > 0) {
@@ -68,7 +68,7 @@ export function onInput(data) {
     }
 
     /* Handle knob turns */
-    const knobs = [MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4];
+    const knobs = [MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6];
     if (isCC && knobs.includes(note)) {
         const knobIdx = knobs.indexOf(note);
         knobTurned[knobIdx] = true;
@@ -102,6 +102,14 @@ function handleKnobTap(knobIdx) {
         /* Reset layer to default (0) */
         step.arpLayer = 0;
         setParam(`track_${state.currentTrack}_step_${state.stepArpEditStep}_arp_layer`, "0");
+    } else if (knobIdx === 4) {
+        /* Reset play steps to track default */
+        step.arpPlaySteps = -1;
+        setParam(`track_${state.currentTrack}_step_${state.stepArpEditStep}_arp_play_steps`, "-1");
+    } else if (knobIdx === 5) {
+        /* Reset play start to track default */
+        step.arpPlayStart = -1;
+        setParam(`track_${state.currentTrack}_step_${state.stepArpEditStep}_arp_play_start`, "-1");
     }
 
     markDirty();
@@ -154,6 +162,26 @@ function handleKnobTurn(knobIdx, velocity) {
         }
         step.arpLayer = layer;
         setParam(`track_${state.currentTrack}_step_${state.stepArpEditStep}_arp_layer`, String(layer));
+    } else if (knobIdx === 4) {
+        /* Play Steps */
+        let playSteps = step.arpPlaySteps;
+        if (velocity >= 1 && velocity <= 63) {
+            playSteps = Math.min(playSteps + 1, 255);
+        } else if (velocity >= 65 && velocity <= 127) {
+            playSteps = Math.max(playSteps - 1, -1);
+        }
+        step.arpPlaySteps = playSteps;
+        setParam(`track_${state.currentTrack}_step_${state.stepArpEditStep}_arp_play_steps`, String(playSteps));
+    } else if (knobIdx === 5) {
+        /* Play Start */
+        let playStart = step.arpPlayStart;
+        if (velocity >= 1 && velocity <= 63) {
+            playStart = Math.min(playStart + 1, 7);
+        } else if (velocity >= 65 && velocity <= 127) {
+            playStart = Math.max(playStart - 1, -1);
+        }
+        step.arpPlayStart = playStart;
+        setParam(`track_${state.currentTrack}_step_${state.stepArpEditStep}_arp_play_start`, String(playStart));
     }
 
     markDirty();
@@ -188,9 +216,9 @@ export function updateLEDs() {
 
     /* Pads owned by track.js coordinator */
 
-    /* Knobs 1-4 lit with arp param colors, 5-8 off */
+    /* Knobs 1-6 lit with arp param colors, 7-8 off */
     for (let i = 0; i < 8; i++) {
-        if (i < 4) {
+        if (i < 6) {
             setButtonLED(MoveKnobLEDs[i], ARP_PARAM_COLORS[i]);
         } else {
             setButtonLED(MoveKnobLEDs[i], Black);
@@ -240,17 +268,27 @@ export function updatePlayhead(oldStep, newStep) {
 
 export function updateDisplayContent() {
     const step = getCurrentPattern(state.currentTrack).steps[state.stepArpEditStep];
+    const track = state.tracks[state.currentTrack];
 
-    const modeName = step.arpMode < 0 ? "Track" : ARP_MODES[step.arpMode].name;
-    const speedName = step.arpSpeed < 0 ? "Track" : ARP_SPEEDS[step.arpSpeed].name;
-    const octaveName = step.arpOctave < 0 ? "Track" : ARP_OCTAVES[step.arpOctave].name;
+    const modeName = step.arpMode < 0 ? "TR" : ARP_MODES[step.arpMode].name;
+    const speedName = step.arpSpeed < 0 ? "TR" : ARP_SPEEDS[step.arpSpeed].name;
+    const octaveName = step.arpOctave < 0 ? "TR" : ARP_OCTAVES[step.arpOctave].name;
     const layerName = ARP_LAYERS[step.arpLayer].name;
 
+    /* For play steps, show "TR" if using track default, otherwise the rotated pattern */
+    let playStepsDisplay;
+    if (step.arpPlaySteps < 0) {
+        playStepsDisplay = "TR";
+    } else {
+        const playStart = step.arpPlayStart >= 0 ? step.arpPlayStart : track.arpPlayStart;
+        playStepsDisplay = getRotatedPlaySteps(step.arpPlaySteps, playStart);
+    }
+
     displayMessage(
-        `Arp: ${modeName}`,
-        `Speed: ${speedName}`,
-        `Octave: ${octaveName}`,
-        `Layer: ${layerName}`
+        `Arp: ${modeName} Spd: ${speedName}`,
+        `Oct: ${octaveName} Layer: ${layerName}`,
+        `Play: ${playStepsDisplay}`,
+        `Step ${state.stepArpEditStep + 1}`
     );
 }
 

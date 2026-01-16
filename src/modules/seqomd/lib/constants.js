@@ -287,3 +287,33 @@ export const ARP_LAYERS = [
 ];
 
 export const DEFAULT_ARP_SPEED = 2;  /* 1/16 = 1 note per step */
+
+/* ============ Arp Play Steps Helpers ============ */
+
+/**
+ * Get the pattern length from play steps value (highest set bit position + 1)
+ * @param {number} playSteps - Value 1-255
+ * @returns {number} Pattern length in bits (1-8)
+ */
+export function getPlayStepsLength(playSteps) {
+    if (playSteps <= 0) return 1;
+    return Math.floor(Math.log2(playSteps)) + 1;
+}
+
+/**
+ * Get the rotated binary string for display
+ * Shows the pattern as it will be played from the start position
+ * @param {number} playSteps - Value 1-255
+ * @param {number} startPos - Start position 0-7
+ * @returns {string} Binary string (e.g., "101")
+ */
+export function getRotatedPlaySteps(playSteps, startPos) {
+    if (playSteps <= 0) return "1";
+    const len = getPlayStepsLength(playSteps);
+    let result = '';
+    for (let i = 0; i < len; i++) {
+        const bitIndex = (startPos + i) % len;
+        result += (playSteps >> bitIndex) & 1;
+    }
+    return result;
+}

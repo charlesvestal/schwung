@@ -27,7 +27,9 @@ export function createEmptyStep() {
         arpMode: -1,       // Arp mode override (-1 = use track, 0+ = override)
         arpSpeed: -1,      // Arp speed override (-1 = use track, 0+ = override)
         arpOctave: -1,     // Arp octave override (-1 = use track, 0+ = override)
-        arpLayer: 0        // Arp layer mode (0=Layer, 1=Cut, 2=Legato) - step only, no track default
+        arpLayer: 0,       // Arp layer mode (0=Layer, 1=Cut, 2=Legato) - step only, no track default
+        arpPlaySteps: -1,  // Arp play steps pattern (-1 = use track, 1-255 = binary pattern)
+        arpPlayStart: -1   // Arp play steps start position (-1 = use track, 0-7 = offset)
     };
 }
 
@@ -60,7 +62,9 @@ export function cloneStep(srcStep) {
         arpMode: srcStep.arpMode !== undefined ? srcStep.arpMode : -1,
         arpSpeed: srcStep.arpSpeed !== undefined ? srcStep.arpSpeed : -1,
         arpOctave: srcStep.arpOctave !== undefined ? srcStep.arpOctave : -1,
-        arpLayer: srcStep.arpLayer !== undefined ? srcStep.arpLayer : 0
+        arpLayer: srcStep.arpLayer !== undefined ? srcStep.arpLayer : 0,
+        arpPlaySteps: srcStep.arpPlaySteps !== undefined ? srcStep.arpPlaySteps : -1,
+        arpPlayStart: srcStep.arpPlayStart !== undefined ? srcStep.arpPlayStart : -1
     };
 }
 
@@ -113,6 +117,8 @@ export function createEmptyTrack(channel) {
         arpSpeed: DEFAULT_ARP_SPEED,  // Index into ARP_SPEEDS
         arpOctave: 0,                 // Index into ARP_OCTAVES
         arpContinuous: 0,             // 0 = restart arp each trigger, 1 = continue from last position
+        arpPlaySteps: 1,              // Arp play steps pattern (1-255, binary pattern, 1 = all play)
+        arpPlayStart: 0,              // Arp play steps start position (0-7)
         cc1Default: 64,               // Track-level CC1 default (0-127)
         cc2Default: 64                // Track-level CC2 default (0-127)
     };
@@ -137,6 +143,8 @@ export function cloneTrack(srcTrack) {
         arpSpeed: srcTrack.arpSpeed !== undefined ? srcTrack.arpSpeed : DEFAULT_ARP_SPEED,
         arpOctave: srcTrack.arpOctave !== undefined ? srcTrack.arpOctave : 0,
         arpContinuous: srcTrack.arpContinuous !== undefined ? srcTrack.arpContinuous : 0,
+        arpPlaySteps: srcTrack.arpPlaySteps !== undefined ? srcTrack.arpPlaySteps : 1,
+        arpPlayStart: srcTrack.arpPlayStart !== undefined ? srcTrack.arpPlayStart : 0,
         cc1Default: srcTrack.cc1Default !== undefined ? srcTrack.cc1Default : 64,
         cc2Default: srcTrack.cc2Default !== undefined ? srcTrack.cc2Default : 64
     };
@@ -214,6 +222,12 @@ export function migrateTrackData(trackData) {
         if (track.arpContinuous === undefined) {
             track.arpContinuous = 0;
         }
+        if (track.arpPlaySteps === undefined) {
+            track.arpPlaySteps = 1;
+        }
+        if (track.arpPlayStart === undefined) {
+            track.arpPlayStart = 0;
+        }
         /* Ensure track CC defaults exist */
         if (track.cc1Default === undefined) {
             track.cc1Default = 64;
@@ -236,6 +250,12 @@ export function migrateTrackData(trackData) {
                 }
                 if (step.arpLayer === undefined) {
                     step.arpLayer = 0;
+                }
+                if (step.arpPlaySteps === undefined) {
+                    step.arpPlaySteps = -1;
+                }
+                if (step.arpPlayStart === undefined) {
+                    step.arpPlayStart = -1;
                 }
                 /* Migrate velocity: old single velocity -> per-note velocities array */
                 if (!step.velocities) {

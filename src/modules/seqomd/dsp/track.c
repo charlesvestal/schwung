@@ -37,6 +37,8 @@ void init_pattern(pattern_t *pattern) {
         pattern->steps[i].arp_mode = -1;        /* Use track default */
         pattern->steps[i].arp_speed = -1;       /* Use track default */
         pattern->steps[i].arp_layer = ARP_LAYER_LAYER;  /* Default to layer */
+        pattern->steps[i].arp_play_steps = -1;  /* Use track default */
+        pattern->steps[i].arp_play_start = -1;  /* Use track default */
     }
 }
 
@@ -81,6 +83,10 @@ void init_track(track_t *track, int channel) {
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->arp_last_notes[i] = 0;
     }
+    /* Arp play steps */
+    track->arp_play_steps = 1;  /* Default: all notes play */
+    track->arp_play_start = 0;
+    track->arp_skip_idx = 0;
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -191,6 +197,12 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
         int arp_speed = step->arp_speed >= 0 ? step->arp_speed : track->arp_speed;
         int arp_octave = track->arp_octave;  /* Octave is track-only, no step override */
 
+        /* Resolve play steps settings (step override or track default) */
+        int play_steps = step->arp_play_steps >= 0 ? step->arp_play_steps : track->arp_play_steps;
+        int play_start = step->arp_play_start >= 0 ? step->arp_play_start : track->arp_play_start;
+        if (play_steps < 1) play_steps = 1;  /* Clamp to minimum */
+        int play_steps_len = get_play_steps_length((uint8_t)play_steps);
+
         /* Generate arp pattern */
         uint8_t arp_pattern[MAX_ARP_PATTERN];
         int pattern_len = generate_arp_pattern(step->notes, step->num_notes,
@@ -202,6 +214,7 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
          * If so, continue from where we left off in the pattern.
          * Random mode always restarts (no meaningful continuation). */
         int start_idx = 0;
+        int skip_start_idx = 0;  /* For play steps pattern */
         if (track->arp_continuous && arp_mode != ARP_RANDOM) {
             /* Sort current notes for comparison */
             uint8_t sorted_notes[MAX_NOTES_PER_STEP];
@@ -215,6 +228,7 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
                                    track->arp_last_notes, track->arp_last_num_notes)) {
                 /* Continue from stored position */
                 start_idx = track->arp_pattern_idx % pattern_len;
+                skip_start_idx = track->arp_skip_idx % play_steps_len;
             }
 
             /* Store current notes (sorted) for next comparison */
@@ -240,8 +254,16 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
 
         /* Handle ARP_CHORD mode - all notes together at each arp position */
         if (arp_mode == ARP_CHORD) {
+            int skip_idx = skip_start_idx;
             for (int i = 0; i < total_arp_notes; i++) {
                 double note_phase = base_phase + (i * note_duration);
+
+                /* Check play steps pattern: should this arp position be played? */
+                int bit_index = (play_start + skip_idx) % play_steps_len;
+                int should_play = (play_steps >> bit_index) & 1;
+                skip_idx++;
+
+                if (!should_play) continue;  /* Skip this arp position */
 
                 /* Play all notes as chord */
                 for (int n = 0; n < step->num_notes && n < MAX_NOTES_PER_STEP; n++) {
@@ -260,16 +282,32 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
                     }
                 }
             }
-            /* For chord mode, continuous doesn't really apply but update index anyway */
+            /* For chord mode, continuous doesn't really apply but update indices anyway */
             if (track->arp_continuous) {
                 track->arp_pattern_idx = (start_idx + total_arp_notes) % pattern_len;
+                track->arp_skip_idx = (skip_start_idx + total_arp_notes) % play_steps_len;
             }
         } else {
-            /* Normal arp: cycle through pattern */
+            /* Normal arp: cycle through pattern with play steps skip logic */
+            int pattern_idx = start_idx;
+            int skip_idx = skip_start_idx;
             for (int i = 0; i < total_arp_notes; i++) {
                 double note_phase = base_phase + (i * note_duration);
-                int pattern_idx = (start_idx + i) % pattern_len;
+
+                /* Check play steps pattern: should this arp position be played? */
+                int bit_index = (play_start + skip_idx) % play_steps_len;
+                int should_play = (play_steps >> bit_index) & 1;
+                skip_idx++;
+
+                if (!should_play) {
+                    /* Skip this arp position but still advance the note pattern */
+                    pattern_idx = (pattern_idx + 1) % pattern_len;
+                    continue;
+                }
+
                 int note_value = arp_pattern[pattern_idx];
+                pattern_idx = (pattern_idx + 1) % pattern_len;
+
                 /* Cycle through velocities based on source note index */
                 int vel_idx = (step->num_notes > 0) ? (i % step->num_notes) : 0;
                 uint8_t velocity = (step->num_notes > 0) ? step->velocities[vel_idx] : DEFAULT_VELOCITY;
@@ -286,9 +324,10 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
                     sequence_transpose
                 );
             }
-            /* Store ending index for continuous mode */
+            /* Store ending indices for continuous mode */
             if (track->arp_continuous) {
-                track->arp_pattern_idx = (start_idx + total_arp_notes) % pattern_len;
+                track->arp_pattern_idx = pattern_idx;
+                track->arp_skip_idx = skip_idx % play_steps_len;
             }
         }
     } else {

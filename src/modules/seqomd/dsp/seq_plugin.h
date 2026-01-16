@@ -118,6 +118,8 @@ typedef struct {
     int8_t arp_mode;                     /* -1=use track, 0+=override mode */
     int8_t arp_speed;                    /* -1=use track, 0+=override speed */
     uint8_t arp_layer;                   /* 0=Layer, 1=Cut, 2=Legato */
+    int16_t arp_play_steps;              /* -1=use track, 1-255=binary pattern */
+    int8_t arp_play_start;               /* -1=use track, 0-7=start position */
 } step_t;
 
 /* Pattern data - contains steps and loop points */
@@ -172,6 +174,10 @@ typedef struct {
     int arp_pattern_idx;         /* Pattern index where last arp left off (for continuous mode) */
     uint8_t arp_last_notes[MAX_NOTES_PER_STEP];  /* Notes from last arp trigger (sorted, for comparison) */
     uint8_t arp_last_num_notes;  /* Number of notes in arp_last_notes */
+    /* Arp play steps (skip pattern) */
+    uint8_t arp_play_steps;      /* 1-255, binary pattern (1=play, 0=skip) */
+    uint8_t arp_play_start;      /* 0-7, offset into pattern */
+    int arp_skip_idx;            /* Current position in skip pattern (for continuous mode) */
 } track_t;
 
 /* Centralized Note Scheduler */
@@ -299,6 +305,7 @@ void sort_notes(uint8_t *notes, int count);
 void shuffle_notes(uint8_t *notes, int count);
 int generate_arp_pattern(uint8_t *notes, int num_notes, int arp_mode,
                          int arp_octave, uint8_t *out_pattern, int max_len);
+int get_play_steps_length(uint8_t play_steps);
 
 /* track.c */
 void init_pattern(pattern_t *pattern);
