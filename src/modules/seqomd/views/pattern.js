@@ -248,6 +248,7 @@ export function onInput(data) {
         }
         updateDisplayContent();
         updatePadLEDs();
+        updateKnobLEDs();
         return true;
     }
 
