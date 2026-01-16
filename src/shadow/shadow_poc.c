@@ -199,23 +199,27 @@ static void clear_display(uint8_t *buf) {
 static void render_shadow_display(void) {
     if (!shadow_display_shm) return;
 
-    clear_display(shadow_display_shm);
+    uint8_t frame[DISPLAY_BUFFER_SIZE];
+    clear_display(frame);
 
     /* Title */
-    draw_string(shadow_display_shm, 20, 4, "SHADOW MODE");
+    draw_string(frame, 20, 4, "SHADOW MODE");
 
     /* Horizontal line */
     for (int x = 0; x < 128; x++) {
-        set_pixel(shadow_display_shm, x, 14, 1);
+        set_pixel(frame, x, 14, 1);
     }
 
     /* Status */
-    draw_string(shadow_display_shm, 8, 20, "SF2 SYNTH LOADED");
-    draw_string(shadow_display_shm, 8, 32, "RECEIVING MIDI");
+    draw_string(frame, 8, 20, "SF2 SYNTH LOADED");
+    draw_string(frame, 8, 32, "RECEIVING MIDI");
 
     /* Instructions */
-    draw_string(shadow_display_shm, 4, 50, "SHIFT+VOL+KNOB1:");
-    draw_string(shadow_display_shm, 4, 58, "RETURN TO MOVE");
+    draw_string(frame, 4, 50, "SHIFT+VOL+KNOB1:");
+    draw_string(frame, 4, 58, "RETURN TO MOVE");
+
+    /* Commit frame in one shot to avoid partial reads */
+    memcpy(shadow_display_shm, frame, DISPLAY_BUFFER_SIZE);
 }
 
 /* ============================================================================
