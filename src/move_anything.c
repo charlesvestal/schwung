@@ -2458,22 +2458,30 @@ int main(int argc, char *argv[])
             {
                 /* Process host-level shortcuts and apply transforms */
                 int consumed = 0;
-                if (apply_transforms) {
-                    uint8_t status = byte[1] & 0xF0;
-                    if ((status == 0x90 || status == 0x80) && byte[2] < 10) {
-                        consumed = 1;  /* Filter knob-touch notes from internal MIDI */
-                    }
+
+                /* Check if this is an internal control note that should be filtered from DSP
+                 * For raw_midi modules, only pad notes (68-99) should go to DSP.
+                 * Filter: capacitive touch (0-9), step buttons (16-31), track buttons (40-43) */
+                uint8_t status = byte[1] & 0xF0;
+                uint8_t note = byte[2];
+                int is_internal_control = 0;
+                if (status == 0x90 || status == 0x80) {
+                    /* Note on/off - check if it's a control note */
+                    is_internal_control = (note < 10) ||           /* capacitive touch */
+                                          (note >= 16 && note <= 31) ||  /* step buttons */
+                                          (note >= 40 && note <= 43);    /* track buttons */
                 }
+
                 if (!consumed) {
                     consumed = process_host_midi(&byte[1], apply_transforms);
                 }
 
-                /* Route to JS handler (unless consumed by host) */
+                /* Route to JS handler (unless consumed by host) - UI receives capacitive touch */
                 if (!consumed && callGlobalFunction(&ctx, &JSonMidiMessageInternal, &byte[1])) {
                   printf("JS:onMidiMessageInternal failed\n");
                 }
-                /* Route to DSP plugin (unless consumed) */
-                if (!consumed) {
+                /* Route to DSP plugin (unless consumed OR internal control note) */
+                if (!consumed && !is_internal_control) {
                   mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
                 }
             }
