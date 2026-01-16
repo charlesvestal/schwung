@@ -823,7 +823,17 @@ function drawModuleList() {
 /* Draw module detail screen */
 function drawModuleDetail() {
     clear_screen();
-    drawMenuHeader(currentModule.name, `v${currentModule.latest_version}`);
+    const status = getModuleStatus(currentModule);
+
+    /* Show version transition if update available, otherwise just new version */
+    let versionStr;
+    if (status.installed && status.hasUpdate) {
+        const installedVer = installedModules[currentModule.id] || '?';
+        versionStr = `${installedVer} -> ${currentModule.latest_version}`;
+    } else {
+        versionStr = `v${currentModule.latest_version}`;
+    }
+    drawMenuHeader(currentModule.name, versionStr);
 
     /* Description */
     const desc = currentModule.description || '';
@@ -837,7 +847,6 @@ function drawModuleDetail() {
     fill_rect(0, 38, 128, 1, 1);
 
     /* Action buttons */
-    const status = getModuleStatus(currentModule);
     let action1, action2;
 
     if (status.installed) {
