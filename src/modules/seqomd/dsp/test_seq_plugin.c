@@ -2202,6 +2202,61 @@ TEST(arp_step_params_persist) {
     ASSERT_EQ(pat->steps[5].arp_speed, -1);
 }
 
+TEST(arp_step_octave_override) {
+    /* Test step-level arp_octave override:
+     * - Track arp_octave = 0 (no extension)
+     * - Step 0: C-E chord, uses track default (no octave)
+     * - Step 8: C-E chord, step override arp_octave = 1 (+1 octave)
+     */
+    set_param("track_4_arp_mode", "1");    /* ARP_UP */
+    set_param("track_4_arp_speed", "2");   /* 1/16 = 1 note per step */
+    set_param("track_4_arp_octave", "0");  /* Track default: no octave extension */
+
+    /* Step 0: C-E chord, no step override (uses track default) */
+    set_param("track_4_step_0_add_note", "60");
+    set_param("track_4_step_0_add_note", "64");
+    set_param("track_4_step_0_length", "2");  /* 2 arp notes: C, E */
+
+    /* Step 8: C-E chord with step-level octave override */
+    set_param("track_4_step_8_add_note", "60");
+    set_param("track_4_step_8_add_note", "64");
+    set_param("track_4_step_8_length", "4");      /* 4 arp notes: C, E, C+12, E+12 */
+    set_param("track_4_step_8_arp_octave", "1");  /* +1 octave on this step only */
+
+    /* Verify step-level param persists */
+    pattern_t *pat = get_current_pattern(&g_tracks[4]);
+    ASSERT_EQ(pat->steps[8].arp_octave, 1);
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(13);  /* Render through both steps */
+    set_param("playing", "0");
+
+    /* Step 0 (no octave): plays C(60), E(64) */
+    /* Step 8 (+1 octave): plays C(60), E(64), C+12(72), E+12(76) */
+    int count_60 = count_note_ons(60, 4);
+    int count_64 = count_note_ons(64, 4);
+    int count_72 = count_note_ons(72, 4);
+    int count_76 = count_note_ons(76, 4);
+
+    /* Step 0 contributes: 60, 64 (1 each)
+     * Step 8 contributes: 60, 64, 72, 76 (1 each)
+     * Total: 60=2, 64=2, 72=1, 76=1 */
+    ASSERT_EQ(count_60, 2);
+    ASSERT_EQ(count_64, 2);
+    ASSERT_EQ(count_72, 1);  /* Only from step 8 */
+    ASSERT_EQ(count_76, 1);  /* Only from step 8 */
+
+    /* Clean up */
+    set_param("track_4_step_0_clear", "1");
+    set_param("track_4_step_8_clear", "1");
+    set_param("track_4_arp_mode", "0");
+    set_param("track_4_arp_octave", "0");
+
+    /* Verify clear resets arp_octave to -1 */
+    ASSERT_EQ(pat->steps[8].arp_octave, -1);
+}
+
 /* ============ Arp Layer Tests ============ */
 
 TEST(arp_layer_default) {
@@ -3200,6 +3255,7 @@ int main(int argc, char **argv) {
     RUN_TEST(arp_no_transpose_on_drum_track);
     RUN_TEST(arp_params_persist);
     RUN_TEST(arp_step_params_persist);
+    RUN_TEST(arp_step_octave_override);
 
     printf("\nArpeggiator Layer Modes:\n");
     RUN_TEST(arp_layer_default);

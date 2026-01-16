@@ -39,6 +39,7 @@ void init_pattern(pattern_t *pattern) {
         pattern->steps[i].arp_layer = ARP_LAYER_LAYER;  /* Default to layer */
         pattern->steps[i].arp_play_steps = -1;  /* Use track default */
         pattern->steps[i].arp_play_start = -1;  /* Use track default */
+        pattern->steps[i].arp_octave = -1;      /* Use track default */
     }
 }
 
@@ -195,7 +196,7 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
         /* Resolve arp settings (step override or track default) */
         int arp_mode = step->arp_mode >= 0 ? step->arp_mode : track->arp_mode;
         int arp_speed = step->arp_speed >= 0 ? step->arp_speed : track->arp_speed;
-        int arp_octave = track->arp_octave;  /* Octave is track-only, no step override */
+        int arp_octave = step->arp_octave >= 0 ? step->arp_octave : track->arp_octave;
 
         /* Resolve play steps settings (step override or track default) */
         int play_steps = step->arp_play_steps >= 0 ? step->arp_play_steps : track->arp_play_steps;

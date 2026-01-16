@@ -112,6 +112,7 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
         s->arp_layer = ARP_LAYER_LAYER;
         s->arp_play_steps = -1;
         s->arp_play_start = -1;
+        s->arp_octave = -1;
         if (g_chord_follow[track_idx]) {
             g_scale_dirty = 1;
         }
@@ -254,6 +255,12 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
             s->arp_play_start = play_start;
         }
     }
+    else if (strcmp(param, "arp_octave") == 0) {
+        int octave = atoi(val);
+        if (octave >= -1 && octave < NUM_ARP_OCTAVES) {
+            s->arp_octave = octave;
+        }
+    }
 }
 
 /**
@@ -304,6 +311,9 @@ int get_step_param(int track_idx, int step_idx, const char *param, char *buf, in
     }
     else if (strcmp(param, "arp_play_start") == 0) {
         return snprintf(buf, buf_len, "%d", s->arp_play_start);
+    }
+    else if (strcmp(param, "arp_octave") == 0) {
+        return snprintf(buf, buf_len, "%d", s->arp_octave);
     }
 
     return -1;

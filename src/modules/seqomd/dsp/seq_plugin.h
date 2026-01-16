@@ -120,6 +120,7 @@ typedef struct {
     uint8_t arp_layer;                   /* 0=Layer, 1=Cut, 2=Legato */
     int16_t arp_play_steps;              /* -1=use track, 1-255=binary pattern */
     int8_t arp_play_start;               /* -1=use track, 0-7=start position */
+    int8_t arp_octave;                   /* -1=use track, 0+=override octave */
 } step_t;
 
 /* Pattern data - contains steps and loop points */
