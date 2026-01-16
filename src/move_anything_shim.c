@@ -648,6 +648,45 @@ int alreadyLaunched = 0;       /* Prevent multiple launches */
 int shadowModeDebounce = 0;    /* Debounce for shadow mode toggle */
 
 static FILE *hotkey_state_log = NULL;
+static uint64_t shift_on_ms = 0;
+static uint64_t vol_on_ms = 0;
+static uint64_t knob1_on_ms = 0;
+
+static void log_hotkey_state(const char *tag);
+
+static uint64_t now_mono_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
+}
+
+static int within_window(uint64_t now, uint64_t ts, uint64_t window_ms)
+{
+    return ts > 0 && now >= ts && (now - ts) <= window_ms;
+}
+
+static void maybe_toggle_shadow(void)
+{
+    const uint64_t window_ms = 500;
+    const uint64_t now = now_mono_ms();
+
+    if (shadowModeDebounce) return;
+
+    if (within_window(now, shift_on_ms, window_ms) &&
+        within_window(now, vol_on_ms, window_ms) &&
+        within_window(now, knob1_on_ms, window_ms))
+    {
+        shadowModeDebounce = 1;
+        log_hotkey_state("toggle");
+        if (shadow_control) {
+            shadow_control->display_mode = !shadow_control->display_mode;
+            printf("Shadow mode toggled: %s\n",
+                   shadow_control->display_mode ? "SHADOW" : "STOCK");
+        }
+    }
+}
+
 static void log_hotkey_state(const char *tag)
 {
     if (!hotkey_state_log)
@@ -710,6 +749,7 @@ void midi_monitor()
                     printf("Shift on\n");
 
                     shiftHeld = 1;
+                    shift_on_ms = now_mono_ms();
                     log_hotkey_state("shift_on");
                 }
                 else
@@ -746,6 +786,7 @@ void midi_monitor()
             {
                 knob1touched = 1;
                 printf("Knob 1 touch start\n");
+                knob1_on_ms = now_mono_ms();
                 log_hotkey_state("knob1_on");
             }
             else
@@ -761,6 +802,7 @@ void midi_monitor()
             if (midi_2 == 0x7f)
             {
                 volumeTouched = 1;
+                vol_on_ms = now_mono_ms();
                 log_hotkey_state("vol_on");
             }
             else
@@ -806,16 +848,7 @@ void midi_monitor()
             }
         }
 
-        if (shiftHeld && volumeTouched && knob1touched && !shadowModeDebounce)
-        {
-            shadowModeDebounce = 1;
-            log_hotkey_state("toggle");
-            if (shadow_control) {
-                shadow_control->display_mode = !shadow_control->display_mode;
-                printf("Shadow mode toggled: %s\n",
-                       shadow_control->display_mode ? "SHADOW" : "STOCK");
-            }
-        }
+        maybe_toggle_shadow();
 
         /* Reset debounce once any part of the combo is released */
         if (shadowModeDebounce && (!shiftHeld || !volumeTouched || !knob1touched))
