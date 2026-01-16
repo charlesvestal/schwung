@@ -126,7 +126,7 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
 
 /**
  * Process all scheduled notes - send note-on/off at the right time.
- * Called every sample from render_block.
+ * Called once per block (~2.9ms at 128 samples/block).
  * Transpose is applied at send time to support immediate live transpose.
  */
 void process_scheduled_notes(void) {

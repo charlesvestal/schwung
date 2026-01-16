@@ -371,9 +371,7 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
             send_midi_clock();
         }
 
-        /* Process each track FIRST - advance steps and schedule notes (including Cut)
-         * IMPORTANT: This must happen before process_scheduled_notes() so that
-         * Cut mode can cancel notes before they are sent */
+        /* Process each track - advance steps and schedule notes (including Cut) */
         for (int t = 0; t < NUM_TRACKS; t++) {
             track_t *track = &g_tracks[t];
 
@@ -387,11 +385,13 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
                 advance_track(track, t);
             }
         }
-
-        /* Process scheduled notes - handles note-on/off timing for ALL tracks
-         * This happens AFTER track advancement so Cut mode can prevent notes from being sent */
-        process_scheduled_notes();
     }
+
+    /* Process scheduled notes ONCE per block (not per sample)
+     * This reduces iterations from 128*512=65536 to just 512 per block.
+     * Timing resolution is ~2.9ms at 128 samples/block, which is better
+     * than Elektron's 96 PPQN (~5.2ms at 120 BPM). */
+    process_scheduled_notes();
 }
 
 /* ============ Plugin Entry Point ============ */

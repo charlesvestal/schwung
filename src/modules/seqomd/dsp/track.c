@@ -412,22 +412,27 @@ void trigger_track_step(track_t *track, int track_idx, double step_start_phase) 
         step->param_spark_n, step->param_spark_m, step->param_spark_not, track);
 
     /* CC handling: step CC overrides track default for step->length duration.
-     * Decrement remaining counter first, then check if step has CC or if we need default. */
+     * Only send CC when: (1) step has CC value, or (2) override just expired.
+     * Track whether we were in override state to detect expiration. */
+
+    int cc1_num = 20 + (track_idx * 2);
+    int cc2_num = cc1_num + 1;
+
+    /* Check if override is expiring this step (was 1, will become 0) */
+    int cc1_expiring = (track->cc1_steps_remaining == 1);
+    int cc2_expiring = (track->cc2_steps_remaining == 1);
 
     /* Decrement remaining counters */
     if (track->cc1_steps_remaining > 0) track->cc1_steps_remaining--;
     if (track->cc2_steps_remaining > 0) track->cc2_steps_remaining--;
 
     if (param_spark_pass) {
-        int cc1_num = 20 + (track_idx * 2);
-        int cc2_num = cc1_num + 1;
-
         /* CC1: step override sets new value for step->length duration */
         if (step->cc1 >= 0) {
             send_cc(cc1_num, step->cc1, track->midi_channel);
             track->cc1_steps_remaining = step->length;
-        } else if (track->cc1_steps_remaining == 0) {
-            /* Override expired, send track default */
+        } else if (cc1_expiring) {
+            /* Override just expired, restore track default */
             send_cc(cc1_num, track->cc1_default, track->midi_channel);
         }
 
@@ -435,8 +440,8 @@ void trigger_track_step(track_t *track, int track_idx, double step_start_phase) 
         if (step->cc2 >= 0) {
             send_cc(cc2_num, step->cc2, track->midi_channel);
             track->cc2_steps_remaining = step->length;
-        } else if (track->cc2_steps_remaining == 0) {
-            /* Override expired, send track default */
+        } else if (cc2_expiring) {
+            /* Override just expired, restore track default */
             send_cc(cc2_num, track->cc2_default, track->midi_channel);
         }
     }
