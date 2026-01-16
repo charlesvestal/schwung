@@ -2346,6 +2346,360 @@ TEST(arp_layer_cut_single_note) {
     set_param("track_0_arp_mode", "0");
 }
 
+/* ============ Arp Continuous Mode Tests ============ */
+
+TEST(arp_continuous_param_persist) {
+    /* Test that arp_continuous parameter can be set and retrieved */
+    ASSERT_EQ(get_param_int("track_0_arp_continuous"), 0);
+
+    set_param("track_0_arp_continuous", "1");
+    ASSERT_EQ(get_param_int("track_0_arp_continuous"), 1);
+
+    set_param("track_0_arp_continuous", "0");
+    ASSERT_EQ(get_param_int("track_0_arp_continuous"), 0);
+}
+
+TEST(arp_continuous_off_restarts_pattern) {
+    /* With continuous OFF, each trigger restarts the pattern from index 0 */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "0");
+
+    /* Step 0: C-E-G chord, length 2 (plays 2 arp notes: C, E) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "2");
+
+    /* Step 2: Same chord, length 2 (should restart: C, E again) */
+    set_param("track_0_step_2_add_note", "60");
+    set_param("track_0_step_2_add_note", "64");
+    set_param("track_0_step_2_add_note", "67");
+    set_param("track_0_step_2_length", "2");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);
+    set_param("playing", "0");
+
+    /* With continuous OFF, both triggers start at C:
+     * Step 0: C(0), E(1)
+     * Step 2: C(2), E(3)
+     * Total: C=2, E=2, G=0 */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 2);  /* C plays twice (start of each trigger) */
+    ASSERT_EQ(count_64, 2);  /* E plays twice */
+    ASSERT_EQ(count_67, 0);  /* G never plays */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(arp_continuous_on_continues_pattern) {
+    /* With continuous ON, same chord continues from where it left off */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "1");
+
+    /* Step 0: C-E-G chord, length 2 (plays 2 arp notes: C, E) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "2");
+
+    /* Step 2: Same chord, length 2 (should continue: G, C) */
+    set_param("track_0_step_2_add_note", "60");
+    set_param("track_0_step_2_add_note", "64");
+    set_param("track_0_step_2_add_note", "67");
+    set_param("track_0_step_2_length", "2");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);
+    set_param("playing", "0");
+
+    /* With continuous ON and same notes:
+     * Step 0: C(idx 0), E(idx 1) -> ends at idx 2
+     * Step 2: G(idx 2), C(idx 0) -> continues from stored idx
+     * Total: C=2, E=1, G=1 */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 2);  /* C plays at idx 0 and idx 3 (wrapped) */
+    ASSERT_EQ(count_64, 1);  /* E plays once at idx 1 */
+    ASSERT_EQ(count_67, 1);  /* G plays once at idx 2 */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_continuous", "0");
+}
+
+TEST(arp_continuous_different_notes_resets) {
+    /* Different notes should reset the pattern even with continuous ON */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "1");
+
+    /* Step 0: C-E chord, length 2 (plays C, E) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_length", "2");
+
+    /* Step 2: Different chord D-F#, length 2 (should reset: D, F#) */
+    set_param("track_0_step_2_add_note", "62");
+    set_param("track_0_step_2_add_note", "66");
+    set_param("track_0_step_2_length", "2");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);
+    set_param("playing", "0");
+
+    /* Different notes = reset pattern, so D starts at idx 0 */
+    int count_60 = count_note_ons(60, 0);  /* C from first chord */
+    int count_64 = count_note_ons(64, 0);  /* E from first chord */
+    int count_62 = count_note_ons(62, 0);  /* D from second chord */
+    int count_66 = count_note_ons(66, 0);  /* F# from second chord */
+
+    ASSERT_EQ(count_60, 1);
+    ASSERT_EQ(count_64, 1);
+    ASSERT_EQ(count_62, 1);  /* D starts at idx 0 (reset) */
+    ASSERT_EQ(count_66, 1);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_continuous", "0");
+}
+
+TEST(arp_continuous_random_ignores) {
+    /* Random mode should ignore continuous (always fresh random) */
+    set_param("track_0_arp_mode", "7");  /* ARP_RANDOM */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "1");
+
+    /* Step 0: C-E-G chord */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "3");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(4);
+    set_param("playing", "0");
+
+    /* Random mode: 3 notes should play (regardless of order) */
+    int total = count_note_ons(60, 0) + count_note_ons(64, 0) + count_note_ons(67, 0);
+    ASSERT_EQ(total, 3);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_continuous", "0");
+}
+
+TEST(arp_continuous_five_notes_cycling) {
+    /* Test with 5 notes and length 16 to see full cycling behavior */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "1");
+
+    /* Step 0: 5-note chord C-D-E-F-G, length 3 (plays C, D, E) */
+    set_param("track_0_step_0_add_note", "60");  /* C */
+    set_param("track_0_step_0_add_note", "62");  /* D */
+    set_param("track_0_step_0_add_note", "64");  /* E */
+    set_param("track_0_step_0_add_note", "65");  /* F */
+    set_param("track_0_step_0_add_note", "67");  /* G */
+    set_param("track_0_step_0_length", "3");
+
+    /* Step 3: Same chord, length 3 (should continue: F, G, C) */
+    set_param("track_0_step_3_add_note", "60");
+    set_param("track_0_step_3_add_note", "62");
+    set_param("track_0_step_3_add_note", "64");
+    set_param("track_0_step_3_add_note", "65");
+    set_param("track_0_step_3_add_note", "67");
+    set_param("track_0_step_3_length", "3");
+
+    /* Step 6: Same chord, length 4 (should continue: D, E, F, G) */
+    set_param("track_0_step_6_add_note", "60");
+    set_param("track_0_step_6_add_note", "62");
+    set_param("track_0_step_6_add_note", "64");
+    set_param("track_0_step_6_add_note", "65");
+    set_param("track_0_step_6_add_note", "67");
+    set_param("track_0_step_6_length", "4");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(11);
+    set_param("playing", "0");
+
+    /* Expected sequence:
+     * Step 0: C(0), D(1), E(2) -> idx ends at 3
+     * Step 3: F(3), G(4), C(0) -> idx ends at 1
+     * Step 6: D(1), E(2), F(3), G(4) -> idx ends at 0
+     * Total: C=2, D=2, E=2, F=2, G=2 */
+    int count_60 = count_note_ons(60, 0);  /* C */
+    int count_62 = count_note_ons(62, 0);  /* D */
+    int count_64 = count_note_ons(64, 0);  /* E */
+    int count_65 = count_note_ons(65, 0);  /* F */
+    int count_67 = count_note_ons(67, 0);  /* G */
+
+    ASSERT_EQ(count_60, 2);
+    ASSERT_EQ(count_62, 2);
+    ASSERT_EQ(count_64, 2);
+    ASSERT_EQ(count_65, 2);
+    ASSERT_EQ(count_67, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_3_clear", "1");
+    set_param("track_0_step_6_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_continuous", "0");
+}
+
+TEST(arp_continuous_diverge_mode) {
+    /* Test continuous with Diverge mode to verify pattern index works with complex patterns */
+    set_param("track_0_arp_mode", "12");  /* ARP_DIVERGE */
+    set_param("track_0_arp_speed", "2");  /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "1");
+
+    /* 5-note chord: C-D-E-F-G (sorted: 60, 62, 64, 65, 67)
+     * Diverge pattern from middle (E=64):
+     * mid=2 -> E(64), F(65), D(62), G(67), C(60)
+     * Pattern = [64, 65, 62, 67, 60] */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "62");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "65");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "3");
+
+    /* Same chord on step 3, length 3 */
+    set_param("track_0_step_3_add_note", "60");
+    set_param("track_0_step_3_add_note", "62");
+    set_param("track_0_step_3_add_note", "64");
+    set_param("track_0_step_3_add_note", "65");
+    set_param("track_0_step_3_add_note", "67");
+    set_param("track_0_step_3_length", "3");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(7);
+    set_param("playing", "0");
+
+    /* Expected:
+     * Step 0: E(0), F(1), D(2) -> idx ends at 3
+     * Step 3: G(3), C(4), E(0) -> continues from idx 3
+     * Total: E=2, F=1, D=1, G=1, C=1 */
+    int count_60 = count_note_ons(60, 0);  /* C */
+    int count_62 = count_note_ons(62, 0);  /* D */
+    int count_64 = count_note_ons(64, 0);  /* E */
+    int count_65 = count_note_ons(65, 0);  /* F */
+    int count_67 = count_note_ons(67, 0);  /* G */
+
+    ASSERT_EQ(count_64, 2);  /* E plays at positions 0 and 5 */
+    ASSERT_EQ(count_65, 1);  /* F plays at position 1 */
+    ASSERT_EQ(count_62, 1);  /* D plays at position 2 */
+    ASSERT_EQ(count_67, 1);  /* G plays at position 3 */
+    ASSERT_EQ(count_60, 1);  /* C plays at position 4 */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_3_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_continuous", "0");
+}
+
+TEST(arp_continuous_note_order_independent) {
+    /* Notes entered in different order should still match (sorted comparison) */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "1");
+
+    /* Step 0: Add C-E-G in order C, E, G */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "2");
+
+    /* Step 2: Add same notes but in reverse order G, E, C */
+    set_param("track_0_step_2_add_note", "67");
+    set_param("track_0_step_2_add_note", "64");
+    set_param("track_0_step_2_add_note", "60");
+    set_param("track_0_step_2_length", "2");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(5);
+    set_param("playing", "0");
+
+    /* Both have same notes when sorted, so continuous should work:
+     * Step 0: C, E (ends at idx 2)
+     * Step 2: G, C (continues from idx 2) */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 2);  /* C at positions 0 and 3 */
+    ASSERT_EQ(count_64, 1);  /* E at position 1 */
+    ASSERT_EQ(count_67, 1);  /* G at position 2 */
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_continuous", "0");
+}
+
+TEST(arp_continuous_long_sequence_16_steps) {
+    /* Test a full 16-step sequence with continuous mode.
+     * Verifies that continuous mode tracks position correctly across a full pattern. */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_arp_continuous", "1");
+    set_param("track_0_loop_end", "15"); /* Full 16 steps */
+
+    /* C-E-G chord on step 0 with length 16 */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "16");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(16);  /* Play through exactly 16 steps (the note length) */
+    set_param("playing", "0");
+
+    /* 16 notes total, pattern length 3:
+     * 16 / 3 = 5 full cycles + 1 extra note
+     * C: positions 0, 3, 6, 9, 12, 15 = 6 times
+     * E: positions 1, 4, 7, 10, 13 = 5 times
+     * G: positions 2, 5, 8, 11, 14 = 5 times */
+    int count_60 = count_note_ons(60, 0);
+    int count_64 = count_note_ons(64, 0);
+    int count_67 = count_note_ons(67, 0);
+
+    ASSERT_EQ(count_60, 6);
+    ASSERT_EQ(count_64, 5);
+    ASSERT_EQ(count_67, 5);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_arp_continuous", "0");
+}
+
 /* ============ Scheduler Tests ============ */
 
 /* Helper: Count active scheduler slots */
@@ -2853,6 +3207,17 @@ int main(int argc, char **argv) {
     RUN_TEST(arp_layer_layer_overlaps);
     RUN_TEST(arp_layer_cut_cancels);
     RUN_TEST(arp_layer_cut_single_note);
+
+    printf("\nArpeggiator Continuous Mode:\n");
+    RUN_TEST(arp_continuous_param_persist);
+    RUN_TEST(arp_continuous_off_restarts_pattern);
+    RUN_TEST(arp_continuous_on_continues_pattern);
+    RUN_TEST(arp_continuous_different_notes_resets);
+    RUN_TEST(arp_continuous_random_ignores);
+    RUN_TEST(arp_continuous_five_notes_cycling);
+    RUN_TEST(arp_continuous_diverge_mode);
+    RUN_TEST(arp_continuous_note_order_independent);
+    RUN_TEST(arp_continuous_long_sequence_16_steps);
 
     printf("\nScheduler Integrity:\n");
     RUN_TEST(scheduler_no_leak_on_conflict);

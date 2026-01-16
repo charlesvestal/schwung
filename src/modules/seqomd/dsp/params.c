@@ -346,6 +346,12 @@ void set_track_param(int track_idx, const char *param, const char *val) {
             track->arp_octave = oct;
         }
     }
+    else if (strcmp(param, "arp_continuous") == 0) {
+        track->arp_continuous = atoi(val) ? 1 : 0;
+        /* Reset pattern index when toggling continuous mode */
+        track->arp_pattern_idx = 0;
+        track->arp_last_num_notes = 0;
+    }
     else if (strcmp(param, "loop_start") == 0) {
         int start = atoi(val);
         if (start >= 0 && start < NUM_STEPS) {
@@ -448,6 +454,9 @@ int get_track_param(int track_idx, const char *param, char *buf, int buf_len) {
     }
     else if (strcmp(param, "arp_octave") == 0) {
         return snprintf(buf, buf_len, "%d", track->arp_octave);
+    }
+    else if (strcmp(param, "arp_continuous") == 0) {
+        return snprintf(buf, buf_len, "%d", track->arp_continuous);
     }
     /* Step-level params: step_S_param */
     else if (strncmp(param, "step_", 5) == 0) {

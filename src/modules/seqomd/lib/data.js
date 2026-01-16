@@ -112,6 +112,7 @@ export function createEmptyTrack(channel) {
         arpMode: 0,                   // 0 = Off, 1+ = arp mode
         arpSpeed: DEFAULT_ARP_SPEED,  // Index into ARP_SPEEDS
         arpOctave: 0,                 // Index into ARP_OCTAVES
+        arpContinuous: 0,             // 0 = restart arp each trigger, 1 = continue from last position
         cc1Default: 64,               // Track-level CC1 default (0-127)
         cc2Default: 64                // Track-level CC2 default (0-127)
     };
@@ -135,6 +136,7 @@ export function cloneTrack(srcTrack) {
         arpMode: srcTrack.arpMode !== undefined ? srcTrack.arpMode : 0,
         arpSpeed: srcTrack.arpSpeed !== undefined ? srcTrack.arpSpeed : DEFAULT_ARP_SPEED,
         arpOctave: srcTrack.arpOctave !== undefined ? srcTrack.arpOctave : 0,
+        arpContinuous: srcTrack.arpContinuous !== undefined ? srcTrack.arpContinuous : 0,
         cc1Default: srcTrack.cc1Default !== undefined ? srcTrack.cc1Default : 64,
         cc2Default: srcTrack.cc2Default !== undefined ? srcTrack.cc2Default : 64
     };
@@ -208,6 +210,9 @@ export function migrateTrackData(trackData) {
         }
         if (track.arpOctave === undefined) {
             track.arpOctave = 0;
+        }
+        if (track.arpContinuous === undefined) {
+            track.arpContinuous = 0;
         }
         /* Ensure track CC defaults exist */
         if (track.cc1Default === undefined) {

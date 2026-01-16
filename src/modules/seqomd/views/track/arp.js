@@ -12,14 +12,14 @@ import {
     Cyan, BrightGreen, BrightRed, Black, White, VividYellow, Purple,
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
-    MoveStep11UI, MoveKnob1, MoveKnob2, MoveKnob3
+    MoveStep11UI, MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
 import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, TRACK_COLORS } from '../../lib/constants.js';
 
 /* Knob colors for each arp parameter - matches step arp mode */
-const ARP_PARAM_COLORS = [Cyan, VividYellow, Purple];
+const ARP_PARAM_COLORS = [Cyan, VividYellow, Purple, BrightGreen];
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, clearStepLEDs, updateStandardTransportLEDs } from '../../lib/helpers.js';
 import { markDirty } from '../../lib/persistence.js';
@@ -81,6 +81,16 @@ export function onInput(data) {
         return true;
     }
 
+    /* Knob 4 - Arp Continuous (toggle) */
+    if (isCC && note === MoveKnob4) {
+        /* Any turn toggles continuous mode */
+        track.arpContinuous = track.arpContinuous ? 0 : 1;
+        setParam(`track_${state.currentTrack}_arp_continuous`, String(track.arpContinuous));
+        markDirty();
+        updateDisplayContent();
+        return true;
+    }
+
     /* Ignore all other input - mode is focused */
     return true;
 }
@@ -102,9 +112,9 @@ export function updateLEDs() {
 
     /* Pads owned by track.js coordinator */
 
-    /* Knobs 1-3 lit with arp param colors, 4-8 off */
+    /* Knobs 1-4 lit with arp param colors, 5-8 off */
     for (let i = 0; i < 8; i++) {
-        if (i < 3) {
+        if (i < 4) {
             setButtonLED(MoveKnobLEDs[i], ARP_PARAM_COLORS[i]);
         } else {
             setButtonLED(MoveKnobLEDs[i], Black);
@@ -127,11 +137,12 @@ export function updateDisplayContent() {
     const modeName = ARP_MODES[track.arpMode].name;
     const speedName = ARP_SPEEDS[track.arpSpeed].name;
     const octaveName = ARP_OCTAVES[track.arpOctave].name;
+    const contName = track.arpContinuous ? 'On' : 'Off';
 
     displayMessage(
         `Arp: ${modeName}`,
-        `Speed: ${speedName}`,
-        `Octave: ${octaveName}`,
+        `Spd: ${speedName} Oct: ${octaveName}`,
+        `Continuous: ${contName}`,
         `Track ${state.currentTrack + 1}`
     );
 }

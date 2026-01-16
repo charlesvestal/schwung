@@ -167,6 +167,11 @@ typedef struct {
     uint8_t cc2_default;         /* Default CC2 value (0-127) */
     uint8_t cc1_steps_remaining; /* Steps remaining for CC1 override (0 = use default) */
     uint8_t cc2_steps_remaining; /* Steps remaining for CC2 override (0 = use default) */
+    /* Arp continuous mode */
+    uint8_t arp_continuous;      /* 0=restart pattern each trigger, 1=continue from last position */
+    int arp_pattern_idx;         /* Pattern index where last arp left off (for continuous mode) */
+    uint8_t arp_last_notes[MAX_NOTES_PER_STEP];  /* Notes from last arp trigger (sorted, for comparison) */
+    uint8_t arp_last_num_notes;  /* Number of notes in arp_last_notes */
 } track_t;
 
 /* Centralized Note Scheduler */

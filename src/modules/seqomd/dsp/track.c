@@ -74,6 +74,13 @@ void init_track(track_t *track, int channel) {
     track->cc2_default = 64;
     track->cc1_steps_remaining = 0;
     track->cc2_steps_remaining = 0;
+    /* Arp continuous mode */
+    track->arp_continuous = 0;
+    track->arp_pattern_idx = 0;
+    track->arp_last_num_notes = 0;
+    for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
+        track->arp_last_notes[i] = 0;
+    }
 
     for (int i = 0; i < MAX_NOTES_PER_STEP; i++) {
         track->last_notes[i] = -1;
@@ -133,6 +140,18 @@ int check_spark_condition(int8_t spark_n, int8_t spark_m, uint8_t spark_not, tra
 }
 
 /**
+ * Check if two sorted note arrays are equal.
+ * Used by arp continuous mode to detect if the same chord is triggering again.
+ */
+static int notes_equal_sorted(uint8_t *a, int a_count, uint8_t *b, int b_count) {
+    if (a_count != b_count) return 0;
+    for (int i = 0; i < a_count; i++) {
+        if (a[i] != b[i]) return 0;
+    }
+    return 1;
+}
+
+/**
  * Schedule notes for a step via the centralized scheduler.
  * This handles swing, ratchets, arp, note conflicts, and transpose automatically.
  *
@@ -179,6 +198,32 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
 
         if (pattern_len == 0) return;
 
+        /* Continuous mode: check if same notes are triggering again.
+         * If so, continue from where we left off in the pattern.
+         * Random mode always restarts (no meaningful continuation). */
+        int start_idx = 0;
+        if (track->arp_continuous && arp_mode != ARP_RANDOM) {
+            /* Sort current notes for comparison */
+            uint8_t sorted_notes[MAX_NOTES_PER_STEP];
+            for (int i = 0; i < step->num_notes && i < MAX_NOTES_PER_STEP; i++) {
+                sorted_notes[i] = step->notes[i];
+            }
+            sort_notes(sorted_notes, step->num_notes);
+
+            /* Check if same notes as last time */
+            if (notes_equal_sorted(sorted_notes, step->num_notes,
+                                   track->arp_last_notes, track->arp_last_num_notes)) {
+                /* Continue from stored position */
+                start_idx = track->arp_pattern_idx % pattern_len;
+            }
+
+            /* Store current notes (sorted) for next comparison */
+            for (int i = 0; i < step->num_notes && i < MAX_NOTES_PER_STEP; i++) {
+                track->arp_last_notes[i] = sorted_notes[i];
+            }
+            track->arp_last_num_notes = step->num_notes;
+        }
+
         /* Calculate arp timing using musical note values
          * ARP_STEP_RATES[speed] = steps per arp note (in global phase)
          * e.g., 1/32 = 0.5 (2 notes per step), 1/4 = 4.0 (1 note per 4 steps)
@@ -215,11 +260,15 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
                     }
                 }
             }
+            /* For chord mode, continuous doesn't really apply but update index anyway */
+            if (track->arp_continuous) {
+                track->arp_pattern_idx = (start_idx + total_arp_notes) % pattern_len;
+            }
         } else {
             /* Normal arp: cycle through pattern */
             for (int i = 0; i < total_arp_notes; i++) {
                 double note_phase = base_phase + (i * note_duration);
-                int pattern_idx = i % pattern_len;
+                int pattern_idx = (start_idx + i) % pattern_len;
                 int note_value = arp_pattern[pattern_idx];
                 /* Cycle through velocities based on source note index */
                 int vel_idx = (step->num_notes > 0) ? (i % step->num_notes) : 0;
@@ -236,6 +285,10 @@ void schedule_step_notes(track_t *track, int track_idx, step_t *step, double bas
                     track_idx,
                     sequence_transpose
                 );
+            }
+            /* Store ending index for continuous mode */
+            if (track->arp_continuous) {
+                track->arp_pattern_idx = (start_idx + total_arp_notes) % pattern_len;
             }
         }
     } else {
