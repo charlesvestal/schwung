@@ -97,6 +97,7 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
                     send_note_off(conflict->sent_note, conflict->channel);
                     conflict->off_sent = 1;
                     conflict->active = 0;  /* Free the slot to prevent leak */
+                    g_active_note_count--;
                 }
             }
         }
@@ -122,6 +123,7 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
     sn->track_idx = track_idx;
     sn->sequence_transpose = sequence_transpose;
     sn->sent_note = 0;  /* Will be set when note-on is sent */
+    g_active_note_count++;
 }
 
 /**
@@ -130,6 +132,9 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
  * Transpose is applied at send time to support immediate live transpose.
  */
 void process_scheduled_notes(void) {
+    /* Early exit if no active notes - avoids scanning all 512 slots */
+    if (g_active_note_count <= 0) return;
+
     for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
         scheduled_note_t *sn = &g_scheduled_notes[i];
         if (!sn->active) continue;
@@ -160,6 +165,7 @@ void process_scheduled_notes(void) {
             send_note_off(sn->sent_note, sn->channel);
             sn->off_sent = 1;
             sn->active = 0;  /* Free the slot */
+            g_active_note_count--;
         }
     }
 }
@@ -177,6 +183,7 @@ void clear_scheduled_notes(void) {
         sn->on_sent = 0;
         sn->off_sent = 0;
     }
+    g_active_note_count = 0;
 }
 
 /**
@@ -195,6 +202,7 @@ void cut_channel_notes(uint8_t channel) {
             sn->active = 0;
             sn->on_sent = 0;
             sn->off_sent = 0;
+            g_active_note_count--;
         }
     }
 }

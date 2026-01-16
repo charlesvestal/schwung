@@ -51,6 +51,7 @@ track_t g_tracks[NUM_TRACKS];
 
 /* Centralized note scheduler */
 scheduled_note_t g_scheduled_notes[MAX_SCHEDULED_NOTES];
+int g_active_note_count = 0;  /* Number of active notes (for early-exit optimization) */
 
 /* Global playback state */
 int g_bpm = 120;
@@ -125,6 +126,7 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
 
     /* Clear note scheduler */
     memset(g_scheduled_notes, 0, sizeof(g_scheduled_notes));
+    g_active_note_count = 0;
 
     /* Parse BPM from defaults if provided */
     if (json_defaults) {

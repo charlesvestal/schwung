@@ -221,6 +221,7 @@ extern track_t g_tracks[NUM_TRACKS];
 
 /* Centralized note scheduler */
 extern scheduled_note_t g_scheduled_notes[MAX_SCHEDULED_NOTES];
+extern int g_active_note_count;  /* Number of active notes (for early-exit optimization) */
 
 /* Global playback state */
 extern int g_bpm;
