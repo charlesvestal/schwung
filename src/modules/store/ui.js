@@ -65,6 +65,7 @@ let selectedActionIndex = 0;
 let selectedUpdateIndex = 0;
 let currentCategory = null;
 let currentModule = null;
+let cameFromUpdateAll = false;
 let errorMessage = '';
 let resultMessage = '';
 let shiftHeld = false;
@@ -574,6 +575,7 @@ function handleSelect() {
                 /* Selected a specific module - show its detail */
                 currentModule = modulesToUpdate[selectedUpdateIndex];
                 selectedActionIndex = 0;
+                cameFromUpdateAll = true;
                 state = STATE_MODULE_DETAIL;
             } else {
                 /* Selected "Update All" */
@@ -636,7 +638,12 @@ function handleBack() {
 
         case STATE_MODULE_DETAIL:
             currentModule = null;
-            state = STATE_MODULE_LIST;
+            if (cameFromUpdateAll) {
+                cameFromUpdateAll = false;
+                state = STATE_UPDATE_ALL;
+            } else {
+                state = STATE_MODULE_LIST;
+            }
             break;
 
         case STATE_ERROR:
@@ -747,21 +754,18 @@ function drawUpdateAll() {
     const modulesToUpdate = getModulesWithUpdates();
     drawMenuHeader('Updates Available', `(${modulesToUpdate.length})`);
 
-    /* Build items list - modules with version info, then "Update All" */
+    /* Build items list - modules then "Update All" */
     let items = [];
     for (const mod of modulesToUpdate) {
-        const installedVer = installedModules[mod.id] || '?';
         items.push({
             id: mod.id,
-            name: mod.name,
-            value: `${installedVer}->${mod.latest_version}`
+            name: mod.name
         });
     }
     /* Add "Update All" as last item */
     items.push({
         id: '_update_all',
-        name: '>> Update All <<',
-        value: ''
+        name: '>> Update All <<'
     });
 
     drawMenuList({
