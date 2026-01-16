@@ -803,6 +803,10 @@ static int shadow_chain_slot_for_channel(int ch) {
     return -1;
 }
 
+static inline uint8_t shadow_chain_force_channel_1(uint8_t status) {
+    return (status & 0xF0) | 0x00;
+}
+
 static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
@@ -824,7 +828,8 @@ static void shadow_inprocess_process_midi(void) {
         if (slot < 0) continue;
 
         if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-            shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, &pkt[1], 3,
+            uint8_t msg[3] = { shadow_chain_force_channel_1(pkt[1]), pkt[2], pkt[3] };
+            shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                       MOVE_MIDI_SOURCE_INTERNAL);
         }
     }
@@ -843,15 +848,16 @@ static void shadow_inprocess_process_midi(void) {
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
             if (slot < 0) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, &pkt[1], 3,
+                uint8_t msg[3] = { shadow_chain_force_channel_1(pkt[1]), pkt[2], pkt[3] };
+                shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                           MOVE_MIDI_SOURCE_INTERNAL);
             }
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
-            uint8_t msg[3] = { status_raw, pkt[1], pkt[2] };
-            if (msg[1] <= 0x7F && msg[2] <= 0x7F) {
-                int slot = shadow_chain_slot_for_channel(msg[0] & 0x0F);
+            if (pkt[1] <= 0x7F && pkt[2] <= 0x7F) {
+                int slot = shadow_chain_slot_for_channel(status_raw & 0x0F);
                 if (slot < 0) continue;
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                    uint8_t msg[3] = { shadow_chain_force_channel_1(status_raw), pkt[1], pkt[2] };
                     shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                               MOVE_MIDI_SOURCE_INTERNAL);
                 }
