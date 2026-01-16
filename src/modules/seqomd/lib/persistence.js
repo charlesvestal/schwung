@@ -171,6 +171,13 @@ export function flushDirty() {
  */
 export function saveCurrentSetToDisk() {
     if (state.currentSet < 0) return false;
+
+    /* Preserve existing color if set has one */
+    let existingColor = undefined;
+    if (state.sets[state.currentSet] && state.sets[state.currentSet].color !== undefined) {
+        existingColor = state.sets[state.currentSet].color;
+    }
+
     /* Serialize directly from state - no deep clone needed */
     const setData = {
         tracks: state.tracks,
@@ -181,6 +188,12 @@ export function saveCurrentSetToDisk() {
         patternSnapshots: state.patternSnapshots,
         activePatternSnapshot: state.activePatternSnapshot
     };
+
+    /* Include color if it exists */
+    if (existingColor !== undefined) {
+        setData.color = existingColor;
+    }
+
     return saveSetToDisk(state.currentSet, setData);
 }
 
@@ -190,6 +203,12 @@ export function saveCurrentSetToDisk() {
  * Save current tracks to current set (in memory)
  */
 export function saveCurrentSet() {
+    /* Preserve existing color if set has one */
+    let existingColor = undefined;
+    if (state.sets[state.currentSet] && state.sets[state.currentSet].color !== undefined) {
+        existingColor = state.sets[state.currentSet].color;
+    }
+
     state.sets[state.currentSet] = {
         tracks: deepCloneTracks(state.tracks),
         bpm: state.bpm,
@@ -199,6 +218,11 @@ export function saveCurrentSet() {
         patternSnapshots: clonePatternSnapshots(state.patternSnapshots),
         activePatternSnapshot: state.activePatternSnapshot
     };
+
+    /* Restore color if it existed */
+    if (existingColor !== undefined) {
+        state.sets[state.currentSet].color = existingColor;
+    }
 }
 
 /**

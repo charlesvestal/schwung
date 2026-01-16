@@ -9,7 +9,12 @@ import {
     MoveSteps, MovePads, MoveTracks, MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveCopy,
     MoveStep1UI, MoveStep2UI, MoveStep3UI, MoveStep4UI, MoveStep5UI, MoveStep6UI, MoveStep7UI, MoveStep8UI,
     MoveStep9UI, MoveStep10UI, MoveStep11UI, MoveStep12UI, MoveStep13UI, MoveStep14UI, MoveStep15UI, MoveStep16UI,
-    MoveDelete, MoveMainButton
+    MoveDelete, MoveMainButton,
+    OrangeRed, Bright, LightYellow, Ochre, BurntOrange, Mustard,
+    ForestGreen, NeonGreen, TealGreen, Lime,
+    AzureBlue, RoyalBlue, Navy, SkyBlue, MutedBlue,
+    BlueViolet, Violet, Purple, ElectricViolet, HotMagenta, NeonPink, Rose, BrightPink,
+    LightGrey, DarkGrey
 } from "../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
@@ -20,6 +25,20 @@ import * as trackView from './track.js';
 import { setParam, syncAllTracksToDSP } from '../lib/helpers.js';
 import { markDirty, flushDirty, loadSetToTracks, setHasContent, deleteSetFile, loadSetFromDisk, saveSetToDisk } from '../lib/persistence.js';
 
+/* ============ Color Palette ============ */
+
+/* 32 colors for the color picker - arranged visually on the 4x8 pad grid */
+const COLOR_PALETTE = [
+    /* Row 1 (bottom): Reds/Oranges/Yellows */
+    BrightRed, OrangeRed, Bright, VividYellow, LightYellow, Ochre, BurntOrange, Mustard,
+    /* Row 2: Greens */
+    BrightGreen, Lime, ForestGreen, NeonGreen, TealGreen, Cyan, AzureBlue, SkyBlue,
+    /* Row 3: Blues/Purples */
+    RoyalBlue, Navy, BlueViolet, Violet, Purple, ElectricViolet, HotMagenta, NeonPink,
+    /* Row 4 (top): Pinks/Neutrals */
+    Rose, BrightPink, MutedBlue, LightGrey, DarkGrey, White, Black, Cyan
+];
+
 /* ============ Local State ============ */
 
 let deleteHeld = false;
@@ -27,6 +46,11 @@ let deleteConfirmSetIdx = -1;  // Set pending deletion confirmation (-1 = none)
 let copyHeld = false;
 let copiedSetData = null;  // Copied set data
 let copiedSetIdx = -1;  // Source set index for display (-1 = none)
+
+/* Color picker state */
+let colorPickerActive = false;
+let colorPickerSetIdx = -1;  // Which set is being colored (-1 = none)
+let colorPickerCallback = null;  // Optional callback for reusable picker
 
 /* ============ View Interface ============ */
 
@@ -39,6 +63,9 @@ export function onEnter() {
     copyHeld = false;
     copiedSetData = null;
     copiedSetIdx = -1;
+    colorPickerActive = false;
+    colorPickerSetIdx = -1;
+    colorPickerCallback = null;
     updateDisplayContent();
 }
 
@@ -51,6 +78,9 @@ export function onExit() {
     copyHeld = false;
     copiedSetData = null;
     copiedSetIdx = -1;
+    colorPickerActive = false;
+    colorPickerSetIdx = -1;
+    colorPickerCallback = null;
 }
 
 /**
@@ -134,8 +164,16 @@ export function onInput(data) {
         }
     }
 
-    /* Back button - cancel deletion */
+    /* Back button - cancel deletion or exit color picker */
     if (isCC && note === MoveBack && velocity > 0) {
+        if (colorPickerActive) {
+            /* Cancel color picker */
+            colorPickerActive = false;
+            colorPickerSetIdx = -1;
+            updateDisplayContent();
+            updateLEDs();
+            return true;
+        }
         if (deleteConfirmSetIdx >= 0) {
             /* Cancel deletion */
             deleteConfirmSetIdx = -1;
@@ -152,10 +190,50 @@ export function onInput(data) {
         const padIdx = note - 68;
 
         if (isNoteOn && velocity > 0) {
+            /* Color picker mode - select a color */
+            if (colorPickerActive) {
+                /* Get color from palette (pads are in display order) */
+                const row = 3 - Math.floor(padIdx / 8);  // Row 0 is bottom
+                const col = padIdx % 8;
+                const paletteIdx = row * 8 + col;
+                const selectedColor = COLOR_PALETTE[paletteIdx];
+
+                /* Apply color to the set */
+                applyColorToSet(colorPickerSetIdx, selectedColor);
+
+                /* Exit color picker */
+                colorPickerActive = false;
+                const setIdx = colorPickerSetIdx;
+                colorPickerSetIdx = -1;
+
+                displayMessage(
+                    "COLOR SET",
+                    `Set ${setIdx + 1} color updated`,
+                    "",
+                    ""
+                );
+                updateLEDs();
+                return true;
+            }
+
             /* Convert pad index to set index (bottom-left = set 0) */
             const row = 3 - Math.floor(padIdx / 8);  // Row 0 is bottom
             const col = padIdx % 8;
             const setIdx = row * 8 + col;
+
+            /* Shift held - enter color picker mode */
+            if (state.shiftHeld) {
+                colorPickerActive = true;
+                colorPickerSetIdx = setIdx;
+                displayMessage(
+                    "SELECT COLOR",
+                    `for Set ${setIdx + 1}`,
+                    "Press a pad to choose",
+                    ""
+                );
+                updateLEDs();
+                return true;
+            }
 
             /* Copy held - copy or paste set */
             if (copyHeld) {
@@ -299,6 +377,51 @@ export function updateDisplayContent() {
     );
 }
 
+/* ============ Color Helpers ============ */
+
+/**
+ * Apply a color to a set
+ * Creates/updates set data if needed to store the color
+ */
+function applyColorToSet(setIdx, color) {
+    /* Load existing set data or create minimal structure for color */
+    let setData = loadSetFromDisk(setIdx);
+    if (!setData) {
+        setData = state.sets[setIdx];
+    }
+    if (!setData) {
+        /* Create minimal set data just to store the color */
+        setData = { color: color };
+    } else {
+        setData.color = color;
+    }
+
+    /* Save to disk and update in-memory cache */
+    saveSetToDisk(setIdx, setData);
+    state.sets[setIdx] = setData;
+}
+
+/**
+ * Get the color for a set (custom color or default)
+ */
+function getSetColor(setIdx) {
+    /* Check in-memory cache first */
+    if (state.sets[setIdx] && state.sets[setIdx].color !== undefined) {
+        return state.sets[setIdx].color;
+    }
+    /* Check disk and cache result */
+    const setData = loadSetFromDisk(setIdx);
+    if (setData) {
+        /* Cache the loaded data */
+        state.sets[setIdx] = setData;
+        if (setData.color !== undefined) {
+            return setData.color;
+        }
+    }
+    /* Default: cycle through track colors */
+    return TRACK_COLORS[setIdx % 8];
+}
+
 /* ============ LED Updates ============ */
 
 function updateStepLEDs() {
@@ -309,6 +432,19 @@ function updateStepLEDs() {
 }
 
 function updatePadLEDs() {
+    /* Color picker mode - show palette */
+    if (colorPickerActive) {
+        for (let i = 0; i < 32; i++) {
+            const padNote = MovePads[i];
+            /* Convert pad index to palette index (same layout as sets) */
+            const row = 3 - Math.floor(i / 8);  // Row 0 is bottom
+            const col = i % 8;
+            const paletteIdx = row * 8 + col;
+            setLED(padNote, COLOR_PALETTE[paletteIdx]);
+        }
+        return;
+    }
+
     /* Set view: 32 pads = 32 sets
      * Layout: 4 rows x 8 columns
      * Row 4 (top, indices 0-7): Sets 25-32
@@ -333,8 +469,8 @@ function updatePadLEDs() {
         } else if (isCurrentSet) {
             color = Cyan;  // Currently loaded set
         } else if (hasContent) {
-            /* Use track colors cycling through for sets with content */
-            color = TRACK_COLORS[setIdx % 8];
+            /* Use custom set color if available, otherwise cycle through track colors */
+            color = getSetColor(setIdx);
         }
         /* Empty sets stay Black */
 
