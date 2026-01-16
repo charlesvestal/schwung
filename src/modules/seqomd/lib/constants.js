@@ -12,7 +12,7 @@ import {
     BlueViolet, SkyBlue, DeepBlue, DarkPurple, DarkViolet, LightYellow, Ochre,
     VeryDarkRed, VeryDarkYellow, VeryDarkGreen, DarkOliveGreen, DeepBrownYellow,
     DeepTeal, DarkBlue, DeepBlueIndigo, DeepViolet, DeepPlum, ShadowMauve
-} from "../../../shared/constants.mjs";
+} from "./shared-constants.js";
 
 /* ============ Core Constants ============ */
 

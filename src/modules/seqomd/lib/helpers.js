@@ -3,8 +3,8 @@
  * Shared utility functions used by views and router
  */
 
-import { VividYellow, LightGrey, DarkGrey, White, Black, BrightGreen, BrightRed, MovePads, MoveSteps, MoveTracks, MoveLoop, MoveCapture, MovePlay, MoveRec, MoveBack } from '../../../shared/constants.mjs';
-import { setLED, setButtonLED } from '../../../shared/input_filter.mjs';
+import { VividYellow, LightGrey, DarkGrey, White, Black, BrightGreen, BrightRed, MovePads, MoveSteps, MoveTracks, MoveLoop, MoveCapture, MovePlay, MoveRec, MoveBack } from './shared-constants.js';
+import { setLED, setButtonLED } from './shared-input.js';
 import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS, TRACK_COLORS, MoveKnobLEDs } from './constants.js';
 import { state } from './state.js';
 import { isRoot, isInScale } from './scale_detection.js';

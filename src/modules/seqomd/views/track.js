@@ -13,11 +13,11 @@
 import {
     MoveLoop, MoveCapture, MoveMainButton, MoveBack, MoveCopy, White, Black,
     MoveKnob3Touch
-} from "../../../shared/constants.mjs";
+} from "../lib/shared-constants.js";
 
 import { updatePadLEDs, setParam, syncAllTracksToDSP, updatePlayheadLED } from '../lib/helpers.js';
 import { clonePattern } from '../lib/data.js';
-import { setButtonLED } from '../../../shared/input_filter.mjs';
+import { setButtonLED } from '../lib/shared-input.js';
 import { NUM_PATTERNS } from '../lib/constants.js';
 
 import {

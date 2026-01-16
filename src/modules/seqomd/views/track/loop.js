@@ -12,9 +12,9 @@ import {
     Black, White, LightGrey, Cyan, BrightGreen, BrightRed,
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack
-} from "../../../../shared/constants.mjs";
+} from "../../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../lib/shared-input.js";
 import { NUM_STEPS, MoveKnobLEDs, TRACK_COLORS } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, getCurrentPattern } from '../../lib/helpers.js';

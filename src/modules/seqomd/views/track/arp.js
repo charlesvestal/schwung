@@ -13,9 +13,9 @@ import {
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveStep11UI, MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6
-} from "../../../../shared/constants.mjs";
+} from "../../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../lib/shared-input.js";
 import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, TRACK_COLORS, getRotatedPlaySteps } from '../../lib/constants.js';
 
 /* Knob colors for each arp parameter - matches step arp mode */

@@ -15,9 +15,9 @@ import {
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
-} from "../../../../shared/constants.mjs";
+} from "../../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../lib/shared-input.js";
 
 import {
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,

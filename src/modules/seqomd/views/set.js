@@ -15,9 +15,9 @@ import {
     AzureBlue, RoyalBlue, Navy, SkyBlue, MutedBlue,
     BlueViolet, Violet, Purple, ElectricViolet, HotMagenta, NeonPink, Rose, BrightPink,
     LightGrey, DarkGrey
-} from "../../../shared/constants.mjs";
+} from "../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../lib/shared-input.js";
 
 import { NUM_SETS, NUM_STEPS, TRACK_COLORS } from '../lib/constants.js';
 import { state, displayMessage, displayTemporaryMessage, enterTrackView } from '../lib/state.js';

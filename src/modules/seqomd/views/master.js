@@ -10,9 +10,9 @@ import {
     MoveUp, MoveDown, MoveDelete, MoveMainKnob,
     MoveStep1UI, MoveStep2UI, MoveStep3UI, MoveStep4UI, MoveStep5UI, MoveStep6UI, MoveStep7UI, MoveStep8UI,
     MoveStep9UI, MoveStep10UI, MoveStep11UI, MoveStep12UI, MoveStep13UI, MoveStep14UI, MoveStep15UI, MoveStep16UI
-} from "../../../shared/constants.mjs";
+} from "../lib/shared-constants.js";
 
-import { setLED, setButtonLED, setLedsEnabled, getLedsEnabled } from "../../../shared/input_filter.mjs";
+import { setLED, setButtonLED, setLedsEnabled, getLedsEnabled } from "../lib/shared-input.js";
 
 import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM } from '../lib/constants.js';
 import * as spark from './master/spark.js';

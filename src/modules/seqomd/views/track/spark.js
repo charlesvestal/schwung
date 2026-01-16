@@ -13,9 +13,9 @@ import {
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
-} from "../../../../shared/constants.mjs";
+} from "../../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../lib/shared-input.js";
 import { NUM_STEPS, MoveKnobLEDs, CONDITIONS } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, getCurrentPattern } from '../../lib/helpers.js';

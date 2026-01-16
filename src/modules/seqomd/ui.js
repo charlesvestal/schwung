@@ -9,13 +9,13 @@ import * as os from 'os';
 import {
     MidiNoteOn, MidiNoteOff, MidiCC,
     MovePlay, MoveRec, MoveShift, MoveMenu, MoveBack, MoveCopy
-} from "../../shared/constants.mjs";
+} from "./lib/shared-constants.js";
 
 import {
     isNoiseMessage, isCapacitiveTouchMessage,
     setButtonLED, clearLEDCache,
     setLedsEnabled, getLedsEnabled
-} from "../../shared/input_filter.mjs";
+} from "./lib/shared-input.js";
 
 /* Import lib modules */
 import { NUM_STEPS } from './lib/constants.js';

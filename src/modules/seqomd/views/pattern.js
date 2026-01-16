@@ -9,9 +9,9 @@ import {
     MoveSteps, MovePads, MoveTracks, MoveMainKnob, MoveCopy,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI
-} from "../../../shared/constants.mjs";
+} from "../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../lib/shared-input.js";
 
 import {
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, MASTER_CC_CHANNEL,

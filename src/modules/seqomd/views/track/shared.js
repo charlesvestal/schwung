@@ -9,9 +9,9 @@
 import {
     Black, White, LightGrey, Navy, Cyan, Purple, BrightGreen, BrightRed,
     MoveSteps, MoveTracks, MoveLoop, MoveCapture, MovePlay, MoveRec, MoveBack
-} from "../../../../shared/constants.mjs";
+} from "../../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../lib/shared-input.js";
 
 import {
     NUM_TRACKS, NUM_STEPS,

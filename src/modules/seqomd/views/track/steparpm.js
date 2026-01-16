@@ -15,9 +15,9 @@ import {
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6,
     MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob4Touch, MoveKnob5Touch, MoveKnob6Touch
-} from "../../../../shared/constants.mjs";
+} from "../../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../lib/shared-input.js";
 import {
     NUM_STEPS, MoveKnobLEDs, TRACK_COLORS,
     ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, ARP_LAYERS, getRotatedPlaySteps

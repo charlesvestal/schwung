@@ -13,9 +13,9 @@ import {
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveStep5UI
-} from "../../../../shared/constants.mjs";
+} from "../../lib/shared-constants.js";
 
-import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
+import { setLED, setButtonLED } from "../../lib/shared-input.js";
 import { NUM_STEPS, MoveKnobLEDs, SPEED_OPTIONS } from '../../lib/constants.js';
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, clearStepLEDs, clearKnobLEDs, clearTrackButtonLEDs, updateStandardTransportLEDs, handleJogWheelTrackParam } from '../../lib/helpers.js';
