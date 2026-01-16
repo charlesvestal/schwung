@@ -54,48 +54,101 @@ export function getPadIndex(noteNumber) {
 
 /* ============ LED Control ============ */
 
-/* Global flag to enable/disable LED updates (for performance testing) */
-let g_leds_enabled = true;
-
-/* LED state cache - only send when color changes */
-let g_led_cache = new Array(128).fill(-1);      /* Notes (pads, steps) */
-let g_button_cache = new Array(128).fill(-1);   /* CCs (buttons, knobs) */
-
-export function setLedsEnabled(enabled) {
-    g_leds_enabled = enabled;
-}
-
-export function getLedsEnabled() {
-    return g_leds_enabled;
-}
-
-/* Clear LED cache - call when changing views to force full refresh */
-export function clearLEDCache() {
-    g_led_cache.fill(-1);
-    g_button_cache.fill(-1);
-}
+const ledCache = new Array(128).fill(-1);
+const buttonCache = new Array(128).fill(-1);
 
 /* Set LED color for a note (pad, step, etc.) */
-export function setLED(note, color) {
-    if (!g_leds_enabled) return;
-    if (g_led_cache[note] === color) return;  /* No change, skip */
-    g_led_cache[note] = color;
+export function setLED(note, color, force = false) {
+    if (!force && ledCache[note] === color) return;
+    ledCache[note] = color;
     move_midi_internal_send([0x09, MidiNoteOn, note, color]);
 }
 
 /* Set LED color via CC (for buttons) */
-export function setButtonLED(cc, color) {
-    if (!g_leds_enabled) return;
-    if (g_button_cache[cc] === color) return;  /* No change, skip */
-    g_button_cache[cc] = color;
+export function setButtonLED(cc, color, force = false) {
+    if (!force && buttonCache[cc] === color) return;
+    buttonCache[cc] = color;
     move_midi_internal_send([0x0b, MidiCC, cc, color]);
 }
 
 /* Clear all LEDs */
 export function clearAllLEDs() {
-    clearLEDCache();  /* Reset cache so all sends go through */
-    for (let i = 0; i < 127; i++) {
-        setLED(i, 0);
-        setButtonLED(i, 0);
+    for (let i = 0; i < 128; i++) {
+        ledCache[i] = -1;
+        buttonCache[i] = -1;
     }
+    for (let i = 0; i < 127; i++) {
+        setLED(i, 0, true);
+        setButtonLED(i, 0, true);
+    }
+}
+
+/* ============ Encoder Delta Decoding ============ */
+
+/**
+ * Decode encoder/jog delta from CC value
+ * @param {number} value - CC value (1-63 = clockwise, 65-127 = counter-clockwise)
+ * @returns {number} Delta (-1, 0, or 1)
+ */
+export function decodeDelta(value) {
+    if (value === 0) return 0;
+    if (value >= 1 && value <= 63) return 1;
+    if (value >= 65 && value <= 127) return -1;
+    return 0;
+}
+
+/* ============ Encoder Acceleration ============ */
+
+/* Acceleration settings */
+const ACCEL_MIN_STEP = 1;
+const ACCEL_MAX_STEP = 10;
+const ACCEL_SLOW_THRESHOLD = 150;  /* ms - slower than this = min step */
+const ACCEL_FAST_THRESHOLD = 25;   /* ms - faster than this = max step */
+
+/* Track last event time per encoder */
+const encoderLastTime = new Map();
+
+/**
+ * Decode encoder delta with acceleration applied
+ * Slow turns = fine control (step 1), fast turns = coarse control (larger steps)
+ * @param {number} value - CC value from encoder
+ * @param {number} encoderId - Encoder identifier (CC number or index)
+ * @returns {number} Accelerated delta (signed, preserves direction)
+ */
+export function decodeAcceleratedDelta(value, encoderId = 0) {
+    const rawDelta = decodeDelta(value);
+    if (rawDelta === 0) return 0;
+
+    const now = Date.now();
+    const lastTime = encoderLastTime.get(encoderId) || 0;
+    const elapsed = now - lastTime;
+    encoderLastTime.set(encoderId, now);
+
+    /* Calculate step based on speed */
+    let step;
+    if (elapsed <= 0 || elapsed >= ACCEL_SLOW_THRESHOLD) {
+        step = ACCEL_MIN_STEP;
+    } else if (elapsed <= ACCEL_FAST_THRESHOLD) {
+        step = ACCEL_MAX_STEP;
+    } else {
+        const speedRatio = (ACCEL_SLOW_THRESHOLD - elapsed) / (ACCEL_SLOW_THRESHOLD - ACCEL_FAST_THRESHOLD);
+        step = Math.round(ACCEL_MIN_STEP + speedRatio * (ACCEL_MAX_STEP - ACCEL_MIN_STEP));
+    }
+
+    return rawDelta * step;
+}
+
+/**
+ * Reset acceleration tracking for an encoder
+ * @param {number} encoderId - Encoder identifier
+ */
+export function resetEncoderAccel(encoderId) {
+    encoderLastTime.delete(encoderId);
+}
+
+/**
+ * Reset all encoder acceleration tracking
+ */
+export function resetAllEncoderAccel() {
+    encoderLastTime.clear();
 }

@@ -1,0 +1,73 @@
+# GitHub Actions workflow for releasing Move Anything external modules
+#
+# Copy this file to .github/workflows/release.yml in your module repository.
+# Customize MODULE_ID to match your module's ID in module.json.
+#
+# Usage:
+#   1. Make changes to your module
+#   2. Update version in src/module.json
+#   3. Commit and tag: git tag v0.2.0 && git push --tags
+#   4. GitHub Actions will build and create a release with the tarball
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  # Change this to your module's ID (must match module.json)
+  MODULE_ID: your-module-id
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          if [ -f "scripts/Dockerfile" ]; then
+            docker build -t move-anything-builder -f scripts/Dockerfile .
+          elif [ -f "Dockerfile" ]; then
+            docker build -t move-anything-builder .
+          else
+            echo "No Dockerfile found, using default cross-compiler"
+            # Fall back to a simple ARM cross-compiler
+            docker run --rm -v $(pwd):/build -w /build \
+              ghcr.io/charlesvestal/move-anything-builder:latest \
+              ./scripts/build.sh
+            exit 0
+          fi
+
+      - name: Build module
+        run: |
+          docker run --rm \
+            -v $(pwd):/build \
+            -w /build \
+            move-anything-builder \
+            ./scripts/build.sh
+
+      - name: Create tarball
+        run: |
+          cd dist
+          tar -czvf ../${{ env.MODULE_ID }}-module.tar.gz ${{ env.MODULE_ID }}/
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.version.outputs.version }}
+          files: ${{ env.MODULE_ID }}-module.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

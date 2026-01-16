@@ -583,7 +583,6 @@ export const MoveDelete = 119;
 // Groupings
 export const MovePads = Array.from({length: 32}, (x, i) => i + 68);
 export const MoveSteps = Array.from({length: 16}, (x, i) => i + 16);
-export const MoveTracks = [MoveRow4, MoveRow3, MoveRow2, MoveRow1];  // Track buttons 1-4
 export const MoveCCButtons = [
   MoveMainButton,
   MoveBack,
@@ -645,3 +644,10 @@ export const Blink16th = 0x0C;
 export const Blink8th = 0x0D;
 export const Blink4th = 0x0E;
 export const Blink2th = 0x0F;
+
+// White LED Brightness (for Menu, Back, Capture, Shift, arrows, etc.)
+// These buttons have white LEDs, not RGB - use brightness values 0-127
+export const WhiteLedOff = 0x00;
+export const WhiteLedDim = 0x10;      // 16 - subtle
+export const WhiteLedMedium = 0x40;   // 64 - medium
+export const WhiteLedBright = 0x7c;   // 124 - bright (max visible)

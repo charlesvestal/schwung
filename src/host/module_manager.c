@@ -164,6 +164,12 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     json_get_bool(json, "midi_in", &info->cap_midi_in);
     json_get_bool(json, "midi_out", &info->cap_midi_out);
     json_get_bool(json, "aftertouch", &info->cap_aftertouch);
+    json_get_bool(json, "claims_master_knob", &info->cap_claims_master_knob);
+    json_get_bool(json, "raw_midi", &info->cap_raw_midi);
+    json_get_bool(json, "raw_ui", &info->cap_raw_ui);
+
+    /* Component type for categorization (sound_generator, audio_fx, midi_fx, utility, etc.) */
+    json_get_string(json, "component_type", info->component_type, sizeof(info->component_type));
 
     /* Defaults */
     json_get_defaults(json, info->defaults_json, sizeof(info->defaults_json));
@@ -181,6 +187,7 @@ void mm_init(module_manager_t *mm, uint8_t *mapped_memory,
     mm->current_module_index = -1;
     mm->dsp_handle = NULL;
     mm->plugin = NULL;
+    mm->host_volume = 100;  /* Default to full volume */
 
     /* Initialize host API */
     mm->host_api.api_version = MOVE_PLUGIN_API_VERSION;
@@ -194,21 +201,20 @@ void mm_init(module_manager_t *mm, uint8_t *mapped_memory,
     mm->host_api.midi_send_external = midi_send_external;
 }
 
-int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
-    mm->module_count = 0;
-
-    DIR *dir = opendir(modules_dir);
+/* Helper to scan a single directory for modules */
+static int scan_directory(module_manager_t *mm, const char *dir_path) {
+    DIR *dir = opendir(dir_path);
     if (!dir) {
-        printf("mm: cannot open modules directory: %s\n", modules_dir);
-        return -1;
+        return 0;  /* Not an error - directory may not exist */
     }
 
+    int found = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL && mm->module_count < MAX_MODULES) {
         if (entry->d_name[0] == '.') continue;
 
         char module_path[MAX_PATH_LEN];
-        snprintf(module_path, sizeof(module_path), "%s/%s", modules_dir, entry->d_name);
+        snprintf(module_path, sizeof(module_path), "%s/%s", dir_path, entry->d_name);
 
         struct stat st;
         if (stat(module_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
@@ -220,10 +226,28 @@ int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
 
         if (parse_module_json(module_path, &mm->modules[mm->module_count]) == 0) {
             mm->module_count++;
+            found++;
         }
     }
 
     closedir(dir);
+    return found;
+}
+
+int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
+    mm->module_count = 0;
+
+    /* Scan main modules directory */
+    int main_count = scan_directory(mm, modules_dir);
+    if (main_count < 0) {
+        printf("mm: cannot open modules directory: %s\n", modules_dir);
+    }
+
+    /* Also scan chain/audio_fx for built-in audio effects */
+    char audio_fx_dir[MAX_PATH_LEN];
+    snprintf(audio_fx_dir, sizeof(audio_fx_dir), "%s/chain/audio_fx", modules_dir);
+    scan_directory(mm, audio_fx_dir);
+
     printf("mm: found %d modules\n", mm->module_count);
     return mm->module_count;
 }
@@ -257,10 +281,11 @@ int mm_load_module(module_manager_t *mm, int index) {
 
     module_info_t *info = &mm->modules[index];
 
-    /* Check API version */
-    if (info->api_version != MOVE_PLUGIN_API_VERSION) {
-        printf("mm: module '%s' requires API v%d, host has v%d\n",
-               info->id, info->api_version, MOVE_PLUGIN_API_VERSION);
+    /* Check API version - support both v1 and v2 */
+    if (info->api_version != MOVE_PLUGIN_API_VERSION &&
+        info->api_version != MOVE_PLUGIN_API_VERSION_2) {
+        printf("mm: module '%s' requires API v%d, host supports v%d and v%d\n",
+               info->id, info->api_version, MOVE_PLUGIN_API_VERSION, MOVE_PLUGIN_API_VERSION_2);
         return -1;
     }
 
@@ -277,45 +302,68 @@ int mm_load_module(module_manager_t *mm, int index) {
             return -1;
         }
 
-        /* Get init function */
-        move_plugin_init_v1_fn init_fn = (move_plugin_init_v1_fn)dlsym(mm->dsp_handle, MOVE_PLUGIN_INIT_SYMBOL);
-        if (!init_fn) {
-            printf("mm: dlsym failed for %s: %s\n", MOVE_PLUGIN_INIT_SYMBOL, dlerror());
-            dlclose(mm->dsp_handle);
-            mm->dsp_handle = NULL;
-            return -1;
+        const char *defaults = info->defaults_json[0] ? info->defaults_json : NULL;
+        int plugin_loaded = 0;
+
+        /* Try v2 API first */
+        move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(mm->dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
+        if (init_v2) {
+            mm->plugin_v2 = init_v2(&mm->host_api);
+            if (mm->plugin_v2 && mm->plugin_v2->api_version == MOVE_PLUGIN_API_VERSION_2) {
+                mm->plugin_instance = mm->plugin_v2->create_instance(info->module_dir, defaults);
+                if (mm->plugin_instance) {
+                    printf("mm: loaded v2 plugin for '%s'\n", info->id);
+                    plugin_loaded = 1;
+                } else {
+                    printf("mm: v2 create_instance failed, trying v1\n");
+                    mm->plugin_v2 = NULL;
+                }
+            } else {
+                mm->plugin_v2 = NULL;
+            }
         }
 
-        /* Initialize plugin */
-        mm->plugin = init_fn(&mm->host_api);
-        if (!mm->plugin) {
-            printf("mm: plugin init returned NULL\n");
-            dlclose(mm->dsp_handle);
-            mm->dsp_handle = NULL;
-            return -1;
-        }
+        /* Fall back to v1 API */
+        if (!plugin_loaded) {
+            move_plugin_init_v1_fn init_fn = (move_plugin_init_v1_fn)dlsym(mm->dsp_handle, MOVE_PLUGIN_INIT_SYMBOL);
+            if (!init_fn) {
+                printf("mm: dlsym failed for %s: %s\n", MOVE_PLUGIN_INIT_SYMBOL, dlerror());
+                dlclose(mm->dsp_handle);
+                mm->dsp_handle = NULL;
+                return -1;
+            }
 
-        /* Verify plugin API version */
-        if (mm->plugin->api_version != MOVE_PLUGIN_API_VERSION) {
-            printf("mm: plugin reports API v%d, expected v%d\n",
-                   mm->plugin->api_version, MOVE_PLUGIN_API_VERSION);
-            dlclose(mm->dsp_handle);
-            mm->dsp_handle = NULL;
-            mm->plugin = NULL;
-            return -1;
-        }
+            /* Initialize plugin */
+            mm->plugin = init_fn(&mm->host_api);
+            if (!mm->plugin) {
+                printf("mm: plugin init returned NULL\n");
+                dlclose(mm->dsp_handle);
+                mm->dsp_handle = NULL;
+                return -1;
+            }
 
-        /* Call on_load */
-        if (mm->plugin->on_load) {
-            const char *defaults = info->defaults_json[0] ? info->defaults_json : NULL;
-            int ret = mm->plugin->on_load(info->module_dir, defaults);
-            if (ret != 0) {
-                printf("mm: plugin on_load failed with %d\n", ret);
+            /* Verify plugin API version */
+            if (mm->plugin->api_version != MOVE_PLUGIN_API_VERSION) {
+                printf("mm: plugin reports API v%d, expected v%d\n",
+                       mm->plugin->api_version, MOVE_PLUGIN_API_VERSION);
                 dlclose(mm->dsp_handle);
                 mm->dsp_handle = NULL;
                 mm->plugin = NULL;
                 return -1;
             }
+
+            /* Call on_load */
+            if (mm->plugin->on_load) {
+                int ret = mm->plugin->on_load(info->module_dir, defaults);
+                if (ret != 0) {
+                    printf("mm: plugin on_load failed with %d\n", ret);
+                    dlclose(mm->dsp_handle);
+                    mm->dsp_handle = NULL;
+                    mm->plugin = NULL;
+                    return -1;
+                }
+            }
+            printf("mm: loaded v1 plugin for '%s'\n", info->id);
         }
     } else {
         printf("mm: no DSP plugin for module '%s' (UI-only)\n", info->id);
@@ -336,16 +384,26 @@ int mm_load_module_by_id(module_manager_t *mm, const char *module_id) {
 }
 
 void mm_unload_module(module_manager_t *mm) {
+    /* Clean up v2 plugin */
+    if (mm->plugin_v2 && mm->plugin_instance) {
+        if (mm->plugin_v2->destroy_instance) {
+            mm->plugin_v2->destroy_instance(mm->plugin_instance);
+        }
+        mm->plugin_instance = NULL;
+        mm->plugin_v2 = NULL;
+    }
+
+    /* Clean up v1 plugin */
     if (mm->plugin && mm->plugin->on_unload) {
         mm->plugin->on_unload();
     }
+    mm->plugin = NULL;
 
     if (mm->dsp_handle) {
         dlclose(mm->dsp_handle);
         mm->dsp_handle = NULL;
     }
 
-    mm->plugin = NULL;
     mm->current_module_index = -1;
 }
 
@@ -359,30 +417,45 @@ const module_info_t* mm_get_current_module(module_manager_t *mm) {
 }
 
 void mm_on_midi(module_manager_t *mm, const uint8_t *msg, int len, int source) {
-    if (mm->plugin && mm->plugin->on_midi) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->on_midi) {
+        mm->plugin_v2->on_midi(mm->plugin_instance, msg, len, source);
+    } else if (mm->plugin && mm->plugin->on_midi) {
         mm->plugin->on_midi(msg, len, source);
     }
 }
 
 void mm_set_param(module_manager_t *mm, const char *key, const char *val) {
-    if (mm->plugin && mm->plugin->set_param) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->set_param) {
+        mm->plugin_v2->set_param(mm->plugin_instance, key, val);
+    } else if (mm->plugin && mm->plugin->set_param) {
         mm->plugin->set_param(key, val);
     }
 }
 
 int mm_get_param(module_manager_t *mm, const char *key, char *buf, int buf_len) {
-    if (mm->plugin && mm->plugin->get_param) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->get_param) {
+        return mm->plugin_v2->get_param(mm->plugin_instance, key, buf, buf_len);
+    } else if (mm->plugin && mm->plugin->get_param) {
         return mm->plugin->get_param(key, buf, buf_len);
     }
     return -1;
 }
 
 void mm_render_block(module_manager_t *mm) {
-    if (!mm->plugin || !mm->plugin->render_block) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->render_block) {
+        mm->plugin_v2->render_block(mm->plugin_instance, mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
+    } else if (mm->plugin && mm->plugin->render_block) {
+        mm->plugin->render_block(mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
+    } else {
         /* No plugin or no render function - output silence */
         memset(mm->audio_out_buffer, 0, sizeof(mm->audio_out_buffer));
-    } else {
-        mm->plugin->render_block(mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
+    }
+
+    /* Apply host volume if not at 100% */
+    if (mm->host_volume < 100) {
+        for (int i = 0; i < MOVE_FRAMES_PER_BLOCK * 2; i++) {
+            mm->audio_out_buffer[i] = (int16_t)((mm->audio_out_buffer[i] * mm->host_volume) / 100);
+        }
     }
 
     /* Write to mailbox */
@@ -390,6 +463,31 @@ void mm_render_block(module_manager_t *mm) {
         int16_t *dst = (int16_t *)(mm->host_api.mapped_memory + MOVE_AUDIO_OUT_OFFSET);
         memcpy(dst, mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
     }
+}
+
+void mm_set_host_volume(module_manager_t *mm, int volume) {
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    mm->host_volume = volume;
+}
+
+int mm_get_host_volume(module_manager_t *mm) {
+    return mm->host_volume;
+}
+
+int mm_module_claims_master_knob(module_manager_t *mm) {
+    if (mm->current_module_index < 0) return 0;
+    return mm->modules[mm->current_module_index].cap_claims_master_knob;
+}
+
+int mm_module_wants_raw_midi(module_manager_t *mm) {
+    if (mm->current_module_index < 0) return 0;
+    return mm->modules[mm->current_module_index].cap_raw_midi;
+}
+
+int mm_module_wants_raw_ui(module_manager_t *mm) {
+    if (mm->current_module_index < 0) return 0;
+    return mm->modules[mm->current_module_index].cap_raw_ui;
 }
 
 void mm_destroy(module_manager_t *mm) {

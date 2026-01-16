@@ -29,6 +29,10 @@ typedef struct module_info {
     int cap_midi_in;
     int cap_midi_out;
     int cap_aftertouch;
+    int cap_claims_master_knob;  /* If true, module handles volume knob */
+    int cap_raw_midi;            /* If true, skip host MIDI transforms */
+    int cap_raw_ui;              /* If true, module owns UI input handling */
+    char component_type[32];     /* Category: sound_generator, audio_fx, midi_fx, utility, etc. */
 
     /* Defaults JSON string (for passing to plugin) */
     char defaults_json[1024];
@@ -43,13 +47,18 @@ typedef struct module_manager {
     /* Currently loaded module */
     int current_module_index;  /* -1 if none */
     void *dsp_handle;          /* dlopen handle */
-    plugin_api_v1_t *plugin;   /* plugin API returned by init */
+    plugin_api_v1_t *plugin;   /* plugin API returned by init (v1) */
+    plugin_api_v2_t *plugin_v2; /* plugin API for v2 plugins */
+    void *plugin_instance;      /* v2 instance pointer */
 
     /* Host API instance (passed to plugins) */
     host_api_v1_t host_api;
 
     /* Audio output buffer */
     int16_t audio_out_buffer[MOVE_FRAMES_PER_BLOCK * 2];
+
+    /* Host-level volume (0-100, default 100) */
+    int host_volume;
 
 } module_manager_t;
 
@@ -96,6 +105,19 @@ int mm_get_param(module_manager_t *mm, const char *key, char *buf, int buf_len);
 
 /* Render audio block from current module, writes to mailbox */
 void mm_render_block(module_manager_t *mm);
+
+/* Host volume control (0-100) */
+void mm_set_host_volume(module_manager_t *mm, int volume);
+int mm_get_host_volume(module_manager_t *mm);
+
+/* Check if current module claims the master knob */
+int mm_module_claims_master_knob(module_manager_t *mm);
+
+/* Check if current module wants raw MIDI (skip transforms) */
+int mm_module_wants_raw_midi(module_manager_t *mm);
+
+/* Check if current module wants raw UI input handling */
+int mm_module_wants_raw_ui(module_manager_t *mm);
 
 /* Cleanup */
 void mm_destroy(module_manager_t *mm);

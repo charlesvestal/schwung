@@ -60,18 +60,78 @@ globalThis.tick = function() {
 }
 ```
 
+## Menu Layout Helpers
+
+For list-based screens (title/list/footer), import the shared menu layout helpers:
+
+```javascript
+import {
+    drawMenuHeader,
+    drawMenuList,
+    drawMenuFooter,
+    menuLayoutDefaults
+} from '../../shared/menu_layout.mjs';
+```
+
+## Encoder Utilities
+
+### Delta Decoding
+
+```javascript
+import { decodeDelta, decodeAcceleratedDelta } from '../../shared/input_filter.mjs';
+
+// Decode jog wheel CC value to simple ±1 delta
+const delta = decodeDelta(value);  // -1, 0, or 1
+
+// Decode with velocity-sensitive acceleration (for value editing)
+const accelDelta = decodeAcceleratedDelta(value, encoderId);  // -10 to +10
+```
+
+**Acceleration behavior:**
+- Slow turns (>150ms): step = 1
+- Fast turns (<25ms): step = 10
+- In between: interpolated
+
+### LED Control
+
+```javascript
+import { setLED, setButtonLED, clearAllLEDs } from '../../shared/input_filter.mjs';
+
+setLED(note, color);        // Set pad/step LED (uses note messages)
+setButtonLED(cc, color);    // Set button LED (uses CC messages)
+clearAllLEDs();             // Clear all LEDs
+```
+
+LED values are cached to avoid redundant MIDI sends.
+
 ## Host Functions (Module Management)
 
 ```javascript
 host_list_modules()           // Returns [{id, name, version}, ...]
 host_load_module(id_or_index) // Load a module by ID or index
+host_load_ui_module(path)     // Load a UI module file (for chain UI shims)
 host_unload_module()          // Unload current module
+host_return_to_menu()         // Unload module and return to host menu UI
 host_module_set_param(k, v)   // Set DSP parameter
 host_module_get_param(k)      // Get DSP parameter
+host_module_send_midi(msg, source) // Send MIDI into current DSP module
 host_is_module_loaded()       // Returns bool
 host_get_current_module()     // Returns {id, name, version, ui_script} or null
 host_rescan_modules()         // Rescan modules directory, returns count
+
+// Host volume control
+host_get_volume()             // Returns volume (0-100)
+host_set_volume(vol)          // Set host output volume (0-100)
+
+// Host settings
+host_get_setting(key)         // Get setting value (velocity_curve, aftertouch_enabled, aftertouch_deadzone)
+host_set_setting(key, val)    // Set setting value
+host_save_settings()          // Save settings to disk
+host_reload_settings()        // Reload settings from disk
 ```
+
+`host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
+`host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
 
 ## Utility Functions
 
@@ -98,13 +158,14 @@ console.log(msg)              // Log to /data/UserData/move-anything/move-anythi
 | 14  | Jog wheel rotate  | 1 = CW, 127 = CCW              |
 | 49  | Shift             | 127 = held                     |
 | 50  | Menu              |                                |
+| 51  | Back              |                                |
 | 52  | Capture           |                                |
 | 54  | Down arrow        |                                |
 | 55  | Up arrow          |                                |
 | 62  | Left arrow        |                                |
 | 63  | Right arrow       |                                |
 | 71-78 | Knob LEDs       | 8 knobs                        |
-| 79  | Master volume LED |                                |
+| 79  | Master volume     | Relative encoder (1-63 CW, 65-127 CCW) |
 | 85  | Play              |                                |
 | 86  | Record            |                                |
 | 88  | Mute              |                                |
@@ -114,6 +175,62 @@ Notes 0-9 are generated when knobs are touched. Filter these if you don't need t
 ```javascript
 if (data[1] < 10) return;  // Ignore capacitive touch
 ```
+When `raw_midi` is false, the host filters knob-touch notes from internal MIDI before modules receive them.
+
+## Host Volume Control
+
+The volume knob (CC 79) controls host-level output volume by default:
+- Volume is applied after DSP rendering, before audio output
+- Range: 0-100 (default: 100)
+- Displayed in host menu UI
+- Use `host_get_volume()` and `host_set_volume()` to read/write from JS
+
+Modules can claim the volume knob for their own use by setting `"claims_master_knob": true` in module.json. When claimed, the host passes CC 79 through to the module instead of adjusting volume.
+
+## Host Input Settings
+
+The host provides MIDI input processing that can be configured from the Settings menu:
+
+### Velocity Curve
+
+Applied to Note On messages before forwarding to modules:
+
+| Curve | Behavior |
+|-------|----------|
+| `linear` | No transform (default) |
+| `soft` | Boost low velocities: `64 + (velocity / 2)` |
+| `hard` | Exponential curve: `(velocity * velocity) / 127` |
+| `full` | Always 127 |
+
+### Aftertouch
+
+- **Enabled/Disabled**: When disabled, aftertouch messages are dropped
+- **Dead Zone (0-50)**: Values below threshold become 0, reducing accidental triggers
+
+### Settings Access
+
+```javascript
+// Get current velocity curve
+let curve = host_get_setting('velocity_curve');  // 'linear', 'soft', 'hard', 'full'
+
+// Get aftertouch settings
+let atEnabled = host_get_setting('aftertouch_enabled');  // 0 or 1
+let atDeadzone = host_get_setting('aftertouch_deadzone');  // 0-50
+
+// Modify settings
+host_set_setting('velocity_curve', 'hard');
+host_set_setting('aftertouch_deadzone', 15);
+host_save_settings();  // Persist to disk
+```
+
+### Raw MIDI Mode
+
+Modules that need unprocessed MIDI input can opt out of transforms by setting `"raw_midi": true` in module.json (this also disables the host knob-touch filter).
+
+### Raw UI Mode
+
+Modules that want full control of UI input can opt out of host Back-to-menu handling by setting `"raw_ui": true` in module.json.
+Some modules (like Signal Chain) also use `raw_midi` to bypass their own MIDI filters (for example, allowing knob-touch notes through).
 
 ## Audio (DSP Modules Only)
 
@@ -122,6 +239,18 @@ Audio is handled by native DSP plugins (`.so` files). See [MODULES.md](MODULES.m
 - Sample rate: 44100 Hz
 - Block size: 128 frames
 - Format: Stereo interleaved int16 (L0, R0, L1, R1, ...)
+
+### Audio Input
+
+Native plugins can access audio input through the host API:
+
+```c
+// In your plugin's render_block function:
+int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
+// audio_in contains 128 stereo samples in interleaved format
+```
+
+Note: Audio input routing depends on the last selected input in the stock Move interface before launching Move Anything.
 
 ## LED Colors
 

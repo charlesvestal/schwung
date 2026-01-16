@@ -1,4 +1,5 @@
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -12,6 +13,7 @@
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
+#include "host/plugin_api_v1.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "lib/stb_image.h"
@@ -20,26 +22,50 @@
 #include "lib/stb_truetype.h"
 
 #include "host/module_manager.h"
+#include "host/settings.h"
 
 int global_fd = -1;
 int global_exit_flag = 0;
 
 /* Host-level input state for system shortcuts */
 int host_shift_held = 0;
+int host_transpose = 0;  /* Semitone transpose for internal MIDI (-48 to +48) */
 
 /* Move MIDI CC constants for system shortcuts */
 #define CC_SHIFT 49
 #define CC_JOG_CLICK 3
+#define CC_BACK 51
+#define CC_MASTER_KNOB 79
+#define CC_UP 55
+#define CC_DOWN 54
 
 /* Module manager instance */
 module_manager_t g_module_manager;
 int g_module_manager_initialized = 0;
 
+/* Host settings instance */
+host_settings_t g_settings;
+
+/* MIDI clock state */
+#define SAMPLE_RATE 44100
+#define FRAMES_PER_BLOCK 128
+float g_clock_accumulator = 0.0f;
+int g_clock_started = 0;
+
 /* Flag to refresh JS function references after module UI load */
 int g_js_functions_need_refresh = 0;
+int g_reload_menu_ui = 0;
+char g_menu_script_path[256] = "";
+int g_silence_blocks = 0;
 
 /* Default modules directory */
 #define DEFAULT_MODULES_DIR "/data/UserData/move-anything/modules"
+
+/* Base directory for path validation */
+#define BASE_DIR "/data/UserData/move-anything"
+
+/* Bundled curl binary path */
+#define CURL_PATH "/data/UserData/move-anything/bin/curl"
 
 typedef struct FontChar {
   unsigned char* data;
@@ -65,6 +91,15 @@ unsigned char screen_buffer[128*64];
 int screen_dirty = 0;
 int frame = 0;
 
+/* Display refresh rate limiting */
+int display_pending = 0;           /* Display has changes waiting to be flushed */
+int display_countdown = 0;         /* Countdown to next allowed refresh */
+int display_refresh_interval = 30; /* Ticks between refreshes (~11Hz at 344Hz loop) */
+int display_force_flush = 0;       /* Force immediate flush */
+
+/* Forward declarations */
+void push_screen(int sync);
+
 struct SPI_Memory
 {
     unsigned char outgoing_midi[256];
@@ -78,6 +113,15 @@ struct SPI_Memory
 unsigned char *mapped_memory;
 
 int outgoing_midi_counter = 0;
+
+#define LED_MAX_UPDATES_PER_TICK 16
+#define LED_QUEUE_SAFE_BYTES 76
+static int pending_note_color[128];
+static uint8_t pending_note_status[128];
+static uint8_t pending_note_cin[128];
+static int pending_cc_color[128];
+static uint8_t pending_cc_status[128];
+static uint8_t pending_cc_cin[128];
 
 struct USB_MIDI_Packet
 {
@@ -164,9 +208,8 @@ static JSValue js_get_int16(JSContext *ctx, JSValueConst this_val, int argc, JSV
 // }
 
 void dirty_screen() {
-  if(screen_dirty == 0) {
-    screen_dirty = 1;
-  }
+  /* Mark that display needs to be pushed */
+  display_pending = 1;
 }
 
 void clear_screen() {
@@ -381,13 +424,14 @@ int glyph_ttf(Font* font, char c, int sx, int sy, int color) {
   unsigned char* bitmap = malloc(w * h);
   stbtt_MakeCodepointBitmap(&font->ttf_info, bitmap, w, h, w, font->ttf_scale, font->ttf_scale, c);
 
-  /* Render with threshold (no anti-aliasing for 1-bit display) */
+  /* Render with threshold (no anti-aliasing for 1-bit display)
+   * Lower threshold (64) captures more of thin font strokes */
   int draw_x = sx + x0;
   int draw_y = sy + font->ttf_ascent + y0;
 
   for (int yi = 0; yi < h; yi++) {
     for (int xi = 0; xi < w; xi++) {
-      if (bitmap[yi * w + xi] > 127) {
+      if (bitmap[yi * w + xi] > 64) {
         set_pixel(draw_x + xi, draw_y + yi, color);
       }
     }
@@ -440,16 +484,66 @@ void print(int sx, int sy, const char* string, int color) {
   }
 }
 
-/* Process host-level MIDI for system shortcuts (Shift+Wheel to exit) */
-/* Returns 1 if message was consumed by host, 0 if should pass to module */
-int process_host_midi(unsigned char midi_0, unsigned char midi_1, unsigned char midi_2) {
-  /* Only handle internal MIDI (cable 0) control changes */
-  if ((midi_0 & 0xF0) != 0xB0) {
-    return 0;  /* Not a CC, pass through */
+/* Process host-level MIDI for system shortcuts and input transforms
+ * Takes pointer to MIDI bytes (status, data1, data2) for in-place modification
+ * Returns 1 if message was consumed by host, 0 if should pass to module */
+int process_host_midi(unsigned char *midi, int apply_transforms) {
+  unsigned char status = midi[0];
+  unsigned char data1 = midi[1];
+  unsigned char data2 = midi[2];
+  unsigned char msg_type = status & 0xF0;
+
+  /* Apply MIDI transforms unless module wants raw MIDI */
+  if (apply_transforms) {
+    /* Velocity curve for Note On */
+    if (msg_type == 0x90 && data2 > 0) {
+      midi[2] = settings_apply_velocity(&g_settings, data2);
+    }
+
+    /* Aftertouch filter */
+    if (msg_type == 0xA0 || msg_type == 0xD0) {
+      uint8_t at_value = (msg_type == 0xA0) ? data2 : data1;
+      if (!settings_apply_aftertouch(&g_settings, &at_value)) {
+        return 1;  /* Aftertouch disabled, drop message */
+      }
+      /* Update the modified value */
+      if (msg_type == 0xA0) {
+        midi[2] = at_value;
+      } else {
+        midi[1] = at_value;
+      }
+    }
+
+    /* Apply pad layout and transpose for Note On/Off on pad notes (68-99) */
+    if ((msg_type == 0x90 || msg_type == 0x80) && data1 >= 68 && data1 <= 99) {
+      int note = data1;
+
+      /* Apply pad layout remapping */
+      if (g_settings.pad_layout == PAD_LAYOUT_FOURTH) {
+        /* Fourth layout: each row is a fourth (5 semitones) up */
+        int row = (note - 68) / 8;
+        int col = (note - 68) % 8;
+        note = 60 + (row * 5) + col;
+      }
+
+      /* Apply transpose */
+      note += host_transpose;
+
+      /* Clamp to valid MIDI note range */
+      if (note < 0) note = 0;
+      if (note > 127) note = 127;
+
+      midi[1] = (unsigned char)note;
+    }
   }
 
-  unsigned char cc = midi_1;
-  unsigned char value = midi_2;
+  /* Handle CC messages for host shortcuts */
+  if (msg_type != 0xB0) {
+    return 0;  /* Not a CC, pass through (after transforms) */
+  }
+
+  unsigned char cc = data1;
+  unsigned char value = data2;
 
   /* Track Shift key state */
   if (cc == CC_SHIFT) {
@@ -462,6 +556,60 @@ int process_host_midi(unsigned char midi_0, unsigned char midi_1, unsigned char 
     printf("Host: Shift+Wheel detected - exiting\n");
     global_exit_flag = 1;
     return 1;  /* Consumed, don't pass to module */
+  }
+
+  /* Back button: return to menu unless module owns UI */
+  if (cc == CC_BACK && value == 127) {
+    if (g_module_manager_initialized && mm_is_module_loaded(&g_module_manager) &&
+        !mm_module_wants_raw_ui(&g_module_manager)) {
+      g_reload_menu_ui = 1;
+      return 1;
+    }
+  }
+
+  /* Master volume knob - relative encoder */
+  /* Only handle if module doesn't claim the knob */
+  if (cc == CC_MASTER_KNOB && g_module_manager_initialized &&
+      !mm_module_claims_master_knob(&g_module_manager)) {
+    int current_vol = mm_get_host_volume(&g_module_manager);
+    int delta;
+
+    /* Relative encoder: 1-63 = clockwise (increment), 65-127 = counter-clockwise (decrement) */
+    if (value >= 1 && value <= 63) {
+      /* Clockwise - apply acceleration curve */
+      delta = (value > 10) ? 5 : (value > 3) ? 2 : 1;
+    } else if (value >= 65 && value <= 127) {
+      /* Counter-clockwise - apply acceleration curve */
+      int speed = 128 - value;  /* Convert to positive: 127->1, 65->63 */
+      delta = (speed > 10) ? -5 : (speed > 3) ? -2 : -1;
+    } else {
+      delta = 0;
+    }
+
+    if (delta != 0) {
+      int new_vol = current_vol + delta;
+      mm_set_host_volume(&g_module_manager, new_vol);
+      printf("Host: Volume %d -> %d\n", current_vol, mm_get_host_volume(&g_module_manager));
+    }
+    return 1;  /* Consumed by host */
+  }
+
+  /* Shift + Up/Down = Semitone transpose */
+  if (host_shift_held && value == 127) {
+    if (cc == CC_UP) {
+      if (host_transpose < 48) {
+        host_transpose++;
+        printf("Host: Transpose +1 -> %d\n", host_transpose);
+      }
+      return 1;  /* Consumed */
+    }
+    if (cc == CC_DOWN) {
+      if (host_transpose > -48) {
+        host_transpose--;
+        printf("Host: Transpose -1 -> %d\n", host_transpose);
+      }
+      return 1;  /* Consumed */
+    }
   }
 
   return 0;  /* Pass through */
@@ -496,6 +644,69 @@ int queueExternalMidiSend(unsigned char *buffer, int length)
 int queueInternalMidiSend(unsigned char *buffer, int length)
 {
     return queueMidiSend(0, buffer, length);
+}
+
+static void reset_pending_leds(void) {
+    for (int i = 0; i < 128; i++) {
+        pending_note_color[i] = -1;
+        pending_note_status[i] = 0x90;
+        pending_note_cin[i] = 0x09;
+        pending_cc_color[i] = -1;
+        pending_cc_status[i] = 0xB0;
+        pending_cc_cin[i] = 0x0B;
+    }
+}
+
+static void queue_pending_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2) {
+    uint8_t type = status & 0xF0;
+    if (type == 0x90) {
+        pending_note_color[data1] = data2;
+        pending_note_status[data1] = status;
+        pending_note_cin[data1] = cin;
+    } else if (type == 0xB0) {
+        pending_cc_color[data1] = data2;
+        pending_cc_status[data1] = status;
+        pending_cc_cin[data1] = cin;
+    }
+}
+
+static void flush_pending_leds(void) {
+    int available = (LED_QUEUE_SAFE_BYTES - outgoing_midi_counter) / 4;
+    int budget = LED_MAX_UPDATES_PER_TICK;
+    if (available <= 0 || budget <= 0) {
+        return;
+    }
+    if (budget > available) {
+        budget = available;
+    }
+
+    int sent = 0;
+    for (int i = 0; i < 128 && sent < budget; i++) {
+        if (pending_note_color[i] >= 0) {
+            unsigned char msg[4] = {
+                pending_note_cin[i],
+                pending_note_status[i],
+                (unsigned char)i,
+                (unsigned char)pending_note_color[i]
+            };
+            pending_note_color[i] = -1;
+            queueMidiSend(0, msg, 4);
+            sent++;
+        }
+    }
+    for (int i = 0; i < 128 && sent < budget; i++) {
+        if (pending_cc_color[i] >= 0) {
+            unsigned char msg[4] = {
+                pending_cc_cin[i],
+                pending_cc_status[i],
+                (unsigned char)i,
+                (unsigned char)pending_cc_color[i]
+            };
+            pending_cc_color[i] = -1;
+            queueMidiSend(0, msg, 4);
+            sent++;
+        }
+    }
 }
 
 void onExternalMidiMessage(unsigned char midi_message[4])
@@ -903,7 +1114,18 @@ static JSValue js_move_midi_send(int cable, JSContext *ctx, JSValueConst this_va
 
     //printf("]\n");
 
-    // flushMidi();
+    if (cable == 0 && send_buffer_index == 4) {
+        uint8_t cin = js_move_midi_send_buffer[0];
+        uint8_t status = js_move_midi_send_buffer[1];
+        uint8_t data1 = js_move_midi_send_buffer[2];
+        uint8_t data2 = js_move_midi_send_buffer[3];
+        uint8_t type = status & 0xF0;
+        if (type == 0x90 || type == 0xB0) {
+            queue_pending_led(cin, status, data1, data2);
+            return JS_UNDEFINED;
+        }
+    }
+
     queueMidiSend(cable, (unsigned char *)js_move_midi_send_buffer, send_buffer_index);
     return JS_UNDEFINED;
 }
@@ -958,6 +1180,7 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
         JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, info->name));
         JS_SetPropertyStr(ctx, obj, "version", JS_NewString(ctx, info->version));
         JS_SetPropertyStr(ctx, obj, "index", JS_NewInt32(ctx, i));
+        JS_SetPropertyStr(ctx, obj, "component_type", JS_NewString(ctx, info->component_type));
         JS_SetPropertyUint32(ctx, arr, i, obj);
     }
 
@@ -1007,6 +1230,34 @@ static int eval_file_safe(JSContext *ctx, const char *filename, int module)
     return ret;
 }
 
+static int eval_file_no_init(JSContext *ctx, const char *filename, int module)
+{
+    uint8_t *buf;
+    int ret, eval_flags = JS_EVAL_FLAG_STRICT;
+    size_t buf_len;
+
+    printf("Loading module UI script: %s\n", filename);
+    buf = js_load_file(ctx, &buf_len, filename);
+    if (!buf) {
+        printf("Failed to load: %s\n", filename);
+        return -1;
+    }
+
+    if (module)
+        eval_flags |= JS_EVAL_TYPE_MODULE;
+    else
+        eval_flags |= JS_EVAL_TYPE_GLOBAL;
+
+    ret = eval_buf(ctx, buf, buf_len, filename, eval_flags);
+    js_free(ctx, buf);
+
+    if (ret != 0) {
+        printf("Failed to eval: %s\n", filename);
+    }
+
+    return ret;
+}
+
 /* host_load_module(id_or_index) -> bool */
 static JSValue js_host_load_module(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv) {
@@ -1038,12 +1289,40 @@ static JSValue js_host_load_module(JSContext *ctx, JSValueConst this_val,
     return result == 0 ? JS_TRUE : JS_FALSE;
 }
 
+/* host_load_ui_module(path) -> bool */
+static JSValue js_host_load_ui_module(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_FALSE;
+
+    int ret = eval_file_no_init(ctx, path, 1);
+    JS_FreeCString(ctx, path);
+
+    return ret == 0 ? JS_TRUE : JS_FALSE;
+}
+
 /* host_unload_module() */
 static JSValue js_host_unload_module(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     if (g_module_manager_initialized) {
         mm_unload_module(&g_module_manager);
+        g_silence_blocks = 8;
     }
+    return JS_UNDEFINED;
+}
+
+/* host_return_to_menu() */
+static JSValue js_host_return_to_menu(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)ctx;
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    g_reload_menu_ui = 1;
     return JS_UNDEFINED;
 }
 
@@ -1088,6 +1367,60 @@ static JSValue js_host_module_get_param(JSContext *ctx, JSValueConst this_val,
     return JS_NewString(ctx, buf);
 }
 
+/* host_module_send_midi([status, data1, data2], source) */
+static JSValue js_host_module_send_midi(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    if (argc < 1 || !g_module_manager_initialized) {
+        return JS_UNDEFINED;
+    }
+
+    if (!JS_IsArray(ctx, argv[0])) {
+        return JS_UNDEFINED;
+    }
+
+    uint32_t len = 0;
+    JSValue len_val = JS_GetPropertyStr(ctx, argv[0], "length");
+    if (JS_IsException(len_val) || JS_ToUint32(ctx, &len, len_val) < 0) {
+        JS_FreeValue(ctx, len_val);
+        return JS_UNDEFINED;
+    }
+    JS_FreeValue(ctx, len_val);
+    if (len < 3) {
+        return JS_UNDEFINED;
+    }
+
+    uint8_t msg[3];
+    for (uint32_t i = 0; i < 3; i++) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[0], i);
+        int32_t val = 0;
+        JS_ToInt32(ctx, &val, v);
+        JS_FreeValue(ctx, v);
+        msg[i] = (uint8_t)val;
+    }
+
+    int source = MOVE_MIDI_SOURCE_INTERNAL;
+    if (argc >= 2) {
+        if (JS_IsNumber(argv[1])) {
+            JS_ToInt32(ctx, &source, argv[1]);
+        } else {
+            const char *src = JS_ToCString(ctx, argv[1]);
+            if (src) {
+                if (strcmp(src, "external") == 0) {
+                    source = MOVE_MIDI_SOURCE_EXTERNAL;
+                } else if (strcmp(src, "host") == 0) {
+                    source = MOVE_MIDI_SOURCE_HOST;
+                } else {
+                    source = MOVE_MIDI_SOURCE_INTERNAL;
+                }
+                JS_FreeCString(ctx, src);
+            }
+        }
+    }
+
+    mm_on_midi(&g_module_manager, msg, 3, source);
+    return JS_UNDEFINED;
+}
+
 /* host_is_module_loaded() -> bool */
 static JSValue js_host_is_module_loaded(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv) {
@@ -1127,6 +1460,434 @@ static JSValue js_host_rescan_modules(JSContext *ctx, JSValueConst this_val,
 
     int count = mm_scan_modules(&g_module_manager, DEFAULT_MODULES_DIR);
     return JS_NewInt32(ctx, count);
+}
+
+/* host_get_volume() -> int (0-100) */
+static JSValue js_host_get_volume(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (!g_module_manager_initialized) {
+        return JS_NewInt32(ctx, 100);
+    }
+    return JS_NewInt32(ctx, mm_get_host_volume(&g_module_manager));
+}
+
+/* host_set_volume(volume) -> void */
+static JSValue js_host_set_volume(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (argc < 1 || !g_module_manager_initialized) {
+        return JS_UNDEFINED;
+    }
+
+    int volume;
+    if (JS_ToInt32(ctx, &volume, argv[0])) {
+        return JS_UNDEFINED;
+    }
+
+    mm_set_host_volume(&g_module_manager, volume);
+    return JS_UNDEFINED;
+}
+
+/* host_get_setting(key) -> string or undefined */
+static JSValue js_host_get_setting(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) {
+        return JS_UNDEFINED;
+    }
+
+    JSValue result = JS_UNDEFINED;
+
+    if (strcmp(key, "velocity_curve") == 0) {
+        result = JS_NewString(ctx, settings_velocity_curve_name(g_settings.velocity_curve));
+    } else if (strcmp(key, "aftertouch_enabled") == 0) {
+        result = JS_NewInt32(ctx, g_settings.aftertouch_enabled);
+    } else if (strcmp(key, "aftertouch_deadzone") == 0) {
+        result = JS_NewInt32(ctx, g_settings.aftertouch_deadzone);
+    } else if (strcmp(key, "pad_layout") == 0) {
+        result = JS_NewString(ctx, settings_pad_layout_name(g_settings.pad_layout));
+    } else if (strcmp(key, "clock_mode") == 0) {
+        const char *mode_names[] = {"off", "internal", "external"};
+        result = JS_NewString(ctx, mode_names[g_settings.clock_mode]);
+    } else if (strcmp(key, "tempo_bpm") == 0) {
+        result = JS_NewInt32(ctx, g_settings.tempo_bpm);
+    }
+
+    JS_FreeCString(ctx, key);
+    return result;
+}
+
+/* host_set_setting(key, value) -> void */
+static JSValue js_host_set_setting(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 2) {
+        return JS_UNDEFINED;
+    }
+
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) {
+        return JS_UNDEFINED;
+    }
+
+    if (strcmp(key, "velocity_curve") == 0) {
+        const char *val = JS_ToCString(ctx, argv[1]);
+        if (val) {
+            g_settings.velocity_curve = settings_parse_velocity_curve(val);
+            JS_FreeCString(ctx, val);
+        }
+    } else if (strcmp(key, "aftertouch_enabled") == 0) {
+        int val;
+        if (!JS_ToInt32(ctx, &val, argv[1])) {
+            g_settings.aftertouch_enabled = val ? 1 : 0;
+        }
+    } else if (strcmp(key, "aftertouch_deadzone") == 0) {
+        int val;
+        if (!JS_ToInt32(ctx, &val, argv[1])) {
+            if (val < 0) val = 0;
+            if (val > 50) val = 50;
+            g_settings.aftertouch_deadzone = val;
+        }
+    } else if (strcmp(key, "pad_layout") == 0) {
+        const char *val = JS_ToCString(ctx, argv[1]);
+        if (val) {
+            g_settings.pad_layout = settings_parse_pad_layout(val);
+            JS_FreeCString(ctx, val);
+        }
+    } else if (strcmp(key, "clock_mode") == 0) {
+        const char *val = JS_ToCString(ctx, argv[1]);
+        if (val) {
+            if (strcmp(val, "off") == 0) g_settings.clock_mode = CLOCK_MODE_OFF;
+            else if (strcmp(val, "internal") == 0) g_settings.clock_mode = CLOCK_MODE_INTERNAL;
+            else if (strcmp(val, "external") == 0) g_settings.clock_mode = CLOCK_MODE_EXTERNAL;
+            JS_FreeCString(ctx, val);
+            /* Reset clock state when mode changes */
+            g_clock_started = 0;
+            g_clock_accumulator = 0.0f;
+        }
+    } else if (strcmp(key, "tempo_bpm") == 0) {
+        int val;
+        if (!JS_ToInt32(ctx, &val, argv[1])) {
+            if (val < 20) val = 20;
+            if (val > 300) val = 300;
+            g_settings.tempo_bpm = val;
+        }
+    }
+
+    JS_FreeCString(ctx, key);
+    return JS_UNDEFINED;
+}
+
+/* host_save_settings() -> int (0 success, -1 error) */
+static JSValue js_host_save_settings(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    int result = settings_save(&g_settings, SETTINGS_PATH);
+    return JS_NewInt32(ctx, result);
+}
+
+/* host_reload_settings() -> void */
+static JSValue js_host_reload_settings(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    settings_load(&g_settings, SETTINGS_PATH);
+    return JS_UNDEFINED;
+}
+
+/* host_set_refresh_rate(hz) - set display refresh rate (1-60 Hz) */
+static JSValue js_host_set_refresh_rate(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    int hz;
+    if (JS_ToInt32(ctx, &hz, argv[0])) {
+        return JS_UNDEFINED;
+    }
+
+    /* Clamp to reasonable range */
+    if (hz < 1) hz = 1;
+    if (hz > 60) hz = 60;
+
+    /* Convert Hz to tick interval (assuming ~344 ticks/sec from audio block rate) */
+    display_refresh_interval = 344 / hz;
+    if (display_refresh_interval < 1) display_refresh_interval = 1;
+
+    /* Reset countdown so new rate takes effect immediately */
+    display_countdown = 0;
+
+    return JS_UNDEFINED;
+}
+
+/* host_get_refresh_rate() -> current refresh rate in Hz */
+static JSValue js_host_get_refresh_rate(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    int hz = 344 / display_refresh_interval;
+    return JS_NewInt32(ctx, hz);
+}
+
+/* host_flush_display() - force immediate display update */
+static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    /* Synchronously push all 6 display slices */
+    for (int sync = 1; sync <= 6; sync++) {
+        push_screen(sync);
+        /* Trigger hardware to read the slice */
+        if (global_fd >= 0) {
+            ioctl(global_fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+        }
+        /* Delay to let hardware process each slice */
+        struct timespec ts = { 0, 3000000 };  /* 3ms per slice */
+        nanosleep(&ts, NULL);
+    }
+    /* Extra delay after full flush to ensure display is updated */
+    struct timespec final_delay = { 0, 50000000 };  /* 50ms */
+    nanosleep(&final_delay, NULL);
+    display_pending = 0;
+    screen_dirty = 0;
+    return JS_UNDEFINED;
+}
+
+/* Helper: validate path is within BASE_DIR to prevent directory traversal */
+static int validate_path(const char *path) {
+    if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
+    if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
+    if (strstr(path, "..") != NULL) return 0;
+    return 1;
+}
+
+/* host_file_exists(path) -> bool */
+static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    struct stat st;
+    int exists = (stat(path, &st) == 0);
+
+    JS_FreeCString(ctx, path);
+    return exists ? JS_TRUE : JS_FALSE;
+}
+
+/* host_http_download(url, dest_path) -> bool */
+static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    if (argc < 2) {
+        return JS_FALSE;
+    }
+
+    const char *url = JS_ToCString(ctx, argv[0]);
+    const char *dest_path = JS_ToCString(ctx, argv[1]);
+
+    if (!url || !dest_path) {
+        if (url) JS_FreeCString(ctx, url);
+        if (dest_path) JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
+    /* Validate destination path */
+    if (!validate_path(dest_path)) {
+        fprintf(stderr, "host_http_download: invalid dest path: %s\n", dest_path);
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
+    /* Build curl command - use -k to skip SSL verification, timeouts to prevent hangs */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "%s -fsSLk --connect-timeout 10 --max-time 120 -o \"%s\" \"%s\" 2>&1",
+             CURL_PATH, dest_path, url);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, dest_path);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_extract_tar(tar_path, dest_dir) -> bool */
+static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    if (argc < 2) {
+        return JS_FALSE;
+    }
+
+    const char *tar_path = JS_ToCString(ctx, argv[0]);
+    const char *dest_dir = JS_ToCString(ctx, argv[1]);
+
+    if (!tar_path || !dest_dir) {
+        if (tar_path) JS_FreeCString(ctx, tar_path);
+        if (dest_dir) JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate paths */
+    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
+        fprintf(stderr, "host_extract_tar: invalid path(s)\n");
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Build tar command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>&1",
+             tar_path, dest_dir);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, tar_path);
+    JS_FreeCString(ctx, dest_dir);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_extract_tar_strip(tar_path, dest_dir, strip_components) -> bool */
+static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    if (argc < 3) {
+        return JS_FALSE;
+    }
+
+    const char *tar_path = JS_ToCString(ctx, argv[0]);
+    const char *dest_dir = JS_ToCString(ctx, argv[1]);
+    int strip = 0;
+    JS_ToInt32(ctx, &strip, argv[2]);
+
+    if (!tar_path || !dest_dir) {
+        if (tar_path) JS_FreeCString(ctx, tar_path);
+        if (dest_dir) JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate paths */
+    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
+        fprintf(stderr, "host_extract_tar_strip: invalid path(s)\n");
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate strip components (0-5 reasonable range) */
+    if (strip < 0 || strip > 5) {
+        fprintf(stderr, "host_extract_tar_strip: invalid strip value: %d\n", strip);
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Build tar command with --strip-components */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" --strip-components=%d 2>&1",
+             tar_path, dest_dir, strip);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, tar_path);
+    JS_FreeCString(ctx, dest_dir);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_remove_dir(path) -> bool */
+static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    /* Validate path - must be within modules directory for safety */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_remove_dir: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Additional safety: must be within modules directory */
+    if (strncmp(path, DEFAULT_MODULES_DIR, strlen(DEFAULT_MODULES_DIR)) != 0) {
+        fprintf(stderr, "host_remove_dir: path must be within modules dir: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Build rm command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>&1", path);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, path);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_read_file(path) -> string or null */
+static JSValue js_host_read_file(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_NULL;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_NULL;
+    }
+
+    /* Validate path */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_read_file: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    /* Get file size */
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    /* Limit to 1MB for safety */
+    if (size > 1024 * 1024) {
+        fprintf(stderr, "host_read_file: file too large: %s\n", path);
+        fclose(f);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    char *buf = malloc(size + 1);
+    if (!buf) {
+        fclose(f);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    size_t read = fread(buf, 1, size, f);
+    buf[read] = '\0';
+    fclose(f);
+
+    JSValue result = JS_NewString(ctx, buf);
+    free(buf);
+    JS_FreeCString(ctx, path);
+
+    return result;
 }
 
 void init_javascript(JSRuntime **prt, JSContext **pctx)
@@ -1197,14 +1958,23 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     JSValue host_load_module_func = JS_NewCFunction(ctx, js_host_load_module, "host_load_module", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_load_module", host_load_module_func);
 
+    JSValue host_load_ui_module_func = JS_NewCFunction(ctx, js_host_load_ui_module, "host_load_ui_module", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_load_ui_module", host_load_ui_module_func);
+
     JSValue host_unload_module_func = JS_NewCFunction(ctx, js_host_unload_module, "host_unload_module", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_unload_module", host_unload_module_func);
+
+    JSValue host_return_to_menu_func = JS_NewCFunction(ctx, js_host_return_to_menu, "host_return_to_menu", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_return_to_menu", host_return_to_menu_func);
 
     JSValue host_module_set_param_func = JS_NewCFunction(ctx, js_host_module_set_param, "host_module_set_param", 2);
     JS_SetPropertyStr(ctx, global_obj, "host_module_set_param", host_module_set_param_func);
 
     JSValue host_module_get_param_func = JS_NewCFunction(ctx, js_host_module_get_param, "host_module_get_param", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_module_get_param", host_module_get_param_func);
+
+    JSValue host_module_send_midi_func = JS_NewCFunction(ctx, js_host_module_send_midi, "host_module_send_midi", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_module_send_midi", host_module_send_midi_func);
 
     JSValue host_is_module_loaded_func = JS_NewCFunction(ctx, js_host_is_module_loaded, "host_is_module_loaded", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_is_module_loaded", host_is_module_loaded_func);
@@ -1214,6 +1984,52 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_rescan_modules_func = JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", host_rescan_modules_func);
+
+    JSValue host_get_volume_func = JS_NewCFunction(ctx, js_host_get_volume, "host_get_volume", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_get_volume", host_get_volume_func);
+
+    JSValue host_set_volume_func = JS_NewCFunction(ctx, js_host_set_volume, "host_set_volume", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_set_volume", host_set_volume_func);
+
+    JSValue host_get_setting_func = JS_NewCFunction(ctx, js_host_get_setting, "host_get_setting", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_get_setting", host_get_setting_func);
+
+    JSValue host_set_setting_func = JS_NewCFunction(ctx, js_host_set_setting, "host_set_setting", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_set_setting", host_set_setting_func);
+
+    JSValue host_save_settings_func = JS_NewCFunction(ctx, js_host_save_settings, "host_save_settings", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_save_settings", host_save_settings_func);
+
+    JSValue host_reload_settings_func = JS_NewCFunction(ctx, js_host_reload_settings, "host_reload_settings", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_reload_settings", host_reload_settings_func);
+
+    JSValue host_set_refresh_rate_func = JS_NewCFunction(ctx, js_host_set_refresh_rate, "host_set_refresh_rate", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_set_refresh_rate", host_set_refresh_rate_func);
+
+    JSValue host_get_refresh_rate_func = JS_NewCFunction(ctx, js_host_get_refresh_rate, "host_get_refresh_rate", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_get_refresh_rate", host_get_refresh_rate_func);
+
+    JSValue host_flush_display_func = JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_flush_display", host_flush_display_func);
+
+    /* Store module functions */
+    JSValue host_file_exists_func = JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_file_exists", host_file_exists_func);
+
+    JSValue host_http_download_func = JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_http_download", host_http_download_func);
+
+    JSValue host_extract_tar_func = JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", host_extract_tar_func);
+
+    JSValue host_extract_tar_strip_func = JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3);
+    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", host_extract_tar_strip_func);
+
+    JSValue host_remove_dir_func = JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", host_remove_dir_func);
+
+    JSValue host_read_file_func = JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_read_file", host_read_file_func);
 
     JS_FreeValue(ctx, global_obj);
 
@@ -1383,6 +2199,9 @@ int main(int argc, char *argv[])
         script_name = default_script_name;
     }
 
+    strncpy(g_menu_script_path, script_name, sizeof(g_menu_script_path) - 1);
+    g_menu_script_path[sizeof(g_menu_script_path) - 1] = '\0';
+
     eval_file(ctx, script_name, -1);
 
     const char *device_path = "/dev/ablspi0.0";
@@ -1421,6 +2240,7 @@ int main(int argc, char *argv[])
     // Clear mapped memory
     printf("Clearing mmapped memory\n");
     memset(mapped_memory, 0, 4096);
+    reset_pending_leds();
 
     /* Initialize module manager */
     printf("Initializing module manager\n");
@@ -1433,6 +2253,10 @@ int main(int argc, char *argv[])
     printf("Scanning for modules in %s\n", DEFAULT_MODULES_DIR);
     int module_count = mm_scan_modules(&g_module_manager, DEFAULT_MODULES_DIR);
     printf("Found %d modules\n", module_count);
+
+    /* Load host settings */
+    printf("Loading host settings\n");
+    settings_load(&g_settings, SETTINGS_PATH);
 
     int padIndex = 0;
 
@@ -1516,6 +2340,28 @@ int main(int argc, char *argv[])
 
     while (!global_exit_flag)
     {
+        if (g_reload_menu_ui) {
+            g_reload_menu_ui = 0;
+            printf("Host: Back detected - returning to menu\n");
+            if (g_module_manager_initialized) {
+                mm_unload_module(&g_module_manager);
+                g_silence_blocks = 8;
+            }
+            if (g_menu_script_path[0]) {
+                eval_file(ctx, g_menu_script_path, -1);
+                JSValue JSinit;
+                getGlobalFunction(&ctx, "init", &JSinit);
+                if (callGlobalFunction(&ctx, &JSinit, 0)) {
+                    printf("JS:init failed\n");
+                }
+                g_js_functions_need_refresh = 1;
+            }
+        }
+
+        if (g_silence_blocks > 0) {
+            memset(mapped_memory + MOVE_AUDIO_OUT_OFFSET, 0, MOVE_AUDIO_BYTES_PER_BLOCK);
+            g_silence_blocks--;
+        }
         /* Refresh JS function references if a module UI was loaded */
         if (g_js_functions_need_refresh) {
             g_js_functions_need_refresh = 0;
@@ -1539,6 +2385,29 @@ int main(int argc, char *argv[])
         if (mm_is_module_loaded(&g_module_manager)) {
             mm_render_block(&g_module_manager);
         }
+
+        /* Generate MIDI clock if enabled */
+        if (g_settings.clock_mode == CLOCK_MODE_INTERNAL && g_settings.tempo_bpm > 0) {
+            /* Send MIDI Start on first block */
+            if (!g_clock_started) {
+                uint8_t start_msg[1] = { 0xFA };  /* MIDI Start */
+                mm_on_midi(&g_module_manager, start_msg, 1, MOVE_MIDI_SOURCE_HOST);
+                g_clock_started = 1;
+                printf("MIDI clock started at %d BPM\n", g_settings.tempo_bpm);
+            }
+
+            /* Generate clock pulses - 24 per quarter note */
+            float samples_per_clock = (float)SAMPLE_RATE * 60.0f / (float)g_settings.tempo_bpm / 24.0f;
+            g_clock_accumulator += (float)FRAMES_PER_BLOCK;
+
+            while (g_clock_accumulator >= samples_per_clock) {
+                g_clock_accumulator -= samples_per_clock;
+                uint8_t clock_msg[1] = { 0xF8 };  /* MIDI Timing Clock */
+                mm_on_midi(&g_module_manager, clock_msg, 1, MOVE_MIDI_SOURCE_HOST);
+            }
+        }
+
+        flush_pending_leds();
 
         ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
         outgoing_midi_counter = 0;
@@ -1573,33 +2442,59 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            //printf("MIDI: cable=%d %02x %02x %02x\n", cable, byte[1], byte[2], byte[3]);
+            //printf("%x %x %x %x\n", byte[0], byte[1], byte[2], byte[3]);
+
+            /* Check if module wants raw MIDI (skip transforms) */
+            int apply_transforms = !mm_module_wants_raw_midi(&g_module_manager);
 
             if (cable == 2)
             {
-                /* Route to JS handler */
-                if(callGlobalFunction(&ctx, &JSonMidiMessageExternal, &byte[1])) {
-                  printf("JS:onMidiMessageExternal failed\n");
-                }
+                /* External MIDI: no transforms, no UI - direct to DSP only */
                 /* Route to DSP plugin */
                 mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_EXTERNAL);
             }
 
             if (cable == 0)
             {
-                /* Process host-level shortcuts (Shift+Wheel to exit) */
-                int consumed = process_host_midi(midi_0, midi_1, midi_2);
+                /* Process host-level shortcuts and apply transforms */
+                int consumed = 0;
 
-                /* Route to JS handler (unless consumed by host) */
+                /* Check if this is an internal control note that should be filtered from DSP
+                 * For raw_midi modules, only pad notes (68-99) should go to DSP.
+                 * Filter: capacitive touch (0-9), step buttons (16-31), track buttons (40-43) */
+                uint8_t status = byte[1] & 0xF0;
+                uint8_t note = byte[2];
+                int is_internal_control = 0;
+                if (status == 0x90 || status == 0x80) {
+                    /* Note on/off - check if it's a control note */
+                    is_internal_control = (note < 10) ||           /* capacitive touch */
+                                          (note >= 16 && note <= 31) ||  /* step buttons */
+                                          (note >= 40 && note <= 43);    /* track buttons */
+                }
+
+                if (!consumed) {
+                    consumed = process_host_midi(&byte[1], apply_transforms);
+                }
+
+                /* Route to JS handler (unless consumed by host) - UI receives capacitive touch */
                 if (!consumed && callGlobalFunction(&ctx, &JSonMidiMessageInternal, &byte[1])) {
                   printf("JS:onMidiMessageInternal failed\n");
                 }
-                /* Route to DSP plugin */
-                mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
+                /* Route to DSP plugin (unless consumed OR internal control note) */
+                if (!consumed && !is_internal_control) {
+                  mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
+                }
             }
 
         }
 
+        /* Start new display push if pending and not already pushing */
+        if (display_pending && screen_dirty == 0) {
+            screen_dirty = 1;
+            display_pending = 0;
+        }
+
+        /* Continue pushing display if in progress */
         if(screen_dirty >= 1) {
           push_screen(screen_dirty-1);
           if(screen_dirty == 7) {

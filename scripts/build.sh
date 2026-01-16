@@ -1,9 +1,45 @@
 #!/usr/bin/env bash
-set -x
+# Build Move Anything for Ableton Move (ARM64)
+#
+# Automatically uses Docker for cross-compilation if needed.
+# Set CROSS_PREFIX to skip Docker (e.g., for native ARM builds).
+set -e
 
-# Get repo root (parent of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+IMAGE_NAME="move-anything-builder"
+
+# Check if we need Docker
+if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
+    echo "=== Move Anything Build (via Docker) ==="
+    echo ""
+
+    # Build Docker image if needed
+    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+        echo "Building Docker image (first time only)..."
+        docker build -t "$IMAGE_NAME" "$REPO_ROOT"
+        echo ""
+    fi
+
+    # Run build inside container
+    echo "Running build..."
+    docker run --rm \
+        -v "$REPO_ROOT:/build" \
+        -u "$(id -u):$(id -g)" \
+        "$IMAGE_NAME"
+
+    echo ""
+    echo "=== Done ==="
+    echo "Output: $REPO_ROOT/move-anything.tar.gz"
+    echo ""
+    echo "To install on Move:"
+    echo "  ./scripts/install.sh local"
+    exit 0
+fi
+
+# === Actual build (runs in Docker or with cross-compiler) ===
+set -x
+
 cd "$REPO_ROOT"
 
 # Clean and prepare
@@ -11,14 +47,15 @@ cd "$REPO_ROOT"
 mkdir -p ./build/
 mkdir -p ./build/host/
 mkdir -p ./build/shared/
-mkdir -p ./build/modules/seqomd/
+# Module directories are created automatically when copying files
 
 echo "Building host..."
 
-# Build host with module manager
+# Build host with module manager and settings
 "${CROSS_PREFIX}gcc" -g -O3 \
     src/move_anything.c \
     src/host/module_manager.c \
+    src/host/settings.c \
     -o build/move-anything \
     -Isrc -Isrc/lib \
     -Ilibs/quickjs/quickjs-2025-04-26 \
@@ -30,20 +67,40 @@ echo "Building host..."
     -o build/move-anything-shim.so \
     src/move_anything_shim.c -ldl
 
-# Copy shared utilities
-cp ./src/shared/*.mjs ./build/shared/
+echo "Building Signal Chain module..."
 
-# Copy host files
-cp ./src/host/menu_ui.js ./build/host/
+# Build Signal Chain DSP plugin
+mkdir -p ./build/modules/chain/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/chain/dsp/chain_host.c \
+    -o build/modules/chain/dsp.so \
+    -Isrc \
+    -lm -ldl -lpthread
 
-# Copy scripts and assets
-cp ./src/shim-entrypoint.sh ./build/
-cp ./src/start.sh ./build/ 2>/dev/null || true
-cp ./src/stop.sh ./build/ 2>/dev/null || true
+echo "Building Audio FX plugins..."
 
-echo "Building Sequencer module..."
+# Build Freeverb audio FX
+mkdir -p ./build/modules/chain/audio_fx/freeverb/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/chain/audio_fx/freeverb/freeverb.c \
+    -o build/modules/chain/audio_fx/freeverb/freeverb.so \
+    -Isrc \
+    -lm
 
-# Build Sequencer DSP plugin (all .c files in dsp directory)
+echo "Building Sound Generator plugins..."
+
+# Build Line In sound generator
+mkdir -p ./build/modules/chain/sound_generators/linein/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/chain/sound_generators/linein/linein.c \
+    -o build/modules/chain/sound_generators/linein/dsp.so \
+    -Isrc \
+    -lm
+
+echo "Building SEQOMD module..."
+
+# Build SEQOMD DSP plugin
+mkdir -p ./build/modules/seqomd/
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
     src/modules/seqomd/dsp/seq_plugin.c \
     src/modules/seqomd/dsp/midi.c \
@@ -57,23 +114,44 @@ echo "Building Sequencer module..."
     -Isrc \
     -lm
 
-# Copy Sequencer module files
-cp ./src/modules/seqomd/module.json ./build/modules/seqomd/
-cp ./src/modules/seqomd/ui.js ./build/modules/seqomd/
+# Copy shared utilities
+cp ./src/shared/*.mjs ./build/shared/
 
-# Copy seqomd lib and views (if they exist)
-if [ -d ./src/modules/seqomd/lib ]; then
-    mkdir -p ./build/modules/seqomd/lib/
-    cp ./src/modules/seqomd/lib/*.js ./build/modules/seqomd/lib/
-fi
-if [ -d ./src/modules/seqomd/views ]; then
-    cp -r ./src/modules/seqomd/views ./build/modules/seqomd/
+# Copy host files
+cp ./src/host/menu_ui.js ./build/host/
+cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
+cp ./src/host/version.txt ./build/host/
+
+# Copy scripts and assets
+cp ./src/shim-entrypoint.sh ./build/
+cp ./src/start.sh ./build/ 2>/dev/null || true
+cp ./src/stop.sh ./build/ 2>/dev/null || true
+
+# Copy all module files (js, mjs, json) - preserves directory structure
+# Compiled .so files are built separately above
+echo "Copying module files..."
+find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while read src; do
+    dest="./build/${src#./src/}"
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+done
+
+# Copy curl binary for store module (if present)
+if [ -f "./libs/curl/curl" ]; then
+    mkdir -p ./build/bin/
+    cp ./libs/curl/curl ./build/bin/
+    echo "Bundled curl binary"
+else
+    echo "Warning: libs/curl/curl not found - store module will not work without it"
 fi
 
 # Strip binaries to reduce size
 echo "Stripping binaries..."
 "${CROSS_PREFIX}strip" build/move-anything
 "${CROSS_PREFIX}strip" build/move-anything-shim.so
+"${CROSS_PREFIX}strip" build/modules/chain/dsp.so
+"${CROSS_PREFIX}strip" build/modules/chain/audio_fx/freeverb/freeverb.so
+"${CROSS_PREFIX}strip" build/modules/chain/sound_generators/linein/dsp.so
 "${CROSS_PREFIX}strip" build/modules/seqomd/dsp.so
 
 echo "Build complete!"

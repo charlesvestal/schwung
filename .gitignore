@@ -1,17 +1,14 @@
-src/move-anything.code-workspace
-build/
-dist/
-libs/
-.vscode/
-
-# macOS
 .DS_Store
 
 # Build artifacts
-*.so
+/build/
+/dist/
+/move-anything.tar.gz
+/libs/quickjs/quickjs-2025-04-26/.obj/
+/libs/quickjs/quickjs-2025-04-26/libquickjs.a
+/.worktrees
+docs/.DS_Store
 *.tar.gz
-test_seq_plugin
-*.dSYM/
 
-# Local backups
-backups/
+# Test patches (kept locally, not committed)
+/src/modules/chain/test_patches/

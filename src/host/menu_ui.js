@@ -2,16 +2,18 @@
  * Host Menu UI - Module selection and management
  *
  * This is the main host script that provides a menu for selecting
- * and loading DSP modules.
+ * and loading DSP modules, plus host settings.
  */
 
 import {
     MoveMainKnob, MoveMainButton, MoveMainTouch,
-    MoveShift, MoveMenu,
+    MoveShift, MoveMenu, MoveBack,
     MoveLeft, MoveRight, MoveUp, MoveDown
 } from '../shared/constants.mjs';
 
-import { isCapacitiveTouchMessage } from '../shared/input_filter.mjs';
+import { isCapacitiveTouchMessage, clearAllLEDs } from '../shared/input_filter.mjs';
+import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount, enterCategory, exitCategory, isInCategory, resetToMain } from './menu_main.mjs';
+import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
 
 /* State */
 let modules = [];
@@ -21,11 +23,15 @@ let menuVisible = true;
 let statusMessage = '';
 let statusTimeout = 0;
 
+/* Settings state */
+let settingsVisible = false;
+
 /* Alias constants for clarity */
 const CC_JOG_WHEEL = MoveMainKnob;
 const CC_JOG_CLICK = MoveMainButton;
 const CC_SHIFT = MoveShift;
 const CC_MENU = MoveMenu;
+const CC_BACK = MoveBack;
 const CC_LEFT = MoveLeft;
 const CC_RIGHT = MoveRight;
 const CC_UP = MoveUp;
@@ -37,14 +43,13 @@ let shiftHeld = false;
 /* Display constants */
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
-const LINE_HEIGHT = 10;
-const MAX_VISIBLE_ITEMS = 5;
 
 /* Refresh module list from host */
 function refreshModules() {
     modules = host_list_modules();
-    if (selectedIndex >= modules.length) {
-        selectedIndex = Math.max(0, modules.length - 1);
+    /* Add 1 for Settings entry */
+    if (selectedIndex >= modules.length + 1) {
+        selectedIndex = Math.max(0, modules.length);
     }
     console.log(`Found ${modules.length} modules`);
 }
@@ -55,48 +60,20 @@ function showStatus(msg, duration = 2000) {
     statusTimeout = Date.now() + duration;
 }
 
+/* Draw the settings screen */
+function renderSettingsScreen() {
+    clear_screen();
+    drawSettings();
+}
+
 /* Draw the menu screen */
 function drawMenu() {
     clear_screen();
-
-    /* Title */
-    print(2, 2, "Move Anything", 1);
-    fill_rect(0, 12, SCREEN_WIDTH, 1, 1);
-
-    if (modules.length === 0) {
-        print(2, 24, "No modules found", 1);
-        print(2, 36, "Check modules/ dir", 1);
-        return;
-    }
-
-    /* Calculate visible range */
-    let startIdx = 0;
-    if (selectedIndex >= MAX_VISIBLE_ITEMS) {
-        startIdx = selectedIndex - MAX_VISIBLE_ITEMS + 1;
-    }
-    let endIdx = Math.min(startIdx + MAX_VISIBLE_ITEMS, modules.length);
-
-    /* Draw module list */
-    for (let i = startIdx; i < endIdx; i++) {
-        const y = 16 + (i - startIdx) * LINE_HEIGHT;
-        const mod = modules[i];
-        const isSelected = (i === selectedIndex);
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LINE_HEIGHT, 1);
-            print(4, y, `> ${mod.name}`, 0);
-        } else {
-            print(4, y, `  ${mod.name}`, 1);
-        }
-    }
-
-    /* Scroll indicators */
-    if (startIdx > 0) {
-        print(120, 16, "^", 1);
-    }
-    if (endIdx < modules.length) {
-        print(120, SCREEN_HEIGHT - 10, "v", 1);
-    }
+    drawMainMenu({
+        modules,
+        selectedIndex,
+        volume: host_get_volume()
+    });
 
     /* Status bar */
     if (statusMessage && Date.now() < statusTimeout) {
@@ -121,14 +98,13 @@ function drawModuleInfo() {
     print(2, 32, "Shift+Menu: back", 1);
 }
 
-/* Load the selected module */
-function loadSelectedModule() {
-    if (selectedIndex < 0 || selectedIndex >= modules.length) {
+/* Load a module */
+function loadModule(mod) {
+    if (!mod) {
         showStatus("No module selected");
         return;
     }
 
-    const mod = modules[selectedIndex];
     console.log(`Loading module: ${mod.id}`);
     showStatus(`Loading ${mod.name}...`);
 
@@ -146,7 +122,11 @@ function loadSelectedModule() {
 /* Unload current module and return to menu */
 function returnToMenu() {
     host_unload_module();
+    clearAllLEDs();
     menuVisible = true;
+    settingsVisible = false;
+    resetToMain();
+    selectedIndex = 0;
     refreshModules();
     showStatus("Module unloaded");
 }
@@ -163,8 +143,32 @@ function handleCC(cc, value) {
 
     /* Menu button returns to menu if shift held */
     if (cc === CC_MENU && value > 0 && shiftHeld) {
-        if (!menuVisible) {
-            returnToMenu();
+        if (!menuVisible || settingsVisible) {
+            if (settingsVisible) {
+                settingsVisible = false;
+            } else {
+                returnToMenu();
+            }
+        }
+        return;
+    }
+
+    /* Back button goes back from settings (unless editing) */
+    if (settingsVisible && cc === CC_BACK && value > 0 && !isEditing()) {
+        settingsVisible = false;
+        return;
+    }
+
+    /* Settings screen navigation */
+    if (settingsVisible) {
+        const result = handleSettingsCC({
+            cc,
+            value,
+            shiftHeld
+        });
+
+        if (result.shouldExit) {
+            settingsVisible = false;
         }
         return;
     }
@@ -172,32 +176,37 @@ function handleCC(cc, value) {
     /* Menu navigation (only when menu visible) */
     if (!menuVisible) return;
 
-    /* Jog wheel navigation */
-    if (cc === CC_JOG_WHEEL) {
-        if (value === 1) {
-            /* Clockwise */
-            selectedIndex = Math.min(selectedIndex + 1, modules.length - 1);
-        } else if (value === 127 || value === 65) {
-            /* Counter-clockwise */
-            selectedIndex = Math.max(selectedIndex - 1, 0);
+    const totalItems = getSelectableCount();
+    const result = handleMainMenuCC({
+        cc,
+        value,
+        selectedIndex,
+        totalItems
+    });
+    selectedIndex = result.nextIndex;
+
+    /* Handle back button */
+    if (result.didBack && isInCategory()) {
+        exitCategory();
+        selectedIndex = 0;
+        return;
+    }
+
+    if (result.didSelect) {
+        const item = getSelectedItem(selectedIndex);
+        if (!item) return;
+
+        if (item.type === 'settings') {
+            settingsVisible = true;
+            initSettings();
+        } else if (item.type === 'exit') {
+            exit();
+        } else if (item.type === 'category') {
+            enterCategory(item.categoryId);
+            selectedIndex = 0;
+        } else if (item.type === 'module') {
+            loadModule(item.module);
         }
-        return;
-    }
-
-    /* Arrow navigation */
-    if (cc === CC_DOWN && value > 0) {
-        selectedIndex = Math.min(selectedIndex + 1, modules.length - 1);
-        return;
-    }
-    if (cc === CC_UP && value > 0) {
-        selectedIndex = Math.max(selectedIndex - 1, 0);
-        return;
-    }
-
-    /* Jog wheel click (CC 3) selects module */
-    if (cc === CC_JOG_CLICK && value > 0) {
-        loadSelectedModule();
-        return;
     }
 }
 
@@ -211,6 +220,7 @@ function handleNote(note, velocity) {
 
 globalThis.init = function() {
     console.log("Menu UI initializing...");
+    clearAllLEDs();
     refreshModules();
 
     if (modules.length > 0) {
@@ -226,7 +236,9 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
-    if (menuVisible) {
+    if (settingsVisible) {
+        renderSettingsScreen();
+    } else if (menuVisible) {
         drawMenu();
     } else {
         /* If a module is loaded, its UI should handle drawing.
