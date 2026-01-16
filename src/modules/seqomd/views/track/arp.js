@@ -9,14 +9,17 @@
  */
 
 import {
-    Cyan, BrightGreen, BrightRed, Black, White,
+    Cyan, BrightGreen, BrightRed, Black, White, VividYellow, Purple,
     MoveSteps, MoveTracks,
     MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack,
     MoveStep11UI, MoveKnob1, MoveKnob2, MoveKnob3
 } from "../../../../shared/constants.mjs";
 
 import { setLED, setButtonLED } from "../../../../shared/input_filter.mjs";
-import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES } from '../../lib/constants.js';
+import { NUM_STEPS, MoveKnobLEDs, ARP_MODES, ARP_SPEEDS, ARP_OCTAVES, TRACK_COLORS } from '../../lib/constants.js';
+
+/* Knob colors for each arp parameter - matches step arp mode */
+const ARP_PARAM_COLORS = [Cyan, VividYellow, Purple];
 import { state, displayMessage } from '../../lib/state.js';
 import { setParam, clearStepLEDs, updateStandardTransportLEDs } from '../../lib/helpers.js';
 import { markDirty } from '../../lib/persistence.js';
@@ -99,11 +102,10 @@ export function updateLEDs() {
 
     /* Pads owned by track.js coordinator */
 
-    /* Knobs - 1, 2, 3 lit for mode, speed, octave */
+    /* Knobs 1-3 lit with arp param colors, 4-8 off */
     for (let i = 0; i < 8; i++) {
         if (i < 3) {
-            /* Lit color indicates if arp is active */
-            setButtonLED(MoveKnobLEDs[i], track.arpMode > 0 ? Cyan : White);
+            setButtonLED(MoveKnobLEDs[i], ARP_PARAM_COLORS[i]);
         } else {
             setButtonLED(MoveKnobLEDs[i], Black);
         }
@@ -127,10 +129,10 @@ export function updateDisplayContent() {
     const octaveName = ARP_OCTAVES[track.arpOctave].name;
 
     displayMessage(
-        "ARP MODE",
-        `Track ${state.currentTrack + 1}`,
-        `${modeName} | ${speedName}`,
-        `Octave: ${octaveName}`
+        `Arp: ${modeName}`,
+        `Speed: ${speedName}`,
+        `Octave: ${octaveName}`,
+        `Track ${state.currentTrack + 1}`
     );
 }
 
