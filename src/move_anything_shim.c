@@ -40,6 +40,19 @@ int frame_counter = 0;
 #define CONTROL_BUFFER_SIZE 64
 #define FRAMES_PER_BLOCK 128
 
+typedef struct shadow_control_t {
+    volatile uint8_t display_mode;    /* 0=stock Move, 1=shadow display */
+    volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
+    volatile uint8_t should_exit;     /* 1 to signal shadow to exit */
+    volatile uint8_t midi_ready;      /* increments when new MIDI available */
+    volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
+    volatile uint8_t read_idx;        /* triple buffer: shim reads here */
+    volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
+    volatile uint8_t reserved[53];    /* padding for future use */
+} shadow_control_t;
+
+static shadow_control_t *shadow_control = NULL;
+
 /* ============================================================================
  * IN-PROCESS SHADOW SYNTH (DX7 POC)
  * ============================================================================
@@ -190,17 +203,6 @@ static void shadow_inprocess_mix_audio(void) {
 #define SHM_SHADOW_CONTROL  "/move-shadow-control"
 #define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow to read */
 
-/* Shadow control structure - shared between shim and shadow process */
-typedef struct {
-    volatile uint8_t display_mode;    /* 0=stock Move, 1=shadow display */
-    volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
-    volatile uint8_t should_exit;     /* 1 to signal shadow to exit */
-    volatile uint8_t midi_ready;      /* increments when new MIDI available */
-    volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
-    volatile uint8_t read_idx;        /* triple buffer: shim reads here */
-    volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
-    volatile uint8_t reserved[53];    /* padding for future use */
-} shadow_control_t;
 
 #define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
 
@@ -209,7 +211,6 @@ static int16_t *shadow_audio_shm = NULL;    /* Shadow's mixed output */
 static int16_t *shadow_movein_shm = NULL;   /* Move's audio for shadow to read */
 static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
-static shadow_control_t *shadow_control = NULL;
 
 /* Shadow shared memory file descriptors */
 static int shm_audio_fd = -1;
