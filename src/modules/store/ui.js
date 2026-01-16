@@ -62,6 +62,7 @@ let hostUpdateAvailable = false;
 let selectedCategoryIndex = 0;
 let selectedModuleIndex = 0;
 let selectedActionIndex = 0;
+let selectedUpdateIndex = 0;
 let currentCategory = null;
 let currentModule = null;
 let errorMessage = '';
@@ -500,6 +501,16 @@ function handleJogWheel(delta) {
             if (selectedActionIndex > 0) selectedActionIndex = 0;  /* Only one action */
             break;
 
+        case STATE_UPDATE_ALL: {
+            /* List includes all modules with updates + "Update All" at the end */
+            const updateCount = getModulesWithUpdates().length;
+            const maxIndex = updateCount;  /* modules + Update All button */
+            selectedUpdateIndex += delta;
+            if (selectedUpdateIndex < 0) selectedUpdateIndex = 0;
+            if (selectedUpdateIndex > maxIndex) selectedUpdateIndex = maxIndex;
+            break;
+        }
+
         case STATE_MODULE_LIST: {
             const modules = getModulesForCategory(currentCategory.id);
             selectedModuleIndex += delta;
@@ -539,7 +550,7 @@ function handleSelect() {
             /* Next: Update All (if updates available) */
             if (updatesAvailable) {
                 if (adjustedIndex === 0) {
-                    selectedActionIndex = 0;
+                    selectedUpdateIndex = 0;
                     state = STATE_UPDATE_ALL;
                     break;
                 }
@@ -557,9 +568,19 @@ function handleSelect() {
             updateHost();
             break;
 
-        case STATE_UPDATE_ALL:
-            updateAllModules();
+        case STATE_UPDATE_ALL: {
+            const modulesToUpdate = getModulesWithUpdates();
+            if (selectedUpdateIndex < modulesToUpdate.length) {
+                /* Selected a specific module - show its detail */
+                currentModule = modulesToUpdate[selectedUpdateIndex];
+                selectedActionIndex = 0;
+                state = STATE_MODULE_DETAIL;
+            } else {
+                /* Selected "Update All" */
+                updateAllModules();
+            }
             break;
+        }
 
         case STATE_MODULE_LIST: {
             const modules = getModulesForCategory(currentCategory.id);
@@ -720,32 +741,42 @@ function drawHostUpdate() {
     drawMenuFooter('Back:cancel');
 }
 
-/* Draw update all confirmation screen */
+/* Draw update all screen - scrollable list of modules + Update All action */
 function drawUpdateAll() {
     clear_screen();
     const modulesToUpdate = getModulesWithUpdates();
-    drawMenuHeader('Update All');
+    drawMenuHeader('Updates Available', `(${modulesToUpdate.length})`);
 
-    print(2, 16, `${modulesToUpdate.length} module${modulesToUpdate.length !== 1 ? 's' : ''} to update:`, 1);
-
-    /* List first few modules */
-    const maxShow = 2;
-    for (let i = 0; i < Math.min(modulesToUpdate.length, maxShow); i++) {
-        print(2, 26 + i * 10, modulesToUpdate[i].name, 1);
+    /* Build items list - modules with version info, then "Update All" */
+    let items = [];
+    for (const mod of modulesToUpdate) {
+        const installedVer = installedModules[mod.id] || '?';
+        items.push({
+            id: mod.id,
+            name: mod.name,
+            value: `${installedVer}->${mod.latest_version}`
+        });
     }
-    if (modulesToUpdate.length > maxShow) {
-        print(2, 26 + maxShow * 10, `...and ${modulesToUpdate.length - maxShow} more`, 1);
-    }
+    /* Add "Update All" as last item */
+    items.push({
+        id: '_update_all',
+        name: '>> Update All <<',
+        value: ''
+    });
 
-    /* Divider */
-    fill_rect(0, 50, 128, 1, 1);
+    drawMenuList({
+        items,
+        selectedIndex: selectedUpdateIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        valueAlignRight: true,
+        getLabel: (item) => item.name,
+        getValue: (item) => item.value
+    });
 
-    /* Update button */
-    const y = 54;
-    fill_rect(2, y - 1, 70, 12, 1);
-    print(4, y, '[Update All]', 0);
-
-    drawMenuFooter('Back:cancel');
+    drawMenuFooter('Back:cancel  Jog:select');
 }
 
 /* Draw module list screen */
