@@ -602,7 +602,7 @@ static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 
 static const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
     "SF2 + Freeverb (Preset 1)",
-    "SF2 + Freeverb",
+    "DX7 + Freeverb",
     "OB-Xd + Freeverb",
     "JV-880 + Freeverb"
 };

@@ -32,7 +32,7 @@ Example:
 {
   "patches": [
     { "name": "SF2 + Freeverb (Preset 1)", "channel": 5 },
-    { "name": "SF2 + Freeverb", "channel": 6 },
+    { "name": "DX7 + Freeverb", "channel": 6 },
     { "name": "OB-Xd + Freeverb", "channel": 7 },
     { "name": "JV-880 + Freeverb", "channel": 8 }
   ]
