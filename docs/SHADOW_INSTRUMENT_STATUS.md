@@ -1,8 +1,8 @@
 # Shadow Instrument POC - Status
 
 **Branch:** `feature/shadow-instrument-poc`
-**Date:** 2025-01-15
-**Status:** Incomplete - audio synchronization issues unresolved
+**Date:** 2025-01-16
+**Status:** Audio resolved - in-process shadow DSP working
 
 ## Goal
 
@@ -20,9 +20,9 @@ Stock Move (ioctl) → Shim (LD_PRELOAD) → SPI Mailbox
                     DX7/SF2 synth module
 ```
 
-### In-Process Shadow Mode (Autostart)
+### In-Process Shadow Mode (Autostart, Current)
 
-The shim can also load and run the DX7 DSP **inside MoveOriginal** without the
+The shim can load and run the DX7 DSP **inside MoveOriginal** without the
 separate `shadow_poc` process. This mode autostarts when the shim sees the SPI
 mailbox `mmap()` and mixes the DX7 audio directly into the mailbox.
 
@@ -57,47 +57,15 @@ DX7. Set the Move track MIDI channel to 5, 6, 7, or 8 to drive the shadow synth.
 ## What Works
 
 - ✅ Shim hooks mmap/ioctl successfully
-- ✅ MIDI forwarding from Move to shadow_poc
 - ✅ Synth module loading (DX7 loads and plays)
-- ✅ Audio renders and can be heard
-- ✅ Triple buffering implemented
-- ✅ Drift correction via shim_counter
+- ✅ Audio renders cleanly (in-process)
 - ✅ In-process shadow DSP autostarts and filters MIDI to channels 5–8
+- ✅ Shadow audio mixes with stock Move audio in the mailbox
 
-## The Problem
+## Audio Status
 
-**Audio sounds "warbly"** - like samples playing at wrong rate or buffers being skipped/repeated.
-
-### Key Finding
-- Same warbly issue occurs in both REPLACE mode (shadow only) and MIX mode
-- DX7 (algorithmic synthesis) has same issue as SF2 (sample-based)
-- DX7 sounds perfect when loaded directly through move-anything
-- **Conclusion:** Issue is IPC timing, not the synth
-
-### Attempted Solutions
-
-1. **Simple handshake** (`audio_ready` flag) - Still warbly
-2. **Triple buffering with drift correction** - Still warbly
-3. **REPLACE mode** (eliminate mixing as variable) - Still warbly
-
-### Root Cause Analysis
-
-The fundamental problem: **two independent clocks cannot be synchronized for real-time audio without kernel-level support**.
-
-- Move's audio runs at exactly 44100 Hz, triggered by XMOS hardware via ioctl
-- shadow_poc runs its own loop with `usleep(2900)` - cannot match exactly
-- Even with drift correction, context switches and scheduling jitter cause buffer mismatches
-- Triple buffering smooths short-term jitter but doesn't fix the fundamental timing problem
-
-## Potential Solutions (Not Implemented)
-
-1. **Run synth in shim directly** - dlopen the module in the shim, call render_block() during ioctl. Eliminates IPC timing entirely. This is essentially what move-anything does.
-
-2. **Use kernel audio infrastructure** - JACK/PipeWire for proper audio clock synchronization. Not available on Move.
-
-3. **POSIX real-time scheduling** - `sched_setscheduler(SCHED_FIFO)`, `mlockall()`, semaphores. Complex and still may have issues.
-
-4. **Larger ring buffer** - Accept 20-50ms latency to smooth out all timing variations.
+Audio is now clean and stable by running the DX7 **in-process** inside the shim.
+This eliminates IPC timing drift entirely.
 
 ## Files Modified
 
@@ -116,9 +84,6 @@ cd /data/UserData/move-anything && ./shadow_poc &
 
 ## Conclusion
 
-The shadow instrument architecture as designed cannot achieve clean audio due to the fundamental timing mismatch between independent processes. The recommended path forward is either:
-
-1. Integrate synth rendering directly into the shim (no IPC)
-2. Accept this as a proof-of-concept and focus on the main move-anything approach
-
-The main move-anything project works correctly because it runs the synth in the same process as the ioctl handler, eliminating all timing coordination issues.
+In-process shadow DSP is the working path: it autostarts in the shim, renders
+clean audio, and mixes with stock Move output. MIDI is gated to channels 5–8 to
+avoid UI events.
