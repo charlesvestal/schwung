@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "host/plugin_api_v1.h"
 
@@ -645,6 +646,23 @@ int knob8touched = 0;
 int knob1touched = 0;
 int alreadyLaunched = 0;       /* Prevent multiple launches */
 int shadowModeDebounce = 0;    /* Debounce for shadow mode toggle */
+
+static FILE *hotkey_state_log = NULL;
+static void log_hotkey_state(const char *tag)
+{
+    if (!hotkey_state_log)
+    {
+        hotkey_state_log = fopen("/data/UserData/move-anything/hotkey_state.log", "a");
+    }
+    if (hotkey_state_log)
+    {
+        time_t now = time(NULL);
+        fprintf(hotkey_state_log, "%ld %s shift=%d vol=%d knob1=%d knob8=%d debounce=%d\n",
+                (long)now, tag, shiftHeld, volumeTouched, knob1touched, knob8touched, shadowModeDebounce);
+        fflush(hotkey_state_log);
+    }
+}
+
 void midi_monitor()
 {
     if (!global_mmap_addr)
@@ -692,12 +710,14 @@ void midi_monitor()
                     printf("Shift on\n");
 
                     shiftHeld = 1;
+                    log_hotkey_state("shift_on");
                 }
                 else
                 {
                     printf("Shift off\n");
 
                     shiftHeld = 0;
+                    log_hotkey_state("shift_off");
                 }
             }
 
@@ -709,11 +729,13 @@ void midi_monitor()
             {
                 knob8touched = 1;
                 printf("Knob 8 touch start\n");
+                log_hotkey_state("knob8_on");
             }
             else
             {
                 knob8touched = 0;
                 printf("Knob 8 touch stop\n");
+                log_hotkey_state("knob8_off");
             }
         }
 
@@ -724,11 +746,13 @@ void midi_monitor()
             {
                 knob1touched = 1;
                 printf("Knob 1 touch start\n");
+                log_hotkey_state("knob1_on");
             }
             else
             {
                 knob1touched = 0;
                 printf("Knob 1 touch stop\n");
+                log_hotkey_state("knob1_off");
             }
         }
 
@@ -737,10 +761,12 @@ void midi_monitor()
             if (midi_2 == 0x7f)
             {
                 volumeTouched = 1;
+                log_hotkey_state("vol_on");
             }
             else
             {
                 volumeTouched = 0;
+                log_hotkey_state("vol_off");
             }
         }
 
@@ -783,6 +809,7 @@ void midi_monitor()
         if (shiftHeld && volumeTouched && knob1touched && !shadowModeDebounce)
         {
             shadowModeDebounce = 1;
+            log_hotkey_state("toggle");
             if (shadow_control) {
                 shadow_control->display_mode = !shadow_control->display_mode;
                 printf("Shadow mode toggled: %s\n",
@@ -790,10 +817,11 @@ void midi_monitor()
             }
         }
 
-        /* Reset debounce when shift released */
-        if (!shiftHeld)
+        /* Reset debounce once any part of the combo is released */
+        if (shadowModeDebounce && (!shiftHeld || !volumeTouched || !knob1touched))
         {
             shadowModeDebounce = 0;
+            log_hotkey_state("debounce_reset");
         }
 
         printf("move-anything: cable: %x,\tcode index number:%x,\tmidi_0:%x,\tmidi_1:%x,\tmidi_2:%x\n", cable, code_index_number, midi_0, midi_1, midi_2);
