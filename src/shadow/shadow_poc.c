@@ -531,12 +531,22 @@ static void signal_handler(int sig) {
 
 int main(int argc, char *argv[]) {
     const char *soundfont_path = NULL;
+    int display_only = 0;
 
     printf("=== Shadow Instrument POC ===\n");
 
     /* Parse arguments */
-    if (argc > 1) {
-        soundfont_path = argv[1];
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--display-only") == 0) {
+            display_only = 1;
+            continue;
+        }
+        soundfont_path = argv[i];
+    }
+
+    if (display_only) {
+        printf("Display-only mode enabled\n");
+    } else if (soundfont_path) {
         printf("Soundfont: %s\n", soundfont_path);
     } else {
         printf("No soundfont specified, using module default\n");
@@ -552,12 +562,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Load synth */
-    if (load_synth(soundfont_path) < 0) {
-        fprintf(stderr, "Failed to load synth module.\n");
-        fprintf(stderr, "Make sure the SF2 module is installed at:\n");
-        fprintf(stderr, "  /data/UserData/move-anything/modules/sf2/dsp.so\n");
-        return 1;
+    /* Load synth (skip in display-only mode) */
+    if (!display_only) {
+        if (load_synth(soundfont_path) < 0) {
+            fprintf(stderr, "Failed to load synth module.\n");
+            fprintf(stderr, "Make sure the SF2 module is installed at:\n");
+            fprintf(stderr, "  /data/UserData/move-anything/modules/sf2/dsp.so\n");
+            return 1;
+        }
     }
 
     /* Render initial display */
@@ -570,13 +582,15 @@ int main(int argc, char *argv[]) {
     /* Main loop */
     while (running && !shadow_control->should_exit) {
         /* Check for new MIDI */
-        if (shadow_control->midi_ready != last_midi_ready) {
-            last_midi_ready = shadow_control->midi_ready;
-            process_midi();
-        }
+        if (!display_only) {
+            if (shadow_control->midi_ready != last_midi_ready) {
+                last_midi_ready = shadow_control->midi_ready;
+                process_midi();
+            }
 
-        /* Render audio */
-        render_audio();
+            /* Render audio */
+            render_audio();
+        }
 
         /* Update display if in shadow mode */
         if (shadow_control->display_mode) {
@@ -590,7 +604,9 @@ int main(int argc, char *argv[]) {
     /* Cleanup */
     printf("Shutting down...\n");
     shadow_control->shadow_ready = 0;
-    unload_synth();
+    if (!display_only) {
+        unload_synth();
+    }
 
     /* Unmap shared memory */
     if (shadow_audio_shm) munmap(shadow_audio_shm, AUDIO_BUFFER_SIZE * NUM_AUDIO_BUFFERS);
