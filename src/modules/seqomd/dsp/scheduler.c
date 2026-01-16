@@ -2,9 +2,60 @@
  * SEQOMD DSP Plugin - Note Scheduler
  *
  * Centralized note scheduling with swing, note conflicts, and note-on/off timing.
+ *
+ * Performance optimizations:
+ * - Active-indices array: O(n) iteration over only active notes instead of O(512)
+ * - Note-channel lookup: O(1) conflict detection instead of O(512) linear search
  */
 
 #include "seq_plugin.h"
+
+/* Helper macro for note-channel lookup index */
+#define NOTE_CHANNEL_IDX(note, channel) ((int)(note) * 16 + (int)(channel))
+
+/**
+ * Helper: Remove a slot from the active_indices array.
+ * Uses swap-with-last for O(1) removal.
+ */
+static void remove_from_active(int slot) {
+    scheduled_note_t *sn = &g_scheduled_notes[slot];
+    int idx = sn->active_idx;
+    if (idx < 0 || idx >= g_active_note_count) return;
+
+    /* Swap with last element */
+    int last_slot = g_active_indices[g_active_note_count - 1];
+    if (last_slot != slot) {
+        g_active_indices[idx] = last_slot;
+        g_scheduled_notes[last_slot].active_idx = idx;
+    }
+    g_active_note_count--;
+    sn->active_idx = -1;
+}
+
+/**
+ * Helper: Add a slot to the active_indices array.
+ */
+static void add_to_active(int slot) {
+    g_active_indices[g_active_note_count] = slot;
+    g_scheduled_notes[slot].active_idx = g_active_note_count;
+    g_active_note_count++;
+}
+
+/**
+ * Helper: Clear lookup entry for a note.
+ */
+static void clear_note_lookup(uint8_t note, uint8_t channel) {
+    int idx = NOTE_CHANNEL_IDX(note, channel);
+    g_note_channel_lookup[idx] = -1;
+}
+
+/**
+ * Helper: Set lookup entry for a note.
+ */
+static void set_note_lookup(uint8_t note, uint8_t channel, int slot) {
+    int idx = NOTE_CHANNEL_IDX(note, channel);
+    g_note_channel_lookup[idx] = (int16_t)slot;
+}
 
 /**
  * Calculate swing delay based on global phase.
@@ -28,14 +79,18 @@ double calculate_swing_delay(int swing, double global_phase) {
 /**
  * Find an existing scheduled note with the same note+channel that's still active.
  * Returns the index, or -1 if not found.
+ *
+ * OPTIMIZED: O(1) lookup using note-channel index instead of O(512) scan.
  */
 int find_conflicting_note(uint8_t note, uint8_t channel) {
-    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
-        if (g_scheduled_notes[i].active &&
-            g_scheduled_notes[i].note == note &&
-            g_scheduled_notes[i].channel == channel &&
-            !g_scheduled_notes[i].off_sent) {
-            return i;
+    int idx = NOTE_CHANNEL_IDX(note, channel);
+    int slot = g_note_channel_lookup[idx];
+
+    if (slot >= 0 && slot < MAX_SCHEDULED_NOTES) {
+        scheduled_note_t *sn = &g_scheduled_notes[slot];
+        /* Verify the lookup is still valid */
+        if (sn->active && sn->note == note && sn->channel == channel && !sn->off_sent) {
+            return slot;
         }
     }
     return -1;
@@ -44,6 +99,9 @@ int find_conflicting_note(uint8_t note, uint8_t channel) {
 /**
  * Find a free slot in the scheduler.
  * Returns the index, or -1 if full.
+ *
+ * Note: This is still O(n) in worst case but typically finds a slot quickly
+ * since we reuse slots. Could be optimized with a free-list if needed.
  */
 int find_free_slot(void) {
     for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
@@ -96,9 +154,11 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
                 if (conflict->on_sent && !conflict->off_sent) {
                     send_note_off(conflict->sent_note, conflict->channel);
                     conflict->off_sent = 1;
-                    conflict->active = 0;  /* Free the slot to prevent leak */
-                    g_active_note_count--;
                 }
+                /* Deactivate the conflicting note */
+                conflict->active = 0;
+                clear_note_lookup(conflict->note, conflict->channel);
+                remove_from_active(conflict_idx);
             }
         }
     }
@@ -123,20 +183,30 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
     sn->track_idx = track_idx;
     sn->sequence_transpose = sequence_transpose;
     sn->sent_note = 0;  /* Will be set when note-on is sent */
-    g_active_note_count++;
+    sn->active_idx = -1;  /* Will be set by add_to_active */
+
+    /* Add to active indices and update lookup */
+    add_to_active(slot);
+    set_note_lookup(note, channel, slot);
 }
 
 /**
  * Process all scheduled notes - send note-on/off at the right time.
  * Called once per block (~2.9ms at 128 samples/block).
  * Transpose is applied at send time to support immediate live transpose.
+ *
+ * OPTIMIZED: O(n) iteration over only active notes instead of O(512) scan.
  */
 void process_scheduled_notes(void) {
-    /* Early exit if no active notes - avoids scanning all 512 slots */
+    /* Early exit if no active notes */
     if (g_active_note_count <= 0) return;
 
-    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
-        scheduled_note_t *sn = &g_scheduled_notes[i];
+    /* Iterate backwards since we may remove elements */
+    for (int i = g_active_note_count - 1; i >= 0; i--) {
+        int slot = g_active_indices[i];
+        scheduled_note_t *sn = &g_scheduled_notes[slot];
+
+        /* Sanity check - should always be active */
         if (!sn->active) continue;
 
         /* Send note-on at the scheduled time */
@@ -164,8 +234,15 @@ void process_scheduled_notes(void) {
         if (sn->on_sent && !sn->off_sent && g_global_phase >= sn->off_phase) {
             send_note_off(sn->sent_note, sn->channel);
             sn->off_sent = 1;
-            sn->active = 0;  /* Free the slot */
-            g_active_note_count--;
+
+            /* Clear lookup for this note (new note with same note+channel can now be scheduled) */
+            clear_note_lookup(sn->note, sn->channel);
+
+            /* Deactivate and remove from active list */
+            sn->active = 0;
+            remove_from_active(slot);
+            /* Note: i may now point to a different element due to swap,
+             * but we're iterating backwards so it's already been processed */
         }
     }
 }
@@ -174,15 +251,18 @@ void process_scheduled_notes(void) {
  * Clear all scheduled notes and send note-off for any active notes.
  */
 void clear_scheduled_notes(void) {
-    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
-        scheduled_note_t *sn = &g_scheduled_notes[i];
-        if (sn->active && sn->on_sent && !sn->off_sent) {
+    /* Send note-off for all active notes that have started */
+    for (int i = 0; i < g_active_note_count; i++) {
+        int slot = g_active_indices[i];
+        scheduled_note_t *sn = &g_scheduled_notes[slot];
+        if (sn->on_sent && !sn->off_sent) {
             send_note_off(sn->sent_note, sn->channel);
         }
-        sn->active = 0;
-        sn->on_sent = 0;
-        sn->off_sent = 0;
     }
+
+    /* Reset all data structures */
+    memset(g_scheduled_notes, 0, sizeof(g_scheduled_notes));
+    memset(g_note_channel_lookup, -1, sizeof(g_note_channel_lookup));
     g_active_note_count = 0;
 }
 
@@ -191,18 +271,23 @@ void clear_scheduled_notes(void) {
  * Sends note-off for any currently playing notes and cancels pending notes.
  */
 void cut_channel_notes(uint8_t channel) {
-    for (int i = 0; i < MAX_SCHEDULED_NOTES; i++) {
-        scheduled_note_t *sn = &g_scheduled_notes[i];
+    /* Iterate backwards since we may remove elements */
+    for (int i = g_active_note_count - 1; i >= 0; i--) {
+        int slot = g_active_indices[i];
+        scheduled_note_t *sn = &g_scheduled_notes[slot];
+
         if (sn->active && sn->channel == channel) {
             /* Send note-off for any note that has started but not ended */
             if (sn->on_sent && !sn->off_sent) {
                 send_note_off(sn->sent_note, sn->channel);
             }
-            /* Cancel the slot */
+
+            /* Clear lookup and deactivate */
+            clear_note_lookup(sn->note, sn->channel);
             sn->active = 0;
             sn->on_sent = 0;
             sn->off_sent = 0;
-            g_active_note_count--;
+            remove_from_active(slot);
         }
     }
 }

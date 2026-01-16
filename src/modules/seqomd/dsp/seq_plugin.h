@@ -193,6 +193,7 @@ typedef struct {
     uint8_t track_idx;      /* Track index for chord_follow lookup */
     int8_t sequence_transpose;  /* Sequence transpose value at schedule time */
     uint8_t sent_note;      /* Actual note sent (for note-off matching) */
+    int16_t active_idx;     /* Index in g_active_indices for O(1) removal (-1 if inactive) */
 } scheduled_note_t;
 
 /* Transpose step - one entry in the transpose sequence */
@@ -222,6 +223,14 @@ extern track_t g_tracks[NUM_TRACKS];
 /* Centralized note scheduler */
 extern scheduled_note_t g_scheduled_notes[MAX_SCHEDULED_NOTES];
 extern int g_active_note_count;  /* Number of active notes (for early-exit optimization) */
+
+/* Scheduler optimization: active-indices array for O(n) iteration instead of O(512) */
+extern int g_active_indices[MAX_SCHEDULED_NOTES];  /* Indices of active slots */
+
+/* Scheduler optimization: note-channel lookup for O(1) conflict detection
+ * Index = (note * 16 + channel), value = slot index or -1 if no active note */
+#define NOTE_CHANNEL_LOOKUP_SIZE (128 * 16)
+extern int16_t g_note_channel_lookup[NOTE_CHANNEL_LOOKUP_SIZE];
 
 /* Global playback state */
 extern int g_bpm;

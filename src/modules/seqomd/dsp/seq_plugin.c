@@ -53,6 +53,12 @@ track_t g_tracks[NUM_TRACKS];
 scheduled_note_t g_scheduled_notes[MAX_SCHEDULED_NOTES];
 int g_active_note_count = 0;  /* Number of active notes (for early-exit optimization) */
 
+/* Scheduler optimization: active-indices for O(n) iteration */
+int g_active_indices[MAX_SCHEDULED_NOTES];
+
+/* Scheduler optimization: note-channel lookup for O(1) conflict detection */
+int16_t g_note_channel_lookup[NOTE_CHANNEL_LOOKUP_SIZE];
+
 /* Global playback state */
 int g_bpm = 120;
 int g_playing = 0;
@@ -127,6 +133,9 @@ static int plugin_on_load(const char *module_dir, const char *json_defaults) {
     /* Clear note scheduler */
     memset(g_scheduled_notes, 0, sizeof(g_scheduled_notes));
     g_active_note_count = 0;
+
+    /* Initialize scheduler optimization structures */
+    memset(g_note_channel_lookup, -1, sizeof(g_note_channel_lookup));
 
     /* Parse BPM from defaults if provided */
     if (json_defaults) {
