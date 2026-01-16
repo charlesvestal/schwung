@@ -827,13 +827,22 @@ function drawModuleDetail() {
 
     /* Show version transition if update available, otherwise just new version */
     let versionStr;
+    let title = currentModule.name;
     if (status.installed && status.hasUpdate) {
         const installedVer = installedModules[currentModule.id] || '?';
-        versionStr = `${installedVer} -> ${currentModule.latest_version}`;
+        versionStr = `${installedVer}->${currentModule.latest_version}`;
+        /* Truncate title to fit with version transition (max ~8 chars) */
+        if (title.length > 8) {
+            title = title.substring(0, 7) + '~';
+        }
     } else {
         versionStr = `v${currentModule.latest_version}`;
+        /* More room without transition */
+        if (title.length > 14) {
+            title = title.substring(0, 13) + '~';
+        }
     }
-    drawMenuHeader(currentModule.name, versionStr);
+    drawMenuHeader(title, versionStr);
 
     /* Description */
     const desc = currentModule.description || '';
