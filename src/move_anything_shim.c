@@ -12,6 +12,8 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "host/plugin_api_v1.h"
+
 unsigned char *global_mmap_addr = NULL;
 FILE *output_file;
 int frame_counter = 0;
@@ -37,6 +39,149 @@ int frame_counter = 0;
 #define DISPLAY_BUFFER_SIZE 1024   /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define FRAMES_PER_BLOCK 128
+
+/* ============================================================================
+ * IN-PROCESS SHADOW SYNTH (DX7 POC)
+ * ============================================================================
+ * Load DX7 directly inside the shim and render in the ioctl audio cadence.
+ * This avoids IPC timing drift and provides a stable audio mix proof-of-concept.
+ * ============================================================================ */
+
+#define SHADOW_INPROCESS_POC 1
+#define SHADOW_DX7_MODULE_DIR "/data/UserData/move-anything/modules/dx7"
+#define SHADOW_DX7_DSP_PATH "/data/UserData/move-anything/modules/dx7/dsp.so"
+
+static void *shadow_dsp_handle = NULL;
+static const plugin_api_v1_t *shadow_plugin_v1 = NULL;
+static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
+static void *shadow_plugin_instance = NULL;
+static host_api_v1_t shadow_host_api;
+static int shadow_inprocess_ready = 0;
+
+static void shadow_log(const char *msg) {
+    FILE *log = fopen("/data/UserData/move-anything/shadow_inprocess.log", "a");
+    if (log) {
+        fprintf(log, "%s\n", msg ? msg : "(null)");
+        fclose(log);
+    }
+}
+
+static int shadow_inprocess_load_dx7(void) {
+    if (shadow_inprocess_ready) return 0;
+
+    shadow_dsp_handle = dlopen(SHADOW_DX7_DSP_PATH, RTLD_NOW | RTLD_LOCAL);
+    if (!shadow_dsp_handle) {
+        fprintf(stderr, "Shadow inprocess: failed to load %s: %s\n",
+                SHADOW_DX7_DSP_PATH, dlerror());
+        return -1;
+    }
+
+    memset(&shadow_host_api, 0, sizeof(shadow_host_api));
+    shadow_host_api.api_version = MOVE_PLUGIN_API_VERSION;
+    shadow_host_api.sample_rate = MOVE_SAMPLE_RATE;
+    shadow_host_api.frames_per_block = MOVE_FRAMES_PER_BLOCK;
+    shadow_host_api.mapped_memory = global_mmap_addr;
+    shadow_host_api.audio_out_offset = MOVE_AUDIO_OUT_OFFSET;
+    shadow_host_api.audio_in_offset = MOVE_AUDIO_IN_OFFSET;
+    shadow_host_api.log = shadow_log;
+
+    move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(
+        shadow_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
+    if (init_v2) {
+        shadow_plugin_v2 = init_v2(&shadow_host_api);
+        if (shadow_plugin_v2 && shadow_plugin_v2->create_instance) {
+            shadow_plugin_instance = shadow_plugin_v2->create_instance(
+                SHADOW_DX7_MODULE_DIR,
+                "{\"syx_path\":\"/data/UserData/move-anything/modules/dx7/patches.syx\",\"preset\":0}");
+        }
+    }
+
+    if (!shadow_plugin_instance) {
+        move_plugin_init_v1_fn init_v1 = (move_plugin_init_v1_fn)dlsym(
+            shadow_dsp_handle, MOVE_PLUGIN_INIT_SYMBOL);
+        if (!init_v1) {
+            fprintf(stderr, "Shadow inprocess: failed to find %s: %s\n",
+                    MOVE_PLUGIN_INIT_SYMBOL, dlerror());
+            dlclose(shadow_dsp_handle);
+            shadow_dsp_handle = NULL;
+            return -1;
+        }
+
+        shadow_plugin_v1 = init_v1(&shadow_host_api);
+        if (!shadow_plugin_v1) {
+            fprintf(stderr, "Shadow inprocess: plugin init returned NULL\n");
+            dlclose(shadow_dsp_handle);
+            shadow_dsp_handle = NULL;
+            return -1;
+        }
+
+        if (shadow_plugin_v1->on_load) {
+            int result = shadow_plugin_v1->on_load(
+                SHADOW_DX7_MODULE_DIR,
+                "{\"syx_path\":\"/data/UserData/move-anything/modules/dx7/patches.syx\",\"preset\":0}");
+            if (result != 0) {
+                fprintf(stderr, "Shadow inprocess: on_load failed: %d\n", result);
+                dlclose(shadow_dsp_handle);
+                shadow_dsp_handle = NULL;
+                shadow_plugin_v1 = NULL;
+                return -1;
+            }
+        }
+    }
+
+    shadow_inprocess_ready = 1;
+    if (shadow_control) {
+        /* Allow display hotkey when running in-process DSP. */
+        shadow_control->shadow_ready = 1;
+    }
+    shadow_log("Shadow inprocess: DX7 loaded");
+    return 0;
+}
+
+static void shadow_inprocess_process_midi(void) {
+    if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    const uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        const uint8_t *pkt = &src[i];
+        if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
+
+        uint8_t cable = (pkt[0] >> 4) & 0x0F;
+        uint8_t cin = pkt[0] & 0x0F;
+
+        if (pkt[1] == 0xFE || pkt[1] == 0xF8 || cin == 0x0F) continue;
+        if (cable != 0) continue;
+        if (cin < 0x08 || cin > 0x0E) continue;
+
+        if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
+            shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
+                                      MOVE_MIDI_SOURCE_INTERNAL);
+        } else if (shadow_plugin_v1 && shadow_plugin_v1->on_midi) {
+            shadow_plugin_v1->on_midi(&pkt[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
+        }
+    }
+}
+
+static void shadow_inprocess_mix_audio(void) {
+    if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    int16_t render_buffer[FRAMES_PER_BLOCK * 2];
+    memset(render_buffer, 0, sizeof(render_buffer));
+
+    if (shadow_plugin_v2 && shadow_plugin_v2->render_block && shadow_plugin_instance) {
+        shadow_plugin_v2->render_block(shadow_plugin_instance, render_buffer, MOVE_FRAMES_PER_BLOCK);
+    } else if (shadow_plugin_v1 && shadow_plugin_v1->render_block) {
+        shadow_plugin_v1->render_block(render_buffer, MOVE_FRAMES_PER_BLOCK);
+    }
+
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)render_buffer[i];
+        if (mixed > 32767) mixed = 32767;
+        if (mixed < -32768) mixed = -32768;
+        mailbox_audio[i] = (int16_t)mixed;
+    }
+}
 
 /* Shared memory segment names */
 #define SHM_SHADOW_AUDIO    "/move-shadow-audio"    /* Shadow's mixed output */
@@ -440,6 +585,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         global_mmap_addr = result;
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
+#if SHADOW_INPROCESS_POC
+        shadow_inprocess_load_dx7();
+#endif
     }
 
     printf("mmap hooked! addr=%p, length=%zu, prot=%d, flags=%d, fd=%d, offset=%lld, result=%p\n",
@@ -676,6 +824,11 @@ int ioctl(int fd, unsigned long request, char *argp)
 
     /* Mix shadow audio into mailbox BEFORE hardware transaction */
     shadow_mix_audio();
+
+#if SHADOW_INPROCESS_POC
+    shadow_inprocess_process_midi();
+    shadow_inprocess_mix_audio();
+#endif
 
     /* Swap display if in shadow mode BEFORE hardware transaction */
     shadow_swap_display();
