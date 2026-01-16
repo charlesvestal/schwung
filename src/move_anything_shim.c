@@ -1312,6 +1312,7 @@ static void shadow_capture_midi_probe(void)
 
 /* Debug counter for display swap */
 static int display_swap_debug_counter = 0;
+static int shadow_display_init = 0;
 
 /* Swap display buffer if in shadow mode */
 static void shadow_swap_display(void)
@@ -1339,6 +1340,18 @@ static void shadow_swap_display(void)
                     shadow_control->display_mode, shadow_control->shadow_ready);
             fflush(debug_log);
         }
+    }
+
+    /* Seed display with a basic pattern so shadow mode isn't black */
+    if (!shadow_display_init) {
+        memset(shadow_display_shm, 0, DISPLAY_BUFFER_SIZE);
+        /* Light a couple bytes per row as a visible marker */
+        for (int row = 0; row < 64; row++) {
+            int base = row * 16;
+            shadow_display_shm[base] = 0x81;      /* two pixels at edges */
+            shadow_display_shm[base + 1] = 0x18;  /* a small block */
+        }
+        shadow_display_init = 1;
     }
 
     /* Overwrite mailbox display with shadow display */
@@ -1721,14 +1734,10 @@ static int within_window(uint64_t now, uint64_t ts, uint64_t window_ms)
 
 static void maybe_toggle_shadow(void)
 {
-    const uint64_t window_ms = 600;
-    const uint64_t now = now_mono_ms();
-
     if (shadowModeDebounce) return;
 
-    if (within_window(now, shift_on_ms, window_ms) &&
-        within_window(now, vol_on_ms, window_ms) &&
-        within_window(now, knob1_on_ms, window_ms))
+    /* Toggle when all three are held, not just pressed within a window. */
+    if (shiftHeld && volumeTouched && knob1touched)
     {
         shadowModeDebounce = 1;
         log_hotkey_state("toggle");
