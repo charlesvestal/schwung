@@ -200,6 +200,8 @@ export function syncAllTracksToDSP() {
         setParam(`track_${t}_arp_speed`, String(track.arpSpeed || 0));
         setParam(`track_${t}_arp_octave`, String(track.arpOctave || 0));
         setParam(`track_${t}_arp_continuous`, String(track.arpContinuous || 0));
+        setParam(`track_${t}_arp_play_steps`, String(track.arpPlaySteps !== undefined ? track.arpPlaySteps : 1));
+        setParam(`track_${t}_arp_play_start`, String(track.arpPlayStart !== undefined ? track.arpPlayStart : 0));
 
         /* Sync track-level CC defaults */
         setParam(`track_${t}_cc1_default`, String(track.cc1Default !== undefined ? track.cc1Default : 64));
@@ -285,6 +287,12 @@ export function syncAllTracksToDSP() {
             }
             if (step.arpLayer !== undefined) {
                 setParam(`track_${t}_step_${s}_arp_layer`, String(step.arpLayer));
+            }
+            if (step.arpPlaySteps !== undefined) {
+                setParam(`track_${t}_step_${s}_arp_play_steps`, String(step.arpPlaySteps));
+            }
+            if (step.arpPlayStart !== undefined) {
+                setParam(`track_${t}_step_${s}_arp_play_start`, String(step.arpPlayStart));
             }
         }
     }

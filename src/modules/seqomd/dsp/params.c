@@ -110,6 +110,8 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
         s->arp_mode = -1;
         s->arp_speed = -1;
         s->arp_layer = ARP_LAYER_LAYER;
+        s->arp_play_steps = -1;
+        s->arp_play_start = -1;
         if (g_chord_follow[track_idx]) {
             g_scale_dirty = 1;
         }
