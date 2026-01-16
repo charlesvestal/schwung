@@ -47,7 +47,9 @@ typedef struct module_manager {
     /* Currently loaded module */
     int current_module_index;  /* -1 if none */
     void *dsp_handle;          /* dlopen handle */
-    plugin_api_v1_t *plugin;   /* plugin API returned by init */
+    plugin_api_v1_t *plugin;   /* plugin API returned by init (v1) */
+    plugin_api_v2_t *plugin_v2; /* plugin API for v2 plugins */
+    void *plugin_instance;      /* v2 instance pointer */
 
     /* Host API instance (passed to plugins) */
     host_api_v1_t host_api;

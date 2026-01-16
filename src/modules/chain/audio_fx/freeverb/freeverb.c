@@ -10,7 +10,8 @@
 #include <string.h>
 #include <math.h>
 
-#include "host/audio_fx_api_v1.h"
+#include "host/plugin_api_v1.h"
+#include "host/audio_fx_api_v2.h"
 
 /* Freeverb constants */
 #define NUM_COMBS 8
@@ -48,32 +49,34 @@ typedef struct {
     int bufidx;
 } allpass_filter_t;
 
-/* Plugin state */
+/* V2 API - Instance-based (V1 API removed) */
 static const host_api_v1_t *g_host = NULL;
-static audio_fx_api_v1_t g_fx_api;
 
-/* Reverb parameters */
-static float g_room_size = 0.5f;
-static float g_damping = 0.5f;
-static float g_wet = 0.3f;
-static float g_dry = 0.7f;
-static float g_width = 1.0f;
+/* Instance structure */
+typedef struct {
+    /* Reverb parameters */
+    float room_size;
+    float damping;
+    float wet;
+    float dry;
+    float width;
 
-/* Derived parameters */
-static float g_feedback;
-static float g_damp1;
-static float g_damp2;
-static float g_wet1;
-static float g_wet2;
+    /* Derived parameters */
+    float feedback;
+    float damp1;
+    float damp2;
+    float wet1;
+    float wet2;
 
-/* Filter instances */
-static comb_filter_t g_comb_l[NUM_COMBS];
-static comb_filter_t g_comb_r[NUM_COMBS];
-static allpass_filter_t g_allpass_l[NUM_ALLPASSES];
-static allpass_filter_t g_allpass_r[NUM_ALLPASSES];
+    /* Filter instances */
+    comb_filter_t comb_l[NUM_COMBS];
+    comb_filter_t comb_r[NUM_COMBS];
+    allpass_filter_t allpass_l[NUM_ALLPASSES];
+    allpass_filter_t allpass_r[NUM_ALLPASSES];
+} freeverb_instance_t;
 
 /* Logging helper */
-static void fx_log(const char *msg) {
+static void v2_log(const char *msg) {
     if (g_host && g_host->log) {
         char buf[256];
         snprintf(buf, sizeof(buf), "[freeverb] %s", msg);
@@ -89,11 +92,11 @@ static void comb_init(comb_filter_t *c, int size) {
     c->filterstore = 0.0f;
 }
 
-/* Process one sample through comb filter */
-static inline float comb_process(comb_filter_t *c, float input) {
+/* Process one sample through comb filter (instance-based) */
+static inline float comb_process(comb_filter_t *c, float input, float feedback, float damp1, float damp2) {
     float output = c->buffer[c->bufidx];
-    c->filterstore = (output * g_damp2) + (c->filterstore * g_damp1);
-    c->buffer[c->bufidx] = input + (c->filterstore * g_feedback);
+    c->filterstore = (output * damp2) + (c->filterstore * damp1);
+    c->buffer[c->bufidx] = input + (c->filterstore * feedback);
     if (++c->bufidx >= c->bufsize) c->bufidx = 0;
     return output;
 }
@@ -114,45 +117,66 @@ static inline float allpass_process(allpass_filter_t *a, float input) {
     return output;
 }
 
-/* Update derived parameters */
-static void update_params(void) {
-    g_feedback = g_room_size * 0.28f + 0.7f;
-    g_damp1 = g_damping * 0.4f;
-    g_damp2 = 1.0f - g_damp1;
-    g_wet1 = g_wet * (g_width / 2.0f + 0.5f);
-    g_wet2 = g_wet * ((1.0f - g_width) / 2.0f);
+/* Update derived parameters (instance-based) */
+static void v2_update_params(freeverb_instance_t *inst) {
+    inst->feedback = inst->room_size * 0.28f + 0.7f;
+    inst->damp1 = inst->damping * 0.4f;
+    inst->damp2 = 1.0f - inst->damp1;
+    inst->wet1 = inst->wet * (inst->width / 2.0f + 0.5f);
+    inst->wet2 = inst->wet * ((1.0f - inst->width) / 2.0f);
 }
 
-/* === Audio FX API Implementation === */
+/* === V2 API Implementation === */
 
-static int fx_on_load(const char *module_dir, const char *config_json) {
-    char msg[256];
-    snprintf(msg, sizeof(msg), "Freeverb loading from: %s", module_dir);
-    fx_log(msg);
+static void* v2_create_instance(const char *module_dir, const char *config_json) {
+    (void)module_dir;
+    (void)config_json;
+
+    v2_log("Creating instance");
+
+    freeverb_instance_t *inst = (freeverb_instance_t*)calloc(1, sizeof(freeverb_instance_t));
+    if (!inst) {
+        v2_log("Failed to allocate instance");
+        return NULL;
+    }
+
+    /* Set default parameters */
+    inst->room_size = 0.5f;
+    inst->damping = 0.5f;
+    inst->wet = 0.3f;
+    inst->dry = 0.7f;
+    inst->width = 1.0f;
 
     /* Initialize comb filters */
     for (int i = 0; i < NUM_COMBS; i++) {
-        comb_init(&g_comb_l[i], comb_tuning_l[i]);
-        comb_init(&g_comb_r[i], comb_tuning_r[i]);
+        comb_init(&inst->comb_l[i], comb_tuning_l[i]);
+        comb_init(&inst->comb_r[i], comb_tuning_r[i]);
     }
 
     /* Initialize allpass filters */
     for (int i = 0; i < NUM_ALLPASSES; i++) {
-        allpass_init(&g_allpass_l[i], allpass_tuning_l[i]);
-        allpass_init(&g_allpass_r[i], allpass_tuning_r[i]);
+        allpass_init(&inst->allpass_l[i], allpass_tuning_l[i]);
+        allpass_init(&inst->allpass_r[i], allpass_tuning_r[i]);
     }
 
-    update_params();
+    v2_update_params(inst);
 
-    fx_log("Freeverb initialized");
-    return 0;
+    v2_log("Instance created");
+    return inst;
 }
 
-static void fx_on_unload(void) {
-    fx_log("Freeverb unloading");
+static void v2_destroy_instance(void *instance) {
+    freeverb_instance_t *inst = (freeverb_instance_t*)instance;
+    if (!inst) return;
+
+    v2_log("Destroying instance");
+    free(inst);
 }
 
-static void fx_process_block(int16_t *audio_inout, int frames) {
+static void v2_process_block(void *instance, int16_t *audio_inout, int frames) {
+    freeverb_instance_t *inst = (freeverb_instance_t*)instance;
+    if (!inst) return;
+
     for (int i = 0; i < frames; i++) {
         /* Convert to float (-1.0 to 1.0) */
         float in_l = audio_inout[i * 2] / 32768.0f;
@@ -166,8 +190,8 @@ static void fx_process_block(int16_t *audio_inout, int frames) {
         float out_r = 0.0f;
 
         for (int c = 0; c < NUM_COMBS; c++) {
-            out_l += comb_process(&g_comb_l[c], input);
-            out_r += comb_process(&g_comb_r[c], input);
+            out_l += comb_process(&inst->comb_l[c], input, inst->feedback, inst->damp1, inst->damp2);
+            out_r += comb_process(&inst->comb_r[c], input, inst->feedback, inst->damp1, inst->damp2);
         }
 
         /* Scale down comb output (8 filters summed) */
@@ -176,13 +200,13 @@ static void fx_process_block(int16_t *audio_inout, int frames) {
 
         /* Pass through allpass filters in series */
         for (int a = 0; a < NUM_ALLPASSES; a++) {
-            out_l = allpass_process(&g_allpass_l[a], out_l);
-            out_r = allpass_process(&g_allpass_r[a], out_r);
+            out_l = allpass_process(&inst->allpass_l[a], out_l);
+            out_r = allpass_process(&inst->allpass_r[a], out_r);
         }
 
         /* Mix wet and dry */
-        float mix_l = out_l * g_wet1 + out_r * g_wet2 + in_l * g_dry;
-        float mix_r = out_r * g_wet1 + out_l * g_wet2 + in_r * g_dry;
+        float mix_l = out_l * inst->wet1 + out_r * inst->wet2 + in_l * inst->dry;
+        float mix_r = out_r * inst->wet1 + out_l * inst->wet2 + in_r * inst->dry;
 
         /* Clamp and convert back to int16 */
         if (mix_l > 1.0f) mix_l = 1.0f;
@@ -195,55 +219,63 @@ static void fx_process_block(int16_t *audio_inout, int frames) {
     }
 }
 
-static void fx_set_param(const char *key, const char *val) {
+static void v2_set_param(void *instance, const char *key, const char *val) {
+    freeverb_instance_t *inst = (freeverb_instance_t*)instance;
+    if (!inst) return;
+
     float v = atof(val);
 
     if (strcmp(key, "room_size") == 0) {
-        g_room_size = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        inst->room_size = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     } else if (strcmp(key, "damping") == 0) {
-        g_damping = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        inst->damping = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     } else if (strcmp(key, "wet") == 0) {
-        g_wet = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        inst->wet = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     } else if (strcmp(key, "dry") == 0) {
-        g_dry = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        inst->dry = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     } else if (strcmp(key, "width") == 0) {
-        g_width = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        inst->width = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     }
 
-    update_params();
+    v2_update_params(inst);
 }
 
-static int fx_get_param(const char *key, char *buf, int buf_len) {
+static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
+    freeverb_instance_t *inst = (freeverb_instance_t*)instance;
+    if (!inst) return -1;
+
     if (strcmp(key, "room_size") == 0) {
-        return snprintf(buf, buf_len, "%.2f", g_room_size);
+        return snprintf(buf, buf_len, "%.2f", inst->room_size);
     } else if (strcmp(key, "damping") == 0) {
-        return snprintf(buf, buf_len, "%.2f", g_damping);
+        return snprintf(buf, buf_len, "%.2f", inst->damping);
     } else if (strcmp(key, "wet") == 0) {
-        return snprintf(buf, buf_len, "%.2f", g_wet);
+        return snprintf(buf, buf_len, "%.2f", inst->wet);
     } else if (strcmp(key, "dry") == 0) {
-        return snprintf(buf, buf_len, "%.2f", g_dry);
+        return snprintf(buf, buf_len, "%.2f", inst->dry);
     } else if (strcmp(key, "width") == 0) {
-        return snprintf(buf, buf_len, "%.2f", g_width);
+        return snprintf(buf, buf_len, "%.2f", inst->width);
     } else if (strcmp(key, "name") == 0) {
         return snprintf(buf, buf_len, "Freeverb");
     }
     return -1;
 }
 
-/* === Entry Point === */
+/* === V2 Entry Point === */
 
-audio_fx_api_v1_t* move_audio_fx_init_v1(const host_api_v1_t *host) {
+static audio_fx_api_v2_t g_fx_api_v2;
+
+audio_fx_api_v2_t* move_audio_fx_init_v2(const host_api_v1_t *host) {
     g_host = host;
 
-    memset(&g_fx_api, 0, sizeof(g_fx_api));
-    g_fx_api.api_version = AUDIO_FX_API_VERSION;
-    g_fx_api.on_load = fx_on_load;
-    g_fx_api.on_unload = fx_on_unload;
-    g_fx_api.process_block = fx_process_block;
-    g_fx_api.set_param = fx_set_param;
-    g_fx_api.get_param = fx_get_param;
+    memset(&g_fx_api_v2, 0, sizeof(g_fx_api_v2));
+    g_fx_api_v2.api_version = AUDIO_FX_API_VERSION_2;
+    g_fx_api_v2.create_instance = v2_create_instance;
+    g_fx_api_v2.destroy_instance = v2_destroy_instance;
+    g_fx_api_v2.process_block = v2_process_block;
+    g_fx_api_v2.set_param = v2_set_param;
+    g_fx_api_v2.get_param = v2_get_param;
 
-    fx_log("Freeverb plugin initialized");
+    v2_log("Freeverb v2 plugin initialized");
 
-    return &g_fx_api;
+    return &g_fx_api_v2;
 }

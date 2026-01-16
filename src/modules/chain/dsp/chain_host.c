@@ -254,6 +254,9 @@ static const host_api_v1_t *g_host = NULL;
 /* Sub-plugin state */
 static void *g_synth_handle = NULL;
 static plugin_api_v1_t *g_synth_plugin = NULL;
+static plugin_api_v2_t *g_synth_plugin_v2 = NULL;   /* v2 API */
+static void *g_synth_instance = NULL;                /* v2 instance */
+static int g_synth_is_v2 = 0;                        /* 1 if using v2 */
 static char g_current_synth_module[MAX_NAME_LEN] = "";
 
 static void *g_source_handle = NULL;
@@ -267,6 +270,45 @@ static audio_fx_api_v2_t *g_fx_plugins_v2[MAX_AUDIO_FX];     /* v2 API */
 static void *g_fx_instances[MAX_AUDIO_FX];                   /* v2 instances */
 static int g_fx_is_v2[MAX_AUDIO_FX];                         /* 1 if using v2 */
 static int g_fx_count = 0;
+
+/* Synth V1/V2 helper functions */
+static inline int synth_loaded(void) {
+    return (g_synth_is_v2 && g_synth_plugin_v2 && g_synth_instance) ||
+           (!g_synth_is_v2 && g_synth_plugin);
+}
+
+static inline void synth_on_midi(const uint8_t *msg, int len, int source) {
+    if (g_synth_is_v2 && g_synth_plugin_v2 && g_synth_plugin_v2->on_midi && g_synth_instance) {
+        g_synth_plugin_v2->on_midi(g_synth_instance, msg, len, source);
+    } else if (g_synth_plugin && g_synth_plugin->on_midi) {
+        g_synth_plugin->on_midi(msg, len, source);
+    }
+}
+
+static inline void synth_set_param(const char *key, const char *val) {
+    if (g_synth_is_v2 && g_synth_plugin_v2 && g_synth_plugin_v2->set_param && g_synth_instance) {
+        g_synth_plugin_v2->set_param(g_synth_instance, key, val);
+    } else if (g_synth_plugin && g_synth_plugin->set_param) {
+        g_synth_plugin->set_param(key, val);
+    }
+}
+
+static inline int synth_get_param(const char *key, char *buf, int buf_len) {
+    if (g_synth_is_v2 && g_synth_plugin_v2 && g_synth_plugin_v2->get_param && g_synth_instance) {
+        return g_synth_plugin_v2->get_param(g_synth_instance, key, buf, buf_len);
+    } else if (g_synth_plugin && g_synth_plugin->get_param) {
+        return g_synth_plugin->get_param(key, buf, buf_len);
+    }
+    return -1;
+}
+
+static inline void synth_render_block(int16_t *out, int frames) {
+    if (g_synth_is_v2 && g_synth_plugin_v2 && g_synth_plugin_v2->render_block && g_synth_instance) {
+        g_synth_plugin_v2->render_block(g_synth_instance, out, frames);
+    } else if (g_synth_plugin && g_synth_plugin->render_block) {
+        g_synth_plugin->render_block(out, frames);
+    }
+}
 
 /* Module parameter info (from chain_params in module.json) */
 static chain_param_info_t g_synth_params[MAX_CHAIN_PARAMS];
@@ -794,13 +836,13 @@ static int arp_get_next_note(void) {
 
 /* Send note to synth (helper for arp) */
 static void arp_send_note(uint8_t note, uint8_t velocity, int note_on) {
-    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+    if (!synth_loaded()) return;
 
     uint8_t msg[3];
     msg[0] = note_on ? 0x90 : 0x80;  /* Note on/off, channel 0 */
     msg[1] = note;
     msg[2] = velocity;
-    g_synth_plugin->on_midi(msg, 3, 0);
+    synth_on_midi(msg, 3, 0);
 }
 
 /* Arp tick - called each render block */
@@ -852,48 +894,37 @@ static int load_synth(const char *module_path, const char *config_json) {
         return -1;
     }
 
-    /* Get init function */
-    move_plugin_init_v1_fn init_fn = (move_plugin_init_v1_fn)dlsym(g_synth_handle, MOVE_PLUGIN_INIT_SYMBOL);
-    if (!init_fn) {
-        snprintf(msg, sizeof(msg), "dlsym failed: %s", dlerror());
-        chain_log(msg);
+    int plugin_loaded = 0;
+
+    /* V2 API required */
+    move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(g_synth_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
+    if (!init_v2) {
+        chain_log("Synth plugin does not support V2 API (V2 required)");
         dlclose(g_synth_handle);
         g_synth_handle = NULL;
         return -1;
     }
 
-    /* Initialize sub-plugin with our forwarding host API */
-    g_synth_plugin = init_fn(&g_subplugin_host_api);
-    if (!g_synth_plugin) {
-        chain_log("Synth plugin init returned NULL");
+    g_synth_plugin_v2 = init_v2(&g_subplugin_host_api);
+    if (!g_synth_plugin_v2 || g_synth_plugin_v2->api_version != MOVE_PLUGIN_API_VERSION_2) {
+        chain_log("Synth V2 API version mismatch");
         dlclose(g_synth_handle);
         g_synth_handle = NULL;
         return -1;
     }
 
-    /* Verify API version */
-    if (g_synth_plugin->api_version != MOVE_PLUGIN_API_VERSION) {
-        snprintf(msg, sizeof(msg), "Synth API version mismatch: %d vs %d",
-                 g_synth_plugin->api_version, MOVE_PLUGIN_API_VERSION);
-        chain_log(msg);
+    g_synth_instance = g_synth_plugin_v2->create_instance(module_path, config_json);
+    if (!g_synth_instance) {
+        chain_log("Synth V2 create_instance failed");
         dlclose(g_synth_handle);
         g_synth_handle = NULL;
-        g_synth_plugin = NULL;
+        g_synth_plugin_v2 = NULL;
         return -1;
     }
 
-    /* Call on_load */
-    if (g_synth_plugin->on_load) {
-        int ret = g_synth_plugin->on_load(module_path, config_json);
-        if (ret != 0) {
-            snprintf(msg, sizeof(msg), "Synth on_load failed: %d", ret);
-            chain_log(msg);
-            dlclose(g_synth_handle);
-            g_synth_handle = NULL;
-            g_synth_plugin = NULL;
-            return -1;
-        }
-    }
+    g_synth_is_v2 = 1;
+    plugin_loaded = 1;
+    chain_log("Synth loaded with V2 API");
 
     /* Parse chain_params from module.json */
     parse_chain_params(module_path, g_synth_params, &g_synth_param_count);
@@ -993,14 +1024,25 @@ static void unload_midi_source(void) {
 
 /* Unload synth sub-plugin */
 static void unload_synth(void) {
-    if (g_synth_plugin && g_synth_plugin->on_unload) {
-        g_synth_plugin->on_unload();
+    if (g_synth_is_v2 && g_synth_plugin_v2) {
+        /* V2: destroy instance */
+        if (g_synth_plugin_v2->destroy_instance && g_synth_instance) {
+            g_synth_plugin_v2->destroy_instance(g_synth_instance);
+        }
+        g_synth_instance = NULL;
+        g_synth_plugin_v2 = NULL;
+    } else if (g_synth_plugin) {
+        /* V1: call on_unload */
+        if (g_synth_plugin->on_unload) {
+            g_synth_plugin->on_unload();
+        }
+        g_synth_plugin = NULL;
     }
     if (g_synth_handle) {
         dlclose(g_synth_handle);
         g_synth_handle = NULL;
     }
-    g_synth_plugin = NULL;
+    g_synth_is_v2 = 0;
     g_current_synth_module[0] = '\0';
 }
 
@@ -1044,75 +1086,43 @@ static int load_audio_fx(const char *fx_name) {
 
     int slot = g_fx_count;
 
-    /* Try v2 API first */
+    /* V2 API required */
     audio_fx_init_v2_fn init_v2_fn = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
-    if (init_v2_fn) {
-        audio_fx_api_v2_t *fx_v2 = init_v2_fn(&g_subplugin_host_api);
-        if (fx_v2 && fx_v2->api_version == AUDIO_FX_API_VERSION_2) {
-            void *instance = fx_v2->create_instance(fx_dir, NULL);
-            if (instance) {
-                g_fx_handles[slot] = handle;
-                g_fx_plugins[slot] = NULL;
-                g_fx_plugins_v2[slot] = fx_v2;
-                g_fx_instances[slot] = instance;
-                g_fx_is_v2[slot] = 1;
-
-                parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
-                g_fx_count++;
-
-                snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)",
-                         fx_name, slot, g_fx_param_counts[slot]);
-                chain_log(msg);
-                return 0;
-            }
-        }
-    }
-
-    /* Fall back to v1 API */
-    audio_fx_init_v1_fn init_fn = (audio_fx_init_v1_fn)dlsym(handle, AUDIO_FX_INIT_SYMBOL);
-    if (!init_fn) {
-        snprintf(msg, sizeof(msg), "dlsym failed: %s", dlerror());
+    if (!init_v2_fn) {
+        snprintf(msg, sizeof(msg), "Audio FX %s does not support V2 API (V2 required)", fx_name);
         chain_log(msg);
         dlclose(handle);
         return -1;
     }
 
-    audio_fx_api_v1_t *fx = init_fn(&g_subplugin_host_api);
-    if (!fx) {
-        chain_log("FX plugin init returned NULL");
-        dlclose(handle);
-        return -1;
-    }
-
-    if (fx->api_version != AUDIO_FX_API_VERSION) {
-        snprintf(msg, sizeof(msg), "FX API version mismatch: %d vs %d",
-                 fx->api_version, AUDIO_FX_API_VERSION);
+    audio_fx_api_v2_t *fx_v2 = init_v2_fn(&g_subplugin_host_api);
+    if (!fx_v2 || fx_v2->api_version != AUDIO_FX_API_VERSION_2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 API version mismatch", fx_name);
         chain_log(msg);
         dlclose(handle);
         return -1;
     }
 
-    if (fx->on_load) {
-        if (fx->on_load(fx_dir, NULL) != 0) {
-            chain_log("FX on_load failed");
-            dlclose(handle);
-            return -1;
-        }
+    void *instance = fx_v2->create_instance(fx_dir, NULL);
+    if (!instance) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 create_instance failed", fx_name);
+        chain_log(msg);
+        dlclose(handle);
+        return -1;
     }
 
     g_fx_handles[slot] = handle;
-    g_fx_plugins[slot] = fx;
-    g_fx_plugins_v2[slot] = NULL;
-    g_fx_instances[slot] = NULL;
-    g_fx_is_v2[slot] = 0;
+    g_fx_plugins[slot] = NULL;
+    g_fx_plugins_v2[slot] = fx_v2;
+    g_fx_instances[slot] = instance;
+    g_fx_is_v2[slot] = 1;
 
     parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
     g_fx_count++;
 
-    snprintf(msg, sizeof(msg), "Audio FX v1 loaded: %s (slot %d, %d params)",
+    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)",
              fx_name, slot, g_fx_param_counts[slot]);
     chain_log(msg);
-
     return 0;
 }
 
@@ -1877,8 +1887,8 @@ static void generate_patch_name(char *out, int out_len,
     char preset_name[MAX_NAME_LEN] = "";
 
     /* Try to get preset name from synth */
-    if (g_synth_plugin && g_synth_plugin->get_param) {
-        g_synth_plugin->get_param("preset_name", preset_name, sizeof(preset_name));
+    if (synth_loaded()) {
+        synth_get_param("preset_name", preset_name, sizeof(preset_name));
     }
 
     if (preset_name[0] != '\0') {
@@ -2183,14 +2193,14 @@ static int scan_patches(const char *module_dir) {
 
 /* Send all-notes-off to synth to prevent stuck notes */
 static void synth_panic(void) {
-    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+    if (!synth_loaded()) return;
 
     /* Send All Sound Off (CC 120) and All Notes Off (CC 123) on all channels */
     for (int ch = 0; ch < 16; ch++) {
         uint8_t all_sound_off[] = { (uint8_t)(0xB0 | ch), 120, 0 };
         uint8_t all_notes_off[] = { (uint8_t)(0xB0 | ch), 123, 0 };
-        g_synth_plugin->on_midi(all_sound_off, 3, 0);
-        g_synth_plugin->on_midi(all_notes_off, 3, 0);
+        synth_on_midi(all_sound_off, 3, 0);
+        synth_on_midi(all_notes_off, 3, 0);
     }
     chain_log("Sent panic (all notes off)");
 }
@@ -2294,10 +2304,10 @@ static int load_patch(int index) {
     }
 
     /* Set preset on synth */
-    if (g_synth_plugin && g_synth_plugin->set_param) {
+    if (synth_loaded()) {
         char preset_str[16];
         snprintf(preset_str, sizeof(preset_str), "%d", patch->synth_preset);
-        g_synth_plugin->set_param("preset", preset_str);
+        synth_set_param("preset", preset_str);
     }
 
     /* Unload old audio FX and load new ones */
@@ -2357,8 +2367,8 @@ static int load_patch(int index) {
                     /* Query the module for the actual max value */
                     char max_buf[32];
                     int got_max = 0;
-                    if (strcmp(target, "synth") == 0 && g_synth_plugin && g_synth_plugin->get_param) {
-                        if (g_synth_plugin->get_param(pinfo->max_param, max_buf, sizeof(max_buf)) >= 0) {
+                    if (strcmp(target, "synth") == 0 && synth_loaded()) {
+                        if (synth_get_param(pinfo->max_param, max_buf, sizeof(max_buf)) >= 0) {
                             g_knob_mappings[i].max_val = (float)(atoi(max_buf) - 1);
                             got_max = 1;
                         }
@@ -2410,8 +2420,8 @@ static int load_patch(int index) {
 
         /* Send to appropriate target */
         if (strcmp(target, "synth") == 0) {
-            if (g_synth_plugin && g_synth_plugin->set_param) {
-                g_synth_plugin->set_param(param, val_str);
+            if (synth_loaded()) {
+                synth_set_param(param, val_str);
             }
         } else if (strcmp(target, "fx1") == 0) {
             if (g_fx_count > 0) {
@@ -2486,11 +2496,11 @@ static void plugin_on_unload(void) {
 
 /* Send a note message to synth with optional interval offset */
 static void send_note_to_synth(const uint8_t *msg, int len, int source, int interval) {
-    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+    if (!synth_loaded()) return;
 
     if (interval == 0) {
         /* No transposition, send as-is */
-        g_synth_plugin->on_midi(msg, len, source);
+        synth_on_midi(msg, len, source);
     } else {
         /* Transpose the note */
         uint8_t transposed[3];
@@ -2500,7 +2510,7 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 
         /* Only send if note is in valid MIDI range */
         if (transposed[1] <= 127) {
-            g_synth_plugin->on_midi(transposed, len, source);
+            synth_on_midi(transposed, len, source);
         }
     }
 }
@@ -2516,7 +2526,7 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
         return;  /* Don't pass record button to synth */
     }
 
-    if (!g_synth_plugin || !g_synth_plugin->on_midi) return;
+    if (!synth_loaded()) return;
 
     /* Handle knob CC mappings (CC 71-78) - relative encoders */
     /* Skip if in component UI mode (UI handles knobs directly) */
@@ -2557,8 +2567,8 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
 
                     if (strcmp(target, "synth") == 0) {
                         /* Route to synth */
-                        if (g_synth_plugin && g_synth_plugin->set_param) {
-                            g_synth_plugin->set_param(param, val_str);
+                        if (synth_loaded()) {
+                            synth_set_param(param, val_str);
                         }
                     } else if (strcmp(target, "fx1") == 0) {
                         /* Route to first audio FX */
@@ -2648,7 +2658,7 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
         }
     } else {
         /* Non-note message or no MIDI FX, forward directly */
-        g_synth_plugin->on_midi(msg, len, source);
+        synth_on_midi(msg, len, source);
     }
 }
 
@@ -2718,8 +2728,8 @@ static void plugin_set_param(const char *key, const char *val) {
     /* Route to synth with synth: prefix */
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
-        if (g_synth_plugin && g_synth_plugin->set_param && subkey[0] != '\0') {
-            g_synth_plugin->set_param(subkey, val);
+        if (synth_loaded() && subkey[0] != '\0') {
+            synth_set_param(subkey, val);
         }
         return;
     }
@@ -2781,8 +2791,8 @@ static void plugin_set_param(const char *key, const char *val) {
     }
 
     /* Forward to synth (includes octave_transpose) */
-    if (g_synth_plugin && g_synth_plugin->set_param) {
-        g_synth_plugin->set_param(key, val);
+    if (synth_loaded()) {
+        synth_set_param(key, val);
     }
 }
 
@@ -2798,8 +2808,8 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     /* Route to synth with synth: prefix */
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
-        if (g_synth_plugin && g_synth_plugin->get_param && subkey[0] != '\0') {
-            return g_synth_plugin->get_param(subkey, buf, buf_len);
+        if (synth_loaded() && subkey[0] != '\0') {
+            return synth_get_param(subkey, buf, buf_len);
         }
         return -1;
     }
@@ -3000,9 +3010,9 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
 
         /* Get current synth preset */
         int current_preset = p->synth_preset;
-        if (g_synth_plugin && g_synth_plugin->get_param) {
+        if (synth_loaded()) {
             char preset_buf[32];
-            if (g_synth_plugin->get_param("preset", preset_buf, sizeof(preset_buf)) >= 0) {
+            if (synth_get_param("preset", preset_buf, sizeof(preset_buf)) >= 0) {
                 current_preset = atoi(preset_buf);
             }
         }
@@ -3069,8 +3079,8 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     }
 
     /* Forward to synth */
-    if (g_synth_plugin && g_synth_plugin->get_param) {
-        return g_synth_plugin->get_param(key, buf, buf_len);
+    if (synth_loaded()) {
+        return synth_get_param(key, buf, buf_len);
     }
     return -1;
 }
@@ -3092,9 +3102,9 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
     /* Process arpeggiator timing (sends notes to synth) */
     arp_tick(frames);
 
-    if (g_synth_plugin && g_synth_plugin->render_block) {
+    if (synth_loaded()) {
         /* Get audio from synth */
-        g_synth_plugin->render_block(out_interleaved_lr, frames);
+        synth_render_block(out_interleaved_lr, frames);
 
         /* Process through audio FX chain */
         for (int i = 0; i < g_fx_count; i++) {
@@ -3415,63 +3425,39 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         return -1;
     }
 
-    /* Try v2 API first */
+    /* V2 API required */
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
-    if (init_v2) {
-        plugin_api_v2_t *api = init_v2(&inst->subplugin_host_api);
-        if (api && api->api_version == MOVE_PLUGIN_API_VERSION_2) {
-            void *synth_inst = api->create_instance(synth_path, NULL);
-            if (synth_inst) {
-                inst->synth_handle = handle;
-                inst->synth_plugin = NULL;
-                inst->synth_plugin_v2 = api;
-                inst->synth_instance = synth_inst;
-                strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
-
-                snprintf(msg, sizeof(msg), "Synth v2 loaded: %s", module_name);
-                v2_chain_log(inst, msg);
-                return 0;
-            }
-        }
-        /* v2 failed, fall through to v1 */
-    }
-
-    /* Fall back to v1 API */
-    move_plugin_init_v1_fn init_v1 = (move_plugin_init_v1_fn)dlsym(handle, MOVE_PLUGIN_INIT_SYMBOL);
-    if (!init_v1) {
-        snprintf(msg, sizeof(msg), "No v1 or v2 entry point found");
+    if (!init_v2) {
+        snprintf(msg, sizeof(msg), "Synth %s does not support V2 API (V2 required)", module_name);
         v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    plugin_api_v1_t *api = init_v1(&inst->subplugin_host_api);
-    if (!api) {
-        v2_chain_log(inst, "Synth init returned NULL");
+    plugin_api_v2_t *api = init_v2(&inst->subplugin_host_api);
+    if (!api || api->api_version != MOVE_PLUGIN_API_VERSION_2) {
+        snprintf(msg, sizeof(msg), "Synth %s V2 API version mismatch", module_name);
+        v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    /* Call on_load */
-    if (api->on_load) {
-        int ret = api->on_load(synth_path, NULL);
-        if (ret != 0) {
-            snprintf(msg, sizeof(msg), "Synth on_load failed: %d", ret);
-            v2_chain_log(inst, msg);
-            dlclose(handle);
-            return -1;
-        }
+    void *synth_inst = api->create_instance(synth_path, NULL);
+    if (!synth_inst) {
+        snprintf(msg, sizeof(msg), "Synth %s V2 create_instance failed", module_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
     }
 
     inst->synth_handle = handle;
-    inst->synth_plugin = api;
-    inst->synth_plugin_v2 = NULL;
-    inst->synth_instance = NULL;
+    inst->synth_plugin = NULL;
+    inst->synth_plugin_v2 = api;
+    inst->synth_instance = synth_inst;
     strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
 
-    snprintf(msg, sizeof(msg), "Synth v1 loaded: %s", module_name);
+    snprintf(msg, sizeof(msg), "Synth v2 loaded: %s", module_name);
     v2_chain_log(inst, msg);
-
     return 0;
 }
 
@@ -3511,58 +3497,40 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
 
     int slot = inst->fx_count;
 
-    /* Try v2 API first */
+    /* V2 API required */
     audio_fx_init_v2_fn init_v2 = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
-    if (init_v2) {
-        audio_fx_api_v2_t *api = init_v2(&inst->subplugin_host_api);
-        if (api && api->api_version == AUDIO_FX_API_VERSION_2) {
-            void *fx_inst = api->create_instance(fx_dir, NULL);
-            if (fx_inst) {
-                inst->fx_handles[slot] = handle;
-                inst->fx_plugins[slot] = NULL;
-                inst->fx_plugins_v2[slot] = api;
-                inst->fx_instances[slot] = fx_inst;
-                inst->fx_is_v2[slot] = 1;
-                inst->fx_count++;
-
-                snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d)", fx_name, slot);
-                v2_chain_log(inst, msg);
-                return 0;
-            }
-        }
-    }
-
-    /* Fall back to v1 API */
-    audio_fx_init_v1_fn init_v1 = (audio_fx_init_v1_fn)dlsym(handle, AUDIO_FX_INIT_SYMBOL);
-    if (!init_v1) {
+    if (!init_v2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s does not support V2 API (V2 required)", fx_name);
+        v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    audio_fx_api_v1_t *api = init_v1(&inst->subplugin_host_api);
-    if (!api) {
+    audio_fx_api_v2_t *api = init_v2(&inst->subplugin_host_api);
+    if (!api || api->api_version != AUDIO_FX_API_VERSION_2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 API version mismatch", fx_name);
+        v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
     }
 
-    if (api->on_load) {
-        int ret = api->on_load(fx_dir, NULL);
-        if (ret != 0) {
-            dlclose(handle);
-            return -1;
-        }
+    void *fx_inst = api->create_instance(fx_dir, NULL);
+    if (!fx_inst) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 create_instance failed", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
     }
 
     inst->fx_handles[slot] = handle;
-    inst->fx_plugins[slot] = api;
-    inst->fx_plugins_v2[slot] = NULL;
-    inst->fx_instances[slot] = NULL;
-    inst->fx_is_v2[slot] = 0;
+    inst->fx_plugins[slot] = NULL;
+    inst->fx_plugins_v2[slot] = api;
+    inst->fx_instances[slot] = fx_inst;
+    inst->fx_is_v2[slot] = 1;
     inst->fx_count++;
 
-    snprintf(msg, sizeof(msg), "Audio FX v1 loaded: %s (slot %d)", fx_name, slot);
+    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d)", fx_name, slot);
     v2_chain_log(inst, msg);
-
     return 0;
 }
 

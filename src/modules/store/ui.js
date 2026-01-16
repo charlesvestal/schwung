@@ -5,6 +5,7 @@
  */
 
 import * as std from 'std';
+import * as os from 'os';
 
 import {
     MidiCC,
@@ -41,6 +42,8 @@ const STATE_REMOVING = 'removing';
 const STATE_RESULT = 'result';
 const STATE_HOST_UPDATE = 'host_update';
 const STATE_UPDATING_HOST = 'updating_host';
+const STATE_UPDATE_ALL = 'update_all';
+const STATE_UPDATING_ALL = 'updating_all';
 
 /* Categories - host update shown separately at top */
 const CATEGORIES = [
@@ -60,8 +63,10 @@ let hostUpdateAvailable = false;
 let selectedCategoryIndex = 0;
 let selectedModuleIndex = 0;
 let selectedActionIndex = 0;
+let selectedUpdateIndex = 0;
 let currentCategory = null;
 let currentModule = null;
+let cameFromUpdateAll = false;
 let errorMessage = '';
 let resultMessage = '';
 let shiftHeld = false;
@@ -113,13 +118,17 @@ function fetchReleaseJson(github_repo) {
 
         const release = JSON.parse(jsonStr);
 
-        /* release.json format: { "version": "x.y.z", "download_url": "..." } */
+        /* release.json format: { "version": "x.y.z", "download_url": "...", "install_path": "..." } */
         if (!release.version || !release.download_url) {
             console.log(`Invalid release.json format for ${github_repo}`);
             return null;
         }
 
-        return { version: release.version, download_url: release.download_url };
+        return {
+            version: release.version,
+            download_url: release.download_url,
+            install_path: release.install_path || ''
+        };
     } catch (e) {
         console.log(`Failed to parse release.json for ${github_repo}: ${e}`);
         return null;
@@ -136,6 +145,7 @@ function fetchAllReleaseInfo() {
         loadingMessage = 'Checking host...';
         draw();
         host_flush_display();
+        os.sleep(30); /* Ensure display updates */
 
         const hostRelease = fetchReleaseJson(catalog.host.github_repo);
         if (hostRelease) {
@@ -159,6 +169,7 @@ function fetchAllReleaseInfo() {
                 if (release) {
                     mod.latest_version = release.version;
                     mod.download_url = release.download_url;
+                    mod.install_path = release.install_path;
                     console.log(`${mod.id} latest: ${release.version}`);
                 } else {
                     /* Fallback: module has no release.json yet */
@@ -259,6 +270,78 @@ function getModuleStatus(mod) {
     return { installed: true, hasUpdate };
 }
 
+/* Get all modules that have updates available */
+function getModulesWithUpdates() {
+    if (!catalog || !catalog.modules) return [];
+    return catalog.modules.filter(mod => {
+        const status = getModuleStatus(mod);
+        return status.installed && status.hasUpdate;
+    });
+}
+
+/* Update all modules that have updates */
+function updateAllModules() {
+    const modulesToUpdate = getModulesWithUpdates();
+    if (modulesToUpdate.length === 0) {
+        state = STATE_RESULT;
+        resultMessage = 'No updates available';
+        return;
+    }
+
+    state = STATE_UPDATING_ALL;
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < modulesToUpdate.length; i++) {
+        const mod = modulesToUpdate[i];
+        loadingTitle = `Updating ${i + 1}/${modulesToUpdate.length}`;
+        loadingMessage = mod.name;
+        draw();
+        host_flush_display();
+
+        /* Check if module has a download URL */
+        if (!mod.download_url) {
+            failCount++;
+            continue;
+        }
+
+        const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
+
+        /* Download the module tarball */
+        const downloadOk = host_http_download(mod.download_url, tarPath);
+        if (!downloadOk) {
+            failCount++;
+            continue;
+        }
+
+        /* Determine extraction path based on module's install_path */
+        let extractDir = MODULES_DIR;
+        if (mod.install_path) {
+            extractDir = `${MODULES_DIR}/${mod.install_path}`;
+        }
+
+        /* Extract to appropriate directory */
+        const extractOk = host_extract_tar(tarPath, extractDir);
+        if (!extractOk) {
+            failCount++;
+            continue;
+        }
+
+        successCount++;
+    }
+
+    /* Rescan modules */
+    host_rescan_modules();
+    scanInstalledModules();
+
+    state = STATE_RESULT;
+    if (failCount === 0) {
+        resultMessage = `Updated ${successCount} module${successCount !== 1 ? 's' : ''}`;
+    } else {
+        resultMessage = `Updated ${successCount}, failed ${failCount}`;
+    }
+}
+
 /* Count modules by category */
 function getCategoryCount(categoryId) {
     return getModulesForCategory(categoryId).length;
@@ -273,6 +356,7 @@ function fetchCatalog() {
     /* Force display update before blocking download */
     draw();
     host_flush_display();
+    os.sleep(50); /* Ensure display updates before blocking download */
 
     /* Try to download fresh catalog (GitHub CDN caches ~5 min) */
     const success = host_http_download(CATALOG_URL, CATALOG_CACHE_PATH);
@@ -363,8 +447,14 @@ function installModule(mod) {
     draw();
     host_flush_display();
 
-    /* Extract to modules directory */
-    const extractOk = host_extract_tar(tarPath, MODULES_DIR);
+    /* Determine extraction path based on module's install_path */
+    let extractDir = MODULES_DIR;
+    if (mod.install_path) {
+        extractDir = `${MODULES_DIR}/${mod.install_path}`;
+    }
+
+    /* Extract to appropriate directory */
+    const extractOk = host_extract_tar(tarPath, extractDir);
     if (!extractOk) {
         state = STATE_RESULT;
         resultMessage = 'Extract failed';
@@ -389,7 +479,11 @@ function removeModule(mod) {
     draw();
     host_flush_display();
 
-    const modulePath = `${MODULES_DIR}/${mod.id}`;
+    /* Determine module path based on install_path */
+    let modulePath = `${MODULES_DIR}/${mod.id}`;
+    if (mod.install_path) {
+        modulePath = `${MODULES_DIR}/${mod.install_path}/${mod.id}`;
+    }
 
     /* Remove the module directory */
     const removeOk = host_remove_dir(modulePath);
@@ -407,9 +501,12 @@ function removeModule(mod) {
     resultMessage = `Removed ${mod.name}`;
 }
 
-/* Get total items in categories view (includes host update if available) */
+/* Get total items in categories view (includes host update and update all if available) */
 function getCategoryItemCount() {
-    return CATEGORIES.length + (hostUpdateAvailable ? 1 : 0);
+    let count = CATEGORIES.length;
+    if (hostUpdateAvailable) count++;
+    if (getModulesWithUpdates().length > 0) count++;
+    return count;
 }
 
 /* Handle navigation */
@@ -428,6 +525,16 @@ function handleJogWheel(delta) {
             if (selectedActionIndex < 0) selectedActionIndex = 0;
             if (selectedActionIndex > 0) selectedActionIndex = 0;  /* Only one action */
             break;
+
+        case STATE_UPDATE_ALL: {
+            /* List includes all modules with updates + "Update All" at the end */
+            const updateCount = getModulesWithUpdates().length;
+            const maxIndex = updateCount;  /* modules + Update All button */
+            selectedUpdateIndex += delta;
+            if (selectedUpdateIndex < 0) selectedUpdateIndex = 0;
+            if (selectedUpdateIndex > maxIndex) selectedUpdateIndex = maxIndex;
+            break;
+        }
 
         case STATE_MODULE_LIST: {
             const modules = getModulesForCategory(currentCategory.id);
@@ -450,26 +557,56 @@ function handleJogWheel(delta) {
 /* Handle selection */
 function handleSelect() {
     switch (state) {
-        case STATE_CATEGORIES:
-            /* If host update available, index 0 is "Update Host" */
+        case STATE_CATEGORIES: {
+            /* Calculate which item is selected based on what's visible */
+            let adjustedIndex = selectedCategoryIndex;
+            const updatesAvailable = getModulesWithUpdates().length > 0;
+
+            /* Index 0: Update Host (if available) */
             if (hostUpdateAvailable) {
-                if (selectedCategoryIndex === 0) {
+                if (adjustedIndex === 0) {
                     selectedActionIndex = 0;
                     state = STATE_HOST_UPDATE;
                     break;
                 }
-                /* Adjust index for categories */
-                currentCategory = CATEGORIES[selectedCategoryIndex - 1];
-            } else {
-                currentCategory = CATEGORIES[selectedCategoryIndex];
+                adjustedIndex--;
             }
+
+            /* Next: Update All (if updates available) */
+            if (updatesAvailable) {
+                if (adjustedIndex === 0) {
+                    selectedUpdateIndex = 0;
+                    state = STATE_UPDATE_ALL;
+                    break;
+                }
+                adjustedIndex--;
+            }
+
+            /* Remaining: Categories */
+            currentCategory = CATEGORIES[adjustedIndex];
             selectedModuleIndex = 0;
             state = STATE_MODULE_LIST;
             break;
+        }
 
         case STATE_HOST_UPDATE:
             updateHost();
             break;
+
+        case STATE_UPDATE_ALL: {
+            const modulesToUpdate = getModulesWithUpdates();
+            if (selectedUpdateIndex < modulesToUpdate.length) {
+                /* Selected a specific module - show its detail */
+                currentModule = modulesToUpdate[selectedUpdateIndex];
+                selectedActionIndex = 0;
+                cameFromUpdateAll = true;
+                state = STATE_MODULE_DETAIL;
+            } else {
+                /* Selected "Update All" */
+                updateAllModules();
+            }
+            break;
+        }
 
         case STATE_MODULE_LIST: {
             const modules = getModulesForCategory(currentCategory.id);
@@ -514,6 +651,7 @@ function handleBack() {
             break;
 
         case STATE_HOST_UPDATE:
+        case STATE_UPDATE_ALL:
             state = STATE_CATEGORIES;
             break;
 
@@ -524,7 +662,12 @@ function handleBack() {
 
         case STATE_MODULE_DETAIL:
             currentModule = null;
-            state = STATE_MODULE_LIST;
+            if (cameFromUpdateAll) {
+                cameFromUpdateAll = false;
+                state = STATE_UPDATE_ALL;
+            } else {
+                state = STATE_MODULE_LIST;
+            }
             break;
 
         case STATE_ERROR:
@@ -577,6 +720,16 @@ function drawCategories() {
         });
     }
 
+    /* Update All option if modules have updates */
+    const modulesWithUpdates = getModulesWithUpdates();
+    if (modulesWithUpdates.length > 0) {
+        items.push({
+            id: '_update_all',
+            name: 'Update All',
+            value: `(${modulesWithUpdates.length})`
+        });
+    }
+
     /* Add categories */
     for (const cat of CATEGORIES) {
         items.push({
@@ -619,6 +772,41 @@ function drawHostUpdate() {
     drawMenuFooter('Back:cancel');
 }
 
+/* Draw update all screen - scrollable list of modules + Update All action */
+function drawUpdateAll() {
+    clear_screen();
+    const modulesToUpdate = getModulesWithUpdates();
+    drawMenuHeader('Updates Available', `(${modulesToUpdate.length})`);
+
+    /* Build items list - modules then "Update All" */
+    let items = [];
+    for (const mod of modulesToUpdate) {
+        items.push({
+            id: mod.id,
+            name: mod.name
+        });
+    }
+    /* Add "Update All" as last item */
+    items.push({
+        id: '_update_all',
+        name: '>> Update All <<'
+    });
+
+    drawMenuList({
+        items,
+        selectedIndex: selectedUpdateIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        valueAlignRight: true,
+        getLabel: (item) => item.name,
+        getValue: (item) => item.value
+    });
+
+    drawMenuFooter('Back:cancel  Jog:select');
+}
+
 /* Draw module list screen */
 function drawModuleList() {
     clear_screen();
@@ -659,7 +847,26 @@ function drawModuleList() {
 /* Draw module detail screen */
 function drawModuleDetail() {
     clear_screen();
-    drawMenuHeader(currentModule.name, `v${currentModule.latest_version}`);
+    const status = getModuleStatus(currentModule);
+
+    /* Show version transition if update available, otherwise just new version */
+    let versionStr;
+    let title = currentModule.name;
+    if (status.installed && status.hasUpdate) {
+        const installedVer = installedModules[currentModule.id] || '?';
+        versionStr = `${installedVer}->${currentModule.latest_version}`;
+        /* Truncate title to fit with version transition (max ~8 chars) */
+        if (title.length > 8) {
+            title = title.substring(0, 7) + '~';
+        }
+    } else {
+        versionStr = `v${currentModule.latest_version}`;
+        /* More room without transition */
+        if (title.length > 14) {
+            title = title.substring(0, 13) + '~';
+        }
+    }
+    drawMenuHeader(title, versionStr);
 
     /* Description */
     const desc = currentModule.description || '';
@@ -673,7 +880,6 @@ function drawModuleDetail() {
     fill_rect(0, 38, 128, 1, 1);
 
     /* Action buttons */
-    const status = getModuleStatus(currentModule);
     let action1, action2;
 
     if (status.installed) {
@@ -709,6 +915,7 @@ function draw() {
         case STATE_INSTALLING:
         case STATE_REMOVING:
         case STATE_UPDATING_HOST:
+        case STATE_UPDATING_ALL:
             drawLoading();
             break;
         case STATE_ERROR:
@@ -722,6 +929,9 @@ function draw() {
             break;
         case STATE_HOST_UPDATE:
             drawHostUpdate();
+            break;
+        case STATE_UPDATE_ALL:
+            drawUpdateAll();
             break;
         case STATE_MODULE_LIST:
             drawModuleList();
@@ -796,6 +1006,7 @@ globalThis.init = function() {
     loadingMessage = 'Loading...';
     draw();
     host_flush_display();
+    os.sleep(50); /* Ensure display updates before blocking operations */
 
     /* Get current host version */
     getHostVersion();
