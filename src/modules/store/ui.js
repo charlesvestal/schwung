@@ -117,13 +117,17 @@ function fetchReleaseJson(github_repo) {
 
         const release = JSON.parse(jsonStr);
 
-        /* release.json format: { "version": "x.y.z", "download_url": "..." } */
+        /* release.json format: { "version": "x.y.z", "download_url": "...", "install_path": "..." } */
         if (!release.version || !release.download_url) {
             console.log(`Invalid release.json format for ${github_repo}`);
             return null;
         }
 
-        return { version: release.version, download_url: release.download_url };
+        return {
+            version: release.version,
+            download_url: release.download_url,
+            install_path: release.install_path || ''
+        };
     } catch (e) {
         console.log(`Failed to parse release.json for ${github_repo}: ${e}`);
         return null;
@@ -163,6 +167,7 @@ function fetchAllReleaseInfo() {
                 if (release) {
                     mod.latest_version = release.version;
                     mod.download_url = release.download_url;
+                    mod.install_path = release.install_path;
                     console.log(`${mod.id} latest: ${release.version}`);
                 } else {
                     /* Fallback: module has no release.json yet */
@@ -433,8 +438,14 @@ function installModule(mod) {
     draw();
     host_flush_display();
 
-    /* Extract to modules directory */
-    const extractOk = host_extract_tar(tarPath, MODULES_DIR);
+    /* Determine extraction path based on module's install_path */
+    let extractDir = MODULES_DIR;
+    if (mod.install_path) {
+        extractDir = `${MODULES_DIR}/${mod.install_path}`;
+    }
+
+    /* Extract to appropriate directory */
+    const extractOk = host_extract_tar(tarPath, extractDir);
     if (!extractOk) {
         state = STATE_RESULT;
         resultMessage = 'Extract failed';
@@ -459,7 +470,11 @@ function removeModule(mod) {
     draw();
     host_flush_display();
 
-    const modulePath = `${MODULES_DIR}/${mod.id}`;
+    /* Determine module path based on install_path */
+    let modulePath = `${MODULES_DIR}/${mod.id}`;
+    if (mod.install_path) {
+        modulePath = `${MODULES_DIR}/${mod.install_path}/${mod.id}`;
+    }
 
     /* Remove the module directory */
     const removeOk = host_remove_dir(modulePath);
