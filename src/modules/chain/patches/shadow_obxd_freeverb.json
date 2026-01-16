@@ -1,0 +1,11 @@
+{
+    "name": "OB-Xd + Freeverb",
+    "input": "both",
+    "synth": {
+        "module": "obxd",
+        "preset": 0
+    },
+    "audio_fx": [
+        { "type": "freeverb" }
+    ]
+}

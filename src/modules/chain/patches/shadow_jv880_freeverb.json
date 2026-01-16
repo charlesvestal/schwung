@@ -1,0 +1,11 @@
+{
+    "name": "JV-880 + Freeverb",
+    "input": "both",
+    "synth": {
+        "module": "jv880",
+        "preset": 0
+    },
+    "audio_fx": [
+        { "type": "freeverb" }
+    ]
+}

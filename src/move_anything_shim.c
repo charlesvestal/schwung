@@ -573,22 +573,39 @@ static void spi_trace_ioctl(unsigned long request, char *argp)
 }
 
 /* ============================================================================
- * IN-PROCESS SHADOW SYNTH (DX7 POC)
+ * IN-PROCESS SHADOW CHAIN (MULTI-PATCH)
  * ============================================================================
- * Load DX7 directly inside the shim and render in the ioctl audio cadence.
+ * Load the chain DSP inside the shim and render in the ioctl audio cadence.
  * This avoids IPC timing drift and provides a stable audio mix proof-of-concept.
  * ============================================================================ */
 
 #define SHADOW_INPROCESS_POC 1
-#define SHADOW_DX7_MODULE_DIR "/data/UserData/move-anything/modules/dx7"
-#define SHADOW_DX7_DSP_PATH "/data/UserData/move-anything/modules/dx7/dsp.so"
+#define SHADOW_CHAIN_MODULE_DIR "/data/UserData/move-anything/modules/chain"
+#define SHADOW_CHAIN_DSP_PATH "/data/UserData/move-anything/modules/chain/dsp.so"
+#define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
+#define SHADOW_CHAIN_INSTANCES 4
 
 static void *shadow_dsp_handle = NULL;
-static const plugin_api_v1_t *shadow_plugin_v1 = NULL;
 static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
-static void *shadow_plugin_instance = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
+
+typedef struct shadow_chain_slot_t {
+    void *instance;
+    int channel;
+    int patch_index;
+    int active;
+    char patch_name[64];
+} shadow_chain_slot_t;
+
+static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
+
+static const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
+    "DX7 + Freeverb",
+    "SF2 + Freeverb",
+    "OB-Xd + Freeverb",
+    "JV-880 + Freeverb"
+};
 
 static void shadow_log(const char *msg) {
     FILE *log = fopen("/data/UserData/move-anything/shadow_inprocess.log", "a");
@@ -598,13 +615,115 @@ static void shadow_log(const char *msg) {
     }
 }
 
-static int shadow_inprocess_load_dx7(void) {
+static void shadow_chain_defaults(void) {
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        shadow_chain_slots[i].instance = NULL;
+        shadow_chain_slots[i].active = 0;
+        shadow_chain_slots[i].patch_index = -1;
+        shadow_chain_slots[i].channel = 5 + i;
+        strncpy(shadow_chain_slots[i].patch_name,
+                shadow_chain_default_patches[i],
+                sizeof(shadow_chain_slots[i].patch_name) - 1);
+        shadow_chain_slots[i].patch_name[sizeof(shadow_chain_slots[i].patch_name) - 1] = '\0';
+    }
+}
+
+static void shadow_chain_load_config(void) {
+    shadow_chain_defaults();
+
+    FILE *f = fopen(SHADOW_CHAIN_CONFIG_PATH, "r");
+    if (!f) {
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size <= 0 || size > 4096) {
+        fclose(f);
+        return;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return;
+    }
+
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+
+    char *cursor = json;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        char *name_pos = strstr(cursor, "\"name\"");
+        if (!name_pos) break;
+        char *colon = strchr(name_pos, ':');
+        if (colon) {
+            char *q1 = strchr(colon, '"');
+            if (q1) {
+                q1++;
+                char *q2 = strchr(q1, '"');
+                if (q2 && q2 > q1) {
+                    size_t len = (size_t)(q2 - q1);
+                    if (len < sizeof(shadow_chain_slots[i].patch_name)) {
+                        memcpy(shadow_chain_slots[i].patch_name, q1, len);
+                        shadow_chain_slots[i].patch_name[len] = '\0';
+                    }
+                }
+            }
+        }
+
+        char *chan_pos = strstr(name_pos, "\"channel\"");
+        if (chan_pos) {
+            char *chan_colon = strchr(chan_pos, ':');
+            if (chan_colon) {
+                int ch = atoi(chan_colon + 1);
+                if (ch >= 5 && ch <= 8) {
+                    shadow_chain_slots[i].channel = ch;
+                }
+            }
+            cursor = chan_pos + 8;
+        } else {
+            cursor = name_pos + 6;
+        }
+    }
+
+    free(json);
+}
+
+static int shadow_chain_find_patch_index(void *instance, const char *name) {
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param || !instance || !name || !name[0]) {
+        return -1;
+    }
+    char buf[128];
+    int len = shadow_plugin_v2->get_param(instance, "patch_count", buf, sizeof(buf));
+    if (len <= 0) return -1;
+    buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+    int count = atoi(buf);
+    if (count <= 0) return -1;
+
+    for (int i = 0; i < count; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "patch_name_%d", i);
+        len = shadow_plugin_v2->get_param(instance, key, buf, sizeof(buf));
+        if (len <= 0) continue;
+        buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+        if (strcmp(buf, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int shadow_inprocess_load_chain(void) {
     if (shadow_inprocess_ready) return 0;
 
-    shadow_dsp_handle = dlopen(SHADOW_DX7_DSP_PATH, RTLD_NOW | RTLD_LOCAL);
+    shadow_dsp_handle = dlopen(SHADOW_CHAIN_DSP_PATH, RTLD_NOW | RTLD_LOCAL);
     if (!shadow_dsp_handle) {
         fprintf(stderr, "Shadow inprocess: failed to load %s: %s\n",
-                SHADOW_DX7_DSP_PATH, dlerror());
+                SHADOW_CHAIN_DSP_PATH, dlerror());
         return -1;
     }
 
@@ -619,45 +738,42 @@ static int shadow_inprocess_load_dx7(void) {
 
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(
         shadow_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
-    if (init_v2) {
-        shadow_plugin_v2 = init_v2(&shadow_host_api);
-        if (shadow_plugin_v2 && shadow_plugin_v2->create_instance) {
-            shadow_plugin_instance = shadow_plugin_v2->create_instance(
-                SHADOW_DX7_MODULE_DIR,
-                "{\"syx_path\":\"/data/UserData/move-anything/modules/dx7/patches.syx\",\"preset\":0}");
-        }
+    if (!init_v2) {
+        fprintf(stderr, "Shadow inprocess: %s not found\n", MOVE_PLUGIN_INIT_V2_SYMBOL);
+        dlclose(shadow_dsp_handle);
+        shadow_dsp_handle = NULL;
+        return -1;
     }
 
-    if (!shadow_plugin_instance) {
-        move_plugin_init_v1_fn init_v1 = (move_plugin_init_v1_fn)dlsym(
-            shadow_dsp_handle, MOVE_PLUGIN_INIT_SYMBOL);
-        if (!init_v1) {
-            fprintf(stderr, "Shadow inprocess: failed to find %s: %s\n",
-                    MOVE_PLUGIN_INIT_SYMBOL, dlerror());
-            dlclose(shadow_dsp_handle);
-            shadow_dsp_handle = NULL;
-            return -1;
-        }
+    shadow_plugin_v2 = init_v2(&shadow_host_api);
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->create_instance) {
+        fprintf(stderr, "Shadow inprocess: chain v2 init failed\n");
+        dlclose(shadow_dsp_handle);
+        shadow_dsp_handle = NULL;
+        shadow_plugin_v2 = NULL;
+        return -1;
+    }
 
-        shadow_plugin_v1 = init_v1(&shadow_host_api);
-        if (!shadow_plugin_v1) {
-            fprintf(stderr, "Shadow inprocess: plugin init returned NULL\n");
-            dlclose(shadow_dsp_handle);
-            shadow_dsp_handle = NULL;
-            return -1;
+    shadow_chain_load_config();
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        shadow_chain_slots[i].instance = shadow_plugin_v2->create_instance(
+            SHADOW_CHAIN_MODULE_DIR, NULL);
+        if (!shadow_chain_slots[i].instance) {
+            continue;
         }
-
-        if (shadow_plugin_v1->on_load) {
-            int result = shadow_plugin_v1->on_load(
-                SHADOW_DX7_MODULE_DIR,
-                "{\"syx_path\":\"/data/UserData/move-anything/modules/dx7/patches.syx\",\"preset\":0}");
-            if (result != 0) {
-                fprintf(stderr, "Shadow inprocess: on_load failed: %d\n", result);
-                dlclose(shadow_dsp_handle);
-                shadow_dsp_handle = NULL;
-                shadow_plugin_v1 = NULL;
-                return -1;
-            }
+        int idx = shadow_chain_find_patch_index(shadow_chain_slots[i].instance,
+                                                shadow_chain_slots[i].patch_name);
+        shadow_chain_slots[i].patch_index = idx;
+        if (idx >= 0 && shadow_plugin_v2->set_param) {
+            char idx_str[16];
+            snprintf(idx_str, sizeof(idx_str), "%d", idx);
+            shadow_plugin_v2->set_param(shadow_chain_slots[i].instance, "load_patch", idx_str);
+            shadow_chain_slots[i].active = 1;
+        } else {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Shadow inprocess: patch not found: %s",
+                     shadow_chain_slots[i].patch_name);
+            shadow_log(msg);
         }
     }
 
@@ -666,16 +782,21 @@ static int shadow_inprocess_load_dx7(void) {
         /* Allow display hotkey when running in-process DSP. */
         shadow_control->shadow_ready = 1;
     }
-    shadow_log("Shadow inprocess: DX7 loaded");
+    shadow_log("Shadow inprocess: chain loaded");
     return 0;
+}
+
+static int shadow_chain_slot_for_channel(int ch) {
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (shadow_chain_slots[i].active && shadow_chain_slots[i].channel == ch) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
-
-    static FILE *forward_log = NULL;
-    const uint8_t ch_min = 0x04; /* MIDI channel 5 */
-    const uint8_t ch_max = 0x07; /* MIDI channel 8 */
 
     const uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
@@ -684,20 +805,19 @@ static void shadow_inprocess_process_midi(void) {
 
         uint8_t cable = (pkt[0] >> 4) & 0x0F;
         uint8_t cin = pkt[0] & 0x0F;
+        uint8_t status = pkt[1];
 
         if (pkt[1] == 0xFE || pkt[1] == 0xF8 || cin == 0x0F) continue;
         if (cable != 0) continue;
         if (cin < 0x08 || cin > 0x0E) continue;
-        uint8_t status = pkt[1];
         if ((status & 0xF0) < 0x80 || (status & 0xF0) > 0xE0) continue;
-        uint8_t ch = status & 0x0F;
-        if (ch < ch_min || ch > ch_max) continue;
 
-        if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
-            shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
+        int slot = shadow_chain_slot_for_channel(status & 0x0F);
+        if (slot < 0) continue;
+
+        if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+            shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, &pkt[1], 3,
                                       MOVE_MIDI_SOURCE_INTERNAL);
-        } else if (shadow_plugin_v1 && shadow_plugin_v1->on_midi) {
-            shadow_plugin_v1->on_midi(&pkt[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
         }
     }
 
@@ -712,45 +832,23 @@ static void shadow_inprocess_process_midi(void) {
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
-            uint8_t ch = status_usb & 0x0F;
-            if (ch < ch_min || ch > ch_max) continue;
-            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
-                shadow_plugin_v2->on_midi(shadow_plugin_instance, &pkt[1], 3,
+            int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
+            if (slot < 0) continue;
+            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, &pkt[1], 3,
                                           MOVE_MIDI_SOURCE_INTERNAL);
-            } else if (shadow_plugin_v1 && shadow_plugin_v1->on_midi) {
-                shadow_plugin_v1->on_midi(&pkt[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
-            }
-            if (!forward_log) {
-                forward_log = fopen("/data/UserData/move-anything/midi_forward.log", "a");
-            }
-            if (forward_log) {
-                fprintf(forward_log, "OUT_USB[%d]: %02x %02x %02x %02x\n",
-                        i, pkt[0], pkt[1], pkt[2], pkt[3]);
             }
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             uint8_t msg[3] = { status_raw, pkt[1], pkt[2] };
             if (msg[1] <= 0x7F && msg[2] <= 0x7F) {
-                uint8_t ch = msg[0] & 0x0F;
-                if (ch < ch_min || ch > ch_max) continue;
-                if (shadow_plugin_v2 && shadow_plugin_v2->on_midi && shadow_plugin_instance) {
-                    shadow_plugin_v2->on_midi(shadow_plugin_instance, msg, 3,
+                int slot = shadow_chain_slot_for_channel(msg[0] & 0x0F);
+                if (slot < 0) continue;
+                if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                    shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                               MOVE_MIDI_SOURCE_INTERNAL);
-                } else if (shadow_plugin_v1 && shadow_plugin_v1->on_midi) {
-                    shadow_plugin_v1->on_midi(msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
-                }
-                if (!forward_log) {
-                    forward_log = fopen("/data/UserData/move-anything/midi_forward.log", "a");
-                }
-                if (forward_log) {
-                    fprintf(forward_log, "OUT_RAW[%d]: %02x %02x %02x\n",
-                            i, msg[0], msg[1], msg[2]);
                 }
             }
         }
-    }
-
-    if (forward_log) {
-        fflush(forward_log);
     }
 }
 
@@ -758,20 +856,29 @@ static void shadow_inprocess_mix_audio(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
-    int16_t render_buffer[FRAMES_PER_BLOCK * 2];
-    memset(render_buffer, 0, sizeof(render_buffer));
+    int32_t mix[FRAMES_PER_BLOCK * 2];
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        mix[i] = mailbox_audio[i];
+    }
 
-    if (shadow_plugin_v2 && shadow_plugin_v2->render_block && shadow_plugin_instance) {
-        shadow_plugin_v2->render_block(shadow_plugin_instance, render_buffer, MOVE_FRAMES_PER_BLOCK);
-    } else if (shadow_plugin_v1 && shadow_plugin_v1->render_block) {
-        shadow_plugin_v1->render_block(render_buffer, MOVE_FRAMES_PER_BLOCK);
+    if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+            int16_t render_buffer[FRAMES_PER_BLOCK * 2];
+            memset(render_buffer, 0, sizeof(render_buffer));
+            shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
+                                           render_buffer,
+                                           MOVE_FRAMES_PER_BLOCK);
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                mix[i] += render_buffer[i];
+            }
+        }
     }
 
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)render_buffer[i];
-        if (mixed > 32767) mixed = 32767;
-        if (mixed < -32768) mixed = -32768;
-        mailbox_audio[i] = (int16_t)mixed;
+        if (mix[i] > 32767) mix[i] = 32767;
+        if (mix[i] < -32768) mix[i] = -32768;
+        mailbox_audio[i] = (int16_t)mix[i];
     }
 }
 
@@ -1346,7 +1453,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
 #if SHADOW_INPROCESS_POC
-        shadow_inprocess_load_dx7();
+        shadow_inprocess_load_chain();
 #endif
     }
 

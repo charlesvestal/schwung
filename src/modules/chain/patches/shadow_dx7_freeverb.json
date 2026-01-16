@@ -1,0 +1,11 @@
+{
+    "name": "DX7 + Freeverb",
+    "input": "both",
+    "synth": {
+        "module": "dx7",
+        "preset": 0
+    },
+    "audio_fx": [
+        { "type": "freeverb" }
+    ]
+}

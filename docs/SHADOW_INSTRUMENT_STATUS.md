@@ -6,28 +6,38 @@
 
 ## Goal
 
-Run custom synth modules (SF2, DX7) alongside stock Ableton Move, mixing their audio output with Move's audio through the SPI mailbox.
+Run custom signal chain patches alongside stock Ableton Move, mixing their audio output with Move's audio through the SPI mailbox.
 
 ## Architecture
 
 ```
 Stock Move (ioctl) → Shim (LD_PRELOAD) → SPI Mailbox
                          ↓
-                    Shared Memory IPC
-                         ↓
-                    shadow_poc process
-                         ↓
-                    DX7/SF2 synth module
+                In-process chain DSP
 ```
 
 ### In-Process Shadow Mode (Autostart, Current)
 
-The shim can load and run the DX7 DSP **inside MoveOriginal** without the
+The shim loads and runs the chain DSP **inside MoveOriginal** without the
 separate `shadow_poc` process. This mode autostarts when the shim sees the SPI
-mailbox `mmap()` and mixes the DX7 audio directly into the mailbox.
+mailbox `mmap()` and mixes the chain audio directly into the mailbox.
 
-**MIDI filter:** Only channel **5–8** messages are forwarded to the in-process
-DX7. Set the Move track MIDI channel to 5, 6, 7, or 8 to drive the shadow synth.
+**MIDI routing:** Channel **5–8** are routed to four independent chain instances:
+5 → Slot A, 6 → Slot B, 7 → Slot C, 8 → Slot D.
+
+**Config:** `/data/UserData/move-anything/shadow_chain_config.json`
+
+Example:
+```json
+{
+  "patches": [
+    { "name": "DX7 + Freeverb", "channel": 5 },
+    { "name": "SF2 + Freeverb", "channel": 6 },
+    { "name": "OB-Xd + Freeverb", "channel": 7 },
+    { "name": "JV-880 + Freeverb", "channel": 8 }
+  ]
+}
+```
 
 ### Components
 
@@ -38,11 +48,10 @@ DX7. Set the Move track MIDI channel to 5, 6, 7, or 8 to drive the shadow synth.
    - Forwards MIDI from mailbox to shadow process
    - Mixes shadow audio into mailbox audio output
 
-2. **shadow_poc** - Standalone process that:
-   - Loads synth module (DX7 or SF2) via dlopen
-   - Receives MIDI from shared memory
-   - Renders audio blocks
-   - Writes audio to shared memory for shim to mix
+2. **chain dsp.so (in-process)** - Loaded directly by the shim:
+   - Scans chain patches in `modules/chain/patches`
+   - Loads selected patches for each slot
+   - Renders audio blocks inline
 
 ### Shared Memory Segments
 
@@ -57,29 +66,28 @@ DX7. Set the Move track MIDI channel to 5, 6, 7, or 8 to drive the shadow synth.
 ## What Works
 
 - ✅ Shim hooks mmap/ioctl successfully
-- ✅ Synth module loading (DX7 loads and plays)
+- ✅ Chain module loading (patches load and play)
 - ✅ Audio renders cleanly (in-process)
-- ✅ In-process shadow DSP autostarts and filters MIDI to channels 5–8
+- ✅ In-process chain autostarts and routes MIDI to channels 5–8
 - ✅ Shadow audio mixes with stock Move audio in the mailbox
 
 ## Audio Status
 
-Audio is now clean and stable by running the DX7 **in-process** inside the shim.
+Audio is now clean and stable by running the chain DSP **in-process** inside the shim.
 This eliminates IPC timing drift entirely.
 
 ## Files Modified
 
-- `src/move_anything_shim.c` - Shadow IPC, triple buffering, drift correction
-- `src/shadow/shadow_poc.c` - Standalone shadow process
+- `src/move_anything_shim.c` - In-process chain loader and routing
+- `src/modules/chain/patches/*.json` - Shadow test patches
 
 ## How to Test
 
 ```bash
 # On Move, with shim installed:
 cd /opt/move && LD_PRELOAD=/usr/lib/move-anything-shim.so ./Move &
-cd /data/UserData/move-anything && ./shadow_poc &
 
-# Press pads - you should hear DX7 (warbly)
+# Set track MIDI channel to 5–8 and play pads
 ```
 
 ## Conclusion

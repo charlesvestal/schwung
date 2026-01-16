@@ -1,0 +1,11 @@
+{
+    "name": "SF2 + Freeverb",
+    "input": "both",
+    "synth": {
+        "module": "sf2",
+        "preset": 0
+    },
+    "audio_fx": [
+        { "type": "freeverb" }
+    ]
+}
