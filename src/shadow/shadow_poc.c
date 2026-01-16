@@ -50,9 +50,16 @@ typedef struct {
     volatile uint8_t midi_ready;      /* increments when new MIDI available */
     volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
     volatile uint8_t read_idx;        /* triple buffer: shim reads here */
+    volatile uint8_t ui_slot;         /* shadow UI slot selection (0-3) */
+    volatile uint8_t ui_flags;        /* reserved for UI flags */
+    volatile uint16_t ui_patch_index; /* shadow UI patch index */
+    volatile uint16_t reserved16;     /* padding/alignment */
+    volatile uint32_t ui_request_id;  /* increment to request patch change */
     volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
-    volatile uint8_t reserved[53];
+    volatile uint8_t reserved[44];
 } shadow_control_t;
+
+typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 
 #define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
 #define SHM_SHADOW_MOVEIN "/move-shadow-movein"  /* Move's audio for mixing */

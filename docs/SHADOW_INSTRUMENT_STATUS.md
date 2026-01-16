@@ -2,7 +2,7 @@
 
 **Branch:** `feature/shadow-instrument-poc`
 **Date:** 2025-01-16
-**Status:** Audio resolved - in-process shadow DSP working
+**Status:** Audio resolved - in-process shadow DSP + shadow UI host working
 
 ## Goal
 
@@ -14,6 +14,8 @@ Run custom signal chain patches alongside stock Ableton Move, mixing their audio
 Stock Move (ioctl) → Shim (LD_PRELOAD) → SPI Mailbox
                          ↓
                 In-process chain DSP
+                         ↓
+                 Shadow UI host (QuickJS)
 ```
 
 ### In-Process Shadow Mode (Autostart, Current)
@@ -53,6 +55,11 @@ Example:
    - Loads selected patches for each slot
    - Renders audio blocks inline
 
+3. **shadow_ui** - Separate QuickJS host (no SPI) that:
+   - Renders shadow UI into `/move-shadow-display`
+   - Reads MIDI from `/move-shadow-midi`
+   - Lets you browse patches per slot and request patch changes
+
 ### Shared Memory Segments
 
 | Segment | Size | Purpose |
@@ -60,8 +67,9 @@ Example:
 | `/move-shadow-audio` | 1536 bytes | Triple-buffered audio output (3 × 512) |
 | `/move-shadow-movein` | 512 bytes | Move's audio for shadow to read |
 | `/move-shadow-midi` | 256 bytes | MIDI from shim to shadow |
-| `/move-shadow-display` | 1024 bytes | Display buffer (not implemented) |
-| `/move-shadow-control` | 64 bytes | Control flags and sync counters |
+| `/move-shadow-display` | 1024 bytes | Shadow UI display buffer |
+| `/move-shadow-control` | 64 bytes | Control flags + UI patch requests |
+| `/move-shadow-ui` | 512 bytes | Slot labels + patch names for UI |
 
 ## What Works
 
@@ -70,6 +78,9 @@ Example:
 - ✅ Audio renders cleanly (in-process)
 - ✅ In-process chain autostarts and routes MIDI to channels 5–8
 - ✅ Shadow audio mixes with stock Move audio in the mailbox
+- ✅ Shadow UI autostarts and renders patch list
+- ✅ Jog + jog press navigate slot list and patch browser
+- ✅ Move UI input blocked while shadow UI is active (transport still passes)
 
 ## Audio Status
 
@@ -90,8 +101,15 @@ cd /opt/move && LD_PRELOAD=/usr/lib/move-anything-shim.so ./Move &
 # Set track MIDI channel to 5–8 and play pads
 ```
 
+Shadow UI:
+- Toggle display: Shift + Volume touch + Knob 1 touch
+- Jog: move selection
+- Jog click: enter slot patch list / load patch
+- Back: return to slot list
+
 ## Conclusion
 
 In-process shadow DSP is the working path: it autostarts in the shim, renders
 clean audio, and mixes with stock Move output. MIDI is gated to channels 5–8 to
-avoid UI events.
+avoid UI events. The shadow UI runs in its own process and can swap patches
+per slot without stopping stock Move.
