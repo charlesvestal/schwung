@@ -2167,16 +2167,25 @@ function drawUI() {
     print(2, 2, title, 1);
     fill_rect(0, 14, SCREEN_WIDTH, 1, 1);
 
-    /* Synth module info */
-    print(2, 20, "Synth:", 1);
-    print(40, 20, synthModule || "SF2", 1);
+    /* Synth module info with bank name */
+    const bankName = host_module_get_param("bank_name");
+    if (bankName) {
+        print(2, 20, `${synthModule || "SF2"}  ${bankName}`, 1);
+    } else {
+        print(2, 20, synthModule || "SF2", 1);
+    }
 
-    /* Preset from synth */
+    /* Preset from synth with number */
     const pn = host_module_get_param("preset_name");
+    const pib = host_module_get_param("patch_in_bank");
     if (pn) {
         presetName = pn.substring(0, 16);
     }
-    print(2, 32, presetName, 1);
+    if (pib) {
+        print(2, 32, `#${pib} ${presetName}`, 1);
+    } else {
+        print(2, 32, presetName, 1);
+    }
 
     /* Octave and polyphony */
     const octStr = octaveTranspose >= 0 ? `+${octaveTranspose}` : `${octaveTranspose}`;
