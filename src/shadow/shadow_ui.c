@@ -73,6 +73,16 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
+static FILE *shadow_ui_log = NULL;
+static uint32_t shadow_ui_tick_count = 0;
+
+static uint32_t shadow_ui_checksum(const unsigned char *buf, size_t len) {
+    uint32_t sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        sum = (sum * 33u) ^ buf[i];
+    }
+    return sum;
+}
 
 typedef struct FontChar {
     unsigned char* data;
@@ -352,6 +362,16 @@ static int open_shadow_shm(void) {
     return 0;
 }
 
+static void shadow_ui_log_line(const char *msg) {
+    if (!shadow_ui_log) {
+        shadow_ui_log = fopen("/data/UserData/move-anything/shadow_ui.log", "a");
+    }
+    if (shadow_ui_log) {
+        fprintf(shadow_ui_log, "%s\n", msg);
+        fflush(shadow_ui_log);
+    }
+}
+
 static JSContext *JS_NewCustomContext(JSRuntime *rt) {
     JSContext *ctx = JS_NewContext(rt);
     if (!ctx) return NULL;
@@ -575,6 +595,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "shadow_ui: failed to open shared memory\n");
         return 1;
     }
+    shadow_ui_log_line("shadow_ui: shared memory open");
 
     JSRuntime *rt = NULL;
     JSContext *ctx = NULL;
@@ -582,21 +603,34 @@ int main(int argc, char *argv[]) {
 
     if (eval_file(ctx, script, 1) != 0) {
         fprintf(stderr, "shadow_ui: failed to load %s\n", script);
+        shadow_ui_log_line("shadow_ui: failed to load script");
         return 1;
     }
+    shadow_ui_log_line("shadow_ui: script loaded");
 
     JSValue JSonMidiMessageInternal;
     JSValue JSonMidiMessageExternal;
     JSValue JSinit;
     JSValue JSTick;
 
-    getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal);
-    getGlobalFunction(ctx, "onMidiMessageExternal", &JSonMidiMessageExternal);
-    getGlobalFunction(ctx, "init", &JSinit);
+    if (!getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal)) {
+        shadow_ui_log_line("shadow_ui: onMidiMessageInternal missing");
+    }
+    if (!getGlobalFunction(ctx, "onMidiMessageExternal", &JSonMidiMessageExternal)) {
+        shadow_ui_log_line("shadow_ui: onMidiMessageExternal missing");
+    }
+    if (!getGlobalFunction(ctx, "init", &JSinit)) {
+        shadow_ui_log_line("shadow_ui: init missing");
+    }
     int jsTickIsDefined = getGlobalFunction(ctx, "tick", &JSTick);
+    if (!jsTickIsDefined) {
+        shadow_ui_log_line("shadow_ui: tick missing");
+    }
 
     callGlobalFunction(ctx, &JSinit, 0);
+    shadow_ui_log_line("shadow_ui: init called");
 
+    int refresh_counter = 0;
     while (!global_exit_flag) {
         if (shadow_control && shadow_control->should_exit) {
             break;
@@ -611,10 +645,22 @@ int main(int argc, char *argv[]) {
             process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
         }
 
-        if (screen_dirty && shadow_display_shm) {
+        shadow_ui_tick_count++;
+        refresh_counter++;
+        if ((screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
             pack_screen(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
             screen_dirty = 0;
+            if ((shadow_ui_tick_count % 120) == 0) {
+                char msg[160];
+                uint32_t screen_sum = shadow_ui_checksum(screen_buffer, sizeof(screen_buffer));
+                uint32_t packed_sum = shadow_ui_checksum(packed_buffer, DISPLAY_BUFFER_SIZE);
+                uint32_t shm_sum = shadow_ui_checksum(shadow_display_shm, DISPLAY_BUFFER_SIZE);
+                snprintf(msg, sizeof(msg),
+                         "shadow_ui: tick=%u screen_sum=%u packed_sum=%u shm_sum=%u",
+                         shadow_ui_tick_count, screen_sum, packed_sum, shm_sum);
+                shadow_ui_log_line(msg);
+            }
         }
 
         usleep(16000);

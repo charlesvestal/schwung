@@ -109,6 +109,17 @@ typedef struct shadow_ui_state_t {
 static shadow_ui_state_t *shadow_ui_state = NULL;
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 
+static void launch_shadow_ui(void);
+
+static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
+{
+    uint32_t sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        sum = (sum * 33u) ^ buf[i];
+    }
+    return sum;
+}
+
 /* ============================================================================
  * MIDI DEVICE TRACE (DISCOVERY)
  * ============================================================================
@@ -851,6 +862,23 @@ static inline uint8_t shadow_chain_force_channel_1(uint8_t status) {
     return (status & 0xF0) | 0x00;
 }
 
+static int shadow_is_internal_control_note(uint8_t note)
+{
+    return (note < 10) || (note >= 16 && note <= 31) || (note >= 40 && note <= 43);
+}
+
+static int shadow_allow_midi_to_dsp(uint8_t status, uint8_t data1)
+{
+    uint8_t type = status & 0xF0;
+    if (type == 0x90 || type == 0x80) {
+        return !shadow_is_internal_control_note(data1);
+    }
+    if (type == 0xA0 || type == 0xD0 || type == 0xE0) {
+        return 1;
+    }
+    return 0;
+}
+
 static uint32_t shadow_ui_request_seen = 0;
 static void shadow_inprocess_handle_ui_request(void) {
     if (!shadow_control || !shadow_plugin_v2 || !shadow_plugin_v2->set_param) return;
@@ -916,6 +944,7 @@ static void shadow_inprocess_process_midi(void) {
         if (cable != 0) continue;
         if (cin < 0x08 || cin > 0x0E) continue;
         if ((status & 0xF0) < 0x80 || (status & 0xF0) > 0xE0) continue;
+        if (!shadow_allow_midi_to_dsp(status, pkt[2])) continue;
 
         int slot = shadow_chain_slot_for_channel(status & 0x0F);
         if (slot < 0) continue;
@@ -938,6 +967,7 @@ static void shadow_inprocess_process_midi(void) {
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
+            if (!shadow_allow_midi_to_dsp(status_usb, pkt[2])) continue;
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
             if (slot < 0) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
@@ -947,6 +977,7 @@ static void shadow_inprocess_process_midi(void) {
             }
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             if (pkt[1] <= 0x7F && pkt[2] <= 0x7F) {
+                if (!shadow_allow_midi_to_dsp(status_raw, pkt[1])) continue;
                 int slot = shadow_chain_slot_for_channel(status_raw & 0x0F);
                 if (slot < 0) continue;
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
@@ -1339,6 +1370,18 @@ static int shadow_is_transport_cc(uint8_t cc)
     return cc == CC_PLAY || cc == CC_REC || cc == CC_MUTE || cc == CC_RECORD;
 }
 
+static int shadow_is_hotkey_event(uint8_t status, uint8_t data1)
+{
+    uint8_t type = status & 0xF0;
+    if (type == 0xB0) {
+        return data1 == 0x31; /* Shift */
+    }
+    if (type == 0x90 || type == 0x80) {
+        return data1 == 0x00 || data1 == 0x08; /* Knob 1 / Volume touch */
+    }
+    return 0;
+}
+
 static void shadow_capture_midi_for_ui(void)
 {
     if (!shadow_midi_shm || !shadow_control || !global_mmap_addr) return;
@@ -1375,6 +1418,11 @@ static void shadow_filter_move_input(void)
             if (shadow_is_transport_cc(cc)) {
                 memcpy(&filtered[i], &src[i], 4);
             }
+            continue;
+        }
+
+        if (shadow_is_hotkey_event(status, src[i + 2])) {
+            memcpy(&filtered[i], &src[i], 4);
         }
     }
 
@@ -1496,9 +1544,13 @@ static void shadow_swap_display(void)
             debug_log = fopen("/data/UserData/move-anything/shadow_debug.log", "a");
         }
         if (debug_log) {
+            uint32_t shadow_sum = shadow_checksum(shadow_display_shm, DISPLAY_BUFFER_SIZE);
+            uint32_t mailbox_sum = shadow_checksum(global_mmap_addr + DISPLAY_OFFSET, DISPLAY_BUFFER_SIZE);
             fprintf(debug_log, "swap #%d: display_shm=%p, mailbox=%p, display_mode=%d, shadow_ready=%d\n",
                     display_swap_debug_counter, shadow_display_shm, global_mmap_addr,
                     shadow_control->display_mode, shadow_control->shadow_ready);
+            fprintf(debug_log, "swap #%d sums: shadow=%u mailbox=%u\n",
+                    display_swap_debug_counter, shadow_sum, mailbox_sum);
             fflush(debug_log);
         }
     }

@@ -1,8 +1,75 @@
 import * as os from 'os';
 import * as std from 'std';
-import { MoveMainKnob, MoveMainButton, MoveBack } from '../shared/constants.mjs';
-import { decodeDelta } from '../shared/input_filter.mjs';
-import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../shared/menu_layout.mjs';
+
+const MoveMainKnob = 14;
+const MoveMainButton = 3;
+const MoveBack = 51;
+
+const SCREEN_WIDTH = 128;
+const SCREEN_HEIGHT = 64;
+const TITLE_Y = 2;
+const TITLE_RULE_Y = 12;
+const LIST_TOP_Y = 15;
+const LIST_LINE_HEIGHT = 11;
+const LIST_HIGHLIGHT_HEIGHT = LIST_LINE_HEIGHT + 2;
+const LIST_LABEL_X = 4;
+const LIST_VALUE_X = 92;
+const FOOTER_TEXT_Y = SCREEN_HEIGHT - 11;
+const FOOTER_RULE_Y = FOOTER_TEXT_Y - 1;
+
+function decodeDelta(value) {
+    if (value === 0) return 0;
+    if (value >= 1 && value <= 63) return 1;
+    if (value >= 65 && value <= 127) return -1;
+    return 0;
+}
+
+function truncateText(text, maxChars) {
+    if (text.length <= maxChars) return text;
+    if (maxChars <= 3) return text.slice(0, maxChars);
+    return `${text.slice(0, maxChars - 3)}...`;
+}
+
+function drawHeader(title) {
+    print(2, TITLE_Y, title, 1);
+    fill_rect(0, TITLE_RULE_Y, SCREEN_WIDTH, 1, 1);
+}
+
+function drawFooter(text) {
+    if (!text) return;
+    fill_rect(0, FOOTER_RULE_Y, SCREEN_WIDTH, 1, 1);
+    print(2, FOOTER_TEXT_Y, text, 1);
+}
+
+function drawList(items, selectedIndex, getLabel, getValue) {
+    const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / LIST_LINE_HEIGHT));
+    let startIdx = 0;
+    const maxSelectedRow = maxVisible - 2;
+    if (selectedIndex > maxSelectedRow) {
+        startIdx = selectedIndex - maxSelectedRow;
+    }
+    const endIdx = Math.min(startIdx + maxVisible, items.length);
+    const maxLabelChars = Math.floor((LIST_VALUE_X - LIST_LABEL_X - 6) / 6);
+
+    for (let i = startIdx; i < endIdx; i++) {
+        const y = LIST_TOP_Y + (i - startIdx) * LIST_LINE_HEIGHT;
+        const item = items[i];
+        const label = truncateText(getLabel(item, i), maxLabelChars);
+        const value = getValue ? getValue(item, i) : "";
+        if (i === selectedIndex) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+            print(LIST_LABEL_X, y, `> ${label}`, 0);
+            if (value) {
+                print(LIST_VALUE_X, y, value, 0);
+            }
+        } else {
+            print(LIST_LABEL_X, y, `  ${label}`, 1);
+            if (value) {
+                print(LIST_VALUE_X, y, value, 1);
+            }
+        }
+    }
+}
 
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/modules/chain/patches";
@@ -195,35 +262,26 @@ function handleBack() {
 
 function drawSlots() {
     clear_screen();
-    drawMenuHeader("Shadow Chains");
-    drawMenuList({
-        items: slots,
-        selectedIndex: selectedSlot,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        valueAlignRight: true,
-        getLabel: (item) => item.name || "Unknown Patch",
-        getValue: (item) => `Ch${item.channel}`
-    });
-    drawMenuFooter("Click: browse");
+    drawHeader("Shadow Chains");
+    drawList(
+        slots,
+        selectedSlot,
+        (item) => item.name || "Unknown Patch",
+        (item) => `Ch${item.channel}`
+    );
+    drawFooter("Click: browse");
 }
 
 function drawPatches() {
     clear_screen();
     const channel = slots[selectedSlot]?.channel || (DEFAULT_SLOTS[selectedSlot]?.channel ?? 5 + selectedSlot);
-    drawMenuHeader(`Ch${channel} Patch`);
-    drawMenuList({
-        items: patches,
-        selectedIndex: selectedPatch,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        getLabel: (item) => item.name
-    });
-    drawMenuFooter("Click: load  Back: slots");
+    drawHeader(`Ch${channel} Patch`);
+    drawList(
+        patches,
+        selectedPatch,
+        (item) => item.name
+    );
+    drawFooter("Click: load  Back: slots");
 }
 
 globalThis.init = function() {
