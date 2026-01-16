@@ -5,6 +5,7 @@
  */
 
 import * as std from 'std';
+import * as os from 'os';
 
 import {
     MidiCC,
@@ -144,6 +145,7 @@ function fetchAllReleaseInfo() {
         loadingMessage = 'Checking host...';
         draw();
         host_flush_display();
+        os.sleep(30); /* Ensure display updates */
 
         const hostRelease = fetchReleaseJson(catalog.host.github_repo);
         if (hostRelease) {
@@ -312,8 +314,14 @@ function updateAllModules() {
             continue;
         }
 
-        /* Extract to modules directory */
-        const extractOk = host_extract_tar(tarPath, MODULES_DIR);
+        /* Determine extraction path based on module's install_path */
+        let extractDir = MODULES_DIR;
+        if (mod.install_path) {
+            extractDir = `${MODULES_DIR}/${mod.install_path}`;
+        }
+
+        /* Extract to appropriate directory */
+        const extractOk = host_extract_tar(tarPath, extractDir);
         if (!extractOk) {
             failCount++;
             continue;
@@ -348,6 +356,7 @@ function fetchCatalog() {
     /* Force display update before blocking download */
     draw();
     host_flush_display();
+    os.sleep(50); /* Ensure display updates before blocking download */
 
     /* Try to download fresh catalog (GitHub CDN caches ~5 min) */
     const success = host_http_download(CATALOG_URL, CATALOG_CACHE_PATH);
@@ -997,6 +1006,7 @@ globalThis.init = function() {
     loadingMessage = 'Loading...';
     draw();
     host_flush_display();
+    os.sleep(50); /* Ensure display updates before blocking operations */
 
     /* Get current host version */
     getHostVersion();
