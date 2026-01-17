@@ -70,8 +70,16 @@ else
   echo "Warning: No modules directory found"
 fi
 
-# killall returns non-zero if a process isn't running; don't treat that as fatal
-$ssh_ableton "killall MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything || true"
+# Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
+$ssh_root "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi"
+
+# Use root to stop running Move processes cleanly, then force if needed.
+$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill \$pids || true; fi; done"
+$ssh_root "sleep 0.5"
+$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi; done"
+$ssh_root "sleep 0.2"
+# Free the SPI device if anything still holds it (prevents \"communication error\")
+$ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
 
 $ssh_root cp -aL /data/UserData/move-anything/move-anything-shim.so /usr/lib/
 $ssh_root chmod u+s /usr/lib/move-anything-shim.so
@@ -95,8 +103,10 @@ $ssh_root md5sum /usr/lib/move-anything-shim.so
 
 echo "Restarting Move binary with shim installed..."
 
-$ssh_ableton "test -x /opt/move/MoveOriginal" || fail "Missing /opt/move/MoveOriginal"
-$ssh_ableton "nohup /opt/move/MoveOriginal 2>/dev/null 1>/dev/null &" &
+$ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
+$ssh_ableton "nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &"
+$ssh_ableton "sleep 1"
+$ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" || exit 1; tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" || fail "Move started without shim (LD_PRELOAD missing)"
 
 echo
 echo "Done!"
