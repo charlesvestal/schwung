@@ -94,6 +94,7 @@ typedef struct shadow_control_t {
 } shadow_control_t;
 
 static shadow_control_t *shadow_control = NULL;
+static uint8_t shadow_display_mode = 0;
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 
 #define SHADOW_UI_NAME_LEN 64
@@ -1023,6 +1024,7 @@ static void shadow_inprocess_mix_audio(void) {
 /* Shared memory segment names */
 #define SHM_SHADOW_AUDIO    "/move-shadow-audio"    /* Shadow's mixed output */
 #define SHM_SHADOW_MIDI     "/move-shadow-midi"
+#define SHM_SHADOW_UI_MIDI  "/move-shadow-ui-midi"
 #define SHM_SHADOW_DISPLAY  "/move-shadow-display"
 #define SHM_SHADOW_CONTROL  "/move-shadow-control"
 #define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow to read */
@@ -1035,12 +1037,14 @@ static void shadow_inprocess_mix_audio(void) {
 static int16_t *shadow_audio_shm = NULL;    /* Shadow's mixed output */
 static int16_t *shadow_movein_shm = NULL;   /* Move's audio for shadow to read */
 static uint8_t *shadow_midi_shm = NULL;
+static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 
 /* Shadow shared memory file descriptors */
 static int shm_audio_fd = -1;
 static int shm_movein_fd = -1;
 static int shm_midi_fd = -1;
+static int shm_ui_midi_fd = -1;
 static int shm_display_fd = -1;
 static int shm_control_fd = -1;
 static int shm_ui_fd = -1;
@@ -1107,6 +1111,23 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create MIDI shm\n");
     }
 
+    /* Create/open UI MIDI shared memory */
+    shm_ui_midi_fd = shm_open(SHM_SHADOW_UI_MIDI, O_CREAT | O_RDWR, 0666);
+    if (shm_ui_midi_fd >= 0) {
+        ftruncate(shm_ui_midi_fd, MIDI_BUFFER_SIZE);
+        shadow_ui_midi_shm = (uint8_t *)mmap(NULL, MIDI_BUFFER_SIZE,
+                                             PROT_READ | PROT_WRITE,
+                                             MAP_SHARED, shm_ui_midi_fd, 0);
+        if (shadow_ui_midi_shm == MAP_FAILED) {
+            shadow_ui_midi_shm = NULL;
+            printf("Shadow: Failed to mmap UI MIDI shm\n");
+        } else {
+            memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
+        }
+    } else {
+        printf("Shadow: Failed to create UI MIDI shm\n");
+    }
+
     /* Create/open display shared memory */
     shm_display_fd = shm_open(SHM_SHADOW_DISPLAY, O_CREAT | O_RDWR, 0666);
     if (shm_display_fd >= 0) {
@@ -1135,7 +1156,19 @@ static void init_shadow_shm(void)
             shadow_control = NULL;
             printf("Shadow: Failed to mmap control shm\n");
         }
-        /* Note: We intentionally don't memset control - shadow_poc sets shadow_ready */
+        if (shadow_control) {
+            /* Avoid sticky shadow state across restarts. */
+            shadow_display_mode = 0;
+            shadow_control->display_mode = 0;
+            shadow_control->should_exit = 0;
+            shadow_control->midi_ready = 0;
+            shadow_control->write_idx = 0;
+            shadow_control->read_idx = 0;
+            shadow_control->ui_slot = 0;
+            shadow_control->ui_flags = 0;
+            shadow_control->ui_patch_index = 0;
+            shadow_control->ui_request_id = 0;
+        }
     } else {
         printf("Shadow: Failed to create control shm\n");
     }
@@ -1160,8 +1193,9 @@ static void init_shadow_shm(void)
     }
 
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, display=%p, control=%p, ui=%p)\n",
-           shadow_audio_shm, shadow_midi_shm, shadow_display_shm, shadow_control, shadow_ui_state);
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p)\n",
+           shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
+           shadow_display_shm, shadow_control, shadow_ui_state);
 }
 
 /* Debug: detailed dump of control regions and offset 256 area */
@@ -1254,6 +1288,21 @@ static void shadow_mix_audio(void)
         mailbox_audio[i] = (int16_t)mixed;
     }
     #endif
+}
+
+static int shadow_has_midi_packets(const uint8_t *src)
+{
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t cin = src[i] & 0x0F;
+        if (cin < 0x08 || cin > 0x0E) {
+            continue;
+        }
+        if (src[i + 1] + src[i + 2] + src[i + 3] == 0) {
+            continue;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 /* Copy incoming MIDI from mailbox to shadow shared memory */
@@ -1384,15 +1433,26 @@ static int shadow_is_hotkey_event(uint8_t status, uint8_t data1)
 
 static void shadow_capture_midi_for_ui(void)
 {
-    if (!shadow_midi_shm || !shadow_control || !global_mmap_addr) return;
-    if (!shadow_control->display_mode) return;
-    memcpy(shadow_midi_shm, global_mmap_addr + MIDI_IN_OFFSET, MIDI_BUFFER_SIZE);
+    if (!shadow_ui_midi_shm || !shadow_control || !global_mmap_addr) return;
+    if (!shadow_display_mode) return;
+    uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    if (!shadow_has_midi_packets(src)) {
+        return;
+    }
+    static uint8_t shadow_ui_prev[MIDI_BUFFER_SIZE];
+    static int shadow_ui_prev_valid = 0;
+    if (shadow_ui_prev_valid && memcmp(shadow_ui_prev, src, MIDI_BUFFER_SIZE) == 0) {
+        return;
+    }
+    memcpy(shadow_ui_prev, src, MIDI_BUFFER_SIZE);
+    shadow_ui_prev_valid = 1;
+    memcpy(shadow_ui_midi_shm, src, MIDI_BUFFER_SIZE);
     shadow_control->midi_ready++;
 }
 
 static void shadow_filter_move_input(void)
 {
-    if (!shadow_control || !shadow_control->display_mode) return;
+    if (!shadow_control || !shadow_display_mode) return;
     if (!global_mmap_addr) return;
 
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
@@ -1413,16 +1473,17 @@ static void shadow_filter_move_input(void)
 
         uint8_t status = src[i + 1];
         uint8_t type = status & 0xF0;
+        if (shadow_is_hotkey_event(status, src[i + 2])) {
+            memcpy(&filtered[i], &src[i], 4);
+            continue;
+        }
+
         if (type == 0xB0) {
             uint8_t cc = src[i + 2];
             if (shadow_is_transport_cc(cc)) {
                 memcpy(&filtered[i], &src[i], 4);
             }
             continue;
-        }
-
-        if (shadow_is_hotkey_event(status, src[i + 2])) {
-            memcpy(&filtered[i], &src[i], 4);
         }
     }
 
@@ -1483,6 +1544,13 @@ static void shadow_capture_midi_probe(void)
 {
     if (!global_mmap_addr) return;
 
+    static int probe_enabled = -1;
+    static int probe_check_counter = 0;
+    if (probe_check_counter++ % 200 == 0 || probe_enabled < 0) {
+        probe_enabled = (access("/data/UserData/move-anything/midi_probe_on", F_OK) == 0);
+    }
+    if (!probe_enabled) return;
+
     if (!midi_probe_log) {
         midi_probe_log = fopen("/data/UserData/move-anything/midi_probe.log", "a");
     }
@@ -1534,7 +1602,7 @@ static void shadow_swap_display(void)
     if (!shadow_control || !shadow_control->shadow_ready) {
         return;
     }
-    if (!shadow_control->display_mode) {
+    if (!shadow_display_mode) {
         return;  /* Not in shadow mode */
     }
 
@@ -1548,7 +1616,7 @@ static void shadow_swap_display(void)
             uint32_t mailbox_sum = shadow_checksum(global_mmap_addr + DISPLAY_OFFSET, DISPLAY_BUFFER_SIZE);
             fprintf(debug_log, "swap #%d: display_shm=%p, mailbox=%p, display_mode=%d, shadow_ready=%d\n",
                     display_swap_debug_counter, shadow_display_shm, global_mmap_addr,
-                    shadow_control->display_mode, shadow_control->shadow_ready);
+                    shadow_display_mode, shadow_control->shadow_ready);
             fprintf(debug_log, "swap #%d sums: shadow=%u mailbox=%u\n",
                     display_swap_debug_counter, shadow_sum, mailbox_sum);
             fflush(debug_log);
@@ -1954,6 +2022,11 @@ static FILE *hotkey_state_log = NULL;
 static uint64_t shift_on_ms = 0;
 static uint64_t vol_on_ms = 0;
 static uint64_t knob1_on_ms = 0;
+static uint8_t hotkey_prev[MIDI_BUFFER_SIZE];
+static int hotkey_prev_valid = 0;
+static int shift_armed = 0;
+static int volume_armed = 0;
+static int knob1_armed = 0;
 
 static void log_hotkey_state(const char *tag);
 
@@ -1969,19 +2042,33 @@ static int within_window(uint64_t now, uint64_t ts, uint64_t window_ms)
     return ts > 0 && now >= ts && (now - ts) <= window_ms;
 }
 
+#define SHADOW_HOTKEY_WINDOW_MS 1500
+#define SHADOW_HOTKEY_GRACE_MS 2000
+static uint64_t shadow_hotkey_enable_ms = 0;
+
 static void maybe_toggle_shadow(void)
 {
     if (shadowModeDebounce) return;
 
-    /* Toggle when all three are held, not just pressed within a window. */
-    if (shiftHeld && volumeTouched && knob1touched)
-    {
+    uint64_t now = now_mono_ms();
+    if (!shadow_hotkey_enable_ms) {
+        shadow_hotkey_enable_ms = now + SHADOW_HOTKEY_GRACE_MS;
+    }
+    if (now < shadow_hotkey_enable_ms) {
+        return;
+    }
+
+    if (shiftHeld && volumeTouched && knob1touched &&
+        within_window(now, shift_on_ms, SHADOW_HOTKEY_WINDOW_MS) &&
+        within_window(now, vol_on_ms, SHADOW_HOTKEY_WINDOW_MS) &&
+        within_window(now, knob1_on_ms, SHADOW_HOTKEY_WINDOW_MS)) {
         shadowModeDebounce = 1;
         log_hotkey_state("toggle");
         if (shadow_control) {
-            shadow_control->display_mode = !shadow_control->display_mode;
+            shadow_display_mode = !shadow_display_mode;
+            shadow_control->display_mode = shadow_display_mode;
             printf("Shadow mode toggled: %s\n",
-                   shadow_control->display_mode ? "SHADOW" : "STOCK");
+                   shadow_display_mode ? "SHADOW" : "STOCK");
         }
     }
 }
@@ -2008,18 +2095,21 @@ void midi_monitor()
         return;
     }
 
-    int startByte = 2048;
-    int length = 256;
-    int endByte = startByte + length;
+    uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    if (!hotkey_prev_valid) {
+        memcpy(hotkey_prev, src, MIDI_BUFFER_SIZE);
+        hotkey_prev_valid = 1;
+        return;
+    }
 
-    for (int i = startByte; i < endByte; i += 4)
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4)
     {
-        if ((unsigned int)global_mmap_addr[i] == 0)
-        {
+        if (memcmp(&src[i], &hotkey_prev[i], 4) == 0) {
             continue;
         }
+        memcpy(&hotkey_prev[i], &src[i], 4);
 
-        unsigned char *byte = &global_mmap_addr[i];
+        unsigned char *byte = &src[i];
         unsigned char cable = (*byte & 0b11110000) >> 4;
         unsigned char code_index_number = (*byte & 0b00001111);
         unsigned char midi_0 = *(byte + 1);
@@ -2047,15 +2137,19 @@ void midi_monitor()
                 {
                     printf("Shift on\n");
 
-                    shiftHeld = 1;
-                    shift_on_ms = now_mono_ms();
-                    log_hotkey_state("shift_on");
+                    if (!shiftHeld && shift_armed) {
+                        shiftHeld = 1;
+                        shift_on_ms = now_mono_ms();
+                        log_hotkey_state("shift_on");
+                        maybe_toggle_shadow();
+                    }
                 }
                 else
                 {
                     printf("Shift off\n");
 
                     shiftHeld = 0;
+                    shift_armed = 1;
                     shift_on_ms = 0;
                     log_hotkey_state("shift_off");
                 }
@@ -2063,13 +2157,15 @@ void midi_monitor()
 
         }
 
-        if (midi_0 == 0x90 && midi_1 == 0x07)
+        if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x07)
         {
             if (midi_2 == 0x7f)
             {
-                knob8touched = 1;
-                printf("Knob 8 touch start\n");
-                log_hotkey_state("knob8_on");
+                if (!knob8touched) {
+                    knob8touched = 1;
+                    printf("Knob 8 touch start\n");
+                    log_hotkey_state("knob8_on");
+                }
             }
             else
             {
@@ -2080,41 +2176,49 @@ void midi_monitor()
         }
 
         /* Knob 1 touch detection (Note 0) - for shadow mode toggle */
-        if (midi_0 == 0x90 && midi_1 == 0x00)
+        if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x00)
         {
             if (midi_2 == 0x7f)
             {
-                knob1touched = 1;
-                printf("Knob 1 touch start\n");
-                knob1_on_ms = now_mono_ms();
-                log_hotkey_state("knob1_on");
+                if (!knob1touched && knob1_armed) {
+                    knob1touched = 1;
+                    printf("Knob 1 touch start\n");
+                    knob1_on_ms = now_mono_ms();
+                    log_hotkey_state("knob1_on");
+                    maybe_toggle_shadow();
+                }
             }
             else
             {
                 knob1touched = 0;
+                knob1_armed = 1;
                 printf("Knob 1 touch stop\n");
                 knob1_on_ms = 0;
                 log_hotkey_state("knob1_off");
             }
         }
 
-        if (midi_0 == 0x90 && midi_1 == 0x08)
+        if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x08)
         {
             if (midi_2 == 0x7f)
             {
-                volumeTouched = 1;
-                vol_on_ms = now_mono_ms();
-                log_hotkey_state("vol_on");
+                if (!volumeTouched && volume_armed) {
+                    volumeTouched = 1;
+                    vol_on_ms = now_mono_ms();
+                    log_hotkey_state("vol_on");
+                    maybe_toggle_shadow();
+                }
             }
             else
             {
                 volumeTouched = 0;
+                volume_armed = 1;
                 vol_on_ms = 0;
                 log_hotkey_state("vol_off");
             }
         }
 
-        if (midi_0 == 0x90 && midi_1 == 0x09)
+        if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x09)
         {
             if (midi_2 == 0x7f)
             {
@@ -2149,8 +2253,6 @@ void midi_monitor()
                 }
             }
         }
-
-        maybe_toggle_shadow();
 
         /* Reset debounce once any part of the combo is released */
         if (shadowModeDebounce && (!shiftHeld || !volumeTouched || !knob1touched))
@@ -2218,8 +2320,9 @@ int ioctl(int fd, unsigned long request, ...)
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
 
-    /* Capture input for shadow UI and optionally block Move UI while shadow display is active. */
+    /* Capture UI MIDI AFTER ioctl while raw input is present. */
     shadow_capture_midi_for_ui();
+    /* Optionally block Move UI while shadow display is active. */
     shadow_filter_move_input();
 
     return result;

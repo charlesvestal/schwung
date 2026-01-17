@@ -87,6 +87,8 @@ let selectedPatch = 0;
 let view = "slots";
 let needsRedraw = true;
 let refreshCounter = 0;
+let redrawCounter = 0;
+const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
 
 function safeLoadJson(path) {
     try {
@@ -294,7 +296,10 @@ globalThis.tick = function() {
     if (refreshCounter % 120 === 0) {
         refreshSlots();
     }
-    if (!needsRedraw) return;
+    redrawCounter++;
+    if (!needsRedraw && (redrawCounter % REDRAW_INTERVAL !== 0)) {
+        return;
+    }
     needsRedraw = false;
     if (view === "slots") {
         drawSlots();

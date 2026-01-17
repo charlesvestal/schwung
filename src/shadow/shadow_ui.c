@@ -26,7 +26,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "lib/stb_truetype.h"
 
-#define SHM_SHADOW_MIDI     "/move-shadow-midi"
+#define SHM_SHADOW_UI_MIDI  "/move-shadow-ui-midi"
 #define SHM_SHADOW_DISPLAY  "/move-shadow-display"
 #define SHM_SHADOW_CONTROL  "/move-shadow-control"
 #define SHM_SHADOW_UI       "/move-shadow-ui"
@@ -66,7 +66,7 @@ typedef struct shadow_ui_state_t {
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 
-static uint8_t *shadow_midi_shm = NULL;
+static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
@@ -343,9 +343,9 @@ static int open_shadow_shm(void) {
     shadow_display_shm = (uint8_t *)mmap(NULL, DISPLAY_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
 
-    fd = shm_open(SHM_SHADOW_MIDI, O_RDWR, 0666);
+    fd = shm_open(SHM_SHADOW_UI_MIDI, O_RDWR, 0666);
     if (fd < 0) return -1;
-    shadow_midi_shm = (uint8_t *)mmap(NULL, MIDI_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    shadow_ui_midi_shm = (uint8_t *)mmap(NULL, MIDI_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
 
     fd = shm_open(SHM_SHADOW_CONTROL, O_RDWR, 0666);
@@ -569,20 +569,23 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     *pctx = ctx;
 }
 
-static void process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onExternal) {
-    if (!shadow_midi_shm) return;
+static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onExternal) {
+    if (!shadow_ui_midi_shm) return 0;
+    int handled = 0;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        uint8_t cin = shadow_midi_shm[i] & 0x0F;
-        uint8_t cable = (shadow_midi_shm[i] >> 4) & 0x0F;
+        uint8_t cin = shadow_ui_midi_shm[i] & 0x0F;
+        uint8_t cable = (shadow_ui_midi_shm[i] >> 4) & 0x0F;
         if (cin < 0x08 || cin > 0x0E) continue;
-        uint8_t msg[3] = { shadow_midi_shm[i + 1], shadow_midi_shm[i + 2], shadow_midi_shm[i + 3] };
+        uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
         if (msg[0] + msg[1] + msg[2] == 0) continue;
+        handled = 1;
         if (cable == 0) {
             callGlobalFunction(ctx, onInternal, msg);
         } else if (cable == 2) {
             callGlobalFunction(ctx, onExternal, msg);
         }
     }
+    return handled;
 }
 
 int main(int argc, char *argv[]) {
@@ -642,7 +645,10 @@ int main(int argc, char *argv[]) {
 
         if (shadow_control && shadow_control->midi_ready != last_midi_ready) {
             last_midi_ready = shadow_control->midi_ready;
-            process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
+            int had_event = process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
+            if (had_event && shadow_ui_midi_shm) {
+                memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
+            }
         }
 
         shadow_ui_tick_count++;
