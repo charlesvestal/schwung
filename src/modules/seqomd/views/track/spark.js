@@ -260,11 +260,12 @@ export function updateDisplayContent() {
         const step = getCurrentPattern(state.currentTrack).steps[firstStep];
         const paramCond = CONDITIONS[step.paramSpark || 0];
         const compCond = CONDITIONS[step.compSpark || 0];
+        const jumpStr = step.jump >= 0 ? String(step.jump + 1) : "---";
         displayMessage(
             `SPARK MODE (${selectedCount})`,
-            `Param: ${paramCond.name}`,
+            `Jump: ${jumpStr}`,
             `Comp: ${compCond.name}`,
-            step.jump >= 0 ? `Jump: ${step.jump + 1}` : ""
+            `Param: ${paramCond.name}`
         );
     } else {
         displayMessage("SPARK MODE", "No steps selected", "", "");
