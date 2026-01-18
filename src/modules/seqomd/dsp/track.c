@@ -7,15 +7,13 @@
 #include "seq_plugin.h"
 
 void init_pattern(pattern_t *pattern) {
-    pattern->loop_start = 0;
-    pattern->loop_end = NUM_STEPS - 1;
     for (int i = 0; i < NUM_STEPS; i++) {
         for (int n = 0; n < MAX_NOTES_PER_STEP; n++) {
             pattern->steps[i].notes[n] = 0;
             pattern->steps[i].velocities[n] = DEFAULT_VELOCITY;
         }
         pattern->steps[i].num_notes = 0;
-        pattern->steps[i].gate = DEFAULT_GATE;
+        pattern->steps[i].gate = 0;  /* 0 = use track gate */
         pattern->steps[i].cc1 = -1;  /* Not set */
         pattern->steps[i].cc2 = -1;  /* Not set */
         pattern->steps[i].probability = 100;    /* Always trigger */
@@ -46,7 +44,10 @@ void init_pattern(pattern_t *pattern) {
 void init_track(track_t *track, int channel) {
     memset(track, 0, sizeof(track_t));
     track->midi_channel = channel;
-    track->length = NUM_STEPS;
+    track->track_length = DEFAULT_TRACK_LENGTH;  /* 1-64 steps, default 16 */
+    track->reset_length = 0;   /* 0=INF (never reset) */
+    track->reset_counter = 0;  /* Steps since last reset */
+    track->gate = DEFAULT_GATE;  /* Track-level gate percentage */
     track->current_pattern = 0;
     track->current_step = 0;
     track->muted = 0;
@@ -77,6 +78,9 @@ void init_track(track_t *track, int channel) {
     track->cc2_default = 64;
     track->cc1_steps_remaining = 0;
     track->cc2_steps_remaining = 0;
+    /* Gate override */
+    track->gate_override = 0;
+    track->gate_steps_remaining = 0;
     /* Arp continuous mode */
     track->arp_continuous = 0;
     track->arp_pattern_idx = 0;
@@ -102,6 +106,38 @@ void init_track(track_t *track, int channel) {
 /* Get current pattern for a track */
 pattern_t* get_current_pattern(track_t *track) {
     return &track->patterns[track->current_pattern];
+}
+
+/**
+ * Get gate value for notes playing on a track.
+ * Gate override works like CC locks - a step's gate setting applies for the
+ * duration of that step's length, affecting all notes (including arp notes)
+ * that play during that time.
+ *
+ * Priority:
+ * 1. Active gate override (from a step with gate set, lasts for step->length)
+ * 2. Track default gate
+ *
+ * @param track_idx  Track index (0-7)
+ * @param step       Global step/phase position (unused, kept for API compatibility)
+ * @return Gate percentage (1-100)
+ */
+int get_step_gate(int track_idx, uint32_t step) {
+    (void)step;  /* Currently unused - gate override is tracked in track state */
+
+    if (track_idx < 0 || track_idx >= NUM_TRACKS) {
+        return DEFAULT_GATE;
+    }
+
+    track_t *track = &g_tracks[track_idx];
+
+    /* Check for active gate override (from a step with gate set) */
+    if (track->gate_steps_remaining > 0 && track->gate_override > 0) {
+        return track->gate_override;
+    }
+
+    /* No override - use track default */
+    return track->gate;
 }
 
 /* Check if step should trigger based on probability and conditions */
@@ -171,15 +207,15 @@ static int notes_equal_sorted(uint8_t *a, int a_count, uint8_t *b, int b_count) 
  */
 void schedule_step_notes(track_t *track, int track_idx, step_t *step, double base_phase, int use_arp, int use_ratchet) {
     int note_length = step->length > 0 ? step->length : 1;
-    int gate = step->gate > 0 ? step->gate : DEFAULT_GATE;
+    int gate = step->gate > 0 ? step->gate : track->gate;
 
-    /* Clamp note length to not extend past the loop end.
+    /* Clamp note length to not extend past track_length.
      * This prevents arp/notes from overlapping when the track loops back. */
-    pattern_t *pattern = get_current_pattern(track);
-    int remaining_steps = pattern->loop_end - track->current_step + 1;
+    int remaining_steps = track->track_length - track->current_step;
     if (note_length > remaining_steps) {
         note_length = remaining_steps;
     }
+    if (note_length < 1) note_length = 1;  /* Safety clamp */
 
     /* Get sequence transpose for this track (will be applied at send time).
      * We only store the sequence transpose here; live transpose is checked at send time
@@ -427,6 +463,18 @@ void trigger_track_step(track_t *track, int track_idx, double step_start_phase) 
     if (track->cc1_steps_remaining > 0) track->cc1_steps_remaining--;
     if (track->cc2_steps_remaining > 0) track->cc2_steps_remaining--;
 
+    /* Gate override: step gate applies for step->length duration (like CC locks).
+     * Decrement first, then check if this step sets a new override. */
+    if (track->gate_steps_remaining > 0) track->gate_steps_remaining--;
+    if (step->gate > 0) {
+        /* This step has a gate override - activate it for step->length duration */
+        track->gate_override = step->gate;
+        track->gate_steps_remaining = step->length > 0 ? step->length : 1;
+    } else if (track->gate_steps_remaining == 0) {
+        /* No active override - clear it */
+        track->gate_override = 0;
+    }
+
     if (param_spark_pass) {
         /* CC1: step override sets new value for step->length duration */
         if (step->cc1 >= 0) {
@@ -484,16 +532,13 @@ void trigger_track_step(track_t *track, int track_idx, double step_start_phase) 
     }
 
     /* Handle jump (only if comp_spark passes) - works on empty steps too */
-    if (comp_spark_pass && step->jump >= 0 && step->jump < NUM_STEPS) {
+    if (comp_spark_pass && step->jump >= 0 && step->jump < track->track_length) {
         /* Jump to target step on next advance */
         /* We set current_step to jump-1 because advance_track will increment it */
-        /* But we need to be careful about loop boundaries */
-        if (step->jump <= pattern->loop_end && step->jump >= pattern->loop_start) {
-            /* Jump is within current loop range - will be incremented by advance */
-            track->current_step = step->jump - 1;
-            if (track->current_step < pattern->loop_start) {
-                track->current_step = pattern->loop_end;  /* Wrap to end */
-            }
+        /* Jump target must be within track_length */
+        track->current_step = step->jump - 1;
+        if (track->current_step < 0) {
+            track->current_step = track->track_length - 1;  /* Wrap to end */
         }
     }
 }
@@ -504,14 +549,19 @@ void trigger_track_step(track_t *track, int track_idx, double step_start_phase) 
  * not as a duration change on steps.
  */
 void advance_track(track_t *track, int track_idx) {
-    /* Advance step, respecting loop points from current pattern */
-    pattern_t *pattern = get_current_pattern(track);
+    /* Advance step, wrapping at track_length */
+    track->current_step++;
+    if (track->current_step >= track->track_length) {
+        track->current_step = 0;
+        track->loop_count++;  /* Increment loop count when track loops */
+    }
 
-    if (track->current_step >= pattern->loop_end) {
-        track->current_step = pattern->loop_start;
-        track->loop_count++;  /* Increment loop count when pattern loops */
-    } else {
-        track->current_step++;
+    /* Per-track reset: if reset_length > 0, reset position after that many steps */
+    track->reset_counter++;
+    if (track->reset_length > 0 && track->reset_counter >= track->reset_length) {
+        track->reset_counter = 0;
+        track->current_step = 0;
+        /* Note: loop_count is NOT reset, only position */
     }
 
     /* Calculate the global phase when this step starts.

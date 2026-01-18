@@ -1017,11 +1017,11 @@ TEST(swing_different_loop_lengths_first_loop) {
      */
     set_param("track_0_step_1_add_note", "60");
     set_param("track_0_swing", "100");
-    set_param("track_0_loop_end", "15");  /* 16 steps */
+    set_param("track_0_length", "16");  /* 16 steps */
 
     set_param("track_1_step_1_add_note", "72");
     set_param("track_1_swing", "100");
-    set_param("track_1_loop_end", "4");   /* 5 steps */
+    set_param("track_1_length", "5");   /* 5 steps */
 
     clear_captured_notes();
     set_param("playing", "1");
@@ -1044,8 +1044,8 @@ TEST(swing_different_loop_lengths_first_loop) {
     set_param("track_1_step_1_clear", "1");
     set_param("track_0_swing", "50");
     set_param("track_1_swing", "50");
-    set_param("track_0_loop_end", "15");
-    set_param("track_1_loop_end", "15");
+    set_param("track_0_length", "16");
+    set_param("track_1_length", "16");
 }
 
 TEST(swing_short_loop_second_iteration) {
@@ -1062,11 +1062,11 @@ TEST(swing_short_loop_second_iteration) {
      */
     set_param("track_0_step_1_add_note", "60");
     set_param("track_0_swing", "100");
-    set_param("track_0_loop_end", "15");  /* 16 steps */
+    set_param("track_0_length", "16");  /* 16 steps */
 
     set_param("track_1_step_1_add_note", "72");
     set_param("track_1_swing", "100");
-    set_param("track_1_loop_end", "4");   /* 5 steps */
+    set_param("track_1_length", "5");   /* 5 steps */
 
     clear_captured_notes();
     set_param("playing", "1");
@@ -1086,8 +1086,8 @@ TEST(swing_short_loop_second_iteration) {
     set_param("track_1_step_1_clear", "1");
     set_param("track_0_swing", "50");
     set_param("track_1_swing", "50");
-    set_param("track_0_loop_end", "15");
-    set_param("track_1_loop_end", "15");
+    set_param("track_0_length", "16");
+    set_param("track_1_length", "16");
 }
 
 TEST(swing_global_phase_determines_swing) {
@@ -1110,7 +1110,7 @@ TEST(swing_global_phase_determines_swing) {
     set_param("track_0_step_3_add_note", "63");
     set_param("track_0_step_4_add_note", "64");
     set_param("track_0_swing", "100");
-    set_param("track_0_loop_end", "4");  /* 5-step loop */
+    set_param("track_0_length", "5");  /* 5-step loop */
 
     clear_captured_notes();
     set_param("playing", "1");
@@ -1137,7 +1137,7 @@ TEST(swing_global_phase_determines_swing) {
     set_param("track_0_step_3_clear", "1");
     set_param("track_0_step_4_clear", "1");
     set_param("track_0_swing", "50");
-    set_param("track_0_loop_end", "15");
+    set_param("track_0_length", "16");
 }
 
 TEST(swing_comparison_5_vs_16_step_loops) {
@@ -1151,11 +1151,11 @@ TEST(swing_comparison_5_vs_16_step_loops) {
      */
     set_param("track_0_step_1_add_note", "60");
     set_param("track_0_swing", "100");
-    set_param("track_0_loop_end", "15");  /* 16 steps */
+    set_param("track_0_length", "16");  /* 16 steps */
 
     set_param("track_1_step_1_add_note", "72");
     set_param("track_1_swing", "100");
-    set_param("track_1_loop_end", "4");   /* 5 steps */
+    set_param("track_1_length", "5");   /* 5 steps */
 
     clear_captured_notes();
     set_param("playing", "1");
@@ -1175,8 +1175,8 @@ TEST(swing_comparison_5_vs_16_step_loops) {
     set_param("track_1_step_1_clear", "1");
     set_param("track_0_swing", "50");
     set_param("track_1_swing", "50");
-    set_param("track_0_loop_end", "15");
-    set_param("track_1_loop_end", "15");
+    set_param("track_0_length", "16");
+    set_param("track_1_length", "16");
 }
 
 /* ============ Tests: Transpose Sequence (DSP Internal) ============ */
@@ -2723,7 +2723,7 @@ TEST(arp_continuous_long_sequence_16_steps) {
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
     set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
     set_param("track_0_arp_continuous", "1");
-    set_param("track_0_loop_end", "15"); /* Full 16 steps */
+    set_param("track_0_length", "16"); /* Full 16 steps */
 
     /* C-E-G chord on step 0 with length 16 */
     set_param("track_0_step_0_add_note", "60");
@@ -2876,6 +2876,401 @@ TEST(scheduler_conflict_frees_slot_immediately) {
     set_param("track_0_step_1_clear", "1");
 }
 
+/* ============ Chord Note Length Tests ============ */
+
+/*
+ * BUG TEST: Chord with length 16 should play for 16 steps, not 8.
+ * User reported that a chord plays for only 8 steps but an arp with
+ * the same length plays for 16 steps.
+ */
+
+/* Helper to count note-offs for a specific note and channel */
+static int count_note_offs(int note, int channel) {
+    int count = 0;
+    for (int i = 0; i < g_num_captured; i++) {
+        if (!g_captured_notes[i].is_note_on &&
+            g_captured_notes[i].note == note &&
+            g_captured_notes[i].channel == channel) {
+            count++;
+        }
+    }
+    return count;
+}
+
+TEST(chord_length_16_plays_full_duration) {
+    /* Test that a chord (multiple notes, no arp) with length 16
+     * plays for the full 16 steps, not cutting off early.
+     *
+     * Setup: Step 0 with chord C-E-G (notes 60, 64, 67), length 16
+     * Expected: Notes should play for 16 steps before note-off
+     */
+
+    /* Ensure clean state */
+    for (int i = 0; i < 16; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+    set_param("track_0_length", "16");
+    set_param("track_0_arp_mode", "0");  /* No arp - plain chord */
+
+    /* Add chord C-E-G on step 0 with length 16 */
+    set_param("track_0_step_0_add_note", "60");  /* C */
+    set_param("track_0_step_0_add_note", "64");  /* E */
+    set_param("track_0_step_0_add_note", "67");  /* G */
+    set_param("track_0_step_0_length", "16");
+
+    /* Play for 8 steps - chord should still be playing (no note-offs yet) */
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(8);
+
+    /* Check: all three notes should have note-ons but NO note-offs yet */
+    int note_ons_60 = count_note_ons(60, 0);
+    int note_ons_64 = count_note_ons(64, 0);
+    int note_ons_67 = count_note_ons(67, 0);
+    int note_offs_60 = count_note_offs(60, 0);
+    int note_offs_64 = count_note_offs(64, 0);
+    int note_offs_67 = count_note_offs(67, 0);
+
+    ASSERT_EQ(note_ons_60, 1);
+    ASSERT_EQ(note_ons_64, 1);
+    ASSERT_EQ(note_ons_67, 1);
+
+    /* KEY BUG TEST: After 8 steps, notes should NOT have note-offs yet
+     * If this fails (note-offs > 0), the chord is being cut short at 8 steps */
+    ASSERT_EQ(note_offs_60, 0);  /* BUG: If this fails, chord ends at 8 steps */
+    ASSERT_EQ(note_offs_64, 0);
+    ASSERT_EQ(note_offs_67, 0);
+
+    /* Play 8 more steps (total 16) - now note-offs should appear */
+    render_steps(8);
+
+    note_offs_60 = count_note_offs(60, 0);
+    note_offs_64 = count_note_offs(64, 0);
+    note_offs_67 = count_note_offs(67, 0);
+
+    /* After 16 steps, notes should have ended */
+    ASSERT_EQ(note_offs_60, 1);
+    ASSERT_EQ(note_offs_64, 1);
+    ASSERT_EQ(note_offs_67, 1);
+
+    set_param("playing", "0");
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+}
+
+TEST(chord_vs_arp_length_16_comparison) {
+    /* Direct comparison: same chord with length 16
+     * - As plain chord (no arp): should play full 16 steps
+     * - As arp: should play full 16 steps
+     *
+     * This test proves if there's a discrepancy between chord and arp handling.
+     */
+
+    /* Ensure clean state */
+    for (int i = 0; i < 16; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+    set_param("track_0_length", "16");
+
+    /* === Test 1: Plain chord (no arp) === */
+    set_param("track_0_arp_mode", "0");  /* No arp */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "16");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(10);  /* Play past halfway point */
+
+    int chord_note_offs = count_note_offs(60, 0);
+    set_param("playing", "0");
+
+    /* Record whether chord was still playing at step 10 */
+    int chord_still_playing_at_10 = (chord_note_offs == 0);
+
+    /* Clean up for next test */
+    set_param("track_0_step_0_clear", "1");
+
+    /* === Test 2: Same chord but with arp === */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "16");
+
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(10);
+
+    /* For arp, check if we got more than 10 arp notes (proving it spans more than 10 steps) */
+    int arp_note_ons_60 = count_note_ons(60, 0);
+    int arp_note_ons_64 = count_note_ons(64, 0);
+    int arp_note_ons_67 = count_note_ons(67, 0);
+    int total_arp_notes = arp_note_ons_60 + arp_note_ons_64 + arp_note_ons_67;
+    set_param("playing", "0");
+
+    /* Arp with 16-step length at 1/16 speed should produce ~16 notes
+     * After 10 steps, we should have at least 10 notes */
+    int arp_still_playing_at_10 = (total_arp_notes >= 10);
+
+    /* KEY COMPARISON: Both should behave the same - if chord ends early but arp doesn't,
+     * there's a bug in chord scheduling.
+     * This test will print diagnostic info and fail if they differ. */
+    if (chord_still_playing_at_10 != arp_still_playing_at_10) {
+        printf("\n  [MISMATCH] Chord still playing at step 10: %d, Arp still playing: %d\n",
+               chord_still_playing_at_10, arp_still_playing_at_10);
+    }
+
+    /* Both should be playing at step 10 (within a 16-step duration) */
+    ASSERT(chord_still_playing_at_10);  /* BUG: fails if chord ends early */
+    ASSERT(arp_still_playing_at_10);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_arp_mode", "0");
+}
+
+TEST(gate_10_percent_with_length_16) {
+    /* Test that a note with length 16 and gate 10% plays for 1.6 steps.
+     * Expected: note-off should occur after ~1.6 steps (between step 1 and 2).
+     *
+     * Setup: Step 0 with note C (60), length 16, gate 10%
+     * Duration = 16 steps * 10% = 1.6 steps
+     */
+
+    /* Ensure clean state */
+    for (int i = 0; i < 16; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+    set_param("track_0_length", "16");
+    set_param("track_0_arp_mode", "0");  /* No arp */
+    set_param("track_0_gate", "10");     /* Set track gate to 10% */
+
+    /* Add note C on step 0 with length 16 (gate comes from track) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_length", "16");
+
+    /* Play for 1 step - note should still be playing (1.0 < 1.6) */
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);
+
+    int note_ons = count_note_ons(60, 0);
+    int note_offs = count_note_offs(60, 0);
+
+    ASSERT_EQ(note_ons, 1);
+    ASSERT_EQ(note_offs, 0);  /* Still playing at step 1 */
+
+    /* Play 1 more step (total 2) - note should have ended (2.0 > 1.6) */
+    render_steps(1);
+
+    note_offs = count_note_offs(60, 0);
+    ASSERT_EQ(note_offs, 1);  /* Note ended between step 1 and 2 */
+
+    set_param("playing", "0");
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_gate", "95");  /* Reset to default */
+}
+
+TEST(step_gate_overrides_track_gate) {
+    /* Test that step-level gate overrides track-level gate.
+     * Track gate = 100%, Step gate = 10%
+     * A 16-step note should play for 1.6 steps (using step gate), not 16 steps.
+     */
+
+    /* Ensure clean state */
+    for (int i = 0; i < 16; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+    set_param("track_0_length", "16");
+    set_param("track_0_arp_mode", "0");  /* No arp */
+    set_param("track_0_gate", "100");    /* Track gate = 100% (legato) */
+
+    /* Add note C on step 0 with length 16 and STEP gate 10% */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_length", "16");
+    set_param("track_0_step_0_gate", "10");  /* Step overrides track */
+
+    /* Play for 1 step - note should still be playing (1.0 < 1.6) */
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(1);
+
+    int note_ons = count_note_ons(60, 0);
+    int note_offs = count_note_offs(60, 0);
+
+    ASSERT_EQ(note_ons, 1);
+    ASSERT_EQ(note_offs, 0);  /* Still playing at step 1 */
+
+    /* Play 1 more step (total 2) - note should have ended (2.0 > 1.6) */
+    render_steps(1);
+
+    note_offs = count_note_offs(60, 0);
+    ASSERT_EQ(note_offs, 1);  /* Note ended - step gate overrode track gate */
+
+    set_param("playing", "0");
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_gate", "95");  /* Reset to default */
+}
+
+TEST(arp_uses_gate_from_current_step) {
+    /* Test that arp notes use gate override from a step for the duration of that step's length.
+     * Gate overrides work like CC locks - they apply for step->length steps.
+     *
+     * Setup:
+     * - Step 0: arp with length 16, track gate 100%
+     * - Step 6: gate = 1% with length = 10 (affects steps 6-15)
+     * - Arp speed = 1/8 (2 steps per note)
+     *
+     * Arp notes play at steps 0, 2, 4, 6, 8, 10, 12, 14.
+     * When track reaches step 6, gate override (1%) activates for 10 steps.
+     * All arp notes from step 6 onwards should use 1% gate.
+     */
+
+    /* Ensure clean state */
+    for (int i = 0; i < 16; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+    set_param("track_0_length", "16");
+    set_param("track_0_gate", "100");    /* Track gate = 100% (full length) */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "4"); /* 1/8 = 2 steps per note */
+
+    /* Step 0: C-E-G chord with length 16 (arp will span 16 steps) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "16");
+
+    /* Step 6: Set very short gate (1%) with length 10 (affects steps 6-15) */
+    set_param("track_0_step_6_gate", "1");
+    set_param("track_0_step_6_length", "10");
+
+    /* Play through 7 steps:
+     * Arp pattern with 2 steps per note:
+     * - Step 0: C starts, ends at 2.0 (100% gate)
+     * - Step 2: E starts, ends at 4.0 (100% gate)
+     * - Step 4: G starts, ends at 6.0 (100% gate)
+     * - Step 6: C starts, ends at 6.02 (1% gate from step 6's override)
+     */
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(7);
+
+    /* Count note-offs BEFORE stopping playback (stopping sends all_notes_off) */
+    int c_note_offs = count_note_offs(60, 0);
+
+    /* Stop playback */
+    set_param("playing", "0");
+
+    /* C note-offs within 7 steps:
+     * - C at step 0: ends at 2.0 -> 1 note-off
+     * - C at step 6: uses 1% gate from override, ends at 6.02 -> 1 note-off (total 2)
+     */
+    ASSERT_EQ(c_note_offs, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_6_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_gate", "95");
+}
+
+TEST(gate_override_spans_multiple_arp_notes) {
+    /* Test that a gate override on one step affects multiple subsequent arp notes.
+     * Gate override lasts for step->length steps, affecting all notes during that time.
+     *
+     * Setup:
+     * - Step 0: arp with length 16, track gate 100%
+     * - Step 6: gate = 1% with length = 10 (affects steps 6-15)
+     * - Arp speed = 1/8 (2 steps per note)
+     *
+     * Arp notes play at steps 0, 2, 4, 6, 8, 10, 12, 14.
+     * Notes at 0, 2, 4: use track gate (100%) - ends at 2, 4, 6
+     * Notes at 6, 8, 10, 12, 14: use override gate (1%) - very short
+     *
+     * By rendering 11 steps, we should see:
+     * - 3 full-length note-offs (at 2, 4, 6) for C, E, G
+     * - 3 short note-offs (at ~6.02, ~8.02, ~10.02) for C, E, G from gate override
+     */
+
+    /* Ensure clean state */
+    for (int i = 0; i < 16; i++) {
+        char key[64];
+        snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
+        set_param(key, "1");
+    }
+    set_param("track_0_length", "16");
+    set_param("track_0_gate", "100");    /* Track gate = 100% (full length) */
+    set_param("track_0_arp_mode", "1");  /* ARP_UP */
+    set_param("track_0_arp_speed", "4"); /* 1/8 = 2 steps per note */
+
+    /* Step 0: C-E-G chord with length 16 (arp will span 16 steps) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_add_note", "67");
+    set_param("track_0_step_0_length", "16");
+
+    /* Step 6: Set very short gate (1%) with length 10 (affects steps 6-15) */
+    set_param("track_0_step_6_gate", "1");
+    set_param("track_0_step_6_length", "10");
+
+    /* Play through 11 steps:
+     * Arp pattern (C-E-G cycle, 2 steps per note):
+     * - Step 0: C, 100% gate, ends at 2.0
+     * - Step 2: E, 100% gate, ends at 4.0
+     * - Step 4: G, 100% gate, ends at 6.0
+     * - Step 6: C, 1% gate (override active!), ends at 6.02
+     * - Step 8: E, 1% gate (override still active), ends at 8.02
+     * - Step 10: G, 1% gate (override still active), ends at 10.02
+     */
+    clear_captured_notes();
+    set_param("playing", "1");
+    render_steps(11);
+
+    /* Count total note-offs for each note BEFORE stopping */
+    int c_offs = count_note_offs(60, 0);  /* C plays at 0, 6 */
+    int e_offs = count_note_offs(64, 0);  /* E plays at 2, 8 */
+    int g_offs = count_note_offs(67, 0);  /* G plays at 4, 10 */
+
+    set_param("playing", "0");
+
+    /* Each note should have 2 note-offs within 11 steps:
+     * - C: ends at 2.0 and 6.02 (both < 11)
+     * - E: ends at 4.0 and 8.02 (both < 11)
+     * - G: ends at 6.0 and 10.02 (both < 11)
+     *
+     * If gate override wasn't working, the notes at 6/8/10 would end at 8/10/12,
+     * and G at step 10 would NOT have ended yet (12 > 11).
+     */
+    ASSERT_EQ(c_offs, 2);
+    ASSERT_EQ(e_offs, 2);
+    ASSERT_EQ(g_offs, 2);
+
+    /* Clean up */
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_step_6_clear", "1");
+    set_param("track_0_arp_mode", "0");
+    set_param("track_0_gate", "95");
+}
+
 /* ============ Loop Boundary Clamping Tests ============ */
 
 TEST(loop_clamp_basic) {
@@ -2888,8 +3283,8 @@ TEST(loop_clamp_basic) {
         snprintf(key, sizeof(key), "track_0_step_%d_clear", i);
         set_param(key, "1");
     }
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "15");
+    /* track_length resets track to start at step 0 by default */
+    set_param("track_0_length", "16");
 
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
     set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
@@ -2918,30 +3313,30 @@ TEST(loop_clamp_basic) {
     set_param("track_0_arp_mode", "0");
 }
 
-TEST(loop_clamp_custom_loop_start) {
-    /* With custom loop start, notes should still be clamped to loop end. */
+TEST(length_clamp_short_track) {
+    /* With short track length, notes should be clamped to not extend past track end.
+     * This replaces the old loop_clamp_custom_loop_start test. */
 
     /* Ensure clean state */
-    set_param("track_0_step_4_clear", "1");
+    set_param("track_0_step_0_clear", "1");
 
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
     set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
 
-    /* Set custom loop: start at 4, end at 7 (4 step loop) */
-    set_param("track_0_loop_start", "4");
-    set_param("track_0_loop_end", "7");
+    /* Set short track: 4 steps */
+    set_param("track_0_length", "4");
 
-    /* Step 4: C-E chord with 8-step length (would extend past loop end at 7) */
-    set_param("track_0_step_4_add_note", "60");
-    set_param("track_0_step_4_add_note", "64");
-    set_param("track_0_step_4_length", "8");
+    /* Step 0: C-E chord with 8-step length (would extend past track end at step 3) */
+    set_param("track_0_step_0_add_note", "60");
+    set_param("track_0_step_0_add_note", "64");
+    set_param("track_0_step_0_length", "8");
 
     clear_captured_notes();
     set_param("playing", "1");
-    render_steps(4);  /* One loop (steps 4-7) */
+    render_steps(4);  /* One loop (steps 0-3) */
     set_param("playing", "0");
 
-    /* With loop 4-7, step 4 has 4 remaining steps (4,5,6,7).
+    /* With track_length=4, step 0 has 4 remaining steps (0,1,2,3).
      * 8-step length is clamped to 4 steps, so 4 arp notes. */
     int count_60 = count_note_ons(60, 0);
     int count_64 = count_note_ons(64, 0);
@@ -2950,17 +3345,16 @@ TEST(loop_clamp_custom_loop_start) {
     ASSERT_EQ(total, 4);
 
     /* Clean up */
-    set_param("track_0_step_4_clear", "1");
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "15");
+    set_param("track_0_step_0_clear", "1");
+    set_param("track_0_length", "16");
     set_param("track_0_arp_mode", "0");
 }
 
-TEST(loop_clamp_no_overlap_on_loop) {
+TEST(length_clamp_no_overlap_on_loop) {
     /* When track loops, arps from previous iteration should not overlap with new iteration.
      * This test verifies that clamping prevents the overlap. */
 
-    /* Ensure clean state - clear all steps in the loop range */
+    /* Ensure clean state - clear all steps in the track range */
     set_param("track_0_step_0_clear", "1");
     set_param("track_0_step_1_clear", "1");
     set_param("track_0_step_2_clear", "1");
@@ -2969,9 +3363,8 @@ TEST(loop_clamp_no_overlap_on_loop) {
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
     set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
 
-    /* Set short loop: 0-3 (4 step loop) */
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "3");
+    /* Set short track: 4 steps */
+    set_param("track_0_length", "4");
 
     /* Step 0: C-E chord with 8-step length (would cause overlap without clamping) */
     set_param("track_0_step_0_add_note", "60");
@@ -2994,35 +3387,33 @@ TEST(loop_clamp_no_overlap_on_loop) {
 
     /* Clean up */
     set_param("track_0_step_0_clear", "1");
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "15");
+    set_param("track_0_length", "16");
     set_param("track_0_arp_mode", "0");
 }
 
-TEST(loop_clamp_mid_loop_step) {
-    /* Test clamping for a step in the middle of a custom loop */
+TEST(length_clamp_mid_track_step) {
+    /* Test clamping for a step near the end of a short track */
 
     /* Ensure clean state */
-    set_param("track_0_step_4_clear", "1");
+    set_param("track_0_step_2_clear", "1");
 
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
     set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
 
-    /* Set loop: 2-5 (4 step loop) */
-    set_param("track_0_loop_start", "2");
-    set_param("track_0_loop_end", "5");
+    /* Set short track: 4 steps (0-3) */
+    set_param("track_0_length", "4");
 
-    /* Step 4: C-E chord with 4-step length (would extend past end at 5) */
-    set_param("track_0_step_4_add_note", "60");
-    set_param("track_0_step_4_add_note", "64");
-    set_param("track_0_step_4_length", "4");
+    /* Step 2: C-E chord with 4-step length (would extend past end at 3) */
+    set_param("track_0_step_2_add_note", "60");
+    set_param("track_0_step_2_add_note", "64");
+    set_param("track_0_step_2_length", "4");
 
     clear_captured_notes();
     set_param("playing", "1");
     render_steps(4);  /* One loop */
     set_param("playing", "0");
 
-    /* Step 4 has only 2 remaining steps (4,5) before loop end.
+    /* Step 2 has only 2 remaining steps (2,3) before track end.
      * 4-step length is clamped to 2, so 2 arp notes. */
     int count_60 = count_note_ons(60, 0);
     int count_64 = count_note_ons(64, 0);
@@ -3031,22 +3422,20 @@ TEST(loop_clamp_mid_loop_step) {
     ASSERT_EQ(total, 2);
 
     /* Clean up */
-    set_param("track_0_step_4_clear", "1");
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "15");
+    set_param("track_0_step_2_clear", "1");
+    set_param("track_0_length", "16");
     set_param("track_0_arp_mode", "0");
 }
 
-TEST(loop_clamp_ratchet) {
-    /* Ratchets should also be clamped to loop boundary */
+TEST(length_clamp_ratchet) {
+    /* Ratchets should also be clamped to track boundary */
 
     /* Ensure clean state */
     set_param("track_0_step_0_clear", "1");
     set_param("track_0_arp_mode", "0");  /* Disable arp for ratchet test */
 
-    /* Set short loop: 0-1 (2 step loop) */
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "1");
+    /* Set short track: 2 steps */
+    set_param("track_0_length", "2");
 
     /* Step 0: single note with 4-step length and 4x ratchet */
     set_param("track_0_step_0_add_note", "60");
@@ -3058,7 +3447,7 @@ TEST(loop_clamp_ratchet) {
     render_steps(2);  /* One loop */
     set_param("playing", "0");
 
-    /* With loop 0-1, step 0 has only 2 remaining steps.
+    /* With track_length=2, step 0 has only 2 remaining steps.
      * 4-step length is clamped to 2.
      * With 4x ratchet spread over 2 steps, we get 4 notes in 2 steps. */
     int count_60 = count_note_ons(60, 0);
@@ -3068,12 +3457,11 @@ TEST(loop_clamp_ratchet) {
 
     /* Clean up */
     set_param("track_0_step_0_clear", "1");
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "15");
+    set_param("track_0_length", "16");
 }
 
-TEST(loop_clamp_last_step) {
-    /* Step at loop end should still play (1 step remaining) */
+TEST(length_clamp_last_step) {
+    /* Step at track end should still play (1 step remaining) */
 
     /* Ensure clean state - clear multiple steps that might have leftover notes */
     set_param("track_0_step_0_clear", "1");
@@ -3084,9 +3472,8 @@ TEST(loop_clamp_last_step) {
     set_param("track_0_arp_mode", "1");  /* ARP_UP */
     set_param("track_0_arp_speed", "2"); /* 1/16 = 1 note per step */
 
-    /* Set loop: 0-3 */
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "3");
+    /* Set short track: 4 steps (0-3) */
+    set_param("track_0_length", "4");
 
     /* Step 3 (last step): C-E chord with 4-step length */
     set_param("track_0_step_3_add_note", "60");
@@ -3098,7 +3485,7 @@ TEST(loop_clamp_last_step) {
     render_steps(4);  /* One loop */
     set_param("playing", "0");
 
-    /* Step 3 has only 1 remaining step before loop wraps.
+    /* Step 3 has only 1 remaining step before track wraps.
      * Length clamped to 1, so only 1 arp note plays. */
     int count_60 = count_note_ons(60, 0);
     int count_64 = count_note_ons(64, 0);
@@ -3108,8 +3495,7 @@ TEST(loop_clamp_last_step) {
 
     /* Clean up */
     set_param("track_0_step_3_clear", "1");
-    set_param("track_0_loop_start", "0");
-    set_param("track_0_loop_end", "15");
+    set_param("track_0_length", "16");
     set_param("track_0_arp_mode", "0");
 }
 
@@ -3279,13 +3665,21 @@ int main(int argc, char **argv) {
     RUN_TEST(scheduler_no_leak_on_conflict);
     RUN_TEST(scheduler_conflict_frees_slot_immediately);
 
-    printf("\nLoop Boundary Clamping:\n");
+    printf("\nChord Note Length:\n");
+    RUN_TEST(chord_length_16_plays_full_duration);
+    RUN_TEST(chord_vs_arp_length_16_comparison);
+    RUN_TEST(gate_10_percent_with_length_16);
+    RUN_TEST(step_gate_overrides_track_gate);
+    RUN_TEST(arp_uses_gate_from_current_step);
+    RUN_TEST(gate_override_spans_multiple_arp_notes);
+
+    printf("\nTrack Length Boundary Clamping:\n");
     RUN_TEST(loop_clamp_basic);
-    RUN_TEST(loop_clamp_custom_loop_start);
-    RUN_TEST(loop_clamp_no_overlap_on_loop);
-    RUN_TEST(loop_clamp_mid_loop_step);
-    RUN_TEST(loop_clamp_ratchet);
-    RUN_TEST(loop_clamp_last_step);
+    RUN_TEST(length_clamp_short_track);
+    RUN_TEST(length_clamp_no_overlap_on_loop);
+    RUN_TEST(length_clamp_mid_track_step);
+    RUN_TEST(length_clamp_ratchet);
+    RUN_TEST(length_clamp_last_step);
 
     cleanup_plugin();
 

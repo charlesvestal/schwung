@@ -14,7 +14,7 @@ import {
 
 import { setLED, setButtonLED, setLedsEnabled, getLedsEnabled } from "../lib/shared-input.js";
 
-import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM } from '../lib/constants.js';
+import { NUM_TRACKS, NUM_STEPS, MoveKnobLEDs, TRACK_COLORS, TRACK_COLORS_DIM, RESET_INF, MAX_RESET } from '../lib/constants.js';
 import * as spark from './master/spark.js';
 import { state, displayMessage } from '../lib/state.js';
 import { setParam, getParam, syncTransposeSequenceToDSP, updateBpm } from '../lib/helpers.js';
@@ -96,8 +96,8 @@ function getScaleDisplayName() {
 
 /* ============ View Interface ============ */
 
-/* BPM edit mode flag (local to master view) */
-let bpmEditMode = false;
+/* Master scale edit mode flag (local to master view) */
+let masterScaleMode = false;
 
 /* Transpose spark mode flag (local to master view) */
 let transposeSparkMode = false;
@@ -110,7 +110,7 @@ export function onEnter() {
     updateDetectedScaleFromDSP();
     state.heldTransposeStep = -1;
     state.heldLiveTransposePad = -1;
-    bpmEditMode = false;
+    masterScaleMode = false;
     transposeSparkMode = false;
     updateDisplayContent();
 }
@@ -123,7 +123,7 @@ export function onExit() {
     state.heldLiveTransposePad = -1;
     /* Clear live transpose when exiting master view */
     setParam("live_transpose", "0");
-    bpmEditMode = false;
+    masterScaleMode = false;
     transposeSparkMode = false;
     state.transposeSparkSelectedSteps.clear();
 }
@@ -165,13 +165,54 @@ export function onInput(data) {
         return true;
     }
 
-    /* Step 5 (note 20) with shift - enter BPM mode */
+    /* Step 5 (note 20) with shift - enter Master Scale mode */
     if (isNote && note === 20 && state.shiftHeld) {
         if (isNoteOn && velocity > 0) {
-            bpmEditMode = true;
+            masterScaleMode = true;
             updateDisplayContent();
             updateLEDs();
         }
+        return true;
+    }
+
+    /* Knob 1 - BPM in master scale mode */
+    if (isCC && note === MoveKnob1 && masterScaleMode) {
+        let delta = 0;
+        if (velocity >= 1 && velocity <= 63) {
+            delta = 1;
+        } else if (velocity >= 65 && velocity <= 127) {
+            delta = -1;
+        }
+        if (delta !== 0) {
+            updateBpm(state.bpm + delta);
+            markDirty();
+            updateDisplayContent();
+        }
+        return true;
+    }
+
+    /* Knob 2 - Master Reset in master scale mode */
+    if (isCC && note === MoveKnob2 && masterScaleMode) {
+        let reset = state.masterReset;
+        if (velocity >= 1 && velocity <= 63) {
+            /* Clockwise: INF -> 1 -> 2 -> ... -> 256 */
+            if (reset === RESET_INF) {
+                reset = 1;
+            } else {
+                reset = Math.min(reset + 1, MAX_RESET);
+            }
+        } else if (velocity >= 65 && velocity <= 127) {
+            /* Counter-clockwise: 256 -> ... -> 1 -> INF */
+            if (reset === 1) {
+                reset = RESET_INF;
+            } else if (reset > 1) {
+                reset = reset - 1;
+            }
+        }
+        state.masterReset = reset;
+        setParam("master_reset", String(reset));
+        markDirty();
+        updateDisplayContent();
         return true;
     }
 
@@ -192,7 +233,7 @@ export function onInput(data) {
 
     /* Capture + Step enters transpose spark mode */
     if (!transposeSparkMode && state.captureHeld && isNote &&
-        note >= 16 && note <= 31 && isNoteOn && velocity > 0 && !bpmEditMode) {
+        note >= 16 && note <= 31 && isNoteOn && velocity > 0 && !masterScaleMode) {
         const stepIdx = note - 16;
         transposeSparkMode = true;
         state.transposeSparkSelectedSteps.add(stepIdx);
@@ -218,7 +259,7 @@ export function onInput(data) {
     }
 
     /* Step buttons - transpose sequence (only when not in BPM mode and Capture not held) */
-    if (isNote && note >= 16 && note <= 31 && !bpmEditMode && !state.captureHeld) {
+    if (isNote && note >= 16 && note <= 31 && !masterScaleMode && !state.captureHeld) {
         return handleStepButton(note - 16, isNoteOn, velocity);
     }
 
@@ -290,7 +331,7 @@ export function onInput(data) {
     /* Jog wheel handling */
     if (isCC && note === MoveMainKnob) {
         /* BPM mode: adjust BPM */
-        if (bpmEditMode) {
+        if (masterScaleMode) {
             let delta = 0;
             if (velocity >= 1 && velocity <= 63) {
                 delta = 1;
@@ -358,8 +399,8 @@ export function onInput(data) {
 
     /* Back button - exit BPM mode if active, else let router handle */
     if (isCC && note === MoveBack && velocity > 0) {
-        if (bpmEditMode) {
-            bpmEditMode = false;
+        if (masterScaleMode) {
+            masterScaleMode = false;
             updateDisplayContent();
             updateLEDs();
             return true;
@@ -497,7 +538,7 @@ function updateStepUILEDs() {
     setButtonLED(MoveStep3UI, Black);
     setButtonLED(MoveStep4UI, Black);
     /* Step 5 UI shows BPM mode option when shift held, or lit when in BPM mode */
-    setButtonLED(MoveStep5UI, (state.shiftHeld || bpmEditMode) ? Cyan : Black);
+    setButtonLED(MoveStep5UI, (state.shiftHeld || masterScaleMode) ? Cyan : Black);
     setButtonLED(MoveStep6UI, Black);
     setButtonLED(MoveStep7UI, Black);
     setButtonLED(MoveStep8UI, Black);
@@ -618,6 +659,16 @@ function updatePadLEDs() {
 }
 
 function updateKnobLEDs() {
+    /* Master scale mode: knob 1 = BPM, knob 2 = master reset */
+    if (masterScaleMode) {
+        setButtonLED(MoveKnobLEDs[0], Cyan);        /* BPM */
+        setButtonLED(MoveKnobLEDs[1], Purple);      /* Master Reset */
+        for (let i = 2; i < 8; i++) {
+            setButtonLED(MoveKnobLEDs[i], Black);
+        }
+        return;
+    }
+
     /* Knob 1 lit when holding step (duration control) */
     setButtonLED(MoveKnobLEDs[0], state.heldTransposeStep >= 0 ? Cyan : Black);
 
@@ -664,13 +715,14 @@ export function updateDisplayContent() {
         return;
     }
 
-    /* BPM edit mode display */
-    if (bpmEditMode) {
+    /* Master scale mode display */
+    if (masterScaleMode) {
+        const resetStr = state.masterReset === RESET_INF ? "INF" : String(state.masterReset);
         displayMessage(
-            "BPM EDIT",
+            "MASTER SCALE",
             `BPM: ${state.bpm}`,
-            "Jog: adjust | Back: exit",
-            ""
+            `Master Reset: ${resetStr}`,
+            "Back to exit"
         );
         return;
     }

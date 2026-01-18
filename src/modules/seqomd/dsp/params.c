@@ -91,6 +91,7 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
             s->notes[n] = 0;
             s->velocities[n] = DEFAULT_VELOCITY;
         }
+        s->gate = 0;  /* 0 = use track gate */
         s->cc1 = -1;
         s->cc2 = -1;
         s->probability = 100;
@@ -138,7 +139,7 @@ void set_step_param(int track_idx, int step_idx, const char *param, const char *
     }
     else if (strcmp(param, "gate") == 0) {
         int gate = atoi(val);
-        if (gate >= 1 && gate <= 100) {
+        if (gate >= 0 && gate <= 100) {  /* 0 = use track gate */
             s->gate = gate;
         }
     }
@@ -339,7 +340,7 @@ void set_track_param(int track_idx, const char *param, const char *val) {
     else if (strcmp(param, "length") == 0) {
         int len = atoi(val);
         if (len >= 1 && len <= NUM_STEPS) {
-            track->length = len;
+            track->track_length = len;
         }
     }
     else if (strcmp(param, "speed") == 0) {
@@ -396,16 +397,22 @@ void set_track_param(int track_idx, const char *param, const char *val) {
             track->arp_play_start = play_start;
         }
     }
-    else if (strcmp(param, "loop_start") == 0) {
-        int start = atoi(val);
-        if (start >= 0 && start < NUM_STEPS) {
-            get_current_pattern(track)->loop_start = start;
+    else if (strcmp(param, "track_length") == 0) {
+        int len = atoi(val);
+        if (len >= 1 && len <= NUM_STEPS) {
+            track->track_length = len;
         }
     }
-    else if (strcmp(param, "loop_end") == 0) {
-        int end = atoi(val);
-        if (end >= 0 && end < NUM_STEPS) {
-            get_current_pattern(track)->loop_end = end;
+    else if (strcmp(param, "reset_length") == 0 || strcmp(param, "reset") == 0) {
+        int reset = atoi(val);
+        if (reset >= 0 && reset <= 256) {  /* 0=INF, 1-256 */
+            track->reset_length = reset;
+        }
+    }
+    else if (strcmp(param, "gate") == 0) {
+        int gate = atoi(val);
+        if (gate >= 1 && gate <= 100) {
+            track->gate = gate;
         }
     }
     else if (strcmp(param, "pattern") == 0) {
@@ -469,20 +476,20 @@ int get_track_param(int track_idx, const char *param, char *buf, int buf_len) {
     else if (strcmp(param, "mute") == 0) {
         return snprintf(buf, buf_len, "%d", track->muted);
     }
-    else if (strcmp(param, "length") == 0) {
-        return snprintf(buf, buf_len, "%d", track->length);
+    else if (strcmp(param, "track_length") == 0) {
+        return snprintf(buf, buf_len, "%d", track->track_length);
+    }
+    else if (strcmp(param, "reset_length") == 0 || strcmp(param, "reset") == 0) {
+        return snprintf(buf, buf_len, "%d", track->reset_length);
+    }
+    else if (strcmp(param, "gate") == 0) {
+        return snprintf(buf, buf_len, "%d", track->gate);
     }
     else if (strcmp(param, "speed") == 0) {
         return snprintf(buf, buf_len, "%.4f", track->speed);
     }
     else if (strcmp(param, "swing") == 0) {
         return snprintf(buf, buf_len, "%d", track->swing);
-    }
-    else if (strcmp(param, "loop_start") == 0) {
-        return snprintf(buf, buf_len, "%d", get_current_pattern(track)->loop_start);
-    }
-    else if (strcmp(param, "loop_end") == 0) {
-        return snprintf(buf, buf_len, "%d", get_current_pattern(track)->loop_end);
     }
     else if (strcmp(param, "pattern") == 0) {
         return snprintf(buf, buf_len, "%d", track->current_pattern);

@@ -11,16 +11,16 @@
 import {
     Black, White, Navy, LightGrey, DarkGrey, Cyan, VividYellow, BrightGreen, BrightRed, Purple, DarkPurple,
     MoveMainKnob, MovePads, MoveSteps, MoveTracks,
-    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown, MoveCopy, MoveShift,
+    MovePlay, MoveRec, MoveLoop, MoveCapture, MoveBack, MoveUp, MoveDown, MoveLeft, MoveRight, MoveCopy, MoveShift,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4, MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
-    MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch,
+    MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob4Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch,
     MoveStep1UI, MoveStep2UI, MoveStep5UI, MoveStep7UI, MoveStep8UI, MoveStep11UI
 } from "../../lib/shared-constants.js";
 
 import { setLED, setButtonLED } from "../../lib/shared-input.js";
 
 import {
-    NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
+    NUM_TRACKS, NUM_STEPS, STEPS_PER_PAGE, NUM_PATTERNS, HOLD_THRESHOLD_MS, DISPLAY_RETURN_MS, MoveKnobLEDs,
     TRACK_COLORS, TRACK_COLORS_DIM, TRACK_COLORS_VERY_DIM, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS,
     getRatchetDisplayName, DEFAULT_SPEED_INDEX
 } from '../../lib/constants.js';
@@ -210,6 +210,38 @@ export function onInput(data) {
         return true;
     }
 
+    /* Left/Right - page navigation or trig shifting (with shift) */
+    if (isCC && note === MoveLeft && velocity > 0) {
+        if (state.shiftHeld) {
+            /* Shift + Left: rotate trigs backward */
+            shiftTrigs(-1);
+            displayMessage(`Track ${state.currentTrack + 1}`, "Trigs shifted left", "", "");
+            updateLEDs();
+        } else if (state.currentPage > 0) {
+            state.currentPage--;
+            updateDisplayContent();
+            updateLEDs();
+        }
+        return true;
+    }
+    if (isCC && note === MoveRight && velocity > 0) {
+        if (state.shiftHeld) {
+            /* Shift + Right: rotate trigs forward */
+            shiftTrigs(1);
+            displayMessage(`Track ${state.currentTrack + 1}`, "Trigs shifted right", "", "");
+            updateLEDs();
+        } else {
+            const track = state.tracks[state.currentTrack];
+            const maxPage = Math.ceil(track.trackLength / STEPS_PER_PAGE) - 1;
+            if (state.currentPage < maxPage) {
+                state.currentPage++;
+                updateDisplayContent();
+                updateLEDs();
+            }
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -258,8 +290,8 @@ function handleKnobTouch(data) {
     const note = data[1];
     const velocity = data[2];
 
-    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch];
-    const touchKnobIndices = [0, 1, 2, 5, 6, 7];
+    const touchKnobs = [MoveKnob1Touch, MoveKnob2Touch, MoveKnob3Touch, MoveKnob4Touch, MoveKnob6Touch, MoveKnob7Touch, MoveKnob8Touch];
+    const touchKnobIndices = [0, 1, 2, 3, 5, 6, 7];
 
     if (isNote && touchKnobs.includes(note)) {
         const touchIdx = touchKnobs.indexOf(note);
@@ -300,6 +332,12 @@ function handleKnobTap(knobIdx) {
         displayMessage(undefined, `Step ${state.heldStep + 1}`, "CC2 cleared", "");
         scheduleDisplayReturn();
         changed = true;
+    } else if (knobIdx === 3 && step.gate !== 0) {
+        step.gate = 0;
+        setParam(`track_${state.currentTrack}_step_${state.heldStep}_gate`, "0");
+        displayMessage(undefined, `Step ${state.heldStep + 1}`, "Gate: TRK (inherit)", "");
+        scheduleDisplayReturn();
+        changed = true;
     } else if (knobIdx === 5 && step.ratchet > 0) {
         step.ratchet = 0;
         setParam(`track_${state.currentTrack}_step_${state.heldStep}_ratchet`, "1");
@@ -332,46 +370,49 @@ function handleKnobTap(knobIdx) {
 
 /* ============ Step Button Handling ============ */
 
-function handleStepButton(stepIdx, isNoteOn, velocity) {
+function handleStepButton(displayIdx, isNoteOn, velocity) {
+    /* Map display position to actual step in pattern */
+    const actualStep = state.currentPage * STEPS_PER_PAGE + displayIdx;
+
     if (isNoteOn && velocity > 0) {
         /* Copy held - copy or paste step */
         if (copyHeld) {
             if (!state.stepCopyBuffer) {
                 /* First press: copy this step */
-                const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
+                const step = getCurrentPattern(state.currentTrack).steps[actualStep];
                 state.stepCopyBuffer = cloneStep(step);
-                state.copiedStepIdx = stepIdx;
+                state.copiedStepIdx = actualStep;
                 stepCopiedThisHold = true;
                 displayMessage(
                     "STEP COPIED",
-                    `Step ${stepIdx + 1} - Hold Copy + press dest`,
+                    `Step ${actualStep + 1} - Hold Copy + press dest`,
                     "",
                     ""
                 );
                 updateLEDs();
             } else {
                 /* Subsequent presses: paste to this step */
-                pasteStep(stepIdx);
+                pasteStep(actualStep);
                 markDirty();
                 updateLEDs();
             }
             return true;
         }
 
-        /* Check if setting length */
-        if (state.heldStep >= 0 && state.heldStep !== stepIdx && stepIdx > state.heldStep) {
-            return handleStepLength(stepIdx);
+        /* Check if setting length - use actual step indices */
+        if (state.heldStep >= 0 && state.heldStep !== actualStep && actualStep > state.heldStep) {
+            return handleStepLength(actualStep);
         }
 
         /* Step pressed */
-        setLED(MoveSteps[stepIdx], TRACK_COLORS[state.currentTrack]);
-        state.stepPressTimes[stepIdx] = Date.now();
-        state.stepPadPressed[stepIdx] = false;
-        state.heldStep = stepIdx;
+        setLED(MoveSteps[displayIdx], TRACK_COLORS[state.currentTrack]);
+        state.stepPressTimes[actualStep] = Date.now();
+        state.stepPadPressed[actualStep] = false;
+        state.heldStep = actualStep;
         updateLEDs();
     } else {
         /* Step released */
-        handleStepRelease(stepIdx);
+        handleStepRelease(actualStep, displayIdx);
     }
     return true;
 }
@@ -397,34 +438,34 @@ function handleStepLength(stepIdx) {
     return true;
 }
 
-function handleStepRelease(stepIdx) {
-    const pressTime = state.stepPressTimes[stepIdx];
-    const padPressed = state.stepPadPressed[stepIdx];
+function handleStepRelease(actualStep, displayIdx) {
+    const pressTime = state.stepPressTimes[actualStep];
+    const padPressed = state.stepPadPressed[actualStep];
     let changed = false;
 
     if (pressTime !== undefined && !padPressed) {
         const holdDuration = Date.now() - pressTime;
         if (holdDuration < HOLD_THRESHOLD_MS) {
-            const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
+            const step = getCurrentPattern(state.currentTrack).steps[actualStep];
             const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
 
             // Clear if has content
             if (hasContent) {
-                clearStep(stepIdx);
+                clearStep(actualStep);
                 changed = true;
             }
             // Add note if empty and note selected
             else if (state.lastSelectedNote > 0) {
-                toggleStepNote(stepIdx, state.lastSelectedNote, state.lastSelectedVelocity);
+                toggleStepNote(actualStep, state.lastSelectedNote, state.lastSelectedVelocity);
                 changed = true;
             }
         }
     }
 
-    delete state.stepPressTimes[stepIdx];
-    delete state.stepPadPressed[stepIdx];
+    delete state.stepPressTimes[actualStep];
+    delete state.stepPadPressed[actualStep];
 
-    if (state.heldStep === stepIdx) {
+    if (state.heldStep === actualStep) {
         state.heldStep = -1;
         state.displayReturnTime = 0;  /* Clear any pending display return */
     }
@@ -504,7 +545,7 @@ function handleKnob(knobIdx, velocity) {
         return handleShiftKnob(knobIdx, velocity);
     }
 
-    if (state.heldStep >= 0 && (knobIdx < 3 || knobIdx >= 5)) {
+    if (state.heldStep >= 0 && (knobIdx <= 3 || knobIdx >= 5)) {
         return handleStepKnob(knobIdx, velocity);
     }
 
@@ -609,6 +650,35 @@ function handleStepKnob(knobIdx, velocity) {
             `(CC ${cc} on Ch ${state.tracks[state.currentTrack].channel + 1})`,
             ""
         );
+    } else if (knobIdx === 3) {
+        /* Gate */
+        let gate = step.gate;
+
+        if (velocity >= 1 && velocity <= 63) {
+            /* Clockwise: if at 0 (track), jump to 1, otherwise increase */
+            if (gate === 0) {
+                gate = 1;
+            } else {
+                gate = Math.min(gate + 1, 100);
+            }
+        } else if (velocity >= 65 && velocity <= 127) {
+            /* Counter-clockwise: if at 1, go to 0 (track), otherwise decrease */
+            if (gate <= 1) {
+                gate = 0;
+            } else {
+                gate = gate - 1;
+            }
+        }
+
+        step.gate = gate;
+        setParam(`track_${state.currentTrack}_step_${state.heldStep}_gate`, String(gate));
+
+        if (gate === 0) {
+            const trackGate = state.tracks[state.currentTrack].gate;
+            displayMessage(`Step ${state.heldStep + 1}`, `Gate: TRK (${trackGate}%)`, "", "");
+        } else {
+            displayMessage(`Step ${state.heldStep + 1}`, `Gate: ${gate}%`, "", "");
+        }
     } else if (knobIdx === 5) {
         /* Ratchet */
         let ratchIdx = step.ratchet;
@@ -779,6 +849,7 @@ function clearStep(stepIdx) {
     const step = getCurrentPattern(state.currentTrack).steps[stepIdx];
     step.notes = [];
     step.velocities = [];
+    step.gate = 0;
     step.cc1 = -1;
     step.cc2 = -1;
     step.probability = 100;
@@ -794,6 +865,38 @@ function clearStep(stepIdx) {
     step.arpOctave = -1;
     step.arpLayer = 0;
     setParam(`track_${state.currentTrack}_step_${stepIdx}_clear`, "1");
+}
+
+/**
+ * Shift/rotate all trigs in the current pattern by direction
+ * @param {number} direction - -1 = shift left (backward), +1 = shift right (forward)
+ */
+function shiftTrigs(direction) {
+    const track = state.tracks[state.currentTrack];
+    const pattern = getCurrentPattern(state.currentTrack);
+    const length = track.trackLength;
+
+    /* Extract steps within track length */
+    const steps = pattern.steps.slice(0, length);
+
+    if (direction < 0) {
+        /* Shift left: [0,1,2,3] -> [1,2,3,0] */
+        const first = steps.shift();
+        steps.push(first);
+    } else {
+        /* Shift right: [0,1,2,3] -> [3,0,1,2] */
+        const last = steps.pop();
+        steps.unshift(last);
+    }
+
+    /* Copy back to pattern */
+    for (let i = 0; i < length; i++) {
+        pattern.steps[i] = steps[i];
+    }
+
+    /* Resync to DSP */
+    syncAllTracksToDSP();
+    markDirty();
 }
 
 /**
@@ -814,6 +917,7 @@ function pasteStep(stepIdx) {
         const vel = srcStep.velocity !== undefined ? srcStep.velocity : 100;
         step.velocities = srcStep.notes.map(() => vel);
     }
+    step.gate = srcStep.gate !== undefined ? srcStep.gate : 0;
     step.cc1 = srcStep.cc1;
     step.cc2 = srcStep.cc2;
     step.probability = srcStep.probability;
@@ -837,6 +941,11 @@ function pasteStep(stepIdx) {
         const note = step.notes[n];
         const vel = step.velocities[n] || 100;
         setParam(`track_${state.currentTrack}_step_${stepIdx}_add_note`, `${note},${vel}`);
+    }
+
+    // Sync gate
+    if (step.gate !== 0) {
+        setParam(`track_${state.currentTrack}_step_${stepIdx}_gate`, String(step.gate));
     }
 
     // Sync CCs
@@ -965,28 +1074,37 @@ export function updateLEDs() {
     updateCaptureLED();
     updateBackLED();
     updateOctaveLEDs();
+    updateArrowLEDs();
 }
 
 function updateStepLEDs() {
     const pattern = getCurrentPattern(state.currentTrack);
+    const track = state.tracks[state.currentTrack];
     const trackColor = TRACK_COLORS[state.currentTrack];
     const dimColor = TRACK_COLORS_DIM[state.currentTrack];
     const veryDimColor = TRACK_COLORS_VERY_DIM[state.currentTrack];
 
+    /* Calculate page-based step range */
+    const pageStart = state.currentPage * STEPS_PER_PAGE;
+
     /* When shift held, only show mode icons - no track pattern */
     if (state.shiftHeld) {
-        for (let i = 0; i < NUM_STEPS; i++) {
+        for (let i = 0; i < STEPS_PER_PAGE; i++) {
             setLED(MoveSteps[i], Black);
         }
     }
     /* When capture held, show steps with spark conditions */
     else if (state.captureHeld) {
-        for (let i = 0; i < NUM_STEPS; i++) {
-            const step = pattern.steps[i];
+        for (let i = 0; i < STEPS_PER_PAGE; i++) {
+            const actualStep = pageStart + i;
+            const step = pattern.steps[actualStep];
             const hasSpark = step.paramSpark > 0 || step.compSpark > 0 || step.jump >= 0;
             const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
+            const isInTrackLength = actualStep < track.trackLength;
 
-            if (hasSpark) {
+            if (!isInTrackLength) {
+                setLED(MoveSteps[i], DarkGrey);
+            } else if (hasSpark) {
                 setLED(MoveSteps[i], Purple);
             } else if (hasContent) {
                 setLED(MoveSteps[i], LightGrey);
@@ -996,37 +1114,42 @@ function updateStepLEDs() {
         }
     }
     else {
-        for (let i = 0; i < NUM_STEPS; i++) {
+        for (let i = 0; i < STEPS_PER_PAGE; i++) {
+            const actualStep = pageStart + i;
+            const step = pattern.steps[actualStep];
+            const isInTrackLength = actualStep < track.trackLength;
+
             let color = Black;
-            const inLoop = i >= pattern.loopStart && i <= pattern.loopEnd;
-            const step = pattern.steps[i];
 
             const hasNotes = step.notes.length > 0;
             const hasCCOnly = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0);
 
-            if (hasNotes) {
-                color = inLoop ? dimColor : Navy;
+            if (!isInTrackLength) {
+                /* Steps beyond track length shown as dark grey */
+                color = DarkGrey;
+            } else if (hasNotes) {
+                color = dimColor;
             } else if (hasCCOnly) {
-                color = inLoop ? veryDimColor : Navy;
+                color = veryDimColor;
             }
 
             /* Length visualization when holding a step */
-            if (state.heldStep >= 0 && state.heldStep !== i) {
+            if (state.heldStep >= 0 && state.heldStep !== actualStep) {
                 const heldStepData = pattern.steps[state.heldStep];
                 const heldLength = heldStepData.length || 1;
                 const lengthEnd = state.heldStep + heldLength - 1;
-                if (i > state.heldStep && i <= lengthEnd) {
+                if (actualStep > state.heldStep && actualStep <= lengthEnd) {
                     color = Cyan;
                 }
             }
 
-            /* Playhead */
-            if (state.playing && i === state.currentPlayStep && state.heldStep < 0) {
+            /* Playhead - only show if on current page */
+            if (state.playing && actualStep === state.currentPlayStep && state.heldStep < 0) {
                 color = White;
             }
 
             /* Currently held step */
-            if (i === state.heldStep) {
+            if (actualStep === state.heldStep) {
                 color = trackColor;
             }
 
@@ -1070,7 +1193,8 @@ function updateKnobLEDs() {
         /* Knob 3: arp (touch to enter step arp mode) */
         const hasArpOverride = step.arpMode >= 0 || step.arpSpeed >= 0 || step.arpOctave >= 0 || step.arpLayer > 0;
         setButtonLED(MoveKnobLEDs[2], hasArpOverride ? trackColor : LightGrey);
-        setButtonLED(MoveKnobLEDs[3], Black);
+        /* Knob 4: gate */
+        setButtonLED(MoveKnobLEDs[3], step.gate !== 0 ? trackColor : LightGrey);
         setButtonLED(MoveKnobLEDs[4], Black);
         /* Knob 6: ratchet */
         setButtonLED(MoveKnobLEDs[5], step.ratchet > 0 ? trackColor : LightGrey);
@@ -1124,10 +1248,8 @@ function updateTransportLEDs() {
     /* Play button */
     setButtonLED(MovePlay, state.playing ? BrightGreen : Black);
 
-    /* Loop button - dim when available, bright when custom loop active */
-    const pattern = getCurrentPattern(state.currentTrack);
-    const hasCustomLoop = pattern.loopStart > 0 || pattern.loopEnd < NUM_STEPS - 1;
-    setButtonLED(MoveLoop, hasCustomLoop ? 127 : 40);
+    /* Loop button - now auto-follow toggle: bright when ON, dim when OFF */
+    setButtonLED(MoveLoop, state.autoFollow ? 127 : 40);
 
     /* Record button */
     setButtonLED(MoveRec, state.recording ? BrightRed : Black);
@@ -1152,34 +1274,66 @@ function updateOctaveLEDs() {
     setButtonLED(MoveDown, state.padOctaveOffset > -2 ? White : DarkGrey);
 }
 
+function updateArrowLEDs() {
+    /* Left/Right arrows for page navigation - lit when can move in that direction */
+    const track = state.tracks[state.currentTrack];
+    const maxPage = Math.ceil(track.trackLength / STEPS_PER_PAGE) - 1;
+
+    setButtonLED(MoveLeft, state.currentPage > 0 ? White : DarkGrey);
+    setButtonLED(MoveRight, state.currentPage < maxPage ? White : DarkGrey);
+}
+
 /* ============ Playhead Update ============ */
 
 /**
  * Lightweight playhead update - only updates the two step LEDs that changed
+ * Now page-aware: only updates LEDs if step is on current page
+ * Also handles auto-follow: when enabled, page follows playhead
  */
 export function updatePlayhead(oldStep, newStep) {
     const pattern = getCurrentPattern(state.currentTrack);
+    const track = state.tracks[state.currentTrack];
     const dimColor = TRACK_COLORS_DIM[state.currentTrack];
     const veryDimColor = TRACK_COLORS_VERY_DIM[state.currentTrack];
 
-    /* Restore old step to its normal color */
-    if (oldStep >= 0 && oldStep < NUM_STEPS) {
-        const inLoop = oldStep >= pattern.loopStart && oldStep <= pattern.loopEnd;
+    /* Auto-follow: change page if playhead moved to different page */
+    if (state.autoFollow && state.playing && newStep >= 0) {
+        const playheadPage = Math.floor(newStep / STEPS_PER_PAGE);
+        if (playheadPage !== state.currentPage && playheadPage < Math.ceil(track.trackLength / STEPS_PER_PAGE)) {
+            state.currentPage = playheadPage;
+            /* Full LED update needed when page changes */
+            updateStepLEDs();
+            updateArrowLEDs();
+            updateDisplayContent();
+            return;
+        }
+    }
+
+    const pageStart = state.currentPage * STEPS_PER_PAGE;
+    const pageEnd = pageStart + STEPS_PER_PAGE;
+
+    /* Restore old step to its normal color (if on current page) */
+    if (oldStep >= pageStart && oldStep < pageEnd) {
+        const displayIdx = oldStep - pageStart;
         const step = pattern.steps[oldStep];
+        const isInTrackLength = oldStep < track.trackLength;
         let color = Black;
         const hasNotes = step.notes.length > 0;
         const hasCCOnly = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0);
-        if (hasNotes) {
-            color = inLoop ? dimColor : Navy;
+        if (!isInTrackLength) {
+            color = DarkGrey;
+        } else if (hasNotes) {
+            color = dimColor;
         } else if (hasCCOnly) {
-            color = inLoop ? veryDimColor : Navy;
+            color = veryDimColor;
         }
-        setLED(MoveSteps[oldStep], color);
+        setLED(MoveSteps[displayIdx], color);
     }
 
-    /* Set new step to playhead color */
-    if (newStep >= 0 && newStep < NUM_STEPS && state.heldStep < 0) {
-        setLED(MoveSteps[newStep], White);
+    /* Set new step to playhead color (if on current page) */
+    if (newStep >= pageStart && newStep < pageEnd && state.heldStep < 0) {
+        const displayIdx = newStep - pageStart;
+        setLED(MoveSteps[displayIdx], White);
     }
 }
 
@@ -1202,17 +1356,15 @@ export function updateDisplayContent() {
         const trackNum = state.currentTrack + 1;
         const muteStr = state.tracks[state.currentTrack].muted ? " [MUTE]" : "";
         const track = state.tracks[state.currentTrack];
-        const pattern = getCurrentPattern(state.currentTrack);
         const isOff = track.currentPattern < 0;
-        const loopStr = (!isOff && (pattern.loopStart > 0 || pattern.loopEnd < NUM_STEPS - 1))
-            ? `Loop:${pattern.loopStart + 1}-${pattern.loopEnd + 1}`
-            : "";
-        const patternStr = isOff ? "OFF" : `Pattern ${track.currentPattern + 1}`;
+        const patternStr = isOff ? "OFF" : `Pat ${track.currentPattern + 1}`;
+        const pageStr = `Pg ${state.currentPage + 1}`;
+        const lengthStr = `Len ${track.trackLength}`;
 
         displayMessage(
             `Track ${trackNum}${muteStr}`,
-            patternStr,
-            loopStr,
+            `${patternStr}  ${pageStr}`,
+            lengthStr,
             ""
         );
     }

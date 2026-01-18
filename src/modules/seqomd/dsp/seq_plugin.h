@@ -19,13 +19,15 @@
 /* ============ Constants ============ */
 
 #define NUM_TRACKS 16
-#define NUM_STEPS 16
+#define NUM_STEPS 64
 #define NUM_PATTERNS 16
+#define STEPS_PER_PAGE 16
+#define DEFAULT_TRACK_LENGTH 16
 #define MAX_NOTES_PER_STEP 7
 #define MAX_SCHEDULED_NOTES 512  /* Increased from 128 for complex patterns with many overlapping notes */
 
 #define DEFAULT_VELOCITY 100
-#define DEFAULT_GATE 50
+#define DEFAULT_GATE 95
 
 /* Transpose sequence constants */
 #define MAX_TRANSPOSE_STEPS 16
@@ -123,19 +125,20 @@ typedef struct {
     int8_t arp_octave;                   /* -1=use track, 0+=override octave */
 } step_t;
 
-/* Pattern data - contains steps and loop points */
+/* Pattern data - contains steps */
 typedef struct {
     step_t steps[NUM_STEPS];
-    uint8_t loop_start;     /* Loop start step (0-15) */
-    uint8_t loop_end;       /* Loop end step (0-15), wraps after this */
 } pattern_t;
 
 /* Track data */
 typedef struct {
-    pattern_t patterns[NUM_PATTERNS];  /* 8 patterns per track */
-    uint8_t current_pattern;           /* Currently active pattern (0-7) */
+    pattern_t patterns[NUM_PATTERNS];  /* 16 patterns per track */
+    uint8_t current_pattern;           /* Currently active pattern (0-15) */
     uint8_t midi_channel;   /* 0-15 */
-    uint8_t length;         /* 1-64 steps (for now max 16) */
+    uint8_t track_length;   /* 1-64 steps, default 16 */
+    uint16_t reset_length;  /* 0=INF (never reset), 1-256 steps */
+    uint16_t reset_counter; /* Steps played since last reset */
+    uint8_t gate;           /* Gate percentage 1-100 (default 95) */
     uint8_t current_step;
     uint8_t muted;
     uint8_t swing;          /* Swing amount 0-100 (50 = no swing, 67 = triplet feel) */
@@ -170,6 +173,9 @@ typedef struct {
     uint8_t cc2_default;         /* Default CC2 value (0-127) */
     uint8_t cc1_steps_remaining; /* Steps remaining for CC1 override (0 = use default) */
     uint8_t cc2_steps_remaining; /* Steps remaining for CC2 override (0 = use default) */
+    /* Gate override (like CC locks - step gate applies for step->length duration) */
+    uint8_t gate_override;       /* Active gate override value (0 = no override, use track gate) */
+    uint8_t gate_steps_remaining; /* Steps remaining for gate override (0 = use track default) */
     /* Arp continuous mode */
     uint8_t arp_continuous;      /* 0=restart pattern each trigger, 1=continue from last position */
     int arp_pattern_idx;         /* Pattern index where last arp left off (for continuous mode) */
@@ -187,11 +193,12 @@ typedef struct {
     uint8_t channel;
     uint8_t velocity;
     double on_phase;        /* Global phase when note-on should fire */
-    double off_phase;       /* Global phase when note-off should fire */
+    double off_phase;       /* Global phase when note-off should fire (calculated at note-on time) */
+    double length;          /* Note duration in steps (for gate-at-play-time calculation) */
     uint8_t on_sent;        /* Has note-on been sent? */
     uint8_t off_sent;       /* Has note-off been sent? */
     uint8_t active;         /* Is this slot in use? */
-    uint8_t track_idx;      /* Track index for chord_follow lookup */
+    uint8_t track_idx;      /* Track index for chord_follow and gate lookup */
     int8_t sequence_transpose;  /* Sequence transpose value at schedule time */
     uint8_t sent_note;      /* Actual note sent (for note-off matching) */
     int16_t active_idx;     /* Index in g_active_indices for O(1) removal (-1 if inactive) */
@@ -239,6 +246,10 @@ extern int g_playing;
 extern int g_send_clock;
 extern double g_clock_phase;
 extern double g_global_phase;  /* Master clock for all timing */
+
+/* Master reset state */
+extern uint16_t g_master_reset;    /* 0=INF (never reset), 1-256 steps */
+extern uint16_t g_master_counter;  /* Global step counter for master reset */
 
 /* Transpose/chord follow state */
 extern int g_chord_follow[NUM_TRACKS];
@@ -322,6 +333,7 @@ int get_play_steps_length(uint8_t play_steps);
 void init_pattern(pattern_t *pattern);
 void init_track(track_t *track, int channel);
 pattern_t* get_current_pattern(track_t *track);
+int get_step_gate(int track_idx, uint32_t step);
 int should_step_trigger(step_t *step, track_t *track);
 int check_spark_condition(int8_t spark_n, int8_t spark_m, uint8_t spark_not, track_t *track);
 void schedule_step_notes(track_t *track, int track_idx, step_t *step, double base_phase, int use_arp, int use_ratchet);

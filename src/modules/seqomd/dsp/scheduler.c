@@ -134,10 +134,10 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
     double swing_delay = calculate_swing_delay(swing, on_phase);
     double swung_on_phase = on_phase + swing_delay;
 
-    /* Calculate note-off time: length adjusted by gate percentage */
-    double gate_mult = gate / 100.0;
-    double note_duration = length * gate_mult;
-    double off_phase = swung_on_phase + note_duration;
+    /* Store length for gate-at-play-time calculation.
+     * off_phase will be recalculated at note-on time using the current step's gate.
+     * For now, use 100% gate (full length) as a conservative estimate for conflict detection. */
+    double max_off_phase = swung_on_phase + length;
 
     /* Check for conflicting note (same note+channel already playing) */
     int conflict_idx = find_conflicting_note(note, channel);
@@ -170,13 +170,14 @@ void schedule_note(uint8_t note, uint8_t velocity, uint8_t channel,
         return;
     }
 
-    /* Schedule the note */
+    /* Schedule the note - off_phase is placeholder, recalculated at note-on time */
     scheduled_note_t *sn = &g_scheduled_notes[slot];
     sn->note = note;
     sn->channel = channel;
     sn->velocity = velocity;
     sn->on_phase = swung_on_phase;
-    sn->off_phase = off_phase;
+    sn->off_phase = max_off_phase;  /* Conservative estimate, recalculated at note-on */
+    sn->length = length;            /* Store for gate-at-play-time calculation */
     sn->on_sent = 0;
     sn->off_sent = 0;
     sn->active = 1;
@@ -224,6 +225,12 @@ void process_scheduled_notes(void) {
                 if (final_note < 0) final_note = 0;
                 if (final_note > 127) final_note = 127;
             }
+
+            /* Apply gate at play time - use gate from the step where note is playing.
+             * This allows arp notes to use different gates based on which step they play at. */
+            int gate = get_step_gate(sn->track_idx, (uint32_t)sn->on_phase);
+            double gate_mult = gate / 100.0;
+            sn->off_phase = sn->on_phase + (sn->length * gate_mult);
 
             send_note_on(final_note, sn->velocity, sn->channel);
             sn->sent_note = (uint8_t)final_note;  /* Remember for note-off */

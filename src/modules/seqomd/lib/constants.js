@@ -17,9 +17,23 @@ import {
 /* ============ Core Constants ============ */
 
 export const NUM_TRACKS = 16;
-export const NUM_STEPS = 16;
+export const NUM_STEPS = 64;          // Max steps per pattern (was 16)
+export const STEPS_PER_PAGE = 16;     // Steps shown on hardware at once
+export const MAX_PAGES = 4;           // 64 steps / 16 per page
+export const DEFAULT_TRACK_LENGTH = 16;  // Default track length
 export const NUM_PATTERNS = 16;
 export const NUM_SETS = 32;
+
+/* ============ Reset Constants ============ */
+
+export const RESET_INF = 0;           // 0 = infinite (never reset)
+export const MAX_RESET = 256;         // Maximum reset length in steps
+
+/* ============ Gate Constants ============ */
+
+export const DEFAULT_GATE = 95;       // Default gate percentage (1-100)
+export const MIN_GATE = 1;
+export const MAX_GATE = 100;
 
 /* ============ Timing ============ */
 

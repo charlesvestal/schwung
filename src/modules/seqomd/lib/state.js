@@ -17,7 +17,7 @@ export const state = {
     /* Current view: 'set' | 'track' | 'pattern' | 'master' */
     view: 'set',
 
-    /* Track view sub-mode: 'normal' | 'loop' | 'spark' | 'swing' | 'bpm' | 'arp' */
+    /* Track view sub-mode: 'normal' | 'spark' | 'swing' | 'bpm' | 'arp' | 'speed' | 'channel' */
     trackMode: 'normal',
 
     /* Track selection */
@@ -52,8 +52,12 @@ export const state = {
     patternSnapshots: [],      // Array of 16 slots, each null or [pattern indices]
     activePatternSnapshot: -1, // Currently active snapshot (-1 = none)
 
-    /* Loop editing */
-    loopEditFirst: -1,         // First step pressed while in loop edit
+    /* Page navigation (for 64-step patterns) */
+    currentPage: 0,            // 0-3, which page of 16 steps to show
+    autoFollow: true,          // Auto-follow playhead to current page
+
+    /* Master reset */
+    masterReset: 0,            // 0=INF (never reset), 1-256 steps
 
     /* Pattern view */
     patternViewOffset: 0,      // Which row of patterns to show (0-26)
@@ -211,10 +215,6 @@ export function isMasterMode() {
     return state.view === 'master';
 }
 
-export function isLoopEditMode() {
-    return state.view === 'track' && state.trackMode === 'loop';
-}
-
 export function isSparkMode() {
     return state.view === 'track' && state.trackMode === 'spark';
 }
@@ -259,17 +259,6 @@ export function enterPatternView() {
 export function enterMasterView() {
     state.view = 'master';
     state.trackMode = 'normal';
-}
-
-export function enterLoopEdit() {
-    state.view = 'track';
-    state.trackMode = 'loop';
-    state.loopEditFirst = -1;
-}
-
-export function exitLoopEdit() {
-    state.trackMode = 'normal';
-    state.loopEditFirst = -1;
 }
 
 export function enterSparkMode() {

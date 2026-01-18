@@ -1,7 +1,7 @@
 /*
  * Track View - Coordinator
  * Routes input and updates to mode-specific handlers
- * Sub-modes: normal, loop, spark, channel, speed, swing, arp
+ * Sub-modes: normal, spark, channel, speed, swing, arp
  *
  * LED Ownership:
  * - Coordinator owns: PADS (piano layout, playing notes, held step notes)
@@ -22,7 +22,6 @@ import { NUM_PATTERNS } from '../lib/constants.js';
 
 import {
     state, displayMessage, enterSetView,
-    enterLoopEdit, exitLoopEdit,
     enterSparkMode, exitSparkMode,
     enterSwingMode, exitSwingMode,
     enterSpeedMode, exitSpeedMode,
@@ -36,7 +35,6 @@ import * as setView from './set.js';
 
 /* Mode modules */
 import * as normal from './track/normal.js';
-import * as loop from './track/loop.js';
 import * as spark from './track/spark.js';
 import * as swing from './track/swing.js';
 import * as speed from './track/speed.js';
@@ -44,7 +42,7 @@ import * as channel from './track/channel.js';
 import * as arp from './track/arp.js';
 import * as steparpm from './track/steparpm.js';
 
-const modes = { normal, loop, spark, swing, speed, channel, arp, steparpm };
+const modes = { normal, spark, swing, speed, channel, arp, steparpm };
 
 /* ============ View Interface ============ */
 
@@ -142,11 +140,11 @@ export function onInput(data) {
         return true;
     }
 
-    /* Loop button press enters loop mode */
+    /* Loop button toggles auto-follow (page follows playhead) */
     if (state.trackMode === 'normal' && isCC && note === MoveLoop && velocity > 0) {
-        modes.normal.onExit();
-        enterLoopEdit();
-        modes.loop.onEnter();
+        state.autoFollow = !state.autoFollow;
+        const status = state.autoFollow ? "ON" : "OFF";
+        displayMessage(`Track ${state.currentTrack + 1}`, `Auto-Follow: ${status}`, "", "");
         updateLEDs();
         return true;
     }
@@ -257,20 +255,6 @@ export function onInput(data) {
             exitCurrentMode();
             enterArpMode();
             modes.arp.onEnter();
-            updateLEDs();
-            return true;
-        }
-    }
-
-    /* Back button or Loop button release exits loop mode */
-    if (state.trackMode === 'loop') {
-        const isBackPress = isCC && note === MoveBack && velocity > 0;
-        const isLoopRelease = isCC && note === MoveLoop && velocity === 0;
-
-        if (isBackPress || isLoopRelease) {
-            modes.loop.onExit();
-            exitLoopEdit();
-            modes.normal.onEnter();
             updateLEDs();
             return true;
         }

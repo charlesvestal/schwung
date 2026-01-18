@@ -5,7 +5,7 @@
 
 import { VividYellow, LightGrey, DarkGrey, White, Black, BrightGreen, BrightRed, MovePads, MoveSteps, MoveTracks, MoveLoop, MoveCapture, MovePlay, MoveRec, MoveBack } from './shared-constants.js';
 import { setLED, setButtonLED } from './shared-input.js';
-import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS, TRACK_COLORS, MoveKnobLEDs } from './constants.js';
+import { NUM_TRACKS, NUM_STEPS, STEPS_PER_PAGE, NUM_PATTERNS, SPEED_OPTIONS, RATCHET_VALUES, CONDITIONS, TRACK_COLORS, MoveKnobLEDs } from './constants.js';
 import { state } from './state.js';
 import { isRoot, isInScale } from './scale_detection.js';
 import { markDirty } from './persistence.js';
@@ -207,10 +207,12 @@ export function syncAllTracksToDSP() {
         setParam(`track_${t}_cc1_default`, String(track.cc1Default !== undefined ? track.cc1Default : 64));
         setParam(`track_${t}_cc2_default`, String(track.cc2Default !== undefined ? track.cc2Default : 64));
 
-        /* Sync current pattern's loop points */
+        /* Sync track length, reset, and gate */
+        setParam(`track_${t}_length`, String(track.trackLength));
+        setParam(`track_${t}_reset`, String(track.resetLength));
+        setParam(`track_${t}_gate`, String(track.gate));
+
         const pattern = track.patterns[track.currentPattern];
-        setParam(`track_${t}_loop_start`, String(pattern.loopStart));
-        setParam(`track_${t}_loop_end`, String(pattern.loopEnd));
 
         /* Sync all steps in current pattern */
         for (let s = 0; s < NUM_STEPS; s++) {
@@ -233,6 +235,9 @@ export function syncAllTracksToDSP() {
             }
 
             /* Sync other step params */
+            if (step.gate !== undefined && step.gate !== 0) {
+                setParam(`track_${t}_step_${s}_gate`, String(step.gate));
+            }
             if (step.cc1 >= 0) {
                 setParam(`track_${t}_step_${s}_cc1`, String(step.cc1));
             }
@@ -300,6 +305,9 @@ export function syncAllTracksToDSP() {
     /* Sync transpose sequence to DSP */
     syncTransposeSequenceToDSP();
 
+    /* Sync master reset */
+    setParam("master_reset", String(state.masterReset));
+
     console.log("All tracks synced to DSP");
 }
 
@@ -357,8 +365,10 @@ export function syncTransposeSequenceToDSP() {
  * @param {boolean} showPlayhead - If true, show playhead as White (default true)
  */
 export function clearStepLEDs(showPlayhead = true) {
-    for (let i = 0; i < NUM_STEPS; i++) {
-        const isPlayhead = showPlayhead && state.playing && i === state.currentPlayStep;
+    for (let i = 0; i < STEPS_PER_PAGE; i++) {
+        /* Map display position to actual step in pattern */
+        const actualStep = state.currentPage * STEPS_PER_PAGE + i;
+        const isPlayhead = showPlayhead && state.playing && actualStep === state.currentPlayStep;
         setLED(MoveSteps[i], isPlayhead ? White : Black);
     }
 }
@@ -400,16 +410,24 @@ export function updateStandardTransportLEDs(overrides = {}) {
 
 /**
  * Update playhead position with two LED updates
- * @param {number} oldStep - Previous step index
- * @param {number} newStep - New step index
+ * Only updates if steps are on current page
+ * @param {number} oldStep - Previous step index (absolute, 0-63)
+ * @param {number} newStep - New step index (absolute, 0-63)
  * @param {Function} getOldStepColor - Optional function to get old step color (default: () => Black)
  */
 export function updatePlayheadLED(oldStep, newStep, getOldStepColor = () => Black) {
-    if (oldStep >= 0 && oldStep < NUM_STEPS) {
-        setLED(MoveSteps[oldStep], getOldStepColor(oldStep));
+    const pageStart = state.currentPage * STEPS_PER_PAGE;
+    const pageEnd = pageStart + STEPS_PER_PAGE;
+
+    /* Update old step if on current page */
+    if (oldStep >= pageStart && oldStep < pageEnd) {
+        const displayIdx = oldStep - pageStart;
+        setLED(MoveSteps[displayIdx], getOldStepColor(oldStep));
     }
-    if (newStep >= 0 && newStep < NUM_STEPS) {
-        setLED(MoveSteps[newStep], White);
+    /* Update new step if on current page */
+    if (newStep >= pageStart && newStep < pageEnd) {
+        const displayIdx = newStep - pageStart;
+        setLED(MoveSteps[displayIdx], White);
     }
 }
 

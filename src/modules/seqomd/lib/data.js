@@ -3,7 +3,7 @@
  * Functions for creating and manipulating track/step data
  */
 
-import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, DEFAULT_SPEED_INDEX, DEFAULT_ARP_SPEED, DEFAULT_TRACK_LENGTH, RESET_INF } from './constants.js';
+import { NUM_TRACKS, NUM_STEPS, NUM_PATTERNS, DEFAULT_SPEED_INDEX, DEFAULT_ARP_SPEED, DEFAULT_TRACK_LENGTH, RESET_INF, DEFAULT_GATE } from './constants.js';
 
 /* ============ Step Data ============ */
 
@@ -14,6 +14,7 @@ export function createEmptyStep() {
     return {
         notes: [],         // Array of MIDI notes
         velocities: [],    // Per-note velocity (1-127), parallel to notes array
+        gate: 0,           // Gate percentage (0 = use track gate, 1-100 = override)
         cc1: -1,           // CC value for knob 1 (-1 = not set)
         cc2: -1,           // CC value for knob 2 (-1 = not set)
         probability: 100,  // 1-100%
@@ -49,6 +50,7 @@ export function cloneStep(srcStep) {
     return {
         notes: [...srcStep.notes],
         velocities: velocities,
+        gate: srcStep.gate !== undefined ? srcStep.gate : 0,
         cc1: srcStep.cc1,
         cc2: srcStep.cc2,
         probability: srcStep.probability,
@@ -117,6 +119,7 @@ export function createEmptyTrack(channel) {
         swing: 50,
         trackLength: DEFAULT_TRACK_LENGTH,  // 1-64 steps, default 16
         resetLength: RESET_INF,             // 0=INF (never reset), 1-256 steps
+        gate: DEFAULT_GATE,                 // Gate percentage (1-100), default 95
         arpMode: 0,                   // 0 = Off, 1+ = arp mode
         arpSpeed: DEFAULT_ARP_SPEED,  // Index into ARP_SPEEDS
         arpOctave: 0,                 // Index into ARP_OCTAVES
@@ -145,6 +148,7 @@ export function cloneTrack(srcTrack) {
         swing: srcTrack.swing !== undefined ? srcTrack.swing : 50,
         trackLength: srcTrack.trackLength !== undefined ? srcTrack.trackLength : DEFAULT_TRACK_LENGTH,
         resetLength: srcTrack.resetLength !== undefined ? srcTrack.resetLength : RESET_INF,
+        gate: srcTrack.gate !== undefined ? srcTrack.gate : DEFAULT_GATE,
         arpMode: srcTrack.arpMode !== undefined ? srcTrack.arpMode : 0,
         arpSpeed: srcTrack.arpSpeed !== undefined ? srcTrack.arpSpeed : DEFAULT_ARP_SPEED,
         arpOctave: srcTrack.arpOctave !== undefined ? srcTrack.arpOctave : 0,
@@ -226,6 +230,10 @@ export function migrateTrackData(trackData) {
         if (track.resetLength === undefined) {
             track.resetLength = RESET_INF;
         }
+        /* Ensure gate exists (default 95%) */
+        if (track.gate === undefined) {
+            track.gate = DEFAULT_GATE;
+        }
         /* Ensure arp fields exist */
         if (track.arpMode === undefined) {
             track.arpMode = 0;
@@ -263,6 +271,10 @@ export function migrateTrackData(trackData) {
             delete pattern.loopEnd;
 
             for (const step of pattern.steps) {
+                /* Migrate gate field */
+                if (step.gate === undefined) {
+                    step.gate = 0;
+                }
                 /* Migrate arp fields */
                 if (step.arpMode === undefined) {
                     step.arpMode = -1;
@@ -356,6 +368,7 @@ export function getDefaultChordFollow() {
  */
 export function stepHasData(step) {
     return step.notes.length > 0 ||
+           step.gate !== 0 ||
            step.cc1 >= 0 ||
            step.cc2 >= 0 ||
            step.probability !== 100 ||
@@ -390,6 +403,7 @@ export function serializeStep(step) {
     }
 
     /* Only include non-default values (using short keys to save space) */
+    if (step.gate !== 0) s.gt = step.gate;
     if (step.cc1 >= 0) s.c1 = step.cc1;
     if (step.cc2 >= 0) s.c2 = step.cc2;
     if (step.probability !== 100) s.pr = step.probability;
@@ -429,6 +443,7 @@ export function deserializeStep(sparse) {
     }
 
     /* Short keys (new format) */
+    if (sparse.gt !== undefined) step.gate = sparse.gt;
     if (sparse.c1 !== undefined) step.cc1 = sparse.c1;
     if (sparse.c2 !== undefined) step.cc2 = sparse.c2;
     if (sparse.pr !== undefined) step.probability = sparse.pr;
@@ -447,6 +462,7 @@ export function deserializeStep(sparse) {
     if (sparse.at !== undefined) step.arpPlayStart = sparse.at;
 
     /* Long keys (old format - for backwards compatibility) */
+    if (sparse.gate !== undefined) step.gate = sparse.gate;
     if (sparse.cc1 !== undefined) step.cc1 = sparse.cc1;
     if (sparse.cc2 !== undefined) step.cc2 = sparse.cc2;
     if (sparse.probability !== undefined) step.probability = sparse.probability;
@@ -534,6 +550,7 @@ export function serializeTrack(track, trackIndex) {
     if (track.swing !== 50) t.sw = track.swing;
     if (track.trackLength !== DEFAULT_TRACK_LENGTH) t.tl = track.trackLength;
     if (track.resetLength !== RESET_INF) t.rl = track.resetLength;
+    if (track.gate !== DEFAULT_GATE) t.ga = track.gate;
     if (track.arpMode !== 0) t.am = track.arpMode;
     if (track.arpSpeed !== DEFAULT_ARP_SPEED) t.as = track.arpSpeed;
     if (track.arpOctave !== 0) t.ao = track.arpOctave;
@@ -580,6 +597,7 @@ export function deserializeTrack(sparse, trackIndex) {
         if (sparse.swing !== undefined) track.swing = sparse.swing;
         if (sparse.trackLength !== undefined) track.trackLength = sparse.trackLength;
         if (sparse.resetLength !== undefined) track.resetLength = sparse.resetLength;
+        if (sparse.gate !== undefined) track.gate = sparse.gate;
         if (sparse.arpMode !== undefined) track.arpMode = sparse.arpMode;
         if (sparse.arpSpeed !== undefined) track.arpSpeed = sparse.arpSpeed;
         if (sparse.arpOctave !== undefined) track.arpOctave = sparse.arpOctave;
@@ -602,6 +620,7 @@ export function deserializeTrack(sparse, trackIndex) {
         if (sparse.sw !== undefined) track.swing = sparse.sw;
         if (sparse.tl !== undefined) track.trackLength = sparse.tl;
         if (sparse.rl !== undefined) track.resetLength = sparse.rl;
+        if (sparse.ga !== undefined) track.gate = sparse.ga;
         if (sparse.am !== undefined) track.arpMode = sparse.am;
         if (sparse.as !== undefined) track.arpSpeed = sparse.as;
         if (sparse.ao !== undefined) track.arpOctave = sparse.ao;

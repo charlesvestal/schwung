@@ -66,6 +66,10 @@ int g_send_clock = 1;
 double g_clock_phase = 0.0;
 double g_global_phase = 0.0;  /* Master clock for all timing */
 
+/* Master reset state */
+uint16_t g_master_reset = 0;    /* 0=INF (never reset), 1-256 steps */
+uint16_t g_master_counter = 0;  /* Global step counter for master reset */
+
 /* Transpose/chord follow state */
 int g_chord_follow[NUM_TRACKS] = {0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1};  /* Tracks 5-8, 13-16 follow by default */
 int g_current_transpose = 0;  /* Current transpose offset in semitones (legacy, kept for compatibility) */
@@ -189,14 +193,16 @@ static void plugin_set_param(const char *key, const char *val) {
             /* Starting playback - clear scheduler and reset all tracks */
             clear_scheduled_notes();
             for (int t = 0; t < NUM_TRACKS; t++) {
-                g_tracks[t].current_step = get_current_pattern(&g_tracks[t])->loop_start;
+                g_tracks[t].current_step = 0;  /* Always start from step 0 */
                 g_tracks[t].phase = 0.0;
                 g_tracks[t].loop_count = 0;
+                g_tracks[t].reset_counter = 0;  /* Reset per-track reset counter */
                 g_tracks[t].next_step_at = 1.0;
             }
             g_clock_phase = 0.0;
             g_global_phase = 0.0;
             g_beat_count = 0;
+            g_master_counter = 0;  /* Reset master reset counter */
             g_random_state = 12345;
             /* Reset transpose virtual playhead and per-step iteration counters */
             g_transpose_virtual_step = 0;
@@ -220,6 +226,12 @@ static void plugin_set_param(const char *key, const char *val) {
     }
     else if (strcmp(key, "send_clock") == 0) {
         g_send_clock = atoi(val);
+    }
+    else if (strcmp(key, "master_reset") == 0) {
+        int reset = atoi(val);
+        if (reset >= 0 && reset <= 256) {  /* 0=INF, 1-256 */
+            g_master_reset = reset;
+        }
     }
     else if (strcmp(key, "current_transpose") == 0) {
         g_current_transpose = atoi(val);
@@ -287,6 +299,9 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     }
     else if (strcmp(key, "send_clock") == 0) {
         return snprintf(buf, buf_len, "%d", g_send_clock);
+    }
+    else if (strcmp(key, "master_reset") == 0) {
+        return snprintf(buf, buf_len, "%d", g_master_reset);
     }
     else if (strcmp(key, "num_tracks") == 0) {
         return snprintf(buf, buf_len, "%d", NUM_TRACKS);
@@ -372,6 +387,17 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         uint32_t curr_step = (uint32_t)g_global_phase;
         if (curr_step > prev_step) {
             update_transpose_virtual_playhead(curr_step);
+
+            /* Master reset: increment counter and reset all tracks if threshold reached */
+            g_master_counter++;
+            if (g_master_reset > 0 && g_master_counter >= g_master_reset) {
+                g_master_counter = 0;
+                /* Reset all track positions (but NOT transpose track or loop_count) */
+                for (int t = 0; t < NUM_TRACKS; t++) {
+                    g_tracks[t].current_step = 0;
+                    g_tracks[t].reset_counter = 0;
+                }
+            }
         }
 
         prev_global_phase = g_global_phase;
