@@ -72,6 +72,7 @@ Create evolving patterns like "play every loop, but filter sweep only every 4th.
 | **Shift + Step 5** | Speed mode |
 | **Shift + Step 7** | Swing mode |
 | **Shift + Step 11** | Arp mode |
+| **Shift + Step 14** | Generate pattern mode |
 | **Track buttons** | Select tracks 1-4 |
 | **Shift + Track** | Select tracks 5-8 |
 | **Jog wheel** | Scroll tracks (in 4-track groups) |
@@ -90,6 +91,35 @@ Create evolving patterns like "play every loop, but filter sweep only every 4th.
 | **Jog wheel** | Micro-timing offset |
 | **Tap another step** | Set note length |
 
+## Pattern Generator
+
+Algorithmic pattern generation with 8 styles and full parameter control. Enter via **Shift + Step 14**.
+
+**Styles** (select with jog wheel):
+- **Random**: Pure random within constraints
+- **Euclidean**: Mathematically even note distribution (Bjorklund algorithm)
+- **Rising**: Notes trend from low to high
+- **Falling**: Notes trend from high to low
+- **Arc**: Low → high → low melodic contour
+- **Pulse**: Emphasis on downbeats (1, 5, 9, 13)
+- **Offbeat**: Syncopated, avoids downbeats
+- **Clustered**: Groups of notes with gaps between
+
+**Parameters** (Knobs 1-8):
+
+| Knob | Parameter | Range |
+|------|-----------|-------|
+| 1 | Length | 1-64 steps |
+| 2 | Density | 5-100% |
+| 3 | Voices | 1-7 notes per step |
+| 4 | Scale | Detected, Chromatic, + 15 scales |
+| 5 | Root | Auto + C through B |
+| 6 | Octave | 1-6 (base octave) |
+| 7 | Range | 1-4 octaves |
+| 8 | Variation | Style-specific (rotation, steepness, etc.) |
+
+**Usage**: Adjust parameters, press jog to generate. Keep pressing to regenerate until satisfied. Press Back to exit.
+
 ## Architecture
 
 ```
@@ -102,6 +132,8 @@ seqomd/
     helpers.js         # Utility functions
     data.js            # Track/pattern data structures
     persistence.js     # Save/load sets to disk
+    generator.js       # Pattern generation algorithms
+    scale_detection.js # Scale detection from notes
     shared-constants.js # Colors, MIDI constants, button mappings
     shared-input.js    # LED control functions
   views/
@@ -117,6 +149,7 @@ seqomd/
       channel.js       # MIDI channel adjustment
       speed.js         # Track speed multiplier
       swing.js         # Track swing amount
+      generate.js      # Pattern generator mode
   dsp/
     seq_plugin.c       # Main DSP entry point
     track.c            # Track playback and scheduling

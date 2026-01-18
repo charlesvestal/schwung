@@ -27,7 +27,8 @@ import {
     enterSpeedMode, exitSpeedMode,
     enterChannelMode, exitChannelMode,
     enterArpMode, exitArpMode,
-    enterStepArpMode, exitStepArpMode
+    enterStepArpMode, exitStepArpMode,
+    enterGenerateMode, exitGenerateMode
 } from '../lib/state.js';
 
 import { markDirty } from '../lib/persistence.js';
@@ -41,8 +42,9 @@ import * as speed from './track/speed.js';
 import * as channel from './track/channel.js';
 import * as arp from './track/arp.js';
 import * as steparpm from './track/steparpm.js';
+import * as generate from './track/generate.js';
 
-const modes = { normal, spark, swing, speed, channel, arp, steparpm };
+const modes = { normal, spark, swing, speed, channel, arp, steparpm, generate };
 
 /* ============ View Interface ============ */
 
@@ -140,6 +142,15 @@ export function onInput(data) {
         return true;
     }
 
+    /* Shift + Step 14 enters generate mode */
+    if (state.trackMode === 'normal' && state.shiftHeld && isNote && note === 29 && isNoteOn && velocity > 0) {
+        modes.normal.onExit();
+        enterGenerateMode();
+        modes.generate.onEnter();
+        updateLEDs();
+        return true;
+    }
+
     /* Loop button toggles auto-follow (page follows playhead) */
     if (state.trackMode === 'normal' && isCC && note === MoveLoop && velocity > 0) {
         state.autoFollow = !state.autoFollow;
@@ -178,6 +189,20 @@ export function onInput(data) {
         if (isBackButton) {
             modes.steparpm.onExit();
             exitStepArpMode();
+            modes.normal.onEnter();
+            updateLEDs();
+            return true;
+        }
+    }
+
+    /*
+     * Generate mode exit - Back button only
+     */
+    if (state.trackMode === 'generate') {
+        const isBackButton = isCC && note === MoveBack && velocity > 0;
+        if (isBackButton) {
+            modes.generate.onExit();
+            exitGenerateMode();
             modes.normal.onEnter();
             updateLEDs();
             return true;

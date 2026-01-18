@@ -3,7 +3,7 @@
  * All mutable state for the sequencer
  */
 
-import { NUM_TRACKS } from './constants.js';
+import { NUM_TRACKS, DEFAULT_GENERATE_PARAMS } from './constants.js';
 
 /* ============ Main State Object ============ */
 
@@ -17,7 +17,7 @@ export const state = {
     /* Current view: 'set' | 'track' | 'pattern' | 'master' */
     view: 'set',
 
-    /* Track view sub-mode: 'normal' | 'spark' | 'swing' | 'bpm' | 'arp' | 'speed' | 'channel' */
+    /* Track view sub-mode: 'normal' | 'spark' | 'swing' | 'bpm' | 'arp' | 'speed' | 'channel' | 'generate' */
     trackMode: 'normal',
 
     /* Track selection */
@@ -135,7 +135,11 @@ export const state = {
     padOctaveOffset: 0,
 
     /* Display auto-return timeout (timestamp when to return to default display, 0 = disabled) */
-    displayReturnTime: 0
+    displayReturnTime: 0,
+
+    /* Pattern generator state */
+    generateStyle: 0,
+    generateParams: { ...DEFAULT_GENERATE_PARAMS }
 };
 
 /* ============ Display Helper ============ */
@@ -326,4 +330,17 @@ export function enterStepArpMode(stepIdx) {
 export function exitStepArpMode() {
     state.trackMode = 'normal';
     state.stepArpEditStep = -1;
+}
+
+export function enterGenerateMode() {
+    state.view = 'track';
+    state.trackMode = 'generate';
+}
+
+export function exitGenerateMode() {
+    state.trackMode = 'normal';
+}
+
+export function isGenerateMode() {
+    return state.view === 'track' && state.trackMode === 'generate';
 }

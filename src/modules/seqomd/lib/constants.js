@@ -331,3 +331,64 @@ export function getRotatedPlaySteps(playSteps, startPos) {
     }
     return result;
 }
+
+/* ============ Pattern Generator ============ */
+
+export const GENERATE_STYLES = [
+    { name: 'Random', short: 'RND' },
+    { name: 'Euclidean', short: 'EUC' },
+    { name: 'Rising', short: 'RIS' },
+    { name: 'Falling', short: 'FAL' },
+    { name: 'Arc', short: 'ARC' },
+    { name: 'Pulse', short: 'PLS' },
+    { name: 'Offbeat', short: 'OFF' },
+    { name: 'Clustered', short: 'CLU' }
+];
+
+export const GENERATOR_SCALES = [
+    { name: 'Detected', short: 'Det', notes: null },
+    { name: 'Chromatic', short: 'Chr', notes: [0,1,2,3,4,5,6,7,8,9,10,11] },
+    { name: 'Minor Penta', short: 'mPn', notes: [0, 3, 5, 7, 10] },
+    { name: 'Major Penta', short: 'MPn', notes: [0, 2, 4, 7, 9] },
+    { name: 'Blues', short: 'Blu', notes: [0, 3, 5, 6, 7, 10] },
+    { name: 'Major', short: 'Maj', notes: [0, 2, 4, 5, 7, 9, 11] },
+    { name: 'Minor', short: 'Min', notes: [0, 2, 3, 5, 7, 8, 10] },
+    { name: 'Dorian', short: 'Dor', notes: [0, 2, 3, 5, 7, 9, 10] },
+    { name: 'Mixolydian', short: 'Mix', notes: [0, 2, 4, 5, 7, 9, 10] },
+    { name: 'Phrygian', short: 'Phr', notes: [0, 1, 3, 5, 7, 8, 10] },
+    { name: 'Lydian', short: 'Lyd', notes: [0, 2, 4, 6, 7, 9, 11] },
+    { name: 'Locrian', short: 'Loc', notes: [0, 1, 3, 5, 6, 8, 10] },
+    { name: 'Harm Minor', short: 'HMi', notes: [0, 2, 3, 5, 7, 8, 11] },
+    { name: 'Mel Minor', short: 'MMi', notes: [0, 2, 3, 5, 7, 9, 11] },
+    { name: 'Whole Tone', short: 'Whl', notes: [0, 2, 4, 6, 8, 10] },
+    { name: 'Dim HW', short: 'DHW', notes: [0, 1, 3, 4, 6, 7, 9, 10] },
+    { name: 'Dim WH', short: 'DWH', notes: [0, 2, 3, 5, 6, 8, 9, 11] }
+];
+
+export const GENERATOR_ROOTS = [
+    { name: 'Auto', short: 'Aut' },
+    { name: 'C', short: 'C' },
+    { name: 'C#', short: 'C#' },
+    { name: 'D', short: 'D' },
+    { name: 'D#', short: 'D#' },
+    { name: 'E', short: 'E' },
+    { name: 'F', short: 'F' },
+    { name: 'F#', short: 'F#' },
+    { name: 'G', short: 'G' },
+    { name: 'G#', short: 'G#' },
+    { name: 'A', short: 'A' },
+    { name: 'A#', short: 'A#' },
+    { name: 'B', short: 'B' }
+];
+
+/* Default generator parameters */
+export const DEFAULT_GENERATE_PARAMS = {
+    length: 16,
+    density: 50,
+    voices: 1,
+    scale: 0,      // 0 = Detected
+    root: 0,       // 0 = Auto
+    octave: 3,
+    range: 2,
+    variation: 64
+};
