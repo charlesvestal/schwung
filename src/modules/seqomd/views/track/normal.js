@@ -447,7 +447,7 @@ function handleStepRelease(actualStep, displayIdx) {
         const holdDuration = Date.now() - pressTime;
         if (holdDuration < HOLD_THRESHOLD_MS) {
             const step = getCurrentPattern(state.currentTrack).steps[actualStep];
-            const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
+            const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0 || step.gate > 0;
 
             // Clear if has content
             if (hasContent) {
@@ -1099,7 +1099,7 @@ function updateStepLEDs() {
             const actualStep = pageStart + i;
             const step = pattern.steps[actualStep];
             const hasSpark = step.paramSpark > 0 || step.compSpark > 0 || step.jump >= 0;
-            const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0;
+            const hasContent = step.notes.length > 0 || step.cc1 >= 0 || step.cc2 >= 0 || step.gate > 0;
             const isInTrackLength = actualStep < track.trackLength;
 
             if (!isInTrackLength) {
@@ -1122,14 +1122,15 @@ function updateStepLEDs() {
             let color = Black;
 
             const hasNotes = step.notes.length > 0;
-            const hasCCOnly = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0);
+            const hasParamLock = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0 || step.gate > 0);
 
             if (!isInTrackLength) {
                 /* Steps beyond track length shown as dark grey */
                 color = DarkGrey;
             } else if (hasNotes) {
                 color = dimColor;
-            } else if (hasCCOnly) {
+            } else if (hasParamLock) {
+                /* Steps with only parameter locks (CC, gate) shown very dim */
                 color = veryDimColor;
             }
 
@@ -1319,12 +1320,12 @@ export function updatePlayhead(oldStep, newStep) {
         const isInTrackLength = oldStep < track.trackLength;
         let color = Black;
         const hasNotes = step.notes.length > 0;
-        const hasCCOnly = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0);
+        const hasParamLock = !hasNotes && (step.cc1 >= 0 || step.cc2 >= 0 || step.gate > 0);
         if (!isInTrackLength) {
             color = DarkGrey;
         } else if (hasNotes) {
             color = dimColor;
-        } else if (hasCCOnly) {
+        } else if (hasParamLock) {
             color = veryDimColor;
         }
         setLED(MoveSteps[displayIdx], color);
