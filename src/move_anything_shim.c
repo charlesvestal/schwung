@@ -2795,10 +2795,9 @@ int ioctl(int fd, unsigned long request, ...)
 
     /* NOTE: MIDI filtering moved to AFTER ioctl - see post-ioctl section below */
 
+#if SHADOW_TRACE_DEBUG
+    /* Discovery/probe functions - only needed during development */
     spi_trace_ioctl(request, (char *)argp);
-
-    /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
-    /* Capture outgoing/incoming MIDI before hardware clears the buffer */
     shadow_capture_midi_probe();
     shadow_scan_mailbox_raw();
     mailbox_diff_probe();
@@ -2806,6 +2805,9 @@ int ioctl(int fd, unsigned long request, ...)
     mailbox_usb_midi_scan();
     mailbox_midi_region_scan();
     mailbox_midi_out_frame_log();
+#endif
+
+    /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
 
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     shadow_forward_midi();

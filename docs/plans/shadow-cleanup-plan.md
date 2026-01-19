@@ -198,15 +198,15 @@ scripts/test_shadow_display_order.sh
 
 ### Phase 2: Code Quality
 
-4. **Refactor shadow_ui.js** to use shared constants
+4. **Refactor shadow_ui.js** to use shared constants (deferred - requires import wiring)
 5. ✅ **Move shadow_poc.c** to examples/ - DONE
-6. **Consolidate debug functions** in shim
+6. ✅ **Consolidate debug functions** - Wrapped probe calls in `#if SHADOW_TRACE_DEBUG`
 
 ### Phase 3: Architecture
 
-7. **Split shim into multiple files** (larger refactor)
-8. **Organize test scripts**
-9. **Update documentation**
+7. **Split shim into multiple files** (deferred - larger refactor)
+8. ✅ **Organize test scripts** - Moved to `tests/shadow/` with README
+9. **Update documentation** (ongoing)
 
 ---
 
