@@ -5,6 +5,11 @@ const MoveMainKnob = 14;
 const MoveMainButton = 3;
 const MoveBack = 51;
 
+/* Track buttons (CCs 40-43) for slot selection */
+const TRACK_CC_START = 40;
+const TRACK_CC_END = 43;
+const SHADOW_UI_SLOTS = 4;
+
 /* Knob CC range for parameter control */
 const KNOB_CC_START = 71;
 const KNOB_CC_END = 78;
@@ -312,15 +317,10 @@ function loadSlotsFromConfig() {
     if (!data || !Array.isArray(data.patches)) {
         return DEFAULT_SLOTS.map((slot) => ({ ...slot }));
     }
-    const byChannel = new Map();
-    for (const entry of data.patches) {
-        if (!entry || typeof entry.channel !== "number") continue;
-        if (typeof entry.name !== "string") continue;
-        byChannel.set(entry.channel, entry.name);
-    }
-    return DEFAULT_SLOTS.map((slot) => ({
-        channel: slot.channel,
-        name: byChannel.get(slot.channel) || slot.name
+    /* Load saved slots, preserving both channel and name */
+    return data.patches.map((entry, idx) => ({
+        channel: (typeof entry.channel === "number") ? entry.channel : (DEFAULT_SLOTS[idx]?.channel ?? 5 + idx),
+        name: (typeof entry.name === "string") ? entry.name : (DEFAULT_SLOTS[idx]?.name ?? "Unknown")
     }));
 }
 
@@ -919,9 +919,8 @@ globalThis.tick = function() {
     /* Draw knob overlay on top of main view */
     drawKnobOverlay();
 
-    /* Debug: show frame counter and last CC to prove display updates */
-    print(100, 2, `${redrawCounter % 1000}`, 1);
-    print(2, SCREEN_HEIGHT - 2, `CC${lastCC.cc}:${lastCC.val}`, 1);
+    /* Debug: show last CC at top right */
+    print(80, 2, `CC${lastCC.cc}`, 1);
 };
 
 let debugMidiCounter = 0;
@@ -931,9 +930,9 @@ globalThis.onMidiMessageInternal = function(data) {
     const d1 = data[1];
     const d2 = data[2];
 
-    /* Debug: log all CC messages to help diagnose input issues */
+    /* Handle CC messages */
     if ((status & 0xF0) === 0xB0) {
-        debugMidiCounter++;
+        /* Debug: track last CC for display */
         lastCC = { cc: d1, val: d2 };
         needsRedraw = true;
 
@@ -957,6 +956,18 @@ globalThis.onMidiMessageInternal = function(data) {
         if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) {
             const knobIndex = d1 - KNOB_CC_START;
             handleKnobTurn(knobIndex, d2);
+            return;
+        }
+
+        /* Handle track button CCs (40-43) for slot selection
+         * Track 1 (top) = CC 43 → slot 0, Track 4 (bottom) = CC 40 → slot 3 */
+        if (d1 >= TRACK_CC_START && d1 <= TRACK_CC_END && d2 > 0) {
+            const slotIndex = TRACK_CC_END - d1;
+            if (slotIndex >= 0 && slotIndex < SHADOW_UI_SLOTS) {
+                selectedSlot = slotIndex;
+                updateFocusedSlot(slotIndex);
+                needsRedraw = true;
+            }
             return;
         }
     }

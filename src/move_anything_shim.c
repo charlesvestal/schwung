@@ -2897,39 +2897,69 @@ int ioctl(int fd, unsigned long request, ...)
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
-            /* Forward CC events to shadow UI, then zero from Move's view */
+            /* Handle CC events - block only specific controls needed for shadow UI */
             if (type == 0xB0) {
-                /* Don't filter shift (0x31) - needed for hotkey detection to exit shadow mode */
-                if (d1 != 0x31) {
-                    if (shadow_ui_midi_shm) {
-                        for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                            if (shadow_ui_midi_shm[slot] == 0) {
-                                shadow_ui_midi_shm[slot] = 0x0B;
-                                shadow_ui_midi_shm[slot + 1] = status;
-                                shadow_ui_midi_shm[slot + 2] = d1;
-                                shadow_ui_midi_shm[slot + 3] = d2;
-                                shadow_control->midi_ready++;
-                                break;
-                            }
+                /* CCs to block from Move (intercept for shadow UI):
+                 * - CC 14 (jog wheel)
+                 * - CC 3 (jog click)
+                 * - CC 51 (back button)
+                 * - CC 71-78 (knobs) */
+                int block_from_move = (d1 == 14 || d1 == 3 || d1 == 51 ||
+                                       (d1 >= 71 && d1 <= 78));
+
+                /* CCs to forward to shadow UI but NOT block from Move:
+                 * - CC 40-43 (track buttons) - shadow uses for slot switching */
+                int forward_to_shadow = block_from_move || (d1 >= 40 && d1 <= 43);
+
+                /* Forward relevant CCs to shadow UI */
+                if (forward_to_shadow && shadow_ui_midi_shm) {
+                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                        if (shadow_ui_midi_shm[slot] == 0) {
+                            shadow_ui_midi_shm[slot] = 0x0B;
+                            shadow_ui_midi_shm[slot + 1] = status;
+                            shadow_ui_midi_shm[slot + 2] = d1;
+                            shadow_ui_midi_shm[slot + 3] = d2;
+                            shadow_control->midi_ready++;
+                            break;
                         }
                     }
-                    /* Route knob CCs (71-78) to the focused slot's DSP */
-                    if (d1 >= 71 && d1 <= 78) {
-                        uint8_t msg[3] = { status, d1, d2 };
-                        shadow_route_knob_cc_to_focused_slot(msg, 3);
-                    }
-                    /* Zero out the CC event so Move doesn't see it */
+                }
+
+                /* Route knob CCs (71-78) to the focused slot's DSP */
+                if (d1 >= 71 && d1 <= 78) {
+                    uint8_t msg[3] = { status, d1, d2 };
+                    shadow_route_knob_cc_to_focused_slot(msg, 3);
+                }
+
+                /* Only zero out blocked CCs - pass everything else to Move */
+                if (block_from_move) {
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                 }
                 continue;
             }
 
-            /* Only pass pad notes (68-99) to Move for MIDI output */
+            /* Handle note events - pass through most, block knob touches */
             if (type == 0x90 || type == 0x80) {
-                if (d1 < 68 || d1 > 99) {
-                    /* Zero out non-pad notes (buttons, knob touches, etc.) */
+                /* Forward track notes (40-43) to shadow UI for slot switching */
+                if (d1 >= 40 && d1 <= 43 && shadow_ui_midi_shm) {
+                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                        if (shadow_ui_midi_shm[slot] == 0) {
+                            shadow_ui_midi_shm[slot] = (type == 0x90) ? 0x09 : 0x08;
+                            shadow_ui_midi_shm[slot + 1] = status;
+                            shadow_ui_midi_shm[slot + 2] = d1;
+                            shadow_ui_midi_shm[slot + 3] = d2;
+                            shadow_control->midi_ready++;
+                            break;
+                        }
+                    }
+                    /* Don't zero - let track notes pass through to Move too */
+                }
+
+                /* Block knob touch notes (0-9) - these confuse Move */
+                if (d1 <= 9) {
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                 }
+                /* Pass through: pads (68-99), tracks (40-43), steps (16-31), etc. */
                 continue;
             }
 
