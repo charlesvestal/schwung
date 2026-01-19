@@ -83,6 +83,7 @@ const DEFAULT_SLOTS = [
 /* View constants */
 const VIEWS = {
     SLOTS: "slots",           // List of 4 chain slots
+    SLOT_SETTINGS: "settings", // Per-slot settings (volume, channels)
     PATCHES: "patches",       // Patch list for selected slot
     PATCH_DETAIL: "detail",   // Show synth/fx info for selected patch
     COMPONENT_PARAMS: "params" // Edit component params (Phase 3)
@@ -93,11 +94,21 @@ let patches = [];
 let selectedSlot = 0;
 let selectedPatch = 0;
 let selectedDetailItem = 0;    // For patch detail view (0=synth, 1=fx1, 2=fx2, 3=load)
+let selectedSetting = 0;       // For slot settings view
+let editingSettingValue = false;
 let view = VIEWS.SLOTS;
 let needsRedraw = true;
 let refreshCounter = 0;
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
+
+/* Slot settings definitions */
+const SLOT_SETTINGS = [
+    { key: "patch", label: "Patch", type: "action" },  // Opens patch browser
+    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
+    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 16, step: 1 },  // -1 = none
+];
 
 /* Cached patch detail info */
 let patchDetail = {
@@ -430,10 +441,75 @@ function applyPatchSelection() {
     needsRedraw = true;
 }
 
+/* Enter slot settings view */
+function enterSlotSettings(slotIndex) {
+    selectedSlot = slotIndex;
+    selectedSetting = 0;
+    editingSettingValue = false;
+    view = VIEWS.SLOT_SETTINGS;
+    needsRedraw = true;
+}
+
+/* Get current value for a slot setting */
+function getSlotSettingValue(slot, setting) {
+    if (setting.key === "patch") {
+        return slots[slot]?.name || "Unknown";
+    }
+    const val = getSlotParam(slot, setting.key);
+    if (val === null) return "-";
+
+    if (setting.key === "slot:volume") {
+        const num = parseFloat(val);
+        return isNaN(num) ? val : `${Math.round(num * 100)}%`;
+    }
+    if (setting.key === "slot:forward_channel") {
+        const ch = parseInt(val);
+        /* -1 means "auto" (same as receive channel), otherwise show specific channel */
+        return ch < 0 ? "Auto" : `Ch ${ch + 1}`;
+    }
+    if (setting.key === "slot:receive_channel") {
+        return `Ch ${val}`;
+    }
+    return val;
+}
+
+/* Adjust a slot setting by delta */
+function adjustSlotSetting(slot, setting, delta) {
+    if (setting.type === "action") return;
+
+    const current = getSlotParam(slot, setting.key);
+    let val;
+
+    if (setting.type === "float") {
+        val = parseFloat(current) || 0;
+        val += delta * setting.step;
+    } else {
+        val = parseInt(current) || 0;
+        val += delta * setting.step;
+    }
+
+    /* Clamp to range */
+    val = Math.max(setting.min, Math.min(setting.max, val));
+
+    /* Format and set */
+    const newVal = setting.type === "float" ? val.toFixed(2) : String(Math.round(val));
+    setSlotParam(slot, setting.key, newVal);
+}
+
 function handleJog(delta) {
     switch (view) {
         case VIEWS.SLOTS:
             selectedSlot = Math.max(0, Math.min(slots.length - 1, selectedSlot + delta));
+            break;
+        case VIEWS.SLOT_SETTINGS:
+            if (editingSettingValue) {
+                /* Adjust the setting value */
+                const setting = SLOT_SETTINGS[selectedSetting];
+                adjustSlotSetting(selectedSlot, setting, delta);
+            } else {
+                /* Navigate settings list */
+                selectedSetting = Math.max(0, Math.min(SLOT_SETTINGS.length - 1, selectedSetting + delta));
+            }
             break;
         case VIEWS.PATCHES:
             selectedPatch = Math.max(0, Math.min(patches.length - 1, selectedPatch + delta));
@@ -462,7 +538,17 @@ function handleJog(delta) {
 function handleSelect() {
     switch (view) {
         case VIEWS.SLOTS:
-            enterPatchBrowser(selectedSlot);
+            enterSlotSettings(selectedSlot);
+            break;
+        case VIEWS.SLOT_SETTINGS:
+            const setting = SLOT_SETTINGS[selectedSetting];
+            if (setting.type === "action") {
+                /* Patch action - go to patch browser */
+                enterPatchBrowser(selectedSlot);
+            } else {
+                /* Toggle editing mode for value settings */
+                editingSettingValue = !editingSettingValue;
+            }
             break;
         case VIEWS.PATCHES:
             if (patches.length > 0) {
@@ -499,8 +585,19 @@ function handleBack() {
                 shadow_request_exit();
             }
             break;
+        case VIEWS.SLOT_SETTINGS:
+            if (editingSettingValue) {
+                /* Exit value editing mode */
+                editingSettingValue = false;
+                needsRedraw = true;
+            } else {
+                /* Return to slots list */
+                view = VIEWS.SLOTS;
+                needsRedraw = true;
+            }
+            break;
         case VIEWS.PATCHES:
-            view = VIEWS.SLOTS;
+            view = VIEWS.SLOT_SETTINGS;
             needsRedraw = true;
             break;
         case VIEWS.PATCH_DETAIL:
@@ -531,7 +628,47 @@ function drawSlots() {
         (item) => item.name || "Unknown Patch",
         (item) => `Ch${item.channel}`
     );
-    drawFooter("Click: browse");
+    drawFooter("Click: settings");
+}
+
+function drawSlotSettings() {
+    clear_screen();
+    const slotName = slots[selectedSlot]?.name || "Unknown";
+    drawHeader(`Slot ${selectedSlot + 1}`);
+
+    const listY = LIST_TOP_Y;
+    const lineHeight = 12;
+
+    for (let i = 0; i < SLOT_SETTINGS.length; i++) {
+        const y = listY + i * lineHeight;
+        const setting = SLOT_SETTINGS[i];
+        const isSelected = i === selectedSetting;
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, lineHeight, 1);
+        }
+
+        const color = isSelected ? 0 : 1;
+        let prefix = "  ";
+        if (isSelected) {
+            prefix = editingSettingValue ? "* " : "> ";
+        }
+
+        const value = getSlotSettingValue(selectedSlot, setting);
+        let valueStr = truncateText(value, 10);
+        if (isSelected && editingSettingValue && setting.type !== "action") {
+            valueStr = `[${valueStr}]`;
+        }
+
+        print(LIST_LABEL_X, y, `${prefix}${setting.label}:`, color);
+        print(LIST_VALUE_X - 8, y, valueStr, color);
+    }
+
+    if (editingSettingValue) {
+        drawFooter("Jog: adjust  Click: done");
+    } else {
+        drawFooter("Click: edit  Back: slots");
+    }
 }
 
 function drawPatches() {
@@ -540,14 +677,14 @@ function drawPatches() {
     drawHeader(`Ch${channel} Patch`);
     if (patches.length === 0) {
         print(LIST_LABEL_X, LIST_TOP_Y, "No patches found", 1);
-        drawFooter("Back: slots");
+        drawFooter("Back: settings");
     } else {
         drawList(
             patches,
             selectedPatch,
             (item) => item.name
         );
-        drawFooter("Click: detail  Back: slots");
+        drawFooter("Click: load  Back: settings");
     }
 }
 
@@ -660,6 +797,9 @@ globalThis.tick = function() {
     switch (view) {
         case VIEWS.SLOTS:
             drawSlots();
+            break;
+        case VIEWS.SLOT_SETTINGS:
+            drawSlotSettings();
             break;
         case VIEWS.PATCHES:
             drawPatches();

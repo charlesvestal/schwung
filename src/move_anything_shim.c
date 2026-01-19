@@ -15,6 +15,7 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <math.h>
 #include <linux/spi/spidev.h>
 
 #include "host/plugin_api_v1.h"
@@ -107,6 +108,8 @@ typedef struct shadow_ui_state_t {
     uint8_t slot_count;
     uint8_t reserved[3];
     uint8_t slot_channels[SHADOW_UI_SLOTS];
+    uint8_t slot_volumes[SHADOW_UI_SLOTS];       /* 0-100 percentage */
+    int8_t slot_forward_ch[SHADOW_UI_SLOTS];     /* -1=none, 0-15=channel */
     char slot_names[SHADOW_UI_SLOTS][SHADOW_UI_NAME_LEN];
 } shadow_ui_state_t;
 
@@ -636,6 +639,121 @@ static void spi_trace_ioctl(unsigned long request, char *argp)
 #define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
 #define SHADOW_CHAIN_INSTANCES 4
 
+/* System volume - for now just a placeholder, we'll find the real source */
+static float shadow_master_gain = 1.0f;
+
+/* Forward declaration */
+static uint64_t now_mono_ms(void);
+
+/* Debug: dump full mailbox to find volume/control data in SPI */
+static uint64_t mailbox_dump_last_ms = 0;
+static uint8_t mailbox_dump_prev[4096];
+static int mailbox_dump_init = 0;
+static int mailbox_dump_count = 0;
+
+static void debug_dump_mailbox_changes(void) {
+    if (!global_mmap_addr) return;
+
+    /* Only check if debug file exists */
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (check_counter++ % 1000 == 0 || enabled < 0) {
+        enabled = (access("/data/UserData/move-anything/mailbox_dump_on", F_OK) == 0);
+    }
+    if (!enabled) return;
+
+    uint64_t now = now_mono_ms();
+    if (now - mailbox_dump_last_ms < 500) return;  /* Twice per second */
+    mailbox_dump_last_ms = now;
+
+    if (!mailbox_dump_init) {
+        memcpy(mailbox_dump_prev, global_mmap_addr, MAILBOX_SIZE);
+        mailbox_dump_init = 1;
+        return;
+    }
+
+    /* Check for changes in NON-AUDIO regions (skip audio data which changes constantly) */
+    /* Layout: 0-256 MIDI_OUT, 256-768 AUDIO_OUT, 768-1792 DISPLAY,
+       1792-2048 unknown, 2048-2304 MIDI_IN, 2304-2816 AUDIO_IN, 2816-4096 unknown */
+    int changed = 0;
+    /* Check MIDI_OUT region (0-256) - might have control data */
+    for (int i = 0; i < 256; i++) {
+        if (global_mmap_addr[i] != mailbox_dump_prev[i]) { changed = 1; break; }
+    }
+    /* Check region between display and MIDI_IN (1792-2048) */
+    if (!changed) {
+        for (int i = 1792; i < 2048; i++) {
+            if (global_mmap_addr[i] != mailbox_dump_prev[i]) { changed = 1; break; }
+        }
+    }
+    /* Check region after AUDIO_IN (2816-4096) */
+    if (!changed) {
+        for (int i = 2816; i < 4096; i++) {
+            if (global_mmap_addr[i] != mailbox_dump_prev[i]) { changed = 1; break; }
+        }
+    }
+
+    /* Also dump first few samples if triggered, to see if audio level changes */
+    FILE *f = fopen("/data/UserData/move-anything/mailbox_dump.log", "a");
+    if (f) {
+        if (changed || mailbox_dump_count < 3) {
+            fprintf(f, "=== Mailbox snapshot #%d at %llu ===\n", mailbox_dump_count, (unsigned long long)now);
+
+            /* Dump MIDI_OUT region (0-256) - look for control bytes */
+            fprintf(f, "MIDI_OUT (0-256) non-zero bytes:\n");
+            for (int i = 0; i < 256; i++) {
+                if (global_mmap_addr[i] != 0) {
+                    fprintf(f, "  [%d]=0x%02x", i, global_mmap_addr[i]);
+                }
+            }
+            fprintf(f, "\n");
+
+            /* Dump first 16 bytes of audio out as potential header */
+            fprintf(f, "AUDIO_OUT first 32 bytes: ");
+            for (int i = 256; i < 288; i++) {
+                fprintf(f, "%02x ", global_mmap_addr[i]);
+            }
+            fprintf(f, "\n");
+
+            /* Check audio levels (RMS of first few samples) */
+            int16_t *audio = (int16_t*)(global_mmap_addr + AUDIO_OUT_OFFSET);
+            int64_t sum_sq = 0;
+            for (int i = 0; i < 32; i++) {
+                sum_sq += (int64_t)audio[i] * audio[i];
+            }
+            double rms = sqrt((double)sum_sq / 32);
+            fprintf(f, "Audio RMS (first 32 samples): %.1f\n", rms);
+
+            /* Dump unknown regions */
+            fprintf(f, "Region 1792-2048: ");
+            int any_nonzero = 0;
+            for (int i = 1792; i < 2048; i++) {
+                if (global_mmap_addr[i] != 0) {
+                    fprintf(f, "[%d]=0x%02x ", i, global_mmap_addr[i]);
+                    any_nonzero = 1;
+                }
+            }
+            if (!any_nonzero) fprintf(f, "(all zeros)");
+            fprintf(f, "\n");
+
+            fprintf(f, "Region 2816-4096: ");
+            any_nonzero = 0;
+            for (int i = 2816; i < 4096; i++) {
+                if (global_mmap_addr[i] != 0) {
+                    fprintf(f, "[%d]=0x%02x ", i, global_mmap_addr[i]);
+                    any_nonzero = 1;
+                }
+            }
+            if (!any_nonzero) fprintf(f, "(all zeros)");
+            fprintf(f, "\n\n");
+
+            mailbox_dump_count++;
+        }
+        fclose(f);
+    }
+    memcpy(mailbox_dump_prev, global_mmap_addr, MAILBOX_SIZE);
+}
+
 static void *shadow_dsp_handle = NULL;
 static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 static host_api_v1_t shadow_host_api;
@@ -646,6 +764,8 @@ typedef struct shadow_chain_slot_t {
     int channel;
     int patch_index;
     int active;
+    float volume;           /* 0.0 to 1.0, applied to audio output */
+    int forward_channel;    /* -1 = none, 0-15 = forward MIDI to this channel */
     char patch_name[64];
 } shadow_chain_slot_t;
 
@@ -680,6 +800,8 @@ static void shadow_chain_defaults(void) {
         shadow_chain_slots[i].active = 0;
         shadow_chain_slots[i].patch_index = -1;
         shadow_chain_slots[i].channel = shadow_chain_parse_channel(5 + i);
+        shadow_chain_slots[i].volume = 1.0f;
+        shadow_chain_slots[i].forward_channel = -1;
         strncpy(shadow_chain_slots[i].patch_name,
                 shadow_chain_default_patches[i],
                 sizeof(shadow_chain_slots[i].patch_name) - 1);
@@ -691,6 +813,8 @@ static void shadow_ui_state_update_slot(int slot) {
     if (!shadow_ui_state) return;
     if (slot < 0 || slot >= SHADOW_UI_SLOTS) return;
     shadow_ui_state->slot_channels[slot] = (uint8_t)(shadow_chain_slots[slot].channel + 1);
+    shadow_ui_state->slot_volumes[slot] = (uint8_t)(shadow_chain_slots[slot].volume * 100.0f);
+    shadow_ui_state->slot_forward_ch[slot] = (int8_t)shadow_chain_slots[slot].forward_channel;
     strncpy(shadow_ui_state->slot_names[slot],
             shadow_chain_slots[slot].patch_name,
             SHADOW_UI_NAME_LEN - 1);
@@ -767,6 +891,30 @@ static void shadow_chain_load_config(void) {
             cursor = chan_pos + 8;
         } else {
             cursor = name_pos + 6;
+        }
+
+        /* Parse volume (0.0 - 1.0) */
+        char *vol_pos = strstr(name_pos, "\"volume\"");
+        if (vol_pos) {
+            char *vol_colon = strchr(vol_pos, ':');
+            if (vol_colon) {
+                float vol = atof(vol_colon + 1);
+                if (vol >= 0.0f && vol <= 1.0f) {
+                    shadow_chain_slots[i].volume = vol;
+                }
+            }
+        }
+
+        /* Parse forward_channel (-1 = none, 1-16 = channel) */
+        char *fwd_pos = strstr(name_pos, "\"forward_channel\"");
+        if (fwd_pos) {
+            char *fwd_colon = strchr(fwd_pos, ':');
+            if (fwd_colon) {
+                int ch = atoi(fwd_colon + 1);
+                if (ch >= -1 && ch <= 16) {
+                    shadow_chain_slots[i].forward_channel = (ch > 0) ? ch - 1 : -1;
+                }
+            }
         }
     }
 
@@ -885,8 +1033,17 @@ static int shadow_chain_slot_for_channel(int ch) {
     return -1;
 }
 
-static inline uint8_t shadow_chain_force_channel_1(uint8_t status) {
-    return (status & 0xF0) | 0x00;
+/* Apply forward channel remapping for a slot.
+ * If forward_channel >= 0, remap to that specific channel.
+ * If forward_channel == -1 (auto), use the slot's receive channel. */
+static inline uint8_t shadow_chain_remap_channel(int slot, uint8_t status) {
+    int fwd_ch = shadow_chain_slots[slot].forward_channel;
+    if (fwd_ch >= 0 && fwd_ch <= 15) {
+        /* Specific forward channel */
+        return (status & 0xF0) | (uint8_t)fwd_ch;
+    }
+    /* Auto: use the receive channel (pass through unchanged) */
+    return (status & 0xF0) | (uint8_t)shadow_chain_slots[slot].channel;
 }
 
 static int shadow_is_internal_control_note(uint8_t note)
@@ -972,8 +1129,51 @@ static void shadow_inprocess_handle_ui_request(void) {
     shadow_ui_state_update_slot(slot);
 }
 
+/* Handle slot-level param (volume, forward_channel, etc.) - returns 1 if handled */
+static int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
+    if (strcmp(key, "slot:volume") == 0) {
+        float vol = atof(value);
+        if (vol < 0.0f) vol = 0.0f;
+        if (vol > 1.0f) vol = 1.0f;
+        shadow_chain_slots[slot].volume = vol;
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
+    if (strcmp(key, "slot:forward_channel") == 0) {
+        int ch = atoi(value);
+        if (ch < -1) ch = -1;
+        if (ch > 15) ch = 15;
+        shadow_chain_slots[slot].forward_channel = ch;
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
+    if (strcmp(key, "slot:receive_channel") == 0) {
+        int ch = atoi(value);
+        if (ch >= 1 && ch <= 16) {
+            shadow_chain_slots[slot].channel = ch - 1;  /* Store 0-based */
+            shadow_ui_state_update_slot(slot);
+        }
+        return 1;
+    }
+    return 0;  /* Not a slot param */
+}
+
+/* Handle slot-level param get - returns length if handled, -1 if not */
+static int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
+    if (strcmp(key, "slot:volume") == 0) {
+        return snprintf(buf, buf_len, "%.2f", shadow_chain_slots[slot].volume);
+    }
+    if (strcmp(key, "slot:forward_channel") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].forward_channel);
+    }
+    if (strcmp(key, "slot:receive_channel") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].channel + 1);  /* Return 1-based */
+    }
+    return -1;  /* Not a slot param */
+}
+
 static void shadow_inprocess_handle_param_request(void) {
-    if (!shadow_param || !shadow_plugin_v2) return;
+    if (!shadow_param) return;
 
     uint8_t req_type = shadow_param->request_type;
     if (req_type == 0) return;  /* No pending request */
@@ -987,7 +1187,30 @@ static void shadow_inprocess_handle_param_request(void) {
         return;
     }
 
-    if (!shadow_chain_slots[slot].instance) {
+    /* Handle slot-level params first */
+    if (req_type == 1) {  /* SET param */
+        if (shadow_handle_slot_param_set(slot, shadow_param->key, shadow_param->value)) {
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+            shadow_param->response_ready = 1;
+            shadow_param->request_type = 0;
+            return;
+        }
+    }
+    else if (req_type == 2) {  /* GET param */
+        int len = shadow_handle_slot_param_get(slot, shadow_param->key,
+                                                shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+        if (len >= 0) {
+            shadow_param->error = 0;
+            shadow_param->result_len = len;
+            shadow_param->response_ready = 1;
+            shadow_param->request_type = 0;
+            return;
+        }
+    }
+
+    /* Not a slot param - forward to plugin */
+    if (!shadow_plugin_v2 || !shadow_chain_slots[slot].instance) {
         shadow_param->error = 2;
         shadow_param->result_len = -1;
         shadow_param->response_ready = 1;
@@ -1060,7 +1283,8 @@ static void shadow_inprocess_process_midi(void) {
         if (slot < 0) continue;
 
         if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-            uint8_t msg[3] = { shadow_chain_force_channel_1(pkt[1]), pkt[2], pkt[3] };
+            /* Remap channel based on slot's forward_channel setting */
+            uint8_t msg[3] = { shadow_chain_remap_channel(slot, pkt[1]), pkt[2], pkt[3] };
             shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                       MOVE_MIDI_SOURCE_INTERNAL);
         }
@@ -1081,7 +1305,8 @@ static void shadow_inprocess_process_midi(void) {
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
             if (slot < 0) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                uint8_t msg[3] = { shadow_chain_force_channel_1(pkt[1]), pkt[2], pkt[3] };
+                /* Remap channel based on slot's forward_channel setting */
+                uint8_t msg[3] = { shadow_chain_remap_channel(slot, pkt[1]), pkt[2], pkt[3] };
                 shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                           MOVE_MIDI_SOURCE_INTERNAL);
             }
@@ -1091,7 +1316,8 @@ static void shadow_inprocess_process_midi(void) {
                 int slot = shadow_chain_slot_for_channel(status_raw & 0x0F);
                 if (slot < 0) continue;
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                    uint8_t msg[3] = { shadow_chain_force_channel_1(status_raw), pkt[1], pkt[2] };
+                    /* Remap channel based on slot's forward_channel setting */
+                    uint8_t msg[3] = { shadow_chain_remap_channel(slot, status_raw), pkt[1], pkt[2] };
                     shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                               MOVE_MIDI_SOURCE_INTERNAL);
                 }
@@ -1117,8 +1343,9 @@ static void shadow_inprocess_mix_audio(void) {
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
+            float vol = shadow_chain_slots[s].volume;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                mix[i] += render_buffer[i];
+                mix[i] += (int32_t)(render_buffer[i] * vol);
             }
         }
     }
@@ -2597,6 +2824,7 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_inprocess_handle_param_request();
     shadow_inprocess_process_midi();
     shadow_inprocess_mix_audio();
+    debug_dump_mailbox_changes();
 #endif
 
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
