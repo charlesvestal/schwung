@@ -75,6 +75,7 @@ static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
 static FILE *shadow_ui_log = NULL;
 static uint32_t shadow_ui_tick_count = 0;
+static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.pid";
 
 static uint32_t shadow_ui_checksum(const unsigned char *buf, size_t len) {
     uint32_t sum = 0;
@@ -372,6 +373,20 @@ static void shadow_ui_log_line(const char *msg) {
     }
 }
 
+static void shadow_ui_remove_pid(void) {
+    unlink(shadow_ui_pid_path);
+}
+
+static void shadow_ui_write_pid(void) {
+    FILE *pid_file = fopen(shadow_ui_pid_path, "w");
+    if (!pid_file) {
+        return;
+    }
+    fprintf(pid_file, "%d\n", (int)getpid());
+    fclose(pid_file);
+    atexit(shadow_ui_remove_pid);
+}
+
 static JSContext *JS_NewCustomContext(JSRuntime *rt) {
     JSContext *ctx = JS_NewContext(rt);
     if (!ctx) return NULL;
@@ -579,10 +594,10 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
         if (msg[0] + msg[1] + msg[2] == 0) continue;
         handled = 1;
-        if (cable == 0) {
-            callGlobalFunction(ctx, onInternal, msg);
-        } else if (cable == 2) {
+        if (cable == 2) {
             callGlobalFunction(ctx, onExternal, msg);
+        } else {
+            callGlobalFunction(ctx, onInternal, msg);
         }
     }
     return handled;
@@ -599,6 +614,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     shadow_ui_log_line("shadow_ui: shared memory open");
+    shadow_ui_write_pid();
 
     JSRuntime *rt = NULL;
     JSContext *ctx = NULL;

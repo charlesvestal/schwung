@@ -1560,14 +1560,30 @@ static void shadow_filter_move_input(void)
 
         uint8_t status = src[i + 1];
         uint8_t type = status & 0xF0;
-        if (shadow_is_hotkey_event(status, src[i + 2])) {
+        uint8_t d1 = src[i + 2];
+        uint8_t d2 = src[i + 3];
+
+        if (shadow_is_hotkey_event(status, d1)) {
             memcpy(&filtered[i], &src[i], 4);
             continue;
         }
 
         if (type == 0xB0) {
-            uint8_t cc = src[i + 2];
-            if (shadow_is_transport_cc(cc)) {
+            /* Forward ALL CC events to shadow UI (including jog wheel CC 14) */
+            if (shadow_ui_midi_shm) {
+                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                    if (shadow_ui_midi_shm[slot] == 0) {
+                        shadow_ui_midi_shm[slot] = 0x0B;  /* USB-MIDI CIN for CC */
+                        shadow_ui_midi_shm[slot + 1] = status;
+                        shadow_ui_midi_shm[slot + 2] = d1;
+                        shadow_ui_midi_shm[slot + 3] = d2;
+                        shadow_control->midi_ready++;
+                        break;
+                    }
+                }
+            }
+
+            if (shadow_is_transport_cc(d1)) {
                 memcpy(&filtered[i], &src[i], 4);
             }
             continue;
@@ -2312,20 +2328,8 @@ void midi_monitor()
         {
             printf("Control message\n");
 
-            /* Forward CC events to shadow UI when in shadow mode */
-            if (shadow_display_mode && shadow_ui_midi_shm && shadow_control) {
-                /* Find empty slot in shadow UI MIDI buffer and write the CC packet */
-                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                    if (shadow_ui_midi_shm[slot] == 0) {
-                        shadow_ui_midi_shm[slot] = 0x0B;  /* USB-MIDI CIN for CC, cable 0 */
-                        shadow_ui_midi_shm[slot + 1] = midi_0;
-                        shadow_ui_midi_shm[slot + 2] = midi_1;
-                        shadow_ui_midi_shm[slot + 3] = midi_2;
-                        shadow_control->midi_ready++;
-                        break;
-                    }
-                }
-            }
+            /* Note: CC forwarding to shadow UI is now handled in shadow_filter_move_input()
+             * which runs AFTER the ioctl, so it reads fresh MIDI data including jog wheel. */
 
             if (midi_1 == 0x31)
             {
@@ -2486,8 +2490,9 @@ int ioctl(int fd, unsigned long request, ...)
     // TODO: Consider using move-anything host code and quickjs for flexibility
     midi_monitor();
 
-    /* Capture UI MIDI BEFORE ioctl - hardware clears buffer during transaction */
-    shadow_capture_midi_for_ui();
+    /* Note: Removed shadow_capture_midi_for_ui() - it was overwriting
+     * the CC events that midi_monitor() forwards to shadow UI.
+     * midi_monitor() handles all CC forwarding including jog wheel. */
 
     spi_trace_ioctl(request, (char *)argp);
 
