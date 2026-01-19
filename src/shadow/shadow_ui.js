@@ -637,15 +637,24 @@ function drawSlotSettings() {
     drawHeader(`Slot ${selectedSlot + 1}`);
 
     const listY = LIST_TOP_Y;
-    const lineHeight = 12;
+    const lineHeight = LIST_LINE_HEIGHT;
 
-    for (let i = 0; i < SLOT_SETTINGS.length; i++) {
-        const y = listY + i * lineHeight;
+    /* Calculate visible items accounting for footer */
+    const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight));
+    let startIdx = 0;
+    const maxSelectedRow = maxVisible - 1;
+    if (selectedSetting > maxSelectedRow) {
+        startIdx = selectedSetting - maxSelectedRow;
+    }
+    const endIdx = Math.min(startIdx + maxVisible, SLOT_SETTINGS.length);
+
+    for (let i = startIdx; i < endIdx; i++) {
+        const y = listY + (i - startIdx) * lineHeight;
         const setting = SLOT_SETTINGS[i];
         const isSelected = i === selectedSetting;
 
         if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, lineHeight, 1);
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
         }
 
         const color = isSelected ? 0 : 1;

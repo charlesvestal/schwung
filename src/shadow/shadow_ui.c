@@ -64,6 +64,8 @@ typedef struct shadow_ui_state_t {
     uint8_t slot_count;
     uint8_t reserved[3];
     uint8_t slot_channels[SHADOW_UI_SLOTS];
+    uint8_t slot_volumes[SHADOW_UI_SLOTS];       /* 0-100 percentage */
+    int8_t slot_forward_ch[SHADOW_UI_SLOTS];     /* -1=none, 0-15=channel */
     char slot_names[SHADOW_UI_SLOTS][SHADOW_UI_NAME_LEN];
 } shadow_ui_state_t;
 
