@@ -93,9 +93,9 @@ static shadow_param_t *shadow_param = NULL;
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
 static FILE *shadow_ui_log = NULL;
-static uint32_t shadow_ui_tick_count = 0;
 static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.pid";
 
+/* Checksum helper for debug logging - unused in production */
 static uint32_t shadow_ui_checksum(const unsigned char *buf, size_t len) {
     uint32_t sum = 0;
     for (size_t i = 0; i < len; i++) {
@@ -800,22 +800,11 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        shadow_ui_tick_count++;
         refresh_counter++;
         if ((screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
             pack_screen(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
             screen_dirty = 0;
-            if ((shadow_ui_tick_count % 120) == 0) {
-                char msg[160];
-                uint32_t screen_sum = shadow_ui_checksum(screen_buffer, sizeof(screen_buffer));
-                uint32_t packed_sum = shadow_ui_checksum(packed_buffer, DISPLAY_BUFFER_SIZE);
-                uint32_t shm_sum = shadow_ui_checksum(shadow_display_shm, DISPLAY_BUFFER_SIZE);
-                snprintf(msg, sizeof(msg),
-                         "shadow_ui: tick=%u screen_sum=%u packed_sum=%u shm_sum=%u",
-                         shadow_ui_tick_count, screen_sum, packed_sum, shm_sum);
-                shadow_ui_log_line(msg);
-            }
         }
 
         usleep(16000);

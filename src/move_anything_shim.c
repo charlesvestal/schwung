@@ -20,6 +20,10 @@
 
 #include "host/plugin_api_v1.h"
 
+/* Debug flags - set to 1 to enable various debug logging */
+#define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
+#define SHADOW_TRACE_DEBUG 0     /* SPI/MIDI trace logging */
+
 unsigned char *global_mmap_addr = NULL;
 FILE *output_file;
 int frame_counter = 0;
@@ -645,6 +649,7 @@ static float shadow_master_gain = 1.0f;
 /* Forward declaration */
 static uint64_t now_mono_ms(void);
 
+#if SHADOW_DEBUG
 /* Debug: dump full mailbox to find volume/control data in SPI */
 static uint64_t mailbox_dump_last_ms = 0;
 static uint8_t mailbox_dump_prev[4096];
@@ -753,6 +758,7 @@ static void debug_dump_mailbox_changes(void) {
     }
     memcpy(mailbox_dump_prev, global_mmap_addr, MAILBOX_SIZE);
 }
+#endif /* SHADOW_DEBUG */
 
 static void *shadow_dsp_handle = NULL;
 static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
@@ -1553,6 +1559,7 @@ static void init_shadow_shm(void)
            shadow_display_shm, shadow_control, shadow_ui_state, shadow_param);
 }
 
+#if SHADOW_DEBUG
 /* Debug: detailed dump of control regions and offset 256 area */
 static void debug_full_mailbox_dump(void) {
     static int dump_count = 0;
@@ -1596,6 +1603,7 @@ static void debug_audio_offset(void) {
     /* DISABLED - using ioctl logging instead */
     return;
 }
+#endif /* SHADOW_DEBUG */
 
 /* Mix shadow audio into mailbox audio buffer - TRIPLE BUFFERED */
 static void shadow_mix_audio(void)
@@ -1825,25 +1833,11 @@ static int shadow_is_hotkey_event(uint8_t status, uint8_t data1)
     return 0;
 }
 
-static FILE *shadow_ui_capture_log = NULL;
-static int shadow_ui_capture_log_counter = 0;
-
 static void shadow_capture_midi_for_ui(void)
 {
-    /* Early debug: check which condition fails */
-    static int early_debug_counter = 0;
-    static FILE *early_log = NULL;
-    if (early_debug_counter++ % 5000 == 0) {
-        if (!early_log) early_log = fopen("/data/UserData/move-anything/shadow_ui_early.log", "a");
-        if (early_log) {
-            fprintf(early_log, "early[%d]: shm=%p ctrl=%p mmap=%p mode=%d\n",
-                    early_debug_counter, shadow_ui_midi_shm, shadow_control,
-                    global_mmap_addr, shadow_display_mode);
-            fflush(early_log);
-        }
-    }
     if (!shadow_ui_midi_shm || !shadow_control || !global_mmap_addr) return;
     if (!shadow_display_mode) return;
+
     uint8_t *src_in = global_mmap_addr + MIDI_IN_OFFSET;
     uint8_t *src_out = global_mmap_addr + MIDI_OUT_OFFSET;
     uint8_t merged[MIDI_BUFFER_SIZE];
@@ -1853,32 +1847,6 @@ static void shadow_capture_midi_for_ui(void)
     offset = shadow_append_ui_midi(merged, offset, src_in);
     if (offset == 0) {
         offset = shadow_append_ui_midi(merged, offset, src_out);
-    }
-
-    /* Debug logging every 1000 calls */
-    if (shadow_ui_capture_log_counter++ % 1000 == 0) {
-        if (!shadow_ui_capture_log) {
-            shadow_ui_capture_log = fopen("/data/UserData/move-anything/shadow_ui_capture.log", "a");
-        }
-        if (shadow_ui_capture_log) {
-            fprintf(shadow_ui_capture_log, "capture[%d]: offset=%d midi_ready=%d\n",
-                    shadow_ui_capture_log_counter, offset, shadow_control->midi_ready);
-            /* Log first 32 bytes of MIDI_IN raw buffer to see what's there */
-            fprintf(shadow_ui_capture_log, "  raw_in: ");
-            for (int i = 0; i < 32; i++) {
-                fprintf(shadow_ui_capture_log, "%02x ", src_in[i]);
-            }
-            fprintf(shadow_ui_capture_log, "\n");
-            /* Log first 16 bytes of merged if any CC found */
-            if (offset > 0) {
-                fprintf(shadow_ui_capture_log, "  merged: ");
-                for (int i = 0; i < 16 && i < offset; i++) {
-                    fprintf(shadow_ui_capture_log, "%02x ", merged[i]);
-                }
-                fprintf(shadow_ui_capture_log, "\n");
-            }
-            fflush(shadow_ui_capture_log);
-        }
     }
 
     if (offset == 0) {
@@ -2514,7 +2482,11 @@ int knob1touched = 0;
 int alreadyLaunched = 0;       /* Prevent multiple launches */
 int shadowModeDebounce = 0;    /* Debounce for shadow mode toggle */
 
+/* Debug logging disabled for performance - set to 1 to enable */
+#define SHADOW_HOTKEY_DEBUG 0
+#if SHADOW_HOTKEY_DEBUG
 static FILE *hotkey_state_log = NULL;
+#endif
 static uint64_t shift_on_ms = 0;
 static uint64_t vol_on_ms = 0;
 static uint64_t knob1_on_ms = 0;
@@ -2576,6 +2548,7 @@ static void maybe_toggle_shadow(void)
 
 static void log_hotkey_state(const char *tag)
 {
+#if SHADOW_HOTKEY_DEBUG
     if (!hotkey_state_log)
     {
         hotkey_state_log = fopen("/data/UserData/move-anything/hotkey_state.log", "a");
@@ -2587,6 +2560,9 @@ static void log_hotkey_state(const char *tag)
                 (long)now, tag, shiftHeld, volumeTouched, knob1touched, knob8touched, shadowModeDebounce);
         fflush(hotkey_state_log);
     }
+#else
+    (void)tag;
+#endif
 }
 
 void midi_monitor()
@@ -2741,21 +2717,6 @@ void midi_monitor()
         }
 
         /* Shadow mode toggle: Shift + Volume + Knob 1 */
-        /* Debug: Log hotkey state every so often */
-        {
-            static int hotkey_log_counter = 0;
-            static FILE *hotkey_debug = NULL;
-            if (hotkey_log_counter++ % 500 == 0) {
-                if (!hotkey_debug) {
-                    hotkey_debug = fopen("/data/UserData/move-anything/hotkey_debug.log", "a");
-                }
-                if (hotkey_debug) {
-                    fprintf(hotkey_debug, "hotkey #%d: shift=%d vol=%d knob1=%d knob8=%d debounce=%d\n",
-                            hotkey_log_counter, shiftHeld, volumeTouched, knob1touched, knob8touched, shadowModeDebounce);
-                    fflush(hotkey_debug);
-                }
-            }
-        }
 
         /* Reset debounce once any part of the combo is released */
         if (shadowModeDebounce && (!shiftHeld || !volumeTouched || !knob1touched))
@@ -2764,7 +2725,6 @@ void midi_monitor()
             log_hotkey_state("debounce_reset");
         }
 
-        printf("move-anything: cable: %x,\tcode index number:%x,\tmidi_0:%x,\tmidi_1:%x,\tmidi_2:%x\n", cable, code_index_number, midi_0, midi_1, midi_2);
     }
 }
 
@@ -2824,7 +2784,6 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_inprocess_handle_param_request();
     shadow_inprocess_process_midi();
     shadow_inprocess_mix_audio();
-    debug_dump_mailbox_changes();
 #endif
 
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
