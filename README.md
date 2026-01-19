@@ -95,6 +95,47 @@ Patches are JSON files in `modules/chain/patches/`. Create your own:
 
 Restart Signal Chain to pick up new patches.
 
+## Shadow Mode
+
+Shadow Mode lets you run custom signal chains **alongside** stock Ableton Move without replacing it. Play pads and hear both Move's sounds and your custom synths mixed together.
+
+### How It Works
+
+- **Toggle**: Shift + touch Volume knob + touch Knob 1 (while Move is running)
+- **Display**: Shadow UI takes over the screen to show slots and patches
+- **Audio**: Shadow synths mix with Move's audio output
+- **MIDI Routing**: Move tracks 1-4 send MIDI on channels 5-8 to shadow slots
+
+### Shadow Slots
+
+Shadow mode provides 4 independent slots, each with its own chain patch:
+
+| Slot | MIDI Channel | Default Use |
+|------|--------------|-------------|
+| Slot A | Ch 5 | Move Track 1 |
+| Slot B | Ch 6 | Move Track 2 |
+| Slot C | Ch 7 | Move Track 3 |
+| Slot D | Ch 8 | Move Track 4 |
+
+### Shadow UI Controls
+
+- **Jog wheel**: Navigate slot list / patch browser
+- **Jog click**: Enter slot patch list / load patch
+- **Back**: Return to slot list
+- **Shift+Vol+Knob1**: Toggle back to Move display
+
+### Extending Shadow Mode
+
+Shadow mode uses the same chain module and patches as standalone Move Anything. **Any module you install via Module Store is automatically available in shadow mode** - no recompilation required.
+
+To add new synths or effects to shadow mode:
+
+1. Install the module via Module Store (or copy to `/data/UserData/move-anything/modules/`)
+2. Create a chain patch in `modules/chain/patches/` that references the module
+3. Select the patch in the shadow UI
+
+See [MODULES.md](docs/MODULES.md#shadow-mode-integration) for details on creating shadow-compatible patches.
+
 ## External Modules (via Module Store)
 
 Install these from the Module Store on your device:

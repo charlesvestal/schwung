@@ -107,6 +107,50 @@ Shadow UI:
 - Jog click: enter slot patch list / load patch
 - Back: return to slot list
 
+## Extending Shadow Mode
+
+Shadow mode uses the same chain module and patches as standalone Move Anything. **Any module installed via Module Store is automatically available in shadow mode** - no recompilation needed.
+
+### Adding New Synths/Effects
+
+1. **Install the module** via Module Store or copy to `/data/UserData/move-anything/modules/`
+2. **Create a chain patch** in `modules/chain/patches/` referencing the module
+3. **Select the patch** in the shadow UI
+
+Example patch using an external module:
+
+```json
+{
+    "name": "JV-880 + CloudSeed",
+    "version": 1,
+    "chain": {
+        "synth": { "module": "jv880" },
+        "audio_fx": [
+            { "type": "cloudseed", "params": { "wet": 0.3 } }
+        ]
+    }
+}
+```
+
+### Module Requirements
+
+Modules must declare chainable capabilities in `module.json`:
+
+```json
+{
+    "capabilities": {
+        "chainable": true,
+        "component_type": "sound_generator"
+    }
+}
+```
+
+### Future Enhancements
+
+- **Per-patch default channel override**: Allow patches to specify a preferred receive channel (e.g., JV-880 expects channel 1), which the shadow chain would use when loading instead of the slot's default channel 5-8.
+
+See [MODULES.md](MODULES.md#shadow-mode-integration) for complete documentation.
+
 ## Conclusion
 
 In-process shadow DSP is the working path: it autostarts in the shim, renders

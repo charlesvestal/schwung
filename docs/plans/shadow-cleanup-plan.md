@@ -206,7 +206,11 @@ scripts/test_shadow_display_order.sh
 
 7. **Split shim into multiple files** (deferred - larger refactor)
 8. ✅ **Organize test scripts** - Moved to `tests/shadow/` with README
-9. **Update documentation** (ongoing)
+9. ✅ **Update documentation** - Added Shadow Mode to README, extensibility docs to MODULES.md
+
+### Future Enhancements
+
+10. **Per-patch default channel override** - Allow patches to specify a default receive channel (e.g., JV-880 expects channel 1, not the slot's default channel 5-8). The shadow chain could read this from the patch config and override the slot's channel when loading.
 
 ---
 

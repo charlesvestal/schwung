@@ -631,6 +631,108 @@ audio_fx_api_v1_t* move_audio_fx_init_v1(const host_api_v1_t *host);
 - Latency: ~3ms
 - Format: Stereo interleaved int16
 
+## Shadow Mode Integration
+
+Shadow Mode runs custom signal chains alongside stock Ableton Move. Your modules are **automatically available** in shadow mode without any additional work - no recompilation required.
+
+### How It Works
+
+Shadow mode loads the same chain module and patches that Move Anything uses standalone. When you install a module via Module Store (or manually copy it to the modules directory), it becomes available to:
+
+1. **Standalone Move Anything** - when launched via the hotkey combo
+2. **Shadow Mode** - when toggled while stock Move is running
+
+Both modes read from the same directories:
+- Modules: `/data/UserData/move-anything/modules/`
+- Patches: `/data/UserData/move-anything/modules/chain/patches/`
+
+### Making Your Module Shadow-Compatible
+
+If your module is chainable (sound generator or audio FX), it works in shadow mode automatically. Ensure your `module.json` has:
+
+```json
+{
+    "capabilities": {
+        "chainable": true,
+        "component_type": "sound_generator"
+    }
+}
+```
+
+Valid `component_type` values for chainable modules:
+- `sound_generator` - Synths and samplers
+- `audio_fx` - Audio effects
+
+### Creating Shadow Chain Patches
+
+Patches are JSON files in `modules/chain/patches/`. To create a patch using your module:
+
+```json
+{
+    "name": "My Synth + Reverb",
+    "version": 1,
+    "chain": {
+        "input": "pads",
+        "synth": {
+            "module": "your-module-id",
+            "config": {
+                "preset": 0
+            }
+        },
+        "audio_fx": [
+            {
+                "type": "freeverb",
+                "params": {
+                    "room_size": 0.7,
+                    "wet": 0.25
+                }
+            }
+        ]
+    }
+}
+```
+
+The `module` field must match the `id` in your module's `module.json`.
+
+### Shadow Mode MIDI Routing
+
+In shadow mode, Move tracks 1-4 send MIDI on channels 5-8:
+
+| Move Track | MIDI Channel | Shadow Slot |
+|------------|--------------|-------------|
+| Track 1 | Ch 5 | Slot A |
+| Track 2 | Ch 6 | Slot B |
+| Track 3 | Ch 7 | Slot C |
+| Track 4 | Ch 8 | Slot D |
+
+Each shadow slot can load a different chain patch. MIDI on channels 1-4 passes through to stock Move.
+
+### Testing Shadow Mode
+
+1. Build and install Move Anything: `./scripts/build.sh && ./scripts/install.sh local`
+2. Launch stock Move (or reboot device)
+3. Toggle shadow mode: **Shift + touch Volume + touch Knob 1**
+4. Use jog wheel to select a slot, click to browse patches
+5. Load a patch that uses your module
+6. Set a Move track to MIDI channel 5-8 and play pads
+
+### Shadow Mode Configuration
+
+Shadow slot configuration is stored in `/data/UserData/move-anything/shadow_chain_config.json`:
+
+```json
+{
+    "patches": [
+        { "name": "SF2 + Freeverb", "channel": 5 },
+        { "name": "DX7 + Freeverb", "channel": 6 },
+        { "name": "OB-Xd + Freeverb", "channel": 7 },
+        { "name": "JV-880 + Freeverb", "channel": 8 }
+    ]
+}
+```
+
+The shadow UI updates this file when you select patches for each slot.
+
 ## Publishing to Module Store
 
 External modules can be distributed via the built-in Module Store. Users can browse, install, update, and remove modules directly from their Move device.
