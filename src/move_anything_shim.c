@@ -44,11 +44,13 @@ int frame_counter = 0;
 #define DISPLAY_BUFFER_SIZE 1024   /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE 512
+#define SHADOW_PARAM_BUFFER_SIZE 512
 #define FRAMES_PER_BLOCK 128
 
 /* Move host shortcut CCs (mirror move_anything.c) */
 #define CC_SHIFT 49
 #define CC_JOG_CLICK 3
+#define CC_JOG_WHEEL 14
 #define CC_BACK 51
 #define CC_MASTER_KNOB 79
 #define CC_UP 55
@@ -110,6 +112,22 @@ typedef struct shadow_ui_state_t {
 
 static shadow_ui_state_t *shadow_ui_state = NULL;
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
+
+/* Shadow param request structure - for set_param/get_param calls from shadow UI */
+#define SHADOW_PARAM_KEY_LEN 64
+#define SHADOW_PARAM_VALUE_LEN 440
+typedef struct shadow_param_t {
+    volatile uint8_t request_type;  /* 0=none, 1=set, 2=get */
+    volatile uint8_t slot;          /* Which chain slot (0-3) */
+    volatile uint8_t response_ready;/* Set by shim when response is ready */
+    volatile uint8_t error;         /* Non-zero on error */
+    volatile int32_t result_len;    /* Length of result, -1 on error */
+    char key[SHADOW_PARAM_KEY_LEN];
+    char value[SHADOW_PARAM_VALUE_LEN];
+} shadow_param_t;
+
+static shadow_param_t *shadow_param = NULL;
+typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 
 static void launch_shadow_ui(void);
 
@@ -824,6 +842,13 @@ static int shadow_inprocess_load_chain(void) {
         if (!shadow_chain_slots[i].instance) {
             continue;
         }
+        /* Check for "none" - means slot should be inactive */
+        if (strcasecmp(shadow_chain_slots[i].patch_name, "none") == 0 ||
+            shadow_chain_slots[i].patch_name[0] == '\0') {
+            shadow_chain_slots[i].active = 0;
+            shadow_chain_slots[i].patch_index = -1;
+            continue;
+        }
         int idx = shadow_chain_find_patch_index(shadow_chain_slots[i].instance,
                                                 shadow_chain_slots[i].patch_name);
         shadow_chain_slots[i].patch_index = idx;
@@ -882,6 +907,9 @@ static int shadow_allow_midi_to_dsp(uint8_t status, uint8_t data1)
 }
 
 static uint32_t shadow_ui_request_seen = 0;
+/* Special patch index value meaning "none" / clear the slot */
+#define SHADOW_PATCH_INDEX_NONE 65535
+
 static void shadow_inprocess_handle_ui_request(void) {
     if (!shadow_control || !shadow_plugin_v2 || !shadow_plugin_v2->set_param) return;
 
@@ -894,6 +922,20 @@ static void shadow_inprocess_handle_ui_request(void) {
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
     if (patch_index < 0) return;
     if (!shadow_chain_slots[slot].instance) return;
+
+    /* Handle "none" special value - clear the slot */
+    if (patch_index == SHADOW_PATCH_INDEX_NONE) {
+        shadow_chain_slots[slot].active = 0;
+        shadow_chain_slots[slot].patch_index = -1;
+        strncpy(shadow_chain_slots[slot].patch_name, "none", sizeof(shadow_chain_slots[slot].patch_name) - 1);
+        shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
+        /* Update UI state */
+        if (shadow_ui_state && slot < SHADOW_UI_SLOTS) {
+            strncpy(shadow_ui_state->slot_names[slot], "none", SHADOW_UI_NAME_LEN - 1);
+            shadow_ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
+        }
+        return;
+    }
 
     if (shadow_plugin_v2->get_param) {
         char buf[32];
@@ -928,6 +970,72 @@ static void shadow_inprocess_handle_ui_request(void) {
     }
 
     shadow_ui_state_update_slot(slot);
+}
+
+static void shadow_inprocess_handle_param_request(void) {
+    if (!shadow_param || !shadow_plugin_v2) return;
+
+    uint8_t req_type = shadow_param->request_type;
+    if (req_type == 0) return;  /* No pending request */
+
+    int slot = shadow_param->slot;
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) {
+        shadow_param->error = 1;
+        shadow_param->result_len = -1;
+        shadow_param->response_ready = 1;
+        shadow_param->request_type = 0;
+        return;
+    }
+
+    if (!shadow_chain_slots[slot].instance) {
+        shadow_param->error = 2;
+        shadow_param->result_len = -1;
+        shadow_param->response_ready = 1;
+        shadow_param->request_type = 0;
+        return;
+    }
+
+    if (req_type == 1) {  /* SET param */
+        if (shadow_plugin_v2->set_param) {
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                        shadow_param->key, shadow_param->value);
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+        } else {
+            shadow_param->error = 3;
+            shadow_param->result_len = -1;
+        }
+    }
+    else if (req_type == 2) {  /* GET param */
+        if (shadow_plugin_v2->get_param) {
+            int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                  shadow_param->key,
+                                                  shadow_param->value,
+                                                  SHADOW_PARAM_VALUE_LEN);
+            if (len >= 0) {
+                if (len < SHADOW_PARAM_VALUE_LEN) {
+                    shadow_param->value[len] = '\0';
+                } else {
+                    shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = len;
+            } else {
+                shadow_param->error = 4;
+                shadow_param->result_len = -1;
+            }
+        } else {
+            shadow_param->error = 5;
+            shadow_param->result_len = -1;
+        }
+    }
+    else {
+        shadow_param->error = 6;  /* Unknown request type */
+        shadow_param->result_len = -1;
+    }
+
+    shadow_param->response_ready = 1;
+    shadow_param->request_type = 0;
 }
 
 static void shadow_inprocess_process_midi(void) {
@@ -1030,6 +1138,7 @@ static void shadow_inprocess_mix_audio(void) {
 #define SHM_SHADOW_CONTROL  "/move-shadow-control"
 #define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow to read */
 #define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
+#define SHM_SHADOW_PARAM    "/move-shadow-param"    /* Shadow param requests */
 
 
 #define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
@@ -1049,6 +1158,7 @@ static int shm_ui_midi_fd = -1;
 static int shm_display_fd = -1;
 static int shm_control_fd = -1;
 static int shm_ui_fd = -1;
+static int shm_param_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -1193,10 +1303,27 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create UI shm\n");
     }
 
+    /* Create/open param shared memory (for set_param/get_param requests) */
+    shm_param_fd = shm_open(SHM_SHADOW_PARAM, O_CREAT | O_RDWR, 0666);
+    if (shm_param_fd >= 0) {
+        ftruncate(shm_param_fd, SHADOW_PARAM_BUFFER_SIZE);
+        shadow_param = (shadow_param_t *)mmap(NULL, SHADOW_PARAM_BUFFER_SIZE,
+                                              PROT_READ | PROT_WRITE,
+                                              MAP_SHARED, shm_param_fd, 0);
+        if (shadow_param == MAP_FAILED) {
+            shadow_param = NULL;
+            printf("Shadow: Failed to mmap param shm\n");
+        } else {
+            memset(shadow_param, 0, SHADOW_PARAM_BUFFER_SIZE);
+        }
+    } else {
+        printf("Shadow: Failed to create param shm\n");
+    }
+
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param);
 }
 
 /* Debug: detailed dump of control regions and offset 256 area */
@@ -1543,8 +1670,6 @@ static void shadow_filter_move_input(void)
     if (!global_mmap_addr) return;
 
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-    uint8_t filtered[MIDI_BUFFER_SIZE];
-    memset(filtered, 0, sizeof(filtered));
 
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cin = src[i] & 0x0F;
@@ -1553,8 +1678,8 @@ static void shadow_filter_move_input(void)
             continue;
         }
 
+        /* Pass through non-cable-0 events (external MIDI) */
         if (cable != 0x00) {
-            memcpy(&filtered[i], &src[i], 4);
             continue;
         }
 
@@ -1563,17 +1688,12 @@ static void shadow_filter_move_input(void)
         uint8_t d1 = src[i + 2];
         uint8_t d2 = src[i + 3];
 
-        if (shadow_is_hotkey_event(status, d1)) {
-            memcpy(&filtered[i], &src[i], 4);
-            continue;
-        }
-
+        /* Forward CC events to shadow UI, then zero them out from Move */
         if (type == 0xB0) {
-            /* Forward ALL CC events to shadow UI (including jog wheel CC 14) */
             if (shadow_ui_midi_shm) {
                 for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
                     if (shadow_ui_midi_shm[slot] == 0) {
-                        shadow_ui_midi_shm[slot] = 0x0B;  /* USB-MIDI CIN for CC */
+                        shadow_ui_midi_shm[slot] = 0x0B;
                         shadow_ui_midi_shm[slot + 1] = status;
                         shadow_ui_midi_shm[slot + 2] = d1;
                         shadow_ui_midi_shm[slot + 3] = d2;
@@ -1582,15 +1702,38 @@ static void shadow_filter_move_input(void)
                     }
                 }
             }
-
-            if (shadow_is_transport_cc(d1)) {
-                memcpy(&filtered[i], &src[i], 4);
-            }
+            /* Zero out CC from Move - only shadow UI should see it */
+            src[i] = 0;
+            src[i + 1] = 0;
+            src[i + 2] = 0;
+            src[i + 3] = 0;
             continue;
         }
-    }
 
-    memcpy(src, filtered, MIDI_BUFFER_SIZE);
+        /* For notes: only pass through pad notes (68-99) and aftertouch */
+        if (type == 0x90 || type == 0x80) {
+            if (d1 >= 68 && d1 <= 99) {
+                continue;  /* Pass pad notes through to Move */
+            }
+            /* Zero out non-pad notes (knob touches, steps, etc.) */
+            src[i] = 0;
+            src[i + 1] = 0;
+            src[i + 2] = 0;
+            src[i + 3] = 0;
+            continue;
+        }
+
+        /* Pass through aftertouch for pads */
+        if (type == 0xA0 || type == 0xD0) {
+            continue;
+        }
+
+        /* Zero out everything else */
+        src[i] = 0;
+        src[i + 1] = 0;
+        src[i + 2] = 0;
+        src[i + 3] = 0;
+    }
 }
 
 static int is_usb_midi_data(uint8_t cin)
@@ -1690,12 +1833,9 @@ static void shadow_capture_midi_probe(void)
     }
 }
 
-/* Debug counter for display swap */
-static int display_swap_debug_counter = 0;
 /* Swap display buffer if in shadow mode */
 static void shadow_swap_display(void)
 {
-    static FILE *debug_log = NULL;
     static uint32_t ui_check_counter = 0;
 
     if (!shadow_display_shm || !global_mmap_addr) {
@@ -1710,54 +1850,6 @@ static void shadow_swap_display(void)
     if ((ui_check_counter++ % 256) == 0) {
         launch_shadow_ui();
     }
-
-    static int slice = 0;
-    uint8_t sync = global_mmap_addr[80];
-    int use_slice = (sync >= 1 && sync <= 6) ? (sync - 1) : slice;
-
-    /* Log every 100th swap attempt */
-    if (display_swap_debug_counter++ % 100 == 0) {
-        if (!debug_log) {
-            debug_log = fopen("/data/UserData/move-anything/shadow_debug.log", "a");
-        }
-        if (debug_log) {
-            uint32_t shadow_sum = shadow_checksum(shadow_display_shm, DISPLAY_BUFFER_SIZE);
-            uint32_t mailbox_sum = shadow_checksum(global_mmap_addr + DISPLAY_OFFSET, DISPLAY_BUFFER_SIZE);
-            fprintf(debug_log,
-                    "swap #%d: display_shm=%p, mailbox=%p, display_mode=%d, shadow_ready=%d sync=%u slice=%d\n",
-                    display_swap_debug_counter, shadow_display_shm, global_mmap_addr,
-                    shadow_display_mode, shadow_control->shadow_ready, sync, use_slice);
-            fprintf(debug_log, "swap #%d sums: shadow=%u mailbox=%u\n",
-                    display_swap_debug_counter, shadow_sum, mailbox_sum);
-            fflush(debug_log);
-        }
-    }
-
-    /* Note: Removed seed pattern init - shadow_ui handles display content */
-
-    /* Overwrite mailbox display with shadow display */
-    /* Try TWO methods: slice protocol AND full buffer write */
-    static int shadow_slice = 0;
-    static uint32_t last_shm_sum = 0;
-    static FILE *refresh_log = NULL;
-    static int refresh_count = 0;
-
-    /* Check if shared memory content has changed */
-    uint32_t current_shm_sum = shadow_checksum(shadow_display_shm, DISPLAY_BUFFER_SIZE);
-    if (refresh_count++ % 500 == 0 || current_shm_sum != last_shm_sum) {
-        if (!refresh_log) refresh_log = fopen("/data/UserData/move-anything/shadow_refresh.log", "a");
-        if (refresh_log) {
-            fprintf(refresh_log, "refresh[%d]: slice=%d shm_sum=%u (was %u) changed=%d\n",
-                    refresh_count, shadow_slice, current_shm_sum, last_shm_sum,
-                    current_shm_sum != last_shm_sum);
-            fflush(refresh_log);
-        }
-        last_shm_sum = current_shm_sum;
-    }
-
-    /* DEBUG: Try writing AFTER the ioctl instead of before */
-    /* Maybe the hardware reads before ioctl returns, not during */
-    /* For now, still write before - but let's try a different approach */
 
     /* Write full display to DISPLAY_OFFSET (768) */
     memcpy(global_mmap_addr + DISPLAY_OFFSET, shadow_display_shm, DISPLAY_BUFFER_SIZE);
@@ -1780,23 +1872,6 @@ static void shadow_swap_display(void)
     }
 
     display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
-
-    /* Debug markers removed - write path confirmed working */
-
-    /* Dump full mailbox once to find display location */
-    static int test_counter = 0;
-    if (test_counter++ == 1000) {  /* After some time so Move has drawn something */
-        FILE *dump = fopen("/data/UserData/move-anything/mailbox_full.log", "w");
-        if (dump) {
-            fprintf(dump, "Full mailbox dump (4096 bytes):\n");
-            for (int i = 0; i < 4096; i++) {
-                if (i % 256 == 0) fprintf(dump, "\n=== OFFSET %d (0x%x) ===\n", i, i);
-                fprintf(dump, "%02x ", (unsigned char)global_mmap_addr[i]);
-                if ((i+1) % 32 == 0) fprintf(dump, "\n");
-            }
-            fclose(dump);
-        }
-    }
 }
 
 void print_mem()
@@ -2239,6 +2314,7 @@ static int within_window(uint64_t now, uint64_t ts, uint64_t window_ms)
 #define SHADOW_HOTKEY_WINDOW_MS 1500
 #define SHADOW_HOTKEY_GRACE_MS 2000
 static uint64_t shadow_hotkey_enable_ms = 0;
+static int shadow_inject_knob_release = 0;  /* Set when toggling shadow mode to inject note-offs */
 
 static void maybe_toggle_shadow(void)
 {
@@ -2261,6 +2337,7 @@ static void maybe_toggle_shadow(void)
         if (shadow_control) {
             shadow_display_mode = !shadow_display_mode;
             shadow_control->display_mode = shadow_display_mode;
+            shadow_inject_knob_release = 1;  /* Inject note-offs to release knob touches */
             printf("Shadow mode toggled: %s\n",
                    shadow_display_mode ? "SHADOW" : "STOCK");
             if (shadow_display_mode) {
@@ -2293,6 +2370,10 @@ void midi_monitor()
     }
 
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+
+    /* NOTE: Shadow mode MIDI filtering now happens AFTER ioctl in the ioctl() function.
+     * This function only handles hotkey detection for shadow mode toggle. */
+
     if (!hotkey_prev_valid) {
         memcpy(hotkey_prev, src, MIDI_BUFFER_SIZE);
         hotkey_prev_valid = 1;
@@ -2326,11 +2407,6 @@ void midi_monitor()
         int controlMessage = 0xb0;
         if (midi_0 == controlMessage)
         {
-            printf("Control message\n");
-
-            /* Note: CC forwarding to shadow UI is now handled in shadow_filter_move_input()
-             * which runs AFTER the ioctl, so it reads fresh MIDI data including jog wheel. */
-
             if (midi_1 == 0x31)
             {
                 if (midi_2 == 0x7f)
@@ -2490,9 +2566,13 @@ int ioctl(int fd, unsigned long request, ...)
     // TODO: Consider using move-anything host code and quickjs for flexibility
     midi_monitor();
 
-    /* Note: Removed shadow_capture_midi_for_ui() - it was overwriting
-     * the CC events that midi_monitor() forwards to shadow UI.
-     * midi_monitor() handles all CC forwarding including jog wheel. */
+    /* Check if shadow UI requested exit via shared memory */
+    if (shadow_control && shadow_display_mode && !shadow_control->display_mode) {
+        shadow_display_mode = 0;
+        shadow_inject_knob_release = 1;  /* Inject note-offs when exiting shadow mode */
+    }
+
+    /* NOTE: MIDI filtering moved to AFTER ioctl - see post-ioctl section below */
 
     spi_trace_ioctl(request, (char *)argp);
 
@@ -2514,6 +2594,7 @@ int ioctl(int fd, unsigned long request, ...)
 
 #if SHADOW_INPROCESS_POC
     shadow_inprocess_handle_ui_request();
+    shadow_inprocess_handle_param_request();
     shadow_inprocess_process_midi();
     shadow_inprocess_mix_audio();
 #endif
@@ -2524,8 +2605,85 @@ int ioctl(int fd, unsigned long request, ...)
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
 
-    /* Optionally block Move UI while shadow display is active. */
-    shadow_filter_move_input();
+    /* === POST-IOCTL: FILTER INCOMING MIDI ===
+     * MIDI INPUT comes FROM the hardware DURING the ioctl.
+     * We must filter AFTER ioctl returns, before Move reads the mailbox.
+     * This prevents jog/click/back from reaching Move while in shadow mode. */
+    if (shadow_display_mode && shadow_control && global_mmap_addr) {
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t cin = src[j] & 0x0F;
+            uint8_t cable = (src[j] >> 4) & 0x0F;
+            if (cin < 0x08 || cin > 0x0E) continue;
+            if (cable != 0x00) continue;  /* Only filter internal cable 0 (Move hardware) */
+
+            uint8_t status = src[j + 1];
+            uint8_t type = status & 0xF0;
+            uint8_t d1 = src[j + 2];
+            uint8_t d2 = src[j + 3];
+
+            /* Forward CC events to shadow UI, then zero from Move's view */
+            if (type == 0xB0) {
+                /* Don't filter shift (0x31) - needed for hotkey detection to exit shadow mode */
+                if (d1 != 0x31) {
+                    if (shadow_ui_midi_shm) {
+                        for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                            if (shadow_ui_midi_shm[slot] == 0) {
+                                shadow_ui_midi_shm[slot] = 0x0B;
+                                shadow_ui_midi_shm[slot + 1] = status;
+                                shadow_ui_midi_shm[slot + 2] = d1;
+                                shadow_ui_midi_shm[slot + 3] = d2;
+                                shadow_control->midi_ready++;
+                                break;
+                            }
+                        }
+                    }
+                    /* Zero out the CC event so Move doesn't see it */
+                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                }
+                continue;
+            }
+
+            /* Only pass pad notes (68-99) to Move for MIDI output */
+            if (type == 0x90 || type == 0x80) {
+                if (d1 < 68 || d1 > 99) {
+                    /* Zero out non-pad notes (buttons, knob touches, etc.) */
+                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                }
+                continue;
+            }
+
+            /* Pass aftertouch through to Move */
+            if (type == 0xA0 || type == 0xD0) {
+                continue;
+            }
+
+            /* Zero everything else */
+            src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+        }
+    }
+
+    /* === POST-IOCTL: INJECT KNOB RELEASE EVENTS ===
+     * When toggling shadow mode, inject note-off events for knob touches
+     * so Move doesn't think knobs are still being held.
+     * This MUST happen AFTER filtering to avoid being zeroed out. */
+    if (shadow_inject_knob_release && global_mmap_addr) {
+        shadow_inject_knob_release = 0;
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        /* Find empty slots and inject note-offs for knobs 0, 7, 8 (Knob1, Knob8, Volume) */
+        const uint8_t knob_notes[] = { 0, 7, 8 };  /* Knob 1, Knob 8, Volume */
+        int injected = 0;
+        for (int j = 0; j < MIDI_BUFFER_SIZE && injected < 3; j += 4) {
+            if (src[j] == 0 && src[j+1] == 0 && src[j+2] == 0 && src[j+3] == 0) {
+                /* Empty slot - inject note-off */
+                src[j] = 0x08;  /* CIN = Note Off, Cable 0 */
+                src[j + 1] = 0x80;  /* Note Off, channel 0 */
+                src[j + 2] = knob_notes[injected];  /* Note number */
+                src[j + 3] = 0x00;  /* Velocity 0 */
+                injected++;
+            }
+        }
+    }
 
     return result;
 }

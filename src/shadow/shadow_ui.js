@@ -80,15 +80,187 @@ const DEFAULT_SLOTS = [
     { channel: 8, name: "JV-880 + Freeverb" }
 ];
 
+/* View constants */
+const VIEWS = {
+    SLOTS: "slots",           // List of 4 chain slots
+    PATCHES: "patches",       // Patch list for selected slot
+    PATCH_DETAIL: "detail",   // Show synth/fx info for selected patch
+    COMPONENT_PARAMS: "params" // Edit component params (Phase 3)
+};
+
 let slots = [];
 let patches = [];
 let selectedSlot = 0;
 let selectedPatch = 0;
-let view = "slots";
+let selectedDetailItem = 0;    // For patch detail view (0=synth, 1=fx1, 2=fx2, 3=load)
+let view = VIEWS.SLOTS;
 let needsRedraw = true;
 let refreshCounter = 0;
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
+
+/* Cached patch detail info */
+let patchDetail = {
+    synthName: "",
+    synthPreset: "",
+    fx1Name: "",
+    fx1Wet: "",
+    fx2Name: "",
+    fx2Wet: ""
+};
+
+/* Component parameter editing state */
+let editingComponent = "";     // "synth", "fx1", "fx2"
+let componentParams = [];      // List of {key, label, value, type, min, max}
+let selectedParam = 0;
+let editingValue = false;      // True when adjusting value
+let editValue = "";            // Current value being edited
+
+/* Param API helper functions */
+function getSlotParam(slot, key) {
+    if (typeof shadow_get_param !== "function") return null;
+    try {
+        return shadow_get_param(slot, key);
+    } catch (e) {
+        return null;
+    }
+}
+
+function setSlotParam(slot, key, value) {
+    if (typeof shadow_set_param !== "function") return false;
+    try {
+        return shadow_set_param(slot, key, String(value));
+    } catch (e) {
+        return false;
+    }
+}
+
+function loadPatchByIndex(slot, index) {
+    return setSlotParam(slot, "load_patch", index);
+}
+
+function getPatchCount(slot) {
+    const val = getSlotParam(slot, "patch_count");
+    return val ? parseInt(val) || 0 : 0;
+}
+
+function getPatchName(slot, index) {
+    return getSlotParam(slot, `patch_name_${index}`);
+}
+
+function getSynthPreset(slot) {
+    return getSlotParam(slot, "synth:preset");
+}
+
+function setSynthPreset(slot, preset) {
+    return setSlotParam(slot, "synth:preset", preset);
+}
+
+function getFxParam(slot, fxNum, param) {
+    return getSlotParam(slot, `fx${fxNum}:${param}`);
+}
+
+function setFxParam(slot, fxNum, param, value) {
+    return setSlotParam(slot, `fx${fxNum}:${param}`, value);
+}
+
+/* Fetch patch detail info from chain DSP */
+function fetchPatchDetail(slot) {
+    patchDetail.synthName = getSlotParam(slot, "synth:name") || "Unknown";
+    patchDetail.synthPreset = getSlotParam(slot, "synth:preset_name") || getSlotParam(slot, "synth:preset") || "-";
+    patchDetail.fx1Name = getSlotParam(slot, "fx1:name") || "None";
+    patchDetail.fx1Wet = getSlotParam(slot, "fx1:wet") || "-";
+    patchDetail.fx2Name = getSlotParam(slot, "fx2:name") || "None";
+    patchDetail.fx2Wet = getSlotParam(slot, "fx2:wet") || "-";
+}
+
+/* Get items for patch detail view */
+function getDetailItems() {
+    return [
+        { label: "Synth", value: patchDetail.synthName, subvalue: patchDetail.synthPreset, editable: true, component: "synth" },
+        { label: "FX1", value: patchDetail.fx1Name, subvalue: patchDetail.fx1Wet, editable: true, component: "fx1" },
+        { label: "FX2", value: patchDetail.fx2Name, subvalue: patchDetail.fx2Wet, editable: true, component: "fx2" },
+        { label: "Load Patch", value: "", subvalue: "", editable: false, component: "" }
+    ];
+}
+
+/* Known synth parameters that can be edited */
+const SYNTH_PARAMS = [
+    { key: "preset", label: "Preset", type: "int", min: 0, max: 127 },
+    { key: "volume", label: "Volume", type: "float", min: 0, max: 1 },
+];
+
+/* Known FX parameters that can be edited */
+const FX_PARAMS = [
+    { key: "wet", label: "Wet", type: "float", min: 0, max: 1 },
+    { key: "dry", label: "Dry", type: "float", min: 0, max: 1 },
+    { key: "room_size", label: "Size", type: "float", min: 0, max: 1 },
+    { key: "damping", label: "Damp", type: "float", min: 0, max: 1 },
+];
+
+/* Fetch current parameter values for a component */
+function fetchComponentParams(slot, component) {
+    const prefix = component + ":";
+    const params = component === "synth" ? SYNTH_PARAMS : FX_PARAMS;
+    const result = [];
+
+    for (const param of params) {
+        const fullKey = prefix + param.key;
+        const value = getSlotParam(slot, fullKey);
+        if (value !== null) {
+            result.push({
+                key: fullKey,
+                label: param.label,
+                value: value,
+                type: param.type,
+                min: param.min,
+                max: param.max
+            });
+        }
+    }
+
+    return result;
+}
+
+/* Enter component parameter editing view */
+function enterComponentParams(slot, component) {
+    editingComponent = component;
+    componentParams = fetchComponentParams(slot, component);
+    selectedParam = 0;
+    editingValue = false;
+    view = VIEWS.COMPONENT_PARAMS;
+    needsRedraw = true;
+}
+
+/* Format a parameter value for display */
+function formatParamValue(param) {
+    if (param.type === "float") {
+        const num = parseFloat(param.value);
+        if (isNaN(num)) return param.value;
+        return num.toFixed(2);
+    }
+    return param.value;
+}
+
+/* Adjust parameter value by delta */
+function adjustParamValue(param, delta) {
+    let val;
+    if (param.type === "float") {
+        val = parseFloat(param.value) || 0;
+        val += delta * 0.05;  // 5% step for floats
+    } else {
+        val = parseInt(param.value) || 0;
+        val += delta;
+    }
+
+    /* Clamp to range */
+    val = Math.max(param.min, Math.min(param.max, val));
+
+    if (param.type === "float") {
+        return val.toFixed(2);
+    }
+    return String(Math.round(val));
+}
 
 function safeLoadJson(path) {
     try {
@@ -162,7 +334,7 @@ function parsePatchName(path) {
     try {
         const raw = std.loadFile(path);
         if (!raw) return null;
-        const match = raw.match(/\"name\"\\s*:\\s*\"([^\"]+)\"/);
+        const match = raw.match(/"name"\s*:\s*"([^"]+)"/);
         if (match && match[1]) {
             return match[1];
         }
@@ -201,7 +373,8 @@ function loadPatchList() {
         if (al > bl) return 1;
         return 0;
     });
-    patches = entries;
+    /* Add "none" as first option to clear a slot */
+    patches = [{ name: "none", file: null }, ...entries];
 }
 
 function findPatchIndexByName(name) {
@@ -212,14 +385,28 @@ function findPatchIndexByName(name) {
 
 function enterPatchBrowser(slotIndex) {
     loadPatchList();
-    if (patches.length === 0) {
-        return;
-    }
     selectedSlot = slotIndex;
-    selectedPatch = findPatchIndexByName(slots[slotIndex]?.name);
-    view = "patches";
+    if (patches.length === 0) {
+        /* No patches found - still enter view to show message */
+        selectedPatch = 0;
+    } else {
+        selectedPatch = findPatchIndexByName(slots[slotIndex]?.name);
+    }
+    view = VIEWS.PATCHES;
     needsRedraw = true;
 }
+
+function enterPatchDetail(slotIndex, patchIndex) {
+    selectedSlot = slotIndex;
+    selectedPatch = patchIndex;
+    selectedDetailItem = 0;
+    fetchPatchDetail(slotIndex);
+    view = VIEWS.PATCH_DETAIL;
+    needsRedraw = true;
+}
+
+/* Special patch index value meaning "none" / clear the slot - must match shim */
+const PATCH_INDEX_NONE = 65535;
 
 function applyPatchSelection() {
     const patch = patches[selectedPatch];
@@ -229,36 +416,109 @@ function applyPatchSelection() {
     saveSlotsToConfig(slots);
     if (typeof shadow_request_patch === "function") {
         try {
-            shadow_request_patch(selectedSlot, selectedPatch);
+            /* "none" is at index 0 in patches array, use special value 65535
+             * Real patches start at index 1, so subtract 1 for shim's index */
+            const patchIndex = patch.name === "none" ? PATCH_INDEX_NONE : selectedPatch - 1;
+            shadow_request_patch(selectedSlot, patchIndex);
         } catch (e) {
             /* ignore */
         }
     }
-    view = "slots";
+    /* Refresh detail info after loading patch */
+    fetchPatchDetail(selectedSlot);
+    view = VIEWS.SLOTS;
     needsRedraw = true;
 }
 
 function handleJog(delta) {
-    if (view === "slots") {
-        selectedSlot = Math.max(0, Math.min(slots.length - 1, selectedSlot + delta));
-    } else {
-        selectedPatch = Math.max(0, Math.min(patches.length - 1, selectedPatch + delta));
+    switch (view) {
+        case VIEWS.SLOTS:
+            selectedSlot = Math.max(0, Math.min(slots.length - 1, selectedSlot + delta));
+            break;
+        case VIEWS.PATCHES:
+            selectedPatch = Math.max(0, Math.min(patches.length - 1, selectedPatch + delta));
+            break;
+        case VIEWS.PATCH_DETAIL:
+            const detailItems = getDetailItems();
+            selectedDetailItem = Math.max(0, Math.min(detailItems.length - 1, selectedDetailItem + delta));
+            break;
+        case VIEWS.COMPONENT_PARAMS:
+            if (editingValue && componentParams.length > 0) {
+                /* Adjusting value - modify the current param */
+                const param = componentParams[selectedParam];
+                const newVal = adjustParamValue(param, delta);
+                param.value = newVal;
+                /* Apply immediately */
+                setSlotParam(selectedSlot, param.key, newVal);
+            } else {
+                /* Selecting param */
+                selectedParam = Math.max(0, Math.min(componentParams.length - 1, selectedParam + delta));
+            }
+            break;
     }
     needsRedraw = true;
 }
 
 function handleSelect() {
-    if (view === "slots") {
-        enterPatchBrowser(selectedSlot);
-        return;
+    switch (view) {
+        case VIEWS.SLOTS:
+            enterPatchBrowser(selectedSlot);
+            break;
+        case VIEWS.PATCHES:
+            if (patches.length > 0) {
+                /* Load patch directly and return to slots */
+                applyPatchSelection();
+            }
+            break;
+        case VIEWS.PATCH_DETAIL:
+            const detailItems = getDetailItems();
+            const item = detailItems[selectedDetailItem];
+            if (item.component && item.editable) {
+                /* Enter component param editor */
+                enterComponentParams(selectedSlot, item.component);
+            } else if (selectedDetailItem === detailItems.length - 1) {
+                /* "Load Patch" selected - apply and return to slots */
+                applyPatchSelection();
+            }
+            break;
+        case VIEWS.COMPONENT_PARAMS:
+            if (componentParams.length > 0) {
+                /* Toggle between selecting and editing */
+                editingValue = !editingValue;
+            }
+            break;
     }
-    applyPatchSelection();
+    needsRedraw = true;
 }
 
 function handleBack() {
-    if (view === "patches") {
-        view = "slots";
-        needsRedraw = true;
+    switch (view) {
+        case VIEWS.SLOTS:
+            /* At root level - exit shadow mode and return to Move */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+            break;
+        case VIEWS.PATCHES:
+            view = VIEWS.SLOTS;
+            needsRedraw = true;
+            break;
+        case VIEWS.PATCH_DETAIL:
+            view = VIEWS.PATCHES;
+            needsRedraw = true;
+            break;
+        case VIEWS.COMPONENT_PARAMS:
+            if (editingValue) {
+                /* Exit value editing mode */
+                editingValue = false;
+                needsRedraw = true;
+            } else {
+                /* Return to patch detail, refresh info */
+                fetchPatchDetail(selectedSlot);
+                view = VIEWS.PATCH_DETAIL;
+                needsRedraw = true;
+            }
+            break;
     }
 }
 
@@ -278,12 +538,108 @@ function drawPatches() {
     clear_screen();
     const channel = slots[selectedSlot]?.channel || (DEFAULT_SLOTS[selectedSlot]?.channel ?? 5 + selectedSlot);
     drawHeader(`Ch${channel} Patch`);
-    drawList(
-        patches,
-        selectedPatch,
-        (item) => item.name
-    );
-    drawFooter("Click: load  Back: slots");
+    if (patches.length === 0) {
+        print(LIST_LABEL_X, LIST_TOP_Y, "No patches found", 1);
+        drawFooter("Back: slots");
+    } else {
+        drawList(
+            patches,
+            selectedPatch,
+            (item) => item.name
+        );
+        drawFooter("Click: detail  Back: slots");
+    }
+}
+
+function drawPatchDetail() {
+    clear_screen();
+    const patch = patches[selectedPatch];
+    const patchName = patch ? patch.name : "Unknown";
+    drawHeader(truncateText(patchName, 18));
+
+    const items = getDetailItems();
+    const listY = LIST_TOP_Y;
+    const lineHeight = 12;
+
+    for (let i = 0; i < items.length; i++) {
+        const y = listY + i * lineHeight;
+        const item = items[i];
+        const isSelected = i === selectedDetailItem;
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, lineHeight, 1);
+        }
+
+        const color = isSelected ? 0 : 1;
+        const prefix = isSelected ? "> " : "  ";
+
+        if (item.value) {
+            /* Label: Value (subvalue) format */
+            print(LIST_LABEL_X, y, `${prefix}${item.label}:`, color);
+            let valueStr = item.value;
+            if (item.subvalue && item.subvalue !== "-") {
+                valueStr = truncateText(valueStr, 8);
+                print(LIST_VALUE_X - 24, y, valueStr, color);
+                print(LIST_VALUE_X + 4, y, `(${item.subvalue})`, color);
+            } else {
+                print(LIST_VALUE_X - 24, y, truncateText(valueStr, 12), color);
+            }
+        } else {
+            /* Just label (for "Load Patch") */
+            print(LIST_LABEL_X, y, `${prefix}${item.label}`, color);
+        }
+    }
+
+    drawFooter("Click: edit  Back: list");
+}
+
+function drawComponentParams() {
+    clear_screen();
+
+    /* Header shows component name */
+    const componentTitle = editingComponent.charAt(0).toUpperCase() + editingComponent.slice(1);
+    drawHeader(`Edit ${componentTitle}`);
+
+    if (componentParams.length === 0) {
+        print(LIST_LABEL_X, LIST_TOP_Y, "No parameters", 1);
+        drawFooter("Back: return");
+        return;
+    }
+
+    const listY = LIST_TOP_Y;
+    const lineHeight = 12;
+
+    for (let i = 0; i < componentParams.length; i++) {
+        const y = listY + i * lineHeight;
+        const param = componentParams[i];
+        const isSelected = i === selectedParam;
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, lineHeight, 1);
+        }
+
+        const color = isSelected ? 0 : 1;
+        let prefix = "  ";
+        if (isSelected) {
+            prefix = editingValue ? "* " : "> ";
+        }
+
+        print(LIST_LABEL_X, y, `${prefix}${param.label}:`, color);
+
+        /* Format value display */
+        let valueStr = formatParamValue(param);
+        if (isSelected && editingValue) {
+            /* Show brackets when editing */
+            valueStr = `[${valueStr}]`;
+        }
+        print(LIST_VALUE_X - 8, y, valueStr, color);
+    }
+
+    if (editingValue) {
+        drawFooter("Jog: adjust  Click: done");
+    } else {
+        drawFooter("Click: edit  Back: detail");
+    }
 }
 
 globalThis.init = function() {
@@ -301,21 +657,40 @@ globalThis.tick = function() {
         return;
     }
     needsRedraw = false;
-    if (view === "slots") {
-        drawSlots();
-    } else {
-        drawPatches();
+    switch (view) {
+        case VIEWS.SLOTS:
+            drawSlots();
+            break;
+        case VIEWS.PATCHES:
+            drawPatches();
+            break;
+        case VIEWS.PATCH_DETAIL:
+            drawPatchDetail();
+            break;
+        case VIEWS.COMPONENT_PARAMS:
+            drawComponentParams();
+            break;
+        default:
+            drawSlots();
     }
-    /* Debug: show frame counter to prove display updates */
+    /* Debug: show frame counter and last CC to prove display updates */
     print(100, 2, `${redrawCounter % 1000}`, 1);
+    print(2, SCREEN_HEIGHT - 2, `CC${lastCC.cc}:${lastCC.val}`, 1);
 };
 
+let debugMidiCounter = 0;
+let lastCC = { cc: 0, val: 0 };
 globalThis.onMidiMessageInternal = function(data) {
     const status = data[0];
     const d1 = data[1];
     const d2 = data[2];
 
+    /* Debug: log all CC messages to help diagnose input issues */
     if ((status & 0xF0) === 0xB0) {
+        debugMidiCounter++;
+        lastCC = { cc: d1, val: d2 };
+        needsRedraw = true;
+
         if (d1 === MoveMainKnob) {
             const delta = decodeDelta(d2);
             if (delta !== 0) {

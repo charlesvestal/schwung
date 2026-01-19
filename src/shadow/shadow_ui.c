@@ -30,14 +30,18 @@
 #define SHM_SHADOW_DISPLAY  "/move-shadow-display"
 #define SHM_SHADOW_CONTROL  "/move-shadow-control"
 #define SHM_SHADOW_UI       "/move-shadow-ui"
+#define SHM_SHADOW_PARAM    "/move-shadow-param"
 
 #define MIDI_BUFFER_SIZE 256
 #define DISPLAY_BUFFER_SIZE 1024
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE 512
+#define SHADOW_PARAM_BUFFER_SIZE 512
 
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_UI_SLOTS 4
+#define SHADOW_PARAM_KEY_LEN 64
+#define SHADOW_PARAM_VALUE_LEN 440
 
 typedef struct shadow_control_t {
     volatile uint8_t display_mode;
@@ -66,10 +70,23 @@ typedef struct shadow_ui_state_t {
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 
+typedef struct shadow_param_t {
+    volatile uint8_t request_type;  /* 0=none, 1=set, 2=get */
+    volatile uint8_t slot;          /* Which chain slot (0-3) */
+    volatile uint8_t response_ready;/* Set by shim when response is ready */
+    volatile uint8_t error;         /* Non-zero on error */
+    volatile int32_t result_len;    /* Length of result, -1 on error */
+    char key[SHADOW_PARAM_KEY_LEN];
+    char value[SHADOW_PARAM_VALUE_LEN];
+} shadow_param_t;
+
+typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
+
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
+static shadow_param_t *shadow_param = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -360,6 +377,12 @@ static int open_shadow_shm(void) {
         close(fd);
     }
 
+    fd = shm_open(SHM_SHADOW_PARAM, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_param = (shadow_param_t *)mmap(NULL, SHADOW_PARAM_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+    }
+
     return 0;
 }
 
@@ -555,6 +578,111 @@ static JSValue js_shadow_request_patch(JSContext *ctx, JSValueConst this_val, in
     return JS_TRUE;
 }
 
+/* shadow_request_exit() -> void
+ * Request to exit shadow display mode and return to regular Move.
+ */
+static JSValue js_shadow_request_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)ctx;
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    if (shadow_control) {
+        shadow_control->display_mode = 0;
+    }
+    return JS_UNDEFINED;
+}
+
+/* shadow_set_param(slot, key, value) -> bool
+ * Sets a parameter on the chain instance for the given slot.
+ * Returns true on success, false on error.
+ */
+static JSValue js_shadow_set_param(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_param || argc < 3) return JS_FALSE;
+
+    int slot = 0;
+    if (JS_ToInt32(ctx, &slot, argv[0])) return JS_FALSE;
+    if (slot < 0 || slot >= SHADOW_UI_SLOTS) return JS_FALSE;
+
+    const char *key = JS_ToCString(ctx, argv[1]);
+    if (!key) return JS_FALSE;
+    const char *value = JS_ToCString(ctx, argv[2]);
+    if (!value) {
+        JS_FreeCString(ctx, key);
+        return JS_FALSE;
+    }
+
+    /* Copy key and value to shared memory */
+    strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
+    shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
+    strncpy(shadow_param->value, value, SHADOW_PARAM_VALUE_LEN - 1);
+    shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, value);
+
+    /* Set up request */
+    shadow_param->slot = (uint8_t)slot;
+    shadow_param->response_ready = 0;
+    shadow_param->error = 0;
+    shadow_param->request_type = 1;  /* SET */
+
+    /* Wait for response with timeout */
+    int timeout = 100;  /* ~100ms */
+    while (!shadow_param->response_ready && timeout > 0) {
+        usleep(1000);
+        timeout--;
+    }
+
+    if (!shadow_param->response_ready || shadow_param->error) {
+        return JS_FALSE;
+    }
+
+    return JS_TRUE;
+}
+
+/* shadow_get_param(slot, key) -> string or null
+ * Gets a parameter from the chain instance for the given slot.
+ * Returns the value as a string, or null on error.
+ */
+static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_param || argc < 2) return JS_NULL;
+
+    int slot = 0;
+    if (JS_ToInt32(ctx, &slot, argv[0])) return JS_NULL;
+    if (slot < 0 || slot >= SHADOW_UI_SLOTS) return JS_NULL;
+
+    const char *key = JS_ToCString(ctx, argv[1]);
+    if (!key) return JS_NULL;
+
+    /* Copy key to shared memory */
+    strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
+    shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
+    shadow_param->value[0] = '\0';
+
+    JS_FreeCString(ctx, key);
+
+    /* Set up request */
+    shadow_param->slot = (uint8_t)slot;
+    shadow_param->response_ready = 0;
+    shadow_param->error = 0;
+    shadow_param->request_type = 2;  /* GET */
+
+    /* Wait for response with timeout */
+    int timeout = 100;  /* ~100ms */
+    while (!shadow_param->response_ready && timeout > 0) {
+        usleep(1000);
+        timeout--;
+    }
+
+    if (!shadow_param->response_ready || shadow_param->error) {
+        return JS_NULL;
+    }
+
+    return JS_NewString(ctx, shadow_param->value);
+}
+
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     global_exit_flag = 1;
@@ -578,6 +706,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "print", JS_NewCFunction(ctx, js_print, "print", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_slots", JS_NewCFunction(ctx, js_shadow_get_slots, "shadow_get_slots", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
     *prt = rt;
