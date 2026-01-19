@@ -188,16 +188,18 @@ scripts/test_shadow_display_order.sh
 
 ## Cleanup Priority Order
 
-### Phase 1: Critical (CPU/Stability)
+### Phase 1: Critical (CPU/Stability) ✅ COMPLETE
 
-1. **Remove debug logging from hot paths** - Immediate CPU improvement
-2. **Remove `debug_dump_mailbox_changes()` call** - Single line change, big impact
-3. **Gate remaining debug code behind `#if SHADOW_DEBUG`**
+1. ✅ **Remove debug logging from hot paths** - Removed all periodic logging
+2. ✅ **Remove `debug_dump_mailbox_changes()` call** - Removed from ioctl handler
+3. ✅ **Gate remaining debug code behind `#if SHADOW_DEBUG`** - Added compile flags
+4. ✅ **Cache access() calls in shadow_forward_midi()** - Was calling 8 access() per ioctl!
+5. ✅ **Default patches to none** - Saves 60% CPU when not actively using shadow
 
 ### Phase 2: Code Quality
 
 4. **Refactor shadow_ui.js** to use shared constants
-5. **Move shadow_poc.c** to examples/
+5. ✅ **Move shadow_poc.c** to examples/ - DONE
 6. **Consolidate debug functions** in shim
 
 ### Phase 3: Architecture

@@ -70,12 +70,12 @@ echo "Building host..."
 
 echo "Building Shadow POC..."
 
-# Build Shadow Instrument POC
+# Build Shadow Instrument POC (reference example - not used in production)
 mkdir -p ./build/shadow/
 "${CROSS_PREFIX}gcc" -g -O3 \
-    src/shadow/shadow_poc.c \
+    examples/shadow_poc.c \
     -o build/shadow/shadow_poc \
-    -Isrc \
+    -Isrc -Isrc/host \
     -lm -ldl -lrt
 
 echo "Building Shadow UI..."

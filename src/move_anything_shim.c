@@ -778,11 +778,11 @@ typedef struct shadow_chain_slot_t {
 static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 
 static const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
-    "SF2 + Freeverb (Preset 1)",
-    "DX7 + Freeverb",
-    "OB-Xd + Freeverb",
-    "JV-880 + Freeverb"
-};
+    "",  /* No default patch - user must select */
+    "",
+    "",
+    ""
+};;
 
 static int shadow_chain_parse_channel(int ch) {
     /* Config uses 1-based MIDI channels; convert to 0-based for status nibble. */
@@ -1713,15 +1713,37 @@ static void shadow_forward_midi(void)
     if (!shadow_midi_shm || !global_mmap_addr) return;
     if (!shadow_control) return;
 
+    /* Cache flag file checks - only re-check every 1000 calls to avoid filesystem overhead */
+    static int cache_counter = 0;
+    static int cached_ch3_only = 0;
+    static int cached_block_ch1 = 0;
+    static int cached_allow_ch5_8 = 0;
+    static int cached_notes_only = 0;
+    static int cached_allow_cable0 = 0;
+    static int cached_drop_cable_f = 0;
+    static int cached_log_on = 0;
+    static int cached_drop_ui = 0;
+
+    if (cache_counter++ % 1000 == 0) {
+        cached_ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
+        cached_block_ch1 = (access("/data/UserData/move-anything/shadow_midi_block_ch1", F_OK) == 0);
+        cached_allow_ch5_8 = (access("/data/UserData/move-anything/shadow_midi_allow_ch5_8", F_OK) == 0);
+        cached_notes_only = (access("/data/UserData/move-anything/shadow_midi_notes_only", F_OK) == 0);
+        cached_allow_cable0 = (access("/data/UserData/move-anything/shadow_midi_allow_cable0", F_OK) == 0);
+        cached_drop_cable_f = (access("/data/UserData/move-anything/shadow_midi_drop_cable_f", F_OK) == 0);
+        cached_log_on = (access("/data/UserData/move-anything/shadow_midi_log_on", F_OK) == 0);
+        cached_drop_ui = (access("/data/UserData/move-anything/shadow_midi_drop_ui", F_OK) == 0);
+    }
+
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-    int ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
-    int block_ch1 = (access("/data/UserData/move-anything/shadow_midi_block_ch1", F_OK) == 0);
-    int allow_ch5_8 = (access("/data/UserData/move-anything/shadow_midi_allow_ch5_8", F_OK) == 0);
-    int notes_only = (access("/data/UserData/move-anything/shadow_midi_notes_only", F_OK) == 0);
-    int allow_cable0 = (access("/data/UserData/move-anything/shadow_midi_allow_cable0", F_OK) == 0);
-    int drop_cable_f = (access("/data/UserData/move-anything/shadow_midi_drop_cable_f", F_OK) == 0);
-    int log_on = (access("/data/UserData/move-anything/shadow_midi_log_on", F_OK) == 0);
-    int drop_ui = (access("/data/UserData/move-anything/shadow_midi_drop_ui", F_OK) == 0);
+    int ch3_only = cached_ch3_only;
+    int block_ch1 = cached_block_ch1;
+    int allow_ch5_8 = cached_allow_ch5_8;
+    int notes_only = cached_notes_only;
+    int allow_cable0 = cached_allow_cable0;
+    int drop_cable_f = cached_drop_cable_f;
+    int log_on = cached_log_on;
+    int drop_ui = cached_drop_ui;
     static FILE *log = NULL;
 
     /* Only copy if there's actual MIDI data (check first 64 bytes for non-zero) */
@@ -2614,7 +2636,9 @@ void midi_monitor()
             {
                 if (midi_2 == 0x7f)
                 {
+#if SHADOW_HOTKEY_DEBUG
                     printf("Shift on\n");
+#endif
 
                     if (!shiftHeld && shift_armed) {
                         shiftHeld = 1;
@@ -2625,7 +2649,9 @@ void midi_monitor()
                 }
                 else
                 {
+#if SHADOW_HOTKEY_DEBUG
                     printf("Shift off\n");
+#endif
 
                     shiftHeld = 0;
                     shift_armed = 1;
@@ -2642,14 +2668,18 @@ void midi_monitor()
             {
                 if (!knob8touched) {
                     knob8touched = 1;
+#if SHADOW_HOTKEY_DEBUG
                     printf("Knob 8 touch start\n");
+#endif
                     log_hotkey_state("knob8_on");
                 }
             }
             else
             {
                 knob8touched = 0;
+#if SHADOW_HOTKEY_DEBUG
                 printf("Knob 8 touch stop\n");
+#endif
                 log_hotkey_state("knob8_off");
             }
         }
@@ -2661,7 +2691,9 @@ void midi_monitor()
             {
                 if (!knob1touched && knob1_armed) {
                     knob1touched = 1;
+#if SHADOW_HOTKEY_DEBUG
                     printf("Knob 1 touch start\n");
+#endif
                     knob1_on_ms = now_mono_ms();
                     log_hotkey_state("knob1_on");
                     maybe_toggle_shadow();
@@ -2671,7 +2703,9 @@ void midi_monitor()
             {
                 knob1touched = 0;
                 knob1_armed = 1;
+#if SHADOW_HOTKEY_DEBUG
                 printf("Knob 1 touch stop\n");
+#endif
                 knob1_on_ms = 0;
                 log_hotkey_state("knob1_off");
             }
