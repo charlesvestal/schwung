@@ -7,5 +7,12 @@
     },
     "audio_fx": [
         { "type": "freeverb" }
+    ],
+    "knob_mappings": [
+        {"cc": 71, "target": "synth", "param": "preset"},
+        {"cc": 72, "target": "fx1", "param": "room_size"},
+        {"cc": 73, "target": "fx1", "param": "damping"},
+        {"cc": 74, "target": "fx1", "param": "wet"},
+        {"cc": 75, "target": "fx1", "param": "dry"}
     ]
 }

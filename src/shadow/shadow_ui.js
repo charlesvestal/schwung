@@ -5,6 +5,11 @@ const MoveMainKnob = 14;
 const MoveMainButton = 3;
 const MoveBack = 51;
 
+/* Knob CC range for parameter control */
+const KNOB_CC_START = 71;
+const KNOB_CC_END = 78;
+const NUM_KNOBS = 8;
+
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
 const TITLE_Y = 2;
@@ -102,6 +107,14 @@ let refreshCounter = 0;
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
 
+/* Knob overlay state */
+let knobMappings = [];       // {cc, name, value} for each knob
+let knobOverlayActive = false;
+let knobOverlayTimeout = 0;
+let knobOverlayName = "";
+let knobOverlayValue = "";
+let lastKnobSlot = -1;       // Track slot changes to refresh mappings
+
 /* Slot settings definitions */
 const SLOT_SETTINGS = [
     { key: "patch", label: "Patch", type: "action" },  // Opens patch browser
@@ -183,6 +196,17 @@ function fetchPatchDetail(slot) {
     patchDetail.fx1Wet = getSlotParam(slot, "fx1:wet") || "-";
     patchDetail.fx2Name = getSlotParam(slot, "fx2:name") || "None";
     patchDetail.fx2Wet = getSlotParam(slot, "fx2:wet") || "-";
+}
+
+/* Fetch knob mappings for the selected slot */
+function fetchKnobMappings(slot) {
+    knobMappings = [];
+    for (let i = 1; i <= NUM_KNOBS; i++) {
+        const name = getSlotParam(slot, `knob_${i}_name`) || `Knob ${i}`;
+        const value = getSlotParam(slot, `knob_${i}_value`) || "-";
+        knobMappings.push({ cc: 70 + i, name, value });
+    }
+    lastKnobSlot = slot;
 }
 
 /* Get items for patch detail view */
@@ -397,6 +421,7 @@ function findPatchIndexByName(name) {
 function enterPatchBrowser(slotIndex) {
     loadPatchList();
     selectedSlot = slotIndex;
+    updateFocusedSlot(slotIndex);
     if (patches.length === 0) {
         /* No patches found - still enter view to show message */
         selectedPatch = 0;
@@ -409,6 +434,7 @@ function enterPatchBrowser(slotIndex) {
 
 function enterPatchDetail(slotIndex, patchIndex) {
     selectedSlot = slotIndex;
+    updateFocusedSlot(slotIndex);
     selectedPatch = patchIndex;
     selectedDetailItem = 0;
     fetchPatchDetail(slotIndex);
@@ -444,6 +470,7 @@ function applyPatchSelection() {
 /* Enter slot settings view */
 function enterSlotSettings(slotIndex) {
     selectedSlot = slotIndex;
+    updateFocusedSlot(slotIndex);
     selectedSetting = 0;
     editingSettingValue = false;
     view = VIEWS.SLOT_SETTINGS;
@@ -496,10 +523,18 @@ function adjustSlotSetting(slot, setting, delta) {
     setSlotParam(slot, setting.key, newVal);
 }
 
+/* Update the focused slot in shared memory for knob CC routing */
+function updateFocusedSlot(slot) {
+    if (typeof shadow_set_focused_slot === "function") {
+        shadow_set_focused_slot(slot);
+    }
+}
+
 function handleJog(delta) {
     switch (view) {
         case VIEWS.SLOTS:
             selectedSlot = Math.max(0, Math.min(slots.length - 1, selectedSlot + delta));
+            updateFocusedSlot(selectedSlot);
             break;
         case VIEWS.SLOT_SETTINGS:
             if (editingSettingValue) {
@@ -617,6 +652,30 @@ function handleBack() {
             }
             break;
     }
+}
+
+/* Handle knob turn - show overlay with parameter name and value */
+function handleKnobTurn(knobIndex, value) {
+    /* Refresh knob mappings if slot changed */
+    if (lastKnobSlot !== selectedSlot) {
+        fetchKnobMappings(selectedSlot);
+    }
+
+    /* Refresh value from DSP (it processes the CC) */
+    const newValue = getSlotParam(selectedSlot, `knob_${knobIndex + 1}_value`);
+    if (knobMappings[knobIndex]) {
+        knobMappings[knobIndex].value = newValue || "-";
+    }
+
+    /* Show overlay */
+    const mapping = knobMappings[knobIndex];
+    if (mapping) {
+        knobOverlayActive = true;
+        knobOverlayTimeout = 30;  /* ~500ms at 60fps tick rate */
+        knobOverlayName = mapping.name;
+        knobOverlayValue = mapping.value;
+    }
+    needsRedraw = true;
 }
 
 function drawSlots() {
@@ -788,9 +847,28 @@ function drawComponentParams() {
     }
 }
 
+/* Draw knob parameter overlay centered on screen */
+function drawKnobOverlay() {
+    if (!knobOverlayActive) return;
+
+    const boxW = 100, boxH = 24;
+    const boxX = (SCREEN_WIDTH - boxW) / 2;
+    const boxY = (SCREEN_HEIGHT - boxH) / 2;
+
+    /* Draw box with black background and white border */
+    fill_rect(boxX, boxY, boxW, boxH, 0);
+    draw_rect(boxX, boxY, boxW, boxH, 1);
+
+    /* Draw parameter name and value */
+    print(boxX + 4, boxY + 4, truncateText(knobOverlayName, 14), 1);
+    print(boxX + 4, boxY + 14, knobOverlayValue, 1);
+}
+
 globalThis.init = function() {
     refreshSlots();
     loadPatchList();
+    updateFocusedSlot(selectedSlot);
+    fetchKnobMappings(selectedSlot);
 };
 
 globalThis.tick = function() {
@@ -798,6 +876,21 @@ globalThis.tick = function() {
     if (refreshCounter % 120 === 0) {
         refreshSlots();
     }
+
+    /* Update knob overlay timeout */
+    if (knobOverlayTimeout > 0) {
+        knobOverlayTimeout--;
+        if (knobOverlayTimeout === 0) {
+            knobOverlayActive = false;
+            needsRedraw = true;
+        }
+    }
+
+    /* Refresh knob mappings if slot changed */
+    if (lastKnobSlot !== selectedSlot) {
+        fetchKnobMappings(selectedSlot);
+    }
+
     redrawCounter++;
     if (!needsRedraw && (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
@@ -822,6 +915,10 @@ globalThis.tick = function() {
         default:
             drawSlots();
     }
+
+    /* Draw knob overlay on top of main view */
+    drawKnobOverlay();
+
     /* Debug: show frame counter and last CC to prove display updates */
     print(100, 2, `${redrawCounter % 1000}`, 1);
     print(2, SCREEN_HEIGHT - 2, `CC${lastCC.cc}:${lastCC.val}`, 1);
@@ -853,6 +950,13 @@ globalThis.onMidiMessageInternal = function(data) {
         }
         if (d1 === MoveBack && d2 > 0) {
             handleBack();
+            return;
+        }
+
+        /* Handle knob CCs (71-78) for parameter control overlay */
+        if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) {
+            const knobIndex = d1 - KNOB_CC_START;
+            handleKnobTurn(knobIndex, d2);
             return;
         }
     }

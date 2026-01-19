@@ -580,6 +580,20 @@ static JSValue js_shadow_request_patch(JSContext *ctx, JSValueConst this_val, in
     return JS_TRUE;
 }
 
+/* shadow_set_focused_slot(slot) -> void
+ * Updates the focused slot for knob CC routing without loading a patch.
+ * Call this when navigating between slots in the UI.
+ */
+static JSValue js_shadow_set_focused_slot(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int slot = 0;
+    if (JS_ToInt32(ctx, &slot, argv[0])) return JS_UNDEFINED;
+    if (slot < 0 || slot >= SHADOW_UI_SLOTS) return JS_UNDEFINED;
+    shadow_control->ui_slot = (uint8_t)slot;
+    return JS_UNDEFINED;
+}
+
 /* shadow_request_exit() -> void
  * Request to exit shadow display mode and return to regular Move.
  */
@@ -708,6 +722,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "print", JS_NewCFunction(ctx, js_print, "print", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_slots", JS_NewCFunction(ctx, js_shadow_get_slots, "shadow_get_slots", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));

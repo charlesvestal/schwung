@@ -1066,7 +1066,48 @@ static int shadow_allow_midi_to_dsp(uint8_t status, uint8_t data1)
     if (type == 0xA0 || type == 0xD0 || type == 0xE0) {
         return 1;
     }
+    /* Allow knob CCs (71-78) */
+    if (type == 0xB0 && data1 >= 71 && data1 <= 78) {
+        return 1;
+    }
     return 0;
+}
+
+
+/* Route knob CCs (71-78) to the UI-selected slot, not channel-based */
+static void shadow_route_knob_cc_to_focused_slot(const uint8_t *msg, int len)
+{
+    if (!shadow_inprocess_ready || len < 3) {
+        /* Debug: log why we're returning early */
+        if (!shadow_inprocess_ready) {
+            shadow_log("Knob CC: inprocess not ready");
+        }
+        return;
+    }
+    if ((msg[0] & 0xF0) != 0xB0) return;
+
+    uint8_t cc = msg[1];
+    if (cc < 71 || cc > 78) return;
+
+    int slot = shadow_control ? shadow_control->ui_slot : 0;
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
+
+    if (!shadow_chain_slots[slot].active) {
+        char dbg[64];
+        snprintf(dbg, sizeof(dbg), "Knob CC%d: slot %d not active", cc, slot);
+        shadow_log(dbg);
+        return;
+    }
+
+    if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+        char dbg[64];
+        snprintf(dbg, sizeof(dbg), "Knob CC%d val=%d -> slot %d", cc, msg[2], slot);
+        shadow_log(dbg);
+        shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, len,
+                                  MOVE_MIDI_SOURCE_INTERNAL);
+    } else {
+        shadow_log("Knob CC: no plugin_v2 or on_midi");
+    }
 }
 
 static uint32_t shadow_ui_request_seen = 0;
@@ -1918,6 +1959,17 @@ static void shadow_filter_move_input(void)
                         break;
                     }
                 }
+            }
+            /* Route knob CCs (71-78) to the focused slot's DSP */
+            if (d1 >= 71 && d1 <= 78) {
+                uint8_t msg[3] = { status, d1, d2 };
+                shadow_route_knob_cc_to_focused_slot(msg, 3);
+            }
+            /* Debug: log that we saw a knob CC */
+            if (d1 >= 71 && d1 <= 78 && d2 != 0) {
+                char dbg[64];
+                snprintf(dbg, sizeof(dbg), "filter_move_input: saw CC%d val=%d", d1, d2);
+                shadow_log(dbg);
             }
             /* Zero out CC from Move - only shadow UI should see it */
             src[i] = 0;
@@ -2860,6 +2912,11 @@ int ioctl(int fd, unsigned long request, ...)
                                 break;
                             }
                         }
+                    }
+                    /* Route knob CCs (71-78) to the focused slot's DSP */
+                    if (d1 >= 71 && d1 <= 78) {
+                        uint8_t msg[3] = { status, d1, d2 };
+                        shadow_route_knob_cc_to_focused_slot(msg, 3);
                     }
                     /* Zero out the CC event so Move doesn't see it */
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
