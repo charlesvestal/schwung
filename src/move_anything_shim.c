@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <linux/spi/spidev.h>
 
 #include "host/plugin_api_v1.h"
@@ -1305,6 +1306,45 @@ static int shadow_has_midi_packets(const uint8_t *src)
     return 0;
 }
 
+static int shadow_append_ui_midi(uint8_t *dst, int offset, const uint8_t *src)
+{
+    /* Prefer USB-MIDI CC packets if present */
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t cin = src[i] & 0x0F;
+        if (cin < 0x08 || cin > 0x0E) continue;
+        uint8_t status = src[i + 1];
+        uint8_t d1 = src[i + 2];
+        uint8_t d2 = src[i + 3];
+        if ((status & 0xF0) != 0xB0) continue;
+        if (d1 >= 0x80 || d2 >= 0x80) continue;
+        if (offset + 4 > MIDI_BUFFER_SIZE) return offset;
+        memcpy(dst + offset, src + i, 4);
+        offset += 4;
+    }
+
+    if (offset > 0) {
+        return offset;
+    }
+
+    /* Fallback: scan for raw 3-byte CC packets */
+    for (int i = 0; i < MIDI_BUFFER_SIZE - 2; i++) {
+        uint8_t status = src[i];
+        uint8_t d1 = src[i + 1];
+        uint8_t d2 = src[i + 2];
+        if ((status & 0xF0) != 0xB0) continue;
+        if (d1 >= 0x80 || d2 >= 0x80) continue;
+        if (offset + 4 > MIDI_BUFFER_SIZE) break;
+        dst[offset] = 0x0B; /* USB-MIDI CIN for CC on cable 0 */
+        dst[offset + 1] = status;
+        dst[offset + 2] = d1;
+        dst[offset + 3] = d2;
+        offset += 4;
+        i += 2;
+    }
+
+    return offset;
+}
+
 /* Copy incoming MIDI from mailbox to shadow shared memory */
 static void shadow_forward_midi(void)
 {
@@ -1431,22 +1471,69 @@ static int shadow_is_hotkey_event(uint8_t status, uint8_t data1)
     return 0;
 }
 
+static FILE *shadow_ui_capture_log = NULL;
+static int shadow_ui_capture_log_counter = 0;
+
 static void shadow_capture_midi_for_ui(void)
 {
+    /* Early debug: check which condition fails */
+    static int early_debug_counter = 0;
+    static FILE *early_log = NULL;
+    if (early_debug_counter++ % 5000 == 0) {
+        if (!early_log) early_log = fopen("/data/UserData/move-anything/shadow_ui_early.log", "a");
+        if (early_log) {
+            fprintf(early_log, "early[%d]: shm=%p ctrl=%p mmap=%p mode=%d\n",
+                    early_debug_counter, shadow_ui_midi_shm, shadow_control,
+                    global_mmap_addr, shadow_display_mode);
+            fflush(early_log);
+        }
+    }
     if (!shadow_ui_midi_shm || !shadow_control || !global_mmap_addr) return;
     if (!shadow_display_mode) return;
-    uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-    if (!shadow_has_midi_packets(src)) {
+    uint8_t *src_in = global_mmap_addr + MIDI_IN_OFFSET;
+    uint8_t *src_out = global_mmap_addr + MIDI_OUT_OFFSET;
+    uint8_t merged[MIDI_BUFFER_SIZE];
+    memset(merged, 0, sizeof(merged));
+
+    int offset = 0;
+    offset = shadow_append_ui_midi(merged, offset, src_in);
+    if (offset == 0) {
+        offset = shadow_append_ui_midi(merged, offset, src_out);
+    }
+
+    /* Debug logging every 1000 calls */
+    if (shadow_ui_capture_log_counter++ % 1000 == 0) {
+        if (!shadow_ui_capture_log) {
+            shadow_ui_capture_log = fopen("/data/UserData/move-anything/shadow_ui_capture.log", "a");
+        }
+        if (shadow_ui_capture_log) {
+            fprintf(shadow_ui_capture_log, "capture[%d]: offset=%d midi_ready=%d\n",
+                    shadow_ui_capture_log_counter, offset, shadow_control->midi_ready);
+            /* Log first 32 bytes of MIDI_IN raw buffer to see what's there */
+            fprintf(shadow_ui_capture_log, "  raw_in: ");
+            for (int i = 0; i < 32; i++) {
+                fprintf(shadow_ui_capture_log, "%02x ", src_in[i]);
+            }
+            fprintf(shadow_ui_capture_log, "\n");
+            /* Log first 16 bytes of merged if any CC found */
+            if (offset > 0) {
+                fprintf(shadow_ui_capture_log, "  merged: ");
+                for (int i = 0; i < 16 && i < offset; i++) {
+                    fprintf(shadow_ui_capture_log, "%02x ", merged[i]);
+                }
+                fprintf(shadow_ui_capture_log, "\n");
+            }
+            fflush(shadow_ui_capture_log);
+        }
+    }
+
+    if (offset == 0) {
         return;
     }
-    static uint8_t shadow_ui_prev[MIDI_BUFFER_SIZE];
-    static int shadow_ui_prev_valid = 0;
-    if (shadow_ui_prev_valid && memcmp(shadow_ui_prev, src, MIDI_BUFFER_SIZE) == 0) {
-        return;
-    }
-    memcpy(shadow_ui_prev, src, MIDI_BUFFER_SIZE);
-    shadow_ui_prev_valid = 1;
-    memcpy(shadow_ui_midi_shm, src, MIDI_BUFFER_SIZE);
+    /* Note: removed deduplication check that was blocking repeated jog wheel events.
+     * Jog sends the same CC value (e.g. 1 for clockwise) on each frame while turning,
+     * and the dedup was comparing entire buffers, blocking all but the first event. */
+    memcpy(shadow_ui_midi_shm, merged, MIDI_BUFFER_SIZE);
     shadow_control->midi_ready++;
 }
 
@@ -1589,12 +1676,11 @@ static void shadow_capture_midi_probe(void)
 
 /* Debug counter for display swap */
 static int display_swap_debug_counter = 0;
-static int shadow_display_init = 0;
-
 /* Swap display buffer if in shadow mode */
 static void shadow_swap_display(void)
 {
     static FILE *debug_log = NULL;
+    static uint32_t ui_check_counter = 0;
 
     if (!shadow_display_shm || !global_mmap_addr) {
         return;
@@ -1605,6 +1691,13 @@ static void shadow_swap_display(void)
     if (!shadow_display_mode) {
         return;  /* Not in shadow mode */
     }
+    if ((ui_check_counter++ % 256) == 0) {
+        launch_shadow_ui();
+    }
+
+    static int slice = 0;
+    uint8_t sync = global_mmap_addr[80];
+    int use_slice = (sync >= 1 && sync <= 6) ? (sync - 1) : slice;
 
     /* Log every 100th swap attempt */
     if (display_swap_debug_counter++ % 100 == 0) {
@@ -1614,46 +1707,65 @@ static void shadow_swap_display(void)
         if (debug_log) {
             uint32_t shadow_sum = shadow_checksum(shadow_display_shm, DISPLAY_BUFFER_SIZE);
             uint32_t mailbox_sum = shadow_checksum(global_mmap_addr + DISPLAY_OFFSET, DISPLAY_BUFFER_SIZE);
-            fprintf(debug_log, "swap #%d: display_shm=%p, mailbox=%p, display_mode=%d, shadow_ready=%d\n",
+            fprintf(debug_log,
+                    "swap #%d: display_shm=%p, mailbox=%p, display_mode=%d, shadow_ready=%d sync=%u slice=%d\n",
                     display_swap_debug_counter, shadow_display_shm, global_mmap_addr,
-                    shadow_display_mode, shadow_control->shadow_ready);
+                    shadow_display_mode, shadow_control->shadow_ready, sync, use_slice);
             fprintf(debug_log, "swap #%d sums: shadow=%u mailbox=%u\n",
                     display_swap_debug_counter, shadow_sum, mailbox_sum);
             fflush(debug_log);
         }
     }
 
-    /* Seed display with a basic pattern so shadow mode isn't black */
-    if (!shadow_display_init) {
-        memset(shadow_display_shm, 0, DISPLAY_BUFFER_SIZE);
-        /* Light a couple bytes per row as a visible marker */
-        for (int row = 0; row < 64; row++) {
-            int base = row * 16;
-            shadow_display_shm[base] = 0x81;      /* two pixels at edges */
-            shadow_display_shm[base + 1] = 0x18;  /* a small block */
-        }
-        shadow_display_init = 1;
-    }
+    /* Note: Removed seed pattern init - shadow_ui handles display content */
 
     /* Overwrite mailbox display with shadow display */
-    /* Try offset 84 where Move Anything writes display (sliced at 172 bytes per frame) */
-    /* Also try offset 768 where we see stock Move data */
-    static int slice = 0;
-    int slice_offset = slice * 172;
-    int slice_bytes = (slice == 5) ? 164 : 172;  /* Last slice is smaller */
+    /* Try TWO methods: slice protocol AND full buffer write */
+    static int shadow_slice = 0;
+    static uint32_t last_shm_sum = 0;
+    static FILE *refresh_log = NULL;
+    static int refresh_count = 0;
 
-    /* Write slice indicator at offset 80 */
-    global_mmap_addr[80] = slice + 1;
+    /* Check if shared memory content has changed */
+    uint32_t current_shm_sum = shadow_checksum(shadow_display_shm, DISPLAY_BUFFER_SIZE);
+    if (refresh_count++ % 500 == 0 || current_shm_sum != last_shm_sum) {
+        if (!refresh_log) refresh_log = fopen("/data/UserData/move-anything/shadow_refresh.log", "a");
+        if (refresh_log) {
+            fprintf(refresh_log, "refresh[%d]: slice=%d shm_sum=%u (was %u) changed=%d\n",
+                    refresh_count, shadow_slice, current_shm_sum, last_shm_sum,
+                    current_shm_sum != last_shm_sum);
+            fflush(refresh_log);
+        }
+        last_shm_sum = current_shm_sum;
+    }
 
-    /* Write display slice to offset 84 */
-    if (slice_offset + slice_bytes <= DISPLAY_BUFFER_SIZE) {
+    /* DEBUG: Try writing AFTER the ioctl instead of before */
+    /* Maybe the hardware reads before ioctl returns, not during */
+    /* For now, still write before - but let's try a different approach */
+
+    /* Write full display to DISPLAY_OFFSET (768) */
+    memcpy(global_mmap_addr + DISPLAY_OFFSET, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+
+    /* Write display using slice protocol - one slice per ioctl */
+    /* No rate limiting because we must overwrite Move every ioctl */
+    static int display_phase = 0;  /* 0-6: phases of display push */
+
+    if (display_phase == 0) {
+        /* Phase 0: Zero out slice area - signals start of new frame */
+        global_mmap_addr[80] = 0;
+        memset(global_mmap_addr + 84, 0, 172);
+    } else {
+        /* Phases 1-6: Write slices 0-5 */
+        int slice = display_phase - 1;
+        int slice_offset = slice * 172;
+        int slice_bytes = (slice == 5) ? 164 : 172;
+        global_mmap_addr[80] = slice + 1;
         memcpy(global_mmap_addr + 84, shadow_display_shm + slice_offset, slice_bytes);
     }
 
-    slice = (slice + 1) % 6;
+    display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
 
-    /* Also write to offset 768 in case that's where stock Move reads */
-    memcpy(global_mmap_addr + DISPLAY_OFFSET, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+    /* Debug markers removed - write path confirmed working */
 
     /* Dump full mailbox once to find display location */
     static int test_counter = 0;
@@ -1985,9 +2097,74 @@ void launchChildAndKillThisProcess(char *pBinPath, char*pBinName, char* pArgs)
 }
 
 static int shadow_ui_started = 0;
+static pid_t shadow_ui_pid = -1;
+static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.pid";
+
+static int shadow_ui_pid_alive(pid_t pid)
+{
+    if (pid <= 0) return 0;
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int rpid = 0;
+    char comm[64] = {0};
+    char state = 0;
+    int matched = fscanf(f, "%d %63s %c", &rpid, comm, &state);
+    fclose(f);
+    if (matched != 3) return 0;
+    if (rpid != (int)pid) return 0;
+    if (state == 'Z') return 0;
+    return 1;
+}
+
+static pid_t shadow_ui_read_pid(void)
+{
+    FILE *pid_file = fopen(shadow_ui_pid_path, "r");
+    if (!pid_file) return -1;
+    long pid = -1;
+    if (fscanf(pid_file, "%ld", &pid) != 1) {
+        pid = -1;
+    }
+    fclose(pid_file);
+    return (pid_t)pid;
+}
+
+static void shadow_ui_refresh_pid(void)
+{
+    if (shadow_ui_pid_alive(shadow_ui_pid)) {
+        shadow_ui_started = 1;
+        return;
+    }
+    pid_t pid = shadow_ui_read_pid();
+    if (shadow_ui_pid_alive(pid)) {
+        shadow_ui_pid = pid;
+        shadow_ui_started = 1;
+        return;
+    }
+    if (pid > 0) {
+        unlink(shadow_ui_pid_path);
+    }
+    shadow_ui_pid = -1;
+    shadow_ui_started = 0;
+}
+
+static void shadow_ui_reap(void)
+{
+    if (shadow_ui_pid <= 0) return;
+    int status = 0;
+    pid_t res = waitpid(shadow_ui_pid, &status, WNOHANG);
+    if (res == shadow_ui_pid) {
+        shadow_ui_pid = -1;
+        shadow_ui_started = 0;
+    }
+}
+
 static void launch_shadow_ui(void)
 {
-    if (shadow_ui_started) return;
+    shadow_ui_reap();
+    shadow_ui_refresh_pid();
+    if (shadow_ui_started && shadow_ui_pid_alive(shadow_ui_pid)) return;
     if (access("/data/UserData/move-anything/shadow/shadow_ui", X_OK) != 0) {
         return;
     }
@@ -2006,6 +2183,7 @@ static void launch_shadow_ui(void)
         _exit(1);
     }
     shadow_ui_started = 1;
+    shadow_ui_pid = pid;
 }
 
 int (*real_ioctl)(int, unsigned long, ...) = NULL;
@@ -2069,6 +2247,9 @@ static void maybe_toggle_shadow(void)
             shadow_control->display_mode = shadow_display_mode;
             printf("Shadow mode toggled: %s\n",
                    shadow_display_mode ? "SHADOW" : "STOCK");
+            if (shadow_display_mode) {
+                launch_shadow_ui();
+            }
         }
     }
 }
@@ -2130,6 +2311,21 @@ void midi_monitor()
         if (midi_0 == controlMessage)
         {
             printf("Control message\n");
+
+            /* Forward CC events to shadow UI when in shadow mode */
+            if (shadow_display_mode && shadow_ui_midi_shm && shadow_control) {
+                /* Find empty slot in shadow UI MIDI buffer and write the CC packet */
+                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                    if (shadow_ui_midi_shm[slot] == 0) {
+                        shadow_ui_midi_shm[slot] = 0x0B;  /* USB-MIDI CIN for CC, cable 0 */
+                        shadow_ui_midi_shm[slot + 1] = midi_0;
+                        shadow_ui_midi_shm[slot + 2] = midi_1;
+                        shadow_ui_midi_shm[slot + 3] = midi_2;
+                        shadow_control->midi_ready++;
+                        break;
+                    }
+                }
+            }
 
             if (midi_1 == 0x31)
             {
@@ -2290,6 +2486,9 @@ int ioctl(int fd, unsigned long request, ...)
     // TODO: Consider using move-anything host code and quickjs for flexibility
     midi_monitor();
 
+    /* Capture UI MIDI BEFORE ioctl - hardware clears buffer during transaction */
+    shadow_capture_midi_for_ui();
+
     spi_trace_ioctl(request, (char *)argp);
 
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
@@ -2314,14 +2513,12 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_inprocess_mix_audio();
 #endif
 
-    /* Swap display if in shadow mode BEFORE hardware transaction */
+    /* Write display BEFORE ioctl - overwrites Move's content right before send */
     shadow_swap_display();
 
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
 
-    /* Capture UI MIDI AFTER ioctl while raw input is present. */
-    shadow_capture_midi_for_ui();
     /* Optionally block Move UI while shadow display is active. */
     shadow_filter_move_input();
 

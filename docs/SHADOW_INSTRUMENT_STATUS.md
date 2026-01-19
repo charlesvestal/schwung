@@ -1,8 +1,8 @@
 # Shadow Instrument POC - Status
 
 **Branch:** `feature/shadow-instrument-poc`
-**Date:** 2025-01-16
-**Status:** Audio resolved - in-process shadow DSP + shadow UI host working
+**Date:** 2026-01-19
+**Status:** ✅ FULLY WORKING - Audio, MIDI routing, and shadow UI display all operational
 
 ## Goal
 
@@ -113,3 +113,35 @@ In-process shadow DSP is the working path: it autostarts in the shim, renders
 clean audio, and mixes with stock Move output. MIDI is gated to channels 5–8 to
 avoid UI events. The shadow UI runs in its own process and can swap patches
 per slot without stopping stock Move.
+
+## Notes (2026-01-19 - Display Animation FIXED)
+
+**Root Cause:** The display slice protocol requires a 7-phase cycle, not 6:
+- Phase 0: Zero slice area with sync=0 (signals start of new frame)
+- Phases 1-6: Write slices 0-5 with sync=1-6
+
+**The Fix:**
+1. Added DISPLAY_OFFSET (768) write for full framebuffer
+2. Implemented proper 7-phase slice protocol with zero phase
+3. Write BEFORE ioctl to ensure our content is sent (not Move's)
+4. Removed seed pattern that was corrupting shared memory
+
+**Debugging Process:**
+- Added incrementing debug bytes to verify write path → saw flickering
+- This confirmed hardware reads our writes, issue was content/protocol
+- Matching move_anything's exact protocol fixed the animation
+
+## Notes (2026-01-19 - Earlier)
+
+- **Fixed jog input not updating display live**: Root cause was timing of `shadow_capture_midi_for_ui()`. It was called AFTER the hardware ioctl, but the ioctl transaction clears the MIDI_IN buffer. Moved the call to BEFORE the ioctl (alongside `midi_monitor()` which correctly reads MIDI before the buffer is cleared). The deduplication removal from earlier was not the actual fix.
+
+## Notes (2026-01-17)
+
+- Shadow UI renders but jog input does not update the highlight live; selection only appears to change after toggling the UI off/on.
+- Added shadow UI resiliency: PID file + watchdog relaunch in shim, and install script now kills `shadow_ui` to avoid multiple instances.
+- Shadow UI now accepts any MIDI cable for internal events, but jog still does not redraw.
+- Captures during jog show no obvious `0xB0` CC packets in MIDI_IN/OUT regions; `usb_midi.log` shows "OTHER" bytes near offset 4088, suggesting jog data may be elsewhere or encoded.
+- Next steps: run `mailbox_diff_on` during jog to locate changing bytes; consider SPI/XMOS trace if jog data is outside mailbox. Logs to check:
+  - `/data/UserData/move-anything/shadow_ui_midi_capture.log`
+  - `/data/UserData/move-anything/usb_midi.log`
+  - `/data/UserData/move-anything/midi_region.log`

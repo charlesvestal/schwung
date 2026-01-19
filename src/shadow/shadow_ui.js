@@ -306,6 +306,8 @@ globalThis.tick = function() {
     } else {
         drawPatches();
     }
+    /* Debug: show frame counter to prove display updates */
+    print(100, 2, `${redrawCounter % 1000}`, 1);
 };
 
 globalThis.onMidiMessageInternal = function(data) {
