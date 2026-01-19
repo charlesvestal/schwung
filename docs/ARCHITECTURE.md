@@ -362,6 +362,150 @@ When the user exits Move Anything (Shift + Jog click, or "Return to Move" in set
 
 The cycle continues until the hotkey combo is pressed again.
 
+## Shadow Mode
+
+Shadow Mode is an alternative operating mode that runs Move Anything's audio engine **alongside** stock Move, rather than replacing it. This allows users to layer additional synths and effects over Move's native instruments.
+
+### Activation
+
+Shadow Mode is activated with a different hotkey combo:
+- **Shift held** (CC 49 = 127)
+- **Volume knob touched** (Note 8 on)
+- **Knob 1 touched** (Note 0 on)
+
+### Architecture
+
+Unlike the full host takeover, Shadow Mode uses the shim's in-process capabilities:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Stock Move (MoveOriginal)                                  │
+│  - Continues running normally                               │
+│  - Handles its own instruments and sequencer                │
+└─────────────────────────────────────────────────────────────┘
+                              ↕ (shim intercepts ioctl)
+┌─────────────────────────────────────────────────────────────┐
+│  LD_PRELOAD Shim (in-process)                               │
+│  - Filters MIDI: blocks some controls, passes others        │
+│  - Loads chain DSP plugins via dlopen                       │
+│  - Mixes shadow audio with Move's audio output              │
+│  - Manages shared memory for UI communication               │
+└─────────────────────────────────────────────────────────────┘
+                              ↕ (shared memory)
+┌─────────────────────────────────────────────────────────────┐
+│  Shadow UI Process (separate)                               │
+│  - Runs shadow_ui.js via QuickJS                            │
+│  - Draws overlay on display                                 │
+│  - Handles jog/back/knob navigation                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Shared Memory Layout
+
+Shadow Mode uses several shared memory regions for IPC:
+
+| Region | Purpose |
+|--------|---------|
+| `/shadow_control` | Control flags, slot selection, request IDs |
+| `/shadow_ui_midi` | MIDI messages forwarded to shadow UI |
+| `/shadow_display` | Display buffer for overlay rendering |
+| `/shadow_ui_state` | Slot state (names, channels, active status) |
+| `/shadow_param` | Parameter read/write requests |
+
+### MIDI Routing
+
+The shim filters incoming MIDI based on control type:
+
+**Blocked from Move (intercepted for Shadow UI):**
+- CC 14 (jog wheel) - shadow UI navigation
+- CC 3 (jog click) - shadow UI selection
+- CC 51 (back button) - shadow UI back navigation
+- CC 71-78 (knobs 1-8) - routed to focused slot's DSP
+- Notes 0-9 (knob touches) - filtered to avoid confusing Move
+
+**Forwarded to Shadow UI AND passed to Move:**
+- CC 40-43 (track buttons) - switch shadow slots while also switching Move tracks
+
+**Passed through to Move (not intercepted):**
+- All other CCs: transport (play, record), editing (loop, mute, copy, delete), navigation (arrows), shift
+- All notes: pads (68-99), steps (16-31)
+- Aftertouch, pitch bend
+
+### Chain Slot System
+
+Shadow Mode supports 4 independent chain slots, each with:
+- A loaded patch (synth + effects chain)
+- A MIDI channel assignment (for external controller routing)
+- Independent knob mappings
+
+```c
+typedef struct {
+    void *instance;           // Chain DSP instance
+    int active;               // Slot has loaded patch
+    int midi_channel;         // MIDI channel (1-16, 0 = omni)
+    int forward_channel;      // Channel remapping for synth
+} shadow_chain_slot_t;
+```
+
+### Knob Control Routing
+
+Knobs 1-8 (CC 71-78) control the currently focused slot:
+
+1. Shadow UI tracks `selectedSlot` (0-3)
+2. JS calls `shadow_set_focused_slot(slot)` to update shared memory
+3. Shim reads `shadow_control->ui_slot`
+4. Knob CCs are routed to that slot's chain DSP instance
+5. Chain DSP applies knob mappings defined in the patch JSON
+
+### Audio Mixing
+
+The shim mixes shadow audio with Move's output post-ioctl:
+
+```c
+void shadow_inprocess_mix_audio(void) {
+    int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    int32_t mix[FRAMES_PER_BLOCK * 2];
+
+    // Start with Move's audio
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        mix[i] = mailbox_audio[i];
+    }
+
+    // Add each active shadow slot's output
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        if (!shadow_chain_slots[s].active) continue;
+        plugin->render_block(shadow_chain_slots[s].instance, slot_buffer, FRAMES_PER_BLOCK);
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            mix[i] += slot_buffer[i];
+        }
+    }
+
+    // Clamp and write back
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        mailbox_audio[i] = clamp16(mix[i]);
+    }
+}
+```
+
+### Display Overlay
+
+The shadow UI process draws to a shared display buffer. The shim swaps this buffer into the mailbox just before each ioctl, overlaying shadow UI on top of Move's display when shadow mode is active.
+
+### Configuration Persistence
+
+Shadow slot configuration is saved to `/data/UserData/move-anything/shadow_config.json`:
+
+```json
+{
+  "patches": [
+    { "name": "SF2 + Freeverb", "channel": 5 },
+    { "name": "DX7 + Freeverb", "channel": 6 },
+    { "name": "OB-Xd + Freeverb", "channel": 7 },
+    { "name": "JV-880 + Freeverb", "channel": 8 }
+  ]
+}
+```
+
 ## Security Considerations
 
 - The shim runs with elevated privileges (setuid) to access hardware
