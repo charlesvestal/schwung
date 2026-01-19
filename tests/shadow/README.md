@@ -8,13 +8,13 @@ These tests verify critical ordering and logic in the shadow instrument shim.
 Verifies that `shadow_swap_display()` runs BEFORE `real_ioctl()`. The shadow display must be written to the mailbox before the hardware transaction sends it to the screen.
 
 ### test_shadow_ui_order.sh
-Verifies that `shadow_capture_midi_for_ui()` runs AFTER `real_ioctl()`. MIDI input arrives during the ioctl, so we must capture it after the transaction completes.
+Verifies that the POST-IOCTL MIDI filtering section runs AFTER `real_ioctl()`. MIDI input arrives during the ioctl, so we must filter it after the transaction completes.
 
 ### test_shadow_hotkey_debounce.sh
 Verifies that `shadowModeDebounce` resets when ANY part of the hotkey combo is released (not just when all are released). This prevents the toggle from firing multiple times.
 
 ### test_shadow_filter_hotkey_cc.sh
-Verifies that the hotkey check (`shadow_is_hotkey_event`) runs BEFORE the CC filter in `shadow_filter_move_input()`. If the CC filter runs first, shift CCs would be dropped before the hotkey logic can see them.
+Verifies that shift CC (0x31) is NOT filtered in the post-ioctl MIDI filter. This allows the hotkey combo (Shift+Vol+Knob1) to work for exiting shadow mode.
 
 ## Running Tests
 

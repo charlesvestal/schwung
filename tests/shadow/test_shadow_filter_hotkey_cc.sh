@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Test: Verify shift CC (0x31) is NOT filtered so hotkey detection works
+# The post-ioctl MIDI filter should skip shift CC to allow exiting shadow mode
+
 file="src/move_anything_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
@@ -8,48 +11,20 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 1
 fi
 
-python3 - <<'PY'
-path = "src/move_anything_shim.c"
-with open(path, "r", encoding="utf-8") as f:
-    lines = f.readlines()
+# Look for the shift bypass in the post-ioctl filtering section
+# Pattern: d1 != 0x31 (don't filter shift CC)
+line=$(rg -n "d1 != 0x31" "$file" | head -n 1 || true)
+if [ -z "${line}" ]; then
+  echo "FAIL: No shift CC (0x31) bypass found in post-ioctl MIDI filter" >&2
+  exit 1
+fi
 
-start = None
-for idx, line in enumerate(lines):
-    if "static void shadow_filter_move_input" in line:
-        start = idx
-        break
+# Verify it's in the context of CC filtering (type == 0xB0)
+context=$(rg -B 5 "d1 != 0x31" "$file" | head -n 6)
+if echo "${context}" | rg -q "type == 0xB0"; then
+  echo "PASS: Shift CC (0x31) is bypassed in CC filter for hotkey detection"
+  exit 0
+fi
 
-if start is None:
-    print("FAIL: shadow_filter_move_input not found")
-    raise SystemExit(1)
-
-brace_count = 0
-body_lines = []
-found_open = False
-for line in lines[start:]:
-    if not found_open:
-        if "{" in line:
-            found_open = True
-            brace_count += line.count("{") - line.count("}")
-        body_lines.append(line)
-        continue
-    brace_count += line.count("{") - line.count("}")
-    body_lines.append(line)
-    if brace_count == 0:
-        break
-
-body = "".join(body_lines)
-pos_hotkey = body.find("shadow_is_hotkey_event")
-pos_cc = body.find("if (type == 0xB0)")
-
-if pos_hotkey == -1 or pos_cc == -1:
-    print("FAIL: missing hotkey or CC filter in shadow_filter_move_input")
-    raise SystemExit(1)
-
-if pos_hotkey < pos_cc:
-    print("PASS: hotkey check occurs before CC filter")
-    raise SystemExit(0)
-
-print("FAIL: hotkey check occurs after CC filter (shift CCs will be dropped)")
-raise SystemExit(1)
-PY
+echo "FAIL: Shift bypass not in CC filter context" >&2
+exit 1
