@@ -424,6 +424,26 @@ static void mailbox_midi_scan_strict(void)
     fflush(mailbox_midi_log);
 }
 
+/*
+ * USB-MIDI Packet Format (per USB Device Class Definition for MIDI Devices 1.0)
+ * https://www.usb.org/sites/default/files/midi10.pdf
+ *
+ * Each packet is 4 bytes:
+ *   Byte 0: [Cable Number (4 bits)] [CIN (4 bits)]
+ *   Byte 1: MIDI Status byte
+ *   Byte 2: MIDI Data 1
+ *   Byte 3: MIDI Data 2
+ *
+ * CIN (Code Index Number) for channel voice messages:
+ *   0x08 = Note Off
+ *   0x09 = Note On
+ *   0x0A = Poly Aftertouch
+ *   0x0B = Control Change
+ *   0x0C = Program Change
+ *   0x0D = Channel Pressure
+ *   0x0E = Pitch Bend
+ */
+
 /* Scan for USB-MIDI 4-byte packets anywhere in the mailbox. */
 static FILE *mailbox_usb_log = NULL;
 static void mailbox_usb_midi_scan(void)
