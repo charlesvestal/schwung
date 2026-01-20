@@ -19,6 +19,7 @@
 #include <linux/spi/spidev.h>
 
 #include "host/plugin_api_v1.h"
+#include "host/audio_fx_api_v2.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
@@ -782,7 +783,13 @@ static const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
     "",
     "",
     ""
-};;
+};
+
+/* Master FX state - processes mixed shadow audio output */
+static void *shadow_master_fx_handle = NULL;          /* dlopen handle */
+static audio_fx_api_v2_t *shadow_master_fx = NULL;    /* FX API pointer */
+static void *shadow_master_fx_instance = NULL;        /* FX instance */
+static char shadow_master_fx_module[256] = "";        /* Full DSP path */
 
 static int shadow_chain_parse_channel(int ch) {
     /* Config uses 1-based MIDI channels; convert to 0-based for status nibble. */
@@ -950,6 +957,87 @@ static int shadow_chain_find_patch_index(void *instance, const char *name) {
         }
     }
     return -1;
+}
+
+/* Unload the current master FX if any */
+static void shadow_master_fx_unload(void) {
+    if (shadow_master_fx_instance && shadow_master_fx && shadow_master_fx->destroy_instance) {
+        shadow_master_fx->destroy_instance(shadow_master_fx_instance);
+    }
+    shadow_master_fx_instance = NULL;
+    shadow_master_fx = NULL;
+    if (shadow_master_fx_handle) {
+        dlclose(shadow_master_fx_handle);
+        shadow_master_fx_handle = NULL;
+    }
+    shadow_master_fx_module[0] = '\0';
+}
+
+/* Load a master FX module by full DSP path (e.g., "/data/.../cloudseed.so").
+ * Returns 0 on success, -1 on failure. */
+static int shadow_master_fx_load(const char *dsp_path) {
+    if (!dsp_path || !dsp_path[0]) {
+        shadow_master_fx_unload();
+        return 0;  /* Empty = disable master FX */
+    }
+
+    /* Already loaded? */
+    if (strcmp(shadow_master_fx_module, dsp_path) == 0 && shadow_master_fx_instance) {
+        return 0;
+    }
+
+    /* Unload previous */
+    shadow_master_fx_unload();
+
+    shadow_master_fx_handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
+    if (!shadow_master_fx_handle) {
+        fprintf(stderr, "Shadow master FX: failed to load %s: %s\n", dsp_path, dlerror());
+        return -1;
+    }
+
+    /* Look for audio FX v2 init function */
+    audio_fx_init_v2_fn init_fn = (audio_fx_init_v2_fn)dlsym(
+        shadow_master_fx_handle, AUDIO_FX_INIT_V2_SYMBOL);
+    if (!init_fn) {
+        fprintf(stderr, "Shadow master FX: %s not found in %s\n",
+                AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
+        dlclose(shadow_master_fx_handle);
+        shadow_master_fx_handle = NULL;
+        return -1;
+    }
+
+    shadow_master_fx = init_fn(&shadow_host_api);
+    if (!shadow_master_fx || !shadow_master_fx->create_instance) {
+        fprintf(stderr, "Shadow master FX: init failed for %s\n", dsp_path);
+        dlclose(shadow_master_fx_handle);
+        shadow_master_fx_handle = NULL;
+        shadow_master_fx = NULL;
+        return -1;
+    }
+
+    /* Extract module directory from dsp_path (remove filename) */
+    char module_dir[256];
+    strncpy(module_dir, dsp_path, sizeof(module_dir) - 1);
+    module_dir[sizeof(module_dir) - 1] = '\0';
+    char *last_slash = strrchr(module_dir, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+    }
+
+    shadow_master_fx_instance = shadow_master_fx->create_instance(module_dir, NULL);
+    if (!shadow_master_fx_instance) {
+        fprintf(stderr, "Shadow master FX: create_instance failed for %s\n", dsp_path);
+        dlclose(shadow_master_fx_handle);
+        shadow_master_fx_handle = NULL;
+        shadow_master_fx = NULL;
+        return -1;
+    }
+
+    strncpy(shadow_master_fx_module, dsp_path, sizeof(shadow_master_fx_module) - 1);
+    shadow_master_fx_module[sizeof(shadow_master_fx_module) - 1] = '\0';
+
+    fprintf(stderr, "Shadow master FX: loaded %s\n", dsp_path);
+    return 0;
 }
 
 static int shadow_inprocess_load_chain(void) {
@@ -1225,6 +1313,61 @@ static void shadow_inprocess_handle_param_request(void) {
     uint8_t req_type = shadow_param->request_type;
     if (req_type == 0) return;  /* No pending request */
 
+    /* Handle global master FX params first (slot-independent) */
+    if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
+        const char *fx_key = shadow_param->key + 10;
+        if (req_type == 1) {  /* SET */
+            if (strcmp(fx_key, "module") == 0) {
+                /* Load or unload master FX */
+                int result = shadow_master_fx_load(shadow_param->value);
+                shadow_param->error = (result == 0) ? 0 : 7;
+                shadow_param->result_len = 0;
+            } else if (strcmp(fx_key, "param") == 0 && shadow_master_fx && shadow_master_fx_instance) {
+                /* Set master FX param: value is "key=value" */
+                char *eq = strchr(shadow_param->value, '=');
+                if (eq && shadow_master_fx->set_param) {
+                    *eq = '\0';
+                    shadow_master_fx->set_param(shadow_master_fx_instance, shadow_param->value, eq + 1);
+                    *eq = '=';
+                    shadow_param->error = 0;
+                } else {
+                    shadow_param->error = 8;
+                }
+                shadow_param->result_len = 0;
+            } else {
+                shadow_param->error = 9;
+                shadow_param->result_len = -1;
+            }
+        } else if (req_type == 2) {  /* GET */
+            if (strcmp(fx_key, "module") == 0) {
+                strncpy(shadow_param->value, shadow_master_fx_module, SHADOW_PARAM_VALUE_LEN - 1);
+                shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            } else if (shadow_master_fx && shadow_master_fx_instance && shadow_master_fx->get_param) {
+                /* Get master FX param by key (fx_key is the param name) */
+                int len = shadow_master_fx->get_param(shadow_master_fx_instance, fx_key,
+                                                       shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                if (len >= 0) {
+                    shadow_param->error = 0;
+                    shadow_param->result_len = len;
+                } else {
+                    shadow_param->error = 10;
+                    shadow_param->result_len = -1;
+                }
+            } else {
+                shadow_param->error = 11;
+                shadow_param->result_len = -1;
+            }
+        } else {
+            shadow_param->error = 6;
+            shadow_param->result_len = -1;
+        }
+        shadow_param->response_ready = 1;
+        shadow_param->request_type = 0;
+        return;
+    }
+
     int slot = shadow_param->slot;
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) {
         shadow_param->error = 1;
@@ -1397,11 +1540,22 @@ static void shadow_inprocess_mix_audio(void) {
         }
     }
 
+    /* Clamp and write to output buffer */
+    int16_t output_buffer[FRAMES_PER_BLOCK * 2];
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         if (mix[i] > 32767) mix[i] = 32767;
         if (mix[i] < -32768) mix[i] = -32768;
-        mailbox_audio[i] = (int16_t)mix[i];
+        output_buffer[i] = (int16_t)mix[i];
     }
+
+    /* Apply master FX if loaded (processes in-place) */
+    if (shadow_master_fx_instance && shadow_master_fx && shadow_master_fx->process_block) {
+        shadow_master_fx->process_block(shadow_master_fx_instance,
+                                        output_buffer, FRAMES_PER_BLOCK);
+    }
+
+    /* Write final output to mailbox */
+    memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
 }
 
 /* Shared memory segment names */

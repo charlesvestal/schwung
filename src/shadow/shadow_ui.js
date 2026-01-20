@@ -92,12 +92,16 @@ const DEFAULT_SLOTS = [
 
 /* View constants */
 const VIEWS = {
-    SLOTS: "slots",           // List of 4 chain slots
+    SLOTS: "slots",           // List of 4 chain slots + Master FX
     SLOT_SETTINGS: "settings", // Per-slot settings (volume, channels)
     PATCHES: "patches",       // Patch list for selected slot
     PATCH_DETAIL: "detail",   // Show synth/fx info for selected patch
-    COMPONENT_PARAMS: "params" // Edit component params (Phase 3)
+    COMPONENT_PARAMS: "params", // Edit component params (Phase 3)
+    MASTER_FX: "masterfx"     // Master FX selection
 };
+
+/* Master FX options - populated by scanning modules directory */
+let MASTER_FX_OPTIONS = [{ id: "", name: "None" }];
 
 let slots = [];
 let patches = [];
@@ -119,6 +123,11 @@ let knobOverlayTimeout = 0;
 let knobOverlayName = "";
 let knobOverlayValue = "";
 let lastKnobSlot = -1;       // Track slot changes to refresh mappings
+
+/* Master FX state */
+let selectedMasterFx = 0;    // Index into MASTER_FX_OPTIONS
+let currentMasterFxId = "";  // Currently loaded master FX module ID
+let currentMasterFxPath = ""; // Full path to currently loaded DSP
 
 /* Slot settings definitions */
 const SLOT_SETTINGS = [
@@ -159,6 +168,77 @@ function setSlotParam(slot, key, value) {
     if (typeof shadow_set_param !== "function") return false;
     try {
         return shadow_set_param(slot, key, String(value));
+    } catch (e) {
+        return false;
+    }
+}
+
+/* Scan modules directory for audio_fx modules */
+function scanForAudioFxModules() {
+    const MODULES_DIR = "/data/UserData/move-anything/modules";
+    const CHAIN_AUDIO_FX_DIR = `${MODULES_DIR}/chain/audio_fx`;
+    const result = [{ id: "", name: "None", dspPath: "" }];
+
+    /* Helper to scan a directory for audio_fx modules */
+    function scanDir(dirPath, pathPrefix) {
+        try {
+            const entries = os.readdir(dirPath) || [];
+            const dirList = entries[0];
+            if (!Array.isArray(dirList)) return;
+
+            for (const entry of dirList) {
+                if (entry === "." || entry === "..") continue;
+
+                const modulePath = `${dirPath}/${entry}/module.json`;
+                try {
+                    const content = std.loadFile(modulePath);
+                    if (!content) continue;
+
+                    const json = JSON.parse(content);
+                    /* Check if this is an audio_fx module */
+                    if (json.component_type === "audio_fx" ||
+                        (json.capabilities && json.capabilities.component_type === "audio_fx")) {
+                        /* Build DSP path - chain audio_fx use {id}.so, top-level use dsp.so */
+                        const dspFile = json.dsp || "dsp.so";
+                        const dspPath = `${dirPath}/${entry}/${dspFile}`;
+                        result.push({
+                            id: json.id || entry,
+                            name: json.name || entry,
+                            dspPath: dspPath
+                        });
+                    }
+                } catch (e) {
+                    /* Skip modules without readable module.json */
+                }
+            }
+        } catch (e) {
+            /* Failed to read directory */
+        }
+    }
+
+    /* Scan top-level modules */
+    scanDir(MODULES_DIR, "");
+
+    /* Scan chain/audio_fx for built-in and installed chain effects */
+    scanDir(CHAIN_AUDIO_FX_DIR, "chain/audio_fx/");
+
+    return result;
+}
+
+/* Master FX param helpers - use slot 0 with master_fx: prefix */
+function getMasterFxModule() {
+    if (typeof shadow_get_param !== "function") return "";
+    try {
+        return shadow_get_param(0, "master_fx:module") || "";
+    } catch (e) {
+        return "";
+    }
+}
+
+function setMasterFxModule(moduleId) {
+    if (typeof shadow_set_param !== "function") return false;
+    try {
+        return shadow_set_param(0, "master_fx:module", moduleId || "");
     } catch (e) {
         return false;
     }
@@ -324,12 +404,43 @@ function loadSlotsFromConfig() {
     }));
 }
 
+function loadMasterFxFromConfig() {
+    const data = safeLoadJson(CONFIG_PATH);
+    return {
+        id: (data && typeof data.master_fx === "string") ? data.master_fx : "",
+        path: (data && typeof data.master_fx_path === "string") ? data.master_fx_path : ""
+    };
+}
+
 function saveSlotsToConfig(nextSlots) {
     const payload = {
         patches: nextSlots.map((slot) => ({
             name: slot.name,
             channel: slot.channel
-        }))
+        })),
+        master_fx: currentMasterFxId || ""
+    };
+    try {
+        const file = std.open(CONFIG_PATH, "w");
+        if (!file) return;
+        file.puts(JSON.stringify(payload, null, 2));
+        file.puts("\n");
+        file.close();
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+function saveConfigMasterFx() {
+    /* Save just the master FX setting to config */
+    const data = safeLoadJson(CONFIG_PATH);
+    const payload = {
+        patches: data && Array.isArray(data.patches) ? data.patches : slots.map((slot) => ({
+            name: slot.name,
+            channel: slot.channel
+        })),
+        master_fx: currentMasterFxId || "",
+        master_fx_path: currentMasterFxPath || ""
     };
     try {
         const file = std.open(CONFIG_PATH, "w");
@@ -477,6 +588,33 @@ function enterSlotSettings(slotIndex) {
     needsRedraw = true;
 }
 
+function enterMasterFxSettings() {
+    /* Scan for available audio_fx modules */
+    MASTER_FX_OPTIONS = scanForAudioFxModules();
+    /* Load current master FX selection */
+    currentMasterFxId = getMasterFxModule();
+    /* Find index in options */
+    selectedMasterFx = MASTER_FX_OPTIONS.findIndex(o => o.id === currentMasterFxId);
+    if (selectedMasterFx < 0) selectedMasterFx = 0;
+    view = VIEWS.MASTER_FX;
+    needsRedraw = true;
+}
+
+function applyMasterFxSelection() {
+    const selected = MASTER_FX_OPTIONS[selectedMasterFx];
+    if (selected) {
+        /* Pass the full DSP path to the shim */
+        setMasterFxModule(selected.dspPath || "");
+        currentMasterFxId = selected.id;
+        /* Save to config - save the dspPath for persistence */
+        currentMasterFxPath = selected.dspPath || "";
+        saveConfigMasterFx();
+    }
+    /* Return to slots view */
+    view = VIEWS.SLOTS;
+    needsRedraw = true;
+}
+
 /* Get current value for a slot setting */
 function getSlotSettingValue(slot, setting) {
     if (setting.key === "patch") {
@@ -533,8 +671,15 @@ function updateFocusedSlot(slot) {
 function handleJog(delta) {
     switch (view) {
         case VIEWS.SLOTS:
-            selectedSlot = Math.max(0, Math.min(slots.length - 1, selectedSlot + delta));
-            updateFocusedSlot(selectedSlot);
+            /* 5 items: 4 slots + Master FX */
+            selectedSlot = Math.max(0, Math.min(slots.length, selectedSlot + delta));
+            /* Only update focused slot for actual slots (0-3), not Master FX (4) */
+            if (selectedSlot < slots.length) {
+                updateFocusedSlot(selectedSlot);
+            }
+            break;
+        case VIEWS.MASTER_FX:
+            selectedMasterFx = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFx + delta));
             break;
         case VIEWS.SLOT_SETTINGS:
             if (editingSettingValue) {
@@ -573,7 +718,16 @@ function handleJog(delta) {
 function handleSelect() {
     switch (view) {
         case VIEWS.SLOTS:
-            enterSlotSettings(selectedSlot);
+            if (selectedSlot < slots.length) {
+                enterSlotSettings(selectedSlot);
+            } else {
+                /* Master FX selected */
+                enterMasterFxSettings();
+            }
+            break;
+        case VIEWS.MASTER_FX:
+            /* Apply master FX selection */
+            applyMasterFxSelection();
             break;
         case VIEWS.SLOT_SETTINGS:
             const setting = SLOT_SETTINGS[selectedSetting];
@@ -651,6 +805,11 @@ function handleBack() {
                 needsRedraw = true;
             }
             break;
+        case VIEWS.MASTER_FX:
+            /* Return to slots list */
+            view = VIEWS.SLOTS;
+            needsRedraw = true;
+            break;
     }
 }
 
@@ -681,13 +840,25 @@ function handleKnobTurn(knobIndex, value) {
 function drawSlots() {
     clear_screen();
     drawHeader("Shadow Chains");
+
+    /* Create items list: 4 slots + Master FX */
+    const items = [
+        ...slots.map((s, i) => ({ label: s.name || "Unknown Patch", value: `Ch${s.channel}`, isSlot: true })),
+        { label: "Master FX", value: getMasterFxDisplayName(), isSlot: false }
+    ];
+
     drawList(
-        slots,
+        items,
         selectedSlot,
-        (item) => item.name || "Unknown Patch",
-        (item) => `Ch${item.channel}`
+        (item) => item.label,
+        (item) => item.value
     );
     drawFooter("Click: settings");
+}
+
+function getMasterFxDisplayName() {
+    const opt = MASTER_FX_OPTIONS.find(o => o.id === currentMasterFxId);
+    return opt ? opt.name : "None";
 }
 
 function drawSlotSettings() {
@@ -847,6 +1018,18 @@ function drawComponentParams() {
     }
 }
 
+function drawMasterFx() {
+    clear_screen();
+    drawHeader("Master FX");
+    drawList(
+        MASTER_FX_OPTIONS,
+        selectedMasterFx,
+        (item) => item.name,
+        (item) => item.id === currentMasterFxId ? "*" : ""
+    );
+    drawFooter("Click: apply  Back: slots");
+}
+
 /* Draw knob parameter overlay centered on screen */
 function drawKnobOverlay() {
     if (!knobOverlayActive) return;
@@ -869,6 +1052,14 @@ globalThis.init = function() {
     loadPatchList();
     updateFocusedSlot(selectedSlot);
     fetchKnobMappings(selectedSlot);
+
+    /* Load and apply master FX from config */
+    const savedMasterFx = loadMasterFxFromConfig();
+    if (savedMasterFx.path) {
+        setMasterFxModule(savedMasterFx.path);
+        currentMasterFxId = savedMasterFx.id;
+        currentMasterFxPath = savedMasterFx.path;
+    }
 };
 
 globalThis.tick = function() {
@@ -911,6 +1102,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.COMPONENT_PARAMS:
             drawComponentParams();
+            break;
+        case VIEWS.MASTER_FX:
+            drawMasterFx();
             break;
         default:
             drawSlots();
