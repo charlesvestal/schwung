@@ -56,7 +56,8 @@ typedef struct shadow_control_t {
     volatile uint16_t reserved16;
     volatile uint32_t ui_request_id;
     volatile uint32_t shim_counter;
-    volatile uint8_t reserved[44];
+    volatile uint8_t selected_slot;   /* track-selected slot (0-3) - for playback/knobs */
+    volatile uint8_t reserved[43];
 } shadow_control_t;
 
 typedef struct shadow_ui_state_t {
@@ -594,6 +595,45 @@ static JSValue js_shadow_set_focused_slot(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* shadow_get_ui_flags() -> int
+ * Returns the UI flags from shared memory.
+ */
+static JSValue js_shadow_get_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->ui_flags);
+}
+
+/* shadow_clear_ui_flags(mask) -> void
+ * Clears the specified flags from ui_flags.
+ */
+static JSValue js_shadow_clear_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int mask = 0;
+    if (JS_ToInt32(ctx, &mask, argv[0])) return JS_UNDEFINED;
+    shadow_control->ui_flags &= ~(uint8_t)mask;
+    return JS_UNDEFINED;
+}
+
+/* shadow_get_selected_slot() -> int
+ * Returns the track-selected slot (0-3) for playback/knobs.
+ */
+static JSValue js_shadow_get_selected_slot(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->selected_slot);
+}
+
+/* shadow_get_ui_slot() -> int
+ * Returns the UI-highlighted slot (0-3) set by shim for jump target.
+ */
+static JSValue js_shadow_get_ui_slot(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->ui_slot);
+}
+
 /* shadow_request_exit() -> void
  * Request to exit shadow display mode and return to regular Move.
  */
@@ -723,6 +763,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_slots", JS_NewCFunction(ctx, js_shadow_get_slots, "shadow_get_slots", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_slot", JS_NewCFunction(ctx, js_shadow_get_ui_slot, "shadow_get_ui_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));

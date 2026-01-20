@@ -10,6 +10,9 @@ const TRACK_CC_START = 40;
 const TRACK_CC_END = 43;
 const SHADOW_UI_SLOTS = 4;
 
+/* UI flags from shim (must match SHADOW_UI_FLAG_* in shim) */
+const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
+
 /* Knob CC range for parameter control */
 const KNOB_CC_START = 71;
 const KNOB_CC_END = 78;
@@ -815,13 +818,19 @@ function handleBack() {
 
 /* Handle knob turn - show overlay with parameter name and value */
 function handleKnobTurn(knobIndex, value) {
+    /* Use track-selected slot (what knobs actually control) not jog-highlighted slot */
+    let targetSlot = 0;
+    if (typeof shadow_get_selected_slot === "function") {
+        targetSlot = shadow_get_selected_slot();
+    }
+
     /* Refresh knob mappings if slot changed */
-    if (lastKnobSlot !== selectedSlot) {
-        fetchKnobMappings(selectedSlot);
+    if (lastKnobSlot !== targetSlot) {
+        fetchKnobMappings(targetSlot);
     }
 
     /* Refresh value from DSP (it processes the CC) */
-    const newValue = getSlotParam(selectedSlot, `knob_${knobIndex + 1}_value`);
+    const newValue = getSlotParam(targetSlot, `knob_${knobIndex + 1}_value`);
     if (knobMappings[knobIndex]) {
         knobMappings[knobIndex].value = newValue || "-";
     }
@@ -841,10 +850,22 @@ function drawSlots() {
     clear_screen();
     drawHeader("Shadow Chains");
 
-    /* Create items list: 4 slots + Master FX */
+    /* Get the track-selected slot (for playback/knobs, set by track buttons) */
+    let trackSelectedSlot = 0;
+    if (typeof shadow_get_selected_slot === "function") {
+        trackSelectedSlot = shadow_get_selected_slot();
+    }
+
+    /* Create items list: 4 slots + Master FX
+     * Show asterisk (*) before patch name for track-selected slot (playing/knob control)
+     * Use leading space for non-selected to maintain alignment */
     const items = [
-        ...slots.map((s, i) => ({ label: s.name || "Unknown Patch", value: `Ch${s.channel}`, isSlot: true })),
-        { label: "Master FX", value: getMasterFxDisplayName(), isSlot: false }
+        ...slots.map((s, i) => ({
+            label: (i === trackSelectedSlot ? "*" : " ") + (s.name || "Unknown Patch"),
+            value: `Ch${s.channel}`,
+            isSlot: true
+        })),
+        { label: " Master FX", value: getMasterFxDisplayName(), isSlot: false }
     ];
 
     drawList(
@@ -853,7 +874,15 @@ function drawSlots() {
         (item) => item.label,
         (item) => item.value
     );
-    drawFooter("Click: settings");
+    /* Debug: show flags value in footer */
+    const debugInfo = typeof globalThis._debugFlags !== "undefined"
+        ? `F:${globalThis._debugFlags}` : "";
+    /* Also show current shift/vol state if available */
+    let stateInfo = "";
+    if (typeof shadow_get_debug_state === "function") {
+        stateInfo = shadow_get_debug_state();
+    }
+    drawFooter(`${debugInfo} ${stateInfo}`);
 }
 
 function getMasterFxDisplayName() {
@@ -1034,7 +1063,14 @@ function drawMasterFx() {
 function drawKnobOverlay() {
     if (!knobOverlayActive) return;
 
-    const boxW = 100, boxH = 24;
+    /* Get track-selected slot and its patch name */
+    let targetSlot = 0;
+    if (typeof shadow_get_selected_slot === "function") {
+        targetSlot = shadow_get_selected_slot();
+    }
+    const patchName = (slots[targetSlot] && slots[targetSlot].name) || "Unknown";
+
+    const boxW = 100, boxH = 34;
     const boxX = (SCREEN_WIDTH - boxW) / 2;
     const boxY = (SCREEN_HEIGHT - boxH) / 2;
 
@@ -1042,9 +1078,15 @@ function drawKnobOverlay() {
     fill_rect(boxX, boxY, boxW, boxH, 0);
     draw_rect(boxX, boxY, boxW, boxH, 1);
 
-    /* Draw parameter name and value */
-    print(boxX + 4, boxY + 4, truncateText(knobOverlayName, 14), 1);
-    print(boxX + 4, boxY + 14, knobOverlayValue, 1);
+    /* Line 1: Slot and patch name (e.g., "S3: PatchName") */
+    const slotLabel = `S${targetSlot + 1}: ${truncateText(patchName, 11)}`;
+    print(boxX + 4, boxY + 4, slotLabel, 1);
+
+    /* Line 2: Parameter name */
+    print(boxX + 4, boxY + 14, truncateText(knobOverlayName, 14), 1);
+
+    /* Line 3: Parameter value */
+    print(boxX + 4, boxY + 24, knobOverlayValue, 1);
 }
 
 globalThis.init = function() {
@@ -1060,9 +1102,30 @@ globalThis.init = function() {
         currentMasterFxId = savedMasterFx.id;
         currentMasterFxPath = savedMasterFx.path;
     }
+    /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
 };
 
 globalThis.tick = function() {
+    /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
+    if (typeof shadow_get_ui_flags === "function") {
+        const flags = shadow_get_ui_flags();
+        globalThis._debugFlags = flags;  /* Debug: store for display */
+        if (flags & SHADOW_UI_FLAG_JUMP_TO_SLOT) {
+            /* Get the slot to jump to (from ui_slot, set by shim) */
+            if (typeof shadow_get_ui_slot === "function") {
+                const jumpSlot = shadow_get_ui_slot();
+                if (jumpSlot >= 0 && jumpSlot < SHADOW_UI_SLOTS) {
+                    selectedSlot = jumpSlot;
+                    enterSlotSettings(jumpSlot);
+                }
+            }
+            /* Clear the flag */
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SLOT);
+            }
+        }
+    }
+
     refreshCounter++;
     if (refreshCounter % 120 === 0) {
         refreshSlots();
@@ -1077,9 +1140,13 @@ globalThis.tick = function() {
         }
     }
 
-    /* Refresh knob mappings if slot changed */
-    if (lastKnobSlot !== selectedSlot) {
-        fetchKnobMappings(selectedSlot);
+    /* Refresh knob mappings if track-selected slot changed */
+    let currentTargetSlot = 0;
+    if (typeof shadow_get_selected_slot === "function") {
+        currentTargetSlot = shadow_get_selected_slot();
+    }
+    if (lastKnobSlot !== currentTargetSlot) {
+        fetchKnobMappings(currentTargetSlot);
     }
 
     redrawCounter++;

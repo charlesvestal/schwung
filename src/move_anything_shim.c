@@ -95,18 +95,22 @@ typedef struct shadow_control_t {
     volatile uint8_t midi_ready;      /* increments when new MIDI available */
     volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
     volatile uint8_t read_idx;        /* triple buffer: shim reads here */
-    volatile uint8_t ui_slot;         /* shadow UI slot selection (0-3) */
-    volatile uint8_t ui_flags;        /* reserved for UI flags */
+    volatile uint8_t ui_slot;         /* shadow UI highlighted slot (0-3) - for navigation */
+    volatile uint8_t ui_flags;        /* UI flags: bit 0 = jump to slot edit on open */
     volatile uint16_t ui_patch_index; /* shadow UI patch index */
     volatile uint16_t reserved16;     /* padding/alignment */
     volatile uint32_t ui_request_id;  /* increment to request patch change */
     volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
-    volatile uint8_t reserved[44];    /* padding for future use */
+    volatile uint8_t selected_slot;   /* track-selected slot (0-3) - for playback/knobs */
+    volatile uint8_t reserved[43];    /* padding for future use */
 } shadow_control_t;
 
 static shadow_control_t *shadow_control = NULL;
 static uint8_t shadow_display_mode = 0;
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
+
+/* UI flags for shadow_control->ui_flags */
+#define SHADOW_UI_FLAG_JUMP_TO_SLOT 0x01  /* Jump to slot settings on open */
 
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_UI_SLOTS 4
@@ -1291,6 +1295,8 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 static volatile float shadow_master_volume = 1.0f;
 /* Is volume knob currently being touched? (note 8) */
 static volatile int shadow_volume_knob_touched = 0;
+/* Is shift button currently held? (CC 49) - global for cross-function access */
+static volatile int shadow_shift_held = 0;
 
 /* ==========================================================================
  * Shift+Knob Overlay - Show parameter overlay on Move's display
@@ -2190,7 +2196,9 @@ static void shadow_route_knob_cc_to_focused_slot(const uint8_t *msg, int len)
     uint8_t cc = msg[1];
     if (cc < 71 || cc > 78) return;
 
-    int slot = shadow_control ? shadow_control->ui_slot : 0;
+    /* Use track-selected slot, not UI-highlighted slot.
+     * Knobs always control the slot selected via track buttons. */
+    int slot = shadow_selected_slot;
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
 
     if (!shadow_chain_slots[slot].active) {
@@ -3319,8 +3327,16 @@ static void shadow_filter_move_input(void)
 
         /* Handle note events */
         if (type == 0x90 || type == 0x80) {
-            /* Block knob touch notes (0-9) - not useful for Move */
-            if (d1 < 10) {
+            /* Block knob touch notes 1-7 and 9 - not useful for Move.
+             * Note 0 (Knob 1) and Note 8 (Volume) pass through for shadow toggle. */
+            if (d1 >= 1 && d1 <= 7) {
+                src[i] = 0;
+                src[i + 1] = 0;
+                src[i + 2] = 0;
+                src[i + 3] = 0;
+                continue;
+            }
+            if (d1 == 9) {  /* Jog wheel touch - not needed */
                 src[i] = 0;
                 src[i + 1] = 0;
                 src[i + 2] = 0;
@@ -3965,16 +3981,29 @@ static void maybe_toggle_shadow(void)
         return;
     }
 
-    if (shiftHeld && volumeTouched && knob1touched &&
-        within_window(now, shift_on_ms, SHADOW_HOTKEY_WINDOW_MS) &&
-        within_window(now, vol_on_ms, SHADOW_HOTKEY_WINDOW_MS) &&
-        within_window(now, knob1_on_ms, SHADOW_HOTKEY_WINDOW_MS)) {
+    /* Require all three to be held, and at least one was JUST activated.
+     * This prevents stuck touch states from triggering on any Shift press. */
+    int any_recent = within_window(now, shift_on_ms, SHADOW_HOTKEY_WINDOW_MS) ||
+                     within_window(now, vol_on_ms, SHADOW_HOTKEY_WINDOW_MS) ||
+                     within_window(now, knob1_on_ms, SHADOW_HOTKEY_WINDOW_MS);
+    if (shiftHeld && volumeTouched && knob1touched && any_recent) {
         shadowModeDebounce = 1;
         log_hotkey_state("toggle");
         if (shadow_control) {
             shadow_display_mode = !shadow_display_mode;
             shadow_control->display_mode = shadow_display_mode;
             shadow_inject_knob_release = 1;  /* Inject note-offs to release knob touches */
+
+            /* Reset touch states to prevent stuck states from re-triggering */
+            knob1touched = 0;
+            volumeTouched = 0;
+            knob8touched = 0;
+            knob1_on_ms = 0;
+            vol_on_ms = 0;
+            /* Re-arm so next touch is detected fresh */
+            knob1_armed = 1;
+            volume_armed = 1;
+
             printf("Shadow mode toggled: %s\n",
                    shadow_display_mode ? "SHADOW" : "STOCK");
             if (shadow_display_mode) {
@@ -4058,6 +4087,7 @@ void midi_monitor()
 
                     if (!shiftHeld && shift_armed) {
                         shiftHeld = 1;
+                        shadow_shift_held = 1;  /* Sync global for cross-function access */
                         shift_on_ms = now_mono_ms();
                         log_hotkey_state("shift_on");
                         maybe_toggle_shadow();
@@ -4070,6 +4100,7 @@ void midi_monitor()
 #endif
 
                     shiftHeld = 0;
+                    shadow_shift_held = 0;  /* Sync global for cross-function access */
                     shift_armed = 1;
                     shift_on_ms = 0;
                     log_hotkey_state("shift_off");
@@ -4133,6 +4164,7 @@ void midi_monitor()
             {
                 if (!volumeTouched && volume_armed) {
                     volumeTouched = 1;
+                    shadow_volume_knob_touched = 1;  /* Sync global for cross-function access */
                     vol_on_ms = now_mono_ms();
                     log_hotkey_state("vol_on");
                     maybe_toggle_shadow();
@@ -4141,6 +4173,7 @@ void midi_monitor()
             else
             {
                 volumeTouched = 0;
+                shadow_volume_knob_touched = 0;  /* Sync global for cross-function access */
                 volume_armed = 1;
                 vol_on_ms = 0;
                 log_hotkey_state("vol_off");
@@ -4397,9 +4430,30 @@ int ioctl(int fd, unsigned long request, ...)
                         int new_slot = 43 - d1;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
                         if (new_slot != shadow_selected_slot) {
                             shadow_selected_slot = new_slot;
+                            /* Sync to shared memory for shadow UI to display */
+                            if (shadow_control) {
+                                shadow_control->selected_slot = (uint8_t)new_slot;
+                            }
                             char msg[64];
                             snprintf(msg, sizeof(msg), "Selected slot: %d (Track %d)", new_slot, new_slot + 1);
                             shadow_log(msg);
+                        }
+
+                        /* Shift + Volume + Track = jump to that slot's edit screen */
+                        {
+                            char dbg[128];
+                            snprintf(dbg, sizeof(dbg), "Track %d: shift=%d vol=%d ctrl=%d mode=%d",
+                                     new_slot + 1, shadow_shift_held, shadow_volume_knob_touched,
+                                     shadow_control ? 1 : 0, shadow_display_mode);
+                            shadow_log(dbg);
+                        }
+                        if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && !shadow_display_mode) {
+                            shadow_control->ui_slot = new_slot;
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
+                            shadow_display_mode = 1;
+                            shadow_control->display_mode = 1;
+                            launch_shadow_ui();
+                            printf("Jump to slot %d edit screen\n", new_slot + 1);
                         }
                     }
                 }
@@ -4438,9 +4492,10 @@ int ioctl(int fd, unsigned long request, ...)
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
-            /* Block knob touch notes (0-7) when Shift held */
+            /* Block knob touch notes 1-7 (knobs 2-8) when Shift held.
+             * Note 0 (Knob 1) and Note 8 (Volume) are NOT blocked - needed for shadow toggle. */
             if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
-                if (d1 <= 7) {  /* Knob capacitive touches are notes 0-7 */
+                if (d1 >= 1 && d1 <= 7) {  /* Knob 2-8 touches only */
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     continue;
                 }
@@ -4570,8 +4625,9 @@ int ioctl(int fd, unsigned long request, ...)
                     /* Don't zero - let track notes pass through to Move too */
                 }
 
-                /* Block knob touch notes (0-9) - these confuse Move */
-                if (d1 <= 9) {
+                /* Block knob touch notes 1-7 and 9 - these confuse Move.
+                 * Note 0 (Knob 1) and Note 8 (Volume) pass through for shadow toggle. */
+                if ((d1 >= 1 && d1 <= 7) || d1 == 9) {
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     continue;
                 }
