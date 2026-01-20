@@ -3,12 +3,16 @@
 
 FROM debian:bookworm
 
+# Enable arm64 architecture for cross-compilation libraries
+RUN dpkg --add-architecture arm64
+
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
     binutils-aarch64-linux-gnu \
     make \
     file \
+    libdbus-1-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

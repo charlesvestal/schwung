@@ -17,6 +17,8 @@
 #include <sys/wait.h>
 #include <math.h>
 #include <linux/spi/spidev.h>
+#include <pthread.h>
+#include <dbus/dbus.h>
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
@@ -1073,6 +1075,206 @@ static audio_fx_api_v2_t *shadow_master_fx = NULL;    /* FX API pointer */
 static void *shadow_master_fx_instance = NULL;        /* FX instance */
 static char shadow_master_fx_module[256] = "";        /* Full DSP path */
 static shadow_capture_rules_t shadow_master_fx_capture;  /* Master FX capture rules */
+
+/* ==========================================================================
+ * D-Bus Volume Sync - Monitor Move's track volume via accessibility D-Bus
+ * ========================================================================== */
+
+/* Forward declaration for logging */
+static void shadow_log(const char *msg);
+
+/* Track button hold state for volume sync: -1 = none held, 0-3 = track 1-4 */
+static volatile int shadow_held_track = -1;
+
+/* D-Bus connection for monitoring */
+static DBusConnection *shadow_dbus_conn = NULL;
+static pthread_t shadow_dbus_thread;
+static volatile int shadow_dbus_running = 0;
+
+/* Parse dB value from "Track Volume X dB" string and convert to linear */
+static float shadow_parse_volume_db(const char *text)
+{
+    /* Format: "Track Volume X dB" or "Track Volume -inf dB" */
+    if (!text) return -1.0f;
+
+    const char *prefix = "Track Volume ";
+    if (strncmp(text, prefix, strlen(prefix)) != 0) return -1.0f;
+
+    const char *val_start = text + strlen(prefix);
+
+    /* Handle -inf dB */
+    if (strncmp(val_start, "-inf", 4) == 0) {
+        return 0.0f;
+    }
+
+    /* Parse dB value */
+    float db = strtof(val_start, NULL);
+
+    /* Convert dB to linear: 10^(dB/20) */
+    float linear = powf(10.0f, db / 20.0f);
+
+    /* Clamp to reasonable range */
+    if (linear < 0.0f) linear = 0.0f;
+    if (linear > 4.0f) linear = 4.0f;  /* +12 dB max */
+
+    return linear;
+}
+
+/* Handle a screenreader text signal */
+static void shadow_dbus_handle_text(const char *text)
+{
+    if (!text || !text[0]) return;
+
+    /* Debug: log all D-Bus text messages */
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "D-Bus text: \"%s\" (held_track=%d)", text, shadow_held_track);
+        shadow_log(msg);
+    }
+
+    /* Check if it's a volume message */
+    if (strncmp(text, "Track Volume ", 13) == 0) {
+        float volume = shadow_parse_volume_db(text);
+        if (volume >= 0.0f && shadow_held_track >= 0 && shadow_held_track < SHADOW_CHAIN_INSTANCES) {
+            /* Update the held track's slot volume */
+            shadow_chain_slots[shadow_held_track].volume = volume;
+
+            /* Log the volume sync */
+            char msg[128];
+            snprintf(msg, sizeof(msg), "D-Bus volume sync: slot %d = %.3f (%s)",
+                     shadow_held_track, volume, text);
+            shadow_log(msg);
+        }
+    }
+}
+
+/* D-Bus filter function to receive signals */
+static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *msg, void *data)
+{
+    (void)conn;
+    (void)data;
+
+    if (dbus_message_is_signal(msg, "com.ableton.move.ScreenReader", "text")) {
+        DBusMessageIter args;
+        if (dbus_message_iter_init(msg, &args)) {
+            if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+                const char *text = NULL;
+                dbus_message_iter_get_basic(&args, &text);
+                shadow_dbus_handle_text(text);
+            }
+        }
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+}
+
+/* D-Bus monitoring thread */
+static void *shadow_dbus_thread_func(void *arg)
+{
+    (void)arg;
+
+    DBusError err;
+    dbus_error_init(&err);
+
+    /* Connect to system bus */
+    shadow_dbus_conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+    if (dbus_error_is_set(&err)) {
+        shadow_log("D-Bus: Failed to connect to system bus");
+        dbus_error_free(&err);
+        return NULL;
+    }
+
+    if (!shadow_dbus_conn) {
+        shadow_log("D-Bus: Connection is NULL");
+        return NULL;
+    }
+
+    /* Subscribe to screenreader signals */
+    const char *rule = "type='signal',interface='com.ableton.move.ScreenReader',member='text'";
+    dbus_bus_add_match(shadow_dbus_conn, rule, &err);
+    dbus_connection_flush(shadow_dbus_conn);
+
+    if (dbus_error_is_set(&err)) {
+        shadow_log("D-Bus: Failed to add match rule");
+        dbus_error_free(&err);
+        return NULL;
+    }
+
+    /* Add message filter */
+    if (!dbus_connection_add_filter(shadow_dbus_conn, shadow_dbus_filter, NULL, NULL)) {
+        shadow_log("D-Bus: Failed to add filter");
+        return NULL;
+    }
+
+    shadow_log("D-Bus: Connected and listening for screenreader signals");
+
+    /* Main loop - process D-Bus messages */
+    while (shadow_dbus_running) {
+        /* Non-blocking read with timeout */
+        dbus_connection_read_write(shadow_dbus_conn, 100);  /* 100ms timeout */
+
+        /* Dispatch any pending messages */
+        while (dbus_connection_dispatch(shadow_dbus_conn) == DBUS_DISPATCH_DATA_REMAINS) {
+            /* Keep dispatching */
+        }
+    }
+
+    shadow_log("D-Bus: Thread exiting");
+    return NULL;
+}
+
+/* Start D-Bus monitoring thread */
+static void shadow_dbus_start(void)
+{
+    if (shadow_dbus_running) return;
+
+    shadow_dbus_running = 1;
+    if (pthread_create(&shadow_dbus_thread, NULL, shadow_dbus_thread_func, NULL) != 0) {
+        shadow_log("D-Bus: Failed to create thread");
+        shadow_dbus_running = 0;
+    }
+}
+
+/* Stop D-Bus monitoring thread */
+static void shadow_dbus_stop(void)
+{
+    if (!shadow_dbus_running) return;
+
+    shadow_dbus_running = 0;
+    pthread_join(shadow_dbus_thread, NULL);
+
+    if (shadow_dbus_conn) {
+        dbus_connection_unref(shadow_dbus_conn);
+        shadow_dbus_conn = NULL;
+    }
+}
+
+/* Update track button hold state from MIDI (called from ioctl hook) */
+static void shadow_update_held_track(uint8_t cc, int pressed)
+{
+    /* Track buttons are CCs 40-43, but in reverse order:
+     * CC 43 = Track 1 → slot 0
+     * CC 42 = Track 2 → slot 1
+     * CC 41 = Track 3 → slot 2
+     * CC 40 = Track 4 → slot 3 */
+    if (cc >= 40 && cc <= 43) {
+        int slot = 43 - cc;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
+        int old_held = shadow_held_track;
+        if (pressed) {
+            shadow_held_track = slot;
+        } else if (shadow_held_track == slot) {
+            shadow_held_track = -1;
+        }
+        /* Log state changes */
+        if (shadow_held_track != old_held) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Track button: CC%d (track %d) %s -> held_track=%d",
+                     cc, 4 - (cc - 40), pressed ? "pressed" : "released", shadow_held_track);
+            shadow_log(msg);
+        }
+    }
+}
 
 static int shadow_chain_parse_channel(int ch) {
     /* Config uses 1-based MIDI channels; convert to 0-based for status nibble. */
@@ -2891,6 +3093,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         init_shadow_shm();
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
+        shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
 #endif
     }
 
@@ -3536,6 +3739,30 @@ int ioctl(int fd, unsigned long request, ...)
 
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
+
+    /* === POST-IOCTL: TRACK BUTTON DETECTION FOR VOLUME SYNC ===
+     * Always scan for track button CCs (40-43) to enable D-Bus volume sync.
+     * This works even when shadow display mode is not active. */
+    if (global_mmap_addr && shadow_inprocess_ready) {
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t cin = src[j] & 0x0F;
+            uint8_t cable = (src[j] >> 4) & 0x0F;
+            if (cable != 0x00) continue;  /* Only internal cable */
+            if (cin != 0x0B) continue;  /* CC messages only */
+
+            uint8_t status = src[j + 1];
+            uint8_t type = status & 0xF0;
+            uint8_t cc = src[j + 2];
+            uint8_t val = src[j + 3];
+
+            /* Track buttons are CCs 40-43 */
+            if (type == 0xB0 && cc >= 40 && cc <= 43) {
+                int pressed = (val > 0);
+                shadow_update_held_track(cc, pressed);
+            }
+        }
+    }
 
     /* === POST-IOCTL: FILTER INCOMING MIDI ===
      * MIDI INPUT comes FROM the hardware DURING the ioctl.
