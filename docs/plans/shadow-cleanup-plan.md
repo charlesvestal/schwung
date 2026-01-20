@@ -7,7 +7,8 @@ This document outlines the cleanup work needed to bring the shadow instrument PO
 - **Branch**: `feature/shadow-instrument-poc`
 - **38 commits** since diverging from main
 - **6,700+ lines added** across 24 files
-- **Main files**: `move_anything_shim.c` (2680 lines added), `shadow_ui.c` (828 lines), `shadow_ui.js` (863 lines), `shadow_poc.c` (631 lines)
+- **Main files**: `move_anything_shim.c` (4455 lines added), `shadow_ui.c` (876 lines), `shadow_ui.js` (1239 lines)
+- **Status**: POC fully working, ready for merge consideration
 
 ---
 
@@ -97,27 +98,37 @@ The following code in `shadow_ui.js` duplicates `src/shared/` utilities:
 
 ---
 
-## Issue 4: Shim Organization (2,917 lines)
+## Issue 4: Shim Organization (4,683 lines)
 
 ### Current Structure
 
-The shim has grown organically and lacks clear organization:
+The shim has grown significantly and includes several major subsystems:
 
 ```
 Line    Section
 ------  -------
-1-25    Includes and macros
-27-145  Shadow instrument support (structures, shared memory names)
-146-289 MIDI device trace (discovery - debug)
-291-555 Mailbox diff probe (discovery - debug)
-556-627 SPI ioctl trace (discovery - debug)
-629-1066 In-process shadow chain (DSP loading, slots, config)
-1067-1600 Param handling, MIDI routing, audio mixing, display
-1601-2165 Display swap, memory debug, mmap intercept
-2166-2540 File intercept (open, close, read, write)
-2541-2769 Hotkey detection, midi_monitor()
-2770-2917 ioctl intercept (main entry point)
+1-150   Includes, macros, shared memory structures
+150-300 File descriptor tracking (MIDI/SPI trace - debug)
+300-600 Mailbox probe/diff utilities (debug, gated by SHADOW_TRACE_DEBUG)
+600-700 SPI trace logging (debug)
+700-1100 Capture rules system (bitmaps, JSON parsing, group aliases)
+1100-1300 Shadow chain slot management, D-Bus volume monitoring
+1300-2000 DSP loading, param handling, MIDI routing, audio mixing
+2000-2500 Display swap, memory intercept
+2500-3200 File intercept (open, close, read, write)
+3200-3700 Hotkey detection, track selection, midi_monitor()
+3700-4683 ioctl intercept, shadow_audio_ioctl_filter()
 ```
+
+### Key Subsystems That Could Be Extracted
+
+| Subsystem | Lines | Description |
+|-----------|-------|-------------|
+| Capture Rules | ~400 | Bitmap operations, JSON parsing, group aliases |
+| D-Bus Integration | ~150 | Volume monitoring thread |
+| MIDI Routing | ~300 | Channel filtering, CC routing, hotkey detection |
+| Display Protocol | ~200 | 7-phase slice protocol, buffer swapping |
+| Debug/Trace | ~400 | Gated behind SHADOW_TRACE_DEBUG |
 
 ### Recommended Reorganization
 

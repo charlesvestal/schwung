@@ -1,8 +1,8 @@
 # Shadow Instrument POC - Status
 
 **Branch:** `feature/shadow-instrument-poc`
-**Date:** 2026-01-19
-**Status:** ✅ FULLY WORKING - Audio, MIDI routing, and shadow UI display all operational
+**Date:** 2026-01-20
+**Status:** ✅ FULLY WORKING - Audio, MIDI routing, shadow UI display, track selection, and knob control all operational
 
 ## Goal
 
@@ -80,7 +80,11 @@ Example:
 - ✅ Shadow audio mixes with stock Move audio in the mailbox
 - ✅ Shadow UI autostarts and renders patch list
 - ✅ Jog + jog press navigate slot list and patch browser
-- ✅ Most Move controls pass through while shadow UI is active (only jog, click, back, knobs blocked)
+- ✅ Most Move controls pass through while shadow UI is active (only jog, click, back blocked)
+- ✅ Track buttons (40-43) select shadow slots while in shadow UI
+- ✅ Shift+Volume+Track jumps directly to slot settings
+- ✅ Knobs (71-78) control focused slot parameters with overlay feedback
+- ✅ D-Bus integration shows Move volume on shadow display
 
 ## Audio Status
 
@@ -106,6 +110,13 @@ Shadow UI:
 - Jog: move selection
 - Jog click: enter slot patch list / load patch
 - Back: return to slot list
+- Track buttons (1-4): Select corresponding shadow slot
+- Shift + Volume + Track: Jump directly to slot settings screen
+
+Knob Control:
+- Knobs 1-8 control parameters of the focused slot
+- Overlay shows slot name, parameter name, and value during adjustment
+- Slot focus follows track selection (selected slot = playback + knob target)
 
 ## Extending Shadow Mode
 
@@ -157,6 +168,30 @@ In-process shadow DSP is the working path: it autostarts in the shim, renders
 clean audio, and mixes with stock Move output. MIDI is gated to channels 5–8 to
 avoid UI events. The shadow UI runs in its own process and can swap patches
 per slot without stopping stock Move.
+
+## Notes (2026-01-20 - Track Selection & Knob Control)
+
+**Track Button Slot Selection:**
+- Track buttons (CC 40-43) select shadow slots 1-4 while shadow UI is active
+- Track buttons are in reverse order: CC43=Track1→slot0, CC42=Track2→slot1, etc.
+- Selected slot is marked with `*` asterisk in the slot list
+- Selected slot becomes the target for knob parameter control
+
+**Shift+Volume+Track Shortcut:**
+- Holding Shift + touching Volume knob + pressing Track button jumps directly to slot settings
+- Useful for quickly accessing slot configuration without navigating through menus
+- Uses shared memory flags to communicate between shim and shadow UI process
+
+**Knob Parameter Control:**
+- Knobs 1-8 (CC 71-78) are routed to the focused slot's chain DSP
+- Chain DSP processes knob CCs via its knob mapping infrastructure
+- Shadow UI shows overlay with slot/patch info, parameter name, and value
+- Knobs are blocked from Move when shadow mode is active
+
+**D-Bus Volume Display:**
+- Shadow shim monitors D-Bus for Move volume changes
+- Current volume is displayed in shadow UI header
+- Uses org.freedesktop.DBus.Properties interface
 
 ## Notes (2026-01-20 - Capture Rules)
 

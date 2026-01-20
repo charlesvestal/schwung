@@ -4440,13 +4440,6 @@ int ioctl(int fd, unsigned long request, ...)
                         }
 
                         /* Shift + Volume + Track = jump to that slot's edit screen */
-                        {
-                            char dbg[128];
-                            snprintf(dbg, sizeof(dbg), "Track %d: shift=%d vol=%d ctrl=%d mode=%d",
-                                     new_slot + 1, shadow_shift_held, shadow_volume_knob_touched,
-                                     shadow_control ? 1 : 0, shadow_display_mode);
-                            shadow_log(dbg);
-                        }
                         if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && !shadow_display_mode) {
                             shadow_control->ui_slot = new_slot;
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
