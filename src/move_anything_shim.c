@@ -3848,37 +3848,33 @@ int ioctl(int fd, unsigned long request, ...)
                     memcpy(full_display + offset, captured_slices[s], bytes);
                 }
 
-                /* Scan for volume line - look for a vertical line (same X across multiple rows) */
-                /* The volume overlay is a full-height vertical line */
-                int column_hits[128] = {0};
-                for (int row = 0; row < 64; row++) {
-                    int row_off = row * 16;
-                    for (int x = 0; x < 128; x++) {
-                        int byte_idx = x / 8;
-                        int bit_idx = x % 8;
-                        if (full_display[row_off + byte_idx] & (1 << bit_idx)) {
-                            column_hits[x]++;
-                        }
+                /* Check a single row in the bar area (row 30) using COLUMN-MAJOR format
+                 * Display format: 8 pages of 128 bytes, each byte = 1 column, 8 vertical bits
+                 * The volume bar is a vertical line; we just need to find which column is lit */
+                int bar_row = 30;
+                int page = bar_row / 8;  /* page 3 */
+                int bit = bar_row % 8;   /* bit 6 */
+                int bar_col = -1;
+
+                for (int col = 0; col < 128; col++) {
+                    int byte_idx = page * 128 + col;
+                    if (full_display[byte_idx] & (1 << bit)) {
+                        bar_col = col;
+                        break;  /* Found the bar */
                     }
                 }
 
-                /* Find column with most hits (the vertical line) */
-                int best_col = -1;
-                int best_hits = 3;  /* Lowered threshold to catch overlay */
-                for (int x = 0; x < 128; x++) {
-                    if (column_hits[x] > best_hits) {
-                        best_hits = column_hits[x];
-                        best_col = x;
-                    }
-                }
+                if (bar_col >= 0) {
+                    /* Map column range 4-122 to volume 0.0-1.0 */
+                    float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
+                    if (normalized < 0.0f) normalized = 0.0f;
+                    if (normalized > 1.0f) normalized = 1.0f;
 
-                if (best_col >= 0) {
-                    float new_volume = (float)best_col / 127.0f;
-                    if (fabsf(new_volume - shadow_master_volume) > 0.01f) {
-                        shadow_master_volume = new_volume;
+                    if (fabsf(normalized - shadow_master_volume) > 0.01f) {
+                        shadow_master_volume = normalized;
                         char msg[64];
                         snprintf(msg, sizeof(msg), "Master volume: x=%d -> %.3f",
-                                 best_col, shadow_master_volume);
+                                 bar_col, shadow_master_volume);
                         shadow_log(msg);
                     }
                 }
