@@ -786,6 +786,267 @@ static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
 
+
+/* ==========================================================================
+ * Shadow Capture Rules - Allow slots to capture specific MIDI controls
+ * ========================================================================== */
+
+/* Control group alias definitions */
+#define CAPTURE_PADS_NOTE_MIN     68
+#define CAPTURE_PADS_NOTE_MAX     99
+#define CAPTURE_STEPS_NOTE_MIN    16
+#define CAPTURE_STEPS_NOTE_MAX    31
+#define CAPTURE_TRACKS_CC_MIN     40
+#define CAPTURE_TRACKS_CC_MAX     43
+#define CAPTURE_KNOBS_CC_MIN      71
+#define CAPTURE_KNOBS_CC_MAX      78
+#define CAPTURE_JOG_CC            14
+
+/* Capture rules: bitmaps for which notes/CCs a slot captures */
+typedef struct shadow_capture_rules_t {
+    uint8_t notes[16];   /* bitmap: 128 notes, 16 bytes */
+    uint8_t ccs[16];     /* bitmap: 128 CCs, 16 bytes */
+} shadow_capture_rules_t;
+
+/* Set a single bit in a capture bitmap */
+static void capture_set_bit(uint8_t *bitmap, int index)
+{
+    if (index >= 0 && index < 128) {
+        bitmap[index / 8] |= (1 << (index % 8));
+    }
+}
+
+/* Set a range of bits in a capture bitmap */
+static void capture_set_range(uint8_t *bitmap, int min, int max)
+{
+    for (int i = min; i <= max && i < 128; i++) {
+        if (i >= 0) {
+            capture_set_bit(bitmap, i);
+        }
+    }
+}
+
+/* Check if a bit is set in a capture bitmap */
+static int capture_has_bit(const uint8_t *bitmap, int index)
+{
+    if (index >= 0 && index < 128) {
+        return (bitmap[index / 8] >> (index % 8)) & 1;
+    }
+    return 0;
+}
+
+/* Check if a note is captured */
+static int capture_has_note(const shadow_capture_rules_t *rules, uint8_t note)
+{
+    return capture_has_bit(rules->notes, note);
+}
+
+/* Check if a CC is captured */
+static int capture_has_cc(const shadow_capture_rules_t *rules, uint8_t cc)
+{
+    return capture_has_bit(rules->ccs, cc);
+}
+
+/* Clear all capture rules */
+static void capture_clear(shadow_capture_rules_t *rules)
+{
+    memset(rules->notes, 0, sizeof(rules->notes));
+    memset(rules->ccs, 0, sizeof(rules->ccs));
+}
+
+/* Apply a named group alias to capture rules */
+static void capture_apply_group(shadow_capture_rules_t *rules, const char *group)
+{
+    if (!group || !rules) return;
+
+    if (strcmp(group, "pads") == 0) {
+        capture_set_range(rules->notes, CAPTURE_PADS_NOTE_MIN, CAPTURE_PADS_NOTE_MAX);
+    } else if (strcmp(group, "steps") == 0) {
+        capture_set_range(rules->notes, CAPTURE_STEPS_NOTE_MIN, CAPTURE_STEPS_NOTE_MAX);
+    } else if (strcmp(group, "tracks") == 0) {
+        capture_set_range(rules->ccs, CAPTURE_TRACKS_CC_MIN, CAPTURE_TRACKS_CC_MAX);
+    } else if (strcmp(group, "knobs") == 0) {
+        capture_set_range(rules->ccs, CAPTURE_KNOBS_CC_MIN, CAPTURE_KNOBS_CC_MAX);
+    } else if (strcmp(group, "jog") == 0) {
+        capture_set_bit(rules->ccs, CAPTURE_JOG_CC);
+    }
+}
+
+/* Parse capture rules from patch JSON.
+ * Handles: groups, notes, note_ranges, ccs, cc_ranges */
+static void capture_parse_json(shadow_capture_rules_t *rules, const char *json)
+{
+    if (!rules || !json) return;
+    capture_clear(rules);
+
+    /* Find "capture" object */
+    const char *capture_start = strstr(json, "\"capture\"");
+    if (!capture_start) return;
+
+    const char *brace = strchr(capture_start, '{');
+    if (!brace) return;
+
+    /* Find matching closing brace (simple - no nested objects expected) */
+    const char *end = strchr(brace, '}');
+    if (!end) return;
+
+    /* Parse "groups" array: ["steps", "pads"] */
+    const char *groups = strstr(brace, "\"groups\"");
+    if (groups && groups < end) {
+        const char *arr_start = strchr(groups, '[');
+        if (arr_start && arr_start < end) {
+            const char *arr_end = strchr(arr_start, ']');
+            if (arr_end && arr_end < end) {
+                /* Extract each quoted string */
+                const char *p = arr_start;
+                while (p < arr_end) {
+                    const char *q1 = strchr(p, '"');
+                    if (!q1 || q1 >= arr_end) break;
+                    q1++;
+                    const char *q2 = strchr(q1, '"');
+                    if (!q2 || q2 >= arr_end) break;
+                    
+                    /* Extract group name */
+                    char group[32];
+                    size_t len = (size_t)(q2 - q1);
+                    if (len < sizeof(group)) {
+                        memcpy(group, q1, len);
+                        group[len] = '\0';
+                        capture_apply_group(rules, group);
+                    }
+                    p = q2 + 1;
+                }
+            }
+        }
+    }
+    
+    /* Parse "notes" array: [60, 61, 62] */
+    const char *notes = strstr(brace, "\"notes\"");
+    if (notes && notes < end) {
+        const char *arr_start = strchr(notes, '[');
+        if (arr_start && arr_start < end) {
+            const char *arr_end = strchr(arr_start, ']');
+            if (arr_end && arr_end < end) {
+                const char *p = arr_start + 1;
+                while (p < arr_end) {
+                    while (p < arr_end && (*p == ' ' || *p == ',')) p++;
+                    if (p >= arr_end) break;
+                    int val = atoi(p);
+                    if (val >= 0 && val < 128) {
+                        capture_set_bit(rules->notes, val);
+                    }
+                    while (p < arr_end && *p != ',' && *p != ']') p++;
+                }
+            }
+        }
+    }
+    
+    /* Parse "note_ranges" array: [[68, 75], [80, 90]] */
+    const char *note_ranges = strstr(brace, "\"note_ranges\"");
+    if (note_ranges && note_ranges < end) {
+        const char *arr_start = strchr(note_ranges, '[');
+        if (arr_start && arr_start < end) {
+            const char *arr_end = strchr(arr_start, ']');
+            /* Find the outer closing bracket (skip inner arrays) */
+            int depth = 1;
+            const char *p = arr_start + 1;
+            while (p < end && depth > 0) {
+                if (*p == '[') depth++;
+                else if (*p == ']') depth--;
+                p++;
+            }
+            arr_end = p - 1;
+            
+            /* Parse each [min, max] pair */
+            p = arr_start + 1;
+            while (p < arr_end) {
+                const char *inner_start = strchr(p, '[');
+                if (!inner_start || inner_start >= arr_end) break;
+                const char *inner_end = strchr(inner_start, ']');
+                if (!inner_end || inner_end >= arr_end) break;
+                
+                /* Parse two numbers */
+                int min = -1, max = -1;
+                const char *n = inner_start + 1;
+                while (n < inner_end && (*n == ' ' || *n == ',')) n++;
+                min = atoi(n);
+                while (n < inner_end && *n != ',') n++;
+                if (n < inner_end) {
+                    n++;
+                    while (n < inner_end && *n == ' ') n++;
+                    max = atoi(n);
+                }
+                if (min >= 0 && max >= min && max < 128) {
+                    capture_set_range(rules->notes, min, max);
+                }
+                p = inner_end + 1;
+            }
+        }
+    }
+    
+    /* Parse "ccs" array: [118, 119] */
+    const char *ccs = strstr(brace, "\"ccs\"");
+    if (ccs && ccs < end) {
+        const char *arr_start = strchr(ccs, '[');
+        if (arr_start && arr_start < end) {
+            const char *arr_end = strchr(arr_start, ']');
+            if (arr_end && arr_end < end) {
+                const char *p = arr_start + 1;
+                while (p < arr_end) {
+                    while (p < arr_end && (*p == ' ' || *p == ',')) p++;
+                    if (p >= arr_end) break;
+                    int val = atoi(p);
+                    if (val >= 0 && val < 128) {
+                        capture_set_bit(rules->ccs, val);
+                    }
+                    while (p < arr_end && *p != ',' && *p != ']') p++;
+                }
+            }
+        }
+    }
+    
+    /* Parse "cc_ranges" array: [[100, 110]] */
+    const char *cc_ranges = strstr(brace, "\"cc_ranges\"");
+    if (cc_ranges && cc_ranges < end) {
+        const char *arr_start = strchr(cc_ranges, '[');
+        if (arr_start && arr_start < end) {
+            /* Find the outer closing bracket */
+            int depth = 1;
+            const char *p = arr_start + 1;
+            while (p < end && depth > 0) {
+                if (*p == '[') depth++;
+                else if (*p == ']') depth--;
+                p++;
+            }
+            const char *arr_end = p - 1;
+            
+            /* Parse each [min, max] pair */
+            p = arr_start + 1;
+            while (p < arr_end) {
+                const char *inner_start = strchr(p, '[');
+                if (!inner_start || inner_start >= arr_end) break;
+                const char *inner_end = strchr(inner_start, ']');
+                if (!inner_end || inner_end >= arr_end) break;
+                
+                int min = -1, max = -1;
+                const char *n = inner_start + 1;
+                while (n < inner_end && (*n == ' ' || *n == ',')) n++;
+                min = atoi(n);
+                while (n < inner_end && *n != ',') n++;
+                if (n < inner_end) {
+                    n++;
+                    while (n < inner_end && *n == ' ') n++;
+                    max = atoi(n);
+                }
+                if (min >= 0 && max >= min && max < 128) {
+                    capture_set_range(rules->ccs, min, max);
+                }
+                p = inner_end + 1;
+            }
+        }
+    }
+}
+
 typedef struct shadow_chain_slot_t {
     void *instance;
     int channel;
@@ -794,7 +1055,8 @@ typedef struct shadow_chain_slot_t {
     float volume;           /* 0.0 to 1.0, applied to audio output */
     int forward_channel;    /* -1 = none, 0-15 = forward MIDI to this channel */
     char patch_name[64];
-} shadow_chain_slot_t;
+    shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
+} shadow_chain_slot_t;;
 
 static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 
@@ -810,6 +1072,7 @@ static void *shadow_master_fx_handle = NULL;          /* dlopen handle */
 static audio_fx_api_v2_t *shadow_master_fx = NULL;    /* FX API pointer */
 static void *shadow_master_fx_instance = NULL;        /* FX instance */
 static char shadow_master_fx_module[256] = "";        /* Full DSP path */
+static shadow_capture_rules_t shadow_master_fx_capture;  /* Master FX capture rules */
 
 static int shadow_chain_parse_channel(int ch) {
     /* Config uses 1-based MIDI channels; convert to 0-based for status nibble. */
@@ -835,11 +1098,14 @@ static void shadow_chain_defaults(void) {
         shadow_chain_slots[i].channel = shadow_chain_parse_channel(5 + i);
         shadow_chain_slots[i].volume = 1.0f;
         shadow_chain_slots[i].forward_channel = -1;
+        capture_clear(&shadow_chain_slots[i].capture);
         strncpy(shadow_chain_slots[i].patch_name,
                 shadow_chain_default_patches[i],
                 sizeof(shadow_chain_slots[i].patch_name) - 1);
         shadow_chain_slots[i].patch_name[sizeof(shadow_chain_slots[i].patch_name) - 1] = '\0';
     }
+    /* Clear master FX capture rules */
+    capture_clear(&shadow_master_fx_capture);
 }
 
 static void shadow_ui_state_update_slot(int slot) {
@@ -998,6 +1264,7 @@ static void shadow_master_fx_unload(void) {
 static int shadow_master_fx_load(const char *dsp_path) {
     if (!dsp_path || !dsp_path[0]) {
         shadow_master_fx_unload();
+        capture_clear(&shadow_master_fx_capture);
         return 0;  /* Empty = disable master FX */
     }
 
@@ -1008,6 +1275,7 @@ static int shadow_master_fx_load(const char *dsp_path) {
 
     /* Unload previous */
     shadow_master_fx_unload();
+    capture_clear(&shadow_master_fx_capture);
 
     shadow_master_fx_handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
     if (!shadow_master_fx_handle) {
@@ -1056,9 +1324,36 @@ static int shadow_master_fx_load(const char *dsp_path) {
     strncpy(shadow_master_fx_module, dsp_path, sizeof(shadow_master_fx_module) - 1);
     shadow_master_fx_module[sizeof(shadow_master_fx_module) - 1] = '\0';
 
+    /* Load capture rules from module.json capabilities */
+    char module_json_path[512];
+    snprintf(module_json_path, sizeof(module_json_path), "%s/module.json", module_dir);
+    FILE *f = fopen(module_json_path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (size > 0 && size < 16384) {
+            char *json = malloc(size + 1);
+            if (json) {
+                fread(json, 1, size, f);
+                json[size] = '\0';
+                /* Look for capabilities.capture - reuse the capture_parse_json function */
+                const char *caps = strstr(json, "\"capabilities\"");
+                if (caps) {
+                    capture_parse_json(&shadow_master_fx_capture, caps);
+                }
+                free(json);
+            }
+        }
+        fclose(f);
+    }
+
     fprintf(stderr, "Shadow master FX: loaded %s\n", dsp_path);
     return 0;
 }
+
+/* Forward declaration for capture loading */
+static void shadow_slot_load_capture(int slot, int patch_index);
 
 static int shadow_inprocess_load_chain(void) {
     if (shadow_inprocess_ready) return 0;
@@ -1119,6 +1414,8 @@ static int shadow_inprocess_load_chain(void) {
             snprintf(idx_str, sizeof(idx_str), "%d", idx);
             shadow_plugin_v2->set_param(shadow_chain_slots[i].instance, "load_patch", idx_str);
             shadow_chain_slots[i].active = 1;
+            /* Load capture rules from the patch file */
+            shadow_slot_load_capture(i, idx);
         } else {
             char msg[128];
             snprintf(msg, sizeof(msg), "Shadow inprocess: patch not found: %s",
@@ -1222,6 +1519,97 @@ static uint32_t shadow_ui_request_seen = 0;
 /* Special patch index value meaning "none" / clear the slot */
 #define SHADOW_PATCH_INDEX_NONE 65535
 
+
+/* Helper to write debug to log file (shadow_log isn't available yet) */
+static void capture_debug_log(const char *msg) {
+    FILE *log = fopen("/data/UserData/move-anything/shadow_capture_debug.log", "a");
+    if (log) {
+        fprintf(log, "%s\n", msg);
+        fclose(log);
+    }
+}
+
+/* Load capture rules for a slot by reading its patch file */
+static void shadow_slot_load_capture(int slot, int patch_index)
+{
+    char dbg[512];
+    snprintf(dbg, sizeof(dbg), "shadow_slot_load_capture: slot=%d patch_index=%d", slot, patch_index);
+    capture_debug_log(dbg);
+
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_chain_slots[slot].instance) {
+        capture_debug_log("  -> no instance");
+        return;
+    }
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) {
+        capture_debug_log("  -> no plugin_v2/get_param");
+        return;
+    }
+
+    /* Clear existing capture rules */
+    capture_clear(&shadow_chain_slots[slot].capture);
+
+    /* Get the patch file path from chain module */
+    char key[32];
+    char path[512];
+    snprintf(key, sizeof(key), "patch_path_%d", patch_index);
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, path, sizeof(path));
+    snprintf(dbg, sizeof(dbg), "  -> get_param(%s) len=%d", key, len);
+    capture_debug_log(dbg);
+    if (len <= 0) return;
+    path[len < (int)sizeof(path) ? len : (int)sizeof(path) - 1] = '\0';
+    snprintf(dbg, sizeof(dbg), "  -> path: %s", path);
+    capture_debug_log(dbg);
+
+    /* Read the patch file */
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        capture_debug_log("  -> fopen failed");
+        return;
+    }
+    
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    
+    if (size <= 0 || size > 16384) {
+        fclose(f);
+        return;
+    }
+    
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return;
+    }
+    
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+    
+    /* Parse capture rules from JSON */
+    capture_parse_json(&shadow_chain_slots[slot].capture, json);
+    free(json);
+
+    /* Log capture rules summary */
+    int has_notes = 0, has_ccs = 0;
+    for (int b = 0; b < 16; b++) {
+        if (shadow_chain_slots[slot].capture.notes[b]) has_notes = 1;
+        if (shadow_chain_slots[slot].capture.ccs[b]) has_ccs = 1;
+    }
+    snprintf(dbg, sizeof(dbg), "  -> capture parsed: has_notes=%d has_ccs=%d", has_notes, has_ccs);
+    capture_debug_log(dbg);
+    /* Debug: check if note 16 is captured */
+    snprintf(dbg, sizeof(dbg), "  -> note 16 captured: %d", capture_has_note(&shadow_chain_slots[slot].capture, 16));
+    capture_debug_log(dbg);
+    if (has_notes || has_ccs) {
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "Slot %d capture loaded: notes=%d ccs=%d",
+                 slot, has_notes, has_ccs);
+        shadow_log(dbg);
+    }
+}
+
 static void shadow_inprocess_handle_ui_request(void) {
     if (!shadow_control || !shadow_plugin_v2 || !shadow_plugin_v2->set_param) return;
 
@@ -1239,6 +1627,7 @@ static void shadow_inprocess_handle_ui_request(void) {
     if (patch_index == SHADOW_PATCH_INDEX_NONE) {
         shadow_chain_slots[slot].active = 0;
         shadow_chain_slots[slot].patch_index = -1;
+        capture_clear(&shadow_chain_slots[slot].capture);
         strncpy(shadow_chain_slots[slot].patch_name, "none", sizeof(shadow_chain_slots[slot].patch_name) - 1);
         shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
         /* Update UI state */
@@ -1280,6 +1669,9 @@ static void shadow_inprocess_handle_ui_request(void) {
             shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
         }
     }
+
+    /* Load capture rules from the patch file */
+    shadow_slot_load_capture(slot, patch_index);
 
     shadow_ui_state_update_slot(slot);
 }
@@ -2096,12 +2488,64 @@ static void shadow_capture_midi_for_ui(void)
     shadow_control->midi_ready++;
 }
 
+
+/* Get capture rules for the focused slot (0-3 = chain, 4 = master FX) */
+static const shadow_capture_rules_t *shadow_get_focused_capture(void)
+{
+    if (!shadow_control) return NULL;
+    
+    int slot = shadow_control->ui_slot;
+    if (slot == SHADOW_CHAIN_INSTANCES) {
+        /* Master FX is focused (slot 4) */
+        return &shadow_master_fx_capture;
+    }
+    if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
+        return &shadow_chain_slots[slot].capture;
+    }
+    return NULL;
+}
+
+/* Route captured MIDI to the focused slot's DSP */
+static void shadow_route_captured_to_focused(const uint8_t *msg, int len)
+{
+    if (!shadow_control || !shadow_inprocess_ready || len < 3) return;
+    
+    int slot = shadow_control->ui_slot;
+    if (slot == SHADOW_CHAIN_INSTANCES) {
+        /* Master FX is focused - route to master FX if it supports on_midi */
+        if (shadow_master_fx && shadow_master_fx_instance && shadow_master_fx->on_midi) {
+            shadow_master_fx->on_midi(shadow_master_fx_instance, msg, len,
+                                      MOVE_MIDI_SOURCE_INTERNAL);
+        }
+    } else if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
+        /* Chain slot - route to chain instance */
+        if (shadow_chain_slots[slot].active && shadow_chain_slots[slot].instance) {
+            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, len,
+                                          MOVE_MIDI_SOURCE_INTERNAL);
+            }
+        }
+    }
+}
+
+static int shadow_filter_logged = 0;
+
 static void shadow_filter_move_input(void)
 {
+    /* Log once when first called with shadow mode active */
+    if (!shadow_filter_logged && shadow_display_mode) {
+        shadow_filter_logged = 1;
+        int slot = shadow_control ? shadow_control->ui_slot : -1;
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "shadow_filter_move_input: ACTIVE, focused_slot=%d", slot);
+        capture_debug_log(dbg);
+    }
+
     if (!shadow_control || !shadow_display_mode) return;
     if (!global_mmap_addr) return;
 
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    const shadow_capture_rules_t *capture = shadow_get_focused_capture();
 
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cin = src[i] & 0x0F;
@@ -2120,62 +2564,101 @@ static void shadow_filter_move_input(void)
         uint8_t d1 = src[i + 2];
         uint8_t d2 = src[i + 3];
 
-        /* Forward CC events to shadow UI, then zero them out from Move */
+        /* Handle CC events */
         if (type == 0xB0) {
-            if (shadow_ui_midi_shm) {
-                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                    if (shadow_ui_midi_shm[slot] == 0) {
-                        shadow_ui_midi_shm[slot] = 0x0B;
-                        shadow_ui_midi_shm[slot + 1] = status;
-                        shadow_ui_midi_shm[slot + 2] = d1;
-                        shadow_ui_midi_shm[slot + 3] = d2;
-                        shadow_control->midi_ready++;
-                        break;
+            /* Shadow UI needs: jog (14), jog click (3), back (51), knobs (71-78) */
+            int is_shadow_ui_cc = (d1 == 14 || d1 == 3 || d1 == 51 ||
+                                   (d1 >= 71 && d1 <= 78));
+
+            if (is_shadow_ui_cc) {
+                /* Forward to shadow UI */
+                if (shadow_ui_midi_shm) {
+                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                        if (shadow_ui_midi_shm[slot] == 0) {
+                            shadow_ui_midi_shm[slot] = 0x0B;
+                            shadow_ui_midi_shm[slot + 1] = status;
+                            shadow_ui_midi_shm[slot + 2] = d1;
+                            shadow_ui_midi_shm[slot + 3] = d2;
+                            shadow_control->midi_ready++;
+                            break;
+                        }
                     }
                 }
+                /* Route knob CCs to focused slot's DSP */
+                if (d1 >= 71 && d1 <= 78) {
+                    uint8_t msg[3] = { status, d1, d2 };
+                    shadow_route_knob_cc_to_focused_slot(msg, 3);
+                }
+                /* Block from Move */
+                src[i] = 0;
+                src[i + 1] = 0;
+                src[i + 2] = 0;
+                src[i + 3] = 0;
+                continue;
             }
-            /* Route knob CCs (71-78) to the focused slot's DSP */
-            if (d1 >= 71 && d1 <= 78) {
+
+            /* Check if this CC is captured by the focused slot */
+            if (capture && capture_has_cc(capture, d1)) {
                 uint8_t msg[3] = { status, d1, d2 };
-                shadow_route_knob_cc_to_focused_slot(msg, 3);
+                shadow_route_captured_to_focused(msg, 3);
+                /* Block from Move */
+                src[i] = 0;
+                src[i + 1] = 0;
+                src[i + 2] = 0;
+                src[i + 3] = 0;
+                continue;
             }
-            /* Debug: log that we saw a knob CC */
-            if (d1 >= 71 && d1 <= 78 && d2 != 0) {
-                char dbg[64];
-                snprintf(dbg, sizeof(dbg), "filter_move_input: saw CC%d val=%d", d1, d2);
-                shadow_log(dbg);
-            }
-            /* Zero out CC from Move - only shadow UI should see it */
-            src[i] = 0;
-            src[i + 1] = 0;
-            src[i + 2] = 0;
-            src[i + 3] = 0;
+
+            /* Not a shadow UI CC and not captured - pass through to Move */
             continue;
         }
 
-        /* For notes: only pass through pad notes (68-99) and aftertouch */
+        /* Handle note events */
         if (type == 0x90 || type == 0x80) {
-            if (d1 >= 68 && d1 <= 99) {
-                continue;  /* Pass pad notes through to Move */
+            /* Block knob touch notes (0-9) - not useful for Move */
+            if (d1 < 10) {
+                src[i] = 0;
+                src[i + 1] = 0;
+                src[i + 2] = 0;
+                src[i + 3] = 0;
+                continue;
             }
-            /* Zero out non-pad notes (knob touches, steps, etc.) */
-            src[i] = 0;
-            src[i + 1] = 0;
-            src[i + 2] = 0;
-            src[i + 3] = 0;
+
+            /* Check if this note is captured by the focused slot */
+            if (capture && capture_has_note(capture, d1)) {
+                /* Debug: log captured note */
+                if (d1 >= 16 && d1 <= 31) {
+                    char dbg[128];
+                    snprintf(dbg, sizeof(dbg), "CAPTURED step note %d, routing to DSP", d1);
+                    capture_debug_log(dbg);
+                }
+                uint8_t msg[3] = { status, d1, d2 };
+                shadow_route_captured_to_focused(msg, 3);
+                /* Block from Move */
+                src[i] = 0;
+                src[i + 1] = 0;
+                src[i + 2] = 0;
+                src[i + 3] = 0;
+                continue;
+            }
+
+            /* Not captured - pass through to Move */
+            /* Debug: log first few step notes passing through */
+            if (d1 >= 16 && d1 <= 31) {
+                static int passthrough_count = 0;
+                if (passthrough_count < 5) {
+                    passthrough_count++;
+                    int slot = shadow_control ? shadow_control->ui_slot : -1;
+                    char dbg[128];
+                    snprintf(dbg, sizeof(dbg), "Step note %d PASSTHROUGH: focused_slot=%d capture=%s",
+                             d1, slot, capture ? "yes" : "no");
+                    capture_debug_log(dbg);
+                }
+            }
             continue;
         }
 
-        /* Pass through aftertouch for pads */
-        if (type == 0xA0 || type == 0xD0) {
-            continue;
-        }
-
-        /* Zero out everything else */
-        src[i] = 0;
-        src[i + 1] = 0;
-        src[i + 2] = 0;
-        src[i + 3] = 0;
+        /* Pass through all other MIDI (aftertouch, pitch bend, etc.) */
     }
 }
 
@@ -3105,6 +3588,25 @@ int ioctl(int fd, unsigned long request, ...)
                     shadow_route_knob_cc_to_focused_slot(msg, 3);
                 }
 
+                /* Check capture rules for CCs (beyond the hardcoded blocks) */
+                {
+                    const shadow_capture_rules_t *capture = shadow_get_focused_capture();
+                    if (capture && capture_has_cc(capture, d1)) {
+                        /* Route captured CC to focused slot's DSP */
+                        int slot = shadow_control ? shadow_control->ui_slot : 0;
+                        if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&
+                            shadow_chain_slots[slot].active &&
+                            shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                            uint8_t msg[3] = { status, d1, d2 };
+                            shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
+                                                      MOVE_MIDI_SOURCE_INTERNAL);
+                        }
+                        /* Block from Move */
+                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        continue;
+                    }
+                }
+
                 /* Only zero out blocked CCs - pass everything else to Move */
                 if (block_from_move) {
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
@@ -3132,6 +3634,26 @@ int ioctl(int fd, unsigned long request, ...)
                 /* Block knob touch notes (0-9) - these confuse Move */
                 if (d1 <= 9) {
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    continue;
+                }
+
+                /* Check capture rules for focused slot */
+                {
+                    const shadow_capture_rules_t *capture = shadow_get_focused_capture();
+                    if (capture && capture_has_note(capture, d1)) {
+                        /* Route captured note to focused slot's DSP */
+                        int slot = shadow_control ? shadow_control->ui_slot : 0;
+                        if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&
+                            shadow_chain_slots[slot].active &&
+                            shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                            uint8_t msg[3] = { status, d1, d2 };
+                            shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
+                                                      MOVE_MIDI_SOURCE_INTERNAL);
+                        }
+                        /* Block from Move */
+                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        continue;
+                    }
                 }
                 /* Pass through: pads (68-99), tracks (40-43), steps (16-31), etc. */
                 continue;

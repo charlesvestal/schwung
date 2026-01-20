@@ -80,7 +80,7 @@ Example:
 - ✅ Shadow audio mixes with stock Move audio in the mailbox
 - ✅ Shadow UI autostarts and renders patch list
 - ✅ Jog + jog press navigate slot list and patch browser
-- ✅ Move UI input blocked while shadow UI is active (transport still passes)
+- ✅ Most Move controls pass through while shadow UI is active (only jog, click, back, knobs blocked)
 
 ## Audio Status
 
@@ -157,6 +157,48 @@ In-process shadow DSP is the working path: it autostarts in the shim, renders
 clean audio, and mixes with stock Move output. MIDI is gated to channels 5–8 to
 avoid UI events. The shadow UI runs in its own process and can swap patches
 per slot without stopping stock Move.
+
+## Notes (2026-01-20 - Capture Rules)
+
+**New Feature:** Slots can now capture specific Move controls exclusively. When a slot is focused, captured controls are blocked from Move and routed to the slot's DSP.
+
+**Capture Rules Definition:**
+- Chain patches define capture in the patch JSON
+- Master FX defines capture in module.json capabilities
+
+**Example patch with capture:**
+```json
+{
+    "name": "Performance Effect",
+    "audio_fx": [{ "type": "perfverb" }],
+    "capture": {
+        "groups": ["steps"]
+    }
+}
+```
+
+**Control Group Aliases:**
+| Alias | Type | Values | Description |
+|-------|------|--------|-------------|
+| `pads` | notes | 68-99 | 32 performance pads |
+| `steps` | notes | 16-31 | 16 step sequencer buttons |
+| `tracks` | CCs | 40-43 | 4 track buttons |
+| `knobs` | CCs | 71-78 | 8 encoders |
+| `jog` | CC | 14 | Main encoder |
+
+**Granular capture:**
+```json
+{
+    "capture": {
+        "groups": ["steps"],
+        "notes": [60, 61, 62],
+        "note_ranges": [[68, 75]],
+        "ccs": [118, 119]
+    }
+}
+```
+
+**Audio FX MIDI:** The `audio_fx_api_v2` now includes an optional `on_midi` callback. FX modules that implement it will receive captured MIDI when focused as Master FX.
 
 ## Notes (2026-01-19 - Display Animation FIXED)
 

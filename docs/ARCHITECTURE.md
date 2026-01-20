@@ -447,6 +447,24 @@ typedef struct {
 } shadow_chain_slot_t;
 ```
 
+### Capture Rules
+
+Slots can define capture rules that intercept specific Move controls:
+
+```c
+typedef struct {
+    uint8_t notes[16];   // bitmap: 128 notes
+    uint8_t ccs[16];     // bitmap: 128 CCs
+} shadow_capture_rules_t;
+```
+
+When a slot is focused and has capture rules:
+1. Captured notes/CCs are blocked from reaching Move
+2. Captured MIDI is routed to the focused slot's DSP via `on_midi`
+3. Non-captured MIDI follows normal passthrough behavior
+
+Capture rules are parsed from patch JSON (`"capture"` field) or module.json capabilities (for Master FX).
+
 ### Knob Control Routing
 
 Knobs 1-8 (CC 71-78) control the currently focused slot:

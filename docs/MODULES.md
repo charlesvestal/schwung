@@ -608,21 +608,24 @@ Note: Audio input routing depends on the last selected input in the stock Move i
 
 ## Audio FX Plugin API
 
-Audio effects use a simpler in-place processing API:
+Audio effects use an in-place processing API. The v2 API supports multiple instances:
 
 ```c
-typedef struct audio_fx_api_v1 {
+typedef struct audio_fx_api_v2 {
     uint32_t api_version;
-    int (*on_load)(const char *module_dir, const char *config_json);
-    void (*on_unload)(void);
-    void (*process_block)(int16_t *audio_inout, int frames);  // In-place stereo
-    void (*set_param)(const char *key, const char *val);
-    int (*get_param)(const char *key, char *buf, int buf_len);
-} audio_fx_api_v1_t;
+    void* (*create_instance)(const char *module_dir, const char *config_json);
+    void (*destroy_instance)(void *instance);
+    void (*process_block)(void *instance, int16_t *audio_inout, int frames);
+    void (*set_param)(void *instance, const char *key, const char *val);
+    int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);  // Optional
+} audio_fx_api_v2_t;
 
 // Entry point
-audio_fx_api_v1_t* move_audio_fx_init_v1(const host_api_v1_t *host);
+audio_fx_api_v2_t* move_audio_fx_init_v2(const host_api_v1_t *host);
 ```
+
+The `on_midi` callback is optional (can be NULL). Implement it to receive MIDI from capture rules or other sources.
 
 ## Audio Specifications
 
@@ -715,6 +718,67 @@ Each shadow slot can load a different chain patch. MIDI on channels 1-4 passes t
 4. Use jog wheel to select a slot, click to browse patches
 5. Load a patch that uses your module
 6. Set a Move track to MIDI channel 5-8 and play pads
+
+### Capture Rules
+
+Chain patches can capture specific Move controls exclusively. When a slot with capture rules is focused in the shadow UI, captured controls are blocked from reaching Move and routed to the slot's DSP.
+
+**Patch-level capture:**
+
+```json
+{
+    "name": "Performance Effect",
+    "synth": { "module": "sf2" },
+    "audio_fx": [{ "type": "freeverb" }],
+    "capture": {
+        "groups": ["steps"]
+    }
+}
+```
+
+**Capture format:**
+
+```json
+{
+    "capture": {
+        "groups": ["steps", "pads"],
+        "notes": [60, 61, 62],
+        "note_ranges": [[68, 75]],
+        "ccs": [118, 119],
+        "cc_ranges": [[100, 110]]
+    }
+}
+```
+
+All fields are optional and combine as a union.
+
+**Control group aliases:**
+
+| Alias | Type | Values | Description |
+|-------|------|--------|-------------|
+| `pads` | notes | 68-99 | 32 performance pads |
+| `steps` | notes | 16-31 | 16 step sequencer buttons |
+| `tracks` | CCs | 40-43 | 4 track buttons |
+| `knobs` | CCs | 71-78 | 8 encoders |
+| `jog` | CC | 14 | Main encoder |
+
+**Module-level capture (for Master FX):**
+
+Audio FX modules can define capture rules in their `module.json`:
+
+```json
+{
+    "id": "perfverb",
+    "capabilities": {
+        "component_type": "audio_fx",
+        "capture": {
+            "groups": ["steps"]
+        }
+    }
+}
+```
+
+**Note:** Audio FX modules that want to receive captured MIDI must implement `on_midi` in their API. If `on_midi` is NULL, captured MIDI is blocked from Move but not routed to the FX.
 
 ### Shadow Mode Configuration
 

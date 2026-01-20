@@ -3921,6 +3921,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
         return -1;
     }
+    if (strncmp(key, "patch_path_", 11) == 0) {
+        int idx = atoi(key + 11);
+        if (idx >= 0 && idx < inst->patch_count) {
+            return snprintf(buf, buf_len, "%s", inst->patches[idx].path);
+        }
+        return -1;
+    }
     if (strcmp(key, "synth_module") == 0) {
         return snprintf(buf, buf_len, "%s", inst->current_synth_module);
     }

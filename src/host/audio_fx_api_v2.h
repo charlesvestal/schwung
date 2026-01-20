@@ -37,6 +37,12 @@ typedef struct audio_fx_api_v2 {
     /* Get a parameter value, returns bytes written or -1 */
     int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
 
+    /* Handle MIDI input (for capture rules, performance control, etc.)
+     * Can be NULL if the effect doesn't process MIDI.
+     * source: MOVE_MIDI_SOURCE_INTERNAL (0), MOVE_MIDI_SOURCE_EXTERNAL (1), MOVE_MIDI_SOURCE_HOST (2)
+     */
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
+
 } audio_fx_api_v2_t;
 
 /* Entry point function type */
