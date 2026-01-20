@@ -1276,6 +1276,72 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
     }
 }
 
+/* ==========================================================================
+ * Master Volume Sync - Read from display buffer when volume overlay shown
+ * ========================================================================== */
+
+/* Master volume for all shadow audio output (0.0 - 1.0) */
+static volatile float shadow_master_volume = 1.0f;
+/* Is volume knob currently being touched? (note 8) */
+static volatile int shadow_volume_knob_touched = 0;
+
+/* Read initial volume from Move's Settings.json */
+static void shadow_read_initial_volume(void)
+{
+    FILE *f = fopen("/data/UserData/settings/Settings.json", "r");
+    if (!f) {
+        shadow_log("Master volume: Settings.json not found, defaulting to 1.0");
+        return;
+    }
+
+    /* Read file */
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size <= 0 || size > 8192) {
+        fclose(f);
+        return;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return;
+    }
+
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+
+    /* Find "globalVolume": X.X */
+    const char *key = "\"globalVolume\":";
+    char *pos = strstr(json, key);
+    if (pos) {
+        pos += strlen(key);
+        while (*pos == ' ') pos++;
+        float db = strtof(pos, NULL);
+        /* globalVolume is in dB, convert to linear */
+        /* 0 dB = 1.0, -inf = 0.0 */
+        if (db <= -60.0f) {
+            shadow_master_volume = 0.0f;
+        } else {
+            shadow_master_volume = powf(10.0f, db / 20.0f);
+            if (shadow_master_volume > 1.0f) shadow_master_volume = 1.0f;
+        }
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Master volume: read %.1f dB -> %.3f linear", db, shadow_master_volume);
+        shadow_log(msg);
+    }
+
+    free(json);
+}
+
+/* Parse volume from display buffer (vertical line position)
+ * The volume overlay is a vertical line that moves left-to-right.
+ * We scan the middle row (row 32) for a white pixel.
+ * X position (0-127) maps to volume. */
+
 static int shadow_chain_parse_channel(int ch) {
     /* Config uses 1-based MIDI channels; convert to 0-based for status nibble. */
     if (ch >= 1 && ch <= 16) {
@@ -2166,6 +2232,14 @@ static void shadow_inprocess_mix_audio(void) {
     if (shadow_master_fx_instance && shadow_master_fx && shadow_master_fx->process_block) {
         shadow_master_fx->process_block(shadow_master_fx_instance,
                                         output_buffer, FRAMES_PER_BLOCK);
+    }
+
+    /* Apply master volume to shadow output */
+    float mv = shadow_master_volume;
+    if (mv < 1.0f) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            output_buffer[i] = (int16_t)(output_buffer[i] * mv);
+        }
     }
 
     /* Write final output to mailbox */
@@ -3094,6 +3168,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
         shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
+        shadow_read_initial_volume();  /* Read initial master volume from settings */
 #endif
     }
 
@@ -3734,32 +3809,132 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_inprocess_mix_audio();
 #endif
 
+    /* === SLICE-BASED DISPLAY CAPTURE FOR VOLUME === */
+    static uint8_t captured_slices[6][172];
+    static uint8_t slice_fresh[6] = {0};  /* Reset each time we want new capture */
+    static int volume_capture_active = 0;
+    static int volume_capture_cooldown = 0;
+
+    if (global_mmap_addr && !shadow_display_mode) {
+        uint8_t *mem = (uint8_t *)global_mmap_addr;
+        uint8_t slice_num = mem[80];
+
+        /* Always capture incoming slices */
+        if (slice_num >= 1 && slice_num <= 6) {
+            int idx = slice_num - 1;
+            memcpy(captured_slices[idx], mem + 84, 172);
+            slice_fresh[idx] = 1;
+        }
+
+        /* When volume knob touched, start capturing */
+        if (shadow_volume_knob_touched && shadow_held_track < 0) {
+            if (!volume_capture_active) {
+                volume_capture_active = 1;
+                memset(slice_fresh, 0, 6);  /* Reset freshness */
+            }
+
+            /* Check if all slices are fresh */
+            int all_fresh = 1;
+            for (int i = 0; i < 6; i++) {
+                if (!slice_fresh[i]) all_fresh = 0;
+            }
+
+            if (all_fresh && volume_capture_cooldown == 0) {
+                /* Reconstruct display */
+                uint8_t full_display[1024];
+                for (int s = 0; s < 6; s++) {
+                    int offset = s * 172;
+                    int bytes = (s == 5) ? 164 : 172;
+                    memcpy(full_display + offset, captured_slices[s], bytes);
+                }
+
+                /* Scan for volume line - look for a vertical line (same X across multiple rows) */
+                /* The volume overlay is a full-height vertical line */
+                int column_hits[128] = {0};
+                for (int row = 0; row < 64; row++) {
+                    int row_off = row * 16;
+                    for (int x = 0; x < 128; x++) {
+                        int byte_idx = x / 8;
+                        int bit_idx = x % 8;
+                        if (full_display[row_off + byte_idx] & (1 << bit_idx)) {
+                            column_hits[x]++;
+                        }
+                    }
+                }
+
+                /* Find column with most hits (the vertical line) */
+                int best_col = -1;
+                int best_hits = 3;  /* Lowered threshold to catch overlay */
+                for (int x = 0; x < 128; x++) {
+                    if (column_hits[x] > best_hits) {
+                        best_hits = column_hits[x];
+                        best_col = x;
+                    }
+                }
+
+                if (best_col >= 0) {
+                    float new_volume = (float)best_col / 127.0f;
+                    if (fabsf(new_volume - shadow_master_volume) > 0.01f) {
+                        shadow_master_volume = new_volume;
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "Master volume: x=%d -> %.3f",
+                                 best_col, shadow_master_volume);
+                        shadow_log(msg);
+                    }
+                }
+
+                memset(slice_fresh, 0, 6);  /* Reset for next capture */
+                volume_capture_cooldown = 50;  /* Wait ~50 frames before next */
+            }
+        } else {
+            volume_capture_active = 0;
+        }
+
+        if (volume_capture_cooldown > 0) volume_capture_cooldown--;
+    }
+
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
     shadow_swap_display();
 
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
 
-    /* === POST-IOCTL: TRACK BUTTON DETECTION FOR VOLUME SYNC ===
-     * Always scan for track button CCs (40-43) to enable D-Bus volume sync.
-     * This works even when shadow display mode is not active. */
+
+    /* === POST-IOCTL: TRACK BUTTON AND VOLUME KNOB DETECTION ===
+     * Scan for track button CCs (40-43) for D-Bus volume sync,
+     * and volume knob touch (note 8) for master volume display reading. */
     if (global_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;  /* Only internal cable */
-            if (cin != 0x0B) continue;  /* CC messages only */
 
             uint8_t status = src[j + 1];
             uint8_t type = status & 0xF0;
-            uint8_t cc = src[j + 2];
-            uint8_t val = src[j + 3];
+            uint8_t d1 = src[j + 2];
+            uint8_t d2 = src[j + 3];
 
-            /* Track buttons are CCs 40-43 */
-            if (type == 0xB0 && cc >= 40 && cc <= 43) {
-                int pressed = (val > 0);
-                shadow_update_held_track(cc, pressed);
+            /* CC messages (CIN 0x0B) */
+            if (cin == 0x0B && type == 0xB0) {
+                /* Track buttons are CCs 40-43 */
+                if (d1 >= 40 && d1 <= 43) {
+                    int pressed = (d2 > 0);
+                    shadow_update_held_track(d1, pressed);
+                }
+            }
+
+            /* Note On/Off messages (CIN 0x09/0x08) for volume knob touch (note 8) */
+            if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
+                if (d1 == 8) {  /* Volume knob capacitive touch */
+                    int touched = (type == 0x90 && d2 > 0);
+                    if (touched != shadow_volume_knob_touched) {
+                        shadow_volume_knob_touched = touched;
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "Volume knob touch: %s", touched ? "ON" : "OFF");
+                        shadow_log(msg);
+                    }
+                }
             }
         }
     }

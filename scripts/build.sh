@@ -70,7 +70,7 @@ echo "Building host..."
     src/move_anything_shim.c \
     -I/usr/include/dbus-1.0 \
     -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
-    -ldl -lrt -lpthread -ldbus-1
+    -ldl -lrt -lpthread -ldbus-1 -lm
 
 echo "Building Shadow POC..."
 
