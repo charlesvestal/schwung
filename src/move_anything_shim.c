@@ -1080,8 +1080,9 @@ static shadow_capture_rules_t shadow_master_fx_capture;  /* Master FX capture ru
  * D-Bus Volume Sync - Monitor Move's track volume via accessibility D-Bus
  * ========================================================================== */
 
-/* Forward declaration for logging */
+/* Forward declarations */
 static void shadow_log(const char *msg);
+static void shadow_save_state(void);
 
 /* Track button hold state for volume sync: -1 = none held, 0-3 = track 1-4 */
 static volatile int shadow_held_track = -1;
@@ -1144,6 +1145,9 @@ static void shadow_dbus_handle_text(const char *text)
             snprintf(msg, sizeof(msg), "D-Bus volume sync: slot %d = %.3f (%s)",
                      shadow_held_track, volume, text);
             shadow_log(msg);
+
+            /* Persist slot volumes */
+            shadow_save_state();
         }
     }
 }
@@ -1332,6 +1336,173 @@ static void shadow_read_initial_volume(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "Master volume: read %.1f dB -> %.3f linear", db, shadow_master_volume);
         shadow_log(msg);
+    }
+
+    free(json);
+}
+
+/* ==========================================================================
+ * Shadow State Persistence - Save/load slot volumes to shadow_chain_config.json
+ * ========================================================================== */
+
+#define SHADOW_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
+
+static void shadow_save_state(void)
+{
+    /* Read existing config to preserve patches and master_fx fields */
+    FILE *f = fopen(SHADOW_CONFIG_PATH, "r");
+    char patches_buf[4096] = "";
+    char master_fx[256] = "";
+    char master_fx_path[256] = "";
+
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        if (size > 0 && size < 8192) {
+            char *json = malloc(size + 1);
+            if (json) {
+                fread(json, 1, size, f);
+                json[size] = '\0';
+
+                /* Extract patches array (preserve as-is) */
+                char *patches_start = strstr(json, "\"patches\":");
+                if (patches_start) {
+                    char *arr_start = strchr(patches_start, '[');
+                    if (arr_start) {
+                        int depth = 1;
+                        char *arr_end = arr_start + 1;
+                        while (*arr_end && depth > 0) {
+                            if (*arr_end == '[') depth++;
+                            else if (*arr_end == ']') depth--;
+                            arr_end++;
+                        }
+                        int len = arr_end - arr_start;
+                        if (len < (int)sizeof(patches_buf) - 1) {
+                            strncpy(patches_buf, arr_start, len);
+                            patches_buf[len] = '\0';
+                        }
+                    }
+                }
+
+                /* Extract master_fx string */
+                char *mfx = strstr(json, "\"master_fx\":");
+                if (mfx) {
+                    mfx = strchr(mfx, ':');
+                    if (mfx) {
+                        mfx++;
+                        while (*mfx == ' ' || *mfx == '"') mfx++;
+                        char *end = mfx;
+                        while (*end && *end != '"' && *end != ',' && *end != '\n') end++;
+                        int len = end - mfx;
+                        if (len < (int)sizeof(master_fx) - 1) {
+                            strncpy(master_fx, mfx, len);
+                            master_fx[len] = '\0';
+                        }
+                    }
+                }
+
+                /* Extract master_fx_path string */
+                char *mfxp = strstr(json, "\"master_fx_path\":");
+                if (mfxp) {
+                    mfxp = strchr(mfxp, ':');
+                    if (mfxp) {
+                        mfxp++;
+                        while (*mfxp == ' ' || *mfxp == '"') mfxp++;
+                        char *end = mfxp;
+                        while (*end && *end != '"' && *end != ',' && *end != '\n') end++;
+                        int len = end - mfxp;
+                        if (len < (int)sizeof(master_fx_path) - 1) {
+                            strncpy(master_fx_path, mfxp, len);
+                            master_fx_path[len] = '\0';
+                        }
+                    }
+                }
+
+                free(json);
+            }
+        }
+        fclose(f);
+    }
+
+    /* Write complete config file */
+    f = fopen(SHADOW_CONFIG_PATH, "w");
+    if (!f) {
+        shadow_log("shadow_save_state: failed to open for writing");
+        return;
+    }
+
+    fprintf(f, "{\n");
+    if (patches_buf[0]) {
+        fprintf(f, "  \"patches\": %s,\n", patches_buf);
+    }
+    fprintf(f, "  \"master_fx\": \"%s\",\n", master_fx);
+    if (master_fx_path[0]) {
+        fprintf(f, "  \"master_fx_path\": \"%s\",\n", master_fx_path);
+    }
+    fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f]\n",
+            shadow_chain_slots[0].volume,
+            shadow_chain_slots[1].volume,
+            shadow_chain_slots[2].volume,
+            shadow_chain_slots[3].volume);
+    fprintf(f, "}\n");
+    fclose(f);
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Saved slot volumes: [%.2f, %.2f, %.2f, %.2f]",
+             shadow_chain_slots[0].volume,
+             shadow_chain_slots[1].volume,
+             shadow_chain_slots[2].volume,
+             shadow_chain_slots[3].volume);
+    shadow_log(msg);
+}
+
+static void shadow_load_state(void)
+{
+    FILE *f = fopen(SHADOW_CONFIG_PATH, "r");
+    if (!f) {
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size <= 0 || size > 8192) {
+        fclose(f);
+        return;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return;
+    }
+
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+
+    /* Parse slot_volumes array */
+    const char *key = "\"slot_volumes\":";
+    char *pos = strstr(json, key);
+    if (pos) {
+        pos = strchr(pos, '[');
+        if (pos) {
+            float v0, v1, v2, v3;
+            if (sscanf(pos, "[%f, %f, %f, %f]", &v0, &v1, &v2, &v3) == 4) {
+                shadow_chain_slots[0].volume = v0;
+                shadow_chain_slots[1].volume = v1;
+                shadow_chain_slots[2].volume = v2;
+                shadow_chain_slots[3].volume = v3;
+
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Loaded slot volumes: [%.2f, %.2f, %.2f, %.2f]",
+                         v0, v1, v2, v3);
+                shadow_log(msg);
+            }
+        }
     }
 
     free(json);
@@ -3169,6 +3340,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         shadow_inprocess_load_chain();
         shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
         shadow_read_initial_volume();  /* Read initial master volume from settings */
+        shadow_load_state();  /* Load saved slot volumes */
 #endif
     }
 
