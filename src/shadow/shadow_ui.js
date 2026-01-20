@@ -1,58 +1,44 @@
 import * as os from 'os';
 import * as std from 'std';
 
-const MoveMainKnob = 14;
-const MoveMainButton = 3;
-const MoveBack = 51;
+/* Import shared utilities - single source of truth */
+import {
+    MoveMainKnob,      // CC 14 - jog wheel
+    MoveMainButton,    // CC 3 - jog click
+    MoveBack,          // CC 51 - back button
+    MoveRow1, MoveRow2, MoveRow3, MoveRow4,  // Track buttons (CC 43, 42, 41, 40)
+    MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
+    MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
+} from '../shared/constants.mjs';
 
-/* Track buttons (CCs 40-43) for slot selection */
-const TRACK_CC_START = 40;
-const TRACK_CC_END = 43;
+import {
+    SCREEN_WIDTH, SCREEN_HEIGHT,
+    TITLE_Y, TITLE_RULE_Y,
+    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
+    LIST_LABEL_X, LIST_VALUE_X,
+    FOOTER_TEXT_Y, FOOTER_RULE_Y,
+    truncateText
+} from '../shared/chain_ui_views.mjs';
+
+import { decodeDelta } from '../shared/input_filter.mjs';
+
+import {
+    drawMenuHeader as drawHeader,
+    drawMenuFooter as drawFooter
+} from '../shared/menu_layout.mjs';
+
+/* Track buttons - derive from imported constants */
+const TRACK_CC_START = MoveRow4;  // CC 40
+const TRACK_CC_END = MoveRow1;    // CC 43
 const SHADOW_UI_SLOTS = 4;
 
 /* UI flags from shim (must match SHADOW_UI_FLAG_* in shim) */
 const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
 
 /* Knob CC range for parameter control */
-const KNOB_CC_START = 71;
-const KNOB_CC_END = 78;
+const KNOB_CC_START = MoveKnob1;  // CC 71
+const KNOB_CC_END = MoveKnob8;    // CC 78
 const NUM_KNOBS = 8;
-
-const SCREEN_WIDTH = 128;
-const SCREEN_HEIGHT = 64;
-const TITLE_Y = 2;
-const TITLE_RULE_Y = 12;
-const LIST_TOP_Y = 15;
-const LIST_LINE_HEIGHT = 11;
-const LIST_HIGHLIGHT_HEIGHT = LIST_LINE_HEIGHT + 2;
-const LIST_LABEL_X = 4;
-const LIST_VALUE_X = 92;
-const FOOTER_TEXT_Y = SCREEN_HEIGHT - 11;
-const FOOTER_RULE_Y = FOOTER_TEXT_Y - 1;
-
-function decodeDelta(value) {
-    if (value === 0) return 0;
-    if (value >= 1 && value <= 63) return 1;
-    if (value >= 65 && value <= 127) return -1;
-    return 0;
-}
-
-function truncateText(text, maxChars) {
-    if (text.length <= maxChars) return text;
-    if (maxChars <= 3) return text.slice(0, maxChars);
-    return `${text.slice(0, maxChars - 3)}...`;
-}
-
-function drawHeader(title) {
-    print(2, TITLE_Y, title, 1);
-    fill_rect(0, TITLE_RULE_Y, SCREEN_WIDTH, 1, 1);
-}
-
-function drawFooter(text) {
-    if (!text) return;
-    fill_rect(0, FOOTER_RULE_Y, SCREEN_WIDTH, 1, 1);
-    print(2, FOOTER_TEXT_Y, text, 1);
-}
 
 function drawList(items, selectedIndex, getLabel, getValue) {
     const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / LIST_LINE_HEIGHT));

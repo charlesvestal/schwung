@@ -754,6 +754,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     if (!ctx) exit(2);
     js_std_add_helpers(ctx, -1, 0);
 
+    /* Enable ES module imports (e.g., import { ... } from '../shared/constants.mjs') */
+    JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
+
     JSValue global_obj = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, global_obj, "set_pixel", JS_NewCFunction(ctx, js_set_pixel, "set_pixel", 3));
     JS_SetPropertyStr(ctx, global_obj, "draw_rect", JS_NewCFunction(ctx, js_draw_rect, "draw_rect", 5));
