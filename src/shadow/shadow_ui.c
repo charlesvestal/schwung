@@ -20,11 +20,7 @@
 #include "quickjs.h"
 #include "quickjs-libc.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "lib/stb_image.h"
-
-#define STB_TRUETYPE_IMPLEMENTATION
-#include "lib/stb_truetype.h"
+#include "host/js_display.h"
 
 #define SHM_SHADOW_UI_MIDI  "/move-shadow-ui-midi"
 #define SHM_SHADOW_DISPLAY  "/move-shadow-display"
@@ -105,258 +101,8 @@ static uint32_t shadow_ui_checksum(const unsigned char *buf, size_t len) {
     return sum;
 }
 
-typedef struct FontChar {
-    unsigned char* data;
-    int width;
-    int height;
-} FontChar;
-
-typedef struct Font {
-    int charSpacing;
-    FontChar charData[128];
-    int is_ttf;
-    stbtt_fontinfo ttf_info;
-    unsigned char* ttf_buffer;
-    float ttf_scale;
-    int ttf_ascent;
-    int ttf_height;
-} Font;
-
-static Font* font = NULL;
-static unsigned char screen_buffer[128 * 64];
+/* Display state - use shared buffer for packing */
 static unsigned char packed_buffer[DISPLAY_BUFFER_SIZE];
-static int screen_dirty = 0;
-
-static void dirty_screen(void) {
-    screen_dirty = 1;
-}
-
-static void clear_screen(void) {
-    memset(screen_buffer, 0, sizeof(screen_buffer));
-    dirty_screen();
-}
-
-static void set_pixel(int x, int y, int value) {
-    if (x >= 0 && x < 128 && y >= 0 && y < 64) {
-        screen_buffer[y * 128 + x] = value ? 1 : 0;
-        dirty_screen();
-    }
-}
-
-static int get_pixel(int x, int y) {
-    if (x >= 0 && x < 128 && y >= 0 && y < 64) {
-        return screen_buffer[y * 128 + x] ? 1 : 0;
-    }
-    return 0;
-}
-
-static void draw_rect(int x, int y, int w, int h, int value) {
-    if (w <= 0 || h <= 0) return;
-    for (int yi = y; yi < y + h; yi++) {
-        set_pixel(x, yi, value);
-        set_pixel(x + w - 1, yi, value);
-    }
-    for (int xi = x; xi < x + w; xi++) {
-        set_pixel(xi, y, value);
-        set_pixel(xi, y + h - 1, value);
-    }
-}
-
-static void fill_rect(int x, int y, int w, int h, int value) {
-    if (w <= 0 || h <= 0) return;
-    for (int yi = y; yi < y + h; yi++) {
-        for (int xi = x; xi < x + w; xi++) {
-            set_pixel(xi, yi, value);
-        }
-    }
-}
-
-static Font* load_font(const char* filename, int charSpacing) {
-    int width, height, n;
-    unsigned char* image = stbi_load(filename, &width, &height, &n, 4);
-    if (!image) {
-        printf("ERROR loading font: %s\n", filename);
-        return NULL;
-    }
-
-    char charListFilename[256];
-    snprintf(charListFilename, sizeof(charListFilename), "%s.dat", filename);
-    FILE* f = fopen(charListFilename, "r");
-    if (!f) {
-        printf("ERROR loading font charList from: %s\n", charListFilename);
-        stbi_image_free(image);
-        return NULL;
-    }
-
-    char charList[256];
-    fgets(charList, sizeof(charList), f);
-    fclose(f);
-
-    int numChars = strlen(charList);
-    Font* out = malloc(sizeof(Font));
-    if (!out) {
-        stbi_image_free(image);
-        return NULL;
-    }
-    memset(out, 0, sizeof(Font));
-    out->charSpacing = charSpacing;
-    out->is_ttf = 0;
-
-    for (int i = 0; i < numChars; i++) {
-        int charIndex = (int)charList[i];
-        int startX = -1, endX = -1;
-        for (int x = 0; x < width; x++) {
-            int idx = (x + i * width) * 4;
-            if (image[idx + 3] > 0) {
-                if (startX == -1) startX = x;
-                endX = x;
-            }
-        }
-        if (startX == -1) continue;
-        int charWidth = endX - startX + 1;
-        FontChar fc = {0};
-        fc.width = charWidth;
-        fc.height = height;
-        fc.data = malloc(charWidth * height);
-        if (!fc.data) continue;
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < charWidth; x++) {
-                int idx = ((startX + x) + y * width) * 4;
-                fc.data[y * charWidth + x] = image[idx + 3] > 0 ? 1 : 0;
-            }
-        }
-        out->charData[charIndex] = fc;
-    }
-
-    stbi_image_free(image);
-    printf("Loaded bitmap font: %s (%d chars)\n", filename, numChars);
-    return out;
-}
-
-static Font* load_ttf_font(const char* filename, int pixel_height) {
-    FILE* f = fopen(filename, "rb");
-    if (!f) {
-        printf("ERROR loading TTF font: %s\n", filename);
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    unsigned char* buffer = malloc(size);
-    if (!buffer) {
-        fclose(f);
-        return NULL;
-    }
-    fread(buffer, 1, size, f);
-    fclose(f);
-
-    Font* out = malloc(sizeof(Font));
-    if (!out) {
-        free(buffer);
-        return NULL;
-    }
-    memset(out, 0, sizeof(Font));
-    out->is_ttf = 1;
-    out->ttf_buffer = buffer;
-    out->charSpacing = 1;
-
-    if (!stbtt_InitFont(&out->ttf_info, buffer, 0)) {
-        free(buffer);
-        free(out);
-        return NULL;
-    }
-
-    out->ttf_scale = stbtt_ScaleForPixelHeight(&out->ttf_info, pixel_height);
-    out->ttf_height = pixel_height;
-    int ascent = 0, descent = 0, lineGap = 0;
-    stbtt_GetFontVMetrics(&out->ttf_info, &ascent, &descent, &lineGap);
-    out->ttf_ascent = (int)(ascent * out->ttf_scale);
-
-    printf("Loaded TTF font: %s (height=%d)\n", filename, pixel_height);
-    return out;
-}
-
-static int glyph_ttf(Font* fnt, char c, int sx, int sy, int color) {
-    int advance = 0, lsb = 0;
-    stbtt_GetCodepointHMetrics(&fnt->ttf_info, c, &advance, &lsb);
-
-    int x0, y0, x1, y1;
-    stbtt_GetCodepointBitmapBox(&fnt->ttf_info, c, fnt->ttf_scale, fnt->ttf_scale, &x0, &y0, &x1, &y1);
-
-    int w = x1 - x0;
-    int h = y1 - y0;
-    if (w <= 0 || h <= 0) {
-        return sx + (int)(advance * fnt->ttf_scale);
-    }
-
-    unsigned char* bitmap = malloc(w * h);
-    if (!bitmap) {
-        return sx + (int)(advance * fnt->ttf_scale);
-    }
-
-    stbtt_MakeCodepointBitmap(&fnt->ttf_info, bitmap, w, h, w, fnt->ttf_scale, fnt->ttf_scale, c);
-
-    int draw_y = sy + fnt->ttf_ascent + y0;
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            int val = bitmap[y * w + x];
-            if (val > 64) {
-                set_pixel(sx + x + x0, draw_y + y, color);
-            }
-        }
-    }
-    free(bitmap);
-
-    return sx + (int)(advance * fnt->ttf_scale);
-}
-
-static int glyph(Font* fnt, char c, int sx, int sy, int color) {
-    FontChar fc = fnt->charData[(int)c];
-    if (!fc.data) return sx + fnt->charSpacing;
-    for (int y = 0; y < fc.height; y++) {
-        for (int x = 0; x < fc.width; x++) {
-            if (fc.data[y * fc.width + x]) {
-                set_pixel(sx + x, sy + y, color);
-            }
-        }
-    }
-    return sx + fc.width + fnt->charSpacing;
-}
-
-static void print(int x, int y, const char* string, int color) {
-    if (!string) return;
-    if (!font) {
-        font = load_ttf_font("/opt/move/Fonts/unifont_jp-14.0.01.ttf", 12);
-        if (!font) {
-            font = load_font("/data/UserData/move-anything/host/font.png", 1);
-        }
-    }
-    if (!font) return;
-
-    int cursor = x;
-    for (size_t i = 0; i < strlen(string); i++) {
-        if (font->is_ttf) {
-            cursor = glyph_ttf(font, string[i], cursor, y, color);
-        } else {
-            cursor = glyph(font, string[i], cursor, y, color);
-        }
-    }
-}
-
-static void pack_screen(uint8_t *dest) {
-    int i = 0;
-    for (int y = 0; y < 64 / 8; y++) {
-        for (int x = 0; x < 128; x++) {
-            int index = (y * 128 * 8) + x;
-            unsigned char packed = 0;
-            for (int j = 0; j < 8; j++) {
-                int packIndex = index + j * 128;
-                packed |= screen_buffer[packIndex] << j;
-            }
-            dest[i++] = packed;
-        }
-    }
-}
 
 static int open_shadow_shm(void) {
     int fd = shm_open(SHM_SHADOW_DISPLAY, O_RDWR, 0666);
@@ -490,65 +236,6 @@ static int callGlobalFunction(JSContext *ctx, JSValue *pfunc, unsigned char *dat
     }
     JS_FreeValue(ctx, ret);
     return JS_IsException(ret);
-}
-
-static JSValue js_set_pixel(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    int x, y, value;
-    if (argc < 2) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &x, argv[0])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &y, argv[1])) return JS_EXCEPTION;
-    value = 1;
-    if (argc >= 3 && JS_ToInt32(ctx, &value, argv[2])) return JS_EXCEPTION;
-    set_pixel(x, y, value);
-    return JS_UNDEFINED;
-}
-
-static JSValue js_draw_rect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    int x, y, w, h, color = 1;
-    if (argc < 4) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &x, argv[0])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &y, argv[1])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &w, argv[2])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &h, argv[3])) return JS_EXCEPTION;
-    if (argc >= 5 && JS_ToInt32(ctx, &color, argv[4])) return JS_EXCEPTION;
-    draw_rect(x, y, w, h, color);
-    return JS_UNDEFINED;
-}
-
-static JSValue js_fill_rect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    int x, y, w, h, color = 1;
-    if (argc < 4) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &x, argv[0])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &y, argv[1])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &w, argv[2])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &h, argv[3])) return JS_EXCEPTION;
-    if (argc >= 5 && JS_ToInt32(ctx, &color, argv[4])) return JS_EXCEPTION;
-    fill_rect(x, y, w, h, color);
-    return JS_UNDEFINED;
-}
-
-static JSValue js_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)ctx; (void)this_val; (void)argc; (void)argv;
-    clear_screen();
-    return JS_UNDEFINED;
-}
-
-static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 3) return JS_EXCEPTION;
-    int x, y, color = 1;
-    if (JS_ToInt32(ctx, &x, argv[0])) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &y, argv[1])) return JS_EXCEPTION;
-    JSValue string_val = JS_ToString(ctx, argv[2]);
-    const char* string = JS_ToCString(ctx, string_val);
-    if (argc >= 4 && JS_ToInt32(ctx, &color, argv[3])) {
-        JS_FreeValue(ctx, string_val);
-        JS_FreeCString(ctx, string);
-        return JS_EXCEPTION;
-    }
-    print(x, y, string, color);
-    JS_FreeValue(ctx, string_val);
-    JS_FreeCString(ctx, string);
-    return JS_UNDEFINED;
 }
 
 static JSValue js_shadow_get_slots(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -758,11 +445,11 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
 
     JSValue global_obj = JS_GetGlobalObject(ctx);
-    JS_SetPropertyStr(ctx, global_obj, "set_pixel", JS_NewCFunction(ctx, js_set_pixel, "set_pixel", 3));
-    JS_SetPropertyStr(ctx, global_obj, "draw_rect", JS_NewCFunction(ctx, js_draw_rect, "draw_rect", 5));
-    JS_SetPropertyStr(ctx, global_obj, "fill_rect", JS_NewCFunction(ctx, js_fill_rect, "fill_rect", 5));
-    JS_SetPropertyStr(ctx, global_obj, "clear_screen", JS_NewCFunction(ctx, js_clear_screen, "clear_screen", 0));
-    JS_SetPropertyStr(ctx, global_obj, "print", JS_NewCFunction(ctx, js_print, "print", 4));
+
+    /* Register shared display bindings (set_pixel, draw_rect, fill_rect, clear_screen, print) */
+    js_display_register_bindings(ctx, global_obj);
+
+    /* Register shadow-specific bindings */
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_slots", JS_NewCFunction(ctx, js_shadow_get_slots, "shadow_get_slots", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
@@ -863,10 +550,10 @@ int main(int argc, char *argv[]) {
         }
 
         refresh_counter++;
-        if ((screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
-            pack_screen(packed_buffer);
+        if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
+            js_display_pack(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
-            screen_dirty = 0;
+            js_display_screen_dirty = 0;
         }
 
         usleep(16000);

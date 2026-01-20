@@ -84,9 +84,10 @@ mkdir -p ./build/shadow/
 
 echo "Building Shadow UI..."
 
-# Build Shadow UI host
+# Build Shadow UI host (uses shared display bindings from js_display.c)
 "${CROSS_PREFIX}gcc" -g -O3 \
     src/shadow/shadow_ui.c \
+    src/host/js_display.c \
     -o build/shadow/shadow_ui \
     -Isrc -Isrc/lib \
     -Ilibs/quickjs/quickjs-2025-04-26 \
