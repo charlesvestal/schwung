@@ -1087,6 +1087,9 @@ static void shadow_save_state(void);
 /* Track button hold state for volume sync: -1 = none held, 0-3 = track 1-4 */
 static volatile int shadow_held_track = -1;
 
+/* Selected slot for Shift+Knob routing: 0-3, persists even when shadow UI is off */
+static volatile int shadow_selected_slot = 0;
+
 /* D-Bus connection for monitoring */
 static DBusConnection *shadow_dbus_conn = NULL;
 static pthread_t shadow_dbus_thread;
@@ -1288,6 +1291,260 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 static volatile float shadow_master_volume = 1.0f;
 /* Is volume knob currently being touched? (note 8) */
 static volatile int shadow_volume_knob_touched = 0;
+
+/* ==========================================================================
+ * Shift+Knob Overlay - Show parameter overlay on Move's display
+ * ========================================================================== */
+
+/* Overlay state for Shift+Knob in Move mode */
+static int shift_knob_overlay_active = 0;
+static int shift_knob_overlay_timeout = 0;  /* Frames until overlay disappears */
+static int shift_knob_overlay_slot = 0;     /* Which slot is being adjusted */
+static int shift_knob_overlay_knob = 0;     /* Which knob (1-8) */
+static char shift_knob_overlay_patch[64] = "";   /* Patch name */
+static char shift_knob_overlay_param[64] = "";   /* Parameter name */
+static char shift_knob_overlay_value[32] = "";   /* Parameter value */
+
+/* Config: enable Shift+Knob in Move mode */
+static int shift_knob_enabled = 1;  /* Default enabled */
+
+#define SHIFT_KNOB_OVERLAY_FRAMES 60  /* ~1 second at 60fps */
+
+/* Minimal 5x7 font for overlay text (ASCII 32-127) */
+static const uint8_t overlay_font_5x7[96][7] = {
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* 32 space */
+    {0x04,0x04,0x04,0x04,0x00,0x04,0x00}, /* 33 ! */
+    {0x0A,0x0A,0x00,0x00,0x00,0x00,0x00}, /* 34 " */
+    {0x0A,0x1F,0x0A,0x1F,0x0A,0x00,0x00}, /* 35 # */
+    {0x04,0x0F,0x14,0x0E,0x05,0x1E,0x04}, /* 36 $ */
+    {0x19,0x1A,0x04,0x0B,0x13,0x00,0x00}, /* 37 % */
+    {0x08,0x14,0x08,0x15,0x12,0x0D,0x00}, /* 38 & */
+    {0x04,0x04,0x00,0x00,0x00,0x00,0x00}, /* 39 ' */
+    {0x02,0x04,0x04,0x04,0x04,0x02,0x00}, /* 40 ( */
+    {0x08,0x04,0x04,0x04,0x04,0x08,0x00}, /* 41 ) */
+    {0x00,0x0A,0x04,0x1F,0x04,0x0A,0x00}, /* 42 * */
+    {0x00,0x04,0x04,0x1F,0x04,0x04,0x00}, /* 43 + */
+    {0x00,0x00,0x00,0x00,0x04,0x04,0x08}, /* 44 , */
+    {0x00,0x00,0x00,0x1F,0x00,0x00,0x00}, /* 45 - */
+    {0x00,0x00,0x00,0x00,0x00,0x04,0x00}, /* 46 . */
+    {0x01,0x02,0x04,0x08,0x10,0x00,0x00}, /* 47 / */
+    {0x0E,0x11,0x13,0x15,0x19,0x0E,0x00}, /* 48 0 */
+    {0x04,0x0C,0x04,0x04,0x04,0x0E,0x00}, /* 49 1 */
+    {0x0E,0x11,0x01,0x06,0x08,0x1F,0x00}, /* 50 2 */
+    {0x0E,0x11,0x02,0x01,0x11,0x0E,0x00}, /* 51 3 */
+    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x00}, /* 52 4 */
+    {0x1F,0x10,0x1E,0x01,0x11,0x0E,0x00}, /* 53 5 */
+    {0x06,0x08,0x1E,0x11,0x11,0x0E,0x00}, /* 54 6 */
+    {0x1F,0x01,0x02,0x04,0x08,0x08,0x00}, /* 55 7 */
+    {0x0E,0x11,0x0E,0x11,0x11,0x0E,0x00}, /* 56 8 */
+    {0x0E,0x11,0x11,0x0F,0x02,0x0C,0x00}, /* 57 9 */
+    {0x00,0x04,0x00,0x00,0x04,0x00,0x00}, /* 58 : */
+    {0x00,0x04,0x00,0x00,0x04,0x08,0x00}, /* 59 ; */
+    {0x02,0x04,0x08,0x04,0x02,0x00,0x00}, /* 60 < */
+    {0x00,0x00,0x1F,0x00,0x1F,0x00,0x00}, /* 61 = */
+    {0x08,0x04,0x02,0x04,0x08,0x00,0x00}, /* 62 > */
+    {0x0E,0x11,0x02,0x04,0x00,0x04,0x00}, /* 63 ? */
+    {0x0E,0x11,0x17,0x15,0x17,0x10,0x0E}, /* 64 @ */
+    {0x0E,0x11,0x11,0x1F,0x11,0x11,0x00}, /* 65 A */
+    {0x1E,0x11,0x1E,0x11,0x11,0x1E,0x00}, /* 66 B */
+    {0x0E,0x11,0x10,0x10,0x11,0x0E,0x00}, /* 67 C */
+    {0x1E,0x11,0x11,0x11,0x11,0x1E,0x00}, /* 68 D */
+    {0x1F,0x10,0x1E,0x10,0x10,0x1F,0x00}, /* 69 E */
+    {0x1F,0x10,0x1E,0x10,0x10,0x10,0x00}, /* 70 F */
+    {0x0E,0x11,0x10,0x13,0x11,0x0F,0x00}, /* 71 G */
+    {0x11,0x11,0x1F,0x11,0x11,0x11,0x00}, /* 72 H */
+    {0x0E,0x04,0x04,0x04,0x04,0x0E,0x00}, /* 73 I */
+    {0x01,0x01,0x01,0x01,0x11,0x0E,0x00}, /* 74 J */
+    {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, /* 75 K */
+    {0x10,0x10,0x10,0x10,0x10,0x1F,0x00}, /* 76 L */
+    {0x11,0x1B,0x15,0x11,0x11,0x11,0x00}, /* 77 M */
+    {0x11,0x19,0x15,0x13,0x11,0x11,0x00}, /* 78 N */
+    {0x0E,0x11,0x11,0x11,0x11,0x0E,0x00}, /* 79 O */
+    {0x1E,0x11,0x11,0x1E,0x10,0x10,0x00}, /* 80 P */
+    {0x0E,0x11,0x11,0x15,0x12,0x0D,0x00}, /* 81 Q */
+    {0x1E,0x11,0x11,0x1E,0x14,0x12,0x00}, /* 82 R */
+    {0x0E,0x11,0x10,0x0E,0x01,0x1E,0x00}, /* 83 S */
+    {0x1F,0x04,0x04,0x04,0x04,0x04,0x00}, /* 84 T */
+    {0x11,0x11,0x11,0x11,0x11,0x0E,0x00}, /* 85 U */
+    {0x11,0x11,0x11,0x0A,0x0A,0x04,0x00}, /* 86 V */
+    {0x11,0x11,0x15,0x15,0x0A,0x0A,0x00}, /* 87 W */
+    {0x11,0x0A,0x04,0x04,0x0A,0x11,0x00}, /* 88 X */
+    {0x11,0x0A,0x04,0x04,0x04,0x04,0x00}, /* 89 Y */
+    {0x1F,0x01,0x02,0x04,0x08,0x1F,0x00}, /* 90 Z */
+    {0x0E,0x08,0x08,0x08,0x08,0x0E,0x00}, /* 91 [ */
+    {0x10,0x08,0x04,0x02,0x01,0x00,0x00}, /* 92 \ */
+    {0x0E,0x02,0x02,0x02,0x02,0x0E,0x00}, /* 93 ] */
+    {0x04,0x0A,0x11,0x00,0x00,0x00,0x00}, /* 94 ^ */
+    {0x00,0x00,0x00,0x00,0x00,0x1F,0x00}, /* 95 _ */
+    {0x08,0x04,0x00,0x00,0x00,0x00,0x00}, /* 96 ` */
+    {0x00,0x0E,0x01,0x0F,0x11,0x0F,0x00}, /* 97 a */
+    {0x10,0x10,0x1E,0x11,0x11,0x1E,0x00}, /* 98 b */
+    {0x00,0x0E,0x10,0x10,0x11,0x0E,0x00}, /* 99 c */
+    {0x01,0x01,0x0F,0x11,0x11,0x0F,0x00}, /* 100 d */
+    {0x00,0x0E,0x11,0x1F,0x10,0x0E,0x00}, /* 101 e */
+    {0x06,0x08,0x1C,0x08,0x08,0x08,0x00}, /* 102 f */
+    {0x00,0x0F,0x11,0x0F,0x01,0x0E,0x00}, /* 103 g */
+    {0x10,0x10,0x1E,0x11,0x11,0x11,0x00}, /* 104 h */
+    {0x04,0x00,0x0C,0x04,0x04,0x0E,0x00}, /* 105 i */
+    {0x02,0x00,0x06,0x02,0x02,0x12,0x0C}, /* 106 j */
+    {0x10,0x10,0x12,0x14,0x18,0x14,0x12}, /* 107 k */
+    {0x0C,0x04,0x04,0x04,0x04,0x0E,0x00}, /* 108 l */
+    {0x00,0x1A,0x15,0x15,0x11,0x11,0x00}, /* 109 m */
+    {0x00,0x1E,0x11,0x11,0x11,0x11,0x00}, /* 110 n */
+    {0x00,0x0E,0x11,0x11,0x11,0x0E,0x00}, /* 111 o */
+    {0x00,0x1E,0x11,0x1E,0x10,0x10,0x00}, /* 112 p */
+    {0x00,0x0F,0x11,0x0F,0x01,0x01,0x00}, /* 113 q */
+    {0x00,0x16,0x19,0x10,0x10,0x10,0x00}, /* 114 r */
+    {0x00,0x0E,0x10,0x0E,0x01,0x1E,0x00}, /* 115 s */
+    {0x08,0x1C,0x08,0x08,0x09,0x06,0x00}, /* 116 t */
+    {0x00,0x11,0x11,0x11,0x13,0x0D,0x00}, /* 117 u */
+    {0x00,0x11,0x11,0x0A,0x0A,0x04,0x00}, /* 118 v */
+    {0x00,0x11,0x11,0x15,0x15,0x0A,0x00}, /* 119 w */
+    {0x00,0x11,0x0A,0x04,0x0A,0x11,0x00}, /* 120 x */
+    {0x00,0x11,0x11,0x0F,0x01,0x0E,0x00}, /* 121 y */
+    {0x00,0x1F,0x02,0x04,0x08,0x1F,0x00}, /* 122 z */
+    {0x02,0x04,0x08,0x04,0x02,0x00,0x00}, /* 123 { */
+    {0x04,0x04,0x04,0x04,0x04,0x04,0x00}, /* 124 | */
+    {0x08,0x04,0x02,0x04,0x08,0x00,0x00}, /* 125 } */
+    {0x00,0x08,0x15,0x02,0x00,0x00,0x00}, /* 126 ~ */
+    {0x1F,0x1F,0x1F,0x1F,0x1F,0x1F,0x1F}, /* 127 DEL (solid block) */
+};
+
+/* Draw a character to column-major display buffer at (x, y) */
+static void overlay_draw_char(uint8_t *buf, int x, int y, char c, int color)
+{
+    if (c < 32 || c > 127) c = '?';
+    const uint8_t *glyph = overlay_font_5x7[c - 32];
+
+    for (int row = 0; row < 7; row++) {
+        int screen_y = y + row;
+        if (screen_y < 0 || screen_y >= 64) continue;
+
+        int page = screen_y / 8;
+        int bit = screen_y % 8;
+
+        for (int col = 0; col < 5; col++) {
+            int screen_x = x + col;
+            if (screen_x < 0 || screen_x >= 128) continue;
+
+            int byte_idx = page * 128 + screen_x;
+            int pixel_on = (glyph[row] >> (4 - col)) & 1;
+
+            if (pixel_on) {
+                if (color)
+                    buf[byte_idx] |= (1 << bit);   /* Set pixel */
+                else
+                    buf[byte_idx] &= ~(1 << bit);  /* Clear pixel */
+            }
+        }
+    }
+}
+
+/* Draw a string to column-major display buffer */
+static void overlay_draw_string(uint8_t *buf, int x, int y, const char *str, int color)
+{
+    while (*str) {
+        overlay_draw_char(buf, x, y, *str, color);
+        x += 6;  /* 5 pixel width + 1 pixel spacing */
+        str++;
+    }
+}
+
+/* Draw a filled rectangle (for overlay background) */
+static void overlay_fill_rect(uint8_t *buf, int x, int y, int w, int h, int color)
+{
+    for (int row = y; row < y + h && row < 64; row++) {
+        if (row < 0) continue;
+        int page = row / 8;
+        int bit = row % 8;
+
+        for (int col = x; col < x + w && col < 128; col++) {
+            if (col < 0) continue;
+            int byte_idx = page * 128 + col;
+
+            if (color)
+                buf[byte_idx] |= (1 << bit);
+            else
+                buf[byte_idx] &= ~(1 << bit);
+        }
+    }
+}
+
+/* Draw the shift+knob overlay onto a display buffer */
+static void overlay_draw_shift_knob(uint8_t *buf)
+{
+    if (!shift_knob_overlay_active || shift_knob_overlay_timeout <= 0) return;
+
+    /* Box dimensions: 3 lines of text + padding */
+    int box_w = 100;
+    int box_h = 30;
+    int box_x = (128 - box_w) / 2;
+    int box_y = (64 - box_h) / 2;
+
+    /* Draw background (black) and border (white) */
+    overlay_fill_rect(buf, box_x, box_y, box_w, box_h, 0);
+    overlay_fill_rect(buf, box_x, box_y, box_w, 1, 1);           /* Top border */
+    overlay_fill_rect(buf, box_x, box_y + box_h - 1, box_w, 1, 1); /* Bottom border */
+    overlay_fill_rect(buf, box_x, box_y, 1, box_h, 1);           /* Left border */
+    overlay_fill_rect(buf, box_x + box_w - 1, box_y, 1, box_h, 1); /* Right border */
+
+    /* Draw text lines */
+    int text_x = box_x + 4;
+    int text_y = box_y + 3;
+
+    overlay_draw_string(buf, text_x, text_y, shift_knob_overlay_patch, 1);
+    overlay_draw_string(buf, text_x, text_y + 9, shift_knob_overlay_param, 1);
+    overlay_draw_string(buf, text_x, text_y + 18, shift_knob_overlay_value, 1);
+}
+
+/* Update overlay state when a knob CC is processed in Move mode with Shift held */
+static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
+{
+    if (!shift_knob_enabled) return;
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_chain_slots[slot].active) return;
+
+    shift_knob_overlay_slot = slot;
+    shift_knob_overlay_knob = knob_num;  /* 1-8 */
+    shift_knob_overlay_active = 1;
+    shift_knob_overlay_timeout = SHIFT_KNOB_OVERLAY_FRAMES;
+
+    /* Copy patch name from slot with "S#: " prefix */
+    snprintf(shift_knob_overlay_patch, sizeof(shift_knob_overlay_patch),
+             "S%d: %s", slot + 1, shadow_chain_slots[slot].patch_name);
+
+    /* Query parameter name and value from DSP */
+    if (shadow_plugin_v2 && shadow_plugin_v2->get_param) {
+        char key[32];
+        char buf[64];
+        int len;
+
+        /* Get knob_N_name */
+        snprintf(key, sizeof(key), "knob_%d_name", knob_num);
+        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
+        if (len > 0) {
+            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+            strncpy(shift_knob_overlay_param, buf, sizeof(shift_knob_overlay_param) - 1);
+            shift_knob_overlay_param[sizeof(shift_knob_overlay_param) - 1] = '\0';
+        } else {
+            snprintf(shift_knob_overlay_param, sizeof(shift_knob_overlay_param), "Knob %d", knob_num);
+        }
+
+        /* Get knob_N_value */
+        snprintf(key, sizeof(key), "knob_%d_value", knob_num);
+        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
+        if (len > 0) {
+            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+            strncpy(shift_knob_overlay_value, buf, sizeof(shift_knob_overlay_value) - 1);
+            shift_knob_overlay_value[sizeof(shift_knob_overlay_value) - 1] = '\0';
+        } else {
+            snprintf(shift_knob_overlay_value, sizeof(shift_knob_overlay_value), "%d", cc_value);
+        }
+    } else {
+        snprintf(shift_knob_overlay_param, sizeof(shift_knob_overlay_param), "Knob %d", knob_num);
+        snprintf(shift_knob_overlay_value, sizeof(shift_knob_overlay_value), "%d", cc_value);
+    }
+}
 
 /* Read initial volume from Move's Settings.json */
 static void shadow_read_initial_volume(void)
@@ -4059,6 +4316,50 @@ int ioctl(int fd, unsigned long request, ...)
         }
 
         if (volume_capture_cooldown > 0) volume_capture_cooldown--;
+
+        /* === SHIFT+KNOB OVERLAY COMPOSITING ===
+         * When overlay is active, draw it onto Move's display BEFORE ioctl sends it */
+        if (shift_knob_overlay_active && shift_knob_overlay_timeout > 0 && slice_num >= 1 && slice_num <= 6) {
+            static uint8_t overlay_display[1024];
+            static int overlay_frame_ready = 0;
+
+            /* When slice 1 arrives, build the overlay display from captured slices */
+            if (slice_num == 1) {
+                /* Check if we have all slices from previous frame */
+                int all_present = 1;
+                for (int i = 0; i < 6; i++) {
+                    if (!slice_fresh[i]) all_present = 0;
+                }
+
+                if (all_present) {
+                    /* Reconstruct display from captured slices */
+                    for (int s = 0; s < 6; s++) {
+                        int offset = s * 172;
+                        int bytes = (s == 5) ? 164 : 172;
+                        memcpy(overlay_display + offset, captured_slices[s], bytes);
+                    }
+
+                    /* Draw overlay onto the display */
+                    overlay_draw_shift_knob(overlay_display);
+                    overlay_frame_ready = 1;
+                }
+
+                /* Decrement timeout once per frame (when slice 1 arrives) */
+                shift_knob_overlay_timeout--;
+                if (shift_knob_overlay_timeout <= 0) {
+                    shift_knob_overlay_active = 0;
+                    overlay_frame_ready = 0;
+                }
+            }
+
+            /* Copy overlay-composited slice back to mailbox */
+            if (overlay_frame_ready) {
+                int idx = slice_num - 1;
+                int offset = idx * 172;
+                int bytes = (idx == 5) ? 164 : 172;
+                memcpy(mem + 84, overlay_display + offset, bytes);
+            }
+        }
     }
 
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
@@ -4089,6 +4390,18 @@ int ioctl(int fd, unsigned long request, ...)
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
                     shadow_update_held_track(d1, pressed);
+
+                    /* Update selected slot when track is pressed (for Shift+Knob routing)
+                     * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */
+                    if (pressed) {
+                        int new_slot = 43 - d1;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
+                        if (new_slot != shadow_selected_slot) {
+                            shadow_selected_slot = new_slot;
+                            char msg[64];
+                            snprintf(msg, sizeof(msg), "Selected slot: %d (Track %d)", new_slot, new_slot + 1);
+                            shadow_log(msg);
+                        }
+                    }
                 }
             }
 
@@ -4105,6 +4418,62 @@ int ioctl(int fd, unsigned long request, ...)
                 }
             }
         }
+    }
+
+    /* === POST-IOCTL: SHIFT+KNOB INTERCEPTION (MOVE MODE) ===
+     * When in Move mode (not shadow mode) but Shift is held,
+     * intercept knob CCs (71-78) and route to shadow chain DSP.
+     * Also block knob touch notes (0-7) to prevent them reaching Move.
+     * This allows adjusting shadow synth parameters while playing Move's sequencer. */
+    if (!shadow_display_mode && shiftHeld && shift_knob_enabled &&
+        shadow_inprocess_ready && global_mmap_addr) {
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t cin = src[j] & 0x0F;
+            uint8_t cable = (src[j] >> 4) & 0x0F;
+            if (cable != 0x00) continue;  /* Only internal cable */
+
+            uint8_t status = src[j + 1];
+            uint8_t type = status & 0xF0;
+            uint8_t d1 = src[j + 2];
+            uint8_t d2 = src[j + 3];
+
+            /* Block knob touch notes (0-7) when Shift held */
+            if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
+                if (d1 <= 7) {  /* Knob capacitive touches are notes 0-7 */
+                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    continue;
+                }
+            }
+
+            /* Handle knob CC messages */
+            if (cin == 0x0B && type == 0xB0 && d1 >= 71 && d1 <= 78) {
+                int knob_num = d1 - 70;  /* 1-8 */
+                int slot = shadow_selected_slot;
+                if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
+
+                /* Route CC to selected slot's DSP */
+                if (shadow_chain_slots[slot].active) {
+                    uint8_t msg[3] = { status, d1, d2 };
+                    /* Route directly to selected slot instead of using shadow_control->ui_slot */
+                    if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                        shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
+                                                  MOVE_MIDI_SOURCE_INTERNAL);
+                    }
+
+                    /* Update overlay state */
+                    shift_knob_update_overlay(slot, knob_num, d2);
+                }
+
+                /* Block CC from reaching Move */
+                src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+            }
+        }
+    }
+
+    /* Clear overlay when Shift is released */
+    if (!shiftHeld && shift_knob_overlay_active) {
+        /* Don't immediately clear - let timeout handle it for smooth experience */
     }
 
     /* === POST-IOCTL: FILTER INCOMING MIDI ===
