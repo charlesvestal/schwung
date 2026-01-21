@@ -187,6 +187,180 @@ let editComponentPresetCount = 0;
 let editComponentPreset = 0;
 let editComponentPresetName = "";
 
+/* Loaded module UI state */
+let loadedModuleUi = null;       // The chain_ui object from loaded module
+let loadedModuleSlot = -1;       // Which slot the module UI is for
+let loadedModuleComponent = "";  // "synth", "fx1", "fx2"
+let moduleUiLoadError = false;   // True if load failed
+
+const MODULES_ROOT = "/data/UserData/move-anything/modules";
+
+/* Find UI path for a module - tries ui_chain.js first, then ui.js */
+function getModuleUiPath(moduleId) {
+    if (!moduleId) return null;
+
+    /* Helper to check a directory for UI files */
+    function checkDir(moduleDir) {
+        /* First try ui_chain.js (preferred - uses chain_ui pattern) */
+        let uiPath = `${moduleDir}/ui_chain.js`;
+
+        /* Try to read module.json for custom ui_chain path */
+        try {
+            const moduleJsonStr = std.loadFile(`${moduleDir}/module.json`);
+            if (moduleJsonStr) {
+                const match = moduleJsonStr.match(/"ui_chain"\s*:\s*"([^"]+)"/);
+                if (match && match[1]) {
+                    uiPath = `${moduleDir}/${match[1]}`;
+                }
+            }
+        } catch (e) {
+            /* No module.json or can't read it */
+        }
+
+        /* Check if ui_chain.js exists */
+        try {
+            const stat = os.stat(uiPath);
+            if (stat && stat[0] === 0) {
+                return uiPath;
+            }
+        } catch (e) {
+            /* File doesn't exist */
+        }
+
+        /* Fall back to ui.js (standard module UI) */
+        uiPath = `${moduleDir}/ui.js`;
+        try {
+            const stat = os.stat(uiPath);
+            if (stat && stat[0] === 0) {
+                return uiPath;
+            }
+        } catch (e) {
+            /* File doesn't exist */
+        }
+
+        return null;
+    }
+
+    /* Check locations in order */
+    const searchDirs = [
+        `${MODULES_ROOT}/${moduleId}`,                      /* Top-level modules */
+        `${MODULES_ROOT}/chain/sound_generators/${moduleId}`, /* Chain synths */
+        `${MODULES_ROOT}/chain/audio_fx/${moduleId}`,        /* Chain FX */
+        `${MODULES_ROOT}/chain/midi_fx/${moduleId}`          /* Chain MIDI FX */
+    ];
+
+    for (const dir of searchDirs) {
+        const result = checkDir(dir);
+        if (result) return result;
+    }
+
+    return null;
+}
+
+/* Set up shims for host_module_get_param and host_module_set_param
+ * These route to the correct slot and component in shadow mode */
+function setupModuleParamShims(slot, componentKey) {
+    const prefix = componentKey === "midiFx" ? "midi_fx" : componentKey;
+
+    globalThis.host_module_get_param = function(key) {
+        return getSlotParam(slot, `${prefix}:${key}`);
+    };
+
+    globalThis.host_module_set_param = function(key, value) {
+        return setSlotParam(slot, `${prefix}:${key}`, value);
+    };
+}
+
+/* Clear the param shims */
+function clearModuleParamShims() {
+    delete globalThis.host_module_get_param;
+    delete globalThis.host_module_set_param;
+}
+
+/* Load a module's UI for editing */
+function loadModuleUi(slot, componentKey, moduleId) {
+    const uiPath = getModuleUiPath(moduleId);
+    if (!uiPath) {
+        moduleUiLoadError = true;
+        return false;
+    }
+
+    /* Clear any previous chain_ui */
+    globalThis.chain_ui = null;
+
+    /* Set up param shims before loading */
+    setupModuleParamShims(slot, componentKey);
+
+    /* Load the UI module */
+    if (typeof shadow_load_ui_module !== "function") {
+        moduleUiLoadError = true;
+        clearModuleParamShims();
+        return false;
+    }
+
+    /* Save current globals before loading - module may overwrite them */
+    const savedInit = globalThis.init;
+    const savedTick = globalThis.tick;
+    const savedMidi = globalThis.onMidiMessageInternal;
+
+    const ok = shadow_load_ui_module(uiPath);
+    if (!ok) {
+        moduleUiLoadError = true;
+        clearModuleParamShims();
+        /* Restore globals in case partial load modified them */
+        globalThis.init = savedInit;
+        globalThis.tick = savedTick;
+        globalThis.onMidiMessageInternal = savedMidi;
+        return false;
+    }
+
+    /* Check if module used chain_ui pattern (preferred) */
+    if (globalThis.chain_ui) {
+        loadedModuleUi = globalThis.chain_ui;
+    } else {
+        /* Module used standard globals - wrap them in chain_ui object */
+        loadedModuleUi = {
+            init: (globalThis.init !== savedInit) ? globalThis.init : null,
+            tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
+            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
+        };
+
+        /* Restore shadow UI's globals */
+        globalThis.init = savedInit;
+        globalThis.tick = savedTick;
+        globalThis.onMidiMessageInternal = savedMidi;
+    }
+
+    /* Verify we got something useful */
+    if (!loadedModuleUi || (!loadedModuleUi.tick && !loadedModuleUi.init && !loadedModuleUi.onMidiMessageInternal)) {
+        moduleUiLoadError = true;
+        clearModuleParamShims();
+        loadedModuleUi = null;
+        return false;
+    }
+
+    loadedModuleSlot = slot;
+    loadedModuleComponent = componentKey;
+    moduleUiLoadError = false;
+
+    /* Call init if available */
+    if (loadedModuleUi.init) {
+        loadedModuleUi.init();
+    }
+
+    return true;
+}
+
+/* Unload the current module UI */
+function unloadModuleUi() {
+    loadedModuleUi = null;
+    loadedModuleSlot = -1;
+    loadedModuleComponent = "";
+    moduleUiLoadError = false;
+    globalThis.chain_ui = null;
+    clearModuleParamShims();
+}
+
 /* Initialize chain configs for all slots */
 function initChainConfigs() {
     chainConfigs = [];
@@ -903,12 +1077,25 @@ function handleShiftSelect() {
     enterComponentEdit(selectedSlot, comp.key);
 }
 
-/* Enter component edit mode */
+/* Enter component edit mode - try to load module UI, fall back to preset browser */
 function enterComponentEdit(slotIndex, componentKey) {
     selectedSlot = slotIndex;
     editingComponentKey = componentKey;
 
-    /* Get param prefix based on component */
+    /* Get module ID from chain config */
+    const cfg = chainConfigs[slotIndex];
+    const moduleData = cfg && cfg[componentKey];
+    const moduleId = moduleData ? moduleData.module : null;
+
+    /* Try to load the module's UI */
+    if (moduleId && loadModuleUi(slotIndex, componentKey, moduleId)) {
+        /* Module UI loaded successfully */
+        view = VIEWS.COMPONENT_EDIT;
+        needsRedraw = true;
+        return;
+    }
+
+    /* Fall back to simple preset browser */
     const prefix = componentKey === "midiFx" ? "midi_fx" : componentKey;
 
     /* Fetch preset count and current preset */
@@ -1211,7 +1398,8 @@ function handleBack() {
             }
             break;
         case VIEWS.COMPONENT_EDIT:
-            /* Return to chain edit */
+            /* Unload module UI and return to chain edit */
+            unloadModuleUi();
             view = VIEWS.CHAIN_EDIT;
             needsRedraw = true;
             break;
@@ -1761,7 +1949,13 @@ globalThis.tick = function() {
             drawChainSettings();
             break;
         case VIEWS.COMPONENT_EDIT:
-            drawComponentEdit();
+            if (loadedModuleUi && loadedModuleUi.tick) {
+                /* Let the loaded module UI handle its own tick/draw */
+                loadedModuleUi.tick();
+            } else {
+                /* Fall back to simple preset browser */
+                drawComponentEdit();
+            }
             break;
         default:
             drawSlots();
@@ -1788,12 +1982,30 @@ globalThis.onMidiMessageInternal = function(data) {
     const d1 = data[1];
     const d2 = data[2];
 
-    /* Handle CC messages */
+    /* Debug: track last CC for display (only for CC messages) */
     if ((status & 0xF0) === 0xB0) {
-        /* Debug: track last CC for display */
         lastCC = { cc: d1, val: d2 };
         needsRedraw = true;
+    }
 
+    /* When a module UI is loaded, route MIDI to it (except Back button) */
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi) {
+        /* Always handle Back ourselves to allow exiting */
+        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0) {
+            handleBack();
+            return;
+        }
+
+        /* Route everything else to the loaded module UI */
+        if (loadedModuleUi.onMidiMessageInternal) {
+            loadedModuleUi.onMidiMessageInternal(data);
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    /* Handle CC messages */
+    if ((status & 0xF0) === 0xB0) {
         if (d1 === MoveMainKnob) {
             const delta = decodeDelta(d2);
             if (delta !== 0) {

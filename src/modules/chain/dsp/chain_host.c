@@ -4273,9 +4273,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route fx1: prefixed params to FX1 (strip prefix) */
     if (strncmp(key, "fx1:", 4) == 0) {
         const char *subkey = key + 4;
-        if (inst->fx_count > 0 && inst->fx_plugins[0] && inst->fx_instances[0]) {
-            if (inst->fx_plugins[0]->get_param) {
-                return inst->fx_plugins[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+        if (inst->fx_count > 0) {
+            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0] && inst->fx_plugins_v2[0]->get_param) {
+                return inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+            } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->get_param) {
+                return inst->fx_plugins[0]->get_param(subkey, buf, buf_len);
             }
         }
         return -1;
@@ -4284,9 +4286,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route fx2: prefixed params to FX2 (strip prefix) */
     if (strncmp(key, "fx2:", 4) == 0) {
         const char *subkey = key + 4;
-        if (inst->fx_count > 1 && inst->fx_plugins[1] && inst->fx_instances[1]) {
-            if (inst->fx_plugins[1]->get_param) {
-                return inst->fx_plugins[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
+        if (inst->fx_count > 1) {
+            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1] && inst->fx_plugins_v2[1]->get_param) {
+                return inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
+            } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->get_param) {
+                return inst->fx_plugins[1]->get_param(subkey, buf, buf_len);
             }
         }
         return -1;

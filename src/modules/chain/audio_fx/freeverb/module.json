@@ -3,6 +3,7 @@
   "name": "Freeverb",
   "version": "0.1.0",
   "dsp": "freeverb.so",
+  "ui_chain": "ui_chain.js",
   "api_version": 1,
   "component_type": "audio_fx",
   "capabilities": {

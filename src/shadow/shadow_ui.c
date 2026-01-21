@@ -286,6 +286,27 @@ static JSValue js_shadow_request_exit(JSContext *ctx, JSValueConst this_val, int
     return JS_UNDEFINED;
 }
 
+/* shadow_load_ui_module(path) -> bool
+ * Loads and evaluates a JS file (typically ui_chain.js) in the current context.
+ * The loaded module can set globalThis.chain_ui to provide init/tick/onMidi functions.
+ * Returns true on success, false on error.
+ */
+static JSValue js_shadow_load_ui_module(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_FALSE;
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_FALSE;
+
+    shadow_ui_log_line("Loading UI module:");
+    shadow_ui_log_line(path);
+
+    int ret = eval_file(ctx, path, 1);  /* Load as ES module */
+    JS_FreeCString(ctx, path);
+
+    return ret == 0 ? JS_TRUE : JS_FALSE;
+}
+
 /* shadow_set_param(slot, key, value) -> bool
  * Sets a parameter on the chain instance for the given slot.
  * Returns true on success, false on error.
@@ -410,6 +431,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_slot", JS_NewCFunction(ctx, js_shadow_get_ui_slot, "shadow_get_ui_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
