@@ -2580,10 +2580,10 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    if (useJsMidiFx) {
-        if (!midiSourceAllowed("internal")) return;
-        processMidiFx([data[0], data[1], data[2]], "internal");
-    }
+    /* JS MIDI FX is disabled for internal MIDI.
+     * Internal MIDI (knob touches, step buttons, etc.) should NOT route to DSP.
+     * JS MIDI FX should only process MIDI right before MIDI_OUT (external/track output).
+     * If a patch needs internal MIDI routed to DSP, use capture rules in the patch JSON. */
 
     /* Handle CC messages */
     /* Note activity triggers redraw for visual feedback */

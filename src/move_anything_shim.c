@@ -2115,59 +2115,8 @@ static int shadow_is_internal_control_note(uint8_t note)
     return (note < 10) || (note >= 16 && note <= 31) || (note >= 40 && note <= 43);
 }
 
-static int shadow_allow_midi_to_dsp(uint8_t status, uint8_t data1)
-{
-    uint8_t type = status & 0xF0;
-    if (type == 0x90 || type == 0x80) {
-        return !shadow_is_internal_control_note(data1);
-    }
-    if (type == 0xA0 || type == 0xD0 || type == 0xE0) {
-        return 1;
-    }
-    /* Allow knob CCs (71-78) */
-    if (type == 0xB0 && data1 >= 71 && data1 <= 78) {
-        return 1;
-    }
-    return 0;
-}
-
-/* Route knob CCs (71-78) to the UI-selected slot, not channel-based */
-static void shadow_route_knob_cc_to_focused_slot(const uint8_t *msg, int len)
-{
-    if (!shadow_inprocess_ready || len < 3) {
-        /* Debug: log why we're returning early */
-        if (!shadow_inprocess_ready) {
-            shadow_log("Knob CC: inprocess not ready");
-        }
-        return;
-    }
-    if ((msg[0] & 0xF0) != 0xB0) return;
-
-    uint8_t cc = msg[1];
-    if (cc < 71 || cc > 78) return;
-
-    /* Use track-selected slot, not UI-highlighted slot.
-     * Knobs always control the slot selected via track buttons. */
-    int slot = shadow_selected_slot;
-    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
-
-    if (!shadow_chain_slots[slot].active) {
-        char dbg[64];
-        snprintf(dbg, sizeof(dbg), "Knob CC%d: slot %d not active", cc, slot);
-        shadow_log(dbg);
-        return;
-    }
-
-    if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-        char dbg[64];
-        snprintf(dbg, sizeof(dbg), "Knob CC%d val=%d -> slot %d", cc, msg[2], slot);
-        shadow_log(dbg);
-        shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, len,
-                                  MOVE_MIDI_SOURCE_INTERNAL);
-    } else {
-        shadow_log("Knob CC: no plugin_v2 or on_midi");
-    }
-}
+/* Note: shadow_allow_midi_to_dsp and shadow_route_knob_cc_to_focused_slot removed.
+ * MIDI_IN is no longer routed directly to DSP. Shadow UI handles knobs via set_param. */
 
 static uint32_t shadow_ui_request_seen = 0;
 /* SHADOW_PATCH_INDEX_NONE from shadow_constants.h */
@@ -2518,32 +2467,13 @@ static void shadow_inprocess_handle_param_request(void) {
 static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
-    const uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        const uint8_t *pkt = &in_src[i];
-        if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
+    /* MIDI_IN (internal controls) is NOT routed to DSP here.
+     * - Shadow UI handles knobs via set_param based on ui_hierarchy
+     * - Capture rules are handled in shadow_filter_move_input (post-ioctl)
+     * - Internal notes/CCs should only reach Move, not DSP */
 
-        uint8_t cable = (pkt[0] >> 4) & 0x0F;
-        uint8_t cin = pkt[0] & 0x0F;
-        uint8_t status = pkt[1];
-
-        if (pkt[1] == 0xFE || pkt[1] == 0xF8 || cin == 0x0F) continue;
-        if (cable != 0) continue;
-        if (cin < 0x08 || cin > 0x0E) continue;
-        if ((status & 0xF0) < 0x80 || (status & 0xF0) > 0xE0) continue;
-        if (!shadow_allow_midi_to_dsp(status, pkt[2])) continue;
-
-        int slot = shadow_chain_slot_for_channel(status & 0x0F);
-        if (slot < 0) continue;
-
-        if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-            /* Remap channel based on slot's forward_channel setting */
-            uint8_t msg[3] = { shadow_chain_remap_channel(slot, pkt[1]), pkt[2], pkt[3] };
-            shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
-                                      MOVE_MIDI_SOURCE_INTERNAL);
-        }
-    }
-
+    /* MIDI_OUT → DSP: Move's track output contains musical notes.
+     * Hardware clears the buffer during ioctl, so we just read and route. */
     const uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         const uint8_t *pkt = &out_src[i];
@@ -2555,22 +2485,35 @@ static void shadow_inprocess_process_midi(void) {
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
-            /* No filtering - MIDI_OUT is Move's track output (musical notes only) */
+            /* Filter internal control notes: capacitive touch (0-9), step buttons (16-31), track buttons (40-43).
+             * Move may echo MIDI_IN to MIDI_OUT (through tracks), so we filter here. */
+            uint8_t status_type = status_usb & 0xF0;
+            uint8_t note = pkt[2];
+            if (status_type == 0x90 || status_type == 0x80) {
+                if (note < 10 || (note >= 16 && note <= 31) || (note >= 40 && note <= 43)) {
+                    continue;
+                }
+            }
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
             if (slot < 0) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                /* Remap channel based on slot's forward_channel setting */
                 uint8_t msg[3] = { shadow_chain_remap_channel(slot, pkt[1]), pkt[2], pkt[3] };
                 shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                           MOVE_MIDI_SOURCE_INTERNAL);
             }
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             if (pkt[1] <= 0x7F && pkt[2] <= 0x7F) {
-                /* No filtering - MIDI_OUT is Move's track output (musical notes only) */
+                /* Filter internal control notes (raw MIDI format: pkt[0]=status, pkt[1]=note) */
+                uint8_t status_type = status_raw & 0xF0;
+                uint8_t note = pkt[1];
+                if (status_type == 0x90 || status_type == 0x80) {
+                    if (note < 10 || (note >= 16 && note <= 31) || (note >= 40 && note <= 43)) {
+                        continue;
+                    }
+                }
                 int slot = shadow_chain_slot_for_channel(status_raw & 0x0F);
                 if (slot < 0) continue;
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                    /* Remap channel based on slot's forward_channel setting */
                     uint8_t msg[3] = { shadow_chain_remap_channel(slot, status_raw), pkt[1], pkt[2] };
                     shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                               MOVE_MIDI_SOURCE_INTERNAL);
@@ -3235,12 +3178,8 @@ static void shadow_filter_move_input(void)
                         }
                     }
                 }
-                /* Route knob CCs to focused slot's DSP - but only when NOT in shadow display mode.
-                 * When shadow UI is active, it handles knobs via set_param based on ui_hierarchy. */
-                if (d1 >= 71 && d1 <= 78 && !shadow_display_mode) {
-                    uint8_t msg[3] = { status, d1, d2 };
-                    shadow_route_knob_cc_to_focused_slot(msg, 3);
-                }
+                /* Knob CCs (71-78) are handled by Shadow UI via set_param based on ui_hierarchy.
+                 * No direct DSP routing - params are changed through the hierarchy system. */
                 /* Block from Move */
                 src[i] = 0;
                 src[i + 1] = 0;
@@ -3277,8 +3216,9 @@ static void shadow_filter_move_input(void)
                 continue;
             }
 
-            /* Check if this note is captured by the focused slot */
-            if (capture && capture_has_note(capture, d1)) {
+            /* Check if this note is captured by the focused slot.
+             * Never route knob touch notes (0-9) to DSP even if in capture rules. */
+            if (capture && d1 >= 10 && capture_has_note(capture, d1)) {
                 /* Debug: log captured step notes */
                 if (d1 >= 16 && d1 <= 31) {
                     char dbg[128];
@@ -4446,26 +4386,19 @@ int ioctl(int fd, unsigned long request, ...)
                 continue;
             }
 
-            /* Handle knob CC messages */
+            /* Handle knob CC messages - update overlay only (no DSP routing).
+             * Params are changed via set_param through the shadow UI hierarchy system. */
             if (cin == 0x0B && type == 0xB0 && d1 >= 71 && d1 <= 78) {
                 int knob_num = d1 - 70;  /* 1-8 */
                 int slot = shadow_selected_slot;
                 if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
 
-                /* Route CC to selected slot's DSP */
+                /* Update overlay state (no DSP routing - params via set_param) */
                 if (shadow_chain_slots[slot].active) {
-                    uint8_t msg[3] = { status, d1, d2 };
-                    /* Route directly to selected slot instead of using shadow_control->ui_slot */
-                    if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                        shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
-                                                  MOVE_MIDI_SOURCE_INTERNAL);
-                    }
-
-                    /* Update overlay state */
                     shift_knob_update_overlay(slot, knob_num, d2);
                 }
 
-                /* Block CC from reaching Move */
+                /* Block CC from reaching Move when shift held */
                 src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
             }
         }
