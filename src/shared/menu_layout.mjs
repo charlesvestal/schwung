@@ -78,7 +78,8 @@ export function drawMenuList({
     indicatorX = LIST_INDICATOR_X,
     indicatorBottomY = LIST_INDICATOR_BOTTOM_Y,
     getLabel,
-    getValue
+    getValue,
+    editMode = false
 }) {
     const totalItems = items.length;
     const resolvedTopY = listArea?.topY ?? topY;
@@ -138,7 +139,13 @@ export function drawMenuList({
             fill_rect(0, y - highlightOffset, SCREEN_WIDTH, highlightHeight, 1);
             print(labelX, y, `${labelPrefix}${label}`, 0);
             if (value) {
-                print(resolvedValueX, y, value, 0);
+                /* Show brackets around value when in edit mode */
+                const displayValue = editMode ? `[${value}]` : value;
+                /* When valueAlignRight and editMode, shift left to account for added brackets */
+                const editValueX = (editMode && valueAlignRight)
+                    ? resolvedValueX - (2 * DEFAULT_CHAR_WIDTH)  /* Shift left for both brackets */
+                    : resolvedValueX;
+                print(editValueX, y, displayValue, 0);
             }
         } else {
             print(labelX, y, `${labelPrefix}${label}`, 1);

@@ -29,6 +29,7 @@ import {
     drawMenuFooter as drawFooter,
     drawMenuList,
     showOverlay,
+    hideOverlay,
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults
@@ -199,6 +200,12 @@ let hierEditorKnobs = [];         // current level's knob-mapped params
 let hierEditorSelectedIdx = 0;
 let hierEditorEditMode = false;   // true when editing a param value
 let hierEditorChainParams = [];   // metadata from chain_params
+
+/* Preset browser state (for preset_browser type levels) */
+let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
+let hierEditorPresetCount = 0;
+let hierEditorPresetIndex = 0;
+let hierEditorPresetName = "";
 
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
@@ -1221,11 +1228,57 @@ function loadHierarchyLevel() {
         /* At mode selection level */
         hierEditorParams = hierEditorHierarchy.modes || [];
         hierEditorKnobs = [];
+        hierEditorIsPresetLevel = false;
         return;
     }
 
-    hierEditorParams = levelDef.params || [];
-    hierEditorKnobs = levelDef.knobs || [];
+    /* Check if this is a preset browser level */
+    if (levelDef.list_param && levelDef.count_param) {
+        hierEditorIsPresetLevel = true;
+        hierEditorParams = [];
+        hierEditorKnobs = levelDef.knobs || [];
+
+        /* Fetch preset count and current preset */
+        const prefix = hierEditorComponent;
+        const countStr = getSlotParam(hierEditorSlot, `${prefix}:${levelDef.count_param}`);
+        hierEditorPresetCount = countStr ? parseInt(countStr) : 0;
+
+        const presetStr = getSlotParam(hierEditorSlot, `${prefix}:${levelDef.list_param}`);
+        hierEditorPresetIndex = presetStr ? parseInt(presetStr) : 0;
+
+        /* Fetch preset name */
+        const nameParam = levelDef.name_param || "preset_name";
+        hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
+    } else {
+        hierEditorIsPresetLevel = false;
+        hierEditorParams = levelDef.params || [];
+        hierEditorKnobs = levelDef.knobs || [];
+    }
+}
+
+/* Change preset in hierarchy editor preset browser */
+function changeHierPreset(delta) {
+    if (hierEditorPresetCount <= 0) return;
+
+    /* Get level definition to find param names */
+    const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
+    if (!levelDef) return;
+
+    /* Calculate new preset with wrapping */
+    let newPreset = hierEditorPresetIndex + delta;
+    if (newPreset < 0) newPreset = hierEditorPresetCount - 1;
+    if (newPreset >= hierEditorPresetCount) newPreset = 0;
+
+    /* Apply the preset change */
+    const prefix = hierEditorComponent;
+    setSlotParam(hierEditorSlot, `${prefix}:${levelDef.list_param}`, String(newPreset));
+
+    /* Update local state */
+    hierEditorPresetIndex = newPreset;
+
+    /* Fetch new preset name */
+    const nameParam = levelDef.name_param || "preset_name";
+    hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
 }
 
 /* Exit hierarchy editor */
@@ -1235,6 +1288,7 @@ function exitHierarchyEditor() {
     hierEditorComponent = "";
     hierEditorHierarchy = null;
     hierEditorChainParams = [];
+    hierEditorIsPresetLevel = false;
     view = VIEWS.CHAIN_EDIT;
     needsRedraw = true;
 }
@@ -1243,6 +1297,28 @@ function exitHierarchyEditor() {
 function getParamMetadata(key) {
     if (!hierEditorChainParams) return null;
     return hierEditorChainParams.find(p => p.key === key);
+}
+
+/* Format a param value for setting (respects type) */
+function formatParamForSet(val, meta) {
+    if (meta && meta.type === "int") {
+        return Math.round(val).toString();
+    }
+    return val.toFixed(3);
+}
+
+/* Format a param value for overlay display (respects type and range) */
+function formatParamForOverlay(val, meta) {
+    if (meta && meta.type === "int") {
+        return Math.round(val).toString();
+    }
+    /* Float: show as percentage if 0-1 range */
+    const min = meta && typeof meta.min === "number" ? meta.min : 0;
+    const max = meta && typeof meta.max === "number" ? meta.max : 1;
+    if (min === 0 && max === 1) {
+        return Math.round(val * 100) + "%";
+    }
+    return val.toFixed(2);
 }
 
 /* Adjust selected param value via jog */
@@ -1259,42 +1335,154 @@ function adjustHierSelectedParam(delta) {
     const num = parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    /* Get step from metadata or use default */
+    /* Get step from metadata - default 1 for int, 0.02 for float */
     const meta = getParamMetadata(key);
-    const step = meta && meta.step ? meta.step : 0.02;
+    const isInt = meta && meta.type === "int";
+    const step = meta && meta.step ? meta.step : (isInt ? 1 : 0.02);
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
     const max = meta && typeof meta.max === "number" ? meta.max : 1;
 
     const newVal = Math.max(min, Math.min(max, num + delta * step));
-    setSlotParam(hierEditorSlot, fullKey, newVal.toFixed(3));
+    setSlotParam(hierEditorSlot, fullKey, formatParamForSet(newVal, meta));
 }
 
-/* Adjust knob-mapped param */
-function adjustHierKnobParam(knobIdx, delta) {
-    if (knobIdx >= hierEditorKnobs.length) return;
+/*
+ * Unified knob context resolution - used by both touch (peek) and turn (adjust)
+ * Returns context object or null if no mapping exists for this knob
+ */
+function getKnobContext(knobIndex) {
+    /* Hierarchy editor context */
+    if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length) {
+        const key = hierEditorKnobs[knobIndex];
+        const fullKey = `${hierEditorComponent}:${key}`;
+        const meta = getParamMetadata(key);
+        const pluginName = getSlotParam(hierEditorSlot, `${hierEditorComponent}:name`) || "";
+        const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
+        return {
+            slot: hierEditorSlot,
+            key,
+            fullKey,
+            meta,
+            pluginName,
+            displayName,
+            title: `${pluginName} ${displayName}`
+        };
+    }
 
-    const key = hierEditorKnobs[knobIdx];
-    const fullKey = `${hierEditorComponent}:${key}`;
+    /* Chain editor with component selected */
+    if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < CHAIN_COMPONENTS.length) {
+        const comp = CHAIN_COMPONENTS[selectedChainComponent];
+        if (comp && comp.key !== "settings") {
+            const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
+            if (hierarchy && hierarchy.levels) {
+                const levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+                if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
+                    const key = levelDef.knobs[knobIndex];
+                    const fullKey = `${comp.key}:${key}`;
+                    const chainParams = getComponentChainParams(selectedSlot, comp.key);
+                    const meta = chainParams.find(p => p.key === key);
+                    const pluginName = getSlotParam(selectedSlot, `${comp.key}:name`) || comp.label;
+                    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
+                    return {
+                        slot: selectedSlot,
+                        key,
+                        fullKey,
+                        meta,
+                        pluginName,
+                        displayName,
+                        title: `${pluginName} ${displayName}`
+                    };
+                }
+            }
+            /* Component selected but no knob mappings - return generic context */
+            const pluginName = getSlotParam(selectedSlot, `${comp.key}:name`) || comp.label;
+            return {
+                slot: selectedSlot,
+                key: null,
+                fullKey: null,
+                meta: null,
+                pluginName,
+                displayName: `Knob ${knobIndex + 1}`,
+                title: `S${selectedSlot + 1} ${pluginName}`,
+                noMapping: true
+            };
+        }
+    }
 
-    const currentVal = getSlotParam(hierEditorSlot, fullKey);
-    if (currentVal === null) return;
+    /* Default: no special context, fall through to global slot mapping */
+    return null;
+}
 
-    const num = parseFloat(currentVal);
-    if (isNaN(num)) return;
+/*
+ * Show overlay for a knob - shared by touch and turn
+ * If value is provided, shows that value; otherwise reads current value
+ */
+function showKnobOverlay(knobIndex, value) {
+    const ctx = getKnobContext(knobIndex);
 
-    /* Get step from metadata or use default */
-    const meta = getParamMetadata(key);
-    const step = meta && meta.step ? meta.step : 0.02;
-    const min = meta && typeof meta.min === "number" ? meta.min : 0;
-    const max = meta && typeof meta.max === "number" ? meta.max : 1;
+    if (ctx) {
+        if (ctx.noMapping) {
+            /* Generic label for unmapped knob */
+            showOverlay(ctx.title, ctx.displayName);
+        } else if (ctx.fullKey) {
+            /* Mapped knob - show value */
+            let displayVal;
+            if (value !== undefined) {
+                displayVal = formatParamForOverlay(value, ctx.meta);
+            } else {
+                const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
+                const num = parseFloat(currentVal);
+                displayVal = !isNaN(num) ? formatParamForOverlay(num, ctx.meta) : (currentVal || "-");
+            }
+            showOverlay(ctx.title, displayVal);
+        }
+        needsRedraw = true;
+        return true;
+    }
+    return false;
+}
 
-    const newVal = Math.max(min, Math.min(max, num + delta * step));
-    setSlotParam(hierEditorSlot, fullKey, newVal.toFixed(3));
+/*
+ * Adjust knob value and show overlay - used by turn handler
+ * Returns true if handled, false to fall through to default
+ */
+function adjustKnobAndShow(knobIndex, delta) {
+    const ctx = getKnobContext(knobIndex);
 
-    /* Show overlay with full context */
-    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-    const displayVal = Math.round((newVal - min) / (max - min) * 100) + "%";
-    showOverlay(displayName, displayVal);
+    if (ctx) {
+        if (ctx.noMapping || !ctx.fullKey) {
+            /* No mapping - just show generic overlay */
+            showOverlay(ctx.title, ctx.displayName);
+            needsRedraw = true;
+            return true;
+        }
+
+        /* Get current value */
+        const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
+        if (currentVal === null) return true;
+
+        const num = parseFloat(currentVal);
+        if (isNaN(num)) return true;
+
+        /* Calculate step and bounds from metadata */
+        const isInt = ctx.meta && ctx.meta.type === "int";
+        const step = ctx.meta && ctx.meta.step ? ctx.meta.step : (isInt ? 1 : 0.02);
+        const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
+        const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
+
+        /* Apply delta and clamp */
+        const newVal = Math.max(min, Math.min(max, num + delta * step));
+
+        /* Set the new value */
+        if (delta !== 0) {
+            setSlotParam(ctx.slot, ctx.fullKey, formatParamForSet(newVal, ctx.meta));
+        }
+
+        /* Show overlay with new value */
+        showKnobOverlay(knobIndex, newVal);
+        return true;
+    }
+    return false;
 }
 
 /* Format a value for display in hierarchy editor */
@@ -1322,45 +1510,82 @@ function formatHierDisplayValue(key, val) {
 function drawHierarchyEditor() {
     clear_screen();
 
-    /* Build breadcrumb header */
+    /* Build breadcrumb header with plugin name */
     const componentName = hierEditorComponent === "synth" ? "Synth" :
                           hierEditorComponent === "fx1" ? "FX1" :
                           hierEditorComponent === "fx2" ? "FX2" : hierEditorComponent;
+
+    /* Get plugin display name */
+    const pluginName = getSlotParam(hierEditorSlot, `${hierEditorComponent}:name`) || "";
+
     let breadcrumb = `S${hierEditorSlot + 1} ${componentName}`;
+    if (pluginName) {
+        breadcrumb += ` ${pluginName}`;
+    }
     if (hierEditorPath.length > 0) {
         breadcrumb += " > " + hierEditorPath.join(" > ");
     }
 
     drawHeader(truncateText(breadcrumb, 24));
 
-    /* Draw param list */
-    if (hierEditorParams.length === 0) {
-        print(4, 24, "No parameters", 1);
+    /* Check if this is a preset browser level */
+    if (hierEditorIsPresetLevel) {
+        /* Draw preset browser UI */
+        const centerY = 32;
+
+        if (hierEditorPresetCount > 0) {
+            /* Show preset number */
+            const presetNum = `${hierEditorPresetIndex + 1} / ${hierEditorPresetCount}`;
+            const numX = Math.floor((SCREEN_WIDTH - presetNum.length * 5) / 2);
+            print(numX, centerY - 8, presetNum, 1);
+
+            /* Show preset name */
+            const name = truncateText(hierEditorPresetName || "(unnamed)", 22);
+            const nameX = Math.floor((SCREEN_WIDTH - name.length * 5) / 2);
+            print(nameX, centerY + 4, name, 1);
+
+            /* Draw navigation arrows */
+            print(4, centerY - 2, "<", 1);
+            print(SCREEN_WIDTH - 10, centerY - 2, ">", 1);
+        } else {
+            print(4, centerY, "No presets available", 1);
+        }
+
+        /* Footer hints - check if there are children to drill into */
+        const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
+        const hasChildren = levelDef && levelDef.children;
+        const hint = hasChildren ? "Jog:browse  Push:edit" : "Jog:browse  Back:exit";
+        drawFooter(hint);
     } else {
-        /* Build items with labels and values */
-        const items = hierEditorParams.map(param => {
-            const key = typeof param === "string" ? param : param.key || param;
-            const meta = getParamMetadata(key);
-            const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-            const val = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${key}`);
-            const displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
-            return { label, value: displayVal, key };
-        });
+        /* Draw param list */
+        if (hierEditorParams.length === 0) {
+            print(4, 24, "No parameters", 1);
+        } else {
+            /* Build items with labels and values */
+            const items = hierEditorParams.map(param => {
+                const key = typeof param === "string" ? param : param.key || param;
+                const meta = getParamMetadata(key);
+                const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
+                const val = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${key}`);
+                const displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
+                return { label, value: displayVal, key };
+            });
 
-        drawMenuList({
-            items,
-            selectedIndex: hierEditorSelectedIdx,
-            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y - 10 },
-            getLabel: (item) => item.label,
-            getValue: (item) => item.value,
-            valueAlignRight: true,
-            editMode: hierEditorEditMode
-        });
+            drawMenuList({
+                items,
+                selectedIndex: hierEditorSelectedIdx,
+                listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y - 10 },
+                getLabel: (item) => item.label,
+                getValue: (item) => item.value,
+                valueAlignRight: true,
+                editMode: hierEditorEditMode
+            });
+        }
+
+        /* Footer hints */
+        const hint = hierEditorEditMode ? "Jog:adjust  Push:done" : "Jog:scroll  Push:edit";
+        drawFooter(hint);
     }
-
-    /* Footer hints */
-    const hint = hierEditorEditMode ? "Jog:adjust  Push:done" : "Jog:scroll  Push:edit";
-    drawFooter(hint);
 }
 
 /* Change preset in component edit mode */
@@ -1437,6 +1662,7 @@ function updateFocusedSlot(slot) {
 }
 
 function handleJog(delta) {
+    hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
             /* 5 items: 4 slots + Master FX */
@@ -1502,7 +1728,10 @@ function handleJog(delta) {
             changeComponentPreset(delta);
             break;
         case VIEWS.HIERARCHY_EDITOR:
-            if (hierEditorEditMode) {
+            if (hierEditorIsPresetLevel) {
+                /* Browse presets */
+                changeHierPreset(delta);
+            } else if (hierEditorEditMode) {
                 /* Adjust selected param value */
                 adjustHierSelectedParam(delta);
             } else {
@@ -1515,6 +1744,7 @@ function handleJog(delta) {
 }
 
 function handleSelect() {
+    hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
             if (selectedSlot < slots.length) {
@@ -1588,14 +1818,28 @@ function handleSelect() {
             editingChainSettingValue = !editingChainSettingValue;
             break;
         case VIEWS.HIERARCHY_EDITOR:
-            /* Toggle edit mode for selected param */
-            hierEditorEditMode = !hierEditorEditMode;
+            if (hierEditorIsPresetLevel) {
+                /* On preset browser - drill into children if available */
+                const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
+                if (levelDef && levelDef.children) {
+                    /* Push current level onto path and enter children level */
+                    hierEditorPath.push(hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`);
+                    hierEditorLevel = levelDef.children;
+                    hierEditorSelectedIdx = 0;
+                    loadHierarchyLevel();
+                }
+                /* If no children, do nothing (just browsing presets) */
+            } else {
+                /* On params level - toggle edit mode */
+                hierEditorEditMode = !hierEditorEditMode;
+            }
             break;
     }
     needsRedraw = true;
 }
 
 function handleBack() {
+    hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
             /* At root level - exit shadow mode and return to Move */
@@ -1672,8 +1916,24 @@ function handleBack() {
                 /* Exit edit mode first */
                 hierEditorEditMode = false;
                 needsRedraw = true;
+            } else if (hierEditorPath.length > 0) {
+                /* Go back to parent level */
+                hierEditorPath.pop();
+                /* Find the parent level that has children pointing to current level */
+                const levels = hierEditorHierarchy.levels;
+                let parentLevel = "root";
+                for (const [name, def] of Object.entries(levels)) {
+                    if (def.children === hierEditorLevel) {
+                        parentLevel = name;
+                        break;
+                    }
+                }
+                hierEditorLevel = parentLevel;
+                hierEditorSelectedIdx = 0;
+                loadHierarchyLevel();
+                needsRedraw = true;
             } else {
-                /* Exit hierarchy editor */
+                /* At root level - exit hierarchy editor */
                 exitHierarchyEditor();
             }
             break;
@@ -1929,7 +2189,9 @@ function drawComponentParams() {
 function drawChainEdit() {
     clear_screen();
     const slotName = slots[selectedSlot]?.name || "Unknown";
-    drawHeader(`S${selectedSlot + 1} Chain`);
+    /* Show slot number and preset name in header */
+    const headerText = truncateText(`S${selectedSlot + 1} ${slotName}`, 24);
+    drawHeader(headerText);
 
     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
     const chainSelected = selectedChainComponent === -1;
@@ -2240,16 +2502,6 @@ globalThis.tick = function() {
 
     /* Draw overlay on top of main view (uses shared overlay system) */
     drawOverlay();
-
-    /* Debug: show last CC and shift state at top right */
-    const shiftStr = isShiftHeld() ? "S" : "";
-    print(70, 2, `${shiftStr}CC${lastCC.cc}`, 1);
-    /* Debug: show chain load info or shift+click result */
-    if (view === VIEWS.CHAIN_EDIT && globalThis._debugLoad) {
-        print(2, 56, globalThis._debugLoad, 1);
-    } else if (globalThis._debugShift) {
-        print(2, 56, globalThis._debugShift, 1);
-    }
 };
 
 let debugMidiCounter = 0;
@@ -2307,18 +2559,14 @@ globalThis.onMidiMessageInternal = function(data) {
         /* Handle knob CCs (71-78) for parameter control */
         if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) {
             const knobIndex = d1 - KNOB_CC_START;
+            const delta = decodeDelta(d2);
 
-            /* In hierarchy editor, knobs control mapped params directly */
-            if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length) {
-                const delta = decodeDelta(d2);
-                if (delta !== 0) {
-                    adjustHierKnobParam(knobIndex, delta);
-                    needsRedraw = true;
-                }
+            /* Use shared knob handler for hierarchy/chain editor contexts */
+            if (adjustKnobAndShow(knobIndex, delta)) {
                 return;
             }
 
-            /* Default: show overlay for slot's knob mapping */
+            /* Default (chain selected or settings): show overlay for slot's knob mapping */
             handleKnobTurn(knobIndex, d2);
             return;
         }
@@ -2341,7 +2589,14 @@ globalThis.onMidiMessageInternal = function(data) {
     if ((status & 0xF0) === MidiNoteOn && d2 > 0) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
-            handleKnobTurn(knobIndex, 0);  // Show overlay with current value
+
+            /* Use shared knob overlay for hierarchy/chain editor contexts */
+            if (showKnobOverlay(knobIndex)) {
+                return;
+            }
+
+            /* Default (chain selected or settings): show overlay for slot's global knob mapping */
+            handleKnobTurn(knobIndex, 0);
             return;
         }
     }

@@ -3236,8 +3236,9 @@ static void shadow_filter_move_input(void)
                         }
                     }
                 }
-                /* Route knob CCs to focused slot's DSP */
-                if (d1 >= 71 && d1 <= 78) {
+                /* Route knob CCs to focused slot's DSP - but only when NOT in shadow display mode.
+                 * When shadow UI is active, it handles knobs via set_param based on ui_hierarchy. */
+                if (d1 >= 71 && d1 <= 78 && !shadow_display_mode) {
                     uint8_t msg[3] = { status, d1, d2 };
                     shadow_route_knob_cc_to_focused_slot(msg, 3);
                 }
@@ -4521,16 +4522,15 @@ int ioctl(int fd, unsigned long request, ...)
                     }
                 }
 
-                /* Route knob CCs (71-78) to the focused slot's DSP */
-                if (d1 >= 71 && d1 <= 78) {
-                    uint8_t msg[3] = { status, d1, d2 };
-                    shadow_route_knob_cc_to_focused_slot(msg, 3);
-                }
+                /* Knob CCs (71-78) are handled by shadow UI via set_param based on ui_hierarchy.
+                 * Do NOT route to DSP here - shadow UI controls knobs when in display mode. */
+                int is_knob_cc = (d1 >= 71 && d1 <= 78);
 
                 /* Check capture rules for CCs (beyond the hardcoded blocks) */
+                /* Skip knobs - they're handled by shadow UI, not routed to DSP */
                 {
                     const shadow_capture_rules_t *capture = shadow_get_focused_capture();
-                    if (capture && capture_has_cc(capture, d1)) {
+                    if (capture && capture_has_cc(capture, d1) && !is_knob_cc) {
                         /* Route captured CC to focused slot's DSP */
                         int slot = shadow_control ? shadow_control->ui_slot : 0;
                         if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&

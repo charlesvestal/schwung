@@ -4262,6 +4262,36 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route synth: prefixed params to synth (strip prefix) */
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
+
+        /* For chain_params: try plugin first, fall back to parsed module.json data */
+        if (strcmp(subkey, "chain_params") == 0) {
+            /* Try plugin's own chain_params handler first */
+            if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+                int result = inst->synth_plugin_v2->get_param(inst->synth_instance, subkey, buf, buf_len);
+                if (result > 0) return result;  /* Plugin provided chain_params */
+            } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
+                int result = inst->synth_plugin->get_param(subkey, buf, buf_len);
+                if (result > 0) return result;
+            }
+            /* Fall back to parsed module.json data */
+            if (inst->synth_param_count > 0) {
+                int offset = 0;
+                offset += snprintf(buf + offset, buf_len - offset, "[");
+                for (int i = 0; i < inst->synth_param_count && offset < buf_len - 100; i++) {
+                    chain_param_info_t *p = &inst->synth_params[i];
+                    if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    offset += snprintf(buf + offset, buf_len - offset,
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g}",
+                        p->key, p->name[0] ? p->name : p->key,
+                        p->type == KNOB_TYPE_INT ? "int" : "float",
+                        p->min_val, p->max_val);
+                }
+                offset += snprintf(buf + offset, buf_len - offset, "]");
+                return offset;
+            }
+            return -1;  /* No chain_params available */
+        }
+
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
             return inst->synth_plugin_v2->get_param(inst->synth_instance, subkey, buf, buf_len);
         } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
@@ -4273,6 +4303,36 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route fx1: prefixed params to FX1 (strip prefix) */
     if (strncmp(key, "fx1:", 4) == 0) {
         const char *subkey = key + 4;
+
+        /* For chain_params: try plugin first, fall back to parsed module.json data */
+        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 0) {
+            /* Try plugin's own chain_params handler first */
+            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0] && inst->fx_plugins_v2[0]->get_param) {
+                int result = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+                if (result > 0) return result;
+            } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->get_param) {
+                int result = inst->fx_plugins[0]->get_param(subkey, buf, buf_len);
+                if (result > 0) return result;
+            }
+            /* Fall back to parsed module.json data */
+            if (inst->fx_param_counts[0] > 0) {
+                int offset = 0;
+                offset += snprintf(buf + offset, buf_len - offset, "[");
+                for (int i = 0; i < inst->fx_param_counts[0] && offset < buf_len - 100; i++) {
+                    chain_param_info_t *p = &inst->fx_params[0][i];
+                    if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    offset += snprintf(buf + offset, buf_len - offset,
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g}",
+                        p->key, p->name[0] ? p->name : p->key,
+                        p->type == KNOB_TYPE_INT ? "int" : "float",
+                        p->min_val, p->max_val);
+                }
+                offset += snprintf(buf + offset, buf_len - offset, "]");
+                return offset;
+            }
+            return -1;
+        }
+
         if (inst->fx_count > 0) {
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0] && inst->fx_plugins_v2[0]->get_param) {
                 return inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
@@ -4286,6 +4346,36 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route fx2: prefixed params to FX2 (strip prefix) */
     if (strncmp(key, "fx2:", 4) == 0) {
         const char *subkey = key + 4;
+
+        /* For chain_params: try plugin first, fall back to parsed module.json data */
+        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 1) {
+            /* Try plugin's own chain_params handler first */
+            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1] && inst->fx_plugins_v2[1]->get_param) {
+                int result = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
+                if (result > 0) return result;
+            } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->get_param) {
+                int result = inst->fx_plugins[1]->get_param(subkey, buf, buf_len);
+                if (result > 0) return result;
+            }
+            /* Fall back to parsed module.json data */
+            if (inst->fx_param_counts[1] > 0) {
+                int offset = 0;
+                offset += snprintf(buf + offset, buf_len - offset, "[");
+                for (int i = 0; i < inst->fx_param_counts[1] && offset < buf_len - 100; i++) {
+                    chain_param_info_t *p = &inst->fx_params[1][i];
+                    if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    offset += snprintf(buf + offset, buf_len - offset,
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g}",
+                        p->key, p->name[0] ? p->name : p->key,
+                        p->type == KNOB_TYPE_INT ? "int" : "float",
+                        p->min_val, p->max_val);
+                }
+                offset += snprintf(buf + offset, buf_len - offset, "]");
+                return offset;
+            }
+            return -1;
+        }
+
         if (inst->fx_count > 1) {
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1] && inst->fx_plugins_v2[1]->get_param) {
                 return inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
