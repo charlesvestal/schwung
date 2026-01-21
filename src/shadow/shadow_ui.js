@@ -67,7 +67,8 @@ const VIEWS = {
     COMPONENT_PARAMS: "params", // Edit component params (Phase 3)
     COMPONENT_SELECT: "compselect", // Select module for a component
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
-    MASTER_FX: "masterfx"     // Master FX selection
+    MASTER_FX: "masterfx",    // Master FX selection
+    HIERARCHY_EDITOR: "hierarch" // Hierarchy-based parameter editor
 };
 
 /* Chain component types for horizontal editor */
@@ -186,6 +187,18 @@ let editingComponentKey = "";    // "synth", "fx1", "fx2", "midiFx"
 let editComponentPresetCount = 0;
 let editComponentPreset = 0;
 let editComponentPresetName = "";
+
+/* Hierarchy editor state */
+let hierEditorSlot = -1;
+let hierEditorComponent = "";
+let hierEditorHierarchy = null;
+let hierEditorLevel = "root";
+let hierEditorPath = [];          // breadcrumb path
+let hierEditorParams = [];        // current level's params
+let hierEditorKnobs = [];         // current level's knob-mapped params
+let hierEditorSelectedIdx = 0;
+let hierEditorEditMode = false;   // true when editing a param value
+let hierEditorChainParams = [];   // metadata from chain_params
 
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
@@ -516,6 +529,41 @@ function getFxParam(slot, fxNum, param) {
 
 function setFxParam(slot, fxNum, param, value) {
     return setSlotParam(slot, `fx${fxNum}:${param}`, value);
+}
+
+/* Fetch chain_params metadata from a component */
+function getComponentChainParams(slot, componentKey) {
+    /* Chain params are typically in module.json, but we query via get_param */
+    const key = componentKey === "synth" ? "synth:chain_params" :
+                componentKey === "fx1" ? "fx1:chain_params" :
+                componentKey === "fx2" ? "fx2:chain_params" : null;
+    if (!key) return [];
+
+    const json = getSlotParam(slot, key);
+    if (!json) return [];
+
+    try {
+        return JSON.parse(json);
+    } catch (e) {
+        return [];
+    }
+}
+
+/* Fetch ui_hierarchy from a component */
+function getComponentHierarchy(slot, componentKey) {
+    const key = componentKey === "synth" ? "synth:ui_hierarchy" :
+                componentKey === "fx1" ? "fx1:ui_hierarchy" :
+                componentKey === "fx2" ? "fx2:ui_hierarchy" : null;
+    if (!key) return null;
+
+    const json = getSlotParam(slot, key);
+    if (!json) return null;
+
+    try {
+        return JSON.parse(json);
+    } catch (e) {
+        return null;
+    }
 }
 
 /* Fetch patch detail info from chain DSP */
@@ -1077,8 +1125,24 @@ function handleShiftSelect() {
     enterComponentEdit(selectedSlot, comp.key);
 }
 
-/* Enter component edit mode - try to load module UI, fall back to preset browser */
+/* Enter component edit mode - try hierarchy editor first, then module UI, then preset browser */
 function enterComponentEdit(slotIndex, componentKey) {
+    selectedSlot = slotIndex;
+    editingComponentKey = componentKey;
+
+    /* Try hierarchy editor first (for plugins with ui_hierarchy) */
+    const hierarchy = getComponentHierarchy(slotIndex, componentKey);
+    if (hierarchy) {
+        enterHierarchyEditor(slotIndex, componentKey);
+        return;
+    }
+
+    /* Fall back to simple preset browser */
+    enterComponentEditFallback(slotIndex, componentKey);
+}
+
+/* Fallback component edit - simple preset browser */
+function enterComponentEditFallback(slotIndex, componentKey) {
     selectedSlot = slotIndex;
     editingComponentKey = componentKey;
 
@@ -1110,6 +1174,193 @@ function enterComponentEdit(slotIndex, componentKey) {
 
     view = VIEWS.COMPONENT_EDIT;
     needsRedraw = true;
+}
+
+/* ============================================================
+ * Hierarchy Editor - Generic parameter editing for plugins
+ * ============================================================ */
+
+/* Enter hierarchy-based parameter editor for a component */
+function enterHierarchyEditor(slotIndex, componentKey) {
+    const hierarchy = getComponentHierarchy(slotIndex, componentKey);
+    if (!hierarchy) {
+        /* No hierarchy - fall back to simple preset browser */
+        enterComponentEditFallback(slotIndex, componentKey);
+        return;
+    }
+
+    hierEditorSlot = slotIndex;
+    hierEditorComponent = componentKey;
+    hierEditorHierarchy = hierarchy;
+    hierEditorLevel = hierarchy.modes ? null : "root";  // Start at mode select if modes exist
+    hierEditorPath = [];
+    hierEditorSelectedIdx = 0;
+    hierEditorEditMode = false;
+
+    /* Fetch chain_params metadata for this component */
+    hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
+
+    /* Set up param shims for this component */
+    setupModuleParamShims(slotIndex, componentKey);
+
+    /* Load current level's params and knobs */
+    loadHierarchyLevel();
+
+    view = VIEWS.HIERARCHY_EDITOR;
+    needsRedraw = true;
+}
+
+/* Load params and knobs for current hierarchy level */
+function loadHierarchyLevel() {
+    if (!hierEditorHierarchy) return;
+
+    const levels = hierEditorHierarchy.levels;
+    const levelDef = hierEditorLevel ? levels[hierEditorLevel] : null;
+
+    if (!levelDef) {
+        /* At mode selection level */
+        hierEditorParams = hierEditorHierarchy.modes || [];
+        hierEditorKnobs = [];
+        return;
+    }
+
+    hierEditorParams = levelDef.params || [];
+    hierEditorKnobs = levelDef.knobs || [];
+}
+
+/* Exit hierarchy editor */
+function exitHierarchyEditor() {
+    clearModuleParamShims();
+    hierEditorSlot = -1;
+    hierEditorComponent = "";
+    hierEditorHierarchy = null;
+    hierEditorChainParams = [];
+    view = VIEWS.CHAIN_EDIT;
+    needsRedraw = true;
+}
+
+/* Get param metadata from chain_params */
+function getParamMetadata(key) {
+    if (!hierEditorChainParams) return null;
+    return hierEditorChainParams.find(p => p.key === key);
+}
+
+/* Adjust selected param value via jog */
+function adjustHierSelectedParam(delta) {
+    if (hierEditorSelectedIdx >= hierEditorParams.length) return;
+
+    const param = hierEditorParams[hierEditorSelectedIdx];
+    const key = typeof param === "string" ? param : param.key || param;
+    const fullKey = `${hierEditorComponent}:${key}`;
+
+    const currentVal = getSlotParam(hierEditorSlot, fullKey);
+    if (currentVal === null) return;
+
+    const num = parseFloat(currentVal);
+    if (isNaN(num)) return;
+
+    /* Get step from metadata or use default */
+    const meta = getParamMetadata(key);
+    const step = meta && meta.step ? meta.step : 0.02;
+    const min = meta && typeof meta.min === "number" ? meta.min : 0;
+    const max = meta && typeof meta.max === "number" ? meta.max : 1;
+
+    const newVal = Math.max(min, Math.min(max, num + delta * step));
+    setSlotParam(hierEditorSlot, fullKey, newVal.toFixed(3));
+}
+
+/* Adjust knob-mapped param */
+function adjustHierKnobParam(knobIdx, delta) {
+    if (knobIdx >= hierEditorKnobs.length) return;
+
+    const key = hierEditorKnobs[knobIdx];
+    const fullKey = `${hierEditorComponent}:${key}`;
+
+    const currentVal = getSlotParam(hierEditorSlot, fullKey);
+    if (currentVal === null) return;
+
+    const num = parseFloat(currentVal);
+    if (isNaN(num)) return;
+
+    /* Get step from metadata or use default */
+    const meta = getParamMetadata(key);
+    const step = meta && meta.step ? meta.step : 0.02;
+    const min = meta && typeof meta.min === "number" ? meta.min : 0;
+    const max = meta && typeof meta.max === "number" ? meta.max : 1;
+
+    const newVal = Math.max(min, Math.min(max, num + delta * step));
+    setSlotParam(hierEditorSlot, fullKey, newVal.toFixed(3));
+
+    /* Show overlay with full context */
+    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
+    const displayVal = Math.round((newVal - min) / (max - min) * 100) + "%";
+    showOverlay(displayName, displayVal);
+}
+
+/* Format a value for display in hierarchy editor */
+function formatHierDisplayValue(key, val) {
+    const meta = getParamMetadata(key);
+    const num = parseFloat(val);
+    if (isNaN(num)) return val;
+
+    /* Show as percentage for 0-1 float values */
+    if (meta && meta.type === "float") {
+        const min = typeof meta.min === "number" ? meta.min : 0;
+        const max = typeof meta.max === "number" ? meta.max : 1;
+        if (min === 0 && max === 1) {
+            return Math.round(num * 100) + "%";
+        }
+    }
+    /* For int or other types, show raw value */
+    if (meta && meta.type === "int") {
+        return Math.round(num).toString();
+    }
+    return num.toFixed(2);
+}
+
+/* Draw the hierarchy-based parameter editor */
+function drawHierarchyEditor() {
+    clear_screen();
+
+    /* Build breadcrumb header */
+    const componentName = hierEditorComponent === "synth" ? "Synth" :
+                          hierEditorComponent === "fx1" ? "FX1" :
+                          hierEditorComponent === "fx2" ? "FX2" : hierEditorComponent;
+    let breadcrumb = `S${hierEditorSlot + 1} ${componentName}`;
+    if (hierEditorPath.length > 0) {
+        breadcrumb += " > " + hierEditorPath.join(" > ");
+    }
+
+    drawHeader(truncateText(breadcrumb, 24));
+
+    /* Draw param list */
+    if (hierEditorParams.length === 0) {
+        print(4, 24, "No parameters", 1);
+    } else {
+        /* Build items with labels and values */
+        const items = hierEditorParams.map(param => {
+            const key = typeof param === "string" ? param : param.key || param;
+            const meta = getParamMetadata(key);
+            const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
+            const val = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${key}`);
+            const displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
+            return { label, value: displayVal, key };
+        });
+
+        drawMenuList({
+            items,
+            selectedIndex: hierEditorSelectedIdx,
+            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y - 10 },
+            getLabel: (item) => item.label,
+            getValue: (item) => item.value,
+            valueAlignRight: true,
+            editMode: hierEditorEditMode
+        });
+    }
+
+    /* Footer hints */
+    const hint = hierEditorEditMode ? "Jog:adjust  Push:done" : "Jog:scroll  Push:edit";
+    drawFooter(hint);
 }
 
 /* Change preset in component edit mode */
@@ -1250,6 +1501,15 @@ function handleJog(delta) {
             /* Jog changes preset */
             changeComponentPreset(delta);
             break;
+        case VIEWS.HIERARCHY_EDITOR:
+            if (hierEditorEditMode) {
+                /* Adjust selected param value */
+                adjustHierSelectedParam(delta);
+            } else {
+                /* Scroll param list */
+                hierEditorSelectedIdx = Math.max(0, Math.min(hierEditorParams.length - 1, hierEditorSelectedIdx + delta));
+            }
+            break;
     }
     needsRedraw = true;
 }
@@ -1327,6 +1587,10 @@ function handleSelect() {
             /* Toggle editing mode for value settings */
             editingChainSettingValue = !editingChainSettingValue;
             break;
+        case VIEWS.HIERARCHY_EDITOR:
+            /* Toggle edit mode for selected param */
+            hierEditorEditMode = !hierEditorEditMode;
+            break;
     }
     needsRedraw = true;
 }
@@ -1402,6 +1666,16 @@ function handleBack() {
             unloadModuleUi();
             view = VIEWS.CHAIN_EDIT;
             needsRedraw = true;
+            break;
+        case VIEWS.HIERARCHY_EDITOR:
+            if (hierEditorEditMode) {
+                /* Exit edit mode first */
+                hierEditorEditMode = false;
+                needsRedraw = true;
+            } else {
+                /* Exit hierarchy editor */
+                exitHierarchyEditor();
+            }
             break;
     }
 }
@@ -1957,6 +2231,9 @@ globalThis.tick = function() {
                 drawComponentEdit();
             }
             break;
+        case VIEWS.HIERARCHY_EDITOR:
+            drawHierarchyEditor();
+            break;
         default:
             drawSlots();
     }
@@ -2027,9 +2304,21 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
 
-        /* Handle knob CCs (71-78) for parameter control overlay */
+        /* Handle knob CCs (71-78) for parameter control */
         if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) {
             const knobIndex = d1 - KNOB_CC_START;
+
+            /* In hierarchy editor, knobs control mapped params directly */
+            if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length) {
+                const delta = decodeDelta(d2);
+                if (delta !== 0) {
+                    adjustHierKnobParam(knobIndex, delta);
+                    needsRedraw = true;
+                }
+                return;
+            }
+
+            /* Default: show overlay for slot's knob mapping */
             handleKnobTurn(knobIndex, d2);
             return;
         }
