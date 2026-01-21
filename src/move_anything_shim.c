@@ -1024,12 +1024,26 @@ static const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
     ""
 };
 
-/* Master FX state - processes mixed shadow audio output */
-static void *shadow_master_fx_handle = NULL;          /* dlopen handle */
-static audio_fx_api_v2_t *shadow_master_fx = NULL;    /* FX API pointer */
-static void *shadow_master_fx_instance = NULL;        /* FX instance */
-static char shadow_master_fx_module[256] = "";        /* Full DSP path */
-static shadow_capture_rules_t shadow_master_fx_capture;  /* Master FX capture rules */
+/* Master FX chain - 4 FX slots that process mixed shadow audio output */
+#define MASTER_FX_SLOTS 4
+
+typedef struct {
+    void *handle;                    /* dlopen handle */
+    audio_fx_api_v2_t *api;          /* FX API pointer */
+    void *instance;                  /* FX instance */
+    char module_path[256];           /* Full DSP path */
+    char module_id[64];              /* Module ID for display */
+    shadow_capture_rules_t capture;  /* Capture rules for this FX */
+} master_fx_slot_t;
+
+static master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
+
+/* Legacy single-slot pointers for backward compatibility during transition */
+#define shadow_master_fx_handle (shadow_master_fx_slots[0].handle)
+#define shadow_master_fx (shadow_master_fx_slots[0].api)
+#define shadow_master_fx_instance (shadow_master_fx_slots[0].instance)
+#define shadow_master_fx_module (shadow_master_fx_slots[0].module_path)
+#define shadow_master_fx_capture (shadow_master_fx_slots[0].capture)
 
 /* ==========================================================================
  * D-Bus Volume Sync - Monitor Move's track volume via accessibility D-Bus
@@ -1757,8 +1771,10 @@ static void shadow_chain_defaults(void) {
                 sizeof(shadow_chain_slots[i].patch_name) - 1);
         shadow_chain_slots[i].patch_name[sizeof(shadow_chain_slots[i].patch_name) - 1] = '\0';
     }
-    /* Clear master FX capture rules */
-    capture_clear(&shadow_master_fx_capture);
+    /* Clear all master FX slots */
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        memset(&shadow_master_fx_slots[i], 0, sizeof(master_fx_slot_t));
+    }
 }
 
 static void shadow_ui_state_update_slot(int slot) {
@@ -1898,61 +1914,72 @@ static int shadow_chain_find_patch_index(void *instance, const char *name) {
     return -1;
 }
 
-/* Unload the current master FX if any */
-static void shadow_master_fx_unload(void) {
-    if (shadow_master_fx_instance && shadow_master_fx && shadow_master_fx->destroy_instance) {
-        shadow_master_fx->destroy_instance(shadow_master_fx_instance);
+/* Unload a specific master FX slot */
+static void shadow_master_fx_slot_unload(int slot) {
+    if (slot < 0 || slot >= MASTER_FX_SLOTS) return;
+    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
+
+    if (s->instance && s->api && s->api->destroy_instance) {
+        s->api->destroy_instance(s->instance);
     }
-    shadow_master_fx_instance = NULL;
-    shadow_master_fx = NULL;
-    if (shadow_master_fx_handle) {
-        dlclose(shadow_master_fx_handle);
-        shadow_master_fx_handle = NULL;
+    s->instance = NULL;
+    s->api = NULL;
+    if (s->handle) {
+        dlclose(s->handle);
+        s->handle = NULL;
     }
-    shadow_master_fx_module[0] = '\0';
+    s->module_path[0] = '\0';
+    s->module_id[0] = '\0';
+    capture_clear(&s->capture);
 }
 
-/* Load a master FX module by full DSP path (e.g., "/data/.../cloudseed.so").
+/* Unload all master FX slots */
+static void shadow_master_fx_unload_all(void) {
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        shadow_master_fx_slot_unload(i);
+    }
+}
+
+/* Load a master FX module into a specific slot by full DSP path.
  * Returns 0 on success, -1 on failure. */
-static int shadow_master_fx_load(const char *dsp_path) {
+static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
+    if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
+    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
+
     if (!dsp_path || !dsp_path[0]) {
-        shadow_master_fx_unload();
-        capture_clear(&shadow_master_fx_capture);
-        return 0;  /* Empty = disable master FX */
+        shadow_master_fx_slot_unload(slot);
+        return 0;  /* Empty = disable this slot */
     }
 
     /* Already loaded? */
-    if (strcmp(shadow_master_fx_module, dsp_path) == 0 && shadow_master_fx_instance) {
+    if (strcmp(s->module_path, dsp_path) == 0 && s->instance) {
         return 0;
     }
 
     /* Unload previous */
-    shadow_master_fx_unload();
-    capture_clear(&shadow_master_fx_capture);
+    shadow_master_fx_slot_unload(slot);
 
-    shadow_master_fx_handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
-    if (!shadow_master_fx_handle) {
-        fprintf(stderr, "Shadow master FX: failed to load %s: %s\n", dsp_path, dlerror());
+    s->handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
+    if (!s->handle) {
+        fprintf(stderr, "Shadow master FX[%d]: failed to load %s: %s\n", slot, dsp_path, dlerror());
         return -1;
     }
 
     /* Look for audio FX v2 init function */
-    audio_fx_init_v2_fn init_fn = (audio_fx_init_v2_fn)dlsym(
-        shadow_master_fx_handle, AUDIO_FX_INIT_V2_SYMBOL);
+    audio_fx_init_v2_fn init_fn = (audio_fx_init_v2_fn)dlsym(s->handle, AUDIO_FX_INIT_V2_SYMBOL);
     if (!init_fn) {
-        fprintf(stderr, "Shadow master FX: %s not found in %s\n",
-                AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
-        dlclose(shadow_master_fx_handle);
-        shadow_master_fx_handle = NULL;
+        fprintf(stderr, "Shadow master FX[%d]: %s not found in %s\n", slot, AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
+        dlclose(s->handle);
+        s->handle = NULL;
         return -1;
     }
 
-    shadow_master_fx = init_fn(&shadow_host_api);
-    if (!shadow_master_fx || !shadow_master_fx->create_instance) {
-        fprintf(stderr, "Shadow master FX: init failed for %s\n", dsp_path);
-        dlclose(shadow_master_fx_handle);
-        shadow_master_fx_handle = NULL;
-        shadow_master_fx = NULL;
+    s->api = init_fn(&shadow_host_api);
+    if (!s->api || !s->api->create_instance) {
+        fprintf(stderr, "Shadow master FX[%d]: init failed for %s\n", slot, dsp_path);
+        dlclose(s->handle);
+        s->handle = NULL;
+        s->api = NULL;
         return -1;
     }
 
@@ -1965,17 +1992,26 @@ static int shadow_master_fx_load(const char *dsp_path) {
         *last_slash = '\0';
     }
 
-    shadow_master_fx_instance = shadow_master_fx->create_instance(module_dir, NULL);
-    if (!shadow_master_fx_instance) {
-        fprintf(stderr, "Shadow master FX: create_instance failed for %s\n", dsp_path);
-        dlclose(shadow_master_fx_handle);
-        shadow_master_fx_handle = NULL;
-        shadow_master_fx = NULL;
+    s->instance = s->api->create_instance(module_dir, NULL);
+    if (!s->instance) {
+        fprintf(stderr, "Shadow master FX[%d]: create_instance failed for %s\n", slot, dsp_path);
+        dlclose(s->handle);
+        s->handle = NULL;
+        s->api = NULL;
         return -1;
     }
 
-    strncpy(shadow_master_fx_module, dsp_path, sizeof(shadow_master_fx_module) - 1);
-    shadow_master_fx_module[sizeof(shadow_master_fx_module) - 1] = '\0';
+    strncpy(s->module_path, dsp_path, sizeof(s->module_path) - 1);
+    s->module_path[sizeof(s->module_path) - 1] = '\0';
+
+    /* Extract module ID from path (e.g., "/path/to/cloudseed/dsp.so" -> "cloudseed") */
+    const char *id_start = strrchr(module_dir, '/');
+    if (id_start) {
+        strncpy(s->module_id, id_start + 1, sizeof(s->module_id) - 1);
+    } else {
+        strncpy(s->module_id, module_dir, sizeof(s->module_id) - 1);
+    }
+    s->module_id[sizeof(s->module_id) - 1] = '\0';
 
     /* Load capture rules from module.json capabilities */
     char module_json_path[512];
@@ -1990,10 +2026,9 @@ static int shadow_master_fx_load(const char *dsp_path) {
             if (json) {
                 fread(json, 1, size, f);
                 json[size] = '\0';
-                /* Look for capabilities.capture - reuse the capture_parse_json function */
                 const char *caps = strstr(json, "\"capabilities\"");
                 if (caps) {
-                    capture_parse_json(&shadow_master_fx_capture, caps);
+                    capture_parse_json(&s->capture, caps);
                 }
                 free(json);
             }
@@ -2001,8 +2036,18 @@ static int shadow_master_fx_load(const char *dsp_path) {
         fclose(f);
     }
 
-    fprintf(stderr, "Shadow master FX: loaded %s\n", dsp_path);
+    fprintf(stderr, "Shadow master FX[%d]: loaded %s\n", slot, dsp_path);
     return 0;
+}
+
+/* Legacy wrapper: load into slot 0 for backward compatibility */
+static int shadow_master_fx_load(const char *dsp_path) {
+    return shadow_master_fx_slot_load(0, dsp_path);
+}
+
+/* Legacy wrapper: unload slot 0 */
+static void shadow_master_fx_unload(void) {
+    shadow_master_fx_slot_unload(0);
 }
 
 /* Forward declaration for capture loading */
@@ -2326,41 +2371,64 @@ static void shadow_inprocess_handle_param_request(void) {
     uint8_t req_type = shadow_param->request_type;
     if (req_type == 0) return;  /* No pending request */
 
-    /* Handle global master FX params first (slot-independent) */
+    /* Handle master FX chain params: master_fx:fx1:module, master_fx:fx2:wet, etc. */
     if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
         const char *fx_key = shadow_param->key + 10;
+        int mfx_slot = -1;  /* -1 = legacy (slot 0), 0-3 = specific slot */
+        const char *param_key = fx_key;
+
+        /* Parse slot: fx1:, fx2:, fx3:, fx4: */
+        if (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; }
+        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; }
+        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; }
+        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; }
+        else { mfx_slot = 0; param_key = fx_key; }  /* Legacy: default to slot 0 */
+
+        master_fx_slot_t *mfx = &shadow_master_fx_slots[mfx_slot];
+
         if (req_type == 1) {  /* SET */
-            if (strcmp(fx_key, "module") == 0) {
-                /* Load or unload master FX */
-                int result = shadow_master_fx_load(shadow_param->value);
+            if (strcmp(param_key, "module") == 0) {
+                /* Load or unload master FX slot */
+                int result = shadow_master_fx_slot_load(mfx_slot, shadow_param->value);
                 shadow_param->error = (result == 0) ? 0 : 7;
                 shadow_param->result_len = 0;
-            } else if (strcmp(fx_key, "param") == 0 && shadow_master_fx && shadow_master_fx_instance) {
+            } else if (strcmp(param_key, "param") == 0 && mfx->api && mfx->instance) {
                 /* Set master FX param: value is "key=value" */
                 char *eq = strchr(shadow_param->value, '=');
-                if (eq && shadow_master_fx->set_param) {
+                if (eq && mfx->api->set_param) {
                     *eq = '\0';
-                    shadow_master_fx->set_param(shadow_master_fx_instance, shadow_param->value, eq + 1);
+                    mfx->api->set_param(mfx->instance, shadow_param->value, eq + 1);
                     *eq = '=';
                     shadow_param->error = 0;
                 } else {
                     shadow_param->error = 8;
                 }
                 shadow_param->result_len = 0;
+            } else if (mfx->api && mfx->instance && mfx->api->set_param) {
+                /* Direct param set: master_fx:fx1:wet -> set_param("wet", value) */
+                mfx->api->set_param(mfx->instance, param_key, shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
             } else {
                 shadow_param->error = 9;
                 shadow_param->result_len = -1;
             }
         } else if (req_type == 2) {  /* GET */
-            if (strcmp(fx_key, "module") == 0) {
-                strncpy(shadow_param->value, shadow_master_fx_module, SHADOW_PARAM_VALUE_LEN - 1);
+            if (strcmp(param_key, "module") == 0) {
+                strncpy(shadow_param->value, mfx->module_path, SHADOW_PARAM_VALUE_LEN - 1);
                 shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
                 shadow_param->error = 0;
                 shadow_param->result_len = strlen(shadow_param->value);
-            } else if (shadow_master_fx && shadow_master_fx_instance && shadow_master_fx->get_param) {
-                /* Get master FX param by key (fx_key is the param name) */
-                int len = shadow_master_fx->get_param(shadow_master_fx_instance, fx_key,
-                                                       shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+            } else if (strcmp(param_key, "name") == 0) {
+                /* Return module ID (display name) */
+                strncpy(shadow_param->value, mfx->module_id, SHADOW_PARAM_VALUE_LEN - 1);
+                shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            } else if (mfx->api && mfx->instance && mfx->api->get_param) {
+                /* Get master FX param by key */
+                int len = mfx->api->get_param(mfx->instance, param_key,
+                                               shadow_param->value, SHADOW_PARAM_VALUE_LEN);
                 if (len >= 0) {
                     shadow_param->error = 0;
                     shadow_param->result_len = len;
@@ -2555,10 +2623,12 @@ static void shadow_inprocess_mix_audio(void) {
         output_buffer[i] = (int16_t)mix[i];
     }
 
-    /* Apply master FX if loaded (processes in-place) */
-    if (shadow_master_fx_instance && shadow_master_fx && shadow_master_fx->process_block) {
-        shadow_master_fx->process_block(shadow_master_fx_instance,
-                                        output_buffer, FRAMES_PER_BLOCK);
+    /* Apply master FX chain - process through all 4 slots in series */
+    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+        master_fx_slot_t *s = &shadow_master_fx_slots[fx];
+        if (s->instance && s->api && s->api->process_block) {
+            s->api->process_block(s->instance, output_buffer, FRAMES_PER_BLOCK);
+        }
     }
 
     /* Apply master volume to shadow output */
@@ -4315,14 +4385,35 @@ int ioctl(int fd, unsigned long request, ...)
                         }
 
                         /* Shift + Volume + Track = jump to that slot's edit screen */
-                        if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && !shadow_display_mode) {
+                        if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
                             shadow_control->ui_slot = new_slot;
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
+                            if (!shadow_display_mode) {
+                                /* From Move mode: launch shadow UI */
+                                shadow_display_mode = 1;
+                                shadow_control->display_mode = 1;
+                                launch_shadow_ui();
+                            }
+                            /* If already in shadow mode, flag will be picked up by tick() */
+                        }
+                    }
+                }
+
+                /* Shift + Volume + Menu = jump to Master FX view */
+                if (d1 == CC_MENU && d2 > 0) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
+                        if (!shadow_display_mode) {
+                            /* From Move mode: launch shadow UI and jump to Master FX */
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                             shadow_display_mode = 1;
                             shadow_control->display_mode = 1;
                             launch_shadow_ui();
-                            printf("Jump to slot %d edit screen\n", new_slot + 1);
+                        } else {
+                            /* Already in shadow mode: set flag */
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                         }
+                        /* Block Menu CC from reaching Move */
+                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     }
                 }
             }

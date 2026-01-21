@@ -4176,6 +4176,72 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
         }
     }
+    /* Knob mapping set: knob_N_set with value "target:param" */
+    else if (strncmp(key, "knob_", 5) == 0) {
+        int knob_num;
+        char action[32];
+        if (sscanf(key + 5, "%d_%31s", &knob_num, action) == 2 && knob_num >= 1 && knob_num <= 8) {
+            int cc = 70 + knob_num;  /* CC 71-78 for knobs 1-8 */
+
+            if (strcmp(action, "set") == 0 && val) {
+                /* Parse "target:param" format */
+                char target[32] = "";
+                char param[64] = "";
+                const char *colon = strchr(val, ':');
+                if (colon) {
+                    int tlen = colon - val;
+                    if (tlen > 0 && tlen < 32) {
+                        strncpy(target, val, tlen);
+                        target[tlen] = '\0';
+                    }
+                    strncpy(param, colon + 1, 63);
+                    param[63] = '\0';
+                }
+
+                /* Find or add mapping for this CC */
+                int found = -1;
+                for (int i = 0; i < inst->knob_mapping_count; i++) {
+                    if (inst->knob_mappings[i].cc == cc) {
+                        found = i;
+                        break;
+                    }
+                }
+
+                if (target[0] && param[0]) {
+                    /* Set mapping */
+                    if (found >= 0) {
+                        /* Update existing */
+                        strncpy(inst->knob_mappings[found].target, target, 31);
+                        strncpy(inst->knob_mappings[found].param, param, 63);
+                    } else if (inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                        /* Add new */
+                        int i = inst->knob_mapping_count++;
+                        inst->knob_mappings[i].cc = cc;
+                        strncpy(inst->knob_mappings[i].target, target, 31);
+                        strncpy(inst->knob_mappings[i].param, param, 63);
+                        inst->knob_mappings[i].type = KNOB_TYPE_FLOAT;
+                        inst->knob_mappings[i].min_val = 0.0f;
+                        inst->knob_mappings[i].max_val = 1.0f;
+                        inst->knob_mappings[i].current_value = 0.5f;
+                    }
+                }
+            }
+            else if (strcmp(action, "clear") == 0) {
+                /* Remove mapping for this CC */
+                for (int i = 0; i < inst->knob_mapping_count; i++) {
+                    if (inst->knob_mappings[i].cc == cc) {
+                        /* Shift remaining mappings down */
+                        for (int j = i; j < inst->knob_mapping_count - 1; j++) {
+                            inst->knob_mappings[j] = inst->knob_mappings[j + 1];
+                        }
+                        inst->knob_mapping_count--;
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+    }
     /* Forward to synth by default */
     else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
         inst->synth_plugin_v2->set_param(inst->synth_instance, key, val);

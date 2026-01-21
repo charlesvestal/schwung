@@ -56,6 +56,7 @@ const SHADOW_UI_SLOTS = 4;
 
 /* UI flags from shim (must match SHADOW_UI_FLAG_* in shim) */
 const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
+const SHADOW_UI_FLAG_JUMP_TO_MASTER_FX = 0x02;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -83,7 +84,9 @@ const VIEWS = {
     COMPONENT_SELECT: "compselect", // Select module for a component
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // Master FX selection
-    HIERARCHY_EDITOR: "hierarch" // Hierarchy-based parameter editor
+    HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
+    KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
+    KNOB_PARAM_PICKER: "knobpick" // Pick parameter for a knob assignment
 };
 
 /* Special action key for swap module option */
@@ -150,10 +153,46 @@ let cachedKnobContextsSlot = -1; // Slot when cache was built
 let cachedKnobContextsComp = -1; // Component when cache was built
 let cachedKnobContextsLevel = ""; // Hierarchy level when cache was built
 
+/* Knob editor state - for creating/editing knob assignments */
+let knobEditorSlot = 0;          // Which slot we're editing knobs for
+let knobEditorIndex = 0;         // Selected knob (0-7) in editor
+let knobEditorAssignments = [];  // Array of 8 {target, param} for current slot
+let knobParamPickerFolder = null; // null = main (targets), string = target name for params
+let knobParamPickerIndex = 0;    // Selected index in param picker
+let knobParamPickerParams = [];  // Available params in current folder
+
 /* Master FX state */
 let selectedMasterFx = 0;    // Index into MASTER_FX_OPTIONS
 let currentMasterFxId = "";  // Currently loaded master FX module ID
 let currentMasterFxPath = ""; // Full path to currently loaded DSP
+
+/* Master FX chain components (4 FX slots + settings) */
+const MASTER_FX_CHAIN_COMPONENTS = [
+    { key: "fx1", label: "FX 1", position: 0, paramPrefix: "master_fx:fx1:" },
+    { key: "fx2", label: "FX 2", position: 1, paramPrefix: "master_fx:fx2:" },
+    { key: "fx3", label: "FX 3", position: 2, paramPrefix: "master_fx:fx3:" },
+    { key: "fx4", label: "FX 4", position: 3, paramPrefix: "master_fx:fx4:" },
+    { key: "settings", label: "Settings", position: 4, paramPrefix: "" }
+];
+
+/* Master FX chain editing state */
+let masterFxConfig = {
+    fx1: { module: "" },
+    fx2: { module: "" },
+    fx3: { module: "" },
+    fx4: { module: "" }
+};
+let selectedMasterFxComponent = 0;    // 0-4: fx1, fx2, fx3, fx4, settings
+let selectingMasterFxModule = false;  // True when selecting module for a component
+let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
+
+/* Master FX settings (shown when Settings component is selected) */
+const MASTER_FX_SETTINGS_ITEMS = [
+    { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 }
+];
+let selectedMasterFxSetting = 0;
+let editingMasterFxSetting = false;
+let editMasterFxValue = "";
 
 /* Slot settings definitions */
 const SLOT_SETTINGS = [
@@ -190,6 +229,7 @@ let selectedModuleIndex = 0;   // Index in availableModules
 
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
+    { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 15, step: 1 }  // -1 = none, 0-15 = ch 1-16
@@ -222,6 +262,10 @@ let hierEditorKnobs = [];         // current level's knob-mapped params
 let hierEditorSelectedIdx = 0;
 let hierEditorEditMode = false;   // true when editing a param value
 let hierEditorChainParams = [];   // metadata from chain_params
+
+/* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
+let hierEditorIsMasterFx = false;
+let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -608,6 +652,34 @@ function getComponentHierarchy(slot, componentKey) {
     }
 }
 
+/* Fetch chain_params metadata from a Master FX slot */
+function getMasterFxChainParams(fxSlot) {
+    if (fxSlot < 0 || fxSlot >= 4) return [];
+    const fxKey = `fx${fxSlot + 1}`;
+    const key = `master_fx:${fxKey}:chain_params`;
+    const json = shadow_get_param(0, key);
+    if (!json) return [];
+    try {
+        return JSON.parse(json);
+    } catch (e) {
+        return [];
+    }
+}
+
+/* Fetch ui_hierarchy from a Master FX slot */
+function getMasterFxHierarchy(fxSlot) {
+    if (fxSlot < 0 || fxSlot >= 4) return null;
+    const fxKey = `fx${fxSlot + 1}`;
+    const key = `master_fx:${fxKey}:ui_hierarchy`;
+    const json = shadow_get_param(0, key);
+    if (!json) return null;
+    try {
+        return JSON.parse(json);
+    } catch (e) {
+        return null;
+    }
+}
+
 /* Fetch patch detail info from chain DSP */
 function fetchPatchDetail(slot) {
     patchDetail.synthName = getSlotParam(slot, "synth:name") || "Unknown";
@@ -926,28 +998,138 @@ function enterSlotSettings(slotIndex) {
 function enterMasterFxSettings() {
     /* Scan for available audio_fx modules */
     MASTER_FX_OPTIONS = scanForAudioFxModules();
-    /* Load current master FX selection */
-    currentMasterFxId = getMasterFxModule();
-    /* Find index in options */
-    selectedMasterFx = MASTER_FX_OPTIONS.findIndex(o => o.id === currentMasterFxId);
-    if (selectedMasterFx < 0) selectedMasterFx = 0;
+    /* Load current master FX chain configuration from DSP */
+    loadMasterFxChainConfig();
+    selectedMasterFxComponent = 0;  // Start at FX 1
+    selectingMasterFxModule = false;
     view = VIEWS.MASTER_FX;
     needsRedraw = true;
 }
 
-function applyMasterFxSelection() {
-    const selected = MASTER_FX_OPTIONS[selectedMasterFx];
-    if (selected) {
-        /* Pass the full DSP path to the shim */
-        setMasterFxModule(selected.dspPath || "");
-        currentMasterFxId = selected.id;
-        /* Save to config - save the dspPath for persistence */
-        currentMasterFxPath = selected.dspPath || "";
-        saveConfigMasterFx();
+/* Load master FX chain configuration from DSP */
+function loadMasterFxChainConfig() {
+    masterFxConfig = {
+        fx1: { module: "" },
+        fx2: { module: "" },
+        fx3: { module: "" },
+        fx4: { module: "" }
+    };
+
+    /* Query each slot's module from DSP */
+    for (let i = 1; i <= 4; i++) {
+        const key = `fx${i}`;
+        const moduleId = getMasterFxSlotModule(i - 1);
+        masterFxConfig[key].module = moduleId || "";
     }
-    /* Return to slots view */
-    view = VIEWS.SLOTS;
+}
+
+/* Get module ID loaded in a master FX slot (0-3) */
+function getMasterFxSlotModule(slotIndex) {
+    if (typeof shadow_get_param !== "function") return "";
+    try {
+        /* Query returns the module_id from the shim */
+        return shadow_get_param(0, `master_fx:fx${slotIndex + 1}:name`) || "";
+    } catch (e) {
+        return "";
+    }
+}
+
+/* Set module for a master FX slot */
+function setMasterFxSlotModule(slotIndex, dspPath) {
+    if (typeof shadow_set_param !== "function") return false;
+    try {
+        return shadow_set_param(0, `master_fx:fx${slotIndex + 1}:module`, dspPath || "");
+    } catch (e) {
+        return false;
+    }
+}
+
+/* Enter module selection for a Master FX slot */
+function enterMasterFxModuleSelect(componentIndex) {
+    const comp = MASTER_FX_CHAIN_COMPONENTS[componentIndex];
+    if (!comp || comp.key === "settings") return;
+
+    /* Set selection index to current module if any */
+    const currentModule = masterFxConfig[comp.key]?.module || "";
+    selectedMasterFxModuleIndex = MASTER_FX_OPTIONS.findIndex(o => o.id === currentModule);
+    if (selectedMasterFxModuleIndex < 0) selectedMasterFxModuleIndex = 0;
+
+    selectingMasterFxModule = true;
     needsRedraw = true;
+}
+
+/* Apply module selection for Master FX slot */
+function applyMasterFxModuleSelection() {
+    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+    if (!comp || comp.key === "settings") return;
+
+    const selected = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex];
+    if (selected) {
+        /* Load the module into the slot */
+        setMasterFxSlotModule(selectedMasterFxComponent, selected.dspPath || "");
+        masterFxConfig[comp.key].module = selected.id;
+        /* Save to config */
+        saveMasterFxChainConfig();
+    }
+
+    /* Exit module selection mode */
+    selectingMasterFxModule = false;
+    needsRedraw = true;
+}
+
+/* Save master FX chain configuration */
+function saveMasterFxChainConfig() {
+    /* The shim persists the state, but we also save to shadow config */
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+
+        /* Save master FX chain - store dspPaths for each slot */
+        config.master_fx_chain = {};
+        for (let i = 1; i <= 4; i++) {
+            const key = `fx${i}`;
+            const moduleId = masterFxConfig[key]?.module || "";
+            if (moduleId) {
+                const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleId);
+                config.master_fx_chain[key] = {
+                    id: moduleId,
+                    path: opt?.dspPath || ""
+                };
+            }
+        }
+
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {
+        /* Ignore errors */
+    }
+}
+
+/* Load master FX chain from config at startup */
+function loadMasterFxChainFromConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+
+        const config = JSON.parse(content);
+        if (!config.master_fx_chain) return;
+
+        /* Load each slot from config */
+        for (let i = 1; i <= 4; i++) {
+            const key = `fx${i}`;
+            const slotConfig = config.master_fx_chain[key];
+            if (slotConfig && slotConfig.path) {
+                setMasterFxSlotModule(i - 1, slotConfig.path);
+                masterFxConfig[key].module = slotConfig.id || "";
+            }
+        }
+    } catch (e) {
+        /* Ignore errors */
+    }
 }
 
 /* Enter chain editing view for a slot */
@@ -1149,6 +1331,162 @@ function adjustChainSetting(slot, setting, delta) {
     }
 }
 
+/* ========== Knob Editor Functions ========== */
+
+/* Enter knob editor for a slot */
+function enterKnobEditor(slot) {
+    knobEditorSlot = slot;
+    knobEditorIndex = 0;
+    loadKnobAssignments(slot);
+    view = VIEWS.KNOB_EDITOR;
+    needsRedraw = true;
+}
+
+/* Load current knob assignments from DSP */
+function loadKnobAssignments(slot) {
+    knobEditorAssignments = [];
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        const target = getSlotParam(slot, `knob_${i + 1}_target`) || "";
+        const param = getSlotParam(slot, `knob_${i + 1}_param`) || "";
+        knobEditorAssignments.push({ target, param });
+    }
+}
+
+/* Get available targets for knob assignment (components with modules loaded) */
+function getKnobTargets(slot) {
+    const targets = [{ id: "", name: "(None)" }];
+    const cfg = chainConfigs[slot];
+    if (!cfg) return targets;
+
+    /* Synth */
+    if (cfg.synth && cfg.synth.module) {
+        const name = getSlotParam(slot, "synth:name") || cfg.synth.module;
+        targets.push({ id: "synth", name: `Synth: ${name}` });
+    }
+
+    /* FX 1 */
+    if (cfg.fx1 && cfg.fx1.module) {
+        const name = getSlotParam(slot, "fx1:name") || cfg.fx1.module;
+        targets.push({ id: "fx1", name: `FX1: ${name}` });
+    }
+
+    /* FX 2 */
+    if (cfg.fx2 && cfg.fx2.module) {
+        const name = getSlotParam(slot, "fx2:name") || cfg.fx2.module;
+        targets.push({ id: "fx2", name: `FX2: ${name}` });
+    }
+
+    return targets;
+}
+
+/* Get available params for a target via ui_hierarchy or known params */
+function getKnobParamsForTarget(slot, target) {
+    const params = [];
+
+    /* Try to get params from ui_hierarchy */
+    const hierarchy = getSlotParam(slot, `${target}:ui_hierarchy`);
+    if (hierarchy) {
+        try {
+            const hier = JSON.parse(hierarchy);
+            /* Collect all knob-mappable params from the hierarchy */
+            if (hier.levels) {
+                for (const levelName in hier.levels) {
+                    const level = hier.levels[levelName];
+                    if (level.knobs && Array.isArray(level.knobs)) {
+                        for (const knob of level.knobs) {
+                            /* knob can be just a param name or a {key, label} object */
+                            if (typeof knob === "string") {
+                                if (!params.find(p => p.key === knob)) {
+                                    params.push({ key: knob, label: knob });
+                                }
+                            } else if (knob.key) {
+                                if (!params.find(p => p.key === knob.key)) {
+                                    params.push({ key: knob.key, label: knob.label || knob.key });
+                                }
+                            }
+                        }
+                    }
+                    /* Also check params array */
+                    if (level.params && Array.isArray(level.params)) {
+                        for (const p of level.params) {
+                            if (typeof p === "string") {
+                                if (!params.find(pp => pp.key === p)) {
+                                    params.push({ key: p, label: p });
+                                }
+                            } else if (p.key) {
+                                if (!params.find(pp => pp.key === p.key)) {
+                                    params.push({ key: p.key, label: p.label || p.key });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            /* Parse error, fall back to known params */
+        }
+    }
+
+    /* If no params from hierarchy, use known defaults */
+    if (params.length === 0) {
+        if (target === "synth") {
+            params.push({ key: "preset", label: "Preset" });
+            params.push({ key: "volume", label: "Volume" });
+        } else {
+            /* FX params */
+            params.push({ key: "wet", label: "Wet" });
+            params.push({ key: "dry", label: "Dry" });
+            params.push({ key: "room_size", label: "Room Size" });
+            params.push({ key: "damping", label: "Damping" });
+        }
+    }
+
+    return params;
+}
+
+/* Get display label for a knob assignment */
+function getKnobAssignmentLabel(assignment) {
+    if (!assignment || !assignment.target || !assignment.param) {
+        return "(None)";
+    }
+    return `${assignment.target}: ${assignment.param}`;
+}
+
+/* Enter param picker for current knob */
+function enterKnobParamPicker() {
+    knobParamPickerFolder = null;
+    knobParamPickerIndex = 0;
+    knobParamPickerParams = [];
+    view = VIEWS.KNOB_PARAM_PICKER;
+    needsRedraw = true;
+}
+
+/* Apply knob assignment from picker */
+function applyKnobAssignment(target, param) {
+    const assignment = { target: target || "", param: param || "" };
+    knobEditorAssignments[knobEditorIndex] = assignment;
+
+    /* Save to DSP via set_param */
+    const knobNum = knobEditorIndex + 1;
+    if (target && param) {
+        /* Set knob mapping - DSP uses "target:param" format internally */
+        setSlotParam(knobEditorSlot, `knob_${knobNum}_set`, `${target}:${param}`);
+    } else {
+        /* Clear knob mapping */
+        setSlotParam(knobEditorSlot, `knob_${knobNum}_clear`, "1");
+    }
+
+    /* Refresh knob mappings cache */
+    fetchKnobMappings(knobEditorSlot);
+    invalidateKnobContextCache();
+
+    /* Return to knob editor */
+    view = VIEWS.KNOB_EDITOR;
+    needsRedraw = true;
+}
+
+/* ========== End Knob Editor Functions ========== */
+
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
     const comp = CHAIN_COMPONENTS[selectedChainComponent];
@@ -1252,6 +1590,48 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     needsRedraw = true;
 }
 
+/* Enter hierarchy-based parameter editor for a Master FX slot */
+function enterMasterFxHierarchyEditor(fxSlot) {
+    if (fxSlot < 0 || fxSlot >= 4) return;
+
+    const hierarchy = getMasterFxHierarchy(fxSlot);
+    if (!hierarchy) {
+        /* No hierarchy - just return, module selection is available */
+        return;
+    }
+
+    /* Dismiss any active overlay and clear pending knob state */
+    hideOverlay();
+    pendingHierKnobIndex = -1;
+    pendingHierKnobDelta = 0;
+
+    /* Set up hierarchy editor for Master FX
+     * Use slot 0 (all Master FX params use slot 0)
+     * Component key is "master_fx:fxN" so params become "master_fx:fxN:param" */
+    const fxKey = `fx${fxSlot + 1}`;
+    hierEditorSlot = 0;
+    hierEditorComponent = `master_fx:${fxKey}`;
+    hierEditorHierarchy = hierarchy;
+    hierEditorLevel = hierarchy.modes ? null : "root";
+    hierEditorPath = [];
+    hierEditorSelectedIdx = 0;
+    hierEditorEditMode = false;
+    hierEditorIsMasterFx = true;
+    hierEditorMasterFxSlot = fxSlot;
+
+    /* Fetch chain_params metadata for this Master FX slot */
+    hierEditorChainParams = getMasterFxChainParams(fxSlot);
+
+    /* Set up param shims for Master FX component */
+    setupModuleParamShims(0, `master_fx:${fxKey}`);
+
+    /* Load current level's params and knobs */
+    loadHierarchyLevel();
+
+    view = VIEWS.HIERARCHY_EDITOR;
+    needsRedraw = true;
+}
+
 /* Load params and knobs for current hierarchy level */
 function loadHierarchyLevel() {
     if (!hierEditorHierarchy) return;
@@ -1328,13 +1708,20 @@ function exitHierarchyEditor() {
     pendingHierKnobDelta = 0;
 
     clearModuleParamShims();
+
+    /* Determine return view based on whether we're editing Master FX */
+    const returnToMasterFx = hierEditorIsMasterFx;
+
     hierEditorSlot = -1;
     hierEditorComponent = "";
     hierEditorHierarchy = null;
     hierEditorChainParams = [];
     hierEditorIsPresetLevel = false;
     hierEditorPresetEditMode = false;
-    view = VIEWS.CHAIN_EDIT;
+    hierEditorIsMasterFx = false;
+    hierEditorMasterFxSlot = -1;
+
+    view = returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
     needsRedraw = true;
 }
 
@@ -1474,6 +1861,57 @@ function buildKnobContextForKnob(knobIndex) {
         }
     }
 
+    /* Master FX view with FX slot selected */
+    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+        const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+        if (comp && comp.key !== "settings") {
+            const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
+            if (hierarchy && hierarchy.levels) {
+                let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+                /* If root has no knobs but has children, use first child level for knob mapping */
+                if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
+                    const childLevel = hierarchy.levels[levelDef.children];
+                    if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
+                        levelDef = childLevel;
+                    }
+                }
+                if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
+                    const key = levelDef.knobs[knobIndex];
+                    const fullKey = `master_fx:${comp.key}:${key}`;
+                    const chainParams = getMasterFxChainParams(selectedMasterFxComponent);
+                    const meta = chainParams.find(p => p.key === key);
+                    const pluginName = shadow_get_param(0, `master_fx:${comp.key}:name`) || comp.label;
+                    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
+                    return {
+                        slot: 0,  /* Master FX always uses slot 0 for param access */
+                        key,
+                        fullKey,
+                        meta,
+                        pluginName,
+                        displayName,
+                        title: `MFX ${pluginName} ${displayName}`,
+                        isMasterFx: true,
+                        masterFxSlot: selectedMasterFxComponent
+                    };
+                }
+            }
+            /* FX slot selected but no knob mappings - return generic context */
+            const pluginName = shadow_get_param(0, `master_fx:${comp.key}:name`) || comp.label;
+            return {
+                slot: 0,
+                key: null,
+                fullKey: null,
+                meta: null,
+                pluginName,
+                displayName: `Knob ${knobIndex + 1}`,
+                title: `MFX ${pluginName}`,
+                noMapping: true,
+                isMasterFx: true,
+                masterFxSlot: selectedMasterFxComponent
+            };
+        }
+    }
+
     /* Default: no special context */
     return null;
 }
@@ -1497,22 +1935,27 @@ function rebuildKnobContextCache() {
  * Returns context object or null if no mapping exists for this knob
  * Uses caching to avoid IPC calls on every CC message
  */
+let cachedKnobContextsMasterFxComp = -1;  /* Track Master FX component for cache */
+
 function getKnobContext(knobIndex) {
     /* Check if cache is valid */
     const currentSlot = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorSlot : selectedSlot;
     const currentComp = (view === VIEWS.HIERARCHY_EDITOR) ? -1 : selectedChainComponent;
     const currentLevel = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorLevel : "";
+    const currentMasterFxComp = (view === VIEWS.MASTER_FX) ? selectedMasterFxComponent : -1;
 
     const cacheValid = (
         cachedKnobContexts.length === NUM_KNOBS &&
         cachedKnobContextsView === view &&
         cachedKnobContextsSlot === currentSlot &&
         cachedKnobContextsComp === currentComp &&
-        cachedKnobContextsLevel === currentLevel
+        cachedKnobContextsLevel === currentLevel &&
+        cachedKnobContextsMasterFxComp === currentMasterFxComp
     );
 
     if (!cacheValid) {
         rebuildKnobContextCache();
+        cachedKnobContextsMasterFxComp = currentMasterFxComp;
     }
 
     return cachedKnobContexts[knobIndex] || null;
@@ -1823,13 +2266,17 @@ function handleJog(delta) {
         case VIEWS.SLOTS:
             /* 5 items: 4 slots + Master FX */
             selectedSlot = Math.max(0, Math.min(slots.length, selectedSlot + delta));
-            /* Only update focused slot for actual slots (0-3), not Master FX (4) */
-            if (selectedSlot < slots.length) {
-                updateFocusedSlot(selectedSlot);
-            }
+            /* Update focused slot: 0-3 for chain slots, 4 for Master FX */
+            updateFocusedSlot(selectedSlot);
             break;
         case VIEWS.MASTER_FX:
-            selectedMasterFx = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFx + delta));
+            if (selectingMasterFxModule) {
+                /* Navigate module list */
+                selectedMasterFxModuleIndex = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFxModuleIndex + delta));
+            } else {
+                /* Navigate chain components */
+                selectedMasterFxComponent = Math.max(0, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
+            }
             break;
         case VIEWS.SLOT_SETTINGS:
             if (editingSettingValue) {
@@ -1895,6 +2342,20 @@ function handleJog(delta) {
                 hierEditorSelectedIdx = Math.max(0, Math.min(hierEditorParams.length - 1, hierEditorSelectedIdx + delta));
             }
             break;
+        case VIEWS.KNOB_EDITOR:
+            /* Navigate knob list (8 knobs + Done button) */
+            knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS, knobEditorIndex + delta));
+            break;
+        case VIEWS.KNOB_PARAM_PICKER:
+            if (knobParamPickerFolder === null) {
+                /* Navigate targets list */
+                const targets = getKnobTargets(knobEditorSlot);
+                knobParamPickerIndex = Math.max(0, Math.min(targets.length - 1, knobParamPickerIndex + delta));
+            } else {
+                /* Navigate params list */
+                knobParamPickerIndex = Math.max(0, Math.min(knobParamPickerParams.length - 1, knobParamPickerIndex + delta));
+            }
+            break;
     }
     needsRedraw = true;
 }
@@ -1912,8 +2373,32 @@ function handleSelect() {
             }
             break;
         case VIEWS.MASTER_FX:
-            /* Apply master FX selection */
-            applyMasterFxSelection();
+            if (selectingMasterFxModule) {
+                /* Apply module selection */
+                applyMasterFxModuleSelection();
+            } else {
+                const selectedComp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+                if (selectedComp.key === "settings") {
+                    /* Settings - could open a settings menu, for now just show info */
+                    /* TODO: Master FX settings view */
+                } else {
+                    /* FX slot - check if module is loaded with hierarchy */
+                    const moduleData = masterFxConfig[selectedComp.key];
+                    if (moduleData && moduleData.module) {
+                        /* Module is loaded - try hierarchy editor first */
+                        const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
+                        if (hierarchy) {
+                            enterMasterFxHierarchyEditor(selectedMasterFxComponent);
+                        } else {
+                            /* No hierarchy - enter module selection to swap */
+                            enterMasterFxModuleSelect(selectedMasterFxComponent);
+                        }
+                    } else {
+                        /* No module loaded - enter module selection */
+                        enterMasterFxModuleSelect(selectedMasterFxComponent);
+                    }
+                }
+            }
             break;
         case VIEWS.SLOT_SETTINGS:
             const setting = SLOT_SETTINGS[selectedSetting];
@@ -1984,8 +2469,16 @@ function handleSelect() {
             applyComponentSelection();
             break;
         case VIEWS.CHAIN_SETTINGS:
-            /* Toggle editing mode for value settings */
-            editingChainSettingValue = !editingChainSettingValue;
+            {
+                const setting = CHAIN_SETTINGS_ITEMS[selectedChainSetting];
+                if (setting.type === "action" && setting.key === "knobs") {
+                    /* Open knob editor for this slot */
+                    enterKnobEditor(selectedSlot);
+                } else {
+                    /* Toggle editing mode for value settings */
+                    editingChainSettingValue = !editingChainSettingValue;
+                }
+            }
             break;
         case VIEWS.HIERARCHY_EDITOR:
             /* Check for mode selection (hierEditorLevel is null when modes exist) */
@@ -2036,6 +2529,39 @@ function handleSelect() {
                 }
             }
             break;
+        case VIEWS.KNOB_EDITOR:
+            if (knobEditorIndex >= NUM_KNOBS) {
+                /* Done button - return to chain settings */
+                view = VIEWS.CHAIN_SETTINGS;
+            } else {
+                /* Edit this knob's assignment */
+                enterKnobParamPicker();
+            }
+            break;
+        case VIEWS.KNOB_PARAM_PICKER:
+            if (knobParamPickerFolder === null) {
+                /* Main view - selecting a target */
+                const targets = getKnobTargets(knobEditorSlot);
+                const selected = targets[knobParamPickerIndex];
+                if (selected) {
+                    if (selected.id === "") {
+                        /* (None) selected - clear assignment */
+                        applyKnobAssignment("", "");
+                    } else {
+                        /* Enter param selection for this target */
+                        knobParamPickerFolder = selected.id;
+                        knobParamPickerIndex = 0;
+                        knobParamPickerParams = getKnobParamsForTarget(knobEditorSlot, selected.id);
+                    }
+                }
+            } else {
+                /* Param view - selecting a param */
+                const selected = knobParamPickerParams[knobParamPickerIndex];
+                if (selected) {
+                    applyKnobAssignment(knobParamPickerFolder, selected.key);
+                }
+            }
+            break;
     }
     needsRedraw = true;
 }
@@ -2082,14 +2608,22 @@ function handleBack() {
             }
             break;
         case VIEWS.MASTER_FX:
-            /* Return to slots list */
-            view = VIEWS.SLOTS;
-            needsRedraw = true;
+            if (selectingMasterFxModule) {
+                /* Cancel module selection, return to chain view */
+                selectingMasterFxModule = false;
+                needsRedraw = true;
+            } else {
+                /* Exit shadow mode and return to Move */
+                if (typeof shadow_request_exit === "function") {
+                    shadow_request_exit();
+                }
+            }
             break;
         case VIEWS.CHAIN_EDIT:
-            /* Return to slot list */
-            view = VIEWS.SLOTS;
-            needsRedraw = true;
+            /* Exit shadow mode and return to Move */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
             break;
         case VIEWS.COMPONENT_SELECT:
             /* Return to chain edit */
@@ -2150,6 +2684,24 @@ function handleBack() {
             } else {
                 /* At root level - exit hierarchy editor */
                 exitHierarchyEditor();
+            }
+            break;
+        case VIEWS.KNOB_EDITOR:
+            /* Return to chain settings */
+            view = VIEWS.CHAIN_SETTINGS;
+            needsRedraw = true;
+            break;
+        case VIEWS.KNOB_PARAM_PICKER:
+            if (knobParamPickerFolder !== null) {
+                /* Return to target selection */
+                knobParamPickerFolder = null;
+                knobParamPickerIndex = 0;
+                knobParamPickerParams = [];
+                needsRedraw = true;
+            } else {
+                /* Return to knob editor */
+                view = VIEWS.KNOB_EDITOR;
+                needsRedraw = true;
             }
             break;
     }
@@ -2563,13 +3115,20 @@ function drawChainSettings() {
     drawHeader(`S${selectedSlot + 1} Settings`);
 
     const listY = LIST_TOP_Y;
-    const lineHeight = 10;
+    const lineHeight = 9;  /* Smaller to fit all 4 items */
     const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
 
-    for (let i = 0; i < CHAIN_SETTINGS_ITEMS.length && i < maxVisible; i++) {
+    /* Calculate scroll offset if needed */
+    let scrollOffset = 0;
+    if (selectedChainSetting >= maxVisible) {
+        scrollOffset = selectedChainSetting - maxVisible + 1;
+    }
+
+    for (let i = 0; i < maxVisible && (i + scrollOffset) < CHAIN_SETTINGS_ITEMS.length; i++) {
+        const itemIdx = i + scrollOffset;
         const y = listY + i * lineHeight;
-        const setting = CHAIN_SETTINGS_ITEMS[i];
-        const isSelected = i === selectedChainSetting;
+        const setting = CHAIN_SETTINGS_ITEMS[itemIdx];
+        const isSelected = itemIdx === selectedChainSetting;
 
         if (isSelected) {
             fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
@@ -2594,17 +3153,196 @@ function drawChainSettings() {
     }
 }
 
+/* Draw knob assignment editor - list of 8 knobs with their assignments */
+function drawKnobEditor() {
+    clear_screen();
+    drawHeader(`S${knobEditorSlot + 1} Knobs`);
+
+    const listY = LIST_TOP_Y;
+    const lineHeight = 10;
+    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
+
+    /* List all 8 knobs + Done button */
+    const items = [];
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        items.push({
+            type: "knob",
+            label: `Knob ${i + 1}`,
+            assignment: knobEditorAssignments[i]
+        });
+    }
+    items.push({ type: "done", label: "Done" });
+
+    /* Calculate scroll offset */
+    let scrollOffset = 0;
+    if (knobEditorIndex >= maxVisible) {
+        scrollOffset = knobEditorIndex - maxVisible + 1;
+    }
+
+    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
+        const itemIdx = i + scrollOffset;
+        const item = items[itemIdx];
+        const y = listY + i * lineHeight;
+        const isSelected = itemIdx === knobEditorIndex;
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+
+        const labelColor = isSelected ? 0 : 1;
+        print(LIST_LABEL_X, y, item.label, labelColor);
+
+        /* Show assignment on the right */
+        if (item.type === "knob") {
+            const value = getKnobAssignmentLabel(item.assignment);
+            const truncValue = truncateText(value, 12);
+            const valueX = SCREEN_WIDTH - truncValue.length * 5 - 4;
+            print(valueX, y, truncValue, labelColor);
+        }
+    }
+
+    drawFooter("Click: edit  Back: cancel");
+}
+
+/* Draw param picker - select target then param for knob assignment */
+function drawKnobParamPicker() {
+    clear_screen();
+    const knobNum = knobEditorIndex + 1;
+
+    if (knobParamPickerFolder === null) {
+        /* Main view - show available targets */
+        drawHeader(`Knob ${knobNum} Target`);
+
+        const targets = getKnobTargets(knobEditorSlot);
+        drawMenuList({
+            items: targets,
+            selectedIndex: knobParamPickerIndex,
+            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+            getLabel: (item) => item.name,
+            getValue: () => ""
+        });
+
+        drawFooter("Click: select  Back: cancel");
+    } else {
+        /* Param view - show params for selected target */
+        drawHeader(`Knob ${knobNum} Param`);
+
+        /* Get params for this target */
+        if (knobParamPickerParams.length === 0) {
+            knobParamPickerParams = getKnobParamsForTarget(knobEditorSlot, knobParamPickerFolder);
+        }
+
+        drawMenuList({
+            items: knobParamPickerParams,
+            selectedIndex: knobParamPickerIndex,
+            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+            getLabel: (item) => item.label,
+            getValue: () => ""
+        });
+
+        drawFooter("Click: assign  Back: targets");
+    }
+}
+
 function drawMasterFx() {
     clear_screen();
+
+    /* Check if we're in module selection mode */
+    if (selectingMasterFxModule) {
+        drawMasterFxModuleSelect();
+        return;
+    }
+
     drawHeader("Master FX");
+
+    /* Calculate box layout - 5 components (4 FX + settings) across 128px */
+    const BOX_W = 22;
+    const BOX_H = 16;
+    const GAP = 2;
+    const TOTAL_W = 5 * BOX_W + 4 * GAP;  // 118px
+    const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);
+    const BOX_Y = 20;
+
+    /* Draw each component box */
+    for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
+        const comp = MASTER_FX_CHAIN_COMPONENTS[i];
+        const x = START_X + i * (BOX_W + GAP);
+        const isSelected = i === selectedMasterFxComponent;
+
+        /* Get abbreviation for this component */
+        let abbrev = "--";
+        if (comp.key === "settings") {
+            abbrev = "*";
+        } else {
+            const moduleData = masterFxConfig[comp.key];
+            abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
+        }
+
+        /* Draw box */
+        if (isSelected) {
+            fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
+        } else {
+            draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
+        }
+
+        /* Draw abbreviation centered in box */
+        const textColor = isSelected ? 0 : 1;
+        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
+        const textY = BOX_Y + 5;
+        print(textX, textY, abbrev, textColor);
+    }
+
+    /* Draw component label below boxes */
+    const selectedComp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+    const labelY = BOX_Y + BOX_H + 4;
+    const label = selectedComp ? selectedComp.label : "";
+    const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
+    print(labelX, labelY, label, 1);
+
+    /* Draw current module name below label */
+    const infoY = labelY + 12;
+    let infoLine = "";
+    if (selectedComp && selectedComp.key !== "settings") {
+        const moduleData = masterFxConfig[selectedComp.key];
+        if (moduleData && moduleData.module) {
+            /* Get display name from MASTER_FX_OPTIONS */
+            const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
+            infoLine = opt ? opt.name : moduleData.module;
+        } else {
+            infoLine = "(empty)";
+        }
+    } else if (selectedComp && selectedComp.key === "settings") {
+        infoLine = "Configure master FX";
+    }
+    infoLine = truncateText(infoLine, 24);
+    const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
+    print(infoX, infoY, infoLine, 1);
+
+    drawFooter("Click: select  Back: slots");
+}
+
+/* Draw module selection list for Master FX */
+function drawMasterFxModuleSelect() {
+    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+    drawHeader(`Select ${comp ? comp.label : "FX"}`);
+
+    if (MASTER_FX_OPTIONS.length === 0) {
+        print(LIST_LABEL_X, LIST_TOP_Y, "No FX modules available", 1);
+        return;
+    }
+
     drawMenuList({
         items: MASTER_FX_OPTIONS,
-        selectedIndex: selectedMasterFx,
+        selectedIndex: selectedMasterFxModuleIndex,
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         getLabel: (item) => item.name,
-        getValue: (item) => item.id === currentMasterFxId ? "*" : ""
+        getValue: (item) => {
+            /* Show * if this is the currently loaded module */
+            const currentModule = masterFxConfig[comp.key]?.module || "";
+            return item.id === currentModule ? "*" : "";
+        }
     });
-    drawFooter("Click: apply  Back: slots");
+    drawFooter("Click: apply  Back: cancel");
 }
 
 globalThis.init = function() {
@@ -2614,12 +3352,17 @@ globalThis.init = function() {
     updateFocusedSlot(selectedSlot);
     fetchKnobMappings(selectedSlot);
 
-    /* Load and apply master FX from config */
+    /* Scan for audio FX modules so display names are available */
+    MASTER_FX_OPTIONS = scanForAudioFxModules();
+
+    /* Load and apply master FX chain from config */
+    loadMasterFxChainFromConfig();
+
+    /* Legacy: migrate old single master_fx config to slot 1 */
     const savedMasterFx = loadMasterFxFromConfig();
-    if (savedMasterFx.path) {
-        setMasterFxModule(savedMasterFx.path);
-        currentMasterFxId = savedMasterFx.id;
-        currentMasterFxPath = savedMasterFx.path;
+    if (savedMasterFx.path && !masterFxConfig.fx1.module) {
+        setMasterFxSlotModule(0, savedMasterFx.path);
+        masterFxConfig.fx1.module = savedMasterFx.id;
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
 };
@@ -2641,6 +3384,14 @@ globalThis.tick = function() {
             /* Clear the flag */
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SLOT);
+            }
+        }
+        if (flags & SHADOW_UI_FLAG_JUMP_TO_MASTER_FX) {
+            /* Always jump to Master FX view */
+            enterMasterFxSettings();
+            /* Clear the flag */
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_MASTER_FX);
             }
         }
     }
@@ -2668,6 +3419,10 @@ globalThis.tick = function() {
     }
     if (lastKnobSlot !== currentTargetSlot) {
         fetchKnobMappings(currentTargetSlot);
+        /* If in Master FX view, switch to that slot's detail when track button pressed */
+        if (currentView === "MASTER_FX") {
+            enterChainEdit(currentTargetSlot);
+        }
     }
 
     redrawCounter++;
@@ -2714,6 +3469,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
+            break;
+        case VIEWS.KNOB_EDITOR:
+            drawKnobEditor();
+            break;
+        case VIEWS.KNOB_PARAM_PICKER:
+            drawKnobParamPicker();
             break;
         default:
             drawSlots();

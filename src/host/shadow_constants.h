@@ -50,7 +50,8 @@
  * UI Flags (set in shadow_control_t.ui_flags)
  * ============================================================================ */
 
-#define SHADOW_UI_FLAG_JUMP_TO_SLOT 0x01  /* Jump to slot settings on open */
+#define SHADOW_UI_FLAG_JUMP_TO_SLOT 0x01      /* Jump to slot settings on open */
+#define SHADOW_UI_FLAG_JUMP_TO_MASTER_FX 0x02 /* Jump to Master FX on open */
 
 /* ============================================================================
  * Special Values
