@@ -80,7 +80,8 @@ typedef struct shadow_control_t {
     volatile uint32_t ui_request_id;  /* Incremented on patch request */
     volatile uint32_t shim_counter;   /* Debug: shim tick counter */
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
-    volatile uint8_t reserved[43];
+    volatile uint8_t shift_held;      /* Is shift button currently held? */
+    volatile uint8_t reserved[42];
 } shadow_control_t;
 
 /*

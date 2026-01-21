@@ -4021,6 +4021,7 @@ void midi_monitor()
                     if (!shiftHeld && shift_armed) {
                         shiftHeld = 1;
                         shadow_shift_held = 1;  /* Sync global for cross-function access */
+                        if (shadow_control) shadow_control->shift_held = 1;
                         shift_on_ms = now_mono_ms();
                         log_hotkey_state("shift_on");
                         maybe_toggle_shadow();
@@ -4034,6 +4035,7 @@ void midi_monitor()
 
                     shiftHeld = 0;
                     shadow_shift_held = 0;  /* Sync global for cross-function access */
+                    if (shadow_control) shadow_control->shift_held = 0;
                     shift_armed = 1;
                     shift_on_ms = 0;
                     log_hotkey_state("shift_off");

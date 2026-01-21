@@ -59,12 +59,48 @@ const DEFAULT_SLOTS = [
 /* View constants */
 const VIEWS = {
     SLOTS: "slots",           // List of 4 chain slots + Master FX
-    SLOT_SETTINGS: "settings", // Per-slot settings (volume, channels)
+    SLOT_SETTINGS: "settings", // Per-slot settings (volume, channels) - legacy
+    CHAIN_EDIT: "chainedit",  // Horizontal chain component editor
+    CHAIN_SETTINGS: "chainsettings", // Chain settings (volume, channels, knob mapping)
     PATCHES: "patches",       // Patch list for selected slot
     PATCH_DETAIL: "detail",   // Show synth/fx info for selected patch
     COMPONENT_PARAMS: "params", // Edit component params (Phase 3)
+    COMPONENT_SELECT: "compselect", // Select module for a component
+    COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx"     // Master FX selection
 };
+
+/* Chain component types for horizontal editor */
+const CHAIN_COMPONENTS = [
+    { key: "midiFx", label: "MIDI FX", position: 0 },
+    { key: "synth", label: "Synth", position: 1 },
+    { key: "fx1", label: "FX 1", position: 2 },
+    { key: "fx2", label: "FX 2", position: 3 },
+    { key: "settings", label: "Settings", position: 4 }
+];
+
+/* Module abbreviations for chain display */
+const MODULE_ABBREVS = {
+    /* Synths */
+    "sf2": "SF", "dx7": "DX", "jv880": "JV", "obxd": "OB", "clap": "CL", "linein": "LI",
+    /* Audio FX */
+    "freeverb": "FV", "cloudseed": "CF", "spacecho": "SE", "tapescam": "TS", "psxverb": "PX",
+    /* MIDI FX */
+    "chord": "CH", "arp": "AR",
+    /* Special */
+    "settings": "*",
+    "none": "--"
+};
+
+/* In-memory chain configuration (for future save/load) */
+function createEmptyChainConfig() {
+    return {
+        midiFx: null,    // { module: "chord", params: {} } or null
+        synth: null,     // { module: "dx7", params: {} } or null
+        fx1: null,       // { module: "freeverb", params: {} } or null
+        fx2: null        // { module: "cloudseed", params: {} } or null
+    };
+}
 
 /* Master FX options - populated by scanning modules directory */
 let MASTER_FX_OPTIONS = [{ id: "", name: "None" }];
@@ -98,6 +134,7 @@ let currentMasterFxPath = ""; // Full path to currently loaded DSP
 /* Slot settings definitions */
 const SLOT_SETTINGS = [
     { key: "patch", label: "Patch", type: "action" },  // Opens patch browser
+    { key: "chain", label: "Edit Chain", type: "action" },  // Opens chain editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 16, step: 1 },  // -1 = none
@@ -119,6 +156,74 @@ let componentParams = [];      // List of {key, label, value, type, min, max}
 let selectedParam = 0;
 let editingValue = false;      // True when adjusting value
 let editValue = "";            // Current value being edited
+
+/* Chain editing state */
+let chainConfigs = [];         // In-memory chain configs per slot
+let selectedChainComponent = 0; // -1=chain, 0-4 (midiFx, synth, fx1, fx2, settings)
+let selectingModule = false;   // True when in module selection for a component
+let availableModules = [];     // Modules available for selected component type
+let selectedModuleIndex = 0;   // Index in availableModules
+
+/* Chain settings (shown when Settings component is selected) */
+const CHAIN_SETTINGS_ITEMS = [
+    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
+    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 16, step: 1 }
+];
+let selectedChainSetting = 0;
+let editingChainSettingValue = false;
+
+/* Shift state - read from shim via shadow_get_shift_held() */
+function isShiftHeld() {
+    if (typeof shadow_get_shift_held === "function") {
+        return shadow_get_shift_held() !== 0;
+    }
+    return false;
+}
+
+/* Component edit state (for Shift+Click editing) */
+let editingComponentKey = "";    // "synth", "fx1", "fx2", "midiFx"
+let editComponentPresetCount = 0;
+let editComponentPreset = 0;
+let editComponentPresetName = "";
+
+/* Initialize chain configs for all slots */
+function initChainConfigs() {
+    chainConfigs = [];
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        chainConfigs.push(createEmptyChainConfig());
+    }
+}
+
+/* Load chain config from current patch info */
+function loadChainConfigFromSlot(slotIndex) {
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
+
+    /* Read current patch configuration from DSP
+     * Note: get_param uses underscores (synth_module), set_param uses colons (synth:module) */
+    const synthModule = getSlotParam(slotIndex, "synth_module");
+    const midiFxModule = getSlotParam(slotIndex, "midi_fx_type");
+    const fx1Module = getSlotParam(slotIndex, "fx1_module");
+    const fx2Module = getSlotParam(slotIndex, "fx2_module");
+
+    /* Debug: track what DSP returned */
+    globalThis._debugLoad = `syn:${synthModule || '-'} fx1:${fx1Module || '-'}`;
+
+    cfg.synth = synthModule && synthModule !== "" ? { module: synthModule.toLowerCase(), params: {} } : null;
+    cfg.midiFx = midiFxModule && midiFxModule !== "" ? { module: midiFxModule.toLowerCase(), params: {} } : null;
+    cfg.fx1 = fx1Module && fx1Module !== "" ? { module: fx1Module.toLowerCase(), params: {} } : null;
+    cfg.fx2 = fx2Module && fx2Module !== "" ? { module: fx2Module.toLowerCase(), params: {} } : null;
+
+    chainConfigs[slotIndex] = cfg;
+    return cfg;
+}
+
+/* Get abbreviation for a module */
+function getModuleAbbrev(moduleId) {
+    if (!moduleId) return "--";
+    const lower = moduleId.toLowerCase();
+    return MODULE_ABBREVS[lower] || moduleId.substring(0, 2).toUpperCase();
+}
 
 /* Param API helper functions */
 function getSlotParam(slot, key) {
@@ -581,6 +686,265 @@ function applyMasterFxSelection() {
     needsRedraw = true;
 }
 
+/* Enter chain editing view for a slot */
+function enterChainEdit(slotIndex) {
+    selectedSlot = slotIndex;
+    updateFocusedSlot(slotIndex);
+    selectedChainComponent = 0;  // Start at MIDI FX (scroll left for Chain/patch)
+    /* Load current chain config from DSP */
+    loadChainConfigFromSlot(slotIndex);
+    view = VIEWS.CHAIN_EDIT;
+    needsRedraw = true;
+}
+
+/* Scan modules directory for modules of a specific component type */
+function scanModulesForType(componentType) {
+    const MODULES_DIR = "/data/UserData/move-anything/modules";
+    const CHAIN_SUBDIR = `${MODULES_DIR}/chain`;
+    const result = [{ id: "", name: "None" }];
+
+    /* Map component type to directory and expected component_type */
+    let searchDirs = [];
+    let expectedTypes = [];
+
+    if (componentType === "synth") {
+        searchDirs = [MODULES_DIR, `${CHAIN_SUBDIR}/sound_generators`];
+        expectedTypes = ["sound_generator"];
+    } else if (componentType === "midiFx") {
+        searchDirs = [`${CHAIN_SUBDIR}/midi_fx`];
+        expectedTypes = ["midi_fx"];
+    } else if (componentType === "fx1" || componentType === "fx2") {
+        searchDirs = [MODULES_DIR, `${CHAIN_SUBDIR}/audio_fx`];
+        expectedTypes = ["audio_fx"];
+    }
+
+    function scanDir(dirPath) {
+        try {
+            const entries = os.readdir(dirPath) || [];
+            const dirList = entries[0];
+            if (!Array.isArray(dirList)) return;
+
+            for (const entry of dirList) {
+                if (entry === "." || entry === "..") continue;
+
+                const modulePath = `${dirPath}/${entry}/module.json`;
+                try {
+                    const content = std.loadFile(modulePath);
+                    if (!content) continue;
+
+                    const json = JSON.parse(content);
+                    const modType = json.component_type ||
+                                   (json.capabilities && json.capabilities.component_type);
+
+                    if (expectedTypes.includes(modType)) {
+                        /* Check if already in result to avoid duplicates */
+                        const id = json.id || entry;
+                        if (!result.find(m => m.id === id)) {
+                            result.push({
+                                id: id,
+                                name: json.name || entry
+                            });
+                        }
+                    }
+                } catch (e) {
+                    /* Skip modules without readable module.json */
+                }
+            }
+        } catch (e) {
+            /* Failed to read directory */
+        }
+    }
+
+    for (const dir of searchDirs) {
+        scanDir(dir);
+    }
+
+    return result;
+}
+
+/* Enter component module selection view */
+function enterComponentSelect(slotIndex, componentIndex) {
+    const comp = CHAIN_COMPONENTS[componentIndex];
+    if (!comp || comp.key === "settings") return;
+
+    selectedSlot = slotIndex;
+    selectedChainComponent = componentIndex;
+
+    /* Scan for available modules of this type */
+    availableModules = scanModulesForType(comp.key);
+    selectedModuleIndex = 0;
+
+    /* Try to find current module in list */
+    const cfg = chainConfigs[slotIndex];
+    const current = cfg && cfg[comp.key];
+    if (current && current.module) {
+        const idx = availableModules.findIndex(m => m.id === current.module);
+        if (idx >= 0) selectedModuleIndex = idx;
+    }
+
+    view = VIEWS.COMPONENT_SELECT;
+    needsRedraw = true;
+}
+
+/* Apply the selected module to the component - updates DSP in realtime */
+function applyComponentSelection() {
+    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    const selected = availableModules[selectedModuleIndex];
+
+    if (!comp || comp.key === "settings") {
+        view = VIEWS.CHAIN_EDIT;
+        return;
+    }
+
+    /* Update in-memory config */
+    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    if (selected && selected.id) {
+        cfg[comp.key] = { module: selected.id, params: {} };
+    } else {
+        cfg[comp.key] = null;
+    }
+    chainConfigs[selectedSlot] = cfg;
+
+    /* Apply to DSP - map component key to param key */
+    const moduleId = selected && selected.id ? selected.id : "";
+    let paramKey = "";
+    switch (comp.key) {
+        case "synth":
+            paramKey = "synth:module";
+            break;
+        case "fx1":
+            paramKey = "fx1:module";
+            break;
+        case "fx2":
+            paramKey = "fx2:module";
+            break;
+        case "midiFx":
+            /* MIDI FX handled differently - uses chord/arp type params */
+            /* TODO: implement midi_fx:type or similar */
+            break;
+    }
+
+    if (paramKey) {
+        const success = setSlotParam(selectedSlot, paramKey, moduleId);
+        if (!success) {
+            print(2, 50, "Failed to apply", 1);
+        }
+    }
+
+    view = VIEWS.CHAIN_EDIT;
+    needsRedraw = true;
+}
+
+/* Enter chain settings view */
+function enterChainSettings(slotIndex) {
+    selectedSlot = slotIndex;
+    selectedChainSetting = 0;
+    editingChainSettingValue = false;
+    view = VIEWS.CHAIN_SETTINGS;
+    needsRedraw = true;
+}
+
+/* Get current value for a chain setting */
+function getChainSettingValue(slot, setting) {
+    const val = getSlotParam(slot, setting.key);
+    if (val === null) return "-";
+
+    if (setting.key === "slot:volume") {
+        const pct = Math.round(parseFloat(val) * 100);
+        return `${pct}%`;
+    }
+    if (setting.key === "slot:forward_channel") {
+        const ch = parseInt(val);
+        return ch < 0 ? "Off" : String(ch);
+    }
+    return String(val);
+}
+
+/* Adjust a chain setting value */
+function adjustChainSetting(slot, setting, delta) {
+    if (setting.type === "action") return;
+
+    const currentVal = getSlotParam(slot, setting.key);
+    let newVal;
+
+    if (setting.type === "float") {
+        const current = parseFloat(currentVal) || setting.min;
+        newVal = Math.max(setting.min, Math.min(setting.max, current + delta * setting.step));
+        newVal = newVal.toFixed(2);
+    } else if (setting.type === "int") {
+        const current = parseInt(currentVal) || setting.min;
+        newVal = Math.max(setting.min, Math.min(setting.max, current + delta * setting.step));
+        newVal = String(newVal);
+    }
+
+    if (newVal !== undefined) {
+        setSlotParam(slot, setting.key, newVal);
+    }
+}
+
+/* Handle Shift+Click - enter component edit mode */
+function handleShiftSelect() {
+    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    if (!comp || comp.key === "settings") return;
+
+    /* Check if this component has a module loaded */
+    const cfg = chainConfigs[selectedSlot];
+    const moduleData = cfg && cfg[comp.key];
+
+    /* Debug: show what we found */
+    globalThis._debugShift = `${comp.key}:${moduleData ? moduleData.module : 'null'}`;
+
+    if (!moduleData || !moduleData.module) {
+        /* No module loaded - just do normal select */
+        handleSelect();
+        return;
+    }
+
+    enterComponentEdit(selectedSlot, comp.key);
+}
+
+/* Enter component edit mode */
+function enterComponentEdit(slotIndex, componentKey) {
+    selectedSlot = slotIndex;
+    editingComponentKey = componentKey;
+
+    /* Get param prefix based on component */
+    const prefix = componentKey === "midiFx" ? "midi_fx" : componentKey;
+
+    /* Fetch preset count and current preset */
+    const countStr = getSlotParam(slotIndex, `${prefix}:preset_count`);
+    editComponentPresetCount = countStr ? parseInt(countStr) : 0;
+
+    const presetStr = getSlotParam(slotIndex, `${prefix}:preset`);
+    editComponentPreset = presetStr ? parseInt(presetStr) : 0;
+
+    /* Fetch preset name */
+    editComponentPresetName = getSlotParam(slotIndex, `${prefix}:preset_name`) || "";
+
+    view = VIEWS.COMPONENT_EDIT;
+    needsRedraw = true;
+}
+
+/* Change preset in component edit mode */
+function changeComponentPreset(delta) {
+    if (editComponentPresetCount <= 0) return;
+
+    /* Calculate new preset with wrapping */
+    let newPreset = editComponentPreset + delta;
+    if (newPreset < 0) newPreset = editComponentPresetCount - 1;
+    if (newPreset >= editComponentPresetCount) newPreset = 0;
+
+    /* Apply the preset change */
+    const prefix = editingComponentKey === "midiFx" ? "midi_fx" : editingComponentKey;
+    setSlotParam(selectedSlot, `${prefix}:preset`, String(newPreset));
+
+    /* Update local state */
+    editComponentPreset = newPreset;
+
+    /* Fetch new preset name */
+    editComponentPresetName = getSlotParam(selectedSlot, `${prefix}:preset_name`) || "";
+}
+
 /* Get current value for a slot setting */
 function getSlotSettingValue(slot, setting) {
     if (setting.key === "patch") {
@@ -677,6 +1041,28 @@ function handleJog(delta) {
                 selectedParam = Math.max(0, Math.min(componentParams.length - 1, selectedParam + delta));
             }
             break;
+        case VIEWS.CHAIN_EDIT:
+            /* Navigate horizontally through chain components (-1 = chain/patch selection) */
+            selectedChainComponent = Math.max(-1, Math.min(CHAIN_COMPONENTS.length - 1, selectedChainComponent + delta));
+            break;
+        case VIEWS.COMPONENT_SELECT:
+            /* Navigate available modules list */
+            selectedModuleIndex = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
+            break;
+        case VIEWS.CHAIN_SETTINGS:
+            if (editingChainSettingValue) {
+                /* Adjust the setting value */
+                const setting = CHAIN_SETTINGS_ITEMS[selectedChainSetting];
+                adjustChainSetting(selectedSlot, setting, delta);
+            } else {
+                /* Navigate settings list */
+                selectedChainSetting = Math.max(0, Math.min(CHAIN_SETTINGS_ITEMS.length - 1, selectedChainSetting + delta));
+            }
+            break;
+        case VIEWS.COMPONENT_EDIT:
+            /* Jog changes preset */
+            changeComponentPreset(delta);
+            break;
     }
     needsRedraw = true;
 }
@@ -685,7 +1071,8 @@ function handleSelect() {
     switch (view) {
         case VIEWS.SLOTS:
             if (selectedSlot < slots.length) {
-                enterSlotSettings(selectedSlot);
+                /* Go directly to chain editor */
+                enterChainEdit(selectedSlot);
             } else {
                 /* Master FX selected */
                 enterMasterFxSettings();
@@ -698,8 +1085,13 @@ function handleSelect() {
         case VIEWS.SLOT_SETTINGS:
             const setting = SLOT_SETTINGS[selectedSetting];
             if (setting.type === "action") {
-                /* Patch action - go to patch browser */
-                enterPatchBrowser(selectedSlot);
+                if (setting.key === "patch") {
+                    /* Patch action - go to patch browser */
+                    enterPatchBrowser(selectedSlot);
+                } else if (setting.key === "chain") {
+                    /* Chain action - go to chain editor */
+                    enterChainEdit(selectedSlot);
+                }
             } else {
                 /* Toggle editing mode for value settings */
                 editingSettingValue = !editingSettingValue;
@@ -728,6 +1120,26 @@ function handleSelect() {
                 editingValue = !editingValue;
             }
             break;
+        case VIEWS.CHAIN_EDIT:
+            if (selectedChainComponent === -1) {
+                /* Chain selected - open patch browser */
+                enterPatchBrowser(selectedSlot);
+            } else if (selectedChainComponent === CHAIN_COMPONENTS.length - 1) {
+                /* Settings selected - go to chain settings */
+                enterChainSettings(selectedSlot);
+            } else {
+                /* Component selected - enter module selection */
+                enterComponentSelect(selectedSlot, selectedChainComponent);
+            }
+            break;
+        case VIEWS.COMPONENT_SELECT:
+            /* Apply selected module to the component */
+            applyComponentSelection();
+            break;
+        case VIEWS.CHAIN_SETTINGS:
+            /* Toggle editing mode for value settings */
+            editingChainSettingValue = !editingChainSettingValue;
+            break;
     }
     needsRedraw = true;
 }
@@ -752,7 +1164,8 @@ function handleBack() {
             }
             break;
         case VIEWS.PATCHES:
-            view = VIEWS.SLOT_SETTINGS;
+            /* Return to chain editor */
+            view = VIEWS.CHAIN_EDIT;
             needsRedraw = true;
             break;
         case VIEWS.PATCH_DETAIL:
@@ -774,6 +1187,32 @@ function handleBack() {
         case VIEWS.MASTER_FX:
             /* Return to slots list */
             view = VIEWS.SLOTS;
+            needsRedraw = true;
+            break;
+        case VIEWS.CHAIN_EDIT:
+            /* Return to slot list */
+            view = VIEWS.SLOTS;
+            needsRedraw = true;
+            break;
+        case VIEWS.COMPONENT_SELECT:
+            /* Return to chain edit */
+            view = VIEWS.CHAIN_EDIT;
+            needsRedraw = true;
+            break;
+        case VIEWS.CHAIN_SETTINGS:
+            if (editingChainSettingValue) {
+                /* Exit value editing mode */
+                editingChainSettingValue = false;
+                needsRedraw = true;
+            } else {
+                /* Return to chain edit */
+                view = VIEWS.CHAIN_EDIT;
+                needsRedraw = true;
+            }
+            break;
+        case VIEWS.COMPONENT_EDIT:
+            /* Return to chain edit */
+            view = VIEWS.CHAIN_EDIT;
             needsRedraw = true;
             break;
     }
@@ -1024,6 +1463,197 @@ function drawComponentParams() {
     }
 }
 
+/* Draw horizontal chain editor with boxed icons */
+function drawChainEdit() {
+    clear_screen();
+    const slotName = slots[selectedSlot]?.name || "Unknown";
+    drawHeader(`S${selectedSlot + 1} Chain`);
+
+    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    const chainSelected = selectedChainComponent === -1;
+
+    /* Calculate box layout - 5 components across 128px
+     * Box size: 22px wide, with 2px gaps, centered */
+    const BOX_W = 22;
+    const BOX_H = 16;
+    const GAP = 2;
+    const TOTAL_W = 5 * BOX_W + 4 * GAP;  // 118px
+    const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);  // center it
+    const BOX_Y = 20;  // Below header
+
+    /* Draw each component box */
+    for (let i = 0; i < CHAIN_COMPONENTS.length; i++) {
+        const comp = CHAIN_COMPONENTS[i];
+        const x = START_X + i * (BOX_W + GAP);
+        const isSelected = i === selectedChainComponent;
+
+        /* Get abbreviation for this component */
+        let abbrev = "--";
+        if (comp.key === "settings") {
+            abbrev = "*";
+        } else {
+            const moduleData = cfg[comp.key];
+            abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
+        }
+
+        /* Draw box:
+         * - If chain selected (position -1): all boxes filled (inverted)
+         * - If individual component selected: that box filled
+         * - Otherwise: outlined box */
+        const fillBox = chainSelected || isSelected;
+        if (fillBox) {
+            fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
+        } else {
+            draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
+        }
+
+        /* Draw abbreviation centered in box */
+        const textColor = fillBox ? 0 : 1;
+        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
+        const textY = BOX_Y + 5;
+        print(textX, textY, abbrev, textColor);
+    }
+
+    /* Draw component label below boxes */
+    const selectedComp = chainSelected ? null : CHAIN_COMPONENTS[selectedChainComponent];
+    const labelY = BOX_Y + BOX_H + 4;
+    const label = chainSelected ? "Chain" : (selectedComp ? selectedComp.label : "");
+    const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
+    print(labelX, labelY, label, 1);
+
+    /* Draw current module name/preset below label */
+    const infoY = labelY + 12;
+    let infoLine = "";
+    if (chainSelected) {
+        /* Show patch name when chain is selected */
+        infoLine = slots[selectedSlot]?.name || "(no patch)";
+    } else if (selectedComp && selectedComp.key !== "settings") {
+        const moduleData = cfg[selectedComp.key];
+        if (moduleData) {
+            /* Get display name from DSP if available */
+            const prefix = selectedComp.key === "midiFx" ? "midi_fx" : selectedComp.key;
+            const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
+            const preset = getSlotParam(selectedSlot, `${prefix}:preset_name`) ||
+                          getSlotParam(selectedSlot, `${prefix}:preset`) || "";
+            infoLine = preset ? `${displayName} (${truncateText(preset, 8)})` : displayName;
+        } else {
+            infoLine = "(empty)";
+        }
+    } else if (selectedComp && selectedComp.key === "settings") {
+        infoLine = "Configure slot";
+    }
+    infoLine = truncateText(infoLine, 24);
+    const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
+    print(infoX, infoY, infoLine, 1);
+}
+
+/* Draw component module selection list */
+function drawComponentSelect() {
+    clear_screen();
+    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    drawHeader(`Select ${comp ? comp.label : "Module"}`);
+
+    if (availableModules.length === 0) {
+        print(LIST_LABEL_X, LIST_TOP_Y, "No modules available", 1);
+        return;
+    }
+
+    drawMenuList({
+        items: availableModules,
+        selectedIndex: selectedModuleIndex,
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        getLabel: (item) => item.name || item.id || "Unknown",
+        getValue: (item) => {
+            const cfg = chainConfigs[selectedSlot];
+            const compKey = CHAIN_COMPONENTS[selectedChainComponent]?.key;
+            const current = cfg && cfg[compKey];
+            const currentId = current ? current.module : null;
+            return currentId === item.id ? "*" : "";
+        }
+    });
+}
+
+/* Draw component edit view (presets, params) */
+function drawComponentEdit() {
+    clear_screen();
+
+    /* Get component info */
+    const cfg = chainConfigs[selectedSlot];
+    const moduleData = cfg && cfg[editingComponentKey];
+    const moduleName = moduleData ? moduleData.module.toUpperCase() : "Unknown";
+
+    /* Get display name from DSP if available */
+    const prefix = editingComponentKey === "midiFx" ? "midi_fx" : editingComponentKey;
+    const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleName;
+
+    drawHeader(truncateText(displayName, 20));
+
+    const centerY = 32;
+
+    if (editComponentPresetCount > 0) {
+        /* Show preset number */
+        const presetNum = `${editComponentPreset + 1}/${editComponentPresetCount}`;
+        const numX = Math.floor((SCREEN_WIDTH - presetNum.length * 5) / 2);
+        print(numX, centerY - 8, presetNum, 1);
+
+        /* Show preset name */
+        const name = truncateText(editComponentPresetName || "(unnamed)", 22);
+        const nameX = Math.floor((SCREEN_WIDTH - name.length * 5) / 2);
+        print(nameX, centerY + 4, name, 1);
+
+        /* Draw navigation arrows */
+        print(4, centerY - 2, "<", 1);
+        print(SCREEN_WIDTH - 10, centerY - 2, ">", 1);
+    } else {
+        /* No presets - show message */
+        const msg = "No presets";
+        const msgX = Math.floor((SCREEN_WIDTH - msg.length * 5) / 2);
+        print(msgX, centerY, msg, 1);
+    }
+
+    /* Show hint at bottom */
+    const hint = "Jog: preset  Back: done";
+    const hintX = Math.floor((SCREEN_WIDTH - hint.length * 5) / 2);
+    print(hintX, 56, hint, 1);
+}
+
+/* Draw chain settings view */
+function drawChainSettings() {
+    clear_screen();
+    drawHeader(`S${selectedSlot + 1} Settings`);
+
+    const listY = LIST_TOP_Y;
+    const lineHeight = 10;
+    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
+
+    for (let i = 0; i < CHAIN_SETTINGS_ITEMS.length && i < maxVisible; i++) {
+        const y = listY + i * lineHeight;
+        const setting = CHAIN_SETTINGS_ITEMS[i];
+        const isSelected = i === selectedChainSetting;
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+
+        const labelColor = isSelected ? 0 : 1;
+        print(LIST_LABEL_X, y, setting.label, labelColor);
+
+        /* Show value on the right */
+        const value = getChainSettingValue(selectedSlot, setting);
+        if (value) {
+            const valueX = SCREEN_WIDTH - value.length * 5 - 4;
+            if (isSelected && editingChainSettingValue) {
+                /* Show editing indicator */
+                print(valueX - 8, y, "<", 0);
+                print(valueX, y, value, 0);
+                print(valueX + value.length * 5 + 2, y, ">", 0);
+            } else {
+                print(valueX, y, value, labelColor);
+            }
+        }
+    }
+}
+
 function drawMasterFx() {
     clear_screen();
     drawHeader("Master FX");
@@ -1040,6 +1670,7 @@ function drawMasterFx() {
 globalThis.init = function() {
     refreshSlots();
     loadPatchList();
+    initChainConfigs();
     updateFocusedSlot(selectedSlot);
     fetchKnobMappings(selectedSlot);
 
@@ -1064,7 +1695,7 @@ globalThis.tick = function() {
                 const jumpSlot = shadow_get_ui_slot();
                 if (jumpSlot >= 0 && jumpSlot < SHADOW_UI_SLOTS) {
                     selectedSlot = jumpSlot;
-                    enterSlotSettings(jumpSlot);
+                    enterChainEdit(jumpSlot);
                 }
             }
             /* Clear the flag */
@@ -1120,6 +1751,18 @@ globalThis.tick = function() {
         case VIEWS.MASTER_FX:
             drawMasterFx();
             break;
+        case VIEWS.CHAIN_EDIT:
+            drawChainEdit();
+            break;
+        case VIEWS.COMPONENT_SELECT:
+            drawComponentSelect();
+            break;
+        case VIEWS.CHAIN_SETTINGS:
+            drawChainSettings();
+            break;
+        case VIEWS.COMPONENT_EDIT:
+            drawComponentEdit();
+            break;
         default:
             drawSlots();
     }
@@ -1127,8 +1770,15 @@ globalThis.tick = function() {
     /* Draw overlay on top of main view (uses shared overlay system) */
     drawOverlay();
 
-    /* Debug: show last CC at top right */
-    print(80, 2, `CC${lastCC.cc}`, 1);
+    /* Debug: show last CC and shift state at top right */
+    const shiftStr = isShiftHeld() ? "S" : "";
+    print(70, 2, `${shiftStr}CC${lastCC.cc}`, 1);
+    /* Debug: show chain load info or shift+click result */
+    if (view === VIEWS.CHAIN_EDIT && globalThis._debugLoad) {
+        print(2, 56, globalThis._debugLoad, 1);
+    } else if (globalThis._debugShift) {
+        print(2, 56, globalThis._debugShift, 1);
+    }
 };
 
 let debugMidiCounter = 0;
@@ -1152,7 +1802,12 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
         if (d1 === MoveMainButton && d2 > 0) {
-            handleSelect();
+            /* Shift+Click in chain edit enters component edit mode */
+            if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
+                handleShiftSelect();
+            } else {
+                handleSelect();
+            }
             return;
         }
         if (d1 === MoveBack && d2 > 0) {

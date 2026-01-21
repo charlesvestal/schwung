@@ -180,6 +180,7 @@ typedef struct chain_instance {
     void *fx_instances[MAX_AUDIO_FX];
     int fx_is_v2[MAX_AUDIO_FX];
     int fx_count;
+    char current_fx_modules[MAX_AUDIO_FX][MAX_NAME_LEN];  /* Track loaded FX names */
 
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
@@ -3397,8 +3398,132 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
         inst->fx_instances[i] = NULL;
         inst->fx_is_v2[i] = 0;
         inst->fx_param_counts[i] = 0;
+        inst->current_fx_modules[i][0] = '\0';
     }
     inst->fx_count = 0;
+}
+
+/* V2 unload a single audio FX slot */
+static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
+    if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return;
+
+    if (inst->fx_is_v2[slot]) {
+        if (inst->fx_plugins_v2[slot] && inst->fx_instances[slot] && inst->fx_plugins_v2[slot]->destroy_instance) {
+            inst->fx_plugins_v2[slot]->destroy_instance(inst->fx_instances[slot]);
+        }
+    } else {
+        if (inst->fx_plugins[slot] && inst->fx_plugins[slot]->on_unload) {
+            inst->fx_plugins[slot]->on_unload();
+        }
+    }
+
+    if (inst->fx_handles[slot]) {
+        dlclose(inst->fx_handles[slot]);
+    }
+
+    inst->fx_handles[slot] = NULL;
+    inst->fx_plugins[slot] = NULL;
+    inst->fx_plugins_v2[slot] = NULL;
+    inst->fx_instances[slot] = NULL;
+    inst->fx_is_v2[slot] = 0;
+    inst->fx_param_counts[slot] = 0;
+    inst->current_fx_modules[slot][0] = '\0';
+}
+
+/* V2 load audio FX into a specific slot */
+static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) {
+    char msg[256];
+    char fx_path[MAX_PATH_LEN];
+    char fx_dir[MAX_PATH_LEN];
+
+    if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return -1;
+
+    /* Unload existing FX in this slot first */
+    v2_unload_audio_fx_slot(inst, slot);
+
+    /* Empty/none means just unload */
+    if (!fx_name || fx_name[0] == '\0' || strcmp(fx_name, "none") == 0) {
+        snprintf(msg, sizeof(msg), "Audio FX slot %d cleared", slot);
+        v2_chain_log(inst, msg);
+        /* Update fx_count if this was the last slot */
+        while (inst->fx_count > 0 && inst->fx_handles[inst->fx_count - 1] == NULL) {
+            inst->fx_count--;
+        }
+        return 0;
+    }
+
+    /* Build path to FX - try chain/audio_fx first, then external */
+    snprintf(fx_path, sizeof(fx_path), "%s/audio_fx/%s/%s.so",
+             inst->module_dir, fx_name, fx_name);
+    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", inst->module_dir, fx_name);
+
+    /* Check if exists, if not try external modules dir */
+    void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        /* Try external modules */
+        char *modules_dir = strdup(inst->module_dir);
+        char *last_slash = strrchr(modules_dir, '/');
+        if (last_slash) *last_slash = '\0';
+
+        snprintf(fx_path, sizeof(fx_path), "%s/%s/%s.so", modules_dir, fx_name, fx_name);
+        snprintf(fx_dir, sizeof(fx_dir), "%s/%s", modules_dir, fx_name);
+        free(modules_dir);
+
+        handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
+    }
+
+    if (!handle) {
+        snprintf(msg, sizeof(msg), "dlopen failed for FX %s: %s", fx_name, dlerror());
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    /* V2 API required */
+    audio_fx_init_v2_fn init_v2 = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
+    if (!init_v2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s does not support V2 API (V2 required)", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    audio_fx_api_v2_t *api = init_v2(&inst->subplugin_host_api);
+    if (!api || api->api_version != AUDIO_FX_API_VERSION_2) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 API version mismatch", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    void *fx_inst = api->create_instance(fx_dir, NULL);
+    if (!fx_inst) {
+        snprintf(msg, sizeof(msg), "Audio FX %s V2 create_instance failed", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    inst->fx_handles[slot] = handle;
+    inst->fx_plugins[slot] = NULL;
+    inst->fx_plugins_v2[slot] = api;
+    inst->fx_instances[slot] = fx_inst;
+    inst->fx_is_v2[slot] = 1;
+
+    /* Track the loaded module name */
+    strncpy(inst->current_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
+    inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
+
+    /* Parse chain_params from module.json for type info */
+    parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]);
+
+    /* Update fx_count to include this slot */
+    if (slot >= inst->fx_count) {
+        inst->fx_count = slot + 1;
+    }
+
+    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)", fx_name, slot, inst->fx_param_counts[slot]);
+    v2_chain_log(inst, msg);
+    return 0;
 }
 
 /* V2 unload MIDI source */
@@ -3579,6 +3704,10 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
     inst->fx_plugins_v2[slot] = api;
     inst->fx_instances[slot] = fx_inst;
     inst->fx_is_v2[slot] = 1;
+
+    /* Track the loaded module name */
+    strncpy(inst->current_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
+    inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
     /* Parse chain_params from module.json for type info */
     parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]);
@@ -3996,7 +4125,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     }
     else if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
-        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+        /* Intercept module change to swap synth dynamically */
+        if (strcmp(subkey, "module") == 0) {
+            v2_synth_panic(inst);
+            v2_unload_synth(inst);
+            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
+                v2_load_synth(inst, val);
+            }
+        } else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
             inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
         } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
             inst->synth_plugin->set_param(subkey, val);
@@ -4004,7 +4140,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     }
     else if (strncmp(key, "fx1:", 4) == 0) {
         const char *subkey = key + 4;
-        if (inst->fx_count > 0) {
+        /* Intercept module change to swap FX1 dynamically */
+        if (strcmp(subkey, "module") == 0) {
+            v2_load_audio_fx_slot(inst, 0, val);
+        } else if (inst->fx_count > 0) {
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
                 inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
             } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
@@ -4014,7 +4153,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     }
     else if (strncmp(key, "fx2:", 4) == 0) {
         const char *subkey = key + 4;
-        if (inst->fx_count > 1) {
+        /* Intercept module change to swap FX2 dynamically */
+        if (strcmp(subkey, "module") == 0) {
+            v2_load_audio_fx_slot(inst, 1, val);
+        } else if (inst->fx_count > 1) {
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
@@ -4057,6 +4199,12 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
     if (strcmp(key, "synth_module") == 0) {
         return snprintf(buf, buf_len, "%s", inst->current_synth_module);
+    }
+    if (strcmp(key, "fx1_module") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->current_fx_modules[0]);
+    }
+    if (strcmp(key, "fx2_module") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->current_fx_modules[1]);
     }
     if (strcmp(key, "fx_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->fx_count);
