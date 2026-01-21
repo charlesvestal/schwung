@@ -256,6 +256,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%.2f", inst->width);
     } else if (strcmp(key, "name") == 0) {
         return snprintf(buf, buf_len, "Freeverb");
+    } else if (strcmp(key, "ui_hierarchy") == 0) {
+        const char *hierarchy = "{"
+            "\"modes\":null,"
+            "\"levels\":{"
+                "\"root\":{"
+                    "\"children\":null,"
+                    "\"knobs\":[\"room_size\",\"damping\",\"wet\",\"dry\"],"
+                    "\"params\":[\"room_size\",\"damping\",\"wet\",\"dry\",\"width\"]"
+                "}"
+            "}"
+        "}";
+        int len = strlen(hierarchy);
+        if (len < buf_len) {
+            strcpy(buf, hierarchy);
+            return len;
+        }
+        return -1;
     }
     return -1;
 }
