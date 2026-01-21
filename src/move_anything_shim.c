@@ -2555,7 +2555,7 @@ static void shadow_inprocess_process_midi(void) {
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
-            /* No note filtering - Move's track output already filters UI controls */
+            /* No filtering - MIDI_OUT is Move's track output (musical notes only) */
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
             if (slot < 0) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
@@ -2566,7 +2566,7 @@ static void shadow_inprocess_process_midi(void) {
             }
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             if (pkt[1] <= 0x7F && pkt[2] <= 0x7F) {
-                /* No note filtering - Move's track output already filters UI controls */
+                /* No filtering - MIDI_OUT is Move's track output (musical notes only) */
                 int slot = shadow_chain_slot_for_channel(status_raw & 0x0F);
                 if (slot < 0) continue;
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
@@ -4590,10 +4590,11 @@ int ioctl(int fd, unsigned long request, ...)
                     continue;
                 }
 
-                /* Check capture rules for focused slot */
+                /* Check capture rules for focused slot.
+                 * Never route knob touch notes (0-9) to DSP even if in capture rules. */
                 {
                     const shadow_capture_rules_t *capture = shadow_get_focused_capture();
-                    if (capture && capture_has_note(capture, d1)) {
+                    if (capture && d1 >= 10 && capture_has_note(capture, d1)) {
                         /* Route captured note to focused slot's DSP */
                         int slot = shadow_control ? shadow_control->ui_slot : 0;
                         if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&

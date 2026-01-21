@@ -161,7 +161,7 @@ const SLOT_SETTINGS = [
     { key: "chain", label: "Edit Chain", type: "action" },  // Opens chain editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
-    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 16, step: 1 },  // -1 = none
+    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 15, step: 1 },  // -1 = none, 0-15 = ch 1-16
 ];
 
 /* Cached patch detail info */
@@ -192,7 +192,7 @@ let selectedModuleIndex = 0;   // Index in availableModules
 const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
-    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 16, step: 1 }
+    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 15, step: 1 }  // -1 = none, 0-15 = ch 1-16
 ];
 let selectedChainSetting = 0;
 let editingChainSettingValue = false;
@@ -1120,7 +1120,7 @@ function getChainSettingValue(slot, setting) {
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
-        return ch < 0 ? "Off" : String(ch);
+        return ch < 0 ? "Off" : `Ch ${ch + 1}`;  // Internal 0-15 → display 1-16
     }
     return String(val);
 }
@@ -1660,9 +1660,20 @@ function drawHierarchyEditor() {
     /* Get plugin display name */
     const pluginName = getSlotParam(hierEditorSlot, `${hierEditorComponent}:name`) || "";
 
+    /* Check for mode indicator - show * for performance mode */
+    let modeIndicator = "";
+    if (hierEditorHierarchy && hierEditorHierarchy.modes && hierEditorHierarchy.mode_param) {
+        const modeVal = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${hierEditorHierarchy.mode_param}`);
+        const modeIndex = modeVal !== null ? parseInt(modeVal) : 0;
+        /* modes[1] is typically "performance" - show * indicator */
+        if (modeIndex === 1) {
+            modeIndicator = "*";
+        }
+    }
+
     let breadcrumb = `S${hierEditorSlot + 1} ${componentName}`;
     if (pluginName) {
-        breadcrumb += ` ${pluginName}`;
+        breadcrumb += ` ${pluginName}${modeIndicator}`;
     }
     if (hierEditorPath.length > 0) {
         breadcrumb += " > " + hierEditorPath.join(" > ");
@@ -1767,8 +1778,8 @@ function getSlotSettingValue(slot, setting) {
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
-        /* -1 means "auto" (same as receive channel), otherwise show specific channel */
-        return ch < 0 ? "Auto" : `Ch ${ch + 1}`;
+        /* -1 means no remapping, otherwise forward to specific channel */
+        return ch < 0 ? "Off" : `Ch ${ch + 1}`;
     }
     if (setting.key === "slot:receive_channel") {
         return `Ch ${val}`;
