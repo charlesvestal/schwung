@@ -4259,7 +4259,40 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return -1;  /* Knob not mapped */
     }
 
-    /* Forward to synth */
+    /* Route synth: prefixed params to synth (strip prefix) */
+    if (strncmp(key, "synth:", 6) == 0) {
+        const char *subkey = key + 6;
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+            return inst->synth_plugin_v2->get_param(inst->synth_instance, subkey, buf, buf_len);
+        } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
+            return inst->synth_plugin->get_param(subkey, buf, buf_len);
+        }
+        return -1;
+    }
+
+    /* Route fx1: prefixed params to FX1 (strip prefix) */
+    if (strncmp(key, "fx1:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (inst->fx_count > 0 && inst->fx_plugins[0] && inst->fx_instances[0]) {
+            if (inst->fx_plugins[0]->get_param) {
+                return inst->fx_plugins[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+            }
+        }
+        return -1;
+    }
+
+    /* Route fx2: prefixed params to FX2 (strip prefix) */
+    if (strncmp(key, "fx2:", 4) == 0) {
+        const char *subkey = key + 4;
+        if (inst->fx_count > 1 && inst->fx_plugins[1] && inst->fx_instances[1]) {
+            if (inst->fx_plugins[1]->get_param) {
+                return inst->fx_plugins[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
+            }
+        }
+        return -1;
+    }
+
+    /* Forward unprefixed to synth as fallback */
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
         return inst->synth_plugin_v2->get_param(inst->synth_instance, key, buf, buf_len);
     } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
