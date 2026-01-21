@@ -21,19 +21,22 @@ src/modules/your-module/
     "id": "your-module",
     "name": "Your Module Name",
     "version": "1.0.0",
+    "abbrev": "MOD",
     "description": "What your module does",
     "author": "Your Name",
     "ui": "ui.js",
     "ui_chain": "ui_chain.js",
     "dsp": "dsp.so",
-    "api_version": 1
+    "api_version": 2
 }
 ```
 
 Required fields: `id`, `name`, `version`, `api_version`
-Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `capabilities`
+Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `capabilities`, `abbrev`
 
-Notes:
+**Notes:**
+- `api_version`: Use `2` for new modules (supports multiple instances, required for Signal Chain)
+- `abbrev`: Short display name (3-6 chars) for Shadow UI slot display (e.g., "SF2", "DX7", "CLAP")
 - `module.json` is parsed by a minimal JSON reader. Use double quotes for keys, lowercase `true`/`false`, and avoid comments.
 - Keep `module.json` reasonably small (the loader caps it at 8KB).
 
@@ -383,41 +386,91 @@ const path = stack.getPath();  // ['Main', 'Settings']
 
 For audio synthesis/processing, create a native plugin implementing the C API.
 
-### Plugin API (v1)
+### Plugin API v2 (Recommended)
+
+V2 supports multiple instances and is **required for Signal Chain integration**:
+
+```c
+#include "plugin_api_v2.h"
+
+typedef struct my_instance {
+    // Your synth state here
+    float sample_rate;
+    int preset;
+} my_instance_t;
+
+static void* create_instance(const char *module_dir, const char *json_defaults) {
+    my_instance_t *inst = calloc(1, sizeof(my_instance_t));
+    inst->sample_rate = 44100.0f;
+    // Parse json_defaults if needed
+    return inst;
+}
+
+static void destroy_instance(void *instance) {
+    free(instance);
+}
+
+static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
+    my_instance_t *inst = (my_instance_t*)instance;
+    // source: 0 = internal (Move), 1 = external (USB)
+}
+
+static void set_param(void *instance, const char *key, const char *val) {
+    my_instance_t *inst = (my_instance_t*)instance;
+    // Handle parameter changes
+}
+
+static int get_param(void *instance, const char *key, char *buf, int buf_len) {
+    my_instance_t *inst = (my_instance_t*)instance;
+    // Return parameter value, ui_hierarchy, chain_params, etc.
+    return -1;
+}
+
+static void render_block(void *instance, int16_t *out_lr, int frames) {
+    my_instance_t *inst = (my_instance_t*)instance;
+    // Generate 'frames' stereo samples
+    // Output format: [L0, R0, L1, R1, ...]
+}
+
+/* Export the plugin API */
+static plugin_api_v2_t api = {
+    .api_version = 2,
+    .create_instance = create_instance,
+    .destroy_instance = destroy_instance,
+    .on_midi = on_midi,
+    .set_param = set_param,
+    .get_param = get_param,
+    .render_block = render_block,
+};
+
+plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t* host) {
+    return &api;
+}
+```
+
+### Plugin API v1 (Deprecated)
+
+V1 is a singleton API - only one instance can exist. **Do not use for new modules:**
 
 ```c
 #include "plugin_api_v1.h"
 
 static int on_load(const char *module_dir, const char *json_defaults) {
-    // Initialize audio engine
     return 0;  // 0 = success
 }
 
-static void on_unload(void) {
-    // Cleanup
-}
+static void on_unload(void) { }
 
-static void on_midi(const uint8_t *msg, int len, int source) {
-    // source: 0 = internal (Move), 1 = external (USB)
-    // Handle MIDI for sound generation
-}
+static void on_midi(const uint8_t *msg, int len, int source) { }
 
-static void set_param(const char *key, const char *val) {
-    // Handle parameter changes from JS
-}
+static void set_param(const char *key, const char *val) { }
 
 static int get_param(const char *key, char *buf, int buf_len) {
-    // Return parameter value
-    return 0;
+    return -1;
 }
 
-static void render_block(int16_t *out_lr, int frames) {
-    // Generate 'frames' stereo samples
-    // Output format: [L0, R0, L1, R1, ...]
-    // Sample range: -32768 to 32767
-}
+static void render_block(int16_t *out_lr, int frames) { }
 
-/* Export the plugin API */
 static plugin_api_v1_t api = {
     .api_version = 1,
     .on_load = on_load,
@@ -456,6 +509,89 @@ let current = host_module_get_param("preset");
 ```
 
 The DSP plugin receives these in `set_param()` and `get_param()`.
+
+## Shadow UI Parameter Hierarchy
+
+Modules can expose a navigable parameter hierarchy to the Shadow UI by responding to `get_param("ui_hierarchy")`:
+
+```c
+int get_param(void *instance, const char *key, char *buf, int buf_len) {
+    if (strcmp(key, "ui_hierarchy") == 0) {
+        const char *json = "{"
+            "\"label\": \"DX7\","
+            "\"children\": ["
+                "{\"label\": \"Algorithm\", \"param\": \"algorithm\", \"type\": \"int\", \"min\": 1, \"max\": 32},"
+                "{\"label\": \"Feedback\", \"param\": \"feedback\", \"type\": \"int\", \"min\": 0, \"max\": 7},"
+                "{\"label\": \"Operators\", \"children\": ["
+                    "{\"label\": \"OP1\", \"children\": [...]}"
+                "]}"
+            "]"
+        "}";
+        strncpy(buf, json, buf_len);
+        return strlen(json);
+    }
+    return -1;
+}
+```
+
+### Hierarchy Node Types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| Container | `label`, `children` | Navigable folder |
+| Integer | `label`, `param`, `type:"int"`, `min`, `max` | Integer value with knob control |
+| Float | `label`, `param`, `type:"float"`, `min`, `max` | Float value (0.0-1.0 typical) |
+| Enum | `label`, `param`, `type:"enum"`, `options` | List of string options |
+| Mode | `label`, `param`, `type:"mode"`, `options` | Mode selector (like enum, triggers mode switch) |
+
+### Example Hierarchy
+
+```json
+{
+  "label": "CloudSeed",
+  "children": [
+    {
+      "label": "Early Reflections",
+      "children": [
+        { "label": "Delay", "param": "early_delay", "type": "float", "min": 0, "max": 1 },
+        { "label": "Amount", "param": "early_amount", "type": "float", "min": 0, "max": 1 }
+      ]
+    },
+    {
+      "label": "Late Reverb",
+      "children": [
+        { "label": "Decay", "param": "decay", "type": "float", "min": 0, "max": 1 },
+        { "label": "Diffusion", "param": "diffusion", "type": "float", "min": 0, "max": 1 }
+      ]
+    }
+  ]
+}
+```
+
+## Chain Parameters (Knob Mappings)
+
+Modules can expose quick-access knob mappings via `get_param("chain_params")`:
+
+```c
+int get_param(void *instance, const char *key, char *buf, int buf_len) {
+    if (strcmp(key, "chain_params") == 0) {
+        const char *json = "["
+            "{\"label\": \"Cutoff\", \"cc\": 71, \"value\": 64},"
+            "{\"label\": \"Resonance\", \"cc\": 72, \"value\": 32},"
+            "{\"label\": \"Attack\", \"cc\": 73, \"value\": 10},"
+            "{\"label\": \"Release\", \"cc\": 74, \"value\": 50}"
+        "]";
+        strncpy(buf, json, buf_len);
+        return strlen(json);
+    }
+    return -1;
+}
+```
+
+These map to knobs 1-8 in the Shadow UI. Each entry needs:
+- `label`: Display name for the parameter
+- `cc`: CC number (71-78 for knobs 1-8)
+- `value`: Current value (0-127)
 
 ## Shared Utilities
 

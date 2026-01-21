@@ -149,7 +149,7 @@ console.log(msg)              // Log to /data/UserData/move-anything/move-anythi
 - Notes 16-31: 16 step buttons
 
 ### Track Selectors
-- Notes 40-43: 4 track buttons (row 4 to row 1)
+- CCs 40-43: 4 track buttons (reversed: CC43=Track1, CC40=Track4)
 
 ### Control CCs
 | CC  | Control           | Notes                          |

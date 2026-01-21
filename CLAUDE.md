@@ -81,7 +81,28 @@ Valid component types:
 
 The main menu automatically organizes modules by category, reading from each module's `component_type` field.
 
-### Plugin API (v1)
+### Plugin API v2 (Recommended)
+
+V2 supports multiple instances and is required for Signal Chain integration:
+
+```c
+typedef struct plugin_api_v2 {
+    uint32_t api_version;              // Must be 2
+    void* (*create_instance)(const char *module_dir, const char *json_defaults);
+    void (*destroy_instance)(void *instance);
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
+    void (*set_param)(void *instance, const char *key, const char *val);
+    int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+    void (*render_block)(void *instance, int16_t *out_lr, int frames);
+} plugin_api_v2_t;
+
+// Entry point
+extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host);
+```
+
+### Plugin API v1 (Deprecated)
+
+V1 is a singleton API - only one instance can exist. Do not use for new modules:
 
 ```c
 typedef struct plugin_api_v1 {
@@ -143,9 +164,9 @@ Located in `src/shared/`:
 
 Pads: Notes 68-99
 Steps: Notes 16-31
-Tracks: Notes 40-43
+Tracks: CCs 40-43 (reversed: CC43=Track1, CC40=Track4)
 
-Key CCs: 14 (jog), 49 (shift), 50 (menu), 71-78 (knob LEDs)
+Key CCs: 3 (jog click), 14 (jog turn), 49 (shift), 50 (menu), 51 (back), 71-78 (knobs)
 
 Notes 0-9: Capacitive touch from knobs (filter if not needed)
 
@@ -199,6 +220,49 @@ Modules declare chainability in module.json:
 
 Component types: `sound_generator`, `audio_fx`, `midi_fx`
 
+### Shadow UI Parameter Hierarchy
+
+Modules can expose parameters to the Shadow UI via `ui_hierarchy` in their get_param response:
+
+```json
+{
+  "ui_hierarchy": {
+    "label": "DX7",
+    "children": [
+      {
+        "label": "Algorithm",
+        "param": "algorithm",
+        "type": "int",
+        "min": 1, "max": 32
+      },
+      {
+        "label": "Operators",
+        "children": [
+          { "label": "OP1", "children": [...] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The Shadow UI renders this as a navigable hierarchy with knob control for leaf parameters.
+
+### Chain Parameters
+
+Modules expose knob mappings via `chain_params` in their get_param response:
+
+```json
+{
+  "chain_params": [
+    { "label": "Cutoff", "cc": 71, "value": 64 },
+    { "label": "Resonance", "cc": 72, "value": 32 }
+  ]
+}
+```
+
+These map to knobs 1-8 in the Shadow UI for quick parameter access.
+
 ### Chain Architecture
 
 - Chain host (`modules/chain/dsp/chain_host.c`) loads sub-plugins via dlopen
@@ -240,6 +304,40 @@ External modules are maintained in separate repositories and available via Modul
 - `m8` - Dirtywave M8 Launchpad Pro emulator
 
 External modules install their own Signal Chain presets via their install scripts.
+
+## Shadow Mode
+
+Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts hardware I/O to mix shadow audio with Move's output.
+
+### Shadow Mode Shortcuts
+
+- **Shift+Vol+Knob1**: Toggle shadow mode on/off
+- **Shift+Vol+Track 1-4**: Jump directly to slot settings (works from Move or Shadow UI)
+- **Shift+Vol+Menu**: Jump directly to Master FX settings
+
+### Shadow Architecture
+
+```
+src/move_anything_shim.c    # LD_PRELOAD shim - intercepts ioctl, mixes audio
+src/shadow/shadow_ui.js     # Shadow UI - slot/patch management
+src/host/shadow_constants.h # Shared memory structures
+```
+
+Key shared memory segments:
+- `/move-shadow-audio` - Shadow's mixed audio output
+- `/move-shadow-control` - Control flags and state (shadow_control_t)
+- `/move-shadow-param` - Parameter get/set requests (shadow_param_t)
+- `/move-shadow-ui` - UI state for slot info (shadow_ui_state_t)
+
+### Shadow UI Flags
+
+Communication between shim and Shadow UI uses flags in `shadow_control_t.ui_flags`:
+- `SHADOW_UI_FLAG_JUMP_TO_SLOT (0x01)` - Jump to slot settings on open
+- `SHADOW_UI_FLAG_JUMP_TO_MASTER_FX (0x02)` - Jump to Master FX on open
+
+### Master FX Chain
+
+Shadow mode includes a 4-slot Master FX chain that processes mixed output from all shadow slots. Access via Shift+Vol+Menu.
 
 ## Module Store
 

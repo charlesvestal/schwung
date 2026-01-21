@@ -117,15 +117,24 @@ Shadow mode provides 4 independent slots, each with its own chain patch:
 | Slot C | Ch 7 | Move Track 3 |
 | Slot D | Ch 8 | Move Track 4 |
 
-### Shadow UI Controls
+### Shadow UI Navigation
 
-- **Jog wheel**: Navigate slot list / patch browser
-- **Jog click**: Enter slot patch list / load patch
-- **Back**: Return to slot list
-- **Track buttons 1-4**: Select corresponding shadow slot
-- **Knobs 1-8**: Adjust parameters of selected slot
+**Quick Access Shortcuts (work from anywhere):**
+- **Shift+Vol+Track 1-4**: Jump directly to that slot's settings
+- **Shift+Vol+Menu**: Jump directly to Master FX settings
+- **Shift+Vol+Knob1**: Toggle shadow mode on/off
+
+**While in Shadow UI:**
+- **Jog wheel**: Navigate menus and adjust values
+- **Jog click**: Select / confirm
+- **Back**: Exit to Move (from slot or Master FX view)
+- **Track buttons 1-4**: Switch to that slot's settings
+- **Knobs 1-8**: Adjust parameters of current slot/effect
 - **Touch knob**: Peek at current value without changing it
-- **Shift+Vol+Knob1**: Toggle back to Move display
+
+### Master FX
+
+Shadow mode includes a 4-slot Master FX chain that processes the mixed output of all shadow slots. Access via Shift+Vol+Menu or by scrolling past the slots.
 
 ### Shift+Knob Control (Move Mode)
 
@@ -133,7 +142,6 @@ While using stock Move (not in Shadow UI), hold Shift to control shadow synth pa
 
 - **Shift + turn knob**: Adjust shadow slot parameter with overlay feedback
 - **Shift + touch knob**: Peek at current value
-- **Shift+Vol+Track**: Jump directly to slot settings in Shadow UI
 
 ### Extending Shadow Mode
 

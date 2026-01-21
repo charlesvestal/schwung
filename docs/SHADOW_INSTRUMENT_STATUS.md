@@ -1,8 +1,8 @@
-# Shadow Instrument POC - Status
+# Shadow Instrument - Status
 
-**Branch:** `feature/shadow-instrument-poc`
-**Date:** 2026-01-20
-**Status:** ✅ FULLY WORKING - Audio, MIDI routing, shadow UI display, track selection, and knob control all operational
+**Branch:** `main` (merged from `feature/shadow-instrument-poc`)
+**Date:** 2026-01-21
+**Status:** ✅ FULLY WORKING - Audio, MIDI routing, shadow UI display, track selection, knob control, Master FX, and parameter hierarchy editor all operational
 
 ## Goal
 
@@ -85,7 +85,7 @@ Example:
 | `/move-shadow-display` | 1024 bytes | Shadow UI display buffer |
 | `/move-shadow-control` | 64 bytes | Control flags + UI patch requests |
 | `/move-shadow-ui` | 512 bytes | Slot labels + patch names for UI |
-| `/move-shadow-param` | 512 bytes | Parameter get/set requests |
+| `/move-shadow-param` | 2176 bytes | Parameter get/set requests (increased for large ui_hierarchy JSON) |
 
 Segment names and buffer sizes are defined in `src/host/shadow_constants.h`.
 
@@ -100,9 +100,14 @@ Segment names and buffer sizes are defined in `src/host/shadow_constants.h`.
 - ✅ Jog + jog press navigate slot list and patch browser
 - ✅ Most Move controls pass through while shadow UI is active (only jog, click, back blocked)
 - ✅ Track buttons (40-43) select shadow slots while in shadow UI
-- ✅ Shift+Volume+Track jumps directly to slot settings
+- ✅ Shift+Volume+Track jumps directly to slot settings (works from Move or Shadow UI)
+- ✅ Shift+Volume+Menu jumps directly to Master FX settings
 - ✅ Knobs (71-78) control focused slot parameters with overlay feedback
 - ✅ D-Bus integration shows Move volume on shadow display
+- ✅ Master FX chain (4 slots for global effects processing)
+- ✅ Hierarchy parameter editor for deep module parameter access
+- ✅ ui_hierarchy support for modules to expose navigable parameter trees
+- ✅ chain_params support for quick knob mappings
 
 ## Audio Status
 
@@ -123,13 +128,14 @@ cd /opt/move && LD_PRELOAD=/usr/lib/move-anything-shim.so ./Move &
 # Set track MIDI channel to 5–8 and play pads
 ```
 
-Shadow UI:
-- Toggle display: Shift + Volume touch + Knob 1 touch
-- Jog: move selection
-- Jog click: enter slot patch list / load patch
-- Back: return to slot list
-- Track buttons (1-4): Select corresponding shadow slot
-- Shift + Volume + Track: Jump directly to slot settings screen
+Shadow UI Navigation:
+- **Toggle display**: Shift + Volume touch + Knob 1 touch
+- **Shift+Vol+Track**: Jump directly to slot settings (from anywhere)
+- **Shift+Vol+Menu**: Jump directly to Master FX settings (from anywhere)
+- **Jog wheel**: Navigate menus, adjust values
+- **Jog click**: Enter/confirm selection
+- **Back**: Exit to Move (from slot detail or Master FX view)
+- **Track buttons (1-4)**: Switch to that slot's settings (from any shadow view)
 
 Knob Control (Shadow UI mode):
 - Knobs 1-8 control parameters of the focused slot
