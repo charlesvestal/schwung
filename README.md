@@ -122,7 +122,18 @@ Shadow mode provides 4 independent slots, each with its own chain patch:
 - **Jog wheel**: Navigate slot list / patch browser
 - **Jog click**: Enter slot patch list / load patch
 - **Back**: Return to slot list
+- **Track buttons 1-4**: Select corresponding shadow slot
+- **Knobs 1-8**: Adjust parameters of selected slot
+- **Touch knob**: Peek at current value without changing it
 - **Shift+Vol+Knob1**: Toggle back to Move display
+
+### Shift+Knob Control (Move Mode)
+
+While using stock Move (not in Shadow UI), hold Shift to control shadow synth parameters:
+
+- **Shift + turn knob**: Adjust shadow slot parameter with overlay feedback
+- **Shift + touch knob**: Peek at current value
+- **Shift+Vol+Track**: Jump directly to slot settings in Shadow UI
 
 ### Extending Shadow Mode
 

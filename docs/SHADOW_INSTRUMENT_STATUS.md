@@ -131,10 +131,17 @@ Shadow UI:
 - Track buttons (1-4): Select corresponding shadow slot
 - Shift + Volume + Track: Jump directly to slot settings screen
 
-Knob Control:
+Knob Control (Shadow UI mode):
 - Knobs 1-8 control parameters of the focused slot
 - Overlay shows slot name, parameter name, and value during adjustment
 - Slot focus follows track selection (selected slot = playback + knob target)
+- Touch a knob (without turning) to peek at current value
+
+Knob Control (Move mode with Shift held):
+- Shift + turn knob: Adjusts shadow slot parameter, shows overlay
+- Shift + touch knob: Peeks at current value without changing it
+- Overlay stays visible while finger touches knob, fades after release
+- Velocity-based acceleration: slow turns for fine control, fast turns for sweeps
 
 ## Extending Shadow Mode
 
@@ -269,6 +276,30 @@ per slot without stopping stock Move.
 - Added incrementing debug bytes to verify write path → saw flickering
 - This confirmed hardware reads our writes, issue was content/protocol
 - Matching move_anything's exact protocol fixed the animation
+
+## Notes (2026-01-20 - Knob Improvements)
+
+**Velocity-Based Acceleration:**
+- Knob turns now use time-based acceleration (1x-8x multiplier based on turn speed)
+- Base step reduced from 0.05 to 0.0015 for fine control (~600 clicks for full 0-1 range at slow speed)
+- Fast turns sweep through values quickly, slow turns allow precise adjustment
+- Separate acceleration cap for int parameters (3x max) to prevent jumping
+
+**Touch-to-Peek:**
+- Shift + touch knob (without turning) shows current parameter value
+- Overlay stays visible while finger touches the knob
+- On finger release, overlay fades after normal timeout
+- Works in Move mode (with Shift held) via shim interception
+
+**Int Parameter Type Detection:**
+- V2 API (shadow mode) now properly detects int vs float parameter types
+- Reads chain_params from module.json to get type/min/max info
+- Int parameters display as integers, float parameters as percentages
+
+**Throttled Display Updates:**
+- Shadow UI throttles overlay value refresh to once per frame
+- Prevents display lag when turning knobs quickly
+- Actual DSP parameter updates smoothly; only display sampling is throttled
 
 ## Notes (2026-01-19 - Earlier)
 

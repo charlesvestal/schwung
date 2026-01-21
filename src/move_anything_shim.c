@@ -3267,15 +3267,8 @@ static void shadow_filter_move_input(void)
 
         /* Handle note events */
         if (type == 0x90 || type == 0x80) {
-            /* Block knob touch notes 1-7 and 9 - not useful for Move.
-             * Note 0 (Knob 1) and Note 8 (Volume) pass through for shadow toggle. */
-            if (d1 >= 1 && d1 <= 7) {
-                src[i] = 0;
-                src[i + 1] = 0;
-                src[i + 2] = 0;
-                src[i + 3] = 0;
-                continue;
-            }
+            /* Knob touch notes 0-7 pass through to Move for touch-to-peek in Chain UI.
+             * Only block note 9 (jog wheel touch - not needed). */
             if (d1 == 9) {  /* Jog wheel touch - not needed */
                 src[i] = 0;
                 src[i + 1] = 0;
@@ -3286,7 +3279,7 @@ static void shadow_filter_move_input(void)
 
             /* Check if this note is captured by the focused slot */
             if (capture && capture_has_note(capture, d1)) {
-                /* Debug: log captured note */
+                /* Debug: log captured step notes */
                 if (d1 >= 16 && d1 <= 31) {
                     char dbg[128];
                     snprintf(dbg, sizeof(dbg), "CAPTURED step note %d, routing to DSP", d1);
@@ -4425,13 +4418,30 @@ int ioctl(int fd, unsigned long request, ...)
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
-            /* Block knob touch notes 1-7 (knobs 2-8) when Shift held.
-             * Note 0 (Knob 1) and Note 8 (Volume) are NOT blocked - needed for shadow toggle. */
-            if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
-                if (d1 >= 1 && d1 <= 7) {  /* Knob 2-8 touches only */
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
-                    continue;
+            /* Handle knob touch notes 0-7 - block from Move, show overlay */
+            if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80) && d1 <= 7) {
+                int knob_num = d1 + 1;  /* Note 0 = Knob 1, etc. */
+                int slot = shadow_selected_slot;
+                if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
+
+                /* Note On (touch start) - show overlay and hold it */
+                if (type == 0x90 && d2 > 0) {
+                    if (shadow_chain_slots[slot].active) {
+                        shift_knob_update_overlay(slot, knob_num, 0);
+                        /* Set timeout very high so it stays visible until Note Off */
+                        shift_knob_overlay_timeout = 10000;
+                    }
                 }
+                /* Note Off (touch release) - start normal timeout for fade */
+                else if (type == 0x80 || (type == 0x90 && d2 == 0)) {
+                    /* Only fade if this is the knob that's currently shown */
+                    if (shift_knob_overlay_active && shift_knob_overlay_knob == knob_num) {
+                        shift_knob_overlay_timeout = SHIFT_KNOB_OVERLAY_FRAMES;
+                    }
+                }
+                /* Block touch note from reaching Move */
+                src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                continue;
             }
 
             /* Handle knob CC messages */
@@ -4558,9 +4568,23 @@ int ioctl(int fd, unsigned long request, ...)
                     /* Don't zero - let track notes pass through to Move too */
                 }
 
-                /* Block knob touch notes 1-7 and 9 - these confuse Move.
-                 * Note 0 (Knob 1) and Note 8 (Volume) pass through for shadow toggle. */
-                if ((d1 >= 1 && d1 <= 7) || d1 == 9) {
+                /* Forward knob touch notes (0-7) to shadow UI for peek-at-value */
+                if (d1 <= 7 && shadow_ui_midi_shm) {
+                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                        if (shadow_ui_midi_shm[slot] == 0) {
+                            shadow_ui_midi_shm[slot] = (type == 0x90) ? 0x09 : 0x08;
+                            shadow_ui_midi_shm[slot + 1] = status;
+                            shadow_ui_midi_shm[slot + 2] = d1;
+                            shadow_ui_midi_shm[slot + 3] = d2;
+                            shadow_control->midi_ready++;
+                            break;
+                        }
+                    }
+                }
+
+                /* Knob touch notes 0-7 pass through to Move for touch-to-peek in Chain UI.
+                 * Note 9 is blocked as it's not a knob touch. */
+                if (d1 == 9) {
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     continue;
                 }
