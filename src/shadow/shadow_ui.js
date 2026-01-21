@@ -72,6 +72,9 @@ const VIEWS = {
     HIERARCHY_EDITOR: "hierarch" // Hierarchy-based parameter editor
 };
 
+/* Special action key for swap module option */
+const SWAP_MODULE_ACTION = "__swap_module__";
+
 /* Chain component types for horizontal editor */
 const CHAIN_COMPONENTS = [
     { key: "midiFx", label: "MIDI FX", position: 0 },
@@ -131,6 +134,13 @@ let pendingKnobIndex = -1;       // Which knob to refresh (-1 = none)
 /* Throttled hierarchy knob adjustment - accumulate deltas, apply once per frame */
 let pendingHierKnobIndex = -1;   // Which knob is being turned (-1 = none)
 let pendingHierKnobDelta = 0;    // Accumulated delta to apply
+
+/* Cached knob contexts - avoid IPC calls on every CC message */
+let cachedKnobContexts = [];     // Array of 8 contexts (one per knob)
+let cachedKnobContextsView = ""; // View when cache was built
+let cachedKnobContextsSlot = -1; // Slot when cache was built
+let cachedKnobContextsComp = -1; // Component when cache was built
+let cachedKnobContextsLevel = ""; // Hierarchy level when cache was built
 
 /* Master FX state */
 let selectedMasterFx = 0;    // Index into MASTER_FX_OPTIONS
@@ -210,6 +220,7 @@ let hierEditorIsPresetLevel = false;  // true when current level is a preset bro
 let hierEditorPresetCount = 0;
 let hierEditorPresetIndex = 0;
 let hierEditorPresetName = "";
+let hierEditorPresetEditMode = false; // true when editing params within a preset browser level
 
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
@@ -1120,20 +1131,8 @@ function handleShiftSelect() {
     const comp = CHAIN_COMPONENTS[selectedChainComponent];
     if (!comp || comp.key === "settings") return;
 
-    /* Check if this component has a module loaded */
-    const cfg = chainConfigs[selectedSlot];
-    const moduleData = cfg && cfg[comp.key];
-
-    /* Debug: show what we found */
-    globalThis._debugShift = `${comp.key}:${moduleData ? moduleData.module : 'null'}`;
-
-    if (!moduleData || !moduleData.module) {
-        /* No module loaded - just do normal select */
-        handleSelect();
-        return;
-    }
-
-    enterComponentEdit(selectedSlot, comp.key);
+    /* Shift+click always goes to module chooser (for swapping) */
+    enterComponentSelect(selectedSlot, selectedChainComponent);
 }
 
 /* Enter component edit mode - try hierarchy editor first, then module UI, then preset browser */
@@ -1200,6 +1199,11 @@ function enterHierarchyEditor(slotIndex, componentKey) {
         return;
     }
 
+    /* Dismiss any active overlay and clear pending knob state */
+    hideOverlay();
+    pendingHierKnobIndex = -1;
+    pendingHierKnobDelta = 0;
+
     hierEditorSlot = slotIndex;
     hierEditorComponent = componentKey;
     hierEditorHierarchy = hierarchy;
@@ -1239,7 +1243,7 @@ function loadHierarchyLevel() {
     /* Check if this is a preset browser level */
     if (levelDef.list_param && levelDef.count_param) {
         hierEditorIsPresetLevel = true;
-        hierEditorParams = [];
+        hierEditorPresetEditMode = false;  /* Reset edit mode when entering preset level */
         hierEditorKnobs = levelDef.knobs || [];
 
         /* Fetch preset count and current preset */
@@ -1253,9 +1257,14 @@ function loadHierarchyLevel() {
         /* Fetch preset name */
         const nameParam = levelDef.name_param || "preset_name";
         hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
+
+        /* Also load params for preset edit mode (prepend swap action) */
+        hierEditorParams = [SWAP_MODULE_ACTION, ...(levelDef.params || [])];
     } else {
         hierEditorIsPresetLevel = false;
-        hierEditorParams = levelDef.params || [];
+        hierEditorPresetEditMode = false;
+        /* Prepend swap module action to params list */
+        hierEditorParams = [SWAP_MODULE_ACTION, ...(levelDef.params || [])];
         hierEditorKnobs = levelDef.knobs || [];
     }
 }
@@ -1287,12 +1296,17 @@ function changeHierPreset(delta) {
 
 /* Exit hierarchy editor */
 function exitHierarchyEditor() {
+    /* Clear pending knob state to prevent stale overlays */
+    pendingHierKnobIndex = -1;
+    pendingHierKnobDelta = 0;
+
     clearModuleParamShims();
     hierEditorSlot = -1;
     hierEditorComponent = "";
     hierEditorHierarchy = null;
     hierEditorChainParams = [];
     hierEditorIsPresetLevel = false;
+    hierEditorPresetEditMode = false;
     view = VIEWS.CHAIN_EDIT;
     needsRedraw = true;
 }
@@ -1331,6 +1345,9 @@ function adjustHierSelectedParam(delta) {
 
     const param = hierEditorParams[hierEditorSelectedIdx];
     const key = typeof param === "string" ? param : param.key || param;
+
+    /* Skip special actions */
+    if (key === SWAP_MODULE_ACTION) return;
     const fullKey = `${hierEditorComponent}:${key}`;
 
     const currentVal = getSlotParam(hierEditorSlot, fullKey);
@@ -1351,10 +1368,20 @@ function adjustHierSelectedParam(delta) {
 }
 
 /*
- * Unified knob context resolution - used by both touch (peek) and turn (adjust)
- * Returns context object or null if no mapping exists for this knob
+ * Invalidate knob context cache - call when view/slot/component/level changes
  */
-function getKnobContext(knobIndex) {
+function invalidateKnobContextCache() {
+    cachedKnobContexts = [];
+    cachedKnobContextsView = "";
+    cachedKnobContextsSlot = -1;
+    cachedKnobContextsComp = -1;
+    cachedKnobContextsLevel = "";
+}
+
+/*
+ * Build knob context for a single knob - internal, called by rebuildKnobContextCache
+ */
+function buildKnobContextForKnob(knobIndex) {
     /* Hierarchy editor context */
     if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length) {
         const key = hierEditorKnobs[knobIndex];
@@ -1413,8 +1440,48 @@ function getKnobContext(knobIndex) {
         }
     }
 
-    /* Default: no special context, fall through to global slot mapping */
+    /* Default: no special context */
     return null;
+}
+
+/*
+ * Rebuild knob context cache for all 8 knobs
+ */
+function rebuildKnobContextCache() {
+    cachedKnobContexts = [];
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        cachedKnobContexts.push(buildKnobContextForKnob(i));
+    }
+    cachedKnobContextsView = view;
+    cachedKnobContextsSlot = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorSlot : selectedSlot;
+    cachedKnobContextsComp = (view === VIEWS.HIERARCHY_EDITOR) ? -1 : selectedChainComponent;
+    cachedKnobContextsLevel = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorLevel : "";
+}
+
+/*
+ * Unified knob context resolution - used by both touch (peek) and turn (adjust)
+ * Returns context object or null if no mapping exists for this knob
+ * Uses caching to avoid IPC calls on every CC message
+ */
+function getKnobContext(knobIndex) {
+    /* Check if cache is valid */
+    const currentSlot = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorSlot : selectedSlot;
+    const currentComp = (view === VIEWS.HIERARCHY_EDITOR) ? -1 : selectedChainComponent;
+    const currentLevel = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorLevel : "";
+
+    const cacheValid = (
+        cachedKnobContexts.length === NUM_KNOBS &&
+        cachedKnobContextsView === view &&
+        cachedKnobContextsSlot === currentSlot &&
+        cachedKnobContextsComp === currentComp &&
+        cachedKnobContextsLevel === currentLevel
+    );
+
+    if (!cacheValid) {
+        rebuildKnobContextCache();
+    }
+
+    return cachedKnobContexts[knobIndex] || null;
 }
 
 /*
@@ -1569,8 +1636,8 @@ function drawHierarchyEditor() {
 
     drawHeader(truncateText(breadcrumb, 24));
 
-    /* Check if this is a preset browser level */
-    if (hierEditorIsPresetLevel) {
+    /* Check if this is a preset browser level (and not in edit mode) */
+    if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
         /* Draw preset browser UI */
         const centerY = 32;
 
@@ -1592,11 +1659,8 @@ function drawHierarchyEditor() {
             print(4, centerY, "No presets available", 1);
         }
 
-        /* Footer hints - check if there are children to drill into */
-        const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
-        const hasChildren = levelDef && levelDef.children;
-        const hint = hasChildren ? "Jog:browse  Push:edit" : "Jog:browse  Back:exit";
-        drawFooter(hint);
+        /* Footer hints - always push to edit (for swap/params) */
+        drawFooter("Jog:browse  Push:edit");
     } else {
         /* Draw param list */
         if (hierEditorParams.length === 0) {
@@ -1605,6 +1669,12 @@ function drawHierarchyEditor() {
             /* Build items with labels and values */
             const items = hierEditorParams.map(param => {
                 const key = typeof param === "string" ? param : param.key || param;
+
+                /* Handle special swap module action */
+                if (key === SWAP_MODULE_ACTION) {
+                    return { label: "[Swap module...]", value: "", key, isAction: true };
+                }
+
                 const meta = getParamMetadata(key);
                 const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
                 const val = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${key}`);
@@ -1769,14 +1839,14 @@ function handleJog(delta) {
             changeComponentPreset(delta);
             break;
         case VIEWS.HIERARCHY_EDITOR:
-            if (hierEditorIsPresetLevel) {
+            if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
                 /* Browse presets */
                 changeHierPreset(delta);
             } else if (hierEditorEditMode) {
                 /* Adjust selected param value */
                 adjustHierSelectedParam(delta);
             } else {
-                /* Scroll param list */
+                /* Scroll param list (includes preset edit mode) */
                 hierEditorSelectedIdx = Math.max(0, Math.min(hierEditorParams.length - 1, hierEditorSelectedIdx + delta));
             }
             break;
@@ -1846,8 +1916,18 @@ function handleSelect() {
                 /* Settings selected - go to chain settings */
                 enterChainSettings(selectedSlot);
             } else {
-                /* Component selected - enter module selection */
-                enterComponentSelect(selectedSlot, selectedChainComponent);
+                /* Component selected - check if populated or empty */
+                const comp = CHAIN_COMPONENTS[selectedChainComponent];
+                const cfg = chainConfigs[selectedSlot];
+                const moduleData = cfg && cfg[comp.key];
+
+                if (moduleData && moduleData.module) {
+                    /* Populated - enter component details (hierarchy editor) */
+                    enterComponentEdit(selectedSlot, comp.key);
+                } else {
+                    /* Empty - enter module selection */
+                    enterComponentSelect(selectedSlot, selectedChainComponent);
+                }
             }
             break;
         case VIEWS.COMPONENT_SELECT:
@@ -1859,8 +1939,8 @@ function handleSelect() {
             editingChainSettingValue = !editingChainSettingValue;
             break;
         case VIEWS.HIERARCHY_EDITOR:
-            if (hierEditorIsPresetLevel) {
-                /* On preset browser - drill into children if available */
+            if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
+                /* On preset browser - drill into children or enter edit mode */
                 const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
                 if (levelDef && levelDef.children) {
                     /* Push current level onto path and enter children level */
@@ -1868,11 +1948,26 @@ function handleSelect() {
                     hierEditorLevel = levelDef.children;
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
+                } else {
+                    /* No children - enter preset edit mode to show params/swap */
+                    hierEditorPresetEditMode = true;
+                    hierEditorSelectedIdx = 0;
                 }
-                /* If no children, do nothing (just browsing presets) */
-            } else {
-                /* On params level - toggle edit mode */
-                hierEditorEditMode = !hierEditorEditMode;
+            } else if (hierEditorPresetEditMode || !hierEditorIsPresetLevel) {
+                /* On params level - check for special actions */
+                const selectedParam = hierEditorParams[hierEditorSelectedIdx];
+                if (selectedParam === SWAP_MODULE_ACTION) {
+                    /* Swap module - find component index and enter module select */
+                    const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
+                    const slotToSwap = hierEditorSlot;  /* Save before exit clears it */
+                    if (compIndex >= 0) {
+                        exitHierarchyEditor();
+                        enterComponentSelect(slotToSwap, compIndex);
+                    }
+                } else {
+                    /* Normal param - toggle edit mode */
+                    hierEditorEditMode = !hierEditorEditMode;
+                }
             }
             break;
     }
@@ -1954,8 +2049,12 @@ function handleBack() {
             break;
         case VIEWS.HIERARCHY_EDITOR:
             if (hierEditorEditMode) {
-                /* Exit edit mode first */
+                /* Exit param edit mode first */
                 hierEditorEditMode = false;
+                needsRedraw = true;
+            } else if (hierEditorPresetEditMode) {
+                /* Exit preset edit mode - return to preset browser */
+                hierEditorPresetEditMode = false;
                 needsRedraw = true;
             } else if (hierEditorPath.length > 0) {
                 /* Go back to parent level */
