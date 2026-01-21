@@ -1258,13 +1258,13 @@ function loadHierarchyLevel() {
         const nameParam = levelDef.name_param || "preset_name";
         hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
 
-        /* Also load params for preset edit mode (prepend swap action) */
-        hierEditorParams = [SWAP_MODULE_ACTION, ...(levelDef.params || [])];
+        /* Also load params for preset edit mode (append swap action at end) */
+        hierEditorParams = [...(levelDef.params || []), SWAP_MODULE_ACTION];
     } else {
         hierEditorIsPresetLevel = false;
         hierEditorPresetEditMode = false;
-        /* Prepend swap module action to params list */
-        hierEditorParams = [SWAP_MODULE_ACTION, ...(levelDef.params || [])];
+        /* Append swap module action to params list */
+        hierEditorParams = [...(levelDef.params || []), SWAP_MODULE_ACTION];
         hierEditorKnobs = levelDef.knobs || [];
     }
 }
@@ -2426,6 +2426,7 @@ function drawComponentSelect() {
         items: availableModules,
         selectedIndex: selectedModuleIndex,
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        lineHeight: 9,  /* Smaller to fit 4 items */
         getLabel: (item) => item.name || item.id || "Unknown",
         getValue: (item) => {
             const cfg = chainConfigs[selectedSlot];
