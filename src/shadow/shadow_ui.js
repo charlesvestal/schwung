@@ -2516,12 +2516,22 @@ function handleSelect() {
                 /* On params level - check for special actions */
                 const selectedParam = hierEditorParams[hierEditorSelectedIdx];
                 if (selectedParam === SWAP_MODULE_ACTION) {
-                    /* Swap module - find component index and enter module select */
-                    const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
-                    const slotToSwap = hierEditorSlot;  /* Save before exit clears it */
-                    if (compIndex >= 0) {
+                    /* Swap module - handle Master FX vs regular chain slots */
+                    if (hierEditorIsMasterFx) {
+                        /* Master FX: use Master FX module select */
+                        const fxSlot = hierEditorMasterFxSlot;
                         exitHierarchyEditor();
-                        enterComponentSelect(slotToSwap, compIndex);
+                        /* Restore Master FX component selection and enter module select */
+                        selectedMasterFxComponent = fxSlot;
+                        enterMasterFxModuleSelect(fxSlot);
+                    } else {
+                        /* Regular chain slot: find component index and enter module select */
+                        const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
+                        const slotToSwap = hierEditorSlot;  /* Save before exit clears it */
+                        if (compIndex >= 0) {
+                            exitHierarchyEditor();
+                            enterComponentSelect(slotToSwap, compIndex);
+                        }
                     }
                 } else {
                     /* Normal param - toggle edit mode */

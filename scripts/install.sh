@@ -73,13 +73,11 @@ fi
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
 $ssh_root "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi"
 
-# Use root to stop running Move processes cleanly, then force if needed.
-$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill \$pids || true; fi; done"
-$ssh_root "sleep 0.5"
-$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi; done"
-$ssh_root "sleep 0.2"
-# Free the SPI device if anything still holds it (prevents \"communication error\")
-$ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
+# Stop running Move processes (run as ableton since processes run as ableton user)
+$ssh_ableton "for name in MoveMessageDisplay MoveLauncher MoveWebService Move MoveOriginal move-anything shadow_ui; do pkill -9 \$name 2>/dev/null || true; done"
+$ssh_ableton "sleep 2"
+# Wait for processes to fully exit and release D-Bus names
+$ssh_ableton "for i in 1 2 3 4 5; do pidof MoveOriginal Move >/dev/null 2>&1 || break; sleep 0.5; done"
 
 $ssh_root cp -aL /data/UserData/move-anything/move-anything-shim.so /usr/lib/
 $ssh_root chmod u+s /usr/lib/move-anything-shim.so
