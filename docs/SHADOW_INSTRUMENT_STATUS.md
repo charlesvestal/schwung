@@ -18,6 +18,20 @@ Stock Move (ioctl) → Shim (LD_PRELOAD) → SPI Mailbox
                  Shadow UI host (QuickJS)
 ```
 
+### Shared Code Structure
+
+Shadow mode shares code with the main Move Anything host to maintain consistency:
+
+**JavaScript (src/shared/):**
+- `constants.mjs` - MIDI CC/note mappings (MoveKnob1, MoveBack, etc.)
+- `chain_ui_views.mjs` - Display constants (SCREEN_WIDTH, LIST_TOP_Y, etc.)
+- `input_filter.mjs` - MIDI utilities (decodeDelta)
+- `menu_layout.mjs` - UI primitives (drawMenuHeader, drawMenuFooter, overlay system)
+
+**C Headers (src/host/):**
+- `shadow_constants.h` - Shared memory names, buffer sizes, struct definitions
+- `js_display.h/c` - Display primitives (set_pixel, print, font loading)
+
 ### In-Process Shadow Mode (Autostart, Current)
 
 The shim loads and runs the chain DSP **inside MoveOriginal** without the
@@ -66,10 +80,14 @@ Example:
 |---------|------|---------|
 | `/move-shadow-audio` | 1536 bytes | Triple-buffered audio output (3 × 512) |
 | `/move-shadow-movein` | 512 bytes | Move's audio for shadow to read |
-| `/move-shadow-midi` | 256 bytes | MIDI from shim to shadow |
+| `/move-shadow-midi` | 256 bytes | MIDI from shim to chain DSP |
+| `/move-shadow-ui-midi` | 256 bytes | MIDI from shim to shadow UI |
 | `/move-shadow-display` | 1024 bytes | Shadow UI display buffer |
 | `/move-shadow-control` | 64 bytes | Control flags + UI patch requests |
 | `/move-shadow-ui` | 512 bytes | Slot labels + patch names for UI |
+| `/move-shadow-param` | 512 bytes | Parameter get/set requests |
+
+Segment names and buffer sizes are defined in `src/host/shadow_constants.h`.
 
 ## What Works
 

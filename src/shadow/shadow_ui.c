@@ -21,65 +21,7 @@
 #include "quickjs-libc.h"
 
 #include "host/js_display.h"
-
-#define SHM_SHADOW_UI_MIDI  "/move-shadow-ui-midi"
-#define SHM_SHADOW_DISPLAY  "/move-shadow-display"
-#define SHM_SHADOW_CONTROL  "/move-shadow-control"
-#define SHM_SHADOW_UI       "/move-shadow-ui"
-#define SHM_SHADOW_PARAM    "/move-shadow-param"
-
-#define MIDI_BUFFER_SIZE 256
-#define DISPLAY_BUFFER_SIZE 1024
-#define CONTROL_BUFFER_SIZE 64
-#define SHADOW_UI_BUFFER_SIZE 512
-#define SHADOW_PARAM_BUFFER_SIZE 512
-
-#define SHADOW_UI_NAME_LEN 64
-#define SHADOW_UI_SLOTS 4
-#define SHADOW_PARAM_KEY_LEN 64
-#define SHADOW_PARAM_VALUE_LEN 440
-
-typedef struct shadow_control_t {
-    volatile uint8_t display_mode;
-    volatile uint8_t shadow_ready;
-    volatile uint8_t should_exit;
-    volatile uint8_t midi_ready;
-    volatile uint8_t write_idx;
-    volatile uint8_t read_idx;
-    volatile uint8_t ui_slot;
-    volatile uint8_t ui_flags;
-    volatile uint16_t ui_patch_index;
-    volatile uint16_t reserved16;
-    volatile uint32_t ui_request_id;
-    volatile uint32_t shim_counter;
-    volatile uint8_t selected_slot;   /* track-selected slot (0-3) - for playback/knobs */
-    volatile uint8_t reserved[43];
-} shadow_control_t;
-
-typedef struct shadow_ui_state_t {
-    uint32_t version;
-    uint8_t slot_count;
-    uint8_t reserved[3];
-    uint8_t slot_channels[SHADOW_UI_SLOTS];
-    uint8_t slot_volumes[SHADOW_UI_SLOTS];       /* 0-100 percentage */
-    int8_t slot_forward_ch[SHADOW_UI_SLOTS];     /* -1=none, 0-15=channel */
-    char slot_names[SHADOW_UI_SLOTS][SHADOW_UI_NAME_LEN];
-} shadow_ui_state_t;
-
-typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
-typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
-
-typedef struct shadow_param_t {
-    volatile uint8_t request_type;  /* 0=none, 1=set, 2=get */
-    volatile uint8_t slot;          /* Which chain slot (0-3) */
-    volatile uint8_t response_ready;/* Set by shim when response is ready */
-    volatile uint8_t error;         /* Non-zero on error */
-    volatile int32_t result_len;    /* Length of result, -1 on error */
-    char key[SHADOW_PARAM_KEY_LEN];
-    char value[SHADOW_PARAM_VALUE_LEN];
-} shadow_param_t;
-
-typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
+#include "host/shadow_constants.h"
 
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;

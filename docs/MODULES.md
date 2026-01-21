@@ -501,6 +501,17 @@ if (MovePads.includes(note)) { /* handle pad */ }
 const padIndex = note - MovePads[0];  // 0-31
 ```
 
+### C Shared Utilities
+
+For native code, shared headers are in `src/host/`:
+
+| File | Contents |
+|------|----------|
+| `js_display.h/c` | Display primitives (set_pixel, draw_rect, print), font loading, QuickJS bindings |
+| `shadow_constants.h` | Shadow mode shared memory names, buffer sizes, control structures |
+| `plugin_api_v1.h` | DSP plugin interface |
+| `audio_fx_api_v2.h` | Audio effects plugin interface |
+
 ## Example Modules
 
 See these modules for reference:

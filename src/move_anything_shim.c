@@ -22,6 +22,7 @@
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
+#include "host/shadow_constants.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
@@ -48,11 +49,8 @@ int frame_counter = 0;
 #define AUDIO_IN_OFFSET 2304
 
 #define AUDIO_BUFFER_SIZE 512      /* 128 frames * 2 channels * 2 bytes */
-#define MIDI_BUFFER_SIZE 256
-#define DISPLAY_BUFFER_SIZE 1024   /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 64
-#define SHADOW_UI_BUFFER_SIZE 512
-#define SHADOW_PARAM_BUFFER_SIZE 512
+/* Buffer sizes from shadow_constants.h: MIDI_BUFFER_SIZE, DISPLAY_BUFFER_SIZE,
+   CONTROL_BUFFER_SIZE, SHADOW_UI_BUFFER_SIZE, SHADOW_PARAM_BUFFER_SIZE */
 #define FRAMES_PER_BLOCK 128
 
 /* Move host shortcut CCs (mirror move_anything.c) */
@@ -88,60 +86,13 @@ int frame_counter = 0;
 #define CC_STEP_UI_FIRST 16
 #define CC_STEP_UI_LAST 31
 
-typedef struct shadow_control_t {
-    volatile uint8_t display_mode;    /* 0=stock Move, 1=shadow display */
-    volatile uint8_t shadow_ready;    /* 1 when shadow process is running */
-    volatile uint8_t should_exit;     /* 1 to signal shadow to exit */
-    volatile uint8_t midi_ready;      /* increments when new MIDI available */
-    volatile uint8_t write_idx;       /* triple buffer: shadow writes here */
-    volatile uint8_t read_idx;        /* triple buffer: shim reads here */
-    volatile uint8_t ui_slot;         /* shadow UI highlighted slot (0-3) - for navigation */
-    volatile uint8_t ui_flags;        /* UI flags: bit 0 = jump to slot edit on open */
-    volatile uint16_t ui_patch_index; /* shadow UI patch index */
-    volatile uint16_t reserved16;     /* padding/alignment */
-    volatile uint32_t ui_request_id;  /* increment to request patch change */
-    volatile uint32_t shim_counter;   /* increments each ioctl for drift correction */
-    volatile uint8_t selected_slot;   /* track-selected slot (0-3) - for playback/knobs */
-    volatile uint8_t reserved[43];    /* padding for future use */
-} shadow_control_t;
-
+/* Shadow structs from shadow_constants.h: shadow_control_t, shadow_ui_state_t, shadow_param_t */
 static shadow_control_t *shadow_control = NULL;
 static uint8_t shadow_display_mode = 0;
-typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
-
-/* UI flags for shadow_control->ui_flags */
-#define SHADOW_UI_FLAG_JUMP_TO_SLOT 0x01  /* Jump to slot settings on open */
-
-#define SHADOW_UI_NAME_LEN 64
-#define SHADOW_UI_SLOTS 4
-typedef struct shadow_ui_state_t {
-    uint32_t version;
-    uint8_t slot_count;
-    uint8_t reserved[3];
-    uint8_t slot_channels[SHADOW_UI_SLOTS];
-    uint8_t slot_volumes[SHADOW_UI_SLOTS];       /* 0-100 percentage */
-    int8_t slot_forward_ch[SHADOW_UI_SLOTS];     /* -1=none, 0-15=channel */
-    char slot_names[SHADOW_UI_SLOTS][SHADOW_UI_NAME_LEN];
-} shadow_ui_state_t;
 
 static shadow_ui_state_t *shadow_ui_state = NULL;
-typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
-
-/* Shadow param request structure - for set_param/get_param calls from shadow UI */
-#define SHADOW_PARAM_KEY_LEN 64
-#define SHADOW_PARAM_VALUE_LEN 440
-typedef struct shadow_param_t {
-    volatile uint8_t request_type;  /* 0=none, 1=set, 2=get */
-    volatile uint8_t slot;          /* Which chain slot (0-3) */
-    volatile uint8_t response_ready;/* Set by shim when response is ready */
-    volatile uint8_t error;         /* Non-zero on error */
-    volatile int32_t result_len;    /* Length of result, -1 on error */
-    char key[SHADOW_PARAM_KEY_LEN];
-    char value[SHADOW_PARAM_VALUE_LEN];
-} shadow_param_t;
 
 static shadow_param_t *shadow_param = NULL;
-typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 
 static void launch_shadow_ui(void);
 
@@ -668,7 +619,7 @@ static void spi_trace_ioctl(unsigned long request, char *argp)
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/move-anything/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/move-anything/modules/chain/dsp.so"
 #define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
-#define SHADOW_CHAIN_INSTANCES 4
+/* SHADOW_CHAIN_INSTANCES from shadow_constants.h */
 
 /* System volume - for now just a placeholder, we'll find the real source */
 static float shadow_master_gain = 1.0f;
@@ -2220,9 +2171,7 @@ static void shadow_route_knob_cc_to_focused_slot(const uint8_t *msg, int len)
 }
 
 static uint32_t shadow_ui_request_seen = 0;
-/* Special patch index value meaning "none" / clear the slot */
-#define SHADOW_PATCH_INDEX_NONE 65535
-
+/* SHADOW_PATCH_INDEX_NONE from shadow_constants.h */
 
 /* Helper to write debug to log file (shadow_log isn't available yet) */
 static void capture_debug_log(const char *msg) {
@@ -2682,16 +2631,7 @@ static void shadow_inprocess_mix_audio(void) {
     memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
 }
 
-/* Shared memory segment names */
-#define SHM_SHADOW_AUDIO    "/move-shadow-audio"    /* Shadow's mixed output */
-#define SHM_SHADOW_MIDI     "/move-shadow-midi"
-#define SHM_SHADOW_UI_MIDI  "/move-shadow-ui-midi"
-#define SHM_SHADOW_DISPLAY  "/move-shadow-display"
-#define SHM_SHADOW_CONTROL  "/move-shadow-control"
-#define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow to read */
-#define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
-#define SHM_SHADOW_PARAM    "/move-shadow-param"    /* Shadow param requests */
-
+/* Shared memory segment names from shadow_constants.h */
 
 #define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
 

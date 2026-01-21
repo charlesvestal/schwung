@@ -4,9 +4,11 @@
 
 **Principle:** Single source of truth - no duplicated code that can drift out of sync.
 
+**Status:** ✅ COMPLETED (2026-01-20)
+
 ---
 
-## Phase 1: Enable ES Module Imports in Shadow UI (30 min)
+## Phase 1: Enable ES Module Imports in Shadow UI ✅
 
 ### 1.1 Add Module Loader to shadow_ui.c
 
@@ -24,7 +26,7 @@ Ensure shadow_ui.js can resolve paths like `../shared/constants.mjs` relative to
 
 ---
 
-## Phase 2: Refactor shadow_ui.js to Use Shared Utilities (2-3 hours)
+## Phase 2: Refactor shadow_ui.js to Use Shared Utilities ✅
 
 ### 2.1 Replace Hardcoded Constants
 
@@ -141,7 +143,7 @@ import {
 
 ---
 
-## Phase 3: Extract Shared C Bindings (1-2 hours)
+## Phase 3: Extract Shared C Bindings ✅
 
 ### 3.1 Create js_display_bindings.h
 
@@ -187,7 +189,7 @@ Link into both `move-anything` and `shadow_ui` binaries.
 
 ---
 
-## Phase 4: Create Shared Constants Header (30 min)
+## Phase 4: Create Shared Constants Header ✅
 
 ### 4.1 Create shadow_constants.h
 
@@ -227,7 +229,7 @@ Link into both `move-anything` and `shadow_ui` binaries.
 
 ---
 
-## Phase 5: Documentation Update (30 min)
+## Phase 5: Documentation Update ✅
 
 ### 5.1 Update SHADOW_INSTRUMENT_STATUS.md
 - Document new architecture
@@ -243,15 +245,20 @@ Link into both `move-anything` and `shadow_ui` binaries.
 
 ---
 
-## Expected Results
+## Actual Results
 
 | Metric | Before | After |
 |--------|--------|-------|
-| shadow_ui.js lines | ~1200 | ~800 |
-| shadow_ui.c lines | ~876 | ~750 |
+| shadow_ui.js lines | ~1200 | ~1100 |
+| shadow_ui.c lines | ~880 | ~510 |
 | Duplicated JS code | ~400 lines | ~0 |
-| Duplicated C code | ~200 lines | ~0 |
+| Duplicated C code | ~320 lines | ~0 |
 | Sources of truth for UI | 2 | 1 |
+
+New shared files:
+- `src/host/js_display.c` - 369 lines of display code
+- `src/host/js_display.h` - 74 lines of declarations
+- `src/host/shadow_constants.h` - 117 lines of shared constants/structs
 
 ---
 

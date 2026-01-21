@@ -24,7 +24,10 @@ import { decodeDelta } from '../shared/input_filter.mjs';
 
 import {
     drawMenuHeader as drawHeader,
-    drawMenuFooter as drawFooter
+    drawMenuFooter as drawFooter,
+    showOverlay,
+    tickOverlay,
+    drawOverlay
 } from '../shared/menu_layout.mjs';
 
 /* Track buttons - derive from imported constants */
@@ -105,12 +108,8 @@ let refreshCounter = 0;
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
 
-/* Knob overlay state */
+/* Knob mapping state (overlay uses shared menu_layout.mjs) */
 let knobMappings = [];       // {cc, name, value} for each knob
-let knobOverlayActive = false;
-let knobOverlayTimeout = 0;
-let knobOverlayName = "";
-let knobOverlayValue = "";
 let lastKnobSlot = -1;       // Track slot changes to refresh mappings
 
 /* Master FX state */
@@ -821,13 +820,13 @@ function handleKnobTurn(knobIndex, value) {
         knobMappings[knobIndex].value = newValue || "-";
     }
 
-    /* Show overlay */
+    /* Show overlay using shared overlay system */
     const mapping = knobMappings[knobIndex];
     if (mapping) {
-        knobOverlayActive = true;
-        knobOverlayTimeout = 30;  /* ~500ms at 60fps tick rate */
-        knobOverlayName = mapping.name;
-        knobOverlayValue = mapping.value;
+        /* Include slot info in the name for context */
+        const patchName = (slots[targetSlot] && slots[targetSlot].name) || "?";
+        const displayName = `S${targetSlot + 1}: ${mapping.name}`;
+        showOverlay(displayName, mapping.value);
     }
     needsRedraw = true;
 }
@@ -1045,36 +1044,6 @@ function drawMasterFx() {
     drawFooter("Click: apply  Back: slots");
 }
 
-/* Draw knob parameter overlay centered on screen */
-function drawKnobOverlay() {
-    if (!knobOverlayActive) return;
-
-    /* Get track-selected slot and its patch name */
-    let targetSlot = 0;
-    if (typeof shadow_get_selected_slot === "function") {
-        targetSlot = shadow_get_selected_slot();
-    }
-    const patchName = (slots[targetSlot] && slots[targetSlot].name) || "Unknown";
-
-    const boxW = 100, boxH = 34;
-    const boxX = (SCREEN_WIDTH - boxW) / 2;
-    const boxY = (SCREEN_HEIGHT - boxH) / 2;
-
-    /* Draw box with black background and white border */
-    fill_rect(boxX, boxY, boxW, boxH, 0);
-    draw_rect(boxX, boxY, boxW, boxH, 1);
-
-    /* Line 1: Slot and patch name (e.g., "S3: PatchName") */
-    const slotLabel = `S${targetSlot + 1}: ${truncateText(patchName, 11)}`;
-    print(boxX + 4, boxY + 4, slotLabel, 1);
-
-    /* Line 2: Parameter name */
-    print(boxX + 4, boxY + 14, truncateText(knobOverlayName, 14), 1);
-
-    /* Line 3: Parameter value */
-    print(boxX + 4, boxY + 24, knobOverlayValue, 1);
-}
-
 globalThis.init = function() {
     refreshSlots();
     loadPatchList();
@@ -1117,13 +1086,9 @@ globalThis.tick = function() {
         refreshSlots();
     }
 
-    /* Update knob overlay timeout */
-    if (knobOverlayTimeout > 0) {
-        knobOverlayTimeout--;
-        if (knobOverlayTimeout === 0) {
-            knobOverlayActive = false;
-            needsRedraw = true;
-        }
+    /* Update shared overlay timeout */
+    if (tickOverlay()) {
+        needsRedraw = true;
     }
 
     /* Refresh knob mappings if track-selected slot changed */
@@ -1163,8 +1128,8 @@ globalThis.tick = function() {
             drawSlots();
     }
 
-    /* Draw knob overlay on top of main view */
-    drawKnobOverlay();
+    /* Draw overlay on top of main view (uses shared overlay system) */
+    drawOverlay();
 
     /* Debug: show last CC at top right */
     print(80, 2, `CC${lastCC.cc}`, 1);
