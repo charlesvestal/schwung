@@ -3568,8 +3568,20 @@ static void v2_arp_reset(chain_instance_t *inst) {
 static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     char msg[256];
     char synth_path[MAX_PATH_LEN];
+    char module_name_copy[MAX_NAME_LEN];  /* Local copy to avoid pointer invalidation */
 
     if (!inst) return -1;
+    if (!module_name || !module_name[0]) return -1;
+
+    /* Make a local copy of module_name immediately - the original pointer may
+     * become invalid during file operations (e.g., shared param buffer reuse) */
+    strncpy(module_name_copy, module_name, MAX_NAME_LEN - 1);
+    module_name_copy[MAX_NAME_LEN - 1] = '\0';
+    module_name = module_name_copy;  /* Use local copy from now on */
+
+    /* Debug: log input module_name at entry */
+    snprintf(msg, sizeof(msg), "v2_load_synth ENTRY: module_name='%s'", module_name);
+    v2_chain_log(inst, msg);
 
     /* Build path to synth module */
     if (strcmp(module_name, "linein") == 0) {
@@ -4263,6 +4275,16 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
 
+        /* Debug: log ui_hierarchy queries */
+        if (strcmp(subkey, "ui_hierarchy") == 0) {
+            char dbg[512];
+            snprintf(dbg, sizeof(dbg), "ui_hierarchy query: synth_plugin_v2=%p synth_instance=%p get_param=%p current_synth_module='%s'",
+                     (void*)inst->synth_plugin_v2, (void*)inst->synth_instance,
+                     inst->synth_plugin_v2 ? (void*)inst->synth_plugin_v2->get_param : NULL,
+                     inst->current_synth_module);
+            v2_chain_log(inst, dbg);
+        }
+
         /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0) {
             /* Try plugin's own chain_params handler first */
@@ -4293,9 +4315,21 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
 
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
-            return inst->synth_plugin_v2->get_param(inst->synth_instance, subkey, buf, buf_len);
+            int result = inst->synth_plugin_v2->get_param(inst->synth_instance, subkey, buf, buf_len);
+            /* Debug: log ui_hierarchy result */
+            if (strcmp(subkey, "ui_hierarchy") == 0) {
+                char dbg[512];
+                snprintf(dbg, sizeof(dbg), "ui_hierarchy result: %d, buf_start='%.100s'",
+                         result, result > 0 ? buf : "(empty)");
+                v2_chain_log(inst, dbg);
+            }
+            return result;
         } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
             return inst->synth_plugin->get_param(subkey, buf, buf_len);
+        }
+        /* Debug: log if we return -1 for ui_hierarchy */
+        if (strcmp(subkey, "ui_hierarchy") == 0) {
+            v2_chain_log(inst, "ui_hierarchy: no synth_plugin_v2 or get_param - returning -1");
         }
         return -1;
     }

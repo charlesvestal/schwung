@@ -34,7 +34,7 @@
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
-#define SHADOW_PARAM_BUFFER_SIZE  512
+#define SHADOW_PARAM_BUFFER_SIZE  1536  /* Increased for larger ui_hierarchy JSON */
 
 /* ============================================================================
  * Slot Configuration
@@ -44,7 +44,7 @@
 #define SHADOW_UI_SLOTS 4
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
-#define SHADOW_PARAM_VALUE_LEN 440
+#define SHADOW_PARAM_VALUE_LEN 1460  /* Increased from 440 for ui_hierarchy (OB-Xd needs ~700 bytes) */
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)

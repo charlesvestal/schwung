@@ -1,6 +1,20 @@
 import * as os from 'os';
 import * as std from 'std';
 
+/* Debug logging to file */
+const DEBUG_LOG_FILE = '/tmp/shadow_debug.log';
+function debugLog(msg) {
+    try {
+        const f = std.open(DEBUG_LOG_FILE, 'a');
+        if (f) {
+            f.puts(`[${Date.now()}] ${msg}\n`);
+            f.close();
+        }
+    } catch (e) {
+        /* Ignore logging errors */
+    }
+}
+
 /* Import shared utilities - single source of truth */
 import {
     MoveMainKnob,      // CC 14 - jog wheel
@@ -576,9 +590,13 @@ function getComponentHierarchy(slot, componentKey) {
     const key = componentKey === "synth" ? "synth:ui_hierarchy" :
                 componentKey === "fx1" ? "fx1:ui_hierarchy" :
                 componentKey === "fx2" ? "fx2:ui_hierarchy" : null;
-    if (!key) return null;
+    if (!key) {
+        debugLog(`getComponentHierarchy: no key for componentKey=${componentKey}`);
+        return null;
+    }
 
     const json = getSlotParam(slot, key);
+    debugLog(`getComponentHierarchy: slot=${slot}, key=${key}, json=${json ? json.substring(0, 100) + '...' : 'null'}`);
     if (!json) return null;
 
     try {
@@ -1137,17 +1155,21 @@ function handleShiftSelect() {
 
 /* Enter component edit mode - try hierarchy editor first, then module UI, then preset browser */
 function enterComponentEdit(slotIndex, componentKey) {
+    debugLog(`enterComponentEdit: slot=${slotIndex}, key=${componentKey}`);
     selectedSlot = slotIndex;
     editingComponentKey = componentKey;
 
     /* Try hierarchy editor first (for plugins with ui_hierarchy) */
     const hierarchy = getComponentHierarchy(slotIndex, componentKey);
+    debugLog(`enterComponentEdit: hierarchy=${hierarchy ? 'found' : 'null'}`);
     if (hierarchy) {
+        debugLog(`enterComponentEdit: calling enterHierarchyEditor`);
         enterHierarchyEditor(slotIndex, componentKey);
         return;
     }
 
     /* Fall back to simple preset browser */
+    debugLog(`enterComponentEdit: falling back to simple preset browser`);
     enterComponentEditFallback(slotIndex, componentKey);
 }
 
@@ -1921,11 +1943,15 @@ function handleSelect() {
                 const cfg = chainConfigs[selectedSlot];
                 const moduleData = cfg && cfg[comp.key];
 
+                debugLog(`CHAIN_EDIT select: slot=${selectedSlot}, comp=${comp?.key}, moduleData=${JSON.stringify(moduleData)}`);
+
                 if (moduleData && moduleData.module) {
                     /* Populated - enter component details (hierarchy editor) */
+                    debugLog(`Entering component edit for ${moduleData.module}`);
                     enterComponentEdit(selectedSlot, comp.key);
                 } else {
                     /* Empty - enter module selection */
+                    debugLog(`Entering component select (empty slot)`);
                     enterComponentSelect(selectedSlot, selectedChainComponent);
                 }
             }
