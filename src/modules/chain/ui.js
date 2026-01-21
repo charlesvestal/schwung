@@ -68,8 +68,9 @@ const REDRAW_INTERVAL = 6;
 
 /* Knob feedback state */
 let currentKnobMappings = [];  /* Array of {cc, target, param, currentValue, type, min, max} for current patch */
-const KNOB_STEP_FLOAT = 0.05;  /* Step size for float params (must match DSP) */
-const KNOB_STEP_INT = 1;       /* Step size for int params */
+/* Note: DSP uses acceleration (1x-8x) based on turn speed, so these are base values */
+const KNOB_STEP_FLOAT = 0.0015; /* Base step for floats (DSP accelerates this) */
+const KNOB_STEP_INT = 1;       /* Base step for int params */
 
 /* Display constants */
 const SCREEN_WIDTH = 128;

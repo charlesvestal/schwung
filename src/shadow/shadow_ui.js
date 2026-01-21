@@ -8,7 +8,9 @@ import {
     MoveBack,          // CC 51 - back button
     MoveRow1, MoveRow2, MoveRow3, MoveRow4,  // Track buttons (CC 43, 42, 41, 40)
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
-    MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
+    MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
+    MoveKnob1Touch, MoveKnob8Touch,  // Capacitive touch notes (0-7)
+    MidiNoteOn
 } from '../shared/constants.mjs';
 
 import {
@@ -25,9 +27,11 @@ import { decodeDelta } from '../shared/input_filter.mjs';
 import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
+    drawMenuList,
     showOverlay,
     tickOverlay,
-    drawOverlay
+    drawOverlay,
+    menuLayoutDefaults
 } from '../shared/menu_layout.mjs';
 
 /* Track buttons - derive from imported constants */
@@ -42,36 +46,6 @@ const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
 const KNOB_CC_START = MoveKnob1;  // CC 71
 const KNOB_CC_END = MoveKnob8;    // CC 78
 const NUM_KNOBS = 8;
-
-function drawList(items, selectedIndex, getLabel, getValue) {
-    const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / LIST_LINE_HEIGHT));
-    let startIdx = 0;
-    const maxSelectedRow = maxVisible - 2;
-    if (selectedIndex > maxSelectedRow) {
-        startIdx = selectedIndex - maxSelectedRow;
-    }
-    const endIdx = Math.min(startIdx + maxVisible, items.length);
-    const maxLabelChars = Math.floor((LIST_VALUE_X - LIST_LABEL_X - 6) / 6);
-
-    for (let i = startIdx; i < endIdx; i++) {
-        const y = LIST_TOP_Y + (i - startIdx) * LIST_LINE_HEIGHT;
-        const item = items[i];
-        const label = truncateText(getLabel(item, i), maxLabelChars);
-        const value = getValue ? getValue(item, i) : "";
-        if (i === selectedIndex) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-            print(LIST_LABEL_X, y, `> ${label}`, 0);
-            if (value) {
-                print(LIST_VALUE_X, y, value, 0);
-            }
-        } else {
-            print(LIST_LABEL_X, y, `  ${label}`, 1);
-            if (value) {
-                print(LIST_VALUE_X, y, value, 1);
-            }
-        }
-    }
-}
 
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/modules/chain/patches";
@@ -111,6 +85,10 @@ const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
 /* Knob mapping state (overlay uses shared menu_layout.mjs) */
 let knobMappings = [];       // {cc, name, value} for each knob
 let lastKnobSlot = -1;       // Track slot changes to refresh mappings
+
+/* Throttled knob overlay - only refresh value once per frame to avoid display lag */
+let pendingKnobRefresh = false;  // True if we need to refresh overlay value
+let pendingKnobIndex = -1;       // Which knob to refresh (-1 = none)
 
 /* Master FX state */
 let selectedMasterFx = 0;    // Index into MASTER_FX_OPTIONS
@@ -801,9 +779,20 @@ function handleBack() {
     }
 }
 
-/* Handle knob turn - show overlay with parameter name and value */
+/* Handle knob turn - mark for throttled overlay refresh
+ * CC messages still flow to DSP normally; we just throttle the display update
+ * to once per frame to avoid lag when turning knobs quickly */
 function handleKnobTurn(knobIndex, value) {
-    /* Use track-selected slot (what knobs actually control) not jog-highlighted slot */
+    pendingKnobRefresh = true;
+    pendingKnobIndex = knobIndex;
+    needsRedraw = true;
+}
+
+/* Refresh knob overlay value - called once per tick to avoid display lag */
+function refreshPendingKnobOverlay() {
+    if (!pendingKnobRefresh || pendingKnobIndex < 0) return;
+
+    /* Use track-selected slot (what knobs actually control) */
     let targetSlot = 0;
     if (typeof shadow_get_selected_slot === "function") {
         targetSlot = shadow_get_selected_slot();
@@ -814,21 +803,21 @@ function handleKnobTurn(knobIndex, value) {
         fetchKnobMappings(targetSlot);
     }
 
-    /* Refresh value from DSP (it processes the CC) */
-    const newValue = getSlotParam(targetSlot, `knob_${knobIndex + 1}_value`);
-    if (knobMappings[knobIndex]) {
-        knobMappings[knobIndex].value = newValue || "-";
+    /* Get current value from DSP (only once per frame) */
+    const newValue = getSlotParam(targetSlot, `knob_${pendingKnobIndex + 1}_value`);
+    if (knobMappings[pendingKnobIndex]) {
+        knobMappings[pendingKnobIndex].value = newValue || "-";
     }
 
     /* Show overlay using shared overlay system */
-    const mapping = knobMappings[knobIndex];
+    const mapping = knobMappings[pendingKnobIndex];
     if (mapping) {
-        /* Include slot info in the name for context */
-        const patchName = (slots[targetSlot] && slots[targetSlot].name) || "?";
         const displayName = `S${targetSlot + 1}: ${mapping.name}`;
         showOverlay(displayName, mapping.value);
     }
-    needsRedraw = true;
+
+    pendingKnobRefresh = false;
+    pendingKnobIndex = -1;
 }
 
 function drawSlots() {
@@ -853,12 +842,14 @@ function drawSlots() {
         { label: " Master FX", value: getMasterFxDisplayName(), isSlot: false }
     ];
 
-    drawList(
+    drawMenuList({
         items,
-        selectedSlot,
-        (item) => item.label,
-        (item) => item.value
-    );
+        selectedIndex: selectedSlot,
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value,
+        valueAlignRight: true
+    });
     /* Debug: show flags value in footer */
     const debugInfo = typeof globalThis._debugFlags !== "undefined"
         ? `F:${globalThis._debugFlags}` : "";
@@ -932,11 +923,12 @@ function drawPatches() {
         print(LIST_LABEL_X, LIST_TOP_Y, "No patches found", 1);
         drawFooter("Back: settings");
     } else {
-        drawList(
-            patches,
-            selectedPatch,
-            (item) => item.name
-        );
+        drawMenuList({
+            items: patches,
+            selectedIndex: selectedPatch,
+            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+            getLabel: (item) => item.name
+        });
         drawFooter("Click: load  Back: settings");
     }
 }
@@ -1035,12 +1027,13 @@ function drawComponentParams() {
 function drawMasterFx() {
     clear_screen();
     drawHeader("Master FX");
-    drawList(
-        MASTER_FX_OPTIONS,
-        selectedMasterFx,
-        (item) => item.name,
-        (item) => item.id === currentMasterFxId ? "*" : ""
-    );
+    drawMenuList({
+        items: MASTER_FX_OPTIONS,
+        selectedIndex: selectedMasterFx,
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        getLabel: (item) => item.name,
+        getValue: (item) => item.id === currentMasterFxId ? "*" : ""
+    });
     drawFooter("Click: apply  Back: slots");
 }
 
@@ -1090,6 +1083,9 @@ globalThis.tick = function() {
     if (tickOverlay()) {
         needsRedraw = true;
     }
+
+    /* Throttled knob overlay refresh - once per frame instead of per CC */
+    refreshPendingKnobOverlay();
 
     /* Refresh knob mappings if track-selected slot changed */
     let currentTargetSlot = 0;
@@ -1180,6 +1176,16 @@ globalThis.onMidiMessageInternal = function(data) {
                 updateFocusedSlot(slotIndex);
                 needsRedraw = true;
             }
+            return;
+        }
+    }
+
+    /* Handle Note On for knob touch - peek at current value without turning
+     * Move sends notes 0-7 for knob capacitive touch (Note On = touch start) */
+    if ((status & 0xF0) === MidiNoteOn && d2 > 0) {
+        if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
+            const knobIndex = d1 - MoveKnob1Touch;
+            handleKnobTurn(knobIndex, 0);  // Show overlay with current value
             return;
         }
     }

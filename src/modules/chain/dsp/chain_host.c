@@ -91,8 +91,15 @@ typedef enum {
 #define MAX_KNOB_MAPPINGS 8
 #define KNOB_CC_START 71
 #define KNOB_CC_END 78
-#define KNOB_STEP_FLOAT 0.05f  /* Step size for float params */
-#define KNOB_STEP_INT 1        /* Step size for int params */
+#define KNOB_STEP_FLOAT 0.0015f /* Base step for floats (~600 clicks for 0-1 at min speed) */
+#define KNOB_STEP_INT 1        /* Base step for int params */
+
+/* Knob acceleration settings */
+#define KNOB_ACCEL_MIN_MULT 1    /* Multiplier for slow turns */
+#define KNOB_ACCEL_MAX_MULT 8    /* Multiplier for fast turns (floats) */
+#define KNOB_ACCEL_MAX_MULT_INT 3 /* Multiplier for fast turns (ints - smaller to avoid jumps) */
+#define KNOB_ACCEL_SLOW_MS 150   /* Slower than this = min multiplier */
+#define KNOB_ACCEL_FAST_MS 25    /* Faster than this = max multiplier */
 
 /* Knob mapping types */
 typedef enum {
@@ -206,6 +213,7 @@ typedef struct chain_instance {
     /* Knob mapping state */
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
     int knob_mapping_count;
+    uint64_t knob_last_time_ms[MAX_KNOB_MAPPINGS];  /* For acceleration */
 
     /* Mute countdown after patch switch */
     int mute_countdown;
@@ -343,6 +351,7 @@ static uint8_t g_arp_velocity = 100; /* Velocity for arp notes */
 /* Knob mapping state */
 static knob_mapping_t g_knob_mappings[MAX_KNOB_MAPPINGS];
 static int g_knob_mapping_count = 0;
+static uint64_t g_knob_last_time_ms[MAX_KNOB_MAPPINGS] = {0};  /* For acceleration */
 
 /* Mute countdown after patch switch (in blocks) to drain old audio */
 static int g_mute_countdown = 0;
@@ -398,6 +407,37 @@ static void chain_log(const char *msg) {
         g_host->log(buf);
     } else {
         printf("[chain] %s\n", msg);
+    }
+}
+
+/* Get current time in milliseconds (for knob acceleration) */
+static uint64_t get_time_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Calculate knob acceleration multiplier based on time between events */
+static int calc_knob_accel(int knob_index) {
+    if (knob_index < 0 || knob_index >= MAX_KNOB_MAPPINGS) return 1;
+
+    uint64_t now = get_time_ms();
+    uint64_t last = g_knob_last_time_ms[knob_index];
+    g_knob_last_time_ms[knob_index] = now;
+
+    if (last == 0) return KNOB_ACCEL_MIN_MULT;  /* First event */
+
+    uint64_t elapsed = now - last;
+
+    if (elapsed >= KNOB_ACCEL_SLOW_MS) {
+        return KNOB_ACCEL_MIN_MULT;
+    } else if (elapsed <= KNOB_ACCEL_FAST_MS) {
+        return KNOB_ACCEL_MAX_MULT;
+    } else {
+        /* Linear interpolation between min and max */
+        float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
+                      (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+        return KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
     }
 }
 
@@ -2535,14 +2575,23 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < g_knob_mapping_count; i++) {
                 if (g_knob_mappings[i].cc == cc) {
-                    /* Relative encoder: 1 = increment, 127 = decrement */
-                    /* Use type-appropriate step size */
+                    /* Calculate acceleration multiplier based on turn speed */
+                    int accel = calc_knob_accel(i);
                     int is_int = (g_knob_mappings[i].type == KNOB_TYPE_INT);
+
+                    /* Cap acceleration for ints to avoid jumping too far */
+                    if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                        accel = KNOB_ACCEL_MAX_MULT_INT;
+                    }
+
+                    /* Relative encoder: 1 = increment, 127 = decrement */
+                    /* Apply acceleration to base step size */
+                    float base_step = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
                     float delta = 0.0f;
                     if (msg[2] == 1) {
-                        delta = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
+                        delta = base_step * accel;
                     } else if (msg[2] == 127) {
-                        delta = is_int ? (float)(-KNOB_STEP_INT) : -KNOB_STEP_FLOAT;
+                        delta = -base_step * accel;
                     } else {
                         return;  /* Ignore other values */
                     }
@@ -3456,7 +3505,10 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     inst->synth_instance = synth_inst;
     strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
 
-    snprintf(msg, sizeof(msg), "Synth v2 loaded: %s", module_name);
+    /* Parse chain_params from module.json for type info */
+    parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
+
+    snprintf(msg, sizeof(msg), "Synth v2 loaded: %s (%d params)", module_name, inst->synth_param_count);
     v2_chain_log(inst, msg);
     return 0;
 }
@@ -3527,9 +3579,13 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
     inst->fx_plugins_v2[slot] = api;
     inst->fx_instances[slot] = fx_inst;
     inst->fx_is_v2[slot] = 1;
+
+    /* Parse chain_params from module.json for type info */
+    parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]);
+
     inst->fx_count++;
 
-    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d)", fx_name, slot);
+    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)", fx_name, slot, inst->fx_param_counts[slot]);
     v2_chain_log(inst, msg);
     return 0;
 }
@@ -3775,6 +3831,48 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     memcpy(inst->knob_mappings, patch->knob_mappings,
            sizeof(knob_mapping_t) * patch->knob_mapping_count);
 
+    /* Look up param info for each knob mapping to get correct type/min/max */
+    for (int i = 0; i < inst->knob_mapping_count; i++) {
+        const char *target = inst->knob_mappings[i].target;
+        const char *param = inst->knob_mappings[i].param;
+        chain_param_info_t *pinfo = NULL;
+
+        if (strcmp(target, "synth") == 0) {
+            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
+        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+        }
+
+        if (pinfo) {
+            inst->knob_mappings[i].type = pinfo->type;
+            inst->knob_mappings[i].min_val = pinfo->min_val;
+            /* Handle dynamic max (e.g., preset_count) */
+            if (pinfo->max_val < 0 && pinfo->max_param[0]) {
+                char max_buf[32];
+                if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+                    if (inst->synth_plugin_v2->get_param(inst->synth_instance, pinfo->max_param, max_buf, sizeof(max_buf)) >= 0) {
+                        inst->knob_mappings[i].max_val = (float)(atoi(max_buf) - 1);
+                    } else {
+                        inst->knob_mappings[i].max_val = 9999.0f;
+                    }
+                } else {
+                    inst->knob_mappings[i].max_val = 9999.0f;
+                }
+            } else {
+                inst->knob_mappings[i].max_val = pinfo->max_val;
+            }
+            /* Initialize to middle of range */
+            float mid = (inst->knob_mappings[i].min_val + inst->knob_mappings[i].max_val) / 2.0f;
+            if (pinfo->type == KNOB_TYPE_INT) {
+                inst->knob_mappings[i].current_value = (float)((int)mid);
+            } else {
+                inst->knob_mappings[i].current_value = mid;
+            }
+        }
+    }
+
     /* Copy other settings */
     inst->chord_type = patch->chord_type;
     inst->arp_mode = patch->arp_mode;
@@ -3800,20 +3898,49 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
-                    /* Relative encoder handling */
+                    /* Calculate acceleration based on time between events */
+                    uint64_t now = get_time_ms();
+                    uint64_t last = inst->knob_last_time_ms[i];
+                    inst->knob_last_time_ms[i] = now;
+                    int accel = KNOB_ACCEL_MIN_MULT;
+                    if (last > 0) {
+                        uint64_t elapsed = now - last;
+                        if (elapsed < KNOB_ACCEL_SLOW_MS) {
+                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
+                                accel = KNOB_ACCEL_MAX_MULT;
+                            } else {
+                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
+                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
+                            }
+                        }
+                    }
+
+                    /* Relative encoder: apply acceleration to base step */
+                    int is_int = (inst->knob_mappings[i].type == KNOB_TYPE_INT);
+                    float base_step = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
                     float delta = 0.0f;
-                    if (msg[2] == 1) delta = KNOB_STEP_FLOAT;
-                    else if (msg[2] == 127) delta = -KNOB_STEP_FLOAT;
-                    else if (msg[2] < 64) delta = KNOB_STEP_FLOAT * msg[2];
-                    else delta = -KNOB_STEP_FLOAT * (128 - msg[2]);
+                    if (msg[2] == 1) {
+                        delta = base_step * accel;
+                    } else if (msg[2] == 127) {
+                        delta = -base_step * accel;
+                    } else {
+                        return;  /* Ignore other values */
+                    }
 
                     float new_val = inst->knob_mappings[i].current_value + delta;
                     if (new_val < inst->knob_mappings[i].min_val) new_val = inst->knob_mappings[i].min_val;
                     if (new_val > inst->knob_mappings[i].max_val) new_val = inst->knob_mappings[i].max_val;
+                    if (is_int) new_val = (float)((int)new_val);  /* Round to int */
                     inst->knob_mappings[i].current_value = new_val;
 
+                    /* Format as int or float */
                     char val_str[16];
-                    snprintf(val_str, sizeof(val_str), "%.3f", new_val);
+                    if (is_int) {
+                        snprintf(val_str, sizeof(val_str), "%d", (int)new_val);
+                    } else {
+                        snprintf(val_str, sizeof(val_str), "%.3f", new_val);
+                    }
 
                     /* Route to target */
                     const char *target = inst->knob_mappings[i].target;
