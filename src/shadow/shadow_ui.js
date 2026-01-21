@@ -1130,11 +1130,13 @@ function adjustChainSetting(slot, setting, delta) {
     let newVal;
 
     if (setting.type === "float") {
-        const current = parseFloat(currentVal) || setting.min;
+        const parsed = parseFloat(currentVal);
+        const current = isNaN(parsed) ? setting.min : parsed;
         newVal = Math.max(setting.min, Math.min(setting.max, current + delta * setting.step));
         newVal = newVal.toFixed(2);
     } else if (setting.type === "int") {
-        const current = parseInt(currentVal) || setting.min;
+        const parsed = parseInt(currentVal);
+        const current = isNaN(parsed) ? setting.min : parsed;
         newVal = Math.max(setting.min, Math.min(setting.max, current + delta * setting.step));
         newVal = String(newVal);
     }
