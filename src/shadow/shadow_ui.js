@@ -1939,7 +1939,17 @@ function handleSelect() {
             editingChainSettingValue = !editingChainSettingValue;
             break;
         case VIEWS.HIERARCHY_EDITOR:
-            if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
+            /* Check for mode selection (hierEditorLevel is null when modes exist) */
+            if (!hierEditorLevel && hierEditorHierarchy.modes) {
+                /* Select mode and navigate into it */
+                const selectedMode = hierEditorParams[hierEditorSelectedIdx];
+                if (selectedMode && hierEditorHierarchy.levels[selectedMode]) {
+                    hierEditorPath.push("Mode");
+                    hierEditorLevel = selectedMode;
+                    hierEditorSelectedIdx = 0;
+                    loadHierarchyLevel();
+                }
+            } else if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
                 /* On preset browser - drill into children or enter edit mode */
                 const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
                 if (levelDef && levelDef.children) {
