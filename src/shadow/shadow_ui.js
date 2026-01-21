@@ -1685,7 +1685,7 @@ function drawHierarchyEditor() {
             drawMenuList({
                 items,
                 selectedIndex: hierEditorSelectedIdx,
-                listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y - 10 },
+                listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
                 getLabel: (item) => item.label,
                 getValue: (item) => item.value,
                 valueAlignRight: true,
