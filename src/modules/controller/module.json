@@ -1,7 +1,7 @@
 {
     "id": "controller",
     "name": "MIDI Controller",
-    "version": "0.1.6",
+    "version": "0.2.4",
     "description": "Custom MIDI controller with 16 banks and configurable pads",
     "author": "chaolue",
     "ui": "ui.js",
