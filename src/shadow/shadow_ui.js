@@ -1979,10 +1979,12 @@ function handleSelect() {
                 /* Select mode and navigate into it */
                 const selectedMode = hierEditorParams[hierEditorSelectedIdx];
                 if (selectedMode && hierEditorHierarchy.levels[selectedMode]) {
-                    /* Tell the plugin to switch modes (patch=0, performance=1, etc.) */
-                    const modeIndex = hierEditorHierarchy.modes.indexOf(selectedMode);
-                    if (modeIndex >= 0) {
-                        setSlotParam(hierEditorSlot, `${hierEditorComponent}:mode`, String(modeIndex));
+                    /* If hierarchy specifies mode_param, set it to the mode index */
+                    if (hierEditorHierarchy.mode_param) {
+                        const modeIndex = hierEditorHierarchy.modes.indexOf(selectedMode);
+                        if (modeIndex >= 0) {
+                            setSlotParam(hierEditorSlot, `${hierEditorComponent}:${hierEditorHierarchy.mode_param}`, String(modeIndex));
+                        }
                     }
                     hierEditorPath.push("Mode");
                     hierEditorLevel = selectedMode;
