@@ -98,15 +98,9 @@ const CHAIN_COMPONENTS = [
     { key: "settings", label: "Settings", position: 4 }
 ];
 
-/* Module abbreviations for chain display */
-const MODULE_ABBREVS = {
-    /* Synths */
-    "sf2": "SF", "dx7": "DX", "jv880": "JV", "obxd": "OB", "clap": "CL", "linein": "LI",
-    /* Audio FX */
-    "freeverb": "FV", "cloudseed": "CF", "spacecho": "SE", "tapescam": "TS", "psxverb": "PX",
-    /* MIDI FX */
-    "chord": "CH", "arp": "AR",
-    /* Special */
+/* Module abbreviations cache - populated from module.json "abbrev" field */
+const moduleAbbrevCache = {
+    /* Built-in fallbacks for special cases */
     "settings": "*",
     "none": "--"
 };
@@ -441,11 +435,18 @@ function loadChainConfigFromSlot(slotIndex) {
     return cfg;
 }
 
+/* Cache a module's abbreviation from its module.json */
+function cacheModuleAbbrev(json) {
+    if (json && json.id && json.abbrev) {
+        moduleAbbrevCache[json.id.toLowerCase()] = json.abbrev;
+    }
+}
+
 /* Get abbreviation for a module */
 function getModuleAbbrev(moduleId) {
     if (!moduleId) return "--";
     const lower = moduleId.toLowerCase();
-    return MODULE_ABBREVS[lower] || moduleId.substring(0, 2).toUpperCase();
+    return moduleAbbrevCache[lower] || moduleId.substring(0, 2).toUpperCase();
 }
 
 /* Param API helper functions */
@@ -489,6 +490,7 @@ function scanForAudioFxModules() {
                     if (!content) continue;
 
                     const json = JSON.parse(content);
+                    cacheModuleAbbrev(json);
                     /* Check if this is an audio_fx module */
                     if (json.component_type === "audio_fx" ||
                         (json.capabilities && json.capabilities.component_type === "audio_fx")) {
@@ -995,6 +997,7 @@ function scanModulesForType(componentType) {
                     if (!content) continue;
 
                     const json = JSON.parse(content);
+                    cacheModuleAbbrev(json);
                     const modType = json.component_type ||
                                    (json.capabilities && json.capabilities.component_type);
 

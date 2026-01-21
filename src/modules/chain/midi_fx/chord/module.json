@@ -1,6 +1,7 @@
 {
   "id": "chord",
   "name": "Chord",
+  "abbrev": "CH",
   "version": "0.1.0",
   "builtin": true,
   "capabilities": {

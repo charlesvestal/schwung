@@ -1,6 +1,7 @@
 {
   "id": "linein",
   "name": "Line In",
+  "abbrev": "LI",
   "version": "0.1.0",
   "dsp": "dsp.so",
   "api_version": 1,

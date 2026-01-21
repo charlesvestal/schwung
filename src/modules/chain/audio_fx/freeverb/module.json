@@ -1,6 +1,7 @@
 {
   "id": "freeverb",
   "name": "Freeverb",
+  "abbrev": "FV",
   "version": "0.1.0",
   "dsp": "freeverb.so",
   "ui_chain": "ui_chain.js",

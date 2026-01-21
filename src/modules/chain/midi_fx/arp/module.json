@@ -1,6 +1,7 @@
 {
   "id": "arp",
   "name": "Arpeggiator",
+  "abbrev": "AR",
   "version": "0.1.0",
   "builtin": true,
   "capabilities": {
