@@ -2131,7 +2131,6 @@ static int shadow_allow_midi_to_dsp(uint8_t status, uint8_t data1)
     return 0;
 }
 
-
 /* Route knob CCs (71-78) to the UI-selected slot, not channel-based */
 static void shadow_route_knob_cc_to_focused_slot(const uint8_t *msg, int len)
 {
@@ -2556,7 +2555,7 @@ static void shadow_inprocess_process_midi(void) {
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
-            if (!shadow_allow_midi_to_dsp(status_usb, pkt[2])) continue;
+            /* No note filtering - Move's track output already filters UI controls */
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
             if (slot < 0) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
@@ -2567,7 +2566,7 @@ static void shadow_inprocess_process_midi(void) {
             }
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             if (pkt[1] <= 0x7F && pkt[2] <= 0x7F) {
-                if (!shadow_allow_midi_to_dsp(status_raw, pkt[1])) continue;
+                /* No note filtering - Move's track output already filters UI controls */
                 int slot = shadow_chain_slot_for_channel(status_raw & 0x0F);
                 if (slot < 0) continue;
                 if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
