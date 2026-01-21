@@ -2104,19 +2104,28 @@ function handleBack() {
             } else if (hierEditorPath.length > 0) {
                 /* Go back to parent level */
                 hierEditorPath.pop();
-                /* Find the parent level that has children pointing to current level */
-                const levels = hierEditorHierarchy.levels;
-                let parentLevel = "root";
-                for (const [name, def] of Object.entries(levels)) {
-                    if (def.children === hierEditorLevel) {
-                        parentLevel = name;
-                        break;
+
+                /* Check if current level is a mode (top-level) - go back to mode selection */
+                if (hierEditorHierarchy.modes && hierEditorHierarchy.modes.includes(hierEditorLevel)) {
+                    hierEditorLevel = null;  // Return to mode selection
+                    hierEditorSelectedIdx = 0;
+                    loadHierarchyLevel();
+                    needsRedraw = true;
+                } else {
+                    /* Find the parent level that has children pointing to current level */
+                    const levels = hierEditorHierarchy.levels;
+                    let parentLevel = "root";
+                    for (const [name, def] of Object.entries(levels)) {
+                        if (def.children === hierEditorLevel) {
+                            parentLevel = name;
+                            break;
+                        }
                     }
+                    hierEditorLevel = parentLevel;
+                    hierEditorSelectedIdx = 0;
+                    loadHierarchyLevel();
+                    needsRedraw = true;
                 }
-                hierEditorLevel = parentLevel;
-                hierEditorSelectedIdx = 0;
-                loadHierarchyLevel();
-                needsRedraw = true;
             } else {
                 /* At root level - exit hierarchy editor */
                 exitHierarchyEditor();
