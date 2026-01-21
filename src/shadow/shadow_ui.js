@@ -1428,7 +1428,14 @@ function buildKnobContextForKnob(knobIndex) {
         if (comp && comp.key !== "settings") {
             const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
             if (hierarchy && hierarchy.levels) {
-                const levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+                let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+                /* If root has no knobs but has children, use first child level for knob mapping */
+                if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
+                    const childLevel = hierarchy.levels[levelDef.children];
+                    if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
+                        levelDef = childLevel;
+                    }
+                }
                 if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
                     const key = levelDef.knobs[knobIndex];
                     const fullKey = `${comp.key}:${key}`;
