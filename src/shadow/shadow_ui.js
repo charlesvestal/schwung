@@ -128,6 +128,10 @@ let lastKnobSlot = -1;       // Track slot changes to refresh mappings
 let pendingKnobRefresh = false;  // True if we need to refresh overlay value
 let pendingKnobIndex = -1;       // Which knob to refresh (-1 = none)
 
+/* Throttled hierarchy knob adjustment - accumulate deltas, apply once per frame */
+let pendingHierKnobIndex = -1;   // Which knob is being turned (-1 = none)
+let pendingHierKnobDelta = 0;    // Accumulated delta to apply
+
 /* Master FX state */
 let selectedMasterFx = 0;    // Index into MASTER_FX_OPTIONS
 let currentMasterFxId = "";  // Currently loaded master FX module ID
@@ -1444,6 +1448,7 @@ function showKnobOverlay(knobIndex, value) {
 
 /*
  * Adjust knob value and show overlay - used by turn handler
+ * THROTTLED: Just accumulates delta, actual work done once per tick
  * Returns true if handled, false to fall through to default
  */
 function adjustKnobAndShow(knobIndex, delta) {
@@ -1457,32 +1462,68 @@ function adjustKnobAndShow(knobIndex, delta) {
             return true;
         }
 
-        /* Get current value */
-        const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
-        if (currentVal === null) return true;
-
-        const num = parseFloat(currentVal);
-        if (isNaN(num)) return true;
-
-        /* Calculate step and bounds from metadata */
-        const isInt = ctx.meta && ctx.meta.type === "int";
-        const step = ctx.meta && ctx.meta.step ? ctx.meta.step : (isInt ? 1 : 0.02);
-        const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
-        const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
-
-        /* Apply delta and clamp */
-        const newVal = Math.max(min, Math.min(max, num + delta * step));
-
-        /* Set the new value */
-        if (delta !== 0) {
-            setSlotParam(ctx.slot, ctx.fullKey, formatParamForSet(newVal, ctx.meta));
+        /* Accumulate delta for throttled processing */
+        if (pendingHierKnobIndex !== knobIndex) {
+            /* Different knob - reset accumulator */
+            pendingHierKnobIndex = knobIndex;
+            pendingHierKnobDelta = delta;
+        } else {
+            /* Same knob - accumulate delta */
+            pendingHierKnobDelta += delta;
         }
-
-        /* Show overlay with new value */
-        showKnobOverlay(knobIndex, newVal);
+        needsRedraw = true;
         return true;
     }
     return false;
+}
+
+/*
+ * Process pending hierarchy knob adjustment - called once per tick
+ * This does the actual get/set/overlay work, throttled to avoid IPC overload
+ */
+function processPendingHierKnob() {
+    if (pendingHierKnobIndex < 0 || pendingHierKnobDelta === 0) {
+        /* No pending adjustment, but still show overlay if knob active */
+        if (pendingHierKnobIndex >= 0) {
+            const ctx = getKnobContext(pendingHierKnobIndex);
+            if (ctx && ctx.fullKey) {
+                const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
+                if (currentVal !== null) {
+                    showKnobOverlay(pendingHierKnobIndex, parseFloat(currentVal));
+                }
+            }
+        }
+        return;
+    }
+
+    const knobIndex = pendingHierKnobIndex;
+    const delta = pendingHierKnobDelta;
+    pendingHierKnobDelta = 0;  /* Clear accumulated delta */
+
+    const ctx = getKnobContext(knobIndex);
+    if (!ctx || ctx.noMapping || !ctx.fullKey) return;
+
+    /* Get current value */
+    const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
+    if (currentVal === null) return;
+
+    const num = parseFloat(currentVal);
+    if (isNaN(num)) return;
+
+    /* Calculate step and bounds from metadata */
+    const isInt = ctx.meta && ctx.meta.type === "int";
+    const step = ctx.meta && ctx.meta.step ? ctx.meta.step : (isInt ? 1 : 0.02);
+    const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
+    const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
+
+    /* Apply accumulated delta and clamp */
+    const newVal = Math.max(min, Math.min(max, num + delta * step));
+
+    /* Set the new value */
+    setSlotParam(ctx.slot, ctx.fullKey, formatParamForSet(newVal, ctx.meta));
+
+    /* Show overlay with new value */
+    showKnobOverlay(knobIndex, newVal);
 }
 
 /* Format a value for display in hierarchy editor */
@@ -2442,6 +2483,9 @@ globalThis.tick = function() {
     /* Throttled knob overlay refresh - once per frame instead of per CC */
     refreshPendingKnobOverlay();
 
+    /* Throttled hierarchy knob adjustment - once per frame */
+    processPendingHierKnob();
+
     /* Refresh knob mappings if track-selected slot changed */
     let currentTargetSlot = 0;
     if (typeof shadow_get_selected_slot === "function") {
@@ -2597,6 +2641,21 @@ globalThis.onMidiMessageInternal = function(data) {
 
             /* Default (chain selected or settings): show overlay for slot's global knob mapping */
             handleKnobTurn(knobIndex, 0);
+            return;
+        }
+    }
+
+    /* Handle Note Off for knob release - clear pending knob state
+     * This ensures accumulated deltas are processed before next touch */
+    if ((status & 0xF0) === MidiNoteOn && d2 === 0) {
+        if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
+            const knobIndex = d1 - MoveKnob1Touch;
+            if (pendingHierKnobIndex === knobIndex) {
+                /* Process any remaining delta before clearing */
+                processPendingHierKnob();
+                pendingHierKnobIndex = -1;
+                pendingHierKnobDelta = 0;
+            }
             return;
         }
     }
