@@ -981,8 +981,9 @@ function applyPatchSelection() {
             /* ignore */
         }
     }
-    /* Refresh detail info after loading patch */
+    /* Refresh detail info and knob mappings after loading/clearing patch */
     fetchPatchDetail(selectedSlot);
+    fetchKnobMappings(selectedSlot);
     view = VIEWS.SLOTS;
     needsRedraw = true;
 }

@@ -4143,6 +4143,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             v2_unload_synth(inst);
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_synth(inst, val);
+            } else {
+                /* Clearing synth - also clear knob mappings */
+                inst->knob_mapping_count = 0;
             }
         } else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
             inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
