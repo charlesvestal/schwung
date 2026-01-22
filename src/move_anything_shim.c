@@ -1471,49 +1471,59 @@ static void overlay_draw_shift_knob(uint8_t *buf)
 /* Update overlay state when a knob CC is processed in Move mode with Shift held */
 static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
 {
+    (void)cc_value;  /* No longer used - we show "Unmapped" instead */
     if (!shift_knob_enabled) return;
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
-    if (!shadow_chain_slots[slot].active) return;
 
     shift_knob_overlay_slot = slot;
     shift_knob_overlay_knob = knob_num;  /* 1-8 */
     shift_knob_overlay_active = 1;
     shift_knob_overlay_timeout = SHIFT_KNOB_OVERLAY_FRAMES;
 
-    /* Copy patch name from slot with "S#: " prefix */
-    snprintf(shift_knob_overlay_patch, sizeof(shift_knob_overlay_patch),
-             "S%d: %s", slot + 1, shadow_chain_slots[slot].patch_name);
+    /* Copy slot name with "S#: " prefix */
+    const char *name = shadow_chain_slots[slot].patch_name;
+    if (name[0] == '\0') {
+        snprintf(shift_knob_overlay_patch, sizeof(shift_knob_overlay_patch),
+                 "S%d", slot + 1);
+    } else {
+        snprintf(shift_knob_overlay_patch, sizeof(shift_knob_overlay_patch),
+                 "S%d: %s", slot + 1, name);
+    }
 
     /* Query parameter name and value from DSP */
-    if (shadow_plugin_v2 && shadow_plugin_v2->get_param) {
+    int mapped = 0;
+    if (shadow_plugin_v2 && shadow_plugin_v2->get_param && shadow_chain_slots[slot].instance) {
         char key[32];
         char buf[64];
         int len;
 
-        /* Get knob_N_name */
+        /* Get knob_N_name - if this succeeds, the knob is mapped */
         snprintf(key, sizeof(key), "knob_%d_name", knob_num);
         len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
         if (len > 0) {
+            mapped = 1;
             buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
             strncpy(shift_knob_overlay_param, buf, sizeof(shift_knob_overlay_param) - 1);
             shift_knob_overlay_param[sizeof(shift_knob_overlay_param) - 1] = '\0';
-        } else {
-            snprintf(shift_knob_overlay_param, sizeof(shift_knob_overlay_param), "Knob %d", knob_num);
-        }
 
-        /* Get knob_N_value */
-        snprintf(key, sizeof(key), "knob_%d_value", knob_num);
-        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
-        if (len > 0) {
-            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-            strncpy(shift_knob_overlay_value, buf, sizeof(shift_knob_overlay_value) - 1);
-            shift_knob_overlay_value[sizeof(shift_knob_overlay_value) - 1] = '\0';
-        } else {
-            snprintf(shift_knob_overlay_value, sizeof(shift_knob_overlay_value), "%d", cc_value);
+            /* Get knob_N_value */
+            snprintf(key, sizeof(key), "knob_%d_value", knob_num);
+            len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
+            if (len > 0) {
+                buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                strncpy(shift_knob_overlay_value, buf, sizeof(shift_knob_overlay_value) - 1);
+                shift_knob_overlay_value[sizeof(shift_knob_overlay_value) - 1] = '\0';
+            } else {
+                strncpy(shift_knob_overlay_value, "?", sizeof(shift_knob_overlay_value) - 1);
+            }
         }
-    } else {
+    }
+
+    /* Show "Unmapped" if knob has no mapping */
+    if (!mapped) {
         snprintf(shift_knob_overlay_param, sizeof(shift_knob_overlay_param), "Knob %d", knob_num);
-        snprintf(shift_knob_overlay_value, sizeof(shift_knob_overlay_value), "%d", cc_value);
+        strncpy(shift_knob_overlay_value, "Unmapped", sizeof(shift_knob_overlay_value) - 1);
+        shift_knob_overlay_value[sizeof(shift_knob_overlay_value) - 1] = '\0';
     }
 }
 
@@ -4404,11 +4414,9 @@ int ioctl(int fd, unsigned long request, ...)
 
                 /* Note On (touch start) - show overlay and hold it */
                 if (type == 0x90 && d2 > 0) {
-                    if (shadow_chain_slots[slot].active) {
-                        shift_knob_update_overlay(slot, knob_num, 0);
-                        /* Set timeout very high so it stays visible until Note Off */
-                        shift_knob_overlay_timeout = 10000;
-                    }
+                    shift_knob_update_overlay(slot, knob_num, 0);
+                    /* Set timeout very high so it stays visible until Note Off */
+                    shift_knob_overlay_timeout = 10000;
                 }
                 /* Note Off (touch release) - start normal timeout for fade */
                 else if (type == 0x80 || (type == 0x90 && d2 == 0)) {
@@ -4441,18 +4449,12 @@ int ioctl(int fd, unsigned long request, ...)
                     shadow_log(dbg);
                 }
 
+                /* Adjust parameter if slot is active */
                 if (shadow_chain_slots[slot].active && shadow_plugin_v2 && shadow_plugin_v2->set_param) {
                     /* Decode relative encoder value to delta (1 = CW, 127 = CCW) */
                     int delta = 0;
                     if (d2 >= 1 && d2 <= 63) delta = d2;      /* Clockwise: 1-63 */
                     else if (d2 >= 65 && d2 <= 127) delta = d2 - 128;  /* Counter-clockwise: -63 to -1 */
-
-                    /* Debug: log delta calculation */
-                    {
-                        char dbg[128];
-                        snprintf(dbg, sizeof(dbg), "Shift+Knob: delta=%d (d2=%d)", delta, d2);
-                        shadow_log(dbg);
-                    }
 
                     if (delta != 0) {
                         /* Adjust parameter via knob_N_adjust */
@@ -4460,21 +4462,12 @@ int ioctl(int fd, unsigned long request, ...)
                         char val[16];
                         snprintf(key, sizeof(key), "knob_%d_adjust", knob_num);
                         snprintf(val, sizeof(val), "%d", delta);
-
-                        /* Debug: log set_param call */
-                        {
-                            char dbg[128];
-                            snprintf(dbg, sizeof(dbg), "Shift+Knob: calling set_param(%p, \"%s\", \"%s\")",
-                                     (void*)shadow_chain_slots[slot].instance, key, val);
-                            shadow_log(dbg);
-                        }
-
                         shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, val);
                     }
-
-                    /* Update overlay to show new value */
-                    shift_knob_update_overlay(slot, knob_num, d2);
                 }
+
+                /* Always show overlay (shows "Unmapped" for unmapped knobs) */
+                shift_knob_update_overlay(slot, knob_num, d2);
 
                 /* Block CC from reaching Move when shift held */
                 src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
