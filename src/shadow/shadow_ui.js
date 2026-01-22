@@ -141,6 +141,7 @@ let lastKnobSlot = -1;       // Track slot changes to refresh mappings
 /* Throttled knob overlay - only refresh value once per frame to avoid display lag */
 let pendingKnobRefresh = false;  // True if we need to refresh overlay value
 let pendingKnobIndex = -1;       // Which knob to refresh (-1 = none)
+let pendingKnobDelta = 0;        // Accumulated delta for global slot knob adjustment
 
 /* Throttled hierarchy knob adjustment - accumulate deltas, apply once per frame */
 let pendingHierKnobIndex = -1;   // Which knob is being turned (-1 = none)
@@ -2721,16 +2722,23 @@ function handleBack() {
     }
 }
 
-/* Handle knob turn - mark for throttled overlay refresh
- * CC messages still flow to DSP normally; we just throttle the display update
- * to once per frame to avoid lag when turning knobs quickly */
-function handleKnobTurn(knobIndex, value) {
+/* Handle knob turn for global slot knob mappings - accumulate delta and refresh overlay
+ * Called when no component is selected (entire slot highlighted) */
+function handleKnobTurn(knobIndex, delta) {
+    if (pendingKnobIndex !== knobIndex) {
+        /* Different knob - reset accumulator */
+        pendingKnobIndex = knobIndex;
+        pendingKnobDelta = delta;
+    } else {
+        /* Same knob - accumulate delta */
+        pendingKnobDelta += delta;
+    }
     pendingKnobRefresh = true;
-    pendingKnobIndex = knobIndex;
     needsRedraw = true;
 }
 
-/* Refresh knob overlay value - called once per tick to avoid display lag */
+/* Refresh knob overlay value - called once per tick to avoid display lag
+ * Also applies accumulated delta for global slot knob adjustments */
 function refreshPendingKnobOverlay() {
     if (!pendingKnobRefresh || pendingKnobIndex < 0) return;
 
@@ -2743,6 +2751,14 @@ function refreshPendingKnobOverlay() {
     /* Refresh knob mappings if slot changed */
     if (lastKnobSlot !== targetSlot) {
         fetchKnobMappings(targetSlot);
+    }
+
+    /* Apply accumulated delta to global slot knob mapping */
+    if (pendingKnobDelta !== 0) {
+        const adjustKey = `knob_${pendingKnobIndex + 1}_adjust`;
+        const deltaStr = pendingKnobDelta > 0 ? `+${pendingKnobDelta}` : `${pendingKnobDelta}`;
+        setSlotParam(targetSlot, adjustKey, deltaStr);
+        pendingKnobDelta = 0;
     }
 
     /* Get current value from DSP (only once per frame) */
@@ -3562,8 +3578,8 @@ globalThis.onMidiMessageInternal = function(data) {
                 return;
             }
 
-            /* Default (chain selected or settings): show overlay for slot's knob mapping */
-            handleKnobTurn(knobIndex, d2);
+            /* Default (slot selected, no component): adjust global slot knob mapping */
+            handleKnobTurn(knobIndex, delta);
             return;
         }
 
@@ -3602,11 +3618,15 @@ globalThis.onMidiMessageInternal = function(data) {
     if ((status & 0xF0) === MidiNoteOn && d2 === 0) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
+            /* Process hierarchy knob delta */
             if (pendingHierKnobIndex === knobIndex) {
-                /* Process any remaining delta before clearing */
                 processPendingHierKnob();
                 pendingHierKnobIndex = -1;
                 pendingHierKnobDelta = 0;
+            }
+            /* Process global slot knob delta */
+            if (pendingKnobIndex === knobIndex && pendingKnobDelta !== 0) {
+                refreshPendingKnobOverlay();
             }
             return;
         }
