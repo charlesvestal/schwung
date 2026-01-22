@@ -3922,8 +3922,8 @@ static uint64_t shift_on_ms = 0;
 static uint64_t vol_on_ms = 0;
 static uint8_t hotkey_prev[MIDI_BUFFER_SIZE];
 static int hotkey_prev_valid = 0;
-static int shift_armed = 0;
-static int volume_armed = 0;
+static int shift_armed = 1;   /* Start armed so first press works */
+static int volume_armed = 1;  /* Start armed so first press works */
 
 static void log_hotkey_state(const char *tag);
 
