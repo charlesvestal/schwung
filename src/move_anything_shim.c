@@ -4317,9 +4317,10 @@ int ioctl(int fd, unsigned long request, ...)
                         int new_slot = 43 - d1;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
                         if (new_slot != shadow_selected_slot) {
                             shadow_selected_slot = new_slot;
-                            /* Sync to shared memory for shadow UI to display */
+                            /* Sync to shared memory for shadow UI and Shift+Knob routing */
                             if (shadow_control) {
                                 shadow_control->selected_slot = (uint8_t)new_slot;
+                                shadow_control->ui_slot = (uint8_t)new_slot;
                             }
                             char msg[64];
                             snprintf(msg, sizeof(msg), "Selected slot: %d (Track %d)", new_slot, new_slot + 1);
@@ -4396,7 +4397,9 @@ int ioctl(int fd, unsigned long request, ...)
             /* Handle knob touch notes 0-7 - block from Move, show overlay */
             if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80) && d1 <= 7) {
                 int knob_num = d1 + 1;  /* Note 0 = Knob 1, etc. */
-                int slot = shadow_selected_slot;
+                /* Use ui_slot from shadow UI navigation, fall back to track button selection */
+                int slot = (shadow_control && shadow_control->ui_slot < SHADOW_CHAIN_INSTANCES)
+                           ? shadow_control->ui_slot : shadow_selected_slot;
                 if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
 
                 /* Note On (touch start) - show overlay and hold it */
@@ -4422,7 +4425,9 @@ int ioctl(int fd, unsigned long request, ...)
             /* Handle knob CC messages - adjust parameter via set_param */
             if (cin == 0x0B && type == 0xB0 && d1 >= 71 && d1 <= 78) {
                 int knob_num = d1 - 70;  /* 1-8 */
-                int slot = shadow_selected_slot;
+                /* Use ui_slot from shadow UI navigation, fall back to track button selection */
+                int slot = (shadow_control && shadow_control->ui_slot < SHADOW_CHAIN_INSTANCES)
+                           ? shadow_control->ui_slot : shadow_selected_slot;
                 if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
 
                 /* Debug: log knob CC received */

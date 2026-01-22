@@ -2344,8 +2344,8 @@ function handleJog(delta) {
             }
             break;
         case VIEWS.KNOB_EDITOR:
-            /* Navigate knob list (8 knobs + Done button) */
-            knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS, knobEditorIndex + delta));
+            /* Navigate knob list (8 knobs) */
+            knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS - 1, knobEditorIndex + delta));
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder === null) {
@@ -2549,13 +2549,8 @@ function handleSelect() {
             }
             break;
         case VIEWS.KNOB_EDITOR:
-            if (knobEditorIndex >= NUM_KNOBS) {
-                /* Done button - return to chain settings */
-                view = VIEWS.CHAIN_SETTINGS;
-            } else {
-                /* Edit this knob's assignment */
-                enterKnobParamPicker();
-            }
+            /* Edit this knob's assignment */
+            enterKnobParamPicker();
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder === null) {
@@ -3184,7 +3179,7 @@ function drawKnobEditor() {
     const lineHeight = 10;
     const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
 
-    /* List all 8 knobs + Done button */
+    /* List all 8 knobs */
     const items = [];
     for (let i = 0; i < NUM_KNOBS; i++) {
         items.push({
@@ -3193,7 +3188,6 @@ function drawKnobEditor() {
             assignment: knobEditorAssignments[i]
         });
     }
-    items.push({ type: "done", label: "Done" });
 
     /* Calculate scroll offset */
     let scrollOffset = 0;
