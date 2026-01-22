@@ -3012,7 +3012,8 @@ static void shadow_forward_midi(void)
     if (!shadow_midi_shm || !global_mmap_addr) return;
     if (!shadow_control) return;
 
-    /* Cache flag file checks - only re-check every 1000 calls to avoid filesystem overhead */
+    /* Cache flag file checks - only re-check every 100000 calls (~5 minutes) to minimize syscall overhead.
+     * These are debug flags that are rarely changed while running. */
     static int cache_counter = 0;
     static int cached_ch3_only = 0;
     static int cached_block_ch1 = 0;
@@ -3022,8 +3023,11 @@ static void shadow_forward_midi(void)
     static int cached_drop_cable_f = 0;
     static int cached_log_on = 0;
     static int cached_drop_ui = 0;
+    static int cache_initialized = 0;
 
-    if (cache_counter++ % 1000 == 0) {
+    /* Only check on first call and then every 100000 calls */
+    if (!cache_initialized || (cache_counter++ % 100000 == 0)) {
+        cache_initialized = 1;
         cached_ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
         cached_block_ch1 = (access("/data/UserData/move-anything/shadow_midi_block_ch1", F_OK) == 0);
         cached_allow_ch5_8 = (access("/data/UserData/move-anything/shadow_midi_allow_ch5_8", F_OK) == 0);
@@ -4119,11 +4123,83 @@ int ioctl(int fd, unsigned long request, ...)
     argp = va_arg(ap, void *);
     va_end(ap);
 
+    /* === COMPREHENSIVE IOCTL TIMING === */
+    static struct timespec ioctl_start, pre_end, post_start, ioctl_end;
+    static uint64_t total_sum = 0, pre_sum = 0, ioctl_sum = 0, post_sum = 0;
+    static uint64_t total_max = 0, pre_max = 0, ioctl_max = 0, post_max = 0;
+    static int timing_count = 0;
+    static int baseline_mode = -1;  /* -1 = unknown, 0 = full mode, 1 = baseline only */
+
+    /* === GRANULAR PRE-IOCTL TIMING === */
+    static struct timespec section_start, section_end;
+    static uint64_t midi_mon_sum = 0, midi_mon_max = 0;
+    static uint64_t fwd_midi_sum = 0, fwd_midi_max = 0;
+    static uint64_t mix_audio_sum = 0, mix_audio_max = 0;
+    static uint64_t ui_req_sum = 0, ui_req_max = 0;
+    static uint64_t param_req_sum = 0, param_req_max = 0;
+    static uint64_t proc_midi_sum = 0, proc_midi_max = 0;
+    static uint64_t inproc_mix_sum = 0, inproc_mix_max = 0;
+    static uint64_t display_sum = 0, display_max = 0;
+    static int granular_count = 0;
+
+#define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &section_start)
+#define TIME_SECTION_END(sum_var, max_var) do { \
+    clock_gettime(CLOCK_MONOTONIC, &section_end); \
+    uint64_t _section_us = (section_end.tv_sec - section_start.tv_sec) * 1000000 + \
+                   (section_end.tv_nsec - section_start.tv_nsec) / 1000; \
+    sum_var += _section_us; \
+    if (_section_us > max_var) max_var = _section_us; \
+} while(0)
+
+    /* === OVERRUN DETECTION AND RECOVERY === */
+    static int consecutive_overruns = 0;
+    static int skip_dsp_this_frame = 0;
+    static uint64_t last_frame_total_us = 0;
+#define OVERRUN_THRESHOLD_US 2850  /* Start worrying at 2850µs (98% of budget) */
+#define SKIP_DSP_THRESHOLD 3       /* Skip DSP after 3 consecutive overruns */
+
+    /* Check for baseline timing mode (set SHADOW_BASELINE=1 to disable all processing) */
+    if (baseline_mode < 0) {
+        const char *env = getenv("SHADOW_BASELINE");
+        baseline_mode = (env && env[0] == '1') ? 1 : 0;
+        if (baseline_mode) {
+            FILE *f = fopen("/tmp/ioctl_timing.log", "a");
+            if (f) { fprintf(f, "=== BASELINE MODE: All processing disabled ===\n"); fclose(f); }
+        }
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &ioctl_start);
+
+    /* Check if previous frame overran - if so, consider skipping expensive work */
+    if (last_frame_total_us > OVERRUN_THRESHOLD_US) {
+        consecutive_overruns++;
+        if (consecutive_overruns >= SKIP_DSP_THRESHOLD) {
+            skip_dsp_this_frame = 1;
+            static int skip_log_count = 0;
+            if (skip_log_count++ < 10 || skip_log_count % 100 == 0) {
+                FILE *f = fopen("/tmp/ioctl_timing.log", "a");
+                if (f) {
+                    fprintf(f, "SKIP_DSP: consecutive_overruns=%d, last_frame=%llu us\n",
+                            consecutive_overruns, (unsigned long long)last_frame_total_us);
+                    fclose(f);
+                }
+            }
+        }
+    } else {
+        consecutive_overruns = 0;
+        skip_dsp_this_frame = 0;
+    }
+
+    /* Skip all processing in baseline mode to measure pure Move ioctl time */
+    if (baseline_mode) goto do_ioctl;
+
     // print_mem();
     // write_mem();
 
     // TODO: Consider using move-anything host code and quickjs for flexibility
+    TIME_SECTION_START();
     midi_monitor();
+    TIME_SECTION_END(midi_mon_sum, midi_mon_max);
 
     /* Check if shadow UI requested exit via shared memory */
     if (shadow_control && shadow_display_mode && !shadow_control->display_mode) {
@@ -4148,19 +4224,86 @@ int ioctl(int fd, unsigned long request, ...)
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
 
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
+    TIME_SECTION_START();
     shadow_forward_midi();
+    TIME_SECTION_END(fwd_midi_sum, fwd_midi_max);
 
     /* Mix shadow audio into mailbox BEFORE hardware transaction */
+    TIME_SECTION_START();
     shadow_mix_audio();
+    TIME_SECTION_END(mix_audio_sum, mix_audio_max);
 
 #if SHADOW_INPROCESS_POC
+    TIME_SECTION_START();
     shadow_inprocess_handle_ui_request();
+    TIME_SECTION_END(ui_req_sum, ui_req_max);
+
+    TIME_SECTION_START();
     shadow_inprocess_handle_param_request();
+    TIME_SECTION_END(param_req_sum, param_req_max);
+
+    TIME_SECTION_START();
     shadow_inprocess_process_midi();
-    shadow_inprocess_mix_audio();
+    TIME_SECTION_END(proc_midi_sum, proc_midi_max);
+
+    /* Timing measurement for DSP - skip if overrunning */
+    static uint64_t dsp_time_sum = 0;
+    static int dsp_time_count = 0;
+    static uint64_t dsp_time_max = 0;
+    static int dsp_frames_skipped = 0;
+
+    if (!skip_dsp_this_frame) {
+        struct timespec dsp_start, dsp_end;
+        clock_gettime(CLOCK_MONOTONIC, &dsp_start);
+
+        shadow_inprocess_mix_audio();
+
+        clock_gettime(CLOCK_MONOTONIC, &dsp_end);
+        uint64_t dsp_us = (dsp_end.tv_sec - dsp_start.tv_sec) * 1000000 +
+                          (dsp_end.tv_nsec - dsp_start.tv_nsec) / 1000;
+        dsp_time_sum += dsp_us;
+        dsp_time_count++;
+        if (dsp_us > dsp_time_max) dsp_time_max = dsp_us;
+
+        /* Also track in granular timing */
+        inproc_mix_sum += dsp_us;
+        if (dsp_us > inproc_mix_max) inproc_mix_max = dsp_us;
+
+        /* Warn immediately if DSP takes >2ms (deadline is ~2.9ms) */
+        if (dsp_us > 2000) {
+            static int overrun_count = 0;
+            overrun_count++;
+            if (overrun_count <= 10 || overrun_count % 100 == 0) {
+                FILE *f = fopen("/tmp/dsp_timing.log", "a");
+                if (f) {
+                    fprintf(f, "WARNING: DSP overrun #%d: %llu us\n",
+                            overrun_count, (unsigned long long)dsp_us);
+                    fclose(f);
+                }
+            }
+        }
+    } else {
+        /* Skipping DSP - audio passes through unchanged from Move */
+        dsp_frames_skipped++;
+    }
+
+    /* Log every 1000 blocks (~23 seconds) */
+    if (dsp_time_count >= 1000) {
+        uint64_t avg = dsp_time_sum / dsp_time_count;
+        FILE *f = fopen("/tmp/dsp_timing.log", "a");
+        if (f) {
+            fprintf(f, "DSP timing: avg=%llu us, max=%llu us (over %d blocks)\n",
+                    (unsigned long long)avg, (unsigned long long)dsp_time_max, dsp_time_count);
+            fclose(f);
+        }
+        dsp_time_sum = 0;
+        dsp_time_count = 0;
+        dsp_time_max = 0;
+    }
 #endif
 
     /* === SLICE-BASED DISPLAY CAPTURE FOR VOLUME === */
+    TIME_SECTION_START();  /* Start timing display section */
     static uint8_t captured_slices[6][172];
     static uint8_t slice_fresh[6] = {0};  /* Reset each time we want new capture */
     static int volume_capture_active = 0;
@@ -4286,10 +4429,23 @@ int ioctl(int fd, unsigned long request, ...)
 
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
     shadow_swap_display();
+    TIME_SECTION_END(display_sum, display_max);  /* End timing display section */
+
+    /* Mark end of pre-ioctl processing */
+    clock_gettime(CLOCK_MONOTONIC, &pre_end);
+
+do_ioctl:
+    /* In baseline mode, pre_end wasn't set - set it now */
+    if (baseline_mode) clock_gettime(CLOCK_MONOTONIC, &pre_end);
 
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
 
+    /* Mark start of post-ioctl processing */
+    clock_gettime(CLOCK_MONOTONIC, &post_start);
+
+    /* Skip post-ioctl processing in baseline mode */
+    if (baseline_mode) goto do_timing;
 
     /* === POST-IOCTL: TRACK BUTTON AND VOLUME KNOB DETECTION ===
      * Scan for track button CCs (40-43) for D-Bus volume sync,
@@ -4660,6 +4816,91 @@ int ioctl(int fd, unsigned long request, ...)
             }
         }
     }
+
+do_timing:
+    /* === COMPREHENSIVE IOCTL TIMING CALCULATIONS === */
+    clock_gettime(CLOCK_MONOTONIC, &ioctl_end);
+
+    uint64_t pre_us = (pre_end.tv_sec - ioctl_start.tv_sec) * 1000000 +
+                      (pre_end.tv_nsec - ioctl_start.tv_nsec) / 1000;
+    uint64_t ioctl_us = (post_start.tv_sec - pre_end.tv_sec) * 1000000 +
+                        (post_start.tv_nsec - pre_end.tv_nsec) / 1000;
+    uint64_t post_us = (ioctl_end.tv_sec - post_start.tv_sec) * 1000000 +
+                       (ioctl_end.tv_nsec - post_start.tv_nsec) / 1000;
+    uint64_t total_us = (ioctl_end.tv_sec - ioctl_start.tv_sec) * 1000000 +
+                        (ioctl_end.tv_nsec - ioctl_start.tv_nsec) / 1000;
+
+    total_sum += total_us;
+    pre_sum += pre_us;
+    ioctl_sum += ioctl_us;
+    post_sum += post_us;
+    timing_count++;
+
+    if (total_us > total_max) total_max = total_us;
+    if (pre_us > pre_max) pre_max = pre_us;
+    if (ioctl_us > ioctl_max) ioctl_max = ioctl_us;
+    if (post_us > post_max) post_max = post_us;
+
+    /* Warn immediately if total hook time >2ms */
+    if (total_us > 2000) {
+        static int hook_overrun_count = 0;
+        hook_overrun_count++;
+        if (hook_overrun_count <= 10 || hook_overrun_count % 100 == 0) {
+            FILE *f = fopen("/tmp/ioctl_timing.log", "a");
+            if (f) {
+                fprintf(f, "WARNING: Hook overrun #%d: total=%llu us (pre=%llu, ioctl=%llu, post=%llu)\n",
+                        hook_overrun_count, (unsigned long long)total_us,
+                        (unsigned long long)pre_us, (unsigned long long)ioctl_us,
+                        (unsigned long long)post_us);
+                fclose(f);
+            }
+        }
+    }
+
+    /* Log every 1000 blocks (~23 seconds) */
+    if (timing_count >= 1000) {
+        FILE *f = fopen("/tmp/ioctl_timing.log", "a");
+        if (f) {
+            fprintf(f, "Ioctl timing (1000 blocks): total avg=%llu max=%llu | pre avg=%llu max=%llu | ioctl avg=%llu max=%llu | post avg=%llu max=%llu\n",
+                    (unsigned long long)(total_sum / timing_count), (unsigned long long)total_max,
+                    (unsigned long long)(pre_sum / timing_count), (unsigned long long)pre_max,
+                    (unsigned long long)(ioctl_sum / timing_count), (unsigned long long)ioctl_max,
+                    (unsigned long long)(post_sum / timing_count), (unsigned long long)post_max);
+            fclose(f);
+        }
+        total_sum = pre_sum = ioctl_sum = post_sum = 0;
+        total_max = pre_max = ioctl_max = post_max = 0;
+        timing_count = 0;
+    }
+
+    /* Log granular pre-ioctl timing every 1000 blocks */
+    granular_count++;
+    if (granular_count >= 1000) {
+        FILE *f = fopen("/tmp/ioctl_timing.log", "a");
+        if (f) {
+            fprintf(f, "Granular: midi_mon avg=%llu max=%llu | fwd_midi avg=%llu max=%llu | "
+                       "mix_audio avg=%llu max=%llu | ui_req avg=%llu max=%llu | "
+                       "param_req avg=%llu max=%llu | proc_midi avg=%llu max=%llu | "
+                       "inproc_mix avg=%llu max=%llu | display avg=%llu max=%llu\n",
+                    (unsigned long long)(midi_mon_sum / granular_count), (unsigned long long)midi_mon_max,
+                    (unsigned long long)(fwd_midi_sum / granular_count), (unsigned long long)fwd_midi_max,
+                    (unsigned long long)(mix_audio_sum / granular_count), (unsigned long long)mix_audio_max,
+                    (unsigned long long)(ui_req_sum / granular_count), (unsigned long long)ui_req_max,
+                    (unsigned long long)(param_req_sum / granular_count), (unsigned long long)param_req_max,
+                    (unsigned long long)(proc_midi_sum / granular_count), (unsigned long long)proc_midi_max,
+                    (unsigned long long)(inproc_mix_sum / granular_count), (unsigned long long)inproc_mix_max,
+                    (unsigned long long)(display_sum / granular_count), (unsigned long long)display_max);
+            fclose(f);
+        }
+        midi_mon_sum = midi_mon_max = fwd_midi_sum = fwd_midi_max = 0;
+        mix_audio_sum = mix_audio_max = ui_req_sum = ui_req_max = 0;
+        param_req_sum = param_req_max = proc_midi_sum = proc_midi_max = 0;
+        inproc_mix_sum = inproc_mix_max = display_sum = display_max = 0;
+        granular_count = 0;
+    }
+
+    /* Record frame time for overrun detection in next iteration */
+    last_frame_total_us = total_us;
 
     return result;
 }
