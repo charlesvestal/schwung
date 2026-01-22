@@ -1970,8 +1970,8 @@ function showKnobOverlay(knobIndex, value) {
 
     if (ctx) {
         if (ctx.noMapping) {
-            /* Generic label for unmapped knob */
-            showOverlay(ctx.title, ctx.displayName);
+            /* Show "not mapped" for unmapped knob */
+            showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
         } else if (ctx.fullKey) {
             /* Mapped knob - show value */
             let displayVal;
@@ -2000,8 +2000,8 @@ function adjustKnobAndShow(knobIndex, delta) {
 
     if (ctx) {
         if (ctx.noMapping || !ctx.fullKey) {
-            /* No mapping - just show generic overlay */
-            showOverlay(ctx.title, ctx.displayName);
+            /* No mapping - show "not mapped" */
+            showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
             needsRedraw = true;
             return true;
         }
@@ -2749,9 +2749,12 @@ function refreshPendingKnobOverlay() {
 
     /* Show overlay using shared overlay system */
     const mapping = knobMappings[pendingKnobIndex];
-    if (mapping) {
+    if (mapping && mapping.name) {
         const displayName = `S${targetSlot + 1}: ${mapping.name}`;
         showOverlay(displayName, mapping.value);
+    } else {
+        /* No mapping for this knob */
+        showOverlay(`Knob ${pendingKnobIndex + 1}`, "not mapped");
     }
 
     pendingKnobRefresh = false;
