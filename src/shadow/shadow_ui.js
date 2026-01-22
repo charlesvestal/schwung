@@ -64,7 +64,7 @@ const KNOB_CC_END = MoveKnob8;    // CC 78
 const NUM_KNOBS = 8;
 
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
-const PATCH_DIR = "/data/UserData/move-anything/modules/chain/patches";
+const PATCH_DIR = "/data/UserData/move-anything/patches";
 const DEFAULT_SLOTS = [
     { channel: 5, name: "" },
     { channel: 6, name: "" },

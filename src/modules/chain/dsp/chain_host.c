@@ -1972,7 +1972,7 @@ static int check_filename_exists(const char *dir, const char *base, char *out_pa
 static int save_patch(const char *json_data) {
     char msg[256];
     char patches_dir[MAX_PATH_LEN];
-    snprintf(patches_dir, sizeof(patches_dir), "%s/patches", g_module_dir);
+    snprintf(patches_dir, sizeof(patches_dir), "%s/../../patches", g_module_dir);
 
     /* Parse incoming JSON to get components */
     char synth[MAX_NAME_LEN] = "sf2";
@@ -2181,7 +2181,7 @@ static int scan_patches(const char *module_dir) {
     char patches_dir[MAX_PATH_LEN];
     char msg[256];
 
-    snprintf(patches_dir, sizeof(patches_dir), "%s/patches", module_dir);
+    snprintf(patches_dir, sizeof(patches_dir), "%s/../../patches", module_dir);
 
     snprintf(msg, sizeof(msg), "Scanning patches in: %s", patches_dir);
     chain_log(msg);
@@ -3676,7 +3676,7 @@ static int v2_scan_patches(chain_instance_t *inst) {
 
     if (!inst) return -1;
 
-    snprintf(patches_dir, sizeof(patches_dir), "%s/patches", inst->module_dir);
+    snprintf(patches_dir, sizeof(patches_dir), "%s/../../patches", inst->module_dir);
     inst->patch_count = 0;
 
     DIR *dir = opendir(patches_dir);

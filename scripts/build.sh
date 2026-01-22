@@ -149,6 +149,11 @@ find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \)
     cp "$src" "$dest"
 done
 
+# Copy patches directory
+echo "Copying patches..."
+mkdir -p ./build/patches
+cp -r ./src/patches/*.json ./build/patches/ 2>/dev/null || true
+
 # Copy curl binary for store module (if present)
 if [ -f "./libs/curl/curl" ]; then
     mkdir -p ./build/bin/
