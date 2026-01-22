@@ -4371,16 +4371,36 @@ int ioctl(int fd, unsigned long request, ...)
                 }
             }
 
-            /* Note On/Off messages (CIN 0x09/0x08) for volume knob touch (note 8) */
+            /* Note On/Off messages (CIN 0x09/0x08) for knob touches */
             if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
-                if (d1 == 8) {  /* Volume knob capacitive touch */
-                    int touched = (type == 0x90 && d2 > 0);
+                int touched = (type == 0x90 && d2 > 0);
+
+                /* Volume knob touch (note 8) */
+                if (d1 == 8) {
                     if (touched != shadow_volume_knob_touched) {
                         shadow_volume_knob_touched = touched;
+                        volumeTouched = touched;
                         char msg[64];
                         snprintf(msg, sizeof(msg), "Volume knob touch: %s", touched ? "ON" : "OFF");
                         shadow_log(msg);
                     }
+                }
+
+                /* Knob 8 touch (note 7) */
+                if (d1 == 7) {
+                    if (touched != knob8touched) {
+                        knob8touched = touched;
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "Knob 8 touch: %s", touched ? "ON" : "OFF");
+                        shadow_log(msg);
+                    }
+                }
+
+                /* Shift + Volume + Knob8 = launch standalone Move Anything */
+                if (shadow_shift_held && shadow_volume_knob_touched && knob8touched && !alreadyLaunched) {
+                    alreadyLaunched = 1;
+                    shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
+                    launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
                 }
             }
         }
