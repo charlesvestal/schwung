@@ -1,5 +1,24 @@
 # Timing Spike Investigation & Mitigation Plan
 
+## ✅ RESOLVED - 2026-01-22
+
+**Root Cause:** Pre-ioctl DSP rendering (~330µs with patches loaded) delayed Move's event processing, causing event timestamp ordering violations (`ASSERT '!maybeNewTime || maybeNewTime > moTime'`) during rapid pad presses.
+
+**Solution:** Moved DSP rendering from pre-ioctl to post-ioctl:
+- Pre-ioctl now just mixes from a pre-rendered buffer (~3-15µs)
+- Post-ioctl renders DSP for the next frame (~300µs)
+- Move processes pad events immediately after ioctl returns
+- Trade-off: ~3ms additional latency on shadow instrument audio (inaudible)
+
+**Key files changed:**
+- `src/move_anything_shim.c`:
+  - Added `shadow_deferred_dsp_buffer[]` and `shadow_deferred_dsp_valid` globals
+  - Added `shadow_inprocess_render_to_buffer()` - called post-ioctl
+  - Added `shadow_inprocess_mix_from_buffer()` - called pre-ioctl (fast)
+  - Also implemented frame skipping safety net and optimized fwd_midi access() calls
+
+---
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Identify what causes pre-ioctl processing spikes (15µs avg → 141µs max) and implement mitigations to prevent crashes.

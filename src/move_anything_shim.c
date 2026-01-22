@@ -616,6 +616,9 @@ static void spi_trace_ioctl(unsigned long request, char *argp)
  * ============================================================================ */
 
 #define SHADOW_INPROCESS_POC 1
+#define SHADOW_DISABLE_POST_IOCTL_MIDI 0  /* Set to 1 to disable post-ioctl MIDI modifications for debugging */
+#define SHADOW_DISABLE_MIDI_ZEROING 0     /* Set to 1 to disable zeroing MIDI events (keeps forwarding) */
+#define SHADOW_ATOMIC_MIDI_FILTER 1       /* Set to 1 to use atomic copy-filter-replace for MIDI filtering */
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/move-anything/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/move-anything/modules/chain/dsp.so"
 #define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
@@ -743,6 +746,9 @@ static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
 
+/* Deferred DSP rendering buffer - rendered post-ioctl, mixed pre-ioctl next frame */
+static int16_t shadow_deferred_dsp_buffer[FRAMES_PER_BLOCK * 2];
+static int shadow_deferred_dsp_valid = 0;
 
 /* ==========================================================================
  * Shadow Capture Rules - Allow slots to capture specific MIDI controls
@@ -2671,6 +2677,74 @@ static void shadow_inprocess_mix_audio(void) {
     memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
 }
 
+/* === DEFERRED DSP RENDERING ===
+ * Render DSP into buffer (slow, ~300µs) - called POST-ioctl
+ * This renders audio for the NEXT frame, adding one frame of latency (~3ms)
+ * but allowing Move to process pad events faster after ioctl returns.
+ */
+static void shadow_inprocess_render_to_buffer(void) {
+    if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    /* Clear the deferred buffer */
+    memset(shadow_deferred_dsp_buffer, 0, sizeof(shadow_deferred_dsp_buffer));
+
+    /* Render each slot's DSP */
+    if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+            int16_t render_buffer[FRAMES_PER_BLOCK * 2];
+            memset(render_buffer, 0, sizeof(render_buffer));
+            shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
+                                           render_buffer,
+                                           MOVE_FRAMES_PER_BLOCK);
+            float vol = shadow_chain_slots[s].volume;
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
+                /* Clamp during accumulation */
+                if (mixed > 32767) mixed = 32767;
+                if (mixed < -32768) mixed = -32768;
+                shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
+            }
+        }
+    }
+
+    /* Apply master FX chain - process through all 4 slots in series */
+    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+        master_fx_slot_t *slot = &shadow_master_fx_slots[fx];
+        if (slot->instance && slot->api && slot->api->process_block) {
+            slot->api->process_block(slot->instance, shadow_deferred_dsp_buffer, FRAMES_PER_BLOCK);
+        }
+    }
+
+    /* Apply master volume */
+    float mv = shadow_master_volume;
+    if (mv < 1.0f) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            shadow_deferred_dsp_buffer[i] = (int16_t)(shadow_deferred_dsp_buffer[i] * mv);
+        }
+    }
+
+    shadow_deferred_dsp_valid = 1;
+}
+
+/* Mix from pre-rendered buffer (fast, ~5µs) - called PRE-ioctl
+ * Just mixes the previously-rendered DSP into Move's audio output.
+ */
+static void shadow_inprocess_mix_from_buffer(void) {
+    if (!shadow_inprocess_ready || !global_mmap_addr) return;
+    if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
+
+    int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+
+    /* Mix deferred buffer into mailbox audio */
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        int32_t mixed = mailbox_audio[i] + shadow_deferred_dsp_buffer[i];
+        if (mixed > 32767) mixed = 32767;
+        if (mixed < -32768) mixed = -32768;
+        mailbox_audio[i] = (int16_t)mixed;
+    }
+}
+
 /* Shared memory segment names from shadow_constants.h */
 
 #define NUM_AUDIO_BUFFERS 3  /* Triple buffering */
@@ -4246,59 +4320,44 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_inprocess_process_midi();
     TIME_SECTION_END(proc_midi_sum, proc_midi_max);
 
-    /* Timing measurement for DSP - skip if overrunning */
-    static uint64_t dsp_time_sum = 0;
-    static int dsp_time_count = 0;
-    static uint64_t dsp_time_max = 0;
-    static int dsp_frames_skipped = 0;
+    /* Pre-ioctl: Mix from pre-rendered buffer (FAST, ~5µs)
+     * DSP was rendered post-ioctl in the previous frame.
+     * This adds ~3ms latency but lets Move process pad events faster.
+     */
+    static uint64_t mix_time_sum = 0;
+    static int mix_time_count = 0;
+    static uint64_t mix_time_max = 0;
 
     if (!skip_dsp_this_frame) {
-        struct timespec dsp_start, dsp_end;
-        clock_gettime(CLOCK_MONOTONIC, &dsp_start);
+        struct timespec mix_start, mix_end;
+        clock_gettime(CLOCK_MONOTONIC, &mix_start);
 
-        shadow_inprocess_mix_audio();
+        shadow_inprocess_mix_from_buffer();  /* Fast: just memcpy+mix */
 
-        clock_gettime(CLOCK_MONOTONIC, &dsp_end);
-        uint64_t dsp_us = (dsp_end.tv_sec - dsp_start.tv_sec) * 1000000 +
-                          (dsp_end.tv_nsec - dsp_start.tv_nsec) / 1000;
-        dsp_time_sum += dsp_us;
-        dsp_time_count++;
-        if (dsp_us > dsp_time_max) dsp_time_max = dsp_us;
+        clock_gettime(CLOCK_MONOTONIC, &mix_end);
+        uint64_t mix_us = (mix_end.tv_sec - mix_start.tv_sec) * 1000000 +
+                          (mix_end.tv_nsec - mix_start.tv_nsec) / 1000;
+        mix_time_sum += mix_us;
+        mix_time_count++;
+        if (mix_us > mix_time_max) mix_time_max = mix_us;
 
-        /* Also track in granular timing */
-        inproc_mix_sum += dsp_us;
-        if (dsp_us > inproc_mix_max) inproc_mix_max = dsp_us;
-
-        /* Warn immediately if DSP takes >2ms (deadline is ~2.9ms) */
-        if (dsp_us > 2000) {
-            static int overrun_count = 0;
-            overrun_count++;
-            if (overrun_count <= 10 || overrun_count % 100 == 0) {
-                FILE *f = fopen("/tmp/dsp_timing.log", "a");
-                if (f) {
-                    fprintf(f, "WARNING: DSP overrun #%d: %llu us\n",
-                            overrun_count, (unsigned long long)dsp_us);
-                    fclose(f);
-                }
-            }
-        }
-    } else {
-        /* Skipping DSP - audio passes through unchanged from Move */
-        dsp_frames_skipped++;
+        /* Track in granular timing */
+        inproc_mix_sum += mix_us;
+        if (mix_us > inproc_mix_max) inproc_mix_max = mix_us;
     }
 
-    /* Log every 1000 blocks (~23 seconds) */
-    if (dsp_time_count >= 1000) {
-        uint64_t avg = dsp_time_sum / dsp_time_count;
+    /* Log pre-ioctl mix timing every 1000 blocks (~23 seconds) */
+    if (mix_time_count >= 1000) {
+        uint64_t avg = mix_time_sum / mix_time_count;
         FILE *f = fopen("/tmp/dsp_timing.log", "a");
         if (f) {
-            fprintf(f, "DSP timing: avg=%llu us, max=%llu us (over %d blocks)\n",
-                    (unsigned long long)avg, (unsigned long long)dsp_time_max, dsp_time_count);
+            fprintf(f, "Pre-ioctl mix (from buffer): avg=%llu us, max=%llu us\n",
+                    (unsigned long long)avg, (unsigned long long)mix_time_max);
             fclose(f);
         }
-        dsp_time_sum = 0;
-        dsp_time_count = 0;
-        dsp_time_max = 0;
+        mix_time_sum = 0;
+        mix_time_count = 0;
+        mix_time_max = 0;
     }
 #endif
 
@@ -4652,8 +4711,79 @@ do_ioctl:
      * MIDI INPUT comes FROM the hardware DURING the ioctl.
      * We must filter AFTER ioctl returns, before Move reads the mailbox.
      * This prevents jog/click/back from reaching Move while in shadow mode. */
+#if !SHADOW_DISABLE_POST_IOCTL_MIDI
+/* Macro to invalidate MIDI event - can be disabled for debugging */
+#if SHADOW_DISABLE_MIDI_ZEROING
+#define ZERO_MIDI_EVENT(s, idx) do {} while(0)
+#else
+/* Instead of zeroing all bytes, set cable to 0x0F (unused) to invalidate.
+ * This preserves packet structure while making Move ignore it. */
+#define ZERO_MIDI_EVENT(s, idx) do { s[idx] = (s[idx] & 0x0F) | 0xF0; } while(0)
+#endif
     if (shadow_display_mode && shadow_control && global_mmap_addr) {
+        /* Pre-scan: check if there are any pad events (notes 68-99) in the buffer.
+         * If so, skip filtering entirely to avoid crash during rapid pad playing. */
+        int has_pad_events = 0;
+        {
+            uint8_t *scan = global_mmap_addr + MIDI_IN_OFFSET;
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t cin = scan[j] & 0x0F;
+                uint8_t cable = (scan[j] >> 4) & 0x0F;
+                if (cable != 0x00) continue;
+                if (cin == 0x09 || cin == 0x08) {  /* Note On/Off */
+                    uint8_t note = scan[j + 2];
+                    if (note >= 68 && note <= 99) {  /* Pad notes */
+                        has_pad_events = 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        /* Skip filtering if pads are being played - prevents crash */
+        if (has_pad_events) {
+            /* Still forward events to shadow UI, but don't modify MIDI_IN */
+            uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t cin = src[j] & 0x0F;
+                uint8_t cable = (src[j] >> 4) & 0x0F;
+                if (cin < 0x08 || cin > 0x0E) continue;
+                if (cable != 0x00) continue;
+
+                uint8_t status = src[j + 1];
+                uint8_t type = status & 0xF0;
+                uint8_t d1 = src[j + 2];
+                uint8_t d2 = src[j + 3];
+
+                /* Forward jog/knob/back CCs to shadow UI (but don't block from Move) */
+                if (type == 0xB0 && shadow_ui_midi_shm) {
+                    int forward = (d1 == 14 || d1 == 3 || d1 == 51 ||
+                                   (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78));
+                    if (forward) {
+                        for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                            if (shadow_ui_midi_shm[slot] == 0) {
+                                shadow_ui_midi_shm[slot] = 0x0B;
+                                shadow_ui_midi_shm[slot + 1] = status;
+                                shadow_ui_midi_shm[slot + 2] = d1;
+                                shadow_ui_midi_shm[slot + 3] = d2;
+                                shadow_control->midi_ready++;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            goto skip_midi_filter;
+        }
+
+#if SHADOW_ATOMIC_MIDI_FILTER
+        /* Atomic approach: copy buffer, filter copy, write back all at once */
+        static uint8_t midi_filter_buf[MIDI_BUFFER_SIZE];
+        memcpy(midi_filter_buf, global_mmap_addr + MIDI_IN_OFFSET, MIDI_BUFFER_SIZE);
+        uint8_t *src = midi_filter_buf;
+#else
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+#endif
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
@@ -4712,14 +4842,14 @@ do_ioctl:
                                                       MOVE_MIDI_SOURCE_INTERNAL);
                         }
                         /* Block from Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        ZERO_MIDI_EVENT(src, j);
                         continue;
                     }
                 }
 
                 /* Only zero out blocked CCs - pass everything else to Move */
                 if (block_from_move) {
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    ZERO_MIDI_EVENT(src, j);
                 }
                 continue;
             }
@@ -4758,7 +4888,7 @@ do_ioctl:
                 /* Knob touch notes 0-7 pass through to Move for touch-to-peek in Chain UI.
                  * Note 9 is blocked as it's not a knob touch. */
                 if (d1 == 9) {
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    ZERO_MIDI_EVENT(src, j);
                     continue;
                 }
 
@@ -4777,7 +4907,7 @@ do_ioctl:
                                                       MOVE_MIDI_SOURCE_INTERNAL);
                         }
                         /* Block from Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        ZERO_MIDI_EVENT(src, j);
                         continue;
                     }
                 }
@@ -4791,14 +4921,22 @@ do_ioctl:
             }
 
             /* Zero everything else */
-            src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+            ZERO_MIDI_EVENT(src, j);
         }
+#if SHADOW_ATOMIC_MIDI_FILTER
+        /* Copy filtered buffer back to MIDI_IN atomically */
+        memcpy(global_mmap_addr + MIDI_IN_OFFSET, midi_filter_buf, MIDI_BUFFER_SIZE);
+#endif
+skip_midi_filter:
+        ; /* Empty statement after label */
     }
+#endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
 
     /* === POST-IOCTL: INJECT KNOB RELEASE EVENTS ===
      * When toggling shadow mode, inject note-off events for knob touches
      * so Move doesn't think knobs are still being held.
      * This MUST happen AFTER filtering to avoid being zeroed out. */
+#if !SHADOW_DISABLE_POST_IOCTL_MIDI
     if (shadow_inject_knob_release && global_mmap_addr) {
         shadow_inject_knob_release = 0;
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
@@ -4816,6 +4954,46 @@ do_ioctl:
             }
         }
     }
+#endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
+
+#if SHADOW_INPROCESS_POC
+    /* === POST-IOCTL: DEFERRED DSP RENDERING (SLOW, ~300µs) ===
+     * Render DSP for the NEXT frame. This happens AFTER the ioctl returns,
+     * so Move gets to process pad events before we do heavy DSP work.
+     * The rendered audio will be mixed in pre-ioctl of the next frame.
+     */
+    {
+        static uint64_t render_time_sum = 0;
+        static int render_time_count = 0;
+        static uint64_t render_time_max = 0;
+
+        struct timespec render_start, render_end;
+        clock_gettime(CLOCK_MONOTONIC, &render_start);
+
+        shadow_inprocess_render_to_buffer();  /* Slow: actual DSP rendering */
+
+        clock_gettime(CLOCK_MONOTONIC, &render_end);
+        uint64_t render_us = (render_end.tv_sec - render_start.tv_sec) * 1000000 +
+                              (render_end.tv_nsec - render_start.tv_nsec) / 1000;
+        render_time_sum += render_us;
+        render_time_count++;
+        if (render_us > render_time_max) render_time_max = render_us;
+
+        /* Log DSP render timing every 1000 blocks (~23 seconds) */
+        if (render_time_count >= 1000) {
+            uint64_t avg = render_time_sum / render_time_count;
+            FILE *f = fopen("/tmp/dsp_timing.log", "a");
+            if (f) {
+                fprintf(f, "Post-ioctl DSP render: avg=%llu us, max=%llu us\n",
+                        (unsigned long long)avg, (unsigned long long)render_time_max);
+                fclose(f);
+            }
+            render_time_sum = 0;
+            render_time_count = 0;
+            render_time_max = 0;
+        }
+    }
+#endif
 
 do_timing:
     /* === COMPREHENSIVE IOCTL TIMING CALCULATIONS === */
