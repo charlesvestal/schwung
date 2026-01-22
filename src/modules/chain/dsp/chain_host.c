@@ -3900,6 +3900,251 @@ static int v2_delete_patch(chain_instance_t *inst, int index) {
     return 0;
 }
 
+/* ========== Master Preset Functions ========== */
+
+#define PRESETS_MASTER_DIR "/data/UserData/move-anything/presets_master"
+#define MAX_MASTER_PRESETS 64
+
+/* Master preset info storage (simpler than chain patches) */
+static char master_preset_names[MAX_MASTER_PRESETS][MAX_NAME_LEN];
+static char master_preset_paths[MAX_MASTER_PRESETS][MAX_PATH_LEN];
+static int master_preset_count = 0;
+
+static void ensure_presets_master_dir(void) {
+    struct stat st = {0};
+    if (stat(PRESETS_MASTER_DIR, &st) == -1) {
+        mkdir(PRESETS_MASTER_DIR, 0755);
+    }
+}
+
+static void scan_master_presets(void) {
+    master_preset_count = 0;
+    ensure_presets_master_dir();
+
+    DIR *dir = opendir(PRESETS_MASTER_DIR);
+    if (!dir) return;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && master_preset_count < MAX_MASTER_PRESETS) {
+        if (entry->d_type != DT_REG) continue;
+
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (len < 6 || strcmp(name + len - 5, ".json") != 0) continue;
+
+        /* Extract name without .json extension */
+        size_t name_len = len - 5;
+        if (name_len >= MAX_NAME_LEN) name_len = MAX_NAME_LEN - 1;
+
+        /* Try to read the "name" field from the JSON file */
+        char path[MAX_PATH_LEN];
+        snprintf(path, sizeof(path), "%s/%s", PRESETS_MASTER_DIR, name);
+
+        FILE *f = fopen(path, "r");
+        if (f) {
+            char json_buf[2048];
+            size_t read_len = fread(json_buf, 1, sizeof(json_buf) - 1, f);
+            json_buf[read_len] = '\0';
+            fclose(f);
+
+            /* Try to get name from JSON */
+            char parsed_name[MAX_NAME_LEN];
+            if (json_get_string(json_buf, "name", parsed_name, sizeof(parsed_name)) == 0) {
+                strncpy(master_preset_names[master_preset_count], parsed_name, MAX_NAME_LEN - 1);
+            } else {
+                /* Fall back to filename */
+                memcpy(master_preset_names[master_preset_count], name, name_len);
+                master_preset_names[master_preset_count][name_len] = '\0';
+            }
+        } else {
+            memcpy(master_preset_names[master_preset_count], name, name_len);
+            master_preset_names[master_preset_count][name_len] = '\0';
+        }
+
+        strncpy(master_preset_paths[master_preset_count], path, MAX_PATH_LEN - 1);
+        master_preset_count++;
+    }
+    closedir(dir);
+}
+
+static int save_master_preset(const char *json_str) {
+    ensure_presets_master_dir();
+
+    /* Get custom_name from JSON */
+    char name[MAX_NAME_LEN] = "Master FX";
+    json_get_string(json_str, "custom_name", name, sizeof(name));
+
+    /* Sanitize name for filename */
+    char filename[MAX_NAME_LEN];
+    sanitize_filename(filename, sizeof(filename), name);
+
+    /* Build path */
+    char path[MAX_PATH_LEN];
+    snprintf(path, sizeof(path), "%s/%s.json", PRESETS_MASTER_DIR, filename);
+
+    /* Build wrapped JSON */
+    char final_json[4096];
+    snprintf(final_json, sizeof(final_json),
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"master_fx\": {\n"
+        "        \"fx1\": %s,\n"
+        "        \"fx2\": %s,\n"
+        "        \"fx3\": %s,\n"
+        "        \"fx4\": %s\n"
+        "    }\n"
+        "}\n",
+        name,
+        strstr(json_str, "\"fx1\":") ? "{}" : "null",  /* Simplified - will refine */
+        strstr(json_str, "\"fx2\":") ? "{}" : "null",
+        strstr(json_str, "\"fx3\":") ? "{}" : "null",
+        strstr(json_str, "\"fx4\":") ? "{}" : "null");
+
+    /* Actually parse and rebuild properly */
+    cJSON *input = cJSON_Parse(json_str);
+    if (input) {
+        cJSON *output = cJSON_CreateObject();
+        cJSON_AddStringToObject(output, "name", name);
+        cJSON_AddNumberToObject(output, "version", 1);
+
+        cJSON *master_fx = cJSON_CreateObject();
+        cJSON *fx1 = cJSON_GetObjectItem(input, "fx1");
+        cJSON *fx2 = cJSON_GetObjectItem(input, "fx2");
+        cJSON *fx3 = cJSON_GetObjectItem(input, "fx3");
+        cJSON *fx4 = cJSON_GetObjectItem(input, "fx4");
+
+        if (fx1) cJSON_AddItemToObject(master_fx, "fx1", cJSON_Duplicate(fx1, 1));
+        if (fx2) cJSON_AddItemToObject(master_fx, "fx2", cJSON_Duplicate(fx2, 1));
+        if (fx3) cJSON_AddItemToObject(master_fx, "fx3", cJSON_Duplicate(fx3, 1));
+        if (fx4) cJSON_AddItemToObject(master_fx, "fx4", cJSON_Duplicate(fx4, 1));
+
+        cJSON_AddItemToObject(output, "master_fx", master_fx);
+
+        char *out_str = cJSON_Print(output);
+        if (out_str) {
+            strncpy(final_json, out_str, sizeof(final_json) - 1);
+            free(out_str);
+        }
+        cJSON_Delete(output);
+        cJSON_Delete(input);
+    }
+
+    /* Write file */
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        chain_log("Failed to save master preset: %s", path);
+        return -1;
+    }
+
+    fputs(final_json, f);
+    fclose(f);
+    chain_log("Saved master preset: %s", name);
+
+    scan_master_presets();
+    return 0;
+}
+
+static int update_master_preset(int index, const char *json_str) {
+    if (index < 0 || index >= master_preset_count) {
+        chain_log("Invalid master preset index: %d", index);
+        return -1;
+    }
+
+    /* Get name from JSON or use existing */
+    char name[MAX_NAME_LEN];
+    if (json_get_string(json_str, "custom_name", name, sizeof(name)) != 0) {
+        strncpy(name, master_preset_names[index], sizeof(name) - 1);
+    }
+
+    /* Parse and rebuild JSON */
+    cJSON *input = cJSON_Parse(json_str);
+    if (!input) {
+        chain_log("Failed to parse master preset JSON");
+        return -1;
+    }
+
+    cJSON *output = cJSON_CreateObject();
+    cJSON_AddStringToObject(output, "name", name);
+    cJSON_AddNumberToObject(output, "version", 1);
+
+    cJSON *master_fx = cJSON_CreateObject();
+    cJSON *fx1 = cJSON_GetObjectItem(input, "fx1");
+    cJSON *fx2 = cJSON_GetObjectItem(input, "fx2");
+    cJSON *fx3 = cJSON_GetObjectItem(input, "fx3");
+    cJSON *fx4 = cJSON_GetObjectItem(input, "fx4");
+
+    if (fx1) cJSON_AddItemToObject(master_fx, "fx1", cJSON_Duplicate(fx1, 1));
+    if (fx2) cJSON_AddItemToObject(master_fx, "fx2", cJSON_Duplicate(fx2, 1));
+    if (fx3) cJSON_AddItemToObject(master_fx, "fx3", cJSON_Duplicate(fx3, 1));
+    if (fx4) cJSON_AddItemToObject(master_fx, "fx4", cJSON_Duplicate(fx4, 1));
+
+    cJSON_AddItemToObject(output, "master_fx", master_fx);
+
+    char *out_str = cJSON_Print(output);
+    cJSON_Delete(output);
+    cJSON_Delete(input);
+
+    if (!out_str) return -1;
+
+    /* Write to existing path */
+    FILE *f = fopen(master_preset_paths[index], "w");
+    if (!f) {
+        free(out_str);
+        return -1;
+    }
+
+    fputs(out_str, f);
+    fclose(f);
+    free(out_str);
+
+    chain_log("Updated master preset: %s", name);
+    scan_master_presets();
+    return 0;
+}
+
+static int delete_master_preset(int index) {
+    if (index < 0 || index >= master_preset_count) {
+        chain_log("Invalid master preset index: %d", index);
+        return -1;
+    }
+
+    if (remove(master_preset_paths[index]) != 0) {
+        chain_log("Failed to delete master preset: %s", master_preset_paths[index]);
+        return -1;
+    }
+
+    chain_log("Deleted master preset: %s", master_preset_names[index]);
+    scan_master_presets();
+    return 0;
+}
+
+static int load_master_preset_json(int index, char *buf, int buf_len) {
+    if (index < 0 || index >= master_preset_count) {
+        buf[0] = '\0';
+        return 0;
+    }
+
+    FILE *f = fopen(master_preset_paths[index], "r");
+    if (!f) {
+        buf[0] = '\0';
+        return 0;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (len >= buf_len) len = buf_len - 1;
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+
+    return (int)len;
+}
+
+/* ========== End Master Preset Functions ========== */
+
 /* V2 parse patch file - simplified version */
 static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch) {
     (void)inst;
@@ -4279,6 +4524,22 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             v2_scan_patches(inst);
         }
     }
+    /* Master preset commands */
+    else if (strcmp(key, "save_master_preset") == 0) {
+        save_master_preset(val);
+    }
+    else if (strcmp(key, "delete_master_preset") == 0) {
+        int index = atoi(val);
+        delete_master_preset(index);
+    }
+    else if (strcmp(key, "update_master_preset") == 0) {
+        /* Format: "index:json_data" */
+        const char *colon = strchr(val, ':');
+        if (colon) {
+            int index = atoi(val);
+            update_master_preset(index, colon + 1);
+        }
+    }
     else if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
@@ -4502,6 +4763,22 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
     if (strcmp(key, "fx2_module") == 0) {
         return snprintf(buf, buf_len, "%s", inst->current_fx_modules[1]);
+    }
+    /* Master preset queries */
+    if (strcmp(key, "master_preset_count") == 0) {
+        scan_master_presets();
+        return snprintf(buf, buf_len, "%d", master_preset_count);
+    }
+    if (strncmp(key, "master_preset_name_", 19) == 0) {
+        int idx = atoi(key + 19);
+        if (idx >= 0 && idx < master_preset_count) {
+            return snprintf(buf, buf_len, "%s", master_preset_names[idx]);
+        }
+        return -1;
+    }
+    if (strncmp(key, "master_preset_json_", 19) == 0) {
+        int idx = atoi(key + 19);
+        return load_master_preset_json(idx, buf, buf_len);
     }
     if (strcmp(key, "fx_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->fx_count);
