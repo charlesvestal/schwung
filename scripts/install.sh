@@ -70,6 +70,114 @@ else
   echo "Warning: No modules directory found"
 fi
 
+# Migration: Check for patches and modules in old locations
+echo
+echo "Checking for migration needs..."
+
+# Track deleted modules for reinstall option
+deleted_modules=""
+
+# Find external modules in old location (modules/<id>/ instead of modules/<type>/<id>/)
+old_modules=$($ssh_ableton "cd /data/UserData/move-anything/modules 2>/dev/null && for d in */; do
+  d=\${d%/}
+  case \"\$d\" in
+    chain|controller|store|text-test|sound_generators|audio_fx|midi_fx|utilities|other) continue ;;
+  esac
+  if [ -f \"\$d/module.json\" ]; then
+    echo \"\$d\"
+  fi
+done" 2>/dev/null || true)
+
+# Check for patches in old location
+old_patches=false
+if $ssh_ableton "test -d /data/UserData/move-anything/modules/chain/patches && ls /data/UserData/move-anything/modules/chain/patches/*.json >/dev/null 2>&1"; then
+  old_patches=true
+fi
+
+# Check for modules in old chain subdirectories
+old_chain_modules=$($ssh_ableton "cd /data/UserData/move-anything/modules/chain 2>/dev/null && for subdir in audio_fx midi_fx sound_generators; do
+  if [ -d \"\$subdir\" ]; then
+    for d in \"\$subdir\"/*/; do
+      d=\${d%/}
+      if [ -f \"\$d/module.json\" ] 2>/dev/null; then
+        echo \"\$d\"
+      fi
+    done
+  fi
+done" 2>/dev/null || true)
+
+if [ -n "$old_modules" ] || [ "$old_patches" = true ] || [ -n "$old_chain_modules" ]; then
+  echo
+  echo "========================================"
+  echo "Migration Required (v0.3.0)"
+  echo "========================================"
+  echo
+  echo "This update restructures the module directory."
+  echo
+  if [ -n "$old_modules" ]; then
+    echo "External modules found in old location:"
+    echo "  $old_modules"
+    echo
+  fi
+  if [ -n "$old_chain_modules" ]; then
+    echo "Chain modules found in old location:"
+    echo "  $old_chain_modules"
+    echo
+  fi
+  if [ "$old_patches" = true ]; then
+    echo "Patches found in old location:"
+    echo "  modules/chain/patches/"
+    echo
+  fi
+  echo "Migration will:"
+  echo "  1. Move your patches to the new /patches/ directory"
+  echo "  2. DELETE old external modules (they need fresh install)"
+  echo
+  echo "After migration, reinstall modules via the Module Store."
+  echo
+  printf "Proceed with migration? [Y/n] "
+  read -r do_migrate
+
+  if [ "$do_migrate" != "n" ] && [ "$do_migrate" != "N" ]; then
+    echo "Migrating..."
+
+    # Migrate patches first
+    if [ "$old_patches" = true ]; then
+      echo "  Moving patches to /patches/..."
+      $ssh_ableton "mkdir -p /data/UserData/move-anything/patches && mv /data/UserData/move-anything/modules/chain/patches/*.json /data/UserData/move-anything/patches/ 2>/dev/null || true"
+    fi
+
+    # Delete old external modules (they have wrong import paths)
+    for mod in $old_modules; do
+      echo "  Removing old module: $mod"
+      $ssh_ableton "rm -rf /data/UserData/move-anything/modules/$mod"
+      deleted_modules="$deleted_modules $mod"
+    done
+
+    # Delete old chain subdirectory modules and track them
+    if [ -n "$old_chain_modules" ]; then
+      echo "  Removing old chain modules..."
+      for chain_mod in $old_chain_modules; do
+        # Extract just the module id (e.g., "audio_fx/cloudseed" -> "cloudseed")
+        mod_id=$(basename "$chain_mod")
+        deleted_modules="$deleted_modules $mod_id"
+      done
+      $ssh_ableton "rm -rf /data/UserData/move-anything/modules/chain/audio_fx /data/UserData/move-anything/modules/chain/midi_fx /data/UserData/move-anything/modules/chain/sound_generators 2>/dev/null || true"
+    fi
+
+    echo
+    echo "Migration complete!"
+    echo
+    echo "Your patches have been preserved."
+    echo "Please reinstall external modules via the Module Store"
+    echo "or use the install option below."
+  else
+    echo "Skipping migration. Old modules may not work correctly."
+  fi
+else
+  echo "No migration needed."
+fi
+
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
 $ssh_root "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi"
 
@@ -101,40 +209,43 @@ $ssh_root md5sum /opt/move/Move
 $ssh_root md5sum /opt/move/MoveOriginal
 $ssh_root md5sum /usr/lib/move-anything-shim.so
 
-echo "Restarting Move binary with shim installed..."
-
-$ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
-$ssh_ableton "nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &"
-$ssh_ableton "sleep 1"
-$ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" || exit 1; tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" || fail "Move started without shim (LD_PRELOAD missing)"
-
+# Optional: Install modules from the Module Store (before restart so they're available immediately)
 echo
-echo "Done!"
-echo
-echo "Move Anything is now installed with the modular plugin system."
-echo "Modules are located in: /data/UserData/move-anything/modules/"
-echo
-echo "Shift+Vol+Track or Shift+Vol+Menu: Access Move Anything's slot configurations"
-echo "Shift+Vol+Knob8: Access Move Anything's standalone mode and module store"
-echo
+install_mode=""
+deleted_modules=$(echo "$deleted_modules" | xargs)  # trim whitespace
 
-# Optional: Install all modules from the Module Store
-echo "Would you like to install all available modules from the Module Store?"
-echo "(Sound Generators, Audio FX, MIDI FX, and Utilities)"
-printf "Install modules? [y/N] "
-read -r install_modules
+if [ -n "$deleted_modules" ]; then
+    # Migration happened - offer three choices
+    echo "Module installation options:"
+    echo "  (a) Install ALL available modules"
+    echo "  (m) Install only MIGRATED modules: $deleted_modules"
+    echo "  (n) Install NONE (use Module Store later)"
+    echo
+    printf "Choice [a/m/N]: "
+    read -r install_choice
+    case "$install_choice" in
+        a|A) install_mode="all" ;;
+        m|M) install_mode="missing" ;;
+        *) install_mode="" ;;
+    esac
+else
+    # No migration - offer yes/no for all
+    echo "Would you like to install all available modules from the Module Store?"
+    echo "(Sound Generators, Audio FX, MIDI FX, and Utilities)"
+    printf "Install modules? [y/N] "
+    read -r install_choice
+    if [ "$install_choice" = "y" ] || [ "$install_choice" = "Y" ]; then
+        install_mode="all"
+    fi
+fi
 
-if [ "$install_modules" = "y" ] || [ "$install_modules" = "Y" ]; then
+if [ -n "$install_mode" ]; then
     echo
     echo "Fetching module catalog..."
     catalog_url="https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json"
     catalog=$(curl -fsSL "$catalog_url") || { echo "Failed to fetch module catalog"; exit 1; }
 
     # Parse catalog with python3 and install each module to correct subdirectory
-    # sound_generator -> modules/sound_generators/
-    # audio_fx -> modules/audio_fx/
-    # midi_fx -> modules/midi_fx/
-    # others -> modules/
     echo "$catalog" | python3 -c "
 import json, sys
 catalog = json.loads(sys.stdin.read())
@@ -146,10 +257,20 @@ for m in catalog['modules']:
         subdir = 'audio_fx'
     elif ctype == 'midi_fx':
         subdir = 'midi_fx'
+    elif ctype == 'utility':
+        subdir = 'utilities'
     else:
-        subdir = ''
+        subdir = 'other'
     print(m['id'] + '|' + m['github_repo'] + '|' + m['asset_name'] + '|' + m['name'] + '|' + subdir)
 " | while IFS='|' read -r id repo asset name subdir; do
+        # If mode is "missing", only install modules that were deleted
+        if [ "$install_mode" = "missing" ]; then
+            case " $deleted_modules " in
+                *" $id "*) ;;  # Module was deleted, continue to install
+                *) continue ;; # Module wasn't deleted, skip
+            esac
+        fi
+
         echo
         if [ -n "$subdir" ]; then
             dest="modules/$subdir"
@@ -174,19 +295,27 @@ for m in catalog['modules']:
     echo "Module Installation Complete"
     echo "========================================"
     echo
-    echo "Installed modules and their repositories:"
-    echo
-    echo "$catalog" | python3 -c "
-import json, sys
-catalog = json.loads(sys.stdin.read())
-for m in catalog['modules']:
-    print(f\"  {m['name']}: https://github.com/{m['github_repo']}\")
-"
-    echo
     echo "NOTE: Some modules require additional assets:"
     echo "  - DX7: Requires Dexed cartridge files (.syx)"
     echo "  - JV-880: Requires Roland JV-880 ROM files"
     echo "  - SF2: Requires SoundFont files (.sf2)"
-    echo "Please check their individual repositories for more information."
-    echo
+    echo "Modules are also available in the Module Store."
 fi
+
+echo
+echo "Restarting Move binary with shim installed..."
+
+$ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
+$ssh_ableton "nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &"
+$ssh_ableton "sleep 1"
+$ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" || exit 1; tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" || fail "Move started without shim (LD_PRELOAD missing)"
+
+echo
+echo "Done!"
+echo
+echo "Move Anything is now installed with the modular plugin system."
+echo "Modules are located in: /data/UserData/move-anything/modules/"
+echo
+echo "Shift+Vol+Track or Shift+Vol+Menu: Access Move Anything's slot configurations"
+echo "Shift+Vol+Knob8: Access Move Anything's standalone mode and module store"
+echo

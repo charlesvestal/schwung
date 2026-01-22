@@ -1181,6 +1181,9 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
         JS_SetPropertyStr(ctx, obj, "version", JS_NewString(ctx, info->version));
         JS_SetPropertyStr(ctx, obj, "index", JS_NewInt32(ctx, i));
         JS_SetPropertyStr(ctx, obj, "component_type", JS_NewString(ctx, info->component_type));
+        /* Check if ui.js exists for standalone mode */
+        int has_ui = (info->ui_script[0] && access(info->ui_script, F_OK) == 0) ? 1 : 0;
+        JS_SetPropertyStr(ctx, obj, "has_ui", JS_NewBool(ctx, has_ui));
         JS_SetPropertyUint32(ctx, arr, i, obj);
     }
 

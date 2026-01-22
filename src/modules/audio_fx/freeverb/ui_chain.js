@@ -8,14 +8,14 @@
 import {
     MoveMainKnob,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4
-} from '../../../../shared/constants.mjs';
+} from '/data/UserData/move-anything/shared/constants.mjs';
 
-import { decodeDelta } from '../../../../shared/input_filter.mjs';
+import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
 
 import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter
-} from '../../../../shared/menu_layout.mjs';
+} from '/data/UserData/move-anything/shared/menu_layout.mjs';
 
 /* Display constants */
 const SCREEN_WIDTH = 128;

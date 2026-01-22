@@ -11,7 +11,7 @@
  * Categories are read from each module's component_type field in module.json.
  */
 
-import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '../shared/menu_layout.mjs';
+import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults } from '/data/UserData/move-anything/shared/menu_layout.mjs';
 
 const MENU_LABEL = "Move Anything";
 

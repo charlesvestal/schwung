@@ -12,17 +12,17 @@ import {
     MoveMainKnob, MoveMainButton,
     MoveShift, MoveBack,
     MoveUp, MoveDown
-} from '../../shared/constants.mjs';
+} from '/data/UserData/move-anything/shared/constants.mjs';
 
-import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
-import { decodeDelta } from '../../shared/input_filter.mjs';
+import { isCapacitiveTouchMessage } from '/data/UserData/move-anything/shared/input_filter.mjs';
+import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
 import {
     drawMenuHeader,
     drawMenuList,
     drawMenuFooter,
     drawStatusOverlay,
     menuLayoutDefaults
-} from '../../shared/menu_layout.mjs';
+} from '/data/UserData/move-anything/shared/menu_layout.mjs';
 
 /* Constants */
 const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json';
@@ -60,7 +60,8 @@ function getInstallSubdir(componentType) {
         case 'sound_generator': return 'sound_generators';
         case 'audio_fx': return 'audio_fx';
         case 'midi_fx': return 'midi_fx';
-        default: return null; /* Top-level modules/ for utilities etc */
+        case 'utility': return 'utilities';
+        default: return 'other';
     }
 }
 

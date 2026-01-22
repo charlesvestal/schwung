@@ -9,9 +9,9 @@ import {
     MoveMainKnob, MoveMainButton, MoveMainTouch,
     MoveShift, MoveMenu, MoveBack,
     MoveLeft, MoveRight, MoveUp, MoveDown
-} from '../shared/constants.mjs';
+} from '/data/UserData/move-anything/shared/constants.mjs';
 
-import { isCapacitiveTouchMessage, clearAllLEDs } from '../shared/input_filter.mjs';
+import { isCapacitiveTouchMessage, clearAllLEDs } from '/data/UserData/move-anything/shared/input_filter.mjs';
 import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount, enterCategory, exitCategory, isInCategory, resetToMain } from './menu_main.mjs';
 import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
 
@@ -102,6 +102,13 @@ function drawModuleInfo() {
 function loadModule(mod) {
     if (!mod) {
         showStatus("No module selected");
+        return;
+    }
+
+    /* Check if module has standalone UI */
+    if (!mod.has_ui) {
+        showStatus("Chain-only module");
+        console.log(`Module ${mod.id} has no standalone UI`);
         return;
     }
 

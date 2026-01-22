@@ -25,7 +25,7 @@ import {
     MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob8Touch,  // Capacitive touch notes (0-7)
     MidiNoteOn
-} from '../shared/constants.mjs';
+} from '/data/UserData/move-anything/shared/constants.mjs';
 
 import {
     SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -34,9 +34,9 @@ import {
     LIST_LABEL_X, LIST_VALUE_X,
     FOOTER_TEXT_Y, FOOTER_RULE_Y,
     truncateText
-} from '../shared/chain_ui_views.mjs';
+} from '/data/UserData/move-anything/shared/chain_ui_views.mjs';
 
-import { decodeDelta } from '../shared/input_filter.mjs';
+import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
 
 import {
     drawMenuHeader as drawHeader,
@@ -47,7 +47,7 @@ import {
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults
-} from '../shared/menu_layout.mjs';
+} from '/data/UserData/move-anything/shared/menu_layout.mjs';
 
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
@@ -334,7 +334,9 @@ function getModuleUiPath(moduleId) {
         `${MODULES_ROOT}/${moduleId}`,                      /* Top-level modules */
         `${MODULES_ROOT}/sound_generators/${moduleId}`,     /* Sound generators */
         `${MODULES_ROOT}/audio_fx/${moduleId}`,             /* Audio FX */
-        `${MODULES_ROOT}/midi_fx/${moduleId}`               /* MIDI FX */
+        `${MODULES_ROOT}/midi_fx/${moduleId}`,              /* MIDI FX */
+        `${MODULES_ROOT}/utilities/${moduleId}`,            /* Utilities */
+        `${MODULES_ROOT}/other/${moduleId}`                 /* Other/unspecified */
     ];
 
     for (const dir of searchDirs) {

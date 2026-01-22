@@ -11,12 +11,12 @@ import {
     MoveShift, MoveMainKnob,
     MovePads, MoveSteps,
     MoveKnob1, MoveMaster
-} from '../../shared/constants.mjs';
+} from '/data/UserData/move-anything/shared/constants.mjs';
 
 import {
     isNoiseMessage, isCapacitiveTouchMessage,
     setLED, clearAllLEDs
-} from '../../shared/input_filter.mjs';
+} from '/data/UserData/move-anything/shared/input_filter.mjs';
 
 /* State */
 let bank = 0;

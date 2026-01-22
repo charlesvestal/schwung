@@ -11,7 +11,7 @@ import {
     handleTextEntryMidi,
     drawTextEntry,
     tickTextEntry
-} from '../../shared/text_entry.mjs';
+} from '/data/UserData/move-anything/shared/text_entry.mjs';
 
 /* State */
 let lastEnteredText = "(none)";

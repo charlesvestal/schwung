@@ -6,11 +6,11 @@
 
 import * as std from 'std';
 import * as os from 'os';
-import { isCapacitiveTouchMessage } from '../../shared/input_filter.mjs';
-import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob, MoveShift } from '../../shared/constants.mjs';
-import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults, showOverlay, tickOverlay, drawOverlay, isOverlayActive } from '../../shared/menu_layout.mjs';
-import { createTextScroller } from '../../shared/text_scroll.mjs';
-import { openTextEntry, isTextEntryActive, handleTextEntryMidi, drawTextEntry, tickTextEntry } from '../../shared/text_entry.mjs';
+import { isCapacitiveTouchMessage } from '/data/UserData/move-anything/shared/input_filter.mjs';
+import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob, MoveShift } from '/data/UserData/move-anything/shared/constants.mjs';
+import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults, showOverlay, tickOverlay, drawOverlay, isOverlayActive } from '/data/UserData/move-anything/shared/menu_layout.mjs';
+import { createTextScroller } from '/data/UserData/move-anything/shared/text_scroll.mjs';
+import { openTextEntry, isTextEntryActive, handleTextEntryMidi, drawTextEntry, tickTextEntry } from '/data/UserData/move-anything/shared/text_entry.mjs';
 import { midiFxRegistry } from './midi_fx/index.mjs';
 
 /* State */
