@@ -926,8 +926,8 @@ function loadPatchList() {
         if (al > bl) return 1;
         return 0;
     });
-    /* Add "Empty" as first option to clear a slot */
-    patches = [{ name: "Empty", file: null }, ...entries];
+    /* Add "New Slot Preset" as first option to clear a slot */
+    patches = [{ name: "[New Slot Preset]", file: null }, ...entries];
 }
 
 function findPatchIndexByName(name) {
@@ -960,20 +960,21 @@ function enterPatchDetail(slotIndex, patchIndex) {
     needsRedraw = true;
 }
 
-/* Special patch index value meaning "Empty" / clear the slot - must match shim */
+/* Special patch index value meaning clear the slot - must match shim */
 const PATCH_INDEX_NONE = 65535;
 
 function applyPatchSelection() {
     const patch = patches[selectedPatch];
     const slot = slots[selectedSlot];
     if (!patch || !slot) return;
-    slot.name = patch.name === "Empty" ? "" : patch.name;
+    const isNewSlot = patch.name === "[New Slot Preset]";
+    slot.name = isNewSlot ? "Untitled" : patch.name;
     saveSlotsToConfig(slots);
     if (typeof shadow_request_patch === "function") {
         try {
-            /* "Empty" is at index 0 in patches array, use special value 65535
+            /* "[New Slot Preset]" is at index 0 in patches array, use special value 65535
              * Real patches start at index 1, so subtract 1 for shim's index */
-            const patchIndex = patch.name === "Empty" ? PATCH_INDEX_NONE : selectedPatch - 1;
+            const patchIndex = isNewSlot ? PATCH_INDEX_NONE : selectedPatch - 1;
             shadow_request_patch(selectedSlot, patchIndex);
         } catch (e) {
             /* ignore */

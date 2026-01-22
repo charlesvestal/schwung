@@ -2282,14 +2282,20 @@ static void shadow_inprocess_handle_ui_request(void) {
 
     /* Handle "none" special value - clear the slot */
     if (patch_index == SHADOW_PATCH_INDEX_NONE) {
+        /* Unload synth and FX modules */
+        if (shadow_plugin_v2->set_param && shadow_chain_slots[slot].instance) {
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "synth:module", "");
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx1:module", "");
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx2:module", "");
+        }
         shadow_chain_slots[slot].active = 0;
         shadow_chain_slots[slot].patch_index = -1;
         capture_clear(&shadow_chain_slots[slot].capture);
-        strncpy(shadow_chain_slots[slot].patch_name, "none", sizeof(shadow_chain_slots[slot].patch_name) - 1);
+        strncpy(shadow_chain_slots[slot].patch_name, "", sizeof(shadow_chain_slots[slot].patch_name) - 1);
         shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
         /* Update UI state */
         if (shadow_ui_state && slot < SHADOW_UI_SLOTS) {
-            strncpy(shadow_ui_state->slot_names[slot], "none", SHADOW_UI_NAME_LEN - 1);
+            strncpy(shadow_ui_state->slot_names[slot], "", SHADOW_UI_NAME_LEN - 1);
             shadow_ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
         }
         return;
