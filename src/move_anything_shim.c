@@ -2265,9 +2265,20 @@ static void shadow_inprocess_handle_ui_request(void) {
 
     int slot = shadow_control->ui_slot;
     int patch_index = shadow_control->ui_patch_index;
+
+    {
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "UI request: slot=%d patch=%d instance=%p",
+                 slot, patch_index, shadow_chain_slots[slot < SHADOW_CHAIN_INSTANCES ? slot : 0].instance);
+        shadow_log(dbg);
+    }
+
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
     if (patch_index < 0) return;
-    if (!shadow_chain_slots[slot].instance) return;
+    if (!shadow_chain_slots[slot].instance) {
+        shadow_log("UI request: slot instance is NULL, aborting");
+        return;
+    }
 
     /* Handle "none" special value - clear the slot */
     if (patch_index == SHADOW_PATCH_INDEX_NONE) {

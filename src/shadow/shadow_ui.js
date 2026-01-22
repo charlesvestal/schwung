@@ -105,7 +105,7 @@ const CHAIN_COMPONENTS = [
 const moduleAbbrevCache = {
     /* Built-in fallbacks for special cases */
     "settings": "*",
-    "none": "--"
+    "empty": "--"
 };
 
 /* In-memory chain configuration (for future save/load) */
@@ -926,8 +926,8 @@ function loadPatchList() {
         if (al > bl) return 1;
         return 0;
     });
-    /* Add "none" as first option to clear a slot */
-    patches = [{ name: "none", file: null }, ...entries];
+    /* Add "Empty" as first option to clear a slot */
+    patches = [{ name: "Empty", file: null }, ...entries];
 }
 
 function findPatchIndexByName(name) {
@@ -960,20 +960,20 @@ function enterPatchDetail(slotIndex, patchIndex) {
     needsRedraw = true;
 }
 
-/* Special patch index value meaning "none" / clear the slot - must match shim */
+/* Special patch index value meaning "Empty" / clear the slot - must match shim */
 const PATCH_INDEX_NONE = 65535;
 
 function applyPatchSelection() {
     const patch = patches[selectedPatch];
     const slot = slots[selectedSlot];
     if (!patch || !slot) return;
-    slot.name = patch.name;
+    slot.name = patch.name === "Empty" ? "" : patch.name;
     saveSlotsToConfig(slots);
     if (typeof shadow_request_patch === "function") {
         try {
-            /* "none" is at index 0 in patches array, use special value 65535
+            /* "Empty" is at index 0 in patches array, use special value 65535
              * Real patches start at index 1, so subtract 1 for shim's index */
-            const patchIndex = patch.name === "none" ? PATCH_INDEX_NONE : selectedPatch - 1;
+            const patchIndex = patch.name === "Empty" ? PATCH_INDEX_NONE : selectedPatch - 1;
             shadow_request_patch(selectedSlot, patchIndex);
         } catch (e) {
             /* ignore */
@@ -2419,6 +2419,8 @@ function handleSelect() {
             if (patches.length > 0) {
                 /* Load patch and return to chain edit */
                 applyPatchSelection();
+                /* Refresh chain config to show newly loaded synth/FX */
+                loadChainConfigFromSlot(selectedSlot);
                 view = VIEWS.CHAIN_EDIT;
                 needsRedraw = true;
             }
@@ -2432,6 +2434,8 @@ function handleSelect() {
             } else if (selectedDetailItem === detailItems.length - 1) {
                 /* "Load Patch" selected - apply and return to chain edit */
                 applyPatchSelection();
+                /* Refresh chain config to show newly loaded synth/FX */
+                loadChainConfigFromSlot(selectedSlot);
                 view = VIEWS.CHAIN_EDIT;
                 needsRedraw = true;
             }
