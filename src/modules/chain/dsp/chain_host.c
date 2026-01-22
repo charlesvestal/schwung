@@ -3713,6 +3713,193 @@ static int v2_scan_patches(chain_instance_t *inst) {
     return inst->patch_count;
 }
 
+/* V2 save patch - uses instance data instead of globals */
+static int v2_save_patch(chain_instance_t *inst, const char *json_data) {
+    char msg[256];
+    char patches_dir[MAX_PATH_LEN];
+    snprintf(patches_dir, sizeof(patches_dir), "%s/../../patches", inst->module_dir);
+
+    /* Parse incoming JSON to get components for name generation */
+    char synth[MAX_NAME_LEN] = "sf2";
+    int preset = 0;
+    char fx1[MAX_NAME_LEN] = "";
+    char fx2[MAX_NAME_LEN] = "";
+
+    json_get_string_in_section(json_data, "synth", "module", synth, sizeof(synth));
+    json_get_int_in_section(json_data, "config", "preset", &preset);
+
+    /* Parse audio_fx to get fx1 and fx2 */
+    const char *fx_pos = strstr(json_data, "\"audio_fx\"");
+    if (fx_pos) {
+        const char *bracket = strchr(fx_pos, '[');
+        if (bracket) {
+            const char *type1 = strstr(bracket, "\"type\"");
+            if (type1) {
+                const char *colon = strchr(type1, ':');
+                if (colon) {
+                    const char *q1 = strchr(colon, '"');
+                    if (q1) {
+                        q1++;
+                        const char *q2 = strchr(q1, '"');
+                        if (q2) {
+                            int len = q2 - q1;
+                            if (len < MAX_NAME_LEN) {
+                                strncpy(fx1, q1, len);
+                                fx1[len] = '\0';
+                            }
+                            const char *type2 = strstr(q2, "\"type\"");
+                            if (type2) {
+                                colon = strchr(type2, ':');
+                                if (colon) {
+                                    q1 = strchr(colon, '"');
+                                    if (q1) {
+                                        q1++;
+                                        q2 = strchr(q1, '"');
+                                        if (q2) {
+                                            len = q2 - q1;
+                                            if (len < MAX_NAME_LEN) {
+                                                strncpy(fx2, q1, len);
+                                                fx2[len] = '\0';
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Check for custom name first, otherwise generate from components */
+    char name[MAX_NAME_LEN];
+    if (json_get_string(json_data, "custom_name", name, sizeof(name)) != 0) {
+        generate_patch_name(name, sizeof(name), synth, preset, fx1, fx2);
+    }
+
+    /* Sanitize to filename */
+    char base_filename[MAX_NAME_LEN];
+    sanitize_filename(base_filename, sizeof(base_filename), name);
+
+    /* Find available filename */
+    char filepath[MAX_PATH_LEN];
+    if (check_filename_exists(patches_dir, base_filename, filepath, sizeof(filepath))) {
+        for (int i = 2; i < 100; i++) {
+            char suffixed[MAX_NAME_LEN];
+            snprintf(suffixed, sizeof(suffixed), "%s_%02d", base_filename, i);
+            if (!check_filename_exists(patches_dir, suffixed, filepath, sizeof(filepath))) {
+                int namelen = strlen(name);
+                snprintf(name + namelen, sizeof(name) - namelen, " %02d", i);
+                break;
+            }
+        }
+    }
+
+    /* Build final JSON with generated name */
+    char final_json[4096];
+    snprintf(final_json, sizeof(final_json),
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"chain\": %s\n"
+        "}\n",
+        name, json_data);
+
+    /* Write file */
+    FILE *f = fopen(filepath, "w");
+    if (!f) {
+        snprintf(msg, sizeof(msg), "[v2] Failed to create patch file: %s", filepath);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    fwrite(final_json, 1, strlen(final_json), f);
+    fclose(f);
+
+    snprintf(msg, sizeof(msg), "[v2] Saved patch: %s", filepath);
+    v2_chain_log(inst, msg);
+
+    return 0;
+}
+
+/* V2 update patch - uses instance data instead of globals */
+static int v2_update_patch(chain_instance_t *inst, int index, const char *json_data) {
+    char msg[256];
+
+    if (index < 0 || index >= inst->patch_count) {
+        snprintf(msg, sizeof(msg), "[v2] Invalid patch index for update: %d (count=%d)", index, inst->patch_count);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    const char *filepath = inst->patches[index].path;
+
+    /* Check for custom name, otherwise keep existing name */
+    char name[MAX_NAME_LEN];
+    if (json_get_string(json_data, "custom_name", name, sizeof(name)) != 0) {
+        strncpy(name, inst->patches[index].name, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+    }
+
+    /* Build final JSON with name */
+    char final_json[4096];
+    snprintf(final_json, sizeof(final_json),
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"chain\": %s\n"
+        "}\n",
+        name, json_data);
+
+    /* Write file */
+    FILE *f = fopen(filepath, "w");
+    if (!f) {
+        snprintf(msg, sizeof(msg), "[v2] Failed to update patch file: %s", filepath);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    fwrite(final_json, 1, strlen(final_json), f);
+    fclose(f);
+
+    snprintf(msg, sizeof(msg), "[v2] Updated patch: %s", filepath);
+    v2_chain_log(inst, msg);
+
+    return 0;
+}
+
+/* V2 delete patch - uses instance data instead of globals */
+static int v2_delete_patch(chain_instance_t *inst, int index) {
+    char msg[256];
+
+    if (index < 0 || index >= inst->patch_count) {
+        snprintf(msg, sizeof(msg), "[v2] Invalid patch index for delete: %d (count=%d)", index, inst->patch_count);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    const char *path = inst->patches[index].path;
+
+    if (remove(path) != 0) {
+        snprintf(msg, sizeof(msg), "[v2] Failed to delete patch: %s", path);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    snprintf(msg, sizeof(msg), "[v2] Deleted patch: %s", path);
+    v2_chain_log(inst, msg);
+
+    /* Adjust current_patch index if needed */
+    if (index == inst->current_patch) {
+        inst->current_patch = -1;  /* Mark as no patch loaded */
+    } else if (index < inst->current_patch) {
+        inst->current_patch--;
+    }
+
+    return 0;
+}
+
 /* V2 parse patch file - simplified version */
 static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch) {
     (void)inst;
@@ -4072,6 +4259,25 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (strcmp(key, "load_patch") == 0) {
         int idx = atoi(val);
         v2_load_patch(inst, idx);
+    }
+    else if (strcmp(key, "save_patch") == 0) {
+        /* Save new patch to disk, then rescan this instance's patch list */
+        v2_save_patch(inst, val);
+        v2_scan_patches(inst);
+    }
+    else if (strcmp(key, "delete_patch") == 0) {
+        int index = atoi(val);
+        v2_delete_patch(inst, index);
+        v2_scan_patches(inst);
+    }
+    else if (strcmp(key, "update_patch") == 0) {
+        /* Format: "index:json_data" */
+        const char *colon = strchr(val, ':');
+        if (colon) {
+            int index = atoi(val);
+            v2_update_patch(inst, index, colon + 1);
+            v2_scan_patches(inst);
+        }
     }
     else if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;

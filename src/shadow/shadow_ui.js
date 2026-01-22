@@ -242,18 +242,22 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 15, step: 1 },  // -1 = none, 0-15 = ch 1-16
-    { key: "save", label: "[Save]", type: "action" },  // Save slot preset
-    { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset (only for existing)
+    { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
+    { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
+    { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
 ];
 let selectedChainSetting = 0;
 let editingChainSettingValue = false;
 
 /* Slot preset save state */
-let pendingSaveName = "";        // Name being saved
-let overwriteTargetIndex = -1;   // Patch index to overwrite (-1 = new)
-let confirmingOverwrite = false; // True when showing overwrite confirmation
-let confirmingDelete = false;    // True when showing delete confirmation
-let confirmIndex = 0;            // 0 = No, 1 = Yes
+let pendingSaveName = "";
+let overwriteTargetIndex = -1;
+let confirmingOverwrite = false;
+let confirmingDelete = false;
+let confirmIndex = 0;
+let overwriteFromKeyboard = false;  /* true if overwrite came from keyboard entry, false if from direct Save */
+let showingNamePreview = false;     /* true when showing name preview with Edit/OK */
+let namePreviewIndex = 0;           /* 0 = Edit, 1 = OK */
 
 /* Shift state - read from shim via shadow_get_shift_held() */
 function isShiftHeld() {
@@ -1007,25 +1011,28 @@ function applyPatchSelection() {
 
 /* Check if current slot has an existing preset (vs "Untitled" or empty) */
 function isExistingPreset(slotIndex) {
-    const name = slots[slotIndex]?.name;
+    const name = slots[slotIndex] ? slots[slotIndex].name : null;
     return name && name !== "" && name !== "Untitled";
 }
 
 /* Get dynamic settings items (excludes Delete for new presets) */
 function getChainSettingsItems(slotIndex) {
     if (isExistingPreset(slotIndex)) {
+        /* Existing preset: show all items (Save, Save As, Delete) */
         return CHAIN_SETTINGS_ITEMS;
     }
-    /* Filter out Delete for new/untitled presets */
-    return CHAIN_SETTINGS_ITEMS.filter(item => item.key !== "delete");
+    /* New preset: hide Save As and Delete (only Save makes sense) */
+    return CHAIN_SETTINGS_ITEMS.filter(function(item) {
+        return item.key !== "save_as" && item.key !== "delete";
+    });
 }
 
 /* Find patch index by name (for conflict detection) */
 function findPatchByName(name) {
-    loadPatchList();  /* Ensure list is fresh */
-    for (let i = 1; i < patches.length; i++) {  /* Skip index 0 which is "[New Slot Preset]" */
+    loadPatchList();
+    for (let i = 1; i < patches.length; i++) {
         if (patches[i].name === name) {
-            return i - 1;  /* Return DSP index (patches array index - 1) */
+            return i - 1;
         }
     }
     return -1;
@@ -1038,188 +1045,141 @@ function generateSlotPresetName(slotIndex) {
 
     const parts = [];
     if (cfg.synth && cfg.synth.module) {
-        const abbrev = getModuleAbbrev(cfg.synth.module) || cfg.synth.module.toUpperCase().slice(0, 3);
+        const abbrev = moduleAbbrevCache[cfg.synth.module] || cfg.synth.module.toUpperCase().slice(0, 3);
         parts.push(abbrev);
     }
     if (cfg.fx1 && cfg.fx1.module) {
-        const abbrev = getModuleAbbrev(cfg.fx1.module) || cfg.fx1.module.toUpperCase().slice(0, 2);
+        const abbrev = moduleAbbrevCache[cfg.fx1.module] || cfg.fx1.module.toUpperCase().slice(0, 2);
         parts.push(abbrev);
     }
     if (cfg.fx2 && cfg.fx2.module) {
-        const abbrev = getModuleAbbrev(cfg.fx2.module) || cfg.fx2.module.toUpperCase().slice(0, 2);
+        const abbrev = moduleAbbrevCache[cfg.fx2.module] || cfg.fx2.module.toUpperCase().slice(0, 2);
         parts.push(abbrev);
     }
 
     return parts.length > 0 ? parts.join(" + ") : "Untitled";
 }
 
-/* Get module abbreviation from cache */
-function getModuleAbbrev(moduleId) {
-    return moduleAbbrevCache[moduleId] || null;
+/* Generate a unique preset name by appending _02, _03, etc. if needed */
+function generateUniquePresetName(baseName) {
+    if (findPatchByName(baseName) < 0) {
+        return baseName;  /* Base name is unique */
+    }
+    /* Try suffixes _02 through _99 */
+    for (let i = 2; i <= 99; i++) {
+        const suffix = i < 10 ? `_0${i}` : `_${i}`;
+        const name = `${baseName}${suffix}`;
+        if (findPatchByName(name) < 0) {
+            return name;
+        }
+    }
+    /* Fallback: use timestamp */
+    return `${baseName}_${Date.now() % 10000}`;
 }
 
-/* Build patch JSON for saving */
+/* Build patch JSON for saving
+ * Note: save_patch expects raw chain content (synth, audio_fx at root)
+ * with "custom_name" for the name. It wraps it with name/version/chain.
+ */
 function buildSlotPatchJson(slotIndex, name) {
     const cfg = chainConfigs[slotIndex];
     if (!cfg) return null;
 
     const patch = {
-        name: name,
-        version: 1,
-        chain: {
-            input: "both",
-            synth: null,
-            audio_fx: []
-        }
+        custom_name: name,
+        input: "both",
+        synth: null,
+        audio_fx: []
     };
 
-    /* Synth */
     if (cfg.synth && cfg.synth.module) {
-        patch.chain.synth = {
+        patch.synth = {
             module: cfg.synth.module,
             config: cfg.synth.params || {}
         };
     }
 
-    /* MIDI FX */
     if (cfg.midiFx && cfg.midiFx.module) {
-        patch.chain.midi_fx = [{
+        patch.midi_fx = [{
             type: cfg.midiFx.module,
             params: cfg.midiFx.params || {}
         }];
     }
 
-    /* Audio FX */
     if (cfg.fx1 && cfg.fx1.module) {
-        patch.chain.audio_fx.push({
+        patch.audio_fx.push({
             type: cfg.fx1.module,
             params: cfg.fx1.params || {}
         });
     }
     if (cfg.fx2 && cfg.fx2.module) {
-        patch.chain.audio_fx.push({
+        patch.audio_fx.push({
             type: cfg.fx2.module,
             params: cfg.fx2.params || {}
         });
     }
 
-    /* TODO: Include knob mappings */
-
     return JSON.stringify(patch);
 }
 
-/* Initiate save flow */
-function startSavePreset(slotIndex) {
-    const currentName = slots[slotIndex]?.name;
-    const isNew = !currentName || currentName === "" || currentName === "Untitled";
-
-    if (isNew) {
-        /* New preset - open text entry for name */
-        const defaultName = generateSlotPresetName(slotIndex);
-        openTextEntry({
-            title: "Save Preset",
-            initialText: defaultName,
-            onConfirm: (newName) => {
-                trySaveWithName(slotIndex, newName);
-            },
-            onCancel: () => {
-                needsRedraw = true;
-            }
-        });
-    } else {
-        /* Existing preset - confirm overwrite */
-        pendingSaveName = currentName;
-        overwriteTargetIndex = findPatchByName(currentName);
-        confirmingOverwrite = true;
-        confirmIndex = 0;
-        needsRedraw = true;
-    }
-}
-
-/* Try to save with given name, checking for conflicts */
-function trySaveWithName(slotIndex, name) {
-    pendingSaveName = name;
-    const existingIndex = findPatchByName(name);
-    const currentName = slots[slotIndex]?.name;
-    const isSamePatch = currentName === name;
-
-    if (existingIndex >= 0 && !isSamePatch) {
-        /* Name conflict with different patch - show overwrite confirmation */
-        overwriteTargetIndex = existingIndex;
-        confirmingOverwrite = true;
-        confirmIndex = 0;
-        needsRedraw = true;
-    } else {
-        /* No conflict - save directly */
-        if (existingIndex >= 0) {
-            overwriteTargetIndex = existingIndex;
-        } else {
-            overwriteTargetIndex = -1;
-        }
-        doSavePreset(slotIndex);
-    }
-}
-
 /* Actually save the preset */
-function doSavePreset(slotIndex) {
-    const json = buildSlotPatchJson(slotIndex, pendingSaveName);
+function doSavePreset(slotIndex, name) {
+    const json = buildSlotPatchJson(slotIndex, name);
     if (!json) {
-        showOverlay("Save failed", 120);
+        /* TODO: show error message */
         return;
     }
 
     if (overwriteTargetIndex >= 0) {
-        /* Overwrite existing */
-        setSlotParam(slotIndex, "update_patch", `${overwriteTargetIndex}:${json}`);
+        setSlotParam(slotIndex, "update_patch", overwriteTargetIndex + ":" + json);
     } else {
-        /* Create new */
         setSlotParam(slotIndex, "save_patch", json);
     }
 
-    /* Update slot name */
-    slots[slotIndex].name = pendingSaveName;
+    slots[slotIndex].name = name;
     saveSlotsToConfig(slots);
 
-    /* Reset state */
     confirmingOverwrite = false;
+    overwriteFromKeyboard = false;
+    showingNamePreview = false;
     pendingSaveName = "";
     overwriteTargetIndex = -1;
 
-    /* Refresh and show success */
     loadPatchList();
-    showOverlay("Saved!", 90);
-    needsRedraw = true;
-}
-
-/* Initiate delete flow */
-function startDeletePreset(slotIndex) {
-    if (!isExistingPreset(slotIndex)) return;
-
-    confirmingDelete = true;
-    confirmIndex = 0;
+    /* Save complete */
     needsRedraw = true;
 }
 
 /* Actually delete the preset */
 function doDeletePreset(slotIndex) {
-    const name = slots[slotIndex]?.name;
+    const name = slots[slotIndex] ? slots[slotIndex].name : null;
     const patchIndex = findPatchByName(name);
 
     if (patchIndex >= 0) {
         setSlotParam(slotIndex, "delete_patch", String(patchIndex));
     }
 
-    /* Clear slot name */
+    /* Clear the slot to "Untitled" state */
     slots[slotIndex].name = "Untitled";
     saveSlotsToConfig(slots);
 
-    /* Reset state */
-    confirmingDelete = false;
+    /* Request slot clear (load PATCH_INDEX_NONE) */
+    if (typeof shadow_request_patch === "function") {
+        try {
+            shadow_request_patch(slotIndex, PATCH_INDEX_NONE);
+        } catch (e) {
+            /* ignore */
+        }
+    }
 
-    /* Refresh and return to chain edit */
+    /* Refresh detail info and knob mappings */
+    fetchPatchDetail(slotIndex);
+    fetchKnobMappings(slotIndex);
+
+    confirmingDelete = false;
     loadPatchList();
     view = VIEWS.CHAIN_EDIT;
-    showOverlay("Deleted", 90);
+    /* Delete complete */
     needsRedraw = true;
 }
 
@@ -2554,16 +2514,15 @@ function handleJog(delta) {
             selectedModuleIndex = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
             break;
         case VIEWS.CHAIN_SETTINGS:
-            if (confirmingOverwrite || confirmingDelete) {
-                /* Toggle Yes/No */
+            if (showingNamePreview) {
+                namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
+            } else if (confirmingOverwrite || confirmingDelete) {
                 confirmIndex = confirmIndex === 0 ? 1 : 0;
             } else if (editingChainSettingValue) {
-                /* Adjust the setting value */
                 const items = getChainSettingsItems(selectedSlot);
                 const setting = items[selectedChainSetting];
                 adjustChainSetting(selectedSlot, setting, delta);
             } else {
-                /* Navigate settings list */
                 const items = getChainSettingsItems(selectedSlot);
                 selectedChainSetting = Math.max(0, Math.min(items.length - 1, selectedChainSetting + delta));
             }
@@ -2720,31 +2679,68 @@ function handleSelect() {
             break;
         case VIEWS.CHAIN_SETTINGS:
             {
-                if (confirmingOverwrite) {
-                    if (confirmIndex === 0) {
-                        /* No - return to text entry */
-                        confirmingOverwrite = false;
+                if (showingNamePreview) {
+                    if (namePreviewIndex === 0) {
+                        /* Edit - open keyboard to edit name */
+                        showingNamePreview = false;
+                        const savedName = pendingSaveName;
                         openTextEntry({
                             title: "Save As",
-                            initialText: pendingSaveName,
+                            initialText: savedName,
                             onConfirm: (newName) => {
-                                trySaveWithName(selectedSlot, newName);
+                                pendingSaveName = newName;
+                                /* Return to name preview with edited name */
+                                showingNamePreview = true;
+                                namePreviewIndex = 1;  /* Default to OK */
+                                needsRedraw = true;
                             },
                             onCancel: () => {
-                                confirmingOverwrite = false;
-                                pendingSaveName = "";
+                                /* Return to name preview unchanged */
+                                showingNamePreview = true;
                                 needsRedraw = true;
                             }
                         });
                     } else {
-                        /* Yes - overwrite */
-                        doSavePreset(selectedSlot);
+                        /* OK - proceed with save (check for conflicts) */
+                        showingNamePreview = false;
+                        overwriteTargetIndex = -1;
+                        const existingIdx = findPatchByName(pendingSaveName);
+                        if (existingIdx >= 0) {
+                            /* Name exists - ask to overwrite */
+                            overwriteTargetIndex = existingIdx;
+                            confirmingOverwrite = true;
+                            confirmIndex = 0;
+                        } else {
+                            /* No conflict - save directly */
+                            doSavePreset(selectedSlot, pendingSaveName);
+                        }
                     }
+                    needsRedraw = true;
+                    break;
+                }
+                if (confirmingOverwrite) {
+                    if (confirmIndex === 0) {
+                        /* No - behavior depends on how we got here */
+                        confirmingOverwrite = false;
+                        if (overwriteFromKeyboard) {
+                            /* Came from Save/Save As flow - return to name preview */
+                            showingNamePreview = true;
+                            namePreviewIndex = 0;  /* Default to Edit so they can change the name */
+                        } else {
+                            /* Direct Save on existing - just return to settings */
+                            pendingSaveName = "";
+                            overwriteTargetIndex = -1;
+                        }
+                    } else {
+                        /* Yes - save */
+                        doSavePreset(selectedSlot, pendingSaveName);
+                    }
+                    needsRedraw = true;
                     break;
                 }
                 if (confirmingDelete) {
                     if (confirmIndex === 0) {
-                        /* No - cancel delete */
+                        /* No - cancel */
                         confirmingDelete = false;
                     } else {
                         /* Yes - delete */
@@ -2757,17 +2753,44 @@ function handleSelect() {
                 const setting = items[selectedChainSetting];
                 if (setting.type === "action") {
                     if (setting.key === "knobs") {
-                        /* Open knob editor for this slot */
                         enterKnobEditor(selectedSlot);
                     } else if (setting.key === "save") {
-                        /* Save preset */
-                        startSavePreset(selectedSlot);
+                        /* Start save flow */
+                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
+                        if (!currentName || currentName === "" || currentName === "Untitled") {
+                            /* New - show name preview with Edit/OK */
+                            pendingSaveName = generateSlotPresetName(selectedSlot);
+                            showingNamePreview = true;
+                            namePreviewIndex = 1;  /* Default to OK */
+                            overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+                            needsRedraw = true;
+                        } else {
+                            /* Existing - confirm overwrite (no keyboard needed) */
+                            pendingSaveName = currentName;
+                            overwriteTargetIndex = findPatchByName(currentName);
+                            confirmingOverwrite = true;
+                            overwriteFromKeyboard = false;  /* Direct save, no keyboard */
+                            confirmIndex = 0;
+                            needsRedraw = true;
+                        }
+                    } else if (setting.key === "save_as") {
+                        /* Save As - show name preview with Edit/OK */
+                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
+                        pendingSaveName = currentName && currentName !== "" && currentName !== "Untitled"
+                            ? currentName
+                            : generateSlotPresetName(selectedSlot);
+                        showingNamePreview = true;
+                        namePreviewIndex = 1;  /* Default to OK */
+                        overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+                        needsRedraw = true;
                     } else if (setting.key === "delete") {
-                        /* Delete preset */
-                        startDeletePreset(selectedSlot);
+                        if (isExistingPreset(selectedSlot)) {
+                            confirmingDelete = true;
+                            confirmIndex = 0;
+                            needsRedraw = true;
+                        }
                     }
                 } else {
-                    /* Toggle editing mode for value settings */
                     editingChainSettingValue = !editingChainSettingValue;
                 }
             }
@@ -2928,22 +2951,22 @@ function handleBack() {
             needsRedraw = true;
             break;
         case VIEWS.CHAIN_SETTINGS:
-            if (confirmingOverwrite) {
-                /* Cancel overwrite confirmation */
+            if (showingNamePreview) {
+                showingNamePreview = false;
+                pendingSaveName = "";
+                needsRedraw = true;
+            } else if (confirmingOverwrite) {
                 confirmingOverwrite = false;
                 pendingSaveName = "";
                 overwriteTargetIndex = -1;
                 needsRedraw = true;
             } else if (confirmingDelete) {
-                /* Cancel delete confirmation */
                 confirmingDelete = false;
                 needsRedraw = true;
             } else if (editingChainSettingValue) {
-                /* Exit value editing mode */
                 editingChainSettingValue = false;
                 needsRedraw = true;
             } else {
-                /* Return to chain edit */
                 view = VIEWS.CHAIN_EDIT;
                 needsRedraw = true;
             }
@@ -3438,21 +3461,39 @@ function drawComponentEdit() {
 function drawChainSettings() {
     clear_screen();
 
+    /* Handle name preview view */
+    if (showingNamePreview) {
+        drawHeader("Save As");
+        const name = truncateText(pendingSaveName, 20);
+        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
+
+        const listY = LIST_TOP_Y + 16;
+        for (let i = 0; i < 2; i++) {
+            const y = listY + i * LIST_LINE_HEIGHT;
+            const isSelected = i === namePreviewIndex;
+            if (isSelected) {
+                fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+            }
+            print(LIST_LABEL_X, y, i === 0 ? "Edit" : "OK", isSelected ? 0 : 1);
+        }
+        drawFooter("Back: cancel");
+        return;
+    }
+
     /* Handle confirmation views */
     if (confirmingOverwrite) {
         drawHeader("Overwrite?");
         const name = truncateText(pendingSaveName, 20);
-        print(LIST_LABEL_X, LIST_TOP_Y, `"${name}"`, 1);
+        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
 
-        const options = ["No", "Yes"];
         const listY = LIST_TOP_Y + 16;
-        for (let i = 0; i < options.length; i++) {
+        for (let i = 0; i < 2; i++) {
             const y = listY + i * LIST_LINE_HEIGHT;
             const isSelected = i === confirmIndex;
             if (isSelected) {
                 fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
             }
-            print(LIST_LABEL_X, y, options[i], isSelected ? 0 : 1);
+            print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
         }
         drawFooter("Back: cancel");
         return;
@@ -3460,31 +3501,29 @@ function drawChainSettings() {
 
     if (confirmingDelete) {
         drawHeader("Delete?");
-        const name = truncateText(slots[selectedSlot]?.name || "Unknown", 20);
-        print(LIST_LABEL_X, LIST_TOP_Y, `"${name}"`, 1);
+        const name = truncateText(slots[selectedSlot] ? slots[selectedSlot].name : "Unknown", 20);
+        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
 
-        const options = ["No", "Yes"];
         const listY = LIST_TOP_Y + 16;
-        for (let i = 0; i < options.length; i++) {
+        for (let i = 0; i < 2; i++) {
             const y = listY + i * LIST_LINE_HEIGHT;
             const isSelected = i === confirmIndex;
             if (isSelected) {
                 fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
             }
-            print(LIST_LABEL_X, y, options[i], isSelected ? 0 : 1);
+            print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
         }
         drawFooter("Back: cancel");
         return;
     }
 
-    drawHeader(`S${selectedSlot + 1} Settings`);
+    drawHeader("S" + (selectedSlot + 1) + " Settings");
 
     const items = getChainSettingsItems(selectedSlot);
     const listY = LIST_TOP_Y;
-    const lineHeight = 9;  /* Smaller to fit all items */
+    const lineHeight = 9;
     const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
 
-    /* Calculate scroll offset if needed */
     let scrollOffset = 0;
     if (selectedChainSetting >= maxVisible) {
         scrollOffset = selectedChainSetting - maxVisible + 1;
@@ -3503,13 +3542,11 @@ function drawChainSettings() {
         const labelColor = isSelected ? 0 : 1;
         print(LIST_LABEL_X, y, setting.label, labelColor);
 
-        /* Show value on the right (only for non-action items) */
         if (setting.type !== "action") {
             const value = getChainSettingValue(selectedSlot, setting);
             if (value) {
                 const valueX = SCREEN_WIDTH - value.length * 5 - 4;
                 if (isSelected && editingChainSettingValue) {
-                    /* Show editing indicator */
                     print(valueX - 8, y, "<", 0);
                     print(valueX, y, value, 0);
                     print(valueX + value.length * 5 + 2, y, ">", 0);
@@ -3768,6 +3805,13 @@ globalThis.tick = function() {
         refreshSlots();
     }
 
+    /* Update text entry state */
+    if (isTextEntryActive()) {
+        if (tickTextEntry()) {
+            needsRedraw = true;
+        }
+    }
+
     /* Update shared overlay timeout */
     if (tickOverlay()) {
         needsRedraw = true;
@@ -3787,14 +3831,9 @@ globalThis.tick = function() {
     if (lastKnobSlot !== currentTargetSlot) {
         fetchKnobMappings(currentTargetSlot);
         /* If in Master FX view, switch to that slot's detail when track button pressed */
-        if (currentView === "MASTER_FX") {
+        if (view === VIEWS.MASTER_FX) {
             enterChainEdit(currentTargetSlot);
         }
-    }
-
-    /* Update text entry animation */
-    if (isTextEntryActive()) {
-        tickTextEntry();
     }
 
     redrawCounter++;
@@ -3802,14 +3841,6 @@ globalThis.tick = function() {
         return;
     }
     needsRedraw = false;
-
-    /* Handle text entry drawing */
-    if (isTextEntryActive()) {
-        drawTextEntry();
-        drawOverlay();
-        return;
-    }
-
     switch (view) {
         case VIEWS.SLOTS:
             drawSlots();
@@ -3860,6 +3891,11 @@ globalThis.tick = function() {
             drawSlots();
     }
 
+    /* Draw text entry on top if active */
+    if (isTextEntryActive()) {
+        drawTextEntry();
+    }
+
     /* Draw overlay on top of main view (uses shared overlay system) */
     drawOverlay();
 };
@@ -3871,11 +3907,12 @@ globalThis.onMidiMessageInternal = function(data) {
     const d1 = data[1];
     const d2 = data[2];
 
-    /* Handle text entry mode */
+    /* Handle text entry MIDI if active */
     if (isTextEntryActive()) {
-        handleTextEntryMidi(data);
-        needsRedraw = true;
-        return;
+        if (handleTextEntryMidi(data)) {
+            needsRedraw = true;
+            return;  /* Consumed by text entry */
+        }
     }
 
     /* Debug: track last CC for display (only for CC messages) */
