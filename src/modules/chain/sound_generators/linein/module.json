@@ -12,6 +12,16 @@
     "midi_out": false,
     "chainable": true,
     "component_type": "sound_generator",
-    "chain_params": []
+    "chain_params": [
+      {
+        "key": "gain",
+        "name": "Gain",
+        "type": "float",
+        "min": 0.0,
+        "max": 2.0,
+        "default": 1.0,
+        "step": 0.05
+      }
+    ]
   }
 }

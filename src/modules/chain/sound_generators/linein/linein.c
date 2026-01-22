@@ -86,6 +86,24 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "polyphony") == 0) {
         return snprintf(buf, buf_len, "0");
     }
+    if (strcmp(key, "ui_hierarchy") == 0) {
+        const char *hierarchy = "{"
+            "\"modes\":null,"
+            "\"levels\":{"
+                "\"root\":{"
+                    "\"children\":null,"
+                    "\"knobs\":[\"gain\"],"
+                    "\"params\":[\"gain\"]"
+                "}"
+            "}"
+        "}";
+        int len = strlen(hierarchy);
+        if (len < buf_len) {
+            strcpy(buf, hierarchy);
+            return len;
+        }
+        return -1;
+    }
     return -1;
 }
 
