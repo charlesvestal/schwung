@@ -114,5 +114,5 @@ echo
 echo "Move Anything is now installed with the modular plugin system."
 echo "Modules are located in: /data/UserData/move-anything/modules/"
 echo
-echo "To launch Move Anything: hold Shift + touch Volume knob + Knob 8"
-echo "To return to Move: hold Shift + click Jog wheel"
+echo "Shift+Vol+Track or Shift+Vol+Menu: Access Move Anything's slot configurations"
+echo "Shift+Vol+Knob8: Access Move Anything's standalone mode and module store"
