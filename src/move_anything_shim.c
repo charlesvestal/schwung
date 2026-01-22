@@ -2167,7 +2167,9 @@ static inline uint8_t shadow_chain_remap_channel(int slot, uint8_t status) {
 
 static int shadow_is_internal_control_note(uint8_t note)
 {
-    return (note < 10) || (note >= 16 && note <= 31) || (note >= 40 && note <= 43);
+    /* Capacitive touch (0-9) and track buttons (40-43) are internal.
+     * Note: Step buttons (16-31) are NOT included - they overlap with musical notes E0-G1. */
+    return (note < 10) || (note >= 40 && note <= 43);
 }
 
 /* Note: shadow_allow_midi_to_dsp and shadow_route_knob_cc_to_focused_slot removed.
@@ -2576,9 +2578,10 @@ static void shadow_inprocess_process_midi(void) {
      * - Capture rules are handled in shadow_filter_move_input (post-ioctl)
      * - Internal notes/CCs should only reach Move, not DSP */
 
-    /* MIDI_OUT → DSP: Move's track output contains musical notes.
-     * Hardware clears the buffer during ioctl, so we just read and route. */
-    const uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
+    /* MIDI_OUT → DSP: Move's track output contains only musical notes.
+     * Internal controls (knob touches, step buttons) do NOT appear in MIDI_OUT.
+     * We must clear packets after reading to avoid re-processing stale data. */
+    uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         const uint8_t *pkt = &out_src[i];
         if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
@@ -2587,16 +2590,21 @@ static void shadow_inprocess_process_midi(void) {
         uint8_t status_usb = pkt[1];
         uint8_t status_raw = pkt[0];
 
+        /* USB MIDI format: CIN in low nibble of byte 0 */
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
-            /* Filter internal control notes: capacitive touch (0-9), step buttons (16-31), track buttons (40-43).
-             * Move may echo MIDI_IN to MIDI_OUT (through tracks), so we filter here. */
-            uint8_t status_type = status_usb & 0xF0;
+
+            /* Validate CIN matches status type (filter garbage/stale data) */
+            uint8_t type = status_usb & 0xF0;
+            uint8_t expected_cin = (type >> 4);  /* Note-off=0x8, Note-on=0x9, etc. */
+            if (cin != expected_cin) {
+                continue;  /* CIN doesn't match status - skip invalid packet */
+            }
+
+            /* Filter internal control notes: knob touches (0-9) */
             uint8_t note = pkt[2];
-            if (status_type == 0x90 || status_type == 0x80) {
-                if (note < 10 || (note >= 16 && note <= 31) || (note >= 40 && note <= 43)) {
-                    continue;
-                }
+            if ((type == 0x90 || type == 0x80) && note < 10) {
+                continue;
             }
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
             if (slot < 0) continue;
@@ -2605,25 +2613,9 @@ static void shadow_inprocess_process_midi(void) {
                 shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                           MOVE_MIDI_SOURCE_INTERNAL);
             }
-        } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
-            if (pkt[1] <= 0x7F && pkt[2] <= 0x7F) {
-                /* Filter internal control notes (raw MIDI format: pkt[0]=status, pkt[1]=note) */
-                uint8_t status_type = status_raw & 0xF0;
-                uint8_t note = pkt[1];
-                if (status_type == 0x90 || status_type == 0x80) {
-                    if (note < 10 || (note >= 16 && note <= 31) || (note >= 40 && note <= 43)) {
-                        continue;
-                    }
-                }
-                int slot = shadow_chain_slot_for_channel(status_raw & 0x0F);
-                if (slot < 0) continue;
-                if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                    uint8_t msg[3] = { shadow_chain_remap_channel(slot, status_raw), pkt[1], pkt[2] };
-                    shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
-                                              MOVE_MIDI_SOURCE_INTERNAL);
-                }
-            }
         }
+        /* Raw MIDI format fallback removed - was matching garbage/stale data.
+         * USB MIDI format (with CIN validation) is the proper format for this buffer. */
     }
 }
 
@@ -3209,7 +3201,7 @@ static const shadow_capture_rules_t *shadow_get_focused_capture(void)
 static void shadow_route_captured_to_focused(const uint8_t *msg, int len)
 {
     if (!shadow_control || !shadow_inprocess_ready || len < 3) return;
-    
+
     int slot = shadow_control->ui_slot;
     if (slot == SHADOW_CHAIN_INSTANCES) {
         /* Master FX is focused - route to master FX if it supports on_midi */
