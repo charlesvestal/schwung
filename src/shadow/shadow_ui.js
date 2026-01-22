@@ -66,10 +66,10 @@ const NUM_KNOBS = 8;
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/modules/chain/patches";
 const DEFAULT_SLOTS = [
-    { channel: 5, name: "SF2 + Freeverb (Preset 1)" },
-    { channel: 6, name: "DX7 + Freeverb" },
-    { channel: 7, name: "OB-Xd + Freeverb" },
-    { channel: 8, name: "JV-880 + Freeverb" }
+    { channel: 5, name: "" },
+    { channel: 6, name: "" },
+    { channel: 7, name: "" },
+    { channel: 8, name: "" }
 ];
 
 /* View constants */
