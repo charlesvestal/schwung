@@ -4239,6 +4239,78 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                     }
                 }
             }
+            else if (strcmp(action, "adjust") == 0 && val) {
+                /* Adjust knob value by delta - used by Shift+Knob in Move mode */
+                int delta_int = atoi(val);  /* +N or -N */
+                if (delta_int == 0) return;  /* No change */
+
+                /* Find mapping for this CC */
+                for (int i = 0; i < inst->knob_mapping_count; i++) {
+                    if (inst->knob_mappings[i].cc == cc) {
+                        /* Calculate acceleration based on time between events */
+                        uint64_t now = get_time_ms();
+                        uint64_t last = inst->knob_last_time_ms[i];
+                        inst->knob_last_time_ms[i] = now;
+                        int accel = KNOB_ACCEL_MIN_MULT;
+                        if (last > 0) {
+                            uint64_t elapsed = now - last;
+                            if (elapsed < 50) accel = KNOB_ACCEL_MAX_MULT;
+                            else if (elapsed < 100) accel = 4;
+                            else if (elapsed < 200) accel = 2;
+                        }
+
+                        /* Calculate step based on type, with acceleration */
+                        int is_int = (inst->knob_mappings[i].type == KNOB_TYPE_INT);
+                        /* Cap acceleration for ints to avoid jumping too far */
+                        if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                            accel = KNOB_ACCEL_MAX_MULT_INT;
+                        }
+                        /* Use larger step for adjust (0.01 = 1% per click) vs tiny KNOB_STEP_FLOAT */
+                        float base_step = is_int ? (float)KNOB_STEP_INT : 0.01f;
+                        float delta = base_step * accel * (delta_int > 0 ? 1 : -1);
+
+                        /* Apply delta with clamping */
+                        float new_val = inst->knob_mappings[i].current_value + delta;
+                        if (new_val < inst->knob_mappings[i].min_val) new_val = inst->knob_mappings[i].min_val;
+                        if (new_val > inst->knob_mappings[i].max_val) new_val = inst->knob_mappings[i].max_val;
+                        if (is_int) new_val = (float)((int)new_val);  /* Round to int */
+                        inst->knob_mappings[i].current_value = new_val;
+
+                        /* Format value as string */
+                        char val_str[16];
+                        if (is_int) {
+                            snprintf(val_str, sizeof(val_str), "%d", (int)new_val);
+                        } else {
+                            snprintf(val_str, sizeof(val_str), "%.3f", new_val);
+                        }
+
+                        /* Route to target */
+                        const char *target = inst->knob_mappings[i].target;
+                        const char *param = inst->knob_mappings[i].param;
+
+                        if (strcmp(target, "synth") == 0) {
+                            if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+                                inst->synth_plugin_v2->set_param(inst->synth_instance, param, val_str);
+                            } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+                                inst->synth_plugin->set_param(param, val_str);
+                            }
+                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
+                                inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], param, val_str);
+                            } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
+                                inst->fx_plugins[0]->set_param(param, val_str);
+                            }
+                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
+                                inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], param, val_str);
+                            } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
+                                inst->fx_plugins[1]->set_param(param, val_str);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
             return;
         }
     }

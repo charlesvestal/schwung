@@ -4477,15 +4477,55 @@ int ioctl(int fd, unsigned long request, ...)
                 continue;
             }
 
-            /* Handle knob CC messages - update overlay only (no DSP routing).
-             * Params are changed via set_param through the shadow UI hierarchy system. */
+            /* Handle knob CC messages - adjust parameter via set_param */
             if (cin == 0x0B && type == 0xB0 && d1 >= 71 && d1 <= 78) {
                 int knob_num = d1 - 70;  /* 1-8 */
                 int slot = shadow_selected_slot;
                 if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
 
-                /* Update overlay state (no DSP routing - params via set_param) */
-                if (shadow_chain_slots[slot].active) {
+                /* Debug: log knob CC received */
+                {
+                    char dbg[128];
+                    snprintf(dbg, sizeof(dbg), "Shift+Knob: CC=%d knob=%d d2=%d slot=%d active=%d v2=%d set_param=%d",
+                             d1, knob_num, d2, slot,
+                             shadow_chain_slots[slot].active,
+                             shadow_plugin_v2 ? 1 : 0,
+                             (shadow_plugin_v2 && shadow_plugin_v2->set_param) ? 1 : 0);
+                    shadow_log(dbg);
+                }
+
+                if (shadow_chain_slots[slot].active && shadow_plugin_v2 && shadow_plugin_v2->set_param) {
+                    /* Decode relative encoder value to delta (1 = CW, 127 = CCW) */
+                    int delta = 0;
+                    if (d2 >= 1 && d2 <= 63) delta = d2;      /* Clockwise: 1-63 */
+                    else if (d2 >= 65 && d2 <= 127) delta = d2 - 128;  /* Counter-clockwise: -63 to -1 */
+
+                    /* Debug: log delta calculation */
+                    {
+                        char dbg[128];
+                        snprintf(dbg, sizeof(dbg), "Shift+Knob: delta=%d (d2=%d)", delta, d2);
+                        shadow_log(dbg);
+                    }
+
+                    if (delta != 0) {
+                        /* Adjust parameter via knob_N_adjust */
+                        char key[32];
+                        char val[16];
+                        snprintf(key, sizeof(key), "knob_%d_adjust", knob_num);
+                        snprintf(val, sizeof(val), "%d", delta);
+
+                        /* Debug: log set_param call */
+                        {
+                            char dbg[128];
+                            snprintf(dbg, sizeof(dbg), "Shift+Knob: calling set_param(%p, \"%s\", \"%s\")",
+                                     (void*)shadow_chain_slots[slot].instance, key, val);
+                            shadow_log(dbg);
+                        }
+
+                        shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, val);
+                    }
+
+                    /* Update overlay to show new value */
                     shift_knob_update_overlay(slot, knob_num, d2);
                 }
 
