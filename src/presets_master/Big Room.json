@@ -1,0 +1,7 @@
+{
+    "name": "Big Room",
+    "version": 1,
+    "master_fx": {
+        "fx1": { "type": "freeverb", "params": { "wet": 0.35, "room": 0.85, "damp": 0.3 } }
+    }
+}

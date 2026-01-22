@@ -1,0 +1,8 @@
+{
+    "name": "Lo-Fi Master",
+    "version": 1,
+    "master_fx": {
+        "fx1": { "type": "tapescam", "params": { "saturation": 0.5, "wobble": 0.2 } },
+        "fx2": { "type": "freeverb", "params": { "wet": 0.2, "room": 0.4 } }
+    }
+}

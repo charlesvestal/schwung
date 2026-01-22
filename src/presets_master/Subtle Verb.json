@@ -1,0 +1,7 @@
+{
+    "name": "Subtle Verb",
+    "version": 1,
+    "master_fx": {
+        "fx1": { "type": "freeverb", "params": { "wet": 0.15, "room": 0.5, "damp": 0.5 } }
+    }
+}

@@ -154,6 +154,11 @@ echo "Copying patches..."
 mkdir -p ./build/patches
 cp -r ./src/patches/*.json ./build/patches/ 2>/dev/null || true
 
+# Copy master presets directory
+echo "Copying master presets..."
+mkdir -p ./build/presets_master
+cp -r ./src/presets_master/*.json ./build/presets_master/ 2>/dev/null || true
+
 # Copy curl binary for store module (if present)
 if [ -f "./libs/curl/curl" ]; then
     mkdir -p ./build/bin/
