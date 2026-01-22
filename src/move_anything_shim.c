@@ -3901,9 +3901,7 @@ int shiftHeld = 0;
 int volumeTouched = 0;
 int wheelTouched = 0;
 int knob8touched = 0;
-int knob1touched = 0;
 int alreadyLaunched = 0;       /* Prevent multiple launches */
-int shadowModeDebounce = 0;    /* Debounce for shadow mode toggle */
 
 /* Debug logging disabled for performance - set to 1 to enable */
 #define SHADOW_HOTKEY_DEBUG 0
@@ -3912,12 +3910,10 @@ static FILE *hotkey_state_log = NULL;
 #endif
 static uint64_t shift_on_ms = 0;
 static uint64_t vol_on_ms = 0;
-static uint64_t knob1_on_ms = 0;
 static uint8_t hotkey_prev[MIDI_BUFFER_SIZE];
 static int hotkey_prev_valid = 0;
 static int shift_armed = 0;
 static int volume_armed = 0;
-static int knob1_armed = 0;
 
 static void log_hotkey_state(const char *tag);
 
@@ -3938,49 +3934,7 @@ static int within_window(uint64_t now, uint64_t ts, uint64_t window_ms)
 static uint64_t shadow_hotkey_enable_ms = 0;
 static int shadow_inject_knob_release = 0;  /* Set when toggling shadow mode to inject note-offs */
 
-static void maybe_toggle_shadow(void)
-{
-    if (shadowModeDebounce) return;
-
-    uint64_t now = now_mono_ms();
-    if (!shadow_hotkey_enable_ms) {
-        shadow_hotkey_enable_ms = now + SHADOW_HOTKEY_GRACE_MS;
-    }
-    if (now < shadow_hotkey_enable_ms) {
-        return;
-    }
-
-    /* Require all three to be held, and at least one was JUST activated.
-     * This prevents stuck touch states from triggering on any Shift press. */
-    int any_recent = within_window(now, shift_on_ms, SHADOW_HOTKEY_WINDOW_MS) ||
-                     within_window(now, vol_on_ms, SHADOW_HOTKEY_WINDOW_MS) ||
-                     within_window(now, knob1_on_ms, SHADOW_HOTKEY_WINDOW_MS);
-    if (shiftHeld && volumeTouched && knob1touched && any_recent) {
-        shadowModeDebounce = 1;
-        log_hotkey_state("toggle");
-        if (shadow_control) {
-            shadow_display_mode = !shadow_display_mode;
-            shadow_control->display_mode = shadow_display_mode;
-            shadow_inject_knob_release = 1;  /* Inject note-offs to release knob touches */
-
-            /* Reset touch states to prevent stuck states from re-triggering */
-            knob1touched = 0;
-            volumeTouched = 0;
-            knob8touched = 0;
-            knob1_on_ms = 0;
-            vol_on_ms = 0;
-            /* Re-arm so next touch is detected fresh */
-            knob1_armed = 1;
-            volume_armed = 1;
-
-            printf("Shadow mode toggled: %s\n",
-                   shadow_display_mode ? "SHADOW" : "STOCK");
-            if (shadow_display_mode) {
-                launch_shadow_ui();
-            }
-        }
-    }
-}
+/* Shift+Vol+Knob1 toggle removed - use Track buttons or Shift+Jog instead */
 
 static void log_hotkey_state(const char *tag)
 {
@@ -3992,8 +3946,8 @@ static void log_hotkey_state(const char *tag)
     if (hotkey_state_log)
     {
         time_t now = time(NULL);
-        fprintf(hotkey_state_log, "%ld %s shift=%d vol=%d knob1=%d knob8=%d debounce=%d\n",
-                (long)now, tag, shiftHeld, volumeTouched, knob1touched, knob8touched, shadowModeDebounce);
+        fprintf(hotkey_state_log, "%ld %s shift=%d vol=%d knob8=%d\n",
+                (long)now, tag, shiftHeld, volumeTouched, knob8touched);
         fflush(hotkey_state_log);
     }
 #else
@@ -4060,8 +4014,7 @@ void midi_monitor()
                         if (shadow_control) shadow_control->shift_held = 1;
                         shift_on_ms = now_mono_ms();
                         log_hotkey_state("shift_on");
-                        maybe_toggle_shadow();
-                    }
+                                            }
                 }
                 else
                 {
@@ -4102,33 +4055,6 @@ void midi_monitor()
             }
         }
 
-        /* Knob 1 touch detection (Note 0) - for shadow mode toggle */
-        if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x00)
-        {
-            if (midi_2 == 0x7f)
-            {
-                if (!knob1touched && knob1_armed) {
-                    knob1touched = 1;
-#if SHADOW_HOTKEY_DEBUG
-                    printf("Knob 1 touch start\n");
-#endif
-                    knob1_on_ms = now_mono_ms();
-                    log_hotkey_state("knob1_on");
-                    maybe_toggle_shadow();
-                }
-            }
-            else
-            {
-                knob1touched = 0;
-                knob1_armed = 1;
-#if SHADOW_HOTKEY_DEBUG
-                printf("Knob 1 touch stop\n");
-#endif
-                knob1_on_ms = 0;
-                log_hotkey_state("knob1_off");
-            }
-        }
-
         if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x08)
         {
             if (midi_2 == 0x7f)
@@ -4138,7 +4064,6 @@ void midi_monitor()
                     shadow_volume_knob_touched = 1;  /* Sync global for cross-function access */
                     vol_on_ms = now_mono_ms();
                     log_hotkey_state("vol_on");
-                    maybe_toggle_shadow();
                 }
             }
             else
@@ -4168,15 +4093,6 @@ void midi_monitor()
             alreadyLaunched = 1;
             printf("Launching Move Anything!\n");
             launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
-        }
-
-        /* Shadow mode toggle: Shift + Volume + Knob 1 */
-
-        /* Reset debounce once any part of the combo is released */
-        if (shadowModeDebounce && (!shiftHeld || !volumeTouched || !knob1touched))
-        {
-            shadowModeDebounce = 0;
-            log_hotkey_state("debounce_reset");
         }
 
     }
