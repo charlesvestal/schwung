@@ -116,3 +116,77 @@ echo "Modules are located in: /data/UserData/move-anything/modules/"
 echo
 echo "Shift+Vol+Track or Shift+Vol+Menu: Access Move Anything's slot configurations"
 echo "Shift+Vol+Knob8: Access Move Anything's standalone mode and module store"
+echo
+
+# Optional: Install all modules from the Module Store
+echo "Would you like to install all available modules from the Module Store?"
+echo "(Sound Generators, Audio FX, MIDI FX, and Utilities)"
+printf "Install modules? [y/N] "
+read -r install_modules
+
+if [ "$install_modules" = "y" ] || [ "$install_modules" = "Y" ]; then
+    echo
+    echo "Fetching module catalog..."
+    catalog_url="https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json"
+    catalog=$(curl -fsSL "$catalog_url") || { echo "Failed to fetch module catalog"; exit 1; }
+
+    # Parse catalog with python3 and install each module to correct subdirectory
+    # sound_generator -> modules/sound_generators/
+    # audio_fx -> modules/audio_fx/
+    # midi_fx -> modules/midi_fx/
+    # others -> modules/
+    echo "$catalog" | python3 -c "
+import json, sys
+catalog = json.loads(sys.stdin.read())
+for m in catalog['modules']:
+    ctype = m.get('component_type', '')
+    if ctype == 'sound_generator':
+        subdir = 'sound_generators'
+    elif ctype == 'audio_fx':
+        subdir = 'audio_fx'
+    elif ctype == 'midi_fx':
+        subdir = 'midi_fx'
+    else:
+        subdir = ''
+    print(m['id'] + '|' + m['github_repo'] + '|' + m['asset_name'] + '|' + m['name'] + '|' + subdir)
+" | while IFS='|' read -r id repo asset name subdir; do
+        echo
+        if [ -n "$subdir" ]; then
+            dest="modules/$subdir"
+            echo "Installing $name ($id) to $dest/..."
+        else
+            dest="modules"
+            echo "Installing $name ($id)..."
+        fi
+        url="https://github.com/${repo}/releases/latest/download/${asset}"
+        if curl -fsSLO "$url"; then
+            $scp_ableton "$asset" "$username@$hostname:./move-anything/" && \
+            $ssh_ableton "cd move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset"
+            rm -f "$asset"
+            echo "  Installed: $name"
+        else
+            echo "  Failed to download $name (may not have a release yet)"
+        fi
+    done
+
+    echo
+    echo "========================================"
+    echo "Module Installation Complete"
+    echo "========================================"
+    echo
+    echo "Installed modules and their repositories:"
+    echo
+    echo "$catalog" | python3 -c "
+import json, sys
+catalog = json.loads(sys.stdin.read())
+for m in catalog['modules']:
+    print(f\"  {m['name']}: https://github.com/{m['github_repo']}\")
+"
+    echo
+    echo "NOTE: Some modules require additional assets:"
+    echo "  - DX7: Requires Dexed cartridge files (.syx)"
+    echo "  - JV-880: Requires Roland JV-880 ROM files"
+    echo "  - SF2: Requires SoundFont files (.sf2)"
+    echo "Please check their individual repositories for more information."
+    echo
+fi

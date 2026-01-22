@@ -318,8 +318,7 @@ External modules can specify where they should be installed via `release.json`.
 ```json
 {
   "version": "0.2.1",
-  "download_url": "https://github.com/user/repo/releases/download/v0.2.1/module.tar.gz",
-  "install_path": "chain/audio_fx"
+  "download_url": "https://github.com/user/repo/releases/download/v0.2.1/module.tar.gz"
 }
 ```
 
@@ -327,20 +326,19 @@ External modules can specify where they should be installed via `release.json`.
 |-------|----------|-------------|
 | `version` | Yes | Semantic version (without `v` prefix) |
 | `download_url` | Yes | Direct link to release tarball |
-| `install_path` | No | Subdirectory under `modules/` for extraction |
 
 ### Install Paths by Module Type
 
-| Module Type | install_path | Extracts To |
-|-------------|--------------|-------------|
-| Standalone synth | (omit field) | `modules/<id>/` |
-| Audio FX | `chain/audio_fx` | `modules/chain/audio_fx/<id>/` |
-| MIDI FX | `chain/midi_fx` | `modules/chain/midi_fx/<id>/` |
-| Sound generator (chain-only) | `chain/sound_generators` | `modules/chain/sound_generators/<id>/` |
+Installation paths are automatically determined by the `component_type` field in module.json:
 
-**Standalone modules** (synths like SF2, DX7, JV-880, OB-Xd, CLAP) should NOT specify `install_path`. They implement the full plugin API and can be loaded directly by the host.
+| component_type | Extracts To |
+|----------------|-------------|
+| `sound_generator` | `modules/sound_generators/<id>/` |
+| `audio_fx` | `modules/audio_fx/<id>/` |
+| `midi_fx` | `modules/midi_fx/<id>/` |
+| `utility` (or other) | `modules/<id>/` |
 
-**Chain-only components** (audio FX, MIDI FX) MUST specify `install_path` so they're installed in the correct Signal Chain subdirectory.
+The Module Store reads `component_type` from the catalog and installs modules to the appropriate subdirectory automatically.
 
 ### GitHub Actions Workflow
 

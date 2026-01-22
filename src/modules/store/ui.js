@@ -54,6 +54,16 @@ const CATEGORIES = [
     { id: 'utility', name: 'Utilities' }
 ];
 
+/* Get install subdirectory based on component_type */
+function getInstallSubdir(componentType) {
+    switch (componentType) {
+        case 'sound_generator': return 'sound_generators';
+        case 'audio_fx': return 'audio_fx';
+        case 'midi_fx': return 'midi_fx';
+        default: return null; /* Top-level modules/ for utilities etc */
+    }
+}
+
 /* State */
 let state = STATE_LOADING;
 let catalog = null;
@@ -314,11 +324,9 @@ function updateAllModules() {
             continue;
         }
 
-        /* Determine extraction path based on module's install_path */
-        let extractDir = MODULES_DIR;
-        if (mod.install_path) {
-            extractDir = `${MODULES_DIR}/${mod.install_path}`;
-        }
+        /* Determine extraction path based on component_type */
+        const subdir = getInstallSubdir(mod.component_type);
+        const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
 
         /* Extract to appropriate directory */
         const extractOk = host_extract_tar(tarPath, extractDir);
@@ -447,11 +455,9 @@ function installModule(mod) {
     draw();
     host_flush_display();
 
-    /* Determine extraction path based on module's install_path */
-    let extractDir = MODULES_DIR;
-    if (mod.install_path) {
-        extractDir = `${MODULES_DIR}/${mod.install_path}`;
-    }
+    /* Determine extraction path based on component_type */
+    const subdir = getInstallSubdir(mod.component_type);
+    const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
 
     /* Extract to appropriate directory */
     const extractOk = host_extract_tar(tarPath, extractDir);
@@ -479,11 +485,11 @@ function removeModule(mod) {
     draw();
     host_flush_display();
 
-    /* Determine module path based on install_path */
-    let modulePath = `${MODULES_DIR}/${mod.id}`;
-    if (mod.install_path) {
-        modulePath = `${MODULES_DIR}/${mod.install_path}/${mod.id}`;
-    }
+    /* Determine module path based on component_type */
+    const subdir = getInstallSubdir(mod.component_type);
+    const modulePath = subdir
+        ? `${MODULES_DIR}/${subdir}/${mod.id}`
+        : `${MODULES_DIR}/${mod.id}`;
 
     /* Remove the module directory */
     const removeOk = host_remove_dir(modulePath);

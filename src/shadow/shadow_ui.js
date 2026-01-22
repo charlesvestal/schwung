@@ -332,9 +332,9 @@ function getModuleUiPath(moduleId) {
     /* Check locations in order */
     const searchDirs = [
         `${MODULES_ROOT}/${moduleId}`,                      /* Top-level modules */
-        `${MODULES_ROOT}/chain/sound_generators/${moduleId}`, /* Chain synths */
-        `${MODULES_ROOT}/chain/audio_fx/${moduleId}`,        /* Chain FX */
-        `${MODULES_ROOT}/chain/midi_fx/${moduleId}`          /* Chain MIDI FX */
+        `${MODULES_ROOT}/sound_generators/${moduleId}`,     /* Sound generators */
+        `${MODULES_ROOT}/audio_fx/${moduleId}`,             /* Audio FX */
+        `${MODULES_ROOT}/midi_fx/${moduleId}`               /* MIDI FX */
     ];
 
     for (const dir of searchDirs) {
@@ -516,11 +516,11 @@ function setSlotParam(slot, key, value) {
 /* Scan modules directory for audio_fx modules */
 function scanForAudioFxModules() {
     const MODULES_DIR = "/data/UserData/move-anything/modules";
-    const CHAIN_AUDIO_FX_DIR = `${MODULES_DIR}/chain/audio_fx`;
+    const AUDIO_FX_DIR = `${MODULES_DIR}/audio_fx`;
     const result = [{ id: "", name: "None", dspPath: "" }];
 
     /* Helper to scan a directory for audio_fx modules */
-    function scanDir(dirPath, pathPrefix) {
+    function scanDir(dirPath) {
         try {
             const entries = os.readdir(dirPath) || [];
             const dirList = entries[0];
@@ -539,7 +539,6 @@ function scanForAudioFxModules() {
                     /* Check if this is an audio_fx module */
                     if (json.component_type === "audio_fx" ||
                         (json.capabilities && json.capabilities.component_type === "audio_fx")) {
-                        /* Build DSP path - chain audio_fx use {id}.so, top-level use dsp.so */
                         const dspFile = json.dsp || "dsp.so";
                         const dspPath = `${dirPath}/${entry}/${dspFile}`;
                         result.push({
@@ -557,11 +556,8 @@ function scanForAudioFxModules() {
         }
     }
 
-    /* Scan top-level modules */
-    scanDir(MODULES_DIR, "");
-
-    /* Scan chain/audio_fx for built-in and installed chain effects */
-    scanDir(CHAIN_AUDIO_FX_DIR, "chain/audio_fx/");
+    /* Scan audio_fx directory for all audio effects */
+    scanDir(AUDIO_FX_DIR);
 
     return result;
 }
@@ -1149,7 +1145,6 @@ function enterChainEdit(slotIndex) {
 /* Scan modules directory for modules of a specific component type */
 function scanModulesForType(componentType) {
     const MODULES_DIR = "/data/UserData/move-anything/modules";
-    const CHAIN_SUBDIR = `${MODULES_DIR}/chain`;
     const result = [{ id: "", name: "None" }];
 
     /* Map component type to directory and expected component_type */
@@ -1157,13 +1152,13 @@ function scanModulesForType(componentType) {
     let expectedTypes = [];
 
     if (componentType === "synth") {
-        searchDirs = [MODULES_DIR, `${CHAIN_SUBDIR}/sound_generators`];
+        searchDirs = [`${MODULES_DIR}/sound_generators`];
         expectedTypes = ["sound_generator"];
     } else if (componentType === "midiFx") {
-        searchDirs = [`${CHAIN_SUBDIR}/midi_fx`];
+        searchDirs = [`${MODULES_DIR}/midi_fx`];
         expectedTypes = ["midi_fx"];
     } else if (componentType === "fx1" || componentType === "fx2") {
-        searchDirs = [MODULES_DIR, `${CHAIN_SUBDIR}/audio_fx`];
+        searchDirs = [`${MODULES_DIR}/audio_fx`];
         expectedTypes = ["audio_fx"];
     }
 

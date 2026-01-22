@@ -320,14 +320,15 @@ function scanChainableModules() {
         }
     }
 
-    /* Scan chain subdirectories for embedded components */
-    const chainDir = `${root}/chain`;
-
-    const soundGens = scanChainSubdir(chainDir, "sound_generators");
+    /* Scan top-level component directories */
+    const soundGens = scanChainSubdir(root, "sound_generators");
     availableComponents.sound_generators.push(...soundGens);
 
-    const audioFx = scanChainSubdir(chainDir, "audio_fx");
+    const audioFx = scanChainSubdir(root, "audio_fx");
     availableComponents.audio_fx.push(...audioFx);
+
+    const midiFx = scanChainSubdir(root, "midi_fx");
+    availableComponents.midi_fx.push(...midiFx);
 
     /* Add built-in JS MIDI FX */
     availableComponents.midi_fx.push(...BUILTIN_MIDI_FX);

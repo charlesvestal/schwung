@@ -107,20 +107,20 @@ mkdir -p ./build/modules/chain/
 echo "Building Audio FX plugins..."
 
 # Build Freeverb audio FX
-mkdir -p ./build/modules/chain/audio_fx/freeverb/
+mkdir -p ./build/modules/audio_fx/freeverb/
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/chain/audio_fx/freeverb/freeverb.c \
-    -o build/modules/chain/audio_fx/freeverb/freeverb.so \
+    src/modules/audio_fx/freeverb/freeverb.c \
+    -o build/modules/audio_fx/freeverb/freeverb.so \
     -Isrc \
     -lm
 
 echo "Building Sound Generator plugins..."
 
 # Build Line In sound generator
-mkdir -p ./build/modules/chain/sound_generators/linein/
+mkdir -p ./build/modules/sound_generators/linein/
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/chain/sound_generators/linein/linein.c \
-    -o build/modules/chain/sound_generators/linein/dsp.so \
+    src/modules/sound_generators/linein/linein.c \
+    -o build/modules/sound_generators/linein/dsp.so \
     -Isrc \
     -lm
 

@@ -243,10 +243,17 @@ int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
         printf("mm: cannot open modules directory: %s\n", modules_dir);
     }
 
-    /* Also scan chain/audio_fx for built-in audio effects */
-    char audio_fx_dir[MAX_PATH_LEN];
-    snprintf(audio_fx_dir, sizeof(audio_fx_dir), "%s/chain/audio_fx", modules_dir);
-    scan_directory(mm, audio_fx_dir);
+    /* Scan component subdirectories */
+    char subdir[MAX_PATH_LEN];
+
+    snprintf(subdir, sizeof(subdir), "%s/sound_generators", modules_dir);
+    scan_directory(mm, subdir);
+
+    snprintf(subdir, sizeof(subdir), "%s/audio_fx", modules_dir);
+    scan_directory(mm, subdir);
+
+    snprintf(subdir, sizeof(subdir), "%s/midi_fx", modules_dir);
+    scan_directory(mm, subdir);
 
     printf("mm: found %d modules\n", mm->module_count);
     return mm->module_count;

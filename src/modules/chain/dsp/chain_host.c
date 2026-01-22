@@ -1096,12 +1096,12 @@ static int load_audio_fx(const char *fx_name) {
         return -1;
     }
 
-    /* Build path to FX .so - try chain/audio_fx/<name>/<name>.so first (built-in) */
+    /* Build path to FX - all audio FX in modules/audio_fx/ */
     char fx_path[MAX_PATH_LEN];
     char fx_dir[MAX_PATH_LEN];
-    snprintf(fx_path, sizeof(fx_path), "%s/audio_fx/%s/%s.so",
+    snprintf(fx_path, sizeof(fx_path), "%s/../audio_fx/%s/%s.so",
              g_module_dir, fx_name, fx_name);
-    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", g_module_dir, fx_name);
+    snprintf(fx_dir, sizeof(fx_dir), "%s/../audio_fx/%s", g_module_dir, fx_name);
 
     snprintf(msg, sizeof(msg), "Loading audio FX: %s", fx_path);
     chain_log(msg);
@@ -1109,20 +1109,9 @@ static int load_audio_fx(const char *fx_name) {
     /* Open the shared library */
     void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
-        /* Try external module path: modules/<name>/<name>.so (Store-installed) */
-        snprintf(fx_path, sizeof(fx_path), "%s/../%s/%s.so",
-                 g_module_dir, fx_name, fx_name);
-        snprintf(fx_dir, sizeof(fx_dir), "%s/../%s", g_module_dir, fx_name);
-
-        snprintf(msg, sizeof(msg), "Trying external path: %s", fx_path);
+        snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
         chain_log(msg);
-
-        handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
-        if (!handle) {
-            snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
-            chain_log(msg);
-            return -1;
-        }
+        return -1;
     }
 
     int slot = g_fx_count;
@@ -2291,23 +2280,10 @@ static int load_patch(int index) {
         /* Unload current synth */
         unload_synth();
 
-        /* Build path to new synth module */
+        /* Build path to new synth module - all sound generators in modules/sound_generators/ */
         char synth_path[MAX_PATH_LEN];
-
-        /* Check if it's an internal sound generator (in chain/sound_generators/) */
-        if (strcmp(patch->synth_module, "linein") == 0) {
-            /* Internal sound generator - look in chain's sound_generators dir */
-            snprintf(synth_path, sizeof(synth_path), "%s/sound_generators/%s",
-                     g_module_dir, patch->synth_module);
-        } else {
-            /* External module (sf2, dx7, etc.) - look in modules dir */
-            strncpy(synth_path, g_module_dir, sizeof(synth_path) - 1);
-            char *last_slash = strrchr(synth_path, '/');
-            if (last_slash) {
-                snprintf(last_slash + 1, sizeof(synth_path) - (last_slash - synth_path) - 1,
-                         "%s", patch->synth_module);
-            }
-        }
+        snprintf(synth_path, sizeof(synth_path), "%s/../sound_generators/%s",
+                 g_module_dir, patch->synth_module);
 
         /* Load new synth */
         if (load_synth(synth_path, NULL) != 0) {
@@ -3452,26 +3428,12 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         return 0;
     }
 
-    /* Build path to FX - try chain/audio_fx first, then external */
-    snprintf(fx_path, sizeof(fx_path), "%s/audio_fx/%s/%s.so",
+    /* Build path to FX - all audio FX in modules/audio_fx/ */
+    snprintf(fx_path, sizeof(fx_path), "%s/../audio_fx/%s/%s.so",
              inst->module_dir, fx_name, fx_name);
-    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", inst->module_dir, fx_name);
+    snprintf(fx_dir, sizeof(fx_dir), "%s/../audio_fx/%s", inst->module_dir, fx_name);
 
-    /* Check if exists, if not try external modules dir */
     void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        /* Try external modules */
-        char *modules_dir = strdup(inst->module_dir);
-        char *last_slash = strrchr(modules_dir, '/');
-        if (last_slash) *last_slash = '\0';
-
-        snprintf(fx_path, sizeof(fx_path), "%s/%s/%s.so", modules_dir, fx_name, fx_name);
-        snprintf(fx_dir, sizeof(fx_dir), "%s/%s", modules_dir, fx_name);
-        free(modules_dir);
-
-        handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
-    }
-
     if (!handle) {
         snprintf(msg, sizeof(msg), "dlopen failed for FX %s: %s", fx_name, dlerror());
         v2_chain_log(inst, msg);
@@ -3583,19 +3545,9 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     snprintf(msg, sizeof(msg), "v2_load_synth ENTRY: module_name='%s'", module_name);
     v2_chain_log(inst, msg);
 
-    /* Build path to synth module */
-    if (strcmp(module_name, "linein") == 0) {
-        /* Internal sound generator */
-        snprintf(synth_path, sizeof(synth_path), "%s/sound_generators/%s",
-                 inst->module_dir, module_name);
-    } else {
-        /* External module - go up to modules dir */
-        char *modules_dir = strdup(inst->module_dir);
-        char *last_slash = strrchr(modules_dir, '/');
-        if (last_slash) *last_slash = '\0';
-        snprintf(synth_path, sizeof(synth_path), "%s/%s", modules_dir, module_name);
-        free(modules_dir);
-    }
+    /* Build path to synth module - all sound generators in modules/sound_generators/ */
+    snprintf(synth_path, sizeof(synth_path), "%s/../sound_generators/%s",
+             inst->module_dir, module_name);
 
     char dsp_path[MAX_PATH_LEN];
     snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", synth_path);
@@ -3658,26 +3610,12 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
 
     if (!inst || inst->fx_count >= MAX_AUDIO_FX) return -1;
 
-    /* Build path to FX - try chain/audio_fx first, then external */
-    snprintf(fx_path, sizeof(fx_path), "%s/audio_fx/%s/%s.so",
+    /* Build path to FX - all audio FX in modules/audio_fx/ */
+    snprintf(fx_path, sizeof(fx_path), "%s/../audio_fx/%s/%s.so",
              inst->module_dir, fx_name, fx_name);
-    snprintf(fx_dir, sizeof(fx_dir), "%s/audio_fx/%s", inst->module_dir, fx_name);
+    snprintf(fx_dir, sizeof(fx_dir), "%s/../audio_fx/%s", inst->module_dir, fx_name);
 
-    /* Check if exists, if not try external modules dir */
     void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        /* Try external modules */
-        char *modules_dir = strdup(inst->module_dir);
-        char *last_slash = strrchr(modules_dir, '/');
-        if (last_slash) *last_slash = '\0';
-
-        snprintf(fx_path, sizeof(fx_path), "%s/%s/%s.so", modules_dir, fx_name, fx_name);
-        snprintf(fx_dir, sizeof(fx_dir), "%s/%s", modules_dir, fx_name);
-        free(modules_dir);
-
-        handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
-    }
-
     if (!handle) {
         snprintf(msg, sizeof(msg), "dlopen failed for FX %s: %s", fx_name, dlerror());
         v2_chain_log(inst, msg);
