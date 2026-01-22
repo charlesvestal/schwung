@@ -196,12 +196,29 @@ let selectingMasterFxModule = false;  // True when selecting module for a compon
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
 
 /* Master FX settings (shown when Settings component is selected) */
-const MASTER_FX_SETTINGS_ITEMS = [
-    { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 }
+const MASTER_FX_SETTINGS_ITEMS_BASE = [
+    { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "save", label: "[Save]", type: "action" },
+    { key: "save_as", label: "[Save As]", type: "action" },
+    { key: "delete", label: "[Delete]", type: "action" }
 ];
+
+/* Get dynamic settings items based on whether preset is loaded */
+function getMasterFxSettingsItems() {
+    if (currentMasterPresetName) {
+        /* Existing preset: show all items */
+        return MASTER_FX_SETTINGS_ITEMS_BASE;
+    }
+    /* New/unsaved: hide Save As and Delete */
+    return MASTER_FX_SETTINGS_ITEMS_BASE.filter(item =>
+        item.key !== "save_as" && item.key !== "delete"
+    );
+}
+
 let selectedMasterFxSetting = 0;
 let editingMasterFxSetting = false;
 let editMasterFxValue = "";
+let inMasterFxSettingsMenu = false;  /* True when in settings submenu */
 
 /* Slot settings definitions */
 const SLOT_SETTINGS = [
@@ -1323,6 +1340,105 @@ function loadMasterPreset(index) {
     } catch (e) {
         /* Parse error - ignore */
     }
+    needsRedraw = true;
+}
+
+/* Build JSON for saving master preset */
+function buildMasterPresetJson(name) {
+    const preset = {
+        custom_name: name,
+        fx1: null,
+        fx2: null,
+        fx3: null,
+        fx4: null
+    };
+
+    for (let i = 0; i < 4; i++) {
+        const key = `fx${i + 1}`;
+        const moduleId = masterFxConfig[key]?.module;
+        if (moduleId) {
+            preset[key] = {
+                type: moduleId,
+                params: {}
+            };
+        }
+    }
+
+    return JSON.stringify(preset);
+}
+
+/* Actually save the master preset */
+function doSaveMasterPreset(name) {
+    const json = buildMasterPresetJson(name);
+
+    if (masterOverwriteTargetIndex >= 0) {
+        /* Overwriting existing preset */
+        setSlotParam(0, "update_master_preset", masterOverwriteTargetIndex + ":" + json);
+    } else {
+        /* Creating new preset */
+        setSlotParam(0, "save_master_preset", json);
+    }
+
+    currentMasterPresetName = name;
+
+    /* Reset state */
+    masterShowingNamePreview = false;
+    masterConfirmingOverwrite = false;
+    masterPendingSaveName = "";
+    masterOverwriteTargetIndex = -1;
+    inMasterFxSettingsMenu = false;
+
+    loadMasterPresetList();
+    needsRedraw = true;
+}
+
+/* Handle master FX settings menu actions */
+function handleMasterFxSettingsAction(key) {
+    if (key === "save") {
+        if (currentMasterPresetName) {
+            /* Existing preset - confirm overwrite */
+            masterPendingSaveName = currentMasterPresetName;
+            masterOverwriteTargetIndex = findMasterPresetByName(currentMasterPresetName);
+            masterConfirmingOverwrite = true;
+            masterConfirmIndex = 0;
+            masterOverwriteFromKeyboard = false;
+        } else {
+            /* New preset - show name preview */
+            masterPendingSaveName = generateMasterPresetName();
+            masterShowingNamePreview = true;
+            masterNamePreviewIndex = 1;  /* Default to OK */
+            masterOverwriteFromKeyboard = true;
+        }
+        needsRedraw = true;
+    } else if (key === "save_as") {
+        /* Save As - show name preview with current name */
+        masterPendingSaveName = currentMasterPresetName || generateMasterPresetName();
+        masterShowingNamePreview = true;
+        masterNamePreviewIndex = 1;
+        masterOverwriteFromKeyboard = true;
+        masterOverwriteTargetIndex = -1;  /* Force create new */
+        needsRedraw = true;
+    } else if (key === "delete") {
+        /* Delete - confirm */
+        masterConfirmingDelete = true;
+        masterConfirmIndex = 0;
+        needsRedraw = true;
+    }
+}
+
+/* Delete the current master preset */
+function doDeleteMasterPreset() {
+    const index = findMasterPresetByName(currentMasterPresetName);
+    if (index >= 0) {
+        setSlotParam(0, "delete_master_preset", String(index));
+    }
+
+    /* Clear current preset and return to picker */
+    clearMasterFx();
+    currentMasterPresetName = "";
+    masterConfirmingDelete = false;
+    inMasterFxSettingsMenu = false;
+    loadMasterPresetList();
     needsRedraw = true;
 }
 
@@ -2602,10 +2718,28 @@ function handleJog(delta) {
             updateFocusedSlot(selectedSlot);
             break;
         case VIEWS.MASTER_FX:
-            if (inMasterPresetPicker) {
+            if (masterShowingNamePreview) {
+                /* Navigate Edit/OK */
+                masterNamePreviewIndex = masterNamePreviewIndex === 0 ? 1 : 0;
+            } else if (masterConfirmingOverwrite || masterConfirmingDelete) {
+                /* Navigate No/Yes */
+                masterConfirmIndex = masterConfirmIndex === 0 ? 1 : 0;
+            } else if (inMasterPresetPicker) {
                 /* Navigate preset picker */
                 const totalItems = 1 + masterPresets.length;  /* [New] + presets */
                 selectedMasterPresetIndex = Math.max(0, Math.min(totalItems - 1, selectedMasterPresetIndex + delta));
+            } else if (inMasterFxSettingsMenu) {
+                /* Navigate settings menu */
+                const items = getMasterFxSettingsItems();
+                if (editingMasterFxSetting) {
+                    /* Adjust value */
+                    const item = items[selectedMasterFxSetting];
+                    if (item.type === "float" || item.type === "int") {
+                        /* TODO: adjust master volume */
+                    }
+                } else {
+                    selectedMasterFxSetting = Math.max(0, Math.min(items.length - 1, selectedMasterFxSetting + delta));
+                }
             } else if (selectingMasterFxModule) {
                 /* Navigate module list */
                 selectedMasterFxModuleIndex = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFxModuleIndex + delta));
@@ -2717,6 +2851,71 @@ function handleSelect() {
             }
             break;
         case VIEWS.MASTER_FX:
+            if (masterShowingNamePreview) {
+                /* Name preview: Edit or OK */
+                if (masterNamePreviewIndex === 0) {
+                    /* Edit - open keyboard */
+                    masterShowingNamePreview = false;
+                    const savedName = masterPendingSaveName;
+                    openTextEntry({
+                        title: "Save As",
+                        initialText: savedName,
+                        onConfirm: (newName) => {
+                            masterPendingSaveName = newName;
+                            masterShowingNamePreview = true;
+                            masterNamePreviewIndex = 1;
+                            needsRedraw = true;
+                        },
+                        onCancel: () => {
+                            masterShowingNamePreview = true;
+                            needsRedraw = true;
+                        }
+                    });
+                } else {
+                    /* OK - proceed with save (check for conflicts) */
+                    masterShowingNamePreview = false;
+                    const existingIdx = findMasterPresetByName(masterPendingSaveName);
+                    if (existingIdx >= 0 && existingIdx !== masterOverwriteTargetIndex) {
+                        /* Name conflict */
+                        masterOverwriteTargetIndex = existingIdx;
+                        masterConfirmingOverwrite = true;
+                        masterConfirmIndex = 0;
+                    } else {
+                        doSaveMasterPreset(masterPendingSaveName);
+                    }
+                }
+                needsRedraw = true;
+                break;
+            }
+            if (masterConfirmingOverwrite) {
+                /* Overwrite confirmation: No or Yes */
+                if (masterConfirmIndex === 0) {
+                    /* No - return to name preview */
+                    masterConfirmingOverwrite = false;
+                    if (masterOverwriteFromKeyboard) {
+                        masterShowingNamePreview = true;
+                        masterNamePreviewIndex = 0;
+                    }
+                    /* If not from keyboard, just return to settings menu */
+                } else {
+                    /* Yes - overwrite */
+                    doSaveMasterPreset(masterPendingSaveName);
+                }
+                needsRedraw = true;
+                break;
+            }
+            if (masterConfirmingDelete) {
+                /* Delete confirmation: No or Yes */
+                if (masterConfirmIndex === 0) {
+                    /* No - return to settings */
+                    masterConfirmingDelete = false;
+                } else {
+                    /* Yes - delete */
+                    doDeleteMasterPreset();
+                }
+                needsRedraw = true;
+                break;
+            }
             if (inMasterPresetPicker) {
                 /* Preset picker click */
                 if (selectedMasterPresetIndex === 0) {
@@ -2731,14 +2930,28 @@ function handleSelect() {
                     currentMasterPresetName = preset.name;
                     exitMasterPresetPicker();
                 }
+            } else if (inMasterFxSettingsMenu) {
+                /* Settings menu click */
+                const items = getMasterFxSettingsItems();
+                const item = items[selectedMasterFxSetting];
+                if (item.type === "action") {
+                    handleMasterFxSettingsAction(item.key);
+                } else if (item.type === "float" || item.type === "int") {
+                    /* Toggle value editing */
+                    editingMasterFxSetting = !editingMasterFxSetting;
+                }
+                needsRedraw = true;
             } else if (selectingMasterFxModule) {
                 /* Apply module selection */
                 applyMasterFxModuleSelection();
             } else {
                 const selectedComp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
                 if (selectedComp.key === "settings") {
-                    /* Settings - could open a settings menu, for now just show info */
-                    /* TODO: Master FX settings view */
+                    /* Enter settings submenu */
+                    inMasterFxSettingsMenu = true;
+                    selectedMasterFxSetting = 0;
+                    editingMasterFxSetting = false;
+                    needsRedraw = true;
                 } else {
                     /* FX slot - check if module is loaded with hierarchy */
                     const moduleData = masterFxConfig[selectedComp.key];
@@ -3085,9 +3298,26 @@ function handleBack() {
             }
             break;
         case VIEWS.MASTER_FX:
-            if (inMasterPresetPicker) {
+            if (masterShowingNamePreview) {
+                /* Cancel name preview */
+                masterShowingNamePreview = false;
+                needsRedraw = true;
+            } else if (masterConfirmingOverwrite) {
+                /* Cancel overwrite - return to settings */
+                masterConfirmingOverwrite = false;
+                needsRedraw = true;
+            } else if (masterConfirmingDelete) {
+                /* Cancel delete */
+                masterConfirmingDelete = false;
+                needsRedraw = true;
+            } else if (inMasterPresetPicker) {
                 /* Exit preset picker, return to FX list */
                 exitMasterPresetPicker();
+            } else if (inMasterFxSettingsMenu) {
+                /* Exit settings menu */
+                inMasterFxSettingsMenu = false;
+                editingMasterFxSetting = false;
+                needsRedraw = true;
             } else if (selectingMasterFxModule) {
                 /* Cancel module selection, return to chain view */
                 selectingMasterFxModule = false;
@@ -3808,12 +4038,125 @@ function drawKnobParamPicker() {
     }
 }
 
+/* ========== Master Preset Draw Functions ========== */
+
+function drawMasterNamePreview() {
+    drawHeader("Save As");
+
+    const name = truncateText(masterPendingSaveName, 20);
+    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
+
+    const listY = LIST_TOP_Y + 16;
+    for (let i = 0; i < 2; i++) {
+        const y = listY + i * LIST_LINE_HEIGHT;
+        const isSelected = i === masterNamePreviewIndex;
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+        print(LIST_LABEL_X, y, i === 0 ? "Edit" : "OK", isSelected ? 0 : 1);
+    }
+
+    drawFooter("Back: cancel");
+}
+
+function drawMasterConfirmOverwrite() {
+    drawHeader("Overwrite?");
+
+    const name = truncateText(masterPendingSaveName, 20);
+    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
+
+    const listY = LIST_TOP_Y + 16;
+    for (let i = 0; i < 2; i++) {
+        const y = listY + i * LIST_LINE_HEIGHT;
+        const isSelected = i === masterConfirmIndex;
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+        print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
+    }
+
+    drawFooter("Back: cancel");
+}
+
+function drawMasterConfirmDelete() {
+    drawHeader("Delete?");
+
+    const name = truncateText(currentMasterPresetName, 20);
+    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
+
+    const listY = LIST_TOP_Y + 16;
+    for (let i = 0; i < 2; i++) {
+        const y = listY + i * LIST_LINE_HEIGHT;
+        const isSelected = i === masterConfirmIndex;
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+        print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
+    }
+
+    drawFooter("Back: cancel");
+}
+
+function drawMasterFxSettingsMenu() {
+    const title = currentMasterPresetName || "Master FX";
+    drawHeader(truncateText(title, 18));
+
+    const items = getMasterFxSettingsItems();
+
+    drawMenuList({
+        items: items,
+        selectedIndex: selectedMasterFxSetting,
+        getLabel: (item) => {
+            if (item.type === "action") {
+                return item.label;
+            }
+            /* For volume, show current value */
+            return item.label;
+        },
+        listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_Y }
+    });
+
+    drawFooter("Back: FX chain");
+}
+
+/* ========== End Master Preset Draw Functions ========== */
+
 function drawMasterFx() {
     clear_screen();
+
+    /* Handle text entry (keyboard) */
+    if (isTextEntryActive()) {
+        drawTextEntry();
+        return;
+    }
+
+    /* Check if we're showing name preview */
+    if (masterShowingNamePreview) {
+        drawMasterNamePreview();
+        return;
+    }
+
+    /* Check if we're confirming overwrite */
+    if (masterConfirmingOverwrite) {
+        drawMasterConfirmOverwrite();
+        return;
+    }
+
+    /* Check if we're confirming delete */
+    if (masterConfirmingDelete) {
+        drawMasterConfirmDelete();
+        return;
+    }
 
     /* Check if we're in preset picker mode */
     if (inMasterPresetPicker) {
         drawMasterPresetPicker();
+        return;
+    }
+
+    /* Check if we're in settings submenu */
+    if (inMasterFxSettingsMenu) {
+        drawMasterFxSettingsMenu();
         return;
     }
 
