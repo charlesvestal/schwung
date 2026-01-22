@@ -2167,7 +2167,9 @@ static inline uint8_t shadow_chain_remap_channel(int slot, uint8_t status) {
 
 static int shadow_is_internal_control_note(uint8_t note)
 {
-    return (note < 10) || (note >= 16 && note <= 31) || (note >= 40 && note <= 43);
+    /* Capacitive touch (0-9) and track buttons (40-43) are internal.
+     * Note: Step buttons (16-31) are NOT included - they overlap with musical notes E0-G1. */
+    return (note < 10) || (note >= 40 && note <= 43);
 }
 
 /* Note: shadow_allow_midi_to_dsp and shadow_route_knob_cc_to_focused_slot removed.
@@ -2589,12 +2591,13 @@ static void shadow_inprocess_process_midi(void) {
 
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
-            /* Filter internal control notes: capacitive touch (0-9), step buttons (16-31), track buttons (40-43).
-             * Move may echo MIDI_IN to MIDI_OUT (through tracks), so we filter here. */
+            /* Filter internal control notes: capacitive touch (0-9), track buttons (40-43).
+             * Note: Step buttons (16-31) are NOT filtered - they overlap with musical notes E0-G1.
+             * Move's sequencer legitimately outputs notes in this range. */
             uint8_t status_type = status_usb & 0xF0;
             uint8_t note = pkt[2];
             if (status_type == 0x90 || status_type == 0x80) {
-                if (note < 10 || (note >= 16 && note <= 31) || (note >= 40 && note <= 43)) {
+                if (note < 10 || (note >= 40 && note <= 43)) {
                     continue;
                 }
             }
@@ -2607,11 +2610,13 @@ static void shadow_inprocess_process_midi(void) {
             }
         } else if ((status_raw & 0xF0) >= 0x80 && (status_raw & 0xF0) <= 0xE0) {
             if (pkt[1] <= 0x7F && pkt[2] <= 0x7F) {
-                /* Filter internal control notes (raw MIDI format: pkt[0]=status, pkt[1]=note) */
+                /* Filter internal control notes (raw MIDI format: pkt[0]=status, pkt[1]=note).
+                 * Only filter capacitive touch (0-9) and track buttons (40-43).
+                 * Note: Step buttons (16-31) are NOT filtered - they overlap with musical notes E0-G1. */
                 uint8_t status_type = status_raw & 0xF0;
                 uint8_t note = pkt[1];
                 if (status_type == 0x90 || status_type == 0x80) {
-                    if (note < 10 || (note >= 16 && note <= 31) || (note >= 40 && note <= 43)) {
+                    if (note < 10 || (note >= 40 && note <= 43)) {
                         continue;
                     }
                 }
