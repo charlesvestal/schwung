@@ -28,7 +28,9 @@
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
 #define SHADOW_TRACE_DEBUG 0     /* SPI/MIDI trace logging */
 
-unsigned char *global_mmap_addr = NULL;
+unsigned char *global_mmap_addr = NULL;  /* Points to shadow_mailbox (what Move sees) */
+unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
+static unsigned char shadow_mailbox[4096] __attribute__((aligned(64))); /* Shadow buffer for Move */
 FILE *output_file;
 int frame_counter = 0;
 
@@ -616,9 +618,7 @@ static void spi_trace_ioctl(unsigned long request, char *argp)
  * ============================================================================ */
 
 #define SHADOW_INPROCESS_POC 1
-#define SHADOW_DISABLE_POST_IOCTL_MIDI 0  /* Set to 1 to disable post-ioctl MIDI modifications for debugging */
-#define SHADOW_DISABLE_MIDI_ZEROING 0     /* Set to 1 to disable zeroing MIDI events (keeps forwarding) */
-#define SHADOW_ATOMIC_MIDI_FILTER 1       /* Set to 1 to use atomic copy-filter-replace for MIDI filtering */
+#define SHADOW_DISABLE_POST_IOCTL_MIDI 0  /* Set to 1 to disable post-ioctl MIDI forwarding for debugging */
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/move-anything/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/move-anything/modules/chain/dsp.so"
 #define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
@@ -3655,7 +3655,16 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 
     if (length == 4096)
     {
-        global_mmap_addr = result;
+        /* Store the real hardware mailbox address */
+        hardware_mmap_addr = result;
+
+        /* Give Move our shadow buffer instead - we'll sync in ioctl hook */
+        global_mmap_addr = shadow_mailbox;
+        memset(shadow_mailbox, 0, sizeof(shadow_mailbox));
+
+        printf("Shadow mailbox: Move sees %p, hardware at %p\n",
+               (void*)shadow_mailbox, result);
+
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
 #if SHADOW_INPROCESS_POC
@@ -3664,12 +3673,15 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         shadow_read_initial_volume();  /* Read initial master volume from settings */
         shadow_load_state();  /* Load saved slot volumes */
 #endif
+
+        /* Return shadow buffer to Move instead of hardware address */
+        printf("mmap hooked! addr=%p, length=%zu, prot=%d, flags=%d, fd=%d, offset=%lld, result=%p (returning shadow)\n",
+               addr, length, prot, flags, fd, (long long)offset, result);
+        return shadow_mailbox;
     }
 
     printf("mmap hooked! addr=%p, length=%zu, prot=%d, flags=%d, fd=%d, offset=%lld, result=%p\n",
            addr, length, prot, flags, fd, (long long)offset, result);
-
-    // output_file = fopen("spi_memory.txt", "w+");
 
     return result;
 }
@@ -4497,8 +4509,89 @@ do_ioctl:
     /* In baseline mode, pre_end wasn't set - set it now */
     if (baseline_mode) clock_gettime(CLOCK_MONOTONIC, &pre_end);
 
+    /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
+     * Copy shadow mailbox to hardware before ioctl.
+     * Move has been writing to shadow_mailbox; now we send that to hardware. */
+    if (hardware_mmap_addr) {
+        memcpy(hardware_mmap_addr, shadow_mailbox, MAILBOX_SIZE);
+    }
+
     /* === HARDWARE TRANSACTION === */
     int result = real_ioctl(fd, request, argp);
+
+    /* === SHADOW MAILBOX SYNC (POST-IOCTL) ===
+     * Copy hardware mailbox back to shadow, filtering MIDI_IN.
+     * Hardware has filled in new data; we filter it before Move sees it.
+     * This eliminates race conditions - Move only sees our shadow buffer. */
+    if (hardware_mmap_addr) {
+        /* Copy non-MIDI sections directly */
+        memcpy(shadow_mailbox + MIDI_OUT_OFFSET, hardware_mmap_addr + MIDI_OUT_OFFSET,
+               AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
+        memcpy(shadow_mailbox + AUDIO_OUT_OFFSET, hardware_mmap_addr + AUDIO_OUT_OFFSET,
+               DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
+        memcpy(shadow_mailbox + DISPLAY_OFFSET, hardware_mmap_addr + DISPLAY_OFFSET,
+               MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
+        memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
+               MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
+
+        /* Copy MIDI_IN with filtering when in shadow display mode */
+        uint8_t *hw_midi = hardware_mmap_addr + MIDI_IN_OFFSET;
+        uint8_t *sh_midi = shadow_mailbox + MIDI_IN_OFFSET;
+
+        if (shadow_display_mode && shadow_control) {
+            /* Filter MIDI_IN: zero out jog/back/knobs */
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t cin = hw_midi[j] & 0x0F;
+                uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+                uint8_t status = hw_midi[j + 1];
+                uint8_t type = status & 0xF0;
+                uint8_t d1 = hw_midi[j + 2];
+
+                int filter = 0;
+
+                /* Only filter internal cable (0x00) */
+                if (cable == 0x00) {
+                    /* CC messages: filter jog/back/menu controls */
+                    if (cin == 0x0B && type == 0xB0) {
+                        if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK ||
+                            d1 == CC_BACK || d1 == CC_UP || d1 == CC_DOWN) {
+                            filter = 1;
+                        }
+                        /* Filter knob CCs when shift held */
+                        if (d1 >= CC_KNOB1 && d1 <= CC_KNOB8) {
+                            filter = 1;
+                        }
+                    }
+                    /* Note messages: filter knob touches (0-9) */
+                    if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
+                        if (d1 <= 9) {
+                            filter = 1;
+                        }
+                    }
+                }
+
+                if (filter) {
+                    /* Zero the event in shadow buffer */
+                    sh_midi[j] = 0;
+                    sh_midi[j + 1] = 0;
+                    sh_midi[j + 2] = 0;
+                    sh_midi[j + 3] = 0;
+                } else {
+                    /* Copy event as-is */
+                    sh_midi[j] = hw_midi[j];
+                    sh_midi[j + 1] = hw_midi[j + 1];
+                    sh_midi[j + 2] = hw_midi[j + 2];
+                    sh_midi[j + 3] = hw_midi[j + 3];
+                }
+            }
+        } else {
+            /* Not in shadow mode - copy MIDI_IN directly */
+            memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
+        }
+
+        /* Memory barrier to ensure all writes are visible */
+        __sync_synchronize();
+    }
 
     /* Mark start of post-ioctl processing */
     clock_gettime(CLOCK_MONOTONIC, &post_start);
@@ -4508,9 +4601,10 @@ do_ioctl:
 
     /* === POST-IOCTL: TRACK BUTTON AND VOLUME KNOB DETECTION ===
      * Scan for track button CCs (40-43) for D-Bus volume sync,
-     * and volume knob touch (note 8) for master volume display reading. */
-    if (global_mmap_addr && shadow_inprocess_ready) {
-        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+     * and volume knob touch (note 8) for master volume display reading.
+     * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow_mailbox is already filtered. */
+    if (hardware_mmap_addr && shadow_inprocess_ready) {
+        uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
@@ -4707,109 +4801,35 @@ do_ioctl:
         /* Don't immediately clear - let timeout handle it for smooth experience */
     }
 
-    /* === POST-IOCTL: FILTER INCOMING MIDI ===
-     * MIDI INPUT comes FROM the hardware DURING the ioctl.
-     * We must filter AFTER ioctl returns, before Move reads the mailbox.
-     * This prevents jog/click/back from reaching Move while in shadow mode. */
+    /* === POST-IOCTL: FORWARD MIDI TO SHADOW UI AND HANDLE CAPTURE RULES ===
+     * Shadow mailbox sync already filtered MIDI_IN for Move.
+     * Here we scan the UNFILTERED hardware buffer to:
+     * 1. Forward relevant events to shadow_ui_midi_shm
+     * 2. Handle capture rules (route captured events to DSP) */
 #if !SHADOW_DISABLE_POST_IOCTL_MIDI
-/* Macro to invalidate MIDI event - can be disabled for debugging */
-#if SHADOW_DISABLE_MIDI_ZEROING
-#define ZERO_MIDI_EVENT(s, idx) do {} while(0)
-#else
-/* Instead of zeroing all bytes, set cable to 0x0F (unused) to invalidate.
- * This preserves packet structure while making Move ignore it. */
-#define ZERO_MIDI_EVENT(s, idx) do { s[idx] = (s[idx] & 0x0F) | 0xF0; } while(0)
-#endif
-    if (shadow_display_mode && shadow_control && global_mmap_addr) {
-        /* Pre-scan: check if there are any pad events (notes 68-99) in the buffer.
-         * If so, skip filtering entirely to avoid crash during rapid pad playing. */
-        int has_pad_events = 0;
-        {
-            uint8_t *scan = global_mmap_addr + MIDI_IN_OFFSET;
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
-                uint8_t cin = scan[j] & 0x0F;
-                uint8_t cable = (scan[j] >> 4) & 0x0F;
-                if (cable != 0x00) continue;
-                if (cin == 0x09 || cin == 0x08) {  /* Note On/Off */
-                    uint8_t note = scan[j + 2];
-                    if (note >= 68 && note <= 99) {  /* Pad notes */
-                        has_pad_events = 1;
-                        break;
-                    }
-                }
-            }
-        }
+    if (shadow_display_mode && shadow_control && hardware_mmap_addr) {
+        uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;  /* Scan unfiltered hardware buffer */
 
-        /* Skip filtering if pads are being played - prevents crash */
-        if (has_pad_events) {
-            /* Still forward events to shadow UI, but don't modify MIDI_IN */
-            uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
-                uint8_t cin = src[j] & 0x0F;
-                uint8_t cable = (src[j] >> 4) & 0x0F;
-                if (cin < 0x08 || cin > 0x0E) continue;
-                if (cable != 0x00) continue;
-
-                uint8_t status = src[j + 1];
-                uint8_t type = status & 0xF0;
-                uint8_t d1 = src[j + 2];
-                uint8_t d2 = src[j + 3];
-
-                /* Forward jog/knob/back CCs to shadow UI (but don't block from Move) */
-                if (type == 0xB0 && shadow_ui_midi_shm) {
-                    int forward = (d1 == 14 || d1 == 3 || d1 == 51 ||
-                                   (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78));
-                    if (forward) {
-                        for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                            if (shadow_ui_midi_shm[slot] == 0) {
-                                shadow_ui_midi_shm[slot] = 0x0B;
-                                shadow_ui_midi_shm[slot + 1] = status;
-                                shadow_ui_midi_shm[slot + 2] = d1;
-                                shadow_ui_midi_shm[slot + 3] = d2;
-                                shadow_control->midi_ready++;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            goto skip_midi_filter;
-        }
-
-#if SHADOW_ATOMIC_MIDI_FILTER
-        /* Atomic approach: copy buffer, filter copy, write back all at once */
-        static uint8_t midi_filter_buf[MIDI_BUFFER_SIZE];
-        memcpy(midi_filter_buf, global_mmap_addr + MIDI_IN_OFFSET, MIDI_BUFFER_SIZE);
-        uint8_t *src = midi_filter_buf;
-#else
-        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-#endif
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cin < 0x08 || cin > 0x0E) continue;
-            if (cable != 0x00) continue;  /* Only filter internal cable 0 (Move hardware) */
+            if (cable != 0x00) continue;  /* Only internal cable 0 (Move hardware) */
 
             uint8_t status = src[j + 1];
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
-            /* Handle CC events - block only specific controls needed for shadow UI */
+            /* Handle CC events */
             if (type == 0xB0) {
-                /* CCs to block from Move (intercept for shadow UI):
-                 * - CC 14 (jog wheel)
-                 * - CC 3 (jog click)
-                 * - CC 51 (back button)
+                /* CCs to forward to shadow UI:
+                 * - CC 14 (jog wheel), CC 3 (jog click), CC 51 (back)
+                 * - CC 40-43 (track buttons)
                  * - CC 71-78 (knobs) */
-                int block_from_move = (d1 == 14 || d1 == 3 || d1 == 51 ||
-                                       (d1 >= 71 && d1 <= 78));
+                int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
+                                         (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78));
 
-                /* CCs to forward to shadow UI but NOT block from Move:
-                 * - CC 40-43 (track buttons) - shadow uses for slot switching */
-                int forward_to_shadow = block_from_move || (d1 >= 40 && d1 <= 43);
-
-                /* Forward relevant CCs to shadow UI */
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
                         if (shadow_ui_midi_shm[slot] == 0) {
@@ -4823,12 +4843,9 @@ do_ioctl:
                     }
                 }
 
-                /* Knob CCs (71-78) are handled by shadow UI via set_param based on ui_hierarchy.
-                 * Do NOT route to DSP here - shadow UI controls knobs when in display mode. */
-                int is_knob_cc = (d1 >= 71 && d1 <= 78);
-
                 /* Check capture rules for CCs (beyond the hardcoded blocks) */
                 /* Skip knobs - they're handled by shadow UI, not routed to DSP */
+                int is_knob_cc = (d1 >= 71 && d1 <= 78);
                 {
                     const shadow_capture_rules_t *capture = shadow_get_focused_capture();
                     if (capture && capture_has_cc(capture, d1) && !is_knob_cc) {
@@ -4841,20 +4858,12 @@ do_ioctl:
                             shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                                       MOVE_MIDI_SOURCE_INTERNAL);
                         }
-                        /* Block from Move */
-                        ZERO_MIDI_EVENT(src, j);
-                        continue;
                     }
-                }
-
-                /* Only zero out blocked CCs - pass everything else to Move */
-                if (block_from_move) {
-                    ZERO_MIDI_EVENT(src, j);
                 }
                 continue;
             }
 
-            /* Handle note events - pass through most, block knob touches */
+            /* Handle note events */
             if (type == 0x90 || type == 0x80) {
                 /* Forward track notes (40-43) to shadow UI for slot switching */
                 if (d1 >= 40 && d1 <= 43 && shadow_ui_midi_shm) {
@@ -4868,7 +4877,6 @@ do_ioctl:
                             break;
                         }
                     }
-                    /* Don't zero - let track notes pass through to Move too */
                 }
 
                 /* Forward knob touch notes (0-7) to shadow UI for peek-at-value */
@@ -4885,13 +4893,6 @@ do_ioctl:
                     }
                 }
 
-                /* Knob touch notes 0-7 pass through to Move for touch-to-peek in Chain UI.
-                 * Note 9 is blocked as it's not a knob touch. */
-                if (d1 == 9) {
-                    ZERO_MIDI_EVENT(src, j);
-                    continue;
-                }
-
                 /* Check capture rules for focused slot.
                  * Never route knob touch notes (0-9) to DSP even if in capture rules. */
                 {
@@ -4906,29 +4907,11 @@ do_ioctl:
                             shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                                       MOVE_MIDI_SOURCE_INTERNAL);
                         }
-                        /* Block from Move */
-                        ZERO_MIDI_EVENT(src, j);
-                        continue;
                     }
                 }
-                /* Pass through: pads (68-99), tracks (40-43), steps (16-31), etc. */
                 continue;
             }
-
-            /* Pass aftertouch through to Move */
-            if (type == 0xA0 || type == 0xD0) {
-                continue;
-            }
-
-            /* Zero everything else */
-            ZERO_MIDI_EVENT(src, j);
         }
-#if SHADOW_ATOMIC_MIDI_FILTER
-        /* Copy filtered buffer back to MIDI_IN atomically */
-        memcpy(global_mmap_addr + MIDI_IN_OFFSET, midi_filter_buf, MIDI_BUFFER_SIZE);
-#endif
-skip_midi_filter:
-        ; /* Empty statement after label */
     }
 #endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
 
