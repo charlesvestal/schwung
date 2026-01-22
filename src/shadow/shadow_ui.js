@@ -4230,8 +4230,6 @@ function drawMasterFx() {
     infoLine = truncateText(infoLine, 24);
     const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
     print(infoX, infoY, infoLine, 1);
-
-    drawFooter("Click: select  Back: slots");
 }
 
 /* Draw module selection list for Master FX */
