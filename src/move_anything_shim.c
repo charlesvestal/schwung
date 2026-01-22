@@ -2512,6 +2512,15 @@ static void shadow_inprocess_handle_param_request(void) {
                                         shadow_param->key, shadow_param->value);
             shadow_param->error = 0;
             shadow_param->result_len = 0;
+
+            /* Activate slot when synth module is loaded */
+            if (strcmp(shadow_param->key, "synth:module") == 0) {
+                if (shadow_param->value[0] != '\0') {
+                    shadow_chain_slots[slot].active = 1;
+                } else {
+                    shadow_chain_slots[slot].active = 0;
+                }
+            }
         } else {
             shadow_param->error = 3;
             shadow_param->result_len = -1;
