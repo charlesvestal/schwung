@@ -1209,6 +1209,125 @@ function enterSlotSettings(slotIndex) {
     needsRedraw = true;
 }
 
+/* ========== Master Preset Picker Functions ========== */
+
+function loadMasterPresetList() {
+    masterPresets = [];
+    const countStr = getSlotParam(0, "master_preset_count");
+    const count = parseInt(countStr, 10) || 0;
+
+    for (let i = 0; i < count; i++) {
+        const name = getSlotParam(0, `master_preset_name_${i}`) || `Preset ${i + 1}`;
+        masterPresets.push({ name: name, index: i });
+    }
+}
+
+function enterMasterPresetPicker() {
+    loadMasterPresetList();
+    inMasterPresetPicker = true;
+    selectedMasterPresetIndex = 0;  /* Start at [New] */
+    needsRedraw = true;
+}
+
+function exitMasterPresetPicker() {
+    inMasterPresetPicker = false;
+    needsRedraw = true;
+}
+
+function drawMasterPresetPicker() {
+    drawHeader("Master Presets");
+
+    /* Build items: [New] + presets */
+    const items = [{ name: "[New]", index: -1 }];
+    for (let i = 0; i < masterPresets.length; i++) {
+        items.push(masterPresets[i]);
+    }
+
+    drawMenuList({
+        items: items,
+        selectedIndex: selectedMasterPresetIndex,
+        getLabel: (item) => {
+            const isCurrent = item.index >= 0 && masterPresets[item.index]?.name === currentMasterPresetName;
+            return isCurrent ? `► ${item.name}` : item.name;
+        },
+        listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_Y }
+    });
+
+    drawFooter("Back: cancel");
+}
+
+function findMasterPresetByName(name) {
+    for (let i = 0; i < masterPresets.length; i++) {
+        if (masterPresets[i].name === name) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function generateMasterPresetName() {
+    const parts = [];
+    for (let i = 0; i < 4; i++) {
+        const key = `fx${i + 1}`;
+        const moduleId = masterFxConfig[key]?.module;
+        if (moduleId) {
+            const abbrev = moduleAbbrevCache[moduleId] || moduleId.toUpperCase().slice(0, 3);
+            parts.push(abbrev);
+        }
+    }
+    return parts.length > 0 ? parts.join(" + ") : "Master FX";
+}
+
+function clearMasterFx() {
+    /* Clear all 4 FX slots */
+    for (let i = 0; i < 4; i++) {
+        setMasterFxSlotModule(i, "");
+        masterFxConfig[`fx${i + 1}`].module = "";
+    }
+    saveMasterFxChainConfig();
+    currentMasterPresetName = "";
+    needsRedraw = true;
+}
+
+function loadMasterPreset(index) {
+    /* Get preset JSON from DSP */
+    const json = getSlotParam(0, `master_preset_json_${index}`);
+    if (!json) return;
+
+    try {
+        const preset = JSON.parse(json);
+        const fx = preset.master_fx || {};
+
+        /* Apply each FX slot */
+        for (let i = 0; i < 4; i++) {
+            const key = `fx${i + 1}`;
+            const fxConfig = fx[key];
+            if (fxConfig && fxConfig.type) {
+                /* Find module path from type */
+                const opt = MASTER_FX_OPTIONS.find(o => o.id === fxConfig.type);
+                if (opt) {
+                    setMasterFxSlotModule(i, opt.dspPath || "");
+                    masterFxConfig[key].module = opt.id;
+                } else {
+                    /* Module not found - clear slot */
+                    setMasterFxSlotModule(i, "");
+                    masterFxConfig[key].module = "";
+                }
+            } else {
+                setMasterFxSlotModule(i, "");
+                masterFxConfig[key].module = "";
+            }
+        }
+
+        saveMasterFxChainConfig();
+    } catch (e) {
+        /* Parse error - ignore */
+    }
+    needsRedraw = true;
+}
+
+/* ========== End Master Preset Picker Functions ========== */
+
 function enterMasterFxSettings() {
     /* Scan for available audio_fx modules */
     MASTER_FX_OPTIONS = scanForAudioFxModules();
@@ -2483,12 +2602,20 @@ function handleJog(delta) {
             updateFocusedSlot(selectedSlot);
             break;
         case VIEWS.MASTER_FX:
-            if (selectingMasterFxModule) {
+            if (inMasterPresetPicker) {
+                /* Navigate preset picker */
+                const totalItems = 1 + masterPresets.length;  /* [New] + presets */
+                selectedMasterPresetIndex = Math.max(0, Math.min(totalItems - 1, selectedMasterPresetIndex + delta));
+            } else if (selectingMasterFxModule) {
                 /* Navigate module list */
                 selectedMasterFxModuleIndex = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFxModuleIndex + delta));
             } else {
-                /* Navigate chain components */
-                selectedMasterFxComponent = Math.max(0, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
+                /* Navigate chain components - scroll left from FX1 enters preset picker */
+                if (selectedMasterFxComponent === 0 && delta < 0) {
+                    enterMasterPresetPicker();
+                } else {
+                    selectedMasterFxComponent = Math.max(0, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
+                }
             }
             break;
         case VIEWS.SLOT_SETTINGS:
@@ -2590,7 +2717,21 @@ function handleSelect() {
             }
             break;
         case VIEWS.MASTER_FX:
-            if (selectingMasterFxModule) {
+            if (inMasterPresetPicker) {
+                /* Preset picker click */
+                if (selectedMasterPresetIndex === 0) {
+                    /* [New] - clear master FX and exit picker */
+                    clearMasterFx();
+                    currentMasterPresetName = "";
+                    exitMasterPresetPicker();
+                } else {
+                    /* Load selected preset */
+                    const preset = masterPresets[selectedMasterPresetIndex - 1];
+                    loadMasterPreset(preset.index);
+                    currentMasterPresetName = preset.name;
+                    exitMasterPresetPicker();
+                }
+            } else if (selectingMasterFxModule) {
                 /* Apply module selection */
                 applyMasterFxModuleSelection();
             } else {
@@ -2944,7 +3085,10 @@ function handleBack() {
             }
             break;
         case VIEWS.MASTER_FX:
-            if (selectingMasterFxModule) {
+            if (inMasterPresetPicker) {
+                /* Exit preset picker, return to FX list */
+                exitMasterPresetPicker();
+            } else if (selectingMasterFxModule) {
                 /* Cancel module selection, return to chain view */
                 selectingMasterFxModule = false;
                 needsRedraw = true;
@@ -3666,6 +3810,12 @@ function drawKnobParamPicker() {
 
 function drawMasterFx() {
     clear_screen();
+
+    /* Check if we're in preset picker mode */
+    if (inMasterPresetPicker) {
+        drawMasterPresetPicker();
+        return;
+    }
 
     /* Check if we're in module selection mode */
     if (selectingMasterFxModule) {
