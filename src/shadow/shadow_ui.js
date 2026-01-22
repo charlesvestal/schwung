@@ -2417,8 +2417,10 @@ function handleSelect() {
             break;
         case VIEWS.PATCHES:
             if (patches.length > 0) {
-                /* Load patch directly and return to slots */
+                /* Load patch and return to chain edit */
                 applyPatchSelection();
+                view = VIEWS.CHAIN_EDIT;
+                needsRedraw = true;
             }
             break;
         case VIEWS.PATCH_DETAIL:
@@ -2428,8 +2430,10 @@ function handleSelect() {
                 /* Enter component param editor */
                 enterComponentParams(selectedSlot, item.component);
             } else if (selectedDetailItem === detailItems.length - 1) {
-                /* "Load Patch" selected - apply and return to slots */
+                /* "Load Patch" selected - apply and return to chain edit */
                 applyPatchSelection();
+                view = VIEWS.CHAIN_EDIT;
+                needsRedraw = true;
             }
             break;
         case VIEWS.COMPONENT_PARAMS:
