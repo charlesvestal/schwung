@@ -1,5 +1,5 @@
 {
-    "name": "Line In + Reverb",
+    "name": "Line In + Freeverb",
     "version": 1,
     "chain": {
         "input": "both",
