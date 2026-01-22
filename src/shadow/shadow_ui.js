@@ -259,6 +259,22 @@ let overwriteFromKeyboard = false;  /* true if overwrite came from keyboard entr
 let showingNamePreview = false;     /* true when showing name preview with Edit/OK */
 let namePreviewIndex = 0;           /* 0 = Edit, 1 = OK */
 
+/* Master preset state */
+let masterPresets = [];              // List of {name, index} from /presets_master/
+let selectedMasterPresetIndex = 0;   // Index in picker (0 = [New])
+let currentMasterPresetName = "";    // Name of loaded preset ("" if new/unsaved)
+let inMasterPresetPicker = false;    // True when showing preset picker
+
+/* Master preset CRUD state (reuse pattern from slot presets) */
+let masterPendingSaveName = "";
+let masterOverwriteTargetIndex = -1;
+let masterConfirmingOverwrite = false;
+let masterConfirmingDelete = false;
+let masterConfirmIndex = 0;
+let masterOverwriteFromKeyboard = false;
+let masterShowingNamePreview = false;
+let masterNamePreviewIndex = 0;
+
 /* Shift state - read from shim via shadow_get_shift_held() */
 function isShiftHeld() {
     if (typeof shadow_get_shift_held === "function") {
