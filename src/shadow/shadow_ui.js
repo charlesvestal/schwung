@@ -3133,6 +3133,12 @@ function handleJog(delta) {
             /* Navigate available modules list */
             selectedModuleIndex = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
             break;
+        case VIEWS.STORE_PICKER_LIST:
+            handleStorePickerListJog(delta);
+            break;
+        case VIEWS.STORE_PICKER_DETAIL:
+            handleStorePickerDetailJog(delta);
+            break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
@@ -3392,6 +3398,15 @@ function handleSelect() {
         case VIEWS.COMPONENT_SELECT:
             /* Apply selected module to the component */
             applyComponentSelection();
+            break;
+        case VIEWS.STORE_PICKER_LIST:
+            handleStorePickerListSelect();
+            break;
+        case VIEWS.STORE_PICKER_DETAIL:
+            handleStorePickerDetailSelect();
+            break;
+        case VIEWS.STORE_PICKER_RESULT:
+            handleStorePickerResultSelect();
             break;
         case VIEWS.CHAIN_SETTINGS:
             {
@@ -3686,6 +3701,11 @@ function handleBack() {
             /* Return to chain edit */
             view = VIEWS.CHAIN_EDIT;
             needsRedraw = true;
+            break;
+        case VIEWS.STORE_PICKER_LIST:
+        case VIEWS.STORE_PICKER_DETAIL:
+        case VIEWS.STORE_PICKER_RESULT:
+            handleStorePickerBack();
             break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
