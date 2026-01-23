@@ -4136,6 +4136,68 @@ function drawStorePickerResult() {
     print(2, 55, "Press to continue", 0);
 }
 
+/* Draw store picker module detail */
+function drawStorePickerDetail() {
+    clear_screen();
+
+    const mod = storePickerCurrentModule;
+    if (!mod) return;
+
+    const status = getModuleStatus(mod, storeInstalledModules);
+
+    /* Header with name and version */
+    fill_rect(0, 0, 128, 11, 1);
+    let title = mod.name;
+    if (title.length > 14) title = title.substring(0, 13) + '~';
+    print(2, 1, title, 0);
+    print(90, 1, `v${mod.latest_version}`, 0);
+
+    /* Description */
+    const desc = mod.description || '';
+    const truncDesc = desc.length > 21 ? desc.substring(0, 18) + '...' : desc;
+    print(2, 14, truncDesc, 1);
+
+    /* Author */
+    print(2, 26, `by ${mod.author || 'Unknown'}`, 1);
+
+    /* Status line */
+    if (status.installed) {
+        if (status.hasUpdate) {
+            print(2, 38, `Installed: v${status.installedVersion}`, 1);
+        } else {
+            print(2, 38, "Installed", 1);
+        }
+    }
+
+    /* Action buttons */
+    let action1, action2;
+    if (status.installed) {
+        action1 = status.hasUpdate ? 'Update' : 'Reinstall';
+        action2 = 'Remove';
+    } else {
+        action1 = 'Install';
+        action2 = null;
+    }
+
+    const buttonY = 48;
+
+    if (storePickerActionIndex === 0) {
+        fill_rect(2, buttonY, 58, 12, 1);
+        print(4, buttonY + 2, `[${action1}]`, 0);
+    } else {
+        print(4, buttonY + 2, `[${action1}]`, 1);
+    }
+
+    if (action2) {
+        if (storePickerActionIndex === 1) {
+            fill_rect(66, buttonY, 58, 12, 1);
+            print(68, buttonY + 2, `[${action2}]`, 0);
+        } else {
+            print(68, buttonY + 2, `[${action2}]`, 1);
+        }
+    }
+}
+
 /* Draw component edit view (presets, params) */
 function drawComponentEdit() {
     clear_screen();
