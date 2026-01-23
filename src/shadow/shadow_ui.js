@@ -191,7 +191,7 @@ let masterFxConfig = {
     fx3: { module: "" },
     fx4: { module: "" }
 };
-let selectedMasterFxComponent = 0;    // 0-4: fx1, fx2, fx3, fx4, settings
+let selectedMasterFxComponent = 0;    // -1=preset, 0-4: fx1, fx2, fx3, fx4, settings
 let selectingMasterFxModule = false;  // True when selecting module for a component
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
 
@@ -1267,7 +1267,7 @@ function drawMasterPresetPicker() {
             const isCurrent = item.index >= 0 && masterPresets[item.index]?.name === currentMasterPresetName;
             return isCurrent ? `► ${item.name}` : item.name;
         },
-        listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_Y }
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
     });
 
     drawFooter("Back: cancel");
@@ -2118,7 +2118,7 @@ function loadHierarchyLevel() {
     } else {
         hierEditorIsPresetLevel = false;
         hierEditorPresetEditMode = false;
-        /* Append swap module action to params list */
+        /* Use hierarchy params for scrollable list, knobs for physical mapping */
         hierEditorParams = [...(levelDef.params || []), SWAP_MODULE_ACTION];
         hierEditorKnobs = levelDef.knobs || [];
     }
@@ -2266,6 +2266,23 @@ function buildKnobContextForKnob(knobIndex) {
     if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < CHAIN_COMPONENTS.length) {
         const comp = CHAIN_COMPONENTS[selectedChainComponent];
         if (comp && comp.key !== "settings") {
+            const pluginName = getSlotParam(selectedSlot, `${comp.key}:name`) || "";
+            const hasModule = pluginName && pluginName.length > 0;
+
+            /* No module loaded in this slot */
+            if (!hasModule) {
+                return {
+                    slot: selectedSlot,
+                    key: null,
+                    fullKey: null,
+                    meta: null,
+                    pluginName: comp.label,
+                    displayName: `Knob ${knobIndex + 1}`,
+                    title: `S${selectedSlot + 1} ${comp.label}`,
+                    noModule: true
+                };
+            }
+
             const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
             if (hierarchy && hierarchy.levels) {
                 let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
@@ -2281,7 +2298,6 @@ function buildKnobContextForKnob(knobIndex) {
                     const fullKey = `${comp.key}:${key}`;
                     const chainParams = getComponentChainParams(selectedSlot, comp.key);
                     const meta = chainParams.find(p => p.key === key);
-                    const pluginName = getSlotParam(selectedSlot, `${comp.key}:name`) || comp.label;
                     const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
                     return {
                         slot: selectedSlot,
@@ -2295,7 +2311,6 @@ function buildKnobContextForKnob(knobIndex) {
                 }
             }
             /* Component selected but no knob mappings - return generic context */
-            const pluginName = getSlotParam(selectedSlot, `${comp.key}:name`) || comp.label;
             return {
                 slot: selectedSlot,
                 key: null,
@@ -2313,6 +2328,27 @@ function buildKnobContextForKnob(knobIndex) {
     if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
         const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
         if (comp && comp.key !== "settings") {
+            const chainParams = getMasterFxChainParams(selectedMasterFxComponent);
+            const pluginName = shadow_get_param(0, `master_fx:${comp.key}:name`) || "";
+            const hasModule = pluginName && pluginName.length > 0;
+
+            /* No module loaded in this slot */
+            if (!hasModule) {
+                return {
+                    slot: 0,
+                    key: null,
+                    fullKey: null,
+                    meta: null,
+                    pluginName: comp.label,
+                    displayName: `Knob ${knobIndex + 1}`,
+                    title: `MFX ${comp.label}`,
+                    noModule: true,
+                    isMasterFx: true,
+                    masterFxSlot: selectedMasterFxComponent
+                };
+            }
+
+            /* Try ui_hierarchy first for explicit knob mappings */
             const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
             if (hierarchy && hierarchy.levels) {
                 let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
@@ -2326,9 +2362,7 @@ function buildKnobContextForKnob(knobIndex) {
                 if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
                     const key = levelDef.knobs[knobIndex];
                     const fullKey = `master_fx:${comp.key}:${key}`;
-                    const chainParams = getMasterFxChainParams(selectedMasterFxComponent);
                     const meta = chainParams.find(p => p.key === key);
-                    const pluginName = shadow_get_param(0, `master_fx:${comp.key}:name`) || comp.label;
                     const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
                     return {
                         slot: 0,  /* Master FX always uses slot 0 for param access */
@@ -2343,8 +2377,27 @@ function buildKnobContextForKnob(knobIndex) {
                     };
                 }
             }
-            /* FX slot selected but no knob mappings - return generic context */
-            const pluginName = shadow_get_param(0, `master_fx:${comp.key}:name`) || comp.label;
+
+            /* Fall back to chain_params: map first 8 params to knobs 1-8 */
+            if (chainParams && chainParams.length > 0 && knobIndex < chainParams.length) {
+                const param = chainParams[knobIndex];
+                const key = param.key;
+                const fullKey = `master_fx:${comp.key}:${key}`;
+                const displayName = param.name || key.replace(/_/g, " ");
+                return {
+                    slot: 0,
+                    key,
+                    fullKey,
+                    meta: param,
+                    pluginName,
+                    displayName,
+                    title: `MFX ${pluginName} ${displayName}`,
+                    isMasterFx: true,
+                    masterFxSlot: selectedMasterFxComponent
+                };
+            }
+
+            /* FX slot selected but no params available */
             return {
                 slot: 0,
                 key: null,
@@ -2417,7 +2470,10 @@ function showKnobOverlay(knobIndex, value) {
     const ctx = getKnobContext(knobIndex);
 
     if (ctx) {
-        if (ctx.noMapping) {
+        if (ctx.noModule) {
+            /* Show "No Module Selected" when no module is loaded in slot */
+            showOverlay(ctx.title, "No Module Selected");
+        } else if (ctx.noMapping) {
             /* Show "not mapped" for unmapped knob */
             showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
         } else if (ctx.fullKey) {
@@ -2447,6 +2503,12 @@ function adjustKnobAndShow(knobIndex, delta) {
     const ctx = getKnobContext(knobIndex);
 
     if (ctx) {
+        if (ctx.noModule) {
+            /* No module loaded - show "No Module Selected" */
+            showOverlay(ctx.title, "No Module Selected");
+            needsRedraw = true;
+            return true;
+        }
         if (ctx.noMapping || !ctx.fullKey) {
             /* No mapping - show "not mapped" */
             showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
@@ -2744,12 +2806,9 @@ function handleJog(delta) {
                 /* Navigate module list */
                 selectedMasterFxModuleIndex = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFxModuleIndex + delta));
             } else {
-                /* Navigate chain components - scroll left from FX1 enters preset picker */
-                if (selectedMasterFxComponent === 0 && delta < 0) {
-                    enterMasterPresetPicker();
-                } else {
-                    selectedMasterFxComponent = Math.max(0, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
-                }
+                /* Navigate chain components (-1 = preset selection, like instrument slots)
+                 * Preset picker is only accessible via click, not scroll */
+                selectedMasterFxComponent = Math.max(-1, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
             }
             break;
         case VIEWS.SLOT_SETTINGS:
@@ -2944,6 +3003,9 @@ function handleSelect() {
             } else if (selectingMasterFxModule) {
                 /* Apply module selection */
                 applyMasterFxModuleSelection();
+            } else if (selectedMasterFxComponent === -1) {
+                /* Preset selected - enter preset picker */
+                enterMasterPresetPicker();
             } else {
                 const selectedComp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
                 if (selectedComp.key === "settings") {
@@ -4113,7 +4175,7 @@ function drawMasterFxSettingsMenu() {
             /* For volume, show current value */
             return item.label;
         },
-        listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_Y }
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
     });
 
     drawFooter("Back: FX chain");
@@ -4176,6 +4238,8 @@ function drawMasterFx() {
     const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);
     const BOX_Y = 20;
 
+    const presetSelected = selectedMasterFxComponent === -1;
+
     /* Draw each component box */
     for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
         const comp = MASTER_FX_CHAIN_COMPONENTS[i];
@@ -4191,31 +4255,38 @@ function drawMasterFx() {
             abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
         }
 
-        /* Draw box */
-        if (isSelected) {
+        /* Draw box:
+         * - If preset selected (position -1): all boxes filled (inverted)
+         * - If individual component selected: that box filled
+         * - Otherwise: outlined box */
+        const fillBox = presetSelected || isSelected;
+        if (fillBox) {
             fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
         } else {
             draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
         }
 
         /* Draw abbreviation centered in box */
-        const textColor = isSelected ? 0 : 1;
+        const textColor = fillBox ? 0 : 1;
         const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
         const textY = BOX_Y + 5;
         print(textX, textY, abbrev, textColor);
     }
 
     /* Draw component label below boxes */
-    const selectedComp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+    const selectedComp = presetSelected ? null : MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
     const labelY = BOX_Y + BOX_H + 4;
-    const label = selectedComp ? selectedComp.label : "";
+    const label = presetSelected ? "Preset" : (selectedComp ? selectedComp.label : "");
     const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
     print(labelX, labelY, label, 1);
 
-    /* Draw current module name below label */
+    /* Draw current module name/preset below label */
     const infoY = labelY + 12;
     let infoLine = "";
-    if (selectedComp && selectedComp.key !== "settings") {
+    if (presetSelected) {
+        /* Show preset name when preset is selected */
+        infoLine = currentMasterPresetName || "(no preset)";
+    } else if (selectedComp && selectedComp.key !== "settings") {
         const moduleData = masterFxConfig[selectedComp.key];
         if (moduleData && moduleData.module) {
             /* Get display name from MASTER_FX_OPTIONS */

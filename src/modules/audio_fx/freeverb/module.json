@@ -10,6 +10,15 @@
   "capabilities": {
     "chainable": true,
     "component_type": "audio_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "Freeverb",
+          "params": ["room_size", "damping", "wet", "dry"],
+          "knobs": ["room_size", "damping", "wet", "dry"]
+        }
+      }
+    },
     "chain_params": [
       {
         "key": "room_size",

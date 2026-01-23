@@ -2460,6 +2460,126 @@ static void shadow_inprocess_handle_param_request(void) {
                 shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
                 shadow_param->error = 0;
                 shadow_param->result_len = strlen(shadow_param->value);
+            } else if (strcmp(param_key, "chain_params") == 0) {
+                /* Read chain_params from module.json
+                 * mfx->module_path is like: .../modules/audio_fx/cloudseed/cloudseed.so
+                 * We need: .../modules/audio_fx/cloudseed/module.json
+                 * So strip just the filename */
+                char module_dir[256];
+                strncpy(module_dir, mfx->module_path, sizeof(module_dir) - 1);
+                module_dir[sizeof(module_dir) - 1] = '\0';
+                char *last_slash = strrchr(module_dir, '/');
+                if (last_slash) *last_slash = '\0';  /* Remove filename */
+
+                char json_path[512];
+                snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
+
+                FILE *f = fopen(json_path, "r");
+                if (f) {
+                    fseek(f, 0, SEEK_END);
+                    long size = ftell(f);
+                    fseek(f, 0, SEEK_SET);
+                    /* Allow larger files - we only extract chain_params array */
+                    if (size > 0 && size < 32768) {
+                        char *json = malloc(size + 1);
+                        if (json) {
+                            fread(json, 1, size, f);
+                            json[size] = '\0';
+
+                            /* Find chain_params in capabilities */
+                            const char *chain_params = strstr(json, "\"chain_params\"");
+                            if (chain_params) {
+                                const char *arr_start = strchr(chain_params, '[');
+                                if (arr_start) {
+                                    int depth = 1;
+                                    const char *arr_end = arr_start + 1;
+                                    while (*arr_end && depth > 0) {
+                                        if (*arr_end == '[') depth++;
+                                        else if (*arr_end == ']') depth--;
+                                        arr_end++;
+                                    }
+                                    int len = (int)(arr_end - arr_start);
+                                    if (len > 0 && len < SHADOW_PARAM_VALUE_LEN - 1) {
+                                        memcpy(shadow_param->value, arr_start, len);
+                                        shadow_param->value[len] = '\0';
+                                        shadow_param->error = 0;
+                                        shadow_param->result_len = len;
+                                        free(json);
+                                        fclose(f);
+                                        shadow_param->response_ready = 1;
+                                        shadow_param->request_type = 0;
+                                        return;
+                                    }
+                                }
+                            }
+                            free(json);
+                        }
+                    }
+                    fclose(f);
+                }
+                /* Fall through if chain_params not found */
+                shadow_param->value[0] = '[';
+                shadow_param->value[1] = ']';
+                shadow_param->value[2] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = 2;
+            } else if (strcmp(param_key, "ui_hierarchy") == 0) {
+                /* Read ui_hierarchy from module.json */
+                char module_dir[256];
+                strncpy(module_dir, mfx->module_path, sizeof(module_dir) - 1);
+                module_dir[sizeof(module_dir) - 1] = '\0';
+                char *last_slash = strrchr(module_dir, '/');
+                if (last_slash) *last_slash = '\0';
+
+                char json_path[512];
+                snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
+
+                FILE *f = fopen(json_path, "r");
+                if (f) {
+                    fseek(f, 0, SEEK_END);
+                    long size = ftell(f);
+                    fseek(f, 0, SEEK_SET);
+                    /* Allow larger files - we only extract ui_hierarchy object */
+                    if (size > 0 && size < 32768) {
+                        char *json = malloc(size + 1);
+                        if (json) {
+                            fread(json, 1, size, f);
+                            json[size] = '\0';
+
+                            /* Find ui_hierarchy in capabilities */
+                            const char *ui_hier = strstr(json, "\"ui_hierarchy\"");
+                            if (ui_hier) {
+                                const char *obj_start = strchr(ui_hier + 14, '{');
+                                if (obj_start) {
+                                    int depth = 1;
+                                    const char *obj_end = obj_start + 1;
+                                    while (*obj_end && depth > 0) {
+                                        if (*obj_end == '{') depth++;
+                                        else if (*obj_end == '}') depth--;
+                                        obj_end++;
+                                    }
+                                    int len = (int)(obj_end - obj_start);
+                                    if (len > 0 && len < SHADOW_PARAM_VALUE_LEN - 1) {
+                                        memcpy(shadow_param->value, obj_start, len);
+                                        shadow_param->value[len] = '\0';
+                                        shadow_param->error = 0;
+                                        shadow_param->result_len = len;
+                                        free(json);
+                                        fclose(f);
+                                        shadow_param->response_ready = 1;
+                                        shadow_param->request_type = 0;
+                                        return;
+                                    }
+                                }
+                            }
+                            free(json);
+                        }
+                    }
+                    fclose(f);
+                }
+                /* ui_hierarchy not found - return null (will fall back to chain_params in JS) */
+                shadow_param->error = 12;
+                shadow_param->result_len = -1;
             } else if (mfx->api && mfx->instance && mfx->api->get_param) {
                 /* Get master FX param by key */
                 int len = mfx->api->get_param(mfx->instance, param_key,
@@ -2708,27 +2828,13 @@ static void shadow_inprocess_render_to_buffer(void) {
         }
     }
 
-    /* Apply master FX chain - process through all 4 slots in series */
-    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
-        master_fx_slot_t *slot = &shadow_master_fx_slots[fx];
-        if (slot->instance && slot->api && slot->api->process_block) {
-            slot->api->process_block(slot->instance, shadow_deferred_dsp_buffer, FRAMES_PER_BLOCK);
-        }
-    }
-
-    /* Apply master volume */
-    float mv = shadow_master_volume;
-    if (mv < 1.0f) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            shadow_deferred_dsp_buffer[i] = (int16_t)(shadow_deferred_dsp_buffer[i] * mv);
-        }
-    }
+    /* Note: Master FX is applied in mix_from_buffer() AFTER mixing with Move's audio */
 
     shadow_deferred_dsp_valid = 1;
 }
 
 /* Mix from pre-rendered buffer (fast, ~5µs) - called PRE-ioctl
- * Just mixes the previously-rendered DSP into Move's audio output.
+ * Mixes shadow DSP with Move's audio, then applies Master FX to combined audio.
  */
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
@@ -2742,6 +2848,22 @@ static void shadow_inprocess_mix_from_buffer(void) {
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
+    }
+
+    /* Apply master FX chain to combined audio - process through all 4 slots in series */
+    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+        master_fx_slot_t *s = &shadow_master_fx_slots[fx];
+        if (s->instance && s->api && s->api->process_block) {
+            s->api->process_block(s->instance, mailbox_audio, FRAMES_PER_BLOCK);
+        }
+    }
+
+    /* Apply master volume */
+    float mv = shadow_master_volume;
+    if (mv < 1.0f) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            mailbox_audio[i] = (int16_t)(mailbox_audio[i] * mv);
+        }
     }
 }
 
@@ -4379,6 +4501,7 @@ int ioctl(int fd, unsigned long request, ...)
     static uint8_t slice_fresh[6] = {0};  /* Reset each time we want new capture */
     static int volume_capture_active = 0;
     static int volume_capture_cooldown = 0;
+    static int volume_capture_warmup = 0;  /* Wait for Move to render overlay */
 
     if (global_mmap_addr && !shadow_display_mode) {
         uint8_t *mem = (uint8_t *)global_mmap_addr;
@@ -4395,7 +4518,14 @@ int ioctl(int fd, unsigned long request, ...)
         if (shadow_volume_knob_touched && shadow_held_track < 0) {
             if (!volume_capture_active) {
                 volume_capture_active = 1;
+                volume_capture_warmup = 18;  /* Wait ~3 frames (6 slices * 3) for overlay to render */
                 memset(slice_fresh, 0, 6);  /* Reset freshness */
+            }
+
+            /* Decrement warmup and skip reading until warmup complete */
+            if (volume_capture_warmup > 0) {
+                volume_capture_warmup--;
+                memset(slice_fresh, 0, 6);  /* Discard stale slices during warmup */
             }
 
             /* Check if all slices are fresh */
@@ -4449,6 +4579,7 @@ int ioctl(int fd, unsigned long request, ...)
             }
         } else {
             volume_capture_active = 0;
+            volume_capture_warmup = 0;  /* Reset warmup for next touch */
         }
 
         if (volume_capture_cooldown > 0) volume_capture_cooldown--;
