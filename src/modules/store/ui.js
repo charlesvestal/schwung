@@ -24,13 +24,18 @@ import {
     menuLayoutDefaults
 } from '/data/UserData/move-anything/shared/menu_layout.mjs';
 
-/* Constants */
-const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json';
-const CATALOG_CACHE_PATH = '/data/UserData/move-anything/catalog-cache.json';
-const MODULES_DIR = '/data/UserData/move-anything/modules';
-const BASE_DIR = '/data/UserData/move-anything';
-const TMP_DIR = '/data/UserData/move-anything/tmp';
-const HOST_VERSION_FILE = '/data/UserData/move-anything/host/version.txt';
+import {
+    CATALOG_URL, CATALOG_CACHE_PATH, MODULES_DIR, BASE_DIR, TMP_DIR, HOST_VERSION_FILE,
+    CATEGORIES,
+    compareVersions, isNewerVersion, getInstallSubdir,
+    fetchReleaseJson,
+    installModule as sharedInstallModule,
+    removeModule as sharedRemoveModule,
+    scanInstalledModules as sharedScanInstalledModules,
+    getHostVersion as sharedGetHostVersion,
+    getModulesForCategory as sharedGetModulesForCategory,
+    getModuleStatus as sharedGetModuleStatus
+} from '/data/UserData/move-anything/shared/store_utils.mjs';
 /* UI States */
 const STATE_LOADING = 'loading';
 const STATE_ERROR = 'error';
@@ -45,25 +50,7 @@ const STATE_UPDATING_HOST = 'updating_host';
 const STATE_UPDATE_ALL = 'update_all';
 const STATE_UPDATING_ALL = 'updating_all';
 
-/* Categories - host update shown separately at top */
-const CATEGORIES = [
-    { id: 'sound_generator', name: 'Sound Generators' },
-    { id: 'audio_fx', name: 'Audio FX' },
-    { id: 'midi_fx', name: 'MIDI FX' },
-    { id: 'midi_source', name: 'MIDI Sources' },
-    { id: 'utility', name: 'Utilities' }
-];
-
-/* Get install subdirectory based on component_type */
-function getInstallSubdir(componentType) {
-    switch (componentType) {
-        case 'sound_generator': return 'sound_generators';
-        case 'audio_fx': return 'audio_fx';
-        case 'midi_fx': return 'midi_fx';
-        case 'utility': return 'utilities';
-        default: return 'other';
-    }
-}
+/* CATEGORIES and getInstallSubdir imported from store_utils.mjs */
 
 /* State */
 let state = STATE_LOADING;
@@ -92,59 +79,7 @@ const CC_BACK = MoveBack;
 const CC_UP = MoveUp;
 const CC_DOWN = MoveDown;
 
-/* Compare semver versions: returns 1 if a > b, -1 if a < b, 0 if equal */
-function compareVersions(a, b) {
-    const partsA = a.split('.').map(n => parseInt(n, 10) || 0);
-    const partsB = b.split('.').map(n => parseInt(n, 10) || 0);
-
-    for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-        const numA = partsA[i] || 0;
-        const numB = partsB[i] || 0;
-        if (numA > numB) return 1;
-        if (numA < numB) return -1;
-    }
-    return 0;
-}
-
-/* Check if version a is newer than version b */
-function isNewerVersion(a, b) {
-    return compareVersions(a, b) > 0;
-}
-
-/* Fetch release info from release.json in repo (high rate limits via raw.githubusercontent.com) */
-function fetchReleaseJson(github_repo) {
-    const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
-    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
-
-    /* Download release.json */
-    const success = host_http_download(releaseUrl, cacheFile);
-    if (!success) {
-        console.log(`Failed to fetch release.json for ${github_repo}`);
-        return null;
-    }
-
-    try {
-        const jsonStr = std.loadFile(cacheFile);
-        if (!jsonStr) return null;
-
-        const release = JSON.parse(jsonStr);
-
-        /* release.json format: { "version": "x.y.z", "download_url": "...", "install_path": "..." } */
-        if (!release.version || !release.download_url) {
-            console.log(`Invalid release.json format for ${github_repo}`);
-            return null;
-        }
-
-        return {
-            version: release.version,
-            download_url: release.download_url,
-            install_path: release.install_path || ''
-        };
-    } catch (e) {
-        console.log(`Failed to parse release.json for ${github_repo}: ${e}`);
-        return null;
-    }
-}
+/* compareVersions, isNewerVersion, fetchReleaseJson imported from store_utils.mjs */
 
 /* Fetch release info for all modules in catalog */
 function fetchAllReleaseInfo() {
@@ -192,19 +127,9 @@ function fetchAllReleaseInfo() {
     }
 }
 
-/* Get current host version */
+/* Get current host version - wrapper that updates global state */
 function getHostVersion() {
-    try {
-        const versionStr = std.loadFile(HOST_VERSION_FILE);
-        if (versionStr) {
-            hostVersion = versionStr.trim();
-            return;
-        }
-    } catch (e) {
-        /* Fall through */
-    }
-    /* Default if no version file */
-    hostVersion = '1.0.0';
+    hostVersion = sharedGetHostVersion();
 }
 
 /* Check if host update is available */
@@ -256,29 +181,19 @@ function updateHost() {
     resultMessage = 'Updated! Restart to apply';
 }
 
-/* Scan installed modules */
+/* Scan installed modules - wrapper that updates global state */
 function scanInstalledModules() {
-    installedModules = {};
-    const modules = host_list_modules();
-    for (const mod of modules) {
-        installedModules[mod.id] = mod.version;
-    }
+    installedModules = sharedScanInstalledModules();
 }
 
-/* Get modules for current category */
+/* Get modules for current category - wrapper using global catalog */
 function getModulesForCategory(categoryId) {
-    if (!catalog || !catalog.modules) return [];
-    return catalog.modules.filter(m => m.component_type === categoryId);
+    return sharedGetModulesForCategory(catalog, categoryId);
 }
 
-/* Get module install status */
+/* Get module install status - wrapper using global installedModules */
 function getModuleStatus(mod) {
-    const installedVersion = installedModules[mod.id];
-    if (!installedVersion) {
-        return { installed: false, hasUpdate: false };
-    }
-    const hasUpdate = isNewerVersion(mod.latest_version, installedVersion);
-    return { installed: true, hasUpdate };
+    return sharedGetModuleStatus(mod, installedModules);
 }
 
 /* Get all modules that have updates available */
@@ -415,97 +330,44 @@ function loadCatalogFromCache() {
     }
 }
 
-/* Install a module */
+/* Install a module - wrapper with UI state management */
 function installModule(mod) {
-    /* Check host version compatibility */
-    if (mod.min_host_version && compareVersions(mod.min_host_version, hostVersion) > 0) {
-        state = STATE_RESULT;
-        resultMessage = `Requires host v${mod.min_host_version}`;
-        return;
-    }
-
-    /* Check if module has a download URL */
-    if (!mod.download_url) {
-        state = STATE_RESULT;
-        resultMessage = 'No release available';
-        return;
-    }
-
     state = STATE_INSTALLING;
     loadingTitle = 'Downloading';
     loadingMessage = `${mod.name} v${mod.latest_version}`;
-
-    /* Force display update before blocking download */
     draw();
     host_flush_display();
 
-    const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
+    const result = sharedInstallModule(mod, hostVersion);
 
-    /* Download the module tarball */
-    console.log(`Downloading: ${mod.download_url}`);
-    const downloadOk = host_http_download(mod.download_url, tarPath);
-    if (!downloadOk) {
-        state = STATE_RESULT;
-        resultMessage = 'Download failed (404?)';
-        console.log('Download failed');
-        return;
-    }
-
-    loadingTitle = 'Installing';
-    loadingMessage = `${mod.name} v${mod.latest_version}`;
-    draw();
-    host_flush_display();
-
-    /* Determine extraction path based on component_type */
-    const subdir = getInstallSubdir(mod.component_type);
-    const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
-
-    /* Extract to appropriate directory */
-    const extractOk = host_extract_tar(tarPath, extractDir);
-    if (!extractOk) {
-        state = STATE_RESULT;
-        resultMessage = 'Extract failed';
-        return;
-    }
-
-    /* Rescan modules */
-    host_rescan_modules();
     scanInstalledModules();
-
     state = STATE_RESULT;
-    resultMessage = `Installed ${mod.name}`;
+
+    if (result.success) {
+        resultMessage = `Installed ${mod.name}`;
+    } else {
+        resultMessage = result.error || 'Install failed';
+    }
 }
 
-/* Remove a module */
+/* Remove a module - wrapper with UI state management */
 function removeModule(mod) {
     state = STATE_REMOVING;
     loadingTitle = 'Removing';
     loadingMessage = mod.name;
-
-    /* Force display update before blocking operation */
     draw();
     host_flush_display();
 
-    /* Determine module path based on component_type */
-    const subdir = getInstallSubdir(mod.component_type);
-    const modulePath = subdir
-        ? `${MODULES_DIR}/${subdir}/${mod.id}`
-        : `${MODULES_DIR}/${mod.id}`;
+    const result = sharedRemoveModule(mod);
 
-    /* Remove the module directory */
-    const removeOk = host_remove_dir(modulePath);
-    if (!removeOk) {
-        state = STATE_RESULT;
-        resultMessage = 'Remove failed';
-        return;
-    }
-
-    /* Rescan modules */
-    host_rescan_modules();
     scanInstalledModules();
-
     state = STATE_RESULT;
-    resultMessage = `Removed ${mod.name}`;
+
+    if (result.success) {
+        resultMessage = `Removed ${mod.name}`;
+    } else {
+        resultMessage = result.error || 'Remove failed';
+    }
 }
 
 /* Get total items in categories view (includes host update and update all if available) */
