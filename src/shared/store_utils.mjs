@@ -80,7 +80,13 @@ export function fetchReleaseJson(github_repo) {
         return {
             version: release.version,
             download_url: release.download_url,
-            install_path: release.install_path || ''
+            install_path: release.install_path || '',
+            /* New fields for module metadata */
+            name: release.name || '',
+            description: release.description || '',
+            requires: release.requires || '',
+            post_install: release.post_install || '',
+            repo_url: release.repo_url || ''
         };
     } catch (e) {
         console.log(`Failed to parse release.json for ${github_repo}: ${e}`);
@@ -139,6 +145,12 @@ export function loadCatalogFromCache(onProgress) {
                         mod.latest_version = release.version;
                         mod.download_url = release.download_url;
                         mod.install_path = release.install_path;
+                        /* Merge new fields, preferring release.json over catalog */
+                        if (release.name) mod.name = release.name;
+                        if (release.description) mod.description = release.description;
+                        mod.requires = release.requires;
+                        mod.post_install = release.post_install;
+                        mod.repo_url = release.repo_url;
                     } else {
                         mod.latest_version = '0.0.0';
                         mod.download_url = null;
