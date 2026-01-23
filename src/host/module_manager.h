@@ -103,6 +103,10 @@ void mm_set_param(module_manager_t *mm, const char *key, const char *val);
 /* Get parameter from current module */
 int mm_get_param(module_manager_t *mm, const char *key, char *buf, int buf_len);
 
+/* Get error message from current module (if in error state)
+ * Returns: length written, or 0 if no error */
+int mm_get_error(module_manager_t *mm, char *buf, int buf_len);
+
 /* Render audio block from current module, writes to mailbox */
 void mm_render_block(module_manager_t *mm);
 

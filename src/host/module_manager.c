@@ -454,6 +454,15 @@ int mm_get_param(module_manager_t *mm, const char *key, char *buf, int buf_len) 
     return -1;
 }
 
+int mm_get_error(module_manager_t *mm, char *buf, int buf_len) {
+    if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->get_error) {
+        return mm->plugin_v2->get_error(mm->plugin_instance, buf, buf_len);
+    } else if (mm->plugin && mm->plugin->get_error) {
+        return mm->plugin->get_error(buf, buf_len);
+    }
+    return 0;  /* No error */
+}
+
 void mm_render_block(module_manager_t *mm) {
     if (mm->plugin_v2 && mm->plugin_instance && mm->plugin_v2->render_block) {
         mm->plugin_v2->render_block(mm->plugin_instance, mm->audio_out_buffer, MOVE_FRAMES_PER_BLOCK);
