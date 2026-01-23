@@ -45,12 +45,21 @@ import {
     drawMenuFooter as drawFooter,
     drawMenuList,
     drawStatusOverlay,
+    drawMessageOverlay,
     showOverlay,
     hideOverlay,
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults
 } from '/data/UserData/move-anything/shared/menu_layout.mjs';
+
+import {
+    wrapText,
+    createScrollableText,
+    handleScrollableTextJog,
+    isActionSelected,
+    drawScrollableText
+} from '/data/UserData/move-anything/shared/scrollable_text.mjs';
 
 import {
     fetchCatalog, getModulesForCategory, getModuleStatus,
@@ -109,7 +118,8 @@ const VIEWS = {
     STORE_PICKER_LIST: "storepickerlist",     // Store: browse modules for category
     STORE_PICKER_DETAIL: "storepickerdetail", // Store: module info and actions
     STORE_PICKER_LOADING: "storepickerloading", // Store: fetching catalog or installing
-    STORE_PICKER_RESULT: "storepickerresult"  // Store: success/error message
+    STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
+    STORE_PICKER_POST_INSTALL: "storepickerpostinstall"  // Store: post-install message
 };
 
 /* Special action key for swap module option */
@@ -320,6 +330,8 @@ let storePickerMessage = '';           // Result/error message
 let storePickerLoadingTitle = '';      // Loading screen title
 let storePickerLoadingMessage = '';    // Loading screen message
 let storeFetchPending = false;         // True while catalog fetch in progress
+let storeDetailScrollState = null;     // Scroll state for module detail
+let storePostInstallLines = [];        // Post-install message lines
 
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
@@ -1818,13 +1830,10 @@ function handleStorePickerListJog(delta) {
 
 /* Handle jog wheel in store picker detail */
 function handleStorePickerDetailJog(delta) {
-    const status = getModuleStatus(storePickerCurrentModule, storeInstalledModules);
-    const maxAction = status.installed ? 1 : 0;
-
-    storePickerActionIndex += delta;
-    if (storePickerActionIndex < 0) storePickerActionIndex = 0;
-    if (storePickerActionIndex > maxAction) storePickerActionIndex = maxAction;
-    needsRedraw = true;
+    if (storeDetailScrollState) {
+        handleScrollableTextJog(storeDetailScrollState, delta);
+        needsRedraw = true;
+    }
 }
 
 /* Handle selection in store picker list */
@@ -1840,28 +1849,24 @@ function handleStorePickerListSelect() {
 /* Handle selection in store picker detail */
 function handleStorePickerDetailSelect() {
     debugLog(`handleStorePickerDetailSelect: starting`);
+
+    /* Can't click until action is selected */
+    if (!storeDetailScrollState || !isActionSelected(storeDetailScrollState)) {
+        debugLog(`handleStorePickerDetailSelect: action not selected`);
+        return;
+    }
+
     const mod = storePickerCurrentModule;
     if (!mod) {
         debugLog(`handleStorePickerDetailSelect: no mod`);
         return;
     }
 
-    debugLog(`handleStorePickerDetailSelect: mod=${mod.id}, actionIndex=${storePickerActionIndex}`);
-    debugLog(`handleStorePickerDetailSelect: getting status`);
-    const status = getModuleStatus(mod, storeInstalledModules);
-    debugLog(`handleStorePickerDetailSelect: got status`);
+    debugLog(`handleStorePickerDetailSelect: mod=${mod.id}`);
 
     view = VIEWS.STORE_PICKER_LOADING;
-
-    if (storePickerActionIndex === 0) {
-        /* Install/Update/Reinstall */
-        storePickerLoadingTitle = 'Installing';
-        storePickerLoadingMessage = mod.name;
-    } else {
-        /* Remove */
-        storePickerLoadingTitle = 'Removing';
-        storePickerLoadingMessage = mod.name;
-    }
+    storePickerLoadingTitle = 'Installing';
+    storePickerLoadingMessage = mod.name;
 
     debugLog(`handleStorePickerDetailSelect: before draw`);
     /* Show loading screen before blocking operation */
@@ -1870,35 +1875,26 @@ function handleStorePickerDetailSelect() {
     host_flush_display();
     debugLog(`handleStorePickerDetailSelect: after flush`);
 
-    debugLog(`handleStorePickerDetailSelect: calling operation`);
+    debugLog(`handleStorePickerDetailSelect: calling sharedInstallModule`);
+    const result = sharedInstallModule(mod, storeHostVersion);
+    debugLog(`handleStorePickerDetailSelect: install result=${JSON.stringify(result)}`);
 
-    if (storePickerActionIndex === 0) {
-        debugLog(`handleStorePickerDetailSelect: calling sharedInstallModule`);
-        const result = sharedInstallModule(mod, storeHostVersion);
-        debugLog(`handleStorePickerDetailSelect: install result=${JSON.stringify(result)}`);
-
-        if (result.success) {
-            storeInstalledModules = scanInstalledModules();
-            storePickerMessage = `Installed ${mod.name}`;
+    if (result.success) {
+        storeInstalledModules = scanInstalledModules();
+        /* Check for post_install message */
+        if (mod.post_install) {
+            storePostInstallLines = wrapText(mod.post_install, 18);
+            view = VIEWS.STORE_PICKER_POST_INSTALL;
         } else {
-            storePickerMessage = result.error || 'Install failed';
+            storePickerMessage = `Installed ${mod.name}`;
+            view = VIEWS.STORE_PICKER_RESULT;
         }
     } else {
-        /* Remove */
-        debugLog(`handleStorePickerDetailSelect: calling sharedRemoveModule`);
-        const result = sharedRemoveModule(mod);
-        debugLog(`handleStorePickerDetailSelect: remove result=${JSON.stringify(result)}`);
-
-        if (result.success) {
-            storeInstalledModules = scanInstalledModules();
-            storePickerMessage = `Removed ${mod.name}`;
-        } else {
-            storePickerMessage = result.error || 'Remove failed';
-        }
+        storePickerMessage = result.error || 'Install failed';
+        view = VIEWS.STORE_PICKER_RESULT;
     }
 
-    debugLog(`handleStorePickerDetailSelect: done, message=${storePickerMessage}`);
-    view = VIEWS.STORE_PICKER_RESULT;
+    debugLog(`handleStorePickerDetailSelect: done`);
     needsRedraw = true;
 }
 
@@ -1924,11 +1920,17 @@ function handleStorePickerBack() {
             /* Return to list */
             view = VIEWS.STORE_PICKER_LIST;
             storePickerCurrentModule = null;
+            storeDetailScrollState = null;
             break;
         case VIEWS.STORE_PICKER_RESULT:
             /* Return to list */
             view = VIEWS.STORE_PICKER_LIST;
             storePickerCurrentModule = null;
+            break;
+        case VIEWS.STORE_PICKER_POST_INSTALL:
+            /* Dismiss post-install, go to result */
+            storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
+            view = VIEWS.STORE_PICKER_RESULT;
             break;
         case VIEWS.STORE_PICKER_LOADING:
             /* Allow cancel during loading - return to component select */
@@ -3440,6 +3442,12 @@ function handleSelect() {
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerResultSelect();
             break;
+        case VIEWS.STORE_PICKER_POST_INSTALL:
+            /* Dismiss post-install, go to result */
+            storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
+            view = VIEWS.STORE_PICKER_RESULT;
+            needsRedraw = true;
+            break;
         case VIEWS.CHAIN_SETTINGS:
             {
                 if (showingNamePreview) {
@@ -3737,6 +3745,7 @@ function handleBack() {
         case VIEWS.STORE_PICKER_LIST:
         case VIEWS.STORE_PICKER_DETAIL:
         case VIEWS.STORE_PICKER_RESULT:
+        case VIEWS.STORE_PICKER_POST_INSTALL:
             handleStorePickerBack();
             break;
         case VIEWS.CHAIN_SETTINGS:
@@ -4275,7 +4284,7 @@ function drawStorePickerDetail() {
 
     const status = getModuleStatus(mod, storeInstalledModules);
 
-    /* Header with name and version - match regular store format */
+    /* Header with name and version */
     let title = mod.name;
     let versionStr = `v${mod.latest_version}`;
     if (status.installed && status.hasUpdate) {
@@ -4286,44 +4295,45 @@ function drawStorePickerDetail() {
     }
     drawHeader(title, versionStr);
 
-    /* Description */
-    const desc = mod.description || '';
-    const truncDesc = desc.length > 20 ? desc.substring(0, 17) + '...' : desc;
-    print(2, 16, truncDesc, 1);
+    /* Initialize scroll state if needed */
+    if (!storeDetailScrollState || storeDetailScrollState.moduleId !== mod.id) {
+        const descLines = wrapText(mod.description || 'No description available.', 20);
 
-    /* Author */
-    print(2, 28, `by ${mod.author || 'Unknown'}`, 1);
+        /* Add author */
+        descLines.push('');
+        descLines.push(`by ${mod.author || 'Unknown'}`);
 
-    /* Divider */
-    fill_rect(0, 38, 128, 1, 1);
-
-    /* Action buttons - match regular store layout */
-    let action1, action2;
-    if (status.installed) {
-        action1 = status.hasUpdate ? 'Update' : 'Reinstall';
-        action2 = 'Remove';
-    } else {
-        action1 = 'Install';
-        action2 = null;
-    }
-
-    const buttonY = 44;
-
-    if (storePickerActionIndex === 0) {
-        fill_rect(2, buttonY - 1, 60, 12, 1);
-        print(4, buttonY, `[${action1}]`, 0);
-    } else {
-        print(4, buttonY, `[${action1}]`, 1);
-    }
-
-    if (action2) {
-        if (storePickerActionIndex === 1) {
-            fill_rect(66, buttonY - 1, 58, 12, 1);
-            print(68, buttonY, `[${action2}]`, 0);
-        } else {
-            print(68, buttonY, `[${action2}]`, 1);
+        /* Add requires line if present */
+        if (mod.requires) {
+            descLines.push('');
+            descLines.push('Requires:');
+            const reqLines = wrapText(mod.requires, 18);
+            descLines.push(...reqLines);
         }
+
+        /* Determine action label */
+        let actionLabel;
+        if (status.installed) {
+            actionLabel = status.hasUpdate ? 'Update' : 'Reinstall';
+        } else {
+            actionLabel = 'Install';
+        }
+
+        storeDetailScrollState = createScrollableText({
+            lines: descLines,
+            actionLabel,
+            visibleLines: 4
+        });
+        storeDetailScrollState.moduleId = mod.id;
     }
+
+    /* Draw scrollable content */
+    drawScrollableText({
+        state: storeDetailScrollState,
+        topY: 16,
+        bottomY: 48,
+        actionY: 52
+    });
 }
 
 /* Draw component edit view (presets, params) */
@@ -4937,6 +4947,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.STORE_PICKER_RESULT:
             drawStorePickerResult();
+            break;
+        case VIEWS.STORE_PICKER_POST_INSTALL:
+            drawMessageOverlay('Install Complete', storePostInstallLines);
             break;
         default:
             drawSlots();
