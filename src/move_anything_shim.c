@@ -4692,6 +4692,10 @@ do_ioctl:
                         if (d1 >= CC_KNOB1 && d1 <= CC_KNOB8) {
                             filter = 1;
                         }
+                        /* Filter Menu CC when Shift+Volume shortcut is active */
+                        if (d1 == CC_MENU && shadow_shift_held && shadow_volume_knob_touched) {
+                            filter = 1;
+                        }
                     }
                     /* Note messages: filter knob touches (0-9) */
                     if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
