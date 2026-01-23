@@ -316,4 +316,34 @@ export function drawStatusOverlay(title, message) {
     print(Math.floor((SCREEN_WIDTH - msgW) / 2), boxY + 24, message, 1);
 }
 
+/**
+ * Draw a post-install or error message overlay with multiple lines
+ * @param {string} title - Title (e.g., "Install Complete" or "Load Error")
+ * @param {string[]} messageLines - Pre-wrapped message lines
+ */
+export function drawMessageOverlay(title, messageLines) {
+    const lineCount = Math.min(messageLines ? messageLines.length : 0, 4);
+    const boxHeight = 24 + lineCount * 10;
+    const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;
+    const boxY = (SCREEN_HEIGHT - boxHeight) / 2;
+
+    /* Background and double border */
+    fill_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 0);
+    drawRect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 1);
+    drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, boxHeight - 2, 1);
+
+    /* Center title */
+    const titleW = title.length * 6;
+    print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 6, title, 1);
+
+    /* Message lines */
+    if (messageLines) {
+        for (let i = 0; i < lineCount; i++) {
+            const line = messageLines[i];
+            const lineW = line.length * 6;
+            print(Math.floor((SCREEN_WIDTH - lineW) / 2), boxY + 18 + i * 10, line, 1);
+        }
+    }
+}
+
 /* Note: Label scroller is auto-ticked inside drawMenuList() */
