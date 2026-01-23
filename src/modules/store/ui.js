@@ -21,8 +21,17 @@ import {
     drawMenuList,
     drawMenuFooter,
     drawStatusOverlay,
+    drawMessageOverlay,
     menuLayoutDefaults
 } from '/data/UserData/move-anything/shared/menu_layout.mjs';
+
+import {
+    wrapText,
+    createScrollableText,
+    handleScrollableTextJog,
+    isActionSelected,
+    drawScrollableText
+} from '/data/UserData/move-anything/shared/scrollable_text.mjs';
 
 import {
     CATALOG_URL, CATALOG_CACHE_PATH, MODULES_DIR, BASE_DIR, TMP_DIR, HOST_VERSION_FILE,
@@ -49,6 +58,7 @@ const STATE_HOST_UPDATE = 'host_update';
 const STATE_UPDATING_HOST = 'updating_host';
 const STATE_UPDATE_ALL = 'update_all';
 const STATE_UPDATING_ALL = 'updating_all';
+const STATE_POST_INSTALL = 'post_install';
 
 /* CATEGORIES and getInstallSubdir imported from store_utils.mjs */
 
@@ -70,6 +80,9 @@ let resultMessage = '';
 let shiftHeld = false;
 let loadingTitle = 'Module Store';
 let loadingMessage = 'Loading...';
+let detailScrollState = null;
+let showingPostInstall = false;
+let postInstallLines = [];
 
 /* CC constants */
 const CC_JOG_WHEEL = MoveMainKnob;
@@ -341,12 +354,20 @@ function installModule(mod) {
     const result = sharedInstallModule(mod, hostVersion);
 
     scanInstalledModules();
-    state = STATE_RESULT;
 
     if (result.success) {
-        resultMessage = `Installed ${mod.name}`;
+        /* Check for post_install message */
+        if (mod.post_install) {
+            postInstallLines = wrapText(mod.post_install, 18);
+            showingPostInstall = true;
+            state = STATE_POST_INSTALL;
+        } else {
+            resultMessage = `Installed ${mod.name}`;
+            state = STATE_RESULT;
+        }
     } else {
         resultMessage = result.error || 'Install failed';
+        state = STATE_RESULT;
     }
 }
 
@@ -416,9 +437,9 @@ function handleJogWheel(delta) {
         }
 
         case STATE_MODULE_DETAIL:
-            selectedActionIndex += delta;
-            if (selectedActionIndex < 0) selectedActionIndex = 0;
-            if (selectedActionIndex > 1) selectedActionIndex = 1;
+            if (detailScrollState) {
+                handleScrollableTextJog(detailScrollState, delta);
+            }
             break;
     }
 }
@@ -488,18 +509,19 @@ function handleSelect() {
         }
 
         case STATE_MODULE_DETAIL: {
-            const status = getModuleStatus(currentModule);
-            if (status.installed) {
-                if (selectedActionIndex === 0) {
-                    installModule(currentModule);  /* Reinstall */
-                } else {
-                    removeModule(currentModule);
-                }
-            } else {
-                installModule(currentModule);
+            if (!detailScrollState || !isActionSelected(detailScrollState)) {
+                break; /* Can't click until action is selected */
             }
+            /* Install/Update/Reinstall - the primary action */
+            installModule(currentModule);
             break;
         }
+
+        case STATE_POST_INSTALL:
+            showingPostInstall = false;
+            resultMessage = `Installed ${currentModule.name}`;
+            state = STATE_RESULT;
+            break;
 
         case STATE_ERROR:
         case STATE_RESULT:
@@ -531,12 +553,19 @@ function handleBack() {
 
         case STATE_MODULE_DETAIL:
             currentModule = null;
+            detailScrollState = null;
             if (cameFromUpdateAll) {
                 cameFromUpdateAll = false;
                 state = STATE_UPDATE_ALL;
             } else {
                 state = STATE_MODULE_LIST;
             }
+            break;
+
+        case STATE_POST_INSTALL:
+            showingPostInstall = false;
+            resultMessage = `Installed ${currentModule.name}`;
+            state = STATE_RESULT;
             break;
 
         case STATE_ERROR:
@@ -713,68 +742,63 @@ function drawModuleList() {
     drawMenuFooter('Back:categories');
 }
 
-/* Draw module detail screen */
+/* Draw module detail screen with scrollable description */
 function drawModuleDetail() {
     clear_screen();
     const status = getModuleStatus(currentModule);
 
-    /* Show version transition if update available, otherwise just new version */
+    /* Header with name and version */
     let versionStr;
     let title = currentModule.name;
     if (status.installed && status.hasUpdate) {
         const installedVer = installedModules[currentModule.id] || '?';
         versionStr = `${installedVer}->${currentModule.latest_version}`;
-        /* Truncate title to fit with version transition (max ~8 chars) */
-        if (title.length > 8) {
-            title = title.substring(0, 7) + '~';
-        }
+        if (title.length > 8) title = title.substring(0, 7) + '~';
     } else {
         versionStr = `v${currentModule.latest_version}`;
-        /* More room without transition */
-        if (title.length > 14) {
-            title = title.substring(0, 13) + '~';
-        }
+        if (title.length > 14) title = title.substring(0, 13) + '~';
     }
     drawMenuHeader(title, versionStr);
 
-    /* Description */
-    const desc = currentModule.description || '';
-    const truncDesc = desc.length > 20 ? desc.substring(0, 17) + '...' : desc;
-    print(2, 16, truncDesc, 1);
+    /* Initialize scroll state if needed */
+    if (!detailScrollState || detailScrollState.moduleId !== currentModule.id) {
+        const descLines = wrapText(currentModule.description || 'No description available.', 20);
 
-    /* Author */
-    print(2, 28, `by ${currentModule.author || 'Unknown'}`, 1);
+        /* Add author */
+        descLines.push('');
+        descLines.push(`by ${currentModule.author || 'Unknown'}`);
 
-    /* Divider */
-    fill_rect(0, 38, 128, 1, 1);
-
-    /* Action buttons */
-    let action1, action2;
-
-    if (status.installed) {
-        action1 = status.hasUpdate ? 'Update' : 'Reinstall';
-        action2 = 'Remove';
-    } else {
-        action1 = 'Install';
-        action2 = null;
-    }
-
-    const y = 44;
-    if (selectedActionIndex === 0) {
-        fill_rect(2, y - 1, 60, 12, 1);
-        print(4, y, `[${action1}]`, 0);
-    } else {
-        print(4, y, `[${action1}]`, 1);
-    }
-
-    if (action2) {
-        if (selectedActionIndex === 1) {
-            fill_rect(66, y - 1, 58, 12, 1);
-            print(68, y, `[${action2}]`, 0);
-        } else {
-            print(68, y, `[${action2}]`, 1);
+        /* Add requires line if present */
+        if (currentModule.requires) {
+            descLines.push('');
+            descLines.push('Requires:');
+            const reqLines = wrapText(currentModule.requires, 18);
+            descLines.push(...reqLines);
         }
+
+        /* Determine action label */
+        let actionLabel;
+        if (status.installed) {
+            actionLabel = status.hasUpdate ? 'Update' : 'Reinstall';
+        } else {
+            actionLabel = 'Install';
+        }
+
+        detailScrollState = createScrollableText({
+            lines: descLines,
+            actionLabel,
+            visibleLines: 4
+        });
+        detailScrollState.moduleId = currentModule.id;
     }
+
+    /* Draw scrollable content */
+    drawScrollableText({
+        state: detailScrollState,
+        topY: 16,
+        bottomY: 48,
+        actionY: 52
+    });
 }
 
 /* Main draw function */
@@ -807,6 +831,9 @@ function draw() {
             break;
         case STATE_MODULE_DETAIL:
             drawModuleDetail();
+            break;
+        case STATE_POST_INSTALL:
+            drawMessageOverlay('Install Complete', postInstallLines);
             break;
     }
 }
