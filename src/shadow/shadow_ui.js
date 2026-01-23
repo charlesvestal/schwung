@@ -50,6 +50,14 @@ import {
 } from '/data/UserData/move-anything/shared/menu_layout.mjs';
 
 import {
+    fetchCatalog, getModulesForCategory, getModuleStatus,
+    installModule as sharedInstallModule,
+    removeModule as sharedRemoveModule,
+    scanInstalledModules, getHostVersion,
+    CATEGORIES
+} from '/data/UserData/move-anything/shared/store_utils.mjs';
+
+import {
     openTextEntry,
     isTextEntryActive,
     handleTextEntryMidi,
@@ -94,7 +102,11 @@ const VIEWS = {
     MASTER_FX: "masterfx",    // Master FX selection
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
-    KNOB_PARAM_PICKER: "knobpick" // Pick parameter for a knob assignment
+    KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
+    STORE_PICKER_LIST: "storepickerlist",     // Store: browse modules for category
+    STORE_PICKER_DETAIL: "storepickerdetail", // Store: module info and actions
+    STORE_PICKER_LOADING: "storepickerloading", // Store: fetching catalog or installing
+    STORE_PICKER_RESULT: "storepickerresult"  // Store: success/error message
 };
 
 /* Special action key for swap module option */
@@ -291,6 +303,20 @@ let selectedChainComponent = 0; // -1=chain, 0-4 (midiFx, synth, fx1, fx2, setti
 let selectingModule = false;   // True when in module selection for a component
 let availableModules = [];     // Modules available for selected component type
 let selectedModuleIndex = 0;   // Index in availableModules
+
+/* Store picker state */
+let storeCatalog = null;               // Cached catalog from store_utils
+let storeInstalledModules = {};        // {moduleId: version} map
+let storeHostVersion = '1.0.0';        // Current host version
+let storePickerCategory = null;        // Category ID being browsed (sound_generator, audio_fx, midi_fx)
+let storePickerModules = [];           // Modules available for download in current category
+let storePickerSelectedIndex = 0;      // Selection in list
+let storePickerCurrentModule = null;   // Module being viewed in detail
+let storePickerActionIndex = 0;        // Selected action in detail view (0=Install/Update, 1=Remove)
+let storePickerMessage = '';           // Result/error message
+let storePickerLoadingTitle = '';      // Loading screen title
+let storePickerLoadingMessage = '';    // Loading screen message
+let storeFetchPending = false;         // True while catalog fetch in progress
 
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
