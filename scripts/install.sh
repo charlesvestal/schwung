@@ -26,7 +26,17 @@ ssh_ableton="ssh -o LogLevel=QUIET -n $username@$hostname"
 scp_ableton="scp -o ConnectTimeout=1"
 ssh_root="ssh -o LogLevel=QUIET -n root@$hostname"
 
-if [ "${1:-}" = "local" ]; then
+# Parse arguments
+use_local=false
+skip_modules=false
+for arg in "$@"; do
+  case "$arg" in
+    local) use_local=true ;;
+    -skip-modules|--skip-modules) skip_modules=true ;;
+  esac
+done
+
+if [ "$use_local" = true ]; then
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
   REPO_ROOT="$(dirname "$SCRIPT_DIR")"
   local_file="$REPO_ROOT/$remote_filename"
@@ -214,7 +224,9 @@ echo
 install_mode=""
 deleted_modules=$(echo "$deleted_modules" | xargs)  # trim whitespace
 
-if [ -n "$deleted_modules" ]; then
+if [ "$skip_modules" = true ]; then
+    echo "Skipping module installation (-skip-modules)"
+elif [ -n "$deleted_modules" ]; then
     # Migration happened - offer three choices
     echo "Module installation options:"
     echo "  (a) Install ALL available modules"
