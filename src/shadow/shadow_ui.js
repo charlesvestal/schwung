@@ -1743,6 +1743,64 @@ function componentKeyToCategoryId(componentKey) {
     }
 }
 
+/* Enter the store picker for a specific component type */
+function enterStorePicker(componentKey) {
+    const categoryId = componentKeyToCategoryId(componentKey);
+    if (!categoryId) return;
+
+    storePickerCategory = categoryId;
+    storePickerSelectedIndex = 0;
+    storePickerCurrentModule = null;
+    storePickerActionIndex = 0;
+
+    /* Check if we need to fetch catalog */
+    if (!storeCatalog) {
+        view = VIEWS.STORE_PICKER_LOADING;
+        storePickerLoadingTitle = 'Module Store';
+        storePickerLoadingMessage = 'Loading catalog...';
+        needsRedraw = true;
+
+        /* Fetch catalog (blocking) */
+        fetchStoreCatalogSync();
+    } else {
+        /* Catalog already loaded, go to list */
+        storePickerModules = getModulesForCategory(storeCatalog, categoryId);
+        view = VIEWS.STORE_PICKER_LIST;
+        needsRedraw = true;
+    }
+}
+
+/* Fetch catalog synchronously (blocking) */
+function fetchStoreCatalogSync() {
+    if (storeFetchPending) return;
+    storeFetchPending = true;
+
+    const onProgress = (title, message) => {
+        storePickerLoadingTitle = title;
+        storePickerLoadingMessage = message;
+        needsRedraw = true;
+        /* Force redraw during fetch */
+        draw();
+        host_flush_display();
+    };
+
+    storeHostVersion = getHostVersion();
+    storeInstalledModules = scanInstalledModules();
+
+    const result = fetchCatalog(onProgress);
+    storeFetchPending = false;
+
+    if (result.success) {
+        storeCatalog = result.catalog;
+        storePickerModules = getModulesForCategory(storeCatalog, storePickerCategory);
+        view = VIEWS.STORE_PICKER_LIST;
+    } else {
+        storePickerMessage = result.error || 'Failed to load catalog';
+        view = VIEWS.STORE_PICKER_RESULT;
+    }
+    needsRedraw = true;
+}
+
 /* Enter component module selection view */
 function enterComponentSelect(slotIndex, componentIndex) {
     const comp = CHAIN_COMPONENTS[componentIndex];
@@ -1774,6 +1832,12 @@ function applyComponentSelection() {
 
     if (!comp || comp.key === "settings") {
         view = VIEWS.CHAIN_EDIT;
+        return;
+    }
+
+    /* Check if user selected "[Get more...]" - enter store picker */
+    if (selected && selected.id === "__get_more__") {
+        enterStorePicker(comp.key);
         return;
     }
 
