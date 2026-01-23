@@ -155,6 +155,45 @@ let pendingKnobDelta = 0;        // Accumulated delta for global slot knob adjus
 let pendingHierKnobIndex = -1;   // Which knob is being turned (-1 = none)
 let pendingHierKnobDelta = 0;    // Accumulated delta to apply
 
+/* Knob acceleration settings - match chain_host.c for consistency */
+const KNOB_ACCEL_MIN_MULT = 1;     // Multiplier for slow turns
+const KNOB_ACCEL_MAX_MULT = 8;     // Multiplier for fast turns (floats)
+const KNOB_ACCEL_MAX_MULT_INT = 3; // Multiplier for fast turns (ints - smaller to avoid jumps)
+const KNOB_ACCEL_SLOW_MS = 150;    // Slower than this = min multiplier
+const KNOB_ACCEL_FAST_MS = 25;     // Faster than this = max multiplier
+const KNOB_BASE_STEP_FLOAT = 0.005; // Base step for floats (acceleration multiplies this)
+const KNOB_BASE_STEP_INT = 1;       // Base step for ints
+
+/* Time tracking for knob acceleration */
+let knobLastTimeMs = [0, 0, 0, 0, 0, 0, 0, 0];  // Last event time per knob
+
+/* Calculate knob acceleration multiplier based on time between events */
+function calcKnobAccel(knobIndex, isInt) {
+    if (knobIndex < 0 || knobIndex >= 8) return 1;
+
+    const now = Date.now();
+    const last = knobLastTimeMs[knobIndex];
+    knobLastTimeMs[knobIndex] = now;
+
+    if (last === 0) return KNOB_ACCEL_MIN_MULT;  // First event
+
+    const elapsed = now - last;
+    let accel;
+
+    if (elapsed >= KNOB_ACCEL_SLOW_MS) {
+        accel = KNOB_ACCEL_MIN_MULT;
+    } else if (elapsed <= KNOB_ACCEL_FAST_MS) {
+        accel = isInt ? KNOB_ACCEL_MAX_MULT_INT : KNOB_ACCEL_MAX_MULT;
+    } else {
+        // Linear interpolation between min and max
+        const ratio = (KNOB_ACCEL_SLOW_MS - elapsed) / (KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+        const maxMult = isInt ? KNOB_ACCEL_MAX_MULT_INT : KNOB_ACCEL_MAX_MULT;
+        accel = Math.round(KNOB_ACCEL_MIN_MULT + ratio * (maxMult - KNOB_ACCEL_MIN_MULT));
+    }
+
+    return accel;
+}
+
 /* Cached knob contexts - avoid IPC calls on every CC message */
 let cachedKnobContexts = [];     // Array of 8 contexts (one per knob)
 let cachedKnobContextsView = ""; // View when cache was built
@@ -2566,11 +2605,15 @@ function processPendingHierKnob() {
 
     /* Calculate step and bounds from metadata */
     const isInt = ctx.meta && ctx.meta.type === "int";
-    const step = ctx.meta && ctx.meta.step ? ctx.meta.step : (isInt ? 1 : 0.02);
+    const baseStep = isInt ? KNOB_BASE_STEP_INT : KNOB_BASE_STEP_FLOAT;
     const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
     const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
 
-    /* Apply accumulated delta and clamp */
+    /* Calculate acceleration based on turn speed */
+    const accel = calcKnobAccel(knobIndex, isInt);
+
+    /* Apply accumulated delta with acceleration and clamp */
+    const step = baseStep * accel;
     const newVal = Math.max(min, Math.min(max, num + delta * step));
 
     /* Set the new value */
