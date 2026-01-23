@@ -168,7 +168,8 @@ function handleCC(cc, value) {
         errorOverlayActive = false;
         errorModuleName = '';
         errorLines = [];
-        /* Module is still loaded, just continue to its UI */
+        /* Module's UI wasn't loaded due to error - return to menu */
+        returnToMenu();
         return;
     }
 

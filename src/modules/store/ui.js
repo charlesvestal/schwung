@@ -787,7 +787,7 @@ function drawModuleDetail() {
         detailScrollState = createScrollableText({
             lines: descLines,
             actionLabel,
-            visibleLines: 4
+            visibleLines: 3
         });
         detailScrollState.moduleId = currentModule.id;
     }
@@ -796,7 +796,7 @@ function drawModuleDetail() {
     drawScrollableText({
         state: detailScrollState,
         topY: 16,
-        bottomY: 48,
+        bottomY: 40,
         actionY: 52
     });
 }

@@ -1280,10 +1280,17 @@ static JSValue js_host_load_module(JSContext *ctx, JSValueConst this_val,
         JS_FreeCString(ctx, id);
     }
 
-    /* If DSP loaded successfully, also load module's UI script */
+    /* If DSP loaded successfully, check for errors before loading UI */
     if (result == 0) {
         const module_info_t *info = mm_get_current_module(&g_module_manager);
-        if (info && info->ui_script[0]) {
+
+        /* Check if module has an error (e.g., missing assets) */
+        char error_buf[256];
+        error_buf[0] = '\0';
+        int has_error = mm_get_error(&g_module_manager, error_buf, sizeof(error_buf));
+
+        /* Only load UI if there's no error (let host menu handle errors) */
+        if (!has_error && info && info->ui_script[0]) {
             /* Load as ES module to enable imports */
             eval_file_safe(ctx, info->ui_script, 1);
         }

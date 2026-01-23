@@ -330,6 +330,17 @@ static inline void synth_render_block(int16_t *out, int frames) {
     }
 }
 
+static inline int synth_get_error(char *buf, int buf_len) {
+    if (g_synth_is_v2 && g_synth_plugin_v2 && g_synth_plugin_v2->get_error && g_synth_instance) {
+        return g_synth_plugin_v2->get_error(g_synth_instance, buf, buf_len);
+    }
+    /* V1 plugins don't have get_error, try via get_param as fallback */
+    if (g_synth_plugin && g_synth_plugin->get_param) {
+        return g_synth_plugin->get_param("load_error", buf, buf_len);
+    }
+    return 0;  /* No error */
+}
+
 /* Module parameter info (from chain_params in module.json) */
 static chain_param_info_t g_synth_params[MAX_CHAIN_PARAMS];
 static int g_synth_param_count = 0;
@@ -2852,6 +2863,9 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         snprintf(buf, buf_len, "%s", g_current_synth_module);
         return 0;
     }
+    if (strcmp(key, "synth_error") == 0) {
+        return synth_get_error(buf, buf_len);
+    }
     if (strcmp(key, "midi_source_module") == 0) {
         snprintf(buf, buf_len, "%s", g_current_source_module);
         return 0;
@@ -3163,6 +3177,20 @@ static void v2_synth_panic(chain_instance_t *inst) {
             inst->synth_plugin->on_midi(msg, 3, MOVE_MIDI_SOURCE_HOST);
         }
     }
+}
+
+/* V2 get synth error */
+static int v2_synth_get_error(chain_instance_t *inst, char *buf, int buf_len) {
+    if (!inst) return 0;
+
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_error) {
+        return inst->synth_plugin_v2->get_error(inst->synth_instance, buf, buf_len);
+    }
+    /* V1 plugins don't have get_error, try via get_param as fallback */
+    if (inst->synth_plugin && inst->synth_plugin->get_param) {
+        return inst->synth_plugin->get_param("load_error", buf, buf_len);
+    }
+    return 0;  /* No error */
 }
 
 /* V2 unload synth */
@@ -4782,6 +4810,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "synth_module") == 0) {
         return snprintf(buf, buf_len, "%s", inst->current_synth_module);
     }
+    if (strcmp(key, "synth_error") == 0) {
+        return v2_synth_get_error(inst, buf, buf_len);
+    }
     if (strcmp(key, "fx1_module") == 0) {
         return snprintf(buf, buf_len, "%s", inst->current_fx_modules[0]);
     }
@@ -4843,6 +4874,24 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         return snprintf(buf, buf_len, "%s", inst->knob_mappings[i].param);
                     }
                     else if (strcmp(query_param, "value") == 0) {
+                        /* Look up param info to check for enum type */
+                        const char *target = inst->knob_mappings[i].target;
+                        const char *param = inst->knob_mappings[i].param;
+                        chain_param_info_t *pinfo = NULL;
+                        if (strcmp(target, "synth") == 0) {
+                            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
+                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                        }
+                        /* If enum, return option label */
+                        if (pinfo && strcmp(pinfo->type_str, "enum") == 0 && pinfo->option_count > 0) {
+                            int idx = (int)(inst->knob_mappings[i].current_value + 0.5f);
+                            if (idx < 0) idx = 0;
+                            if (idx >= pinfo->option_count) idx = pinfo->option_count - 1;
+                            return snprintf(buf, buf_len, "%s", pinfo->options[idx]);
+                        }
                         if (inst->knob_mappings[i].type == KNOB_TYPE_INT) {
                             return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].current_value);
                         } else {
@@ -4856,6 +4905,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].max_val);
                     }
                     else if (strcmp(query_param, "type") == 0) {
+                        /* Look up param info to check for enum type */
+                        const char *target = inst->knob_mappings[i].target;
+                        const char *param = inst->knob_mappings[i].param;
+                        chain_param_info_t *pinfo = NULL;
+                        if (strcmp(target, "synth") == 0) {
+                            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
+                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                        }
+                        if (pinfo && pinfo->type_str[0]) {
+                            return snprintf(buf, buf_len, "%s", pinfo->type_str);
+                        }
                         return snprintf(buf, buf_len, "%s",
                                         inst->knob_mappings[i].type == KNOB_TYPE_INT ? "int" : "float");
                     }
@@ -4951,10 +5014,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     chain_param_info_t *p = &inst->fx_params[0][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                     offset += snprintf(buf + offset, buf_len - offset,
-                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g}",
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type == KNOB_TYPE_INT ? "int" : "float",
+                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
                         p->min_val, p->max_val);
+                    /* Add options array for enum types */
+                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
+                        for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
+                            if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                            offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
+                        }
+                        offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
                 offset += snprintf(buf + offset, buf_len - offset, "]");
                 return offset;
@@ -4994,10 +5067,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     chain_param_info_t *p = &inst->fx_params[1][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                     offset += snprintf(buf + offset, buf_len - offset,
-                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g}",
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type == KNOB_TYPE_INT ? "int" : "float",
+                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
                         p->min_val, p->max_val);
+                    /* Add options array for enum types */
+                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
+                        for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
+                            if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                            offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
+                        }
+                        offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
                 offset += snprintf(buf + offset, buf_len - offset, "]");
                 return offset;

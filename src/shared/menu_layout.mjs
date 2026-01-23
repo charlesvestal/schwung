@@ -320,10 +320,11 @@ export function drawStatusOverlay(title, message) {
  * Draw a post-install or error message overlay with multiple lines
  * @param {string} title - Title (e.g., "Install Complete" or "Load Error")
  * @param {string[]} messageLines - Pre-wrapped message lines
+ * @param {boolean} showOk - Whether to show [OK] button (default: true)
  */
-export function drawMessageOverlay(title, messageLines) {
+export function drawMessageOverlay(title, messageLines, showOk = true) {
     const lineCount = Math.min(messageLines ? messageLines.length : 0, 4);
-    const boxHeight = 24 + lineCount * 10;
+    const boxHeight = showOk ? (36 + lineCount * 10) : (24 + lineCount * 10);
     const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;
     const boxY = (SCREEN_HEIGHT - boxHeight) / 2;
 
@@ -343,6 +344,16 @@ export function drawMessageOverlay(title, messageLines) {
             const lineW = line.length * 6;
             print(Math.floor((SCREEN_WIDTH - lineW) / 2), boxY + 18 + i * 10, line, 1);
         }
+    }
+
+    /* OK button - highlighted to show it's the action */
+    if (showOk) {
+        const okText = '[OK]';
+        const okW = okText.length * 6;
+        const okX = Math.floor((SCREEN_WIDTH - okW) / 2);
+        const okY = boxY + boxHeight - 14;
+        fill_rect(okX - 4, okY - 2, okW + 8, 12, 1);
+        print(okX, okY, okText, 0);
     }
 }
 

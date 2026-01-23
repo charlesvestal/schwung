@@ -2634,10 +2634,12 @@ function buildKnobContextForKnob(knobIndex) {
         const comp = CHAIN_COMPONENTS[selectedChainComponent];
         if (comp && comp.key !== "settings") {
             const prefix = getComponentParamPrefix(comp.key);
-            const paramKey = `${prefix}:name`;
-            const pluginName = getSlotParam(selectedSlot, paramKey) || "";
+            /* MIDI FX uses different param key format than synth/fx */
+            const isMidiFx = comp.key === "midiFx";
+            const nameParamKey = isMidiFx ? "midi_fx1_module" : `${prefix}:name`;
+            const pluginName = getSlotParam(selectedSlot, nameParamKey) || "";
             const hasModule = pluginName && pluginName.length > 0;
-            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, prefix=${prefix}, paramKey=${paramKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
+            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, prefix=${prefix}, nameParamKey=${nameParamKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
 
             /* No module loaded in this slot */
             if (!hasModule) {
@@ -2654,8 +2656,10 @@ function buildKnobContextForKnob(knobIndex) {
             }
 
             const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
+            debugLog(`buildKnobContext: hierarchy=${hierarchy ? JSON.stringify(hierarchy).substring(0, 200) : 'null'}`);
             if (hierarchy && hierarchy.levels) {
                 let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+                debugLog(`buildKnobContext: levelDef=${levelDef ? JSON.stringify(levelDef) : 'null'}, knobIndex=${knobIndex}`);
                 /* If root has no knobs but has children, use first child level for knob mapping */
                 if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
                     const childLevel = hierarchy.levels[levelDef.children];
@@ -2667,6 +2671,7 @@ function buildKnobContextForKnob(knobIndex) {
                     const key = levelDef.knobs[knobIndex];
                     const fullKey = `${prefix}:${key}`;
                     const chainParams = getComponentChainParams(selectedSlot, comp.key);
+                    debugLog(`buildKnobContext: found knob key=${key}, fullKey=${fullKey}, chainParams count=${chainParams.length}`);
                     const meta = chainParams.find(p => p.key === key);
                     const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
                     return {
@@ -2679,6 +2684,9 @@ function buildKnobContextForKnob(knobIndex) {
                         title: `${pluginName} ${displayName}`
                     };
                 }
+                debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex}, levelDef.knobs=${levelDef?.knobs ? JSON.stringify(levelDef.knobs) : 'undefined'}`);
+            } else {
+                debugLog(`buildKnobContext: no hierarchy or no levels`);
             }
             /* Component selected but no knob mappings - return generic context */
             return {
@@ -2877,23 +2885,28 @@ function showKnobOverlay(knobIndex, value) {
  * Returns true if handled, false to fall through to default
  */
 function adjustKnobAndShow(knobIndex, delta) {
+    debugLog(`adjustKnobAndShow: knobIndex=${knobIndex}, delta=${delta}, view=${view}, selectedChainComponent=${selectedChainComponent}`);
     const ctx = getKnobContext(knobIndex);
+    debugLog(`adjustKnobAndShow: ctx=${ctx ? 'present' : 'null'}, noModule=${ctx?.noModule}, noMapping=${ctx?.noMapping}, fullKey=${ctx?.fullKey}`);
 
     if (ctx) {
         if (ctx.noModule) {
             /* No module loaded - show "No Module Selected" */
+            debugLog(`adjustKnobAndShow: noModule, showing overlay`);
             showOverlay(ctx.title, "No Module Selected");
             needsRedraw = true;
             return true;
         }
         if (ctx.noMapping || !ctx.fullKey) {
             /* No mapping - show "not mapped" */
+            debugLog(`adjustKnobAndShow: noMapping or no fullKey, showing not mapped`);
             showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
             needsRedraw = true;
             return true;
         }
 
         /* Accumulate delta for throttled processing */
+        debugLog(`adjustKnobAndShow: accumulating delta, fullKey=${ctx.fullKey}`);
         if (pendingHierKnobIndex !== knobIndex) {
             /* Different knob - reset accumulator */
             pendingHierKnobIndex = knobIndex;
@@ -2913,6 +2926,7 @@ function adjustKnobAndShow(knobIndex, delta) {
  * This does the actual get/set/overlay work, throttled to avoid IPC overload
  */
 function processPendingHierKnob() {
+    debugLog(`processPendingHierKnob: index=${pendingHierKnobIndex}, delta=${pendingHierKnobDelta}`);
     if (pendingHierKnobIndex < 0 || pendingHierKnobDelta === 0) {
         /* No pending adjustment, but still show overlay if knob active */
         if (pendingHierKnobIndex >= 0) {
@@ -2937,10 +2951,12 @@ function processPendingHierKnob() {
     pendingHierKnobDelta = 0;  /* Clear accumulated delta */
 
     const ctx = getKnobContext(knobIndex);
+    debugLog(`processPendingHierKnob: ctx=${ctx ? JSON.stringify({slot: ctx.slot, key: ctx.key, fullKey: ctx.fullKey, noMapping: ctx.noMapping, meta: ctx.meta ? 'present' : 'null'}) : 'null'}`);
     if (!ctx || ctx.noMapping || !ctx.fullKey) return;
 
     /* Get current value */
     const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
+    debugLog(`processPendingHierKnob: currentVal=${currentVal}`);
     if (currentVal === null) return;
 
     /* Handle enum type - cycle through options (clamp at ends, don't wrap) */
@@ -4909,6 +4925,7 @@ function drawMasterFxModuleSelect() {
 }
 
 globalThis.init = function() {
+    debugLog(`Shadow UI init - DEBUG_LOG_ENABLED=${DEBUG_LOG_ENABLED}`);
     refreshSlots();
     loadPatchList();
     initChainConfigs();
