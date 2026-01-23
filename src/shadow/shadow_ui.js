@@ -2633,10 +2633,11 @@ function buildKnobContextForKnob(knobIndex) {
     if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < CHAIN_COMPONENTS.length) {
         const comp = CHAIN_COMPONENTS[selectedChainComponent];
         if (comp && comp.key !== "settings") {
-            const paramKey = `${comp.key}:name`;
+            const prefix = getComponentParamPrefix(comp.key);
+            const paramKey = `${prefix}:name`;
             const pluginName = getSlotParam(selectedSlot, paramKey) || "";
             const hasModule = pluginName && pluginName.length > 0;
-            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, paramKey=${paramKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
+            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, prefix=${prefix}, paramKey=${paramKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
 
             /* No module loaded in this slot */
             if (!hasModule) {
@@ -2664,7 +2665,7 @@ function buildKnobContextForKnob(knobIndex) {
                 }
                 if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
                     const key = levelDef.knobs[knobIndex];
-                    const fullKey = `${comp.key}:${key}`;
+                    const fullKey = `${prefix}:${key}`;
                     const chainParams = getComponentChainParams(selectedSlot, comp.key);
                     const meta = chainParams.find(p => p.key === key);
                     const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
@@ -2848,12 +2849,19 @@ function showKnobOverlay(knobIndex, value) {
         } else if (ctx.fullKey) {
             /* Mapped knob - show value */
             let displayVal;
+            const isEnum = ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool");
             if (value !== undefined) {
-                displayVal = formatParamForOverlay(value, ctx.meta);
+                /* For enums, show string directly; for numbers, format */
+                displayVal = isEnum ? String(value) : formatParamForOverlay(value, ctx.meta);
             } else {
                 const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
-                const num = parseFloat(currentVal);
-                displayVal = !isNaN(num) ? formatParamForOverlay(num, ctx.meta) : (currentVal || "-");
+                /* For enums, show string directly; for numbers, parse and format */
+                if (isEnum) {
+                    displayVal = currentVal || "-";
+                } else {
+                    const num = parseFloat(currentVal);
+                    displayVal = !isNaN(num) ? formatParamForOverlay(num, ctx.meta) : (currentVal || "-");
+                }
             }
             showOverlay(ctx.title, displayVal);
         }
@@ -2912,7 +2920,12 @@ function processPendingHierKnob() {
             if (ctx && ctx.fullKey) {
                 const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
                 if (currentVal !== null) {
-                    showKnobOverlay(pendingHierKnobIndex, parseFloat(currentVal));
+                    /* For enums, pass string directly; for numbers, parse */
+                    if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
+                        showOverlay(ctx.title, currentVal);
+                    } else {
+                        showKnobOverlay(pendingHierKnobIndex, parseFloat(currentVal));
+                    }
                 }
             }
         }
@@ -2930,12 +2943,13 @@ function processPendingHierKnob() {
     const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
     if (currentVal === null) return;
 
-    /* Handle enum type - cycle through options */
+    /* Handle enum type - cycle through options (clamp at ends, don't wrap) */
     if (ctx.meta && ctx.meta.type === "enum" && ctx.meta.options && ctx.meta.options.length > 0) {
         const currentIndex = ctx.meta.options.indexOf(currentVal);
         let newIndex = currentIndex + (delta > 0 ? 1 : -1);
-        if (newIndex < 0) newIndex = ctx.meta.options.length - 1;
-        if (newIndex >= ctx.meta.options.length) newIndex = 0;
+        /* Clamp at ends instead of wrapping */
+        if (newIndex < 0) newIndex = 0;
+        if (newIndex >= ctx.meta.options.length) newIndex = ctx.meta.options.length - 1;
         const newVal = ctx.meta.options[newIndex];
         setSlotParam(ctx.slot, ctx.fullKey, newVal);
         showOverlay(ctx.title, newVal);
