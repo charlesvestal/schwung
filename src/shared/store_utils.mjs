@@ -160,3 +160,84 @@ export function getModuleStatus(mod, installedModules) {
     const hasUpdate = isNewerVersion(mod.latest_version, installedVersion);
     return { installed: true, hasUpdate, installedVersion };
 }
+
+/* Get current host version */
+export function getHostVersion() {
+    try {
+        const versionStr = std.loadFile(HOST_VERSION_FILE);
+        if (versionStr) {
+            return versionStr.trim();
+        }
+    } catch (e) {
+        /* Fall through */
+    }
+    return '1.0.0';
+}
+
+/* Install a module, returns { success, error } */
+export function installModule(mod, hostVersion) {
+    /* Check host version compatibility */
+    if (mod.min_host_version && compareVersions(mod.min_host_version, hostVersion) > 0) {
+        return { success: false, error: `Requires host v${mod.min_host_version}` };
+    }
+
+    /* Check if module has a download URL */
+    if (!mod.download_url) {
+        return { success: false, error: 'No release available' };
+    }
+
+    const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
+
+    /* Download the module tarball */
+    console.log(`Downloading: ${mod.download_url}`);
+    const downloadOk = host_http_download(mod.download_url, tarPath);
+    if (!downloadOk) {
+        console.log('Download failed');
+        return { success: false, error: 'Download failed' };
+    }
+
+    /* Determine extraction path based on component_type */
+    const subdir = getInstallSubdir(mod.component_type);
+    const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
+
+    /* Extract to appropriate directory */
+    const extractOk = host_extract_tar(tarPath, extractDir);
+    if (!extractOk) {
+        return { success: false, error: 'Extract failed' };
+    }
+
+    /* Rescan modules */
+    host_rescan_modules();
+
+    return { success: true, error: null };
+}
+
+/* Remove a module, returns { success, error } */
+export function removeModule(mod) {
+    /* Determine module path based on component_type */
+    const subdir = getInstallSubdir(mod.component_type);
+    const modulePath = subdir
+        ? `${MODULES_DIR}/${subdir}/${mod.id}`
+        : `${MODULES_DIR}/${mod.id}`;
+
+    /* Remove the module directory */
+    const removeOk = host_remove_dir(modulePath);
+    if (!removeOk) {
+        return { success: false, error: 'Remove failed' };
+    }
+
+    /* Rescan modules */
+    host_rescan_modules();
+
+    return { success: true, error: null };
+}
+
+/* Scan installed modules, returns { moduleId: version } map */
+export function scanInstalledModules() {
+    const installedModules = {};
+    const modules = host_list_modules();
+    for (const mod of modules) {
+        installedModules[mod.id] = mod.version;
+    }
+    return installedModules;
+}
