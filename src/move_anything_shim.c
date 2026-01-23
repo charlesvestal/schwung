@@ -2460,6 +2460,18 @@ static void shadow_inprocess_handle_param_request(void) {
                 shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
                 shadow_param->error = 0;
                 shadow_param->result_len = strlen(shadow_param->value);
+            } else if (strcmp(param_key, "error") == 0) {
+                /* Return load error from master FX module (if any) */
+                shadow_param->value[0] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+                if (mfx->api && mfx->instance && mfx->api->get_param) {
+                    int len = mfx->api->get_param(mfx->instance, "load_error",
+                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                    if (len > 0) {
+                        shadow_param->result_len = len;
+                    }
+                }
             } else if (strcmp(param_key, "chain_params") == 0) {
                 /* Read chain_params from module.json
                  * mfx->module_path is like: .../modules/audio_fx/cloudseed/cloudseed.so

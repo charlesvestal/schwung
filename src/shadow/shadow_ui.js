@@ -415,6 +415,13 @@ let loadedModuleSlot = -1;       // Which slot the module UI is for
 let loadedModuleComponent = "";  // "synth", "fx1", "fx2"
 let moduleUiLoadError = false;   // True if load failed
 
+/* Asset warning overlay state */
+let assetWarningActive = false;  // True when showing asset warning overlay
+let assetWarningTitle = "";      // e.g., "DX7 Warning"
+let assetWarningLines = [];      // Wrapped error message lines
+let assetWarningShownForSlots = new Set();  // Track which chain slots have shown warnings
+let assetWarningShownForMasterFx = new Set();  // Track which Master FX slots have shown warnings
+
 const MODULES_ROOT = "/data/UserData/move-anything/modules";
 
 /* Find UI path for a module - tries ui_chain.js first, then ui.js */
@@ -590,6 +597,44 @@ function unloadModuleUi() {
     clearModuleParamShims();
 }
 
+/* Check for synth error in a slot and show warning if found */
+function checkAndShowSynthError(slotIndex) {
+    const synthError = getSlotParam(slotIndex, "synth_error");
+    if (synthError && synthError.length > 0) {
+        const synthName = getSlotParam(slotIndex, "synth:name") || "Synth";
+        assetWarningTitle = `${synthName} Warning`;
+        assetWarningLines = wrapText(synthError, 18);
+        assetWarningActive = true;
+        needsRedraw = true;
+        return true;
+    }
+    return false;
+}
+
+/* Check for Master FX error in a slot and show warning if found */
+function checkAndShowMasterFxError(fxSlot) {
+    /* fxSlot is 0-3 for the 4 Master FX slots */
+    const fxNum = fxSlot + 1;  /* fx1, fx2, fx3, fx4 */
+    const fxError = getMasterFxParam(fxSlot, "error");
+    if (fxError && fxError.length > 0) {
+        const fxName = getMasterFxParam(fxSlot, "name") || `FX ${fxNum}`;
+        assetWarningTitle = `${fxName} Warning`;
+        assetWarningLines = wrapText(fxError, 18);
+        assetWarningActive = true;
+        needsRedraw = true;
+        return true;
+    }
+    return false;
+}
+
+/* Dismiss asset warning overlay */
+function dismissAssetWarning() {
+    assetWarningActive = false;
+    assetWarningTitle = "";
+    assetWarningLines = [];
+    needsRedraw = true;
+}
+
 /* Initialize chain configs for all slots */
 function initChainConfigs() {
     chainConfigs = [];
@@ -723,6 +768,8 @@ function setMasterFxModule(moduleId) {
 }
 
 function loadPatchByIndex(slot, index) {
+    /* Clear warning tracking for this slot so new warnings can show */
+    assetWarningShownForSlots.delete(slot);
     return setSlotParam(slot, "load_patch", index);
 }
 
@@ -1573,6 +1620,8 @@ function getMasterFxSlotModule(slotIndex) {
 /* Set module for a master FX slot */
 function setMasterFxSlotModule(slotIndex, dspPath) {
     if (typeof shadow_set_param !== "function") return false;
+    /* Clear warning tracking for this slot so warning can show again for new module */
+    assetWarningShownForMasterFx.delete(slotIndex);
     try {
         return shadow_set_param(0, `master_fx:fx${slotIndex + 1}:module`, dspPath || "");
     } catch (e) {
@@ -2326,6 +2375,11 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     /* Load current level's params and knobs */
     loadHierarchyLevel();
 
+    /* Check for synth errors (missing assets) when entering synth editor */
+    if (componentKey === "synth") {
+        checkAndShowSynthError(slotIndex);
+    }
+
     view = VIEWS.HIERARCHY_EDITOR;
     needsRedraw = true;
 }
@@ -2483,6 +2537,10 @@ function formatParamForSet(val, meta) {
 function formatParamForOverlay(val, meta) {
     if (meta && meta.type === "int") {
         return Math.round(val).toString();
+    }
+    /* Enum/bool: show value as-is (string) */
+    if (meta && (meta.type === "enum" || meta.type === "bool")) {
+        return String(val);
     }
     /* Float: show as percentage if 0-1 range */
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
@@ -2872,6 +2930,18 @@ function processPendingHierKnob() {
     const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
     if (currentVal === null) return;
 
+    /* Handle enum type - cycle through options */
+    if (ctx.meta && ctx.meta.type === "enum" && ctx.meta.options && ctx.meta.options.length > 0) {
+        const currentIndex = ctx.meta.options.indexOf(currentVal);
+        let newIndex = currentIndex + (delta > 0 ? 1 : -1);
+        if (newIndex < 0) newIndex = ctx.meta.options.length - 1;
+        if (newIndex >= ctx.meta.options.length) newIndex = 0;
+        const newVal = ctx.meta.options[newIndex];
+        setSlotParam(ctx.slot, ctx.fullKey, newVal);
+        showOverlay(ctx.title, newVal);
+        return;
+    }
+
     const num = parseFloat(currentVal);
     if (isNaN(num)) return;
 
@@ -3085,6 +3155,32 @@ function adjustSlotSetting(slot, setting, delta) {
 function updateFocusedSlot(slot) {
     if (typeof shadow_set_focused_slot === "function") {
         shadow_set_focused_slot(slot);
+    }
+
+    /* Check for synth errors when selecting a chain slot (not Master FX) */
+    if (slot >= 0 && slot < SHADOW_UI_SLOTS && !assetWarningShownForSlots.has(slot)) {
+        const synthModule = getSlotParam(slot, "synth_module");
+        if (synthModule && synthModule.length > 0) {
+            /* Slot has a synth - check for errors */
+            if (checkAndShowSynthError(slot)) {
+                assetWarningShownForSlots.add(slot);
+            }
+        }
+    }
+
+    /* Check for Master FX errors when selecting the Master FX slot (slot 4) */
+    if (slot === SHADOW_UI_SLOTS) {  /* Slot 4 = Master FX */
+        for (let fx = 0; fx < 4; fx++) {
+            if (assetWarningShownForMasterFx.has(fx)) continue;
+            const fxModule = getMasterFxParam(fx, "module");
+            if (fxModule && fxModule.length > 0) {
+                /* FX slot has a module loaded - check for errors */
+                if (checkAndShowMasterFxError(fx)) {
+                    assetWarningShownForMasterFx.add(fx);
+                    break;  /* Show one warning at a time */
+                }
+            }
+        }
     }
 }
 
@@ -4322,7 +4418,7 @@ function drawStorePickerDetail() {
         storeDetailScrollState = createScrollableText({
             lines: descLines,
             actionLabel,
-            visibleLines: 4
+            visibleLines: 3
         });
         storeDetailScrollState.moduleId = mod.id;
     }
@@ -4331,7 +4427,7 @@ function drawStorePickerDetail() {
     drawScrollableText({
         state: storeDetailScrollState,
         topY: 16,
-        bottomY: 48,
+        bottomY: 40,
         actionY: 52
     });
 }
@@ -4960,6 +5056,11 @@ globalThis.tick = function() {
         drawTextEntry();
     }
 
+    /* Draw asset warning overlay if active */
+    if (assetWarningActive) {
+        drawMessageOverlay(assetWarningTitle, assetWarningLines);
+    }
+
     /* Draw overlay on top of main view (uses shared overlay system) */
     drawOverlay();
 };
@@ -4977,6 +5078,12 @@ globalThis.onMidiMessageInternal = function(data) {
             needsRedraw = true;
             return;  /* Consumed by text entry */
         }
+    }
+
+    /* Dismiss asset warning overlay on any button press */
+    if (assetWarningActive && (status & 0xF0) === 0xB0 && d2 > 0) {
+        dismissAssetWarning();
+        return;  /* Consumed - don't process further */
     }
 
     /* Debug: track last CC for display (only for CC messages) */
