@@ -7,13 +7,22 @@
   "capabilities": {
     "chainable": true,
     "component_type": "midi_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "Arpeggiator",
+          "params": ["mode", "bpm", "division"],
+          "knobs": ["mode", "bpm", "division"]
+        }
+      }
+    },
     "chain_params": [
       {
         "key": "mode",
         "name": "Mode",
         "type": "enum",
         "options": ["off", "up", "down", "up_down", "random"],
-        "default": "off"
+        "default": "up"
       },
       {
         "key": "bpm",

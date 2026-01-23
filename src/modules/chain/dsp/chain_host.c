@@ -12,10 +12,12 @@
 #include <dirent.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/stat.h>
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v1.h"
 #include "host/audio_fx_api_v2.h"
+#include "host/midi_fx_api_v1.h"
 
 /* Recording constants */
 #define RECORDINGS_DIR "/data/UserData/move-anything/recordings"
@@ -51,6 +53,7 @@ typedef struct {
 #define MAX_PATCHES 32      /* Max patches to list in browser */
 #define MAX_AUDIO_FX 4      /* Max FX loaded per active chain */
 #define MAX_MIDI_FX_JS 4    /* Max JS MIDI FX per patch */
+#define MAX_MIDI_FX 2       /* Max native MIDI FX modules per chain */
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
@@ -120,17 +123,35 @@ typedef struct {
 
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 16
+#define MAX_ENUM_OPTIONS 16
 typedef struct {
     char key[32];           /* Parameter key (e.g., "preset", "decay") */
     char name[32];          /* Display name */
-    knob_type_t type;       /* float or int */
+    knob_type_t type;       /* float or int (for numeric types) */
+    char type_str[16];      /* Type as string ("float", "int", "enum") */
     float min_val;          /* Minimum value */
     float max_val;          /* Maximum value (or -1 if dynamic via max_param) */
     float default_val;      /* Default value */
     char max_param[32];     /* Dynamic max param key (e.g., "preset_count") */
+    char options[MAX_ENUM_OPTIONS][32];  /* Enum options (if type is "enum") */
+    int option_count;       /* Number of enum options */
 } chain_param_info_t;
 
 #define MOVE_PAD_NOTE_MAX 99
+
+/* MIDI FX parameter storage (key-value pairs for flexible configuration) */
+#define MAX_MIDI_FX_PARAMS 8
+typedef struct {
+    char key[32];
+    char val[32];
+} midi_fx_param_t;
+
+/* MIDI FX configuration (module + params) */
+typedef struct {
+    char module[MAX_NAME_LEN];
+    midi_fx_param_t params[MAX_MIDI_FX_PARAMS];
+    int param_count;
+} midi_fx_config_t;
 
 /* Patch info */
 typedef struct {
@@ -141,12 +162,10 @@ typedef struct {
     char midi_source_module[MAX_NAME_LEN];
     char audio_fx[MAX_AUDIO_FX][MAX_NAME_LEN];
     int audio_fx_count;
+    midi_fx_config_t midi_fx[MAX_MIDI_FX];      /* Native MIDI FX with params */
+    int midi_fx_count;
     char midi_fx_js[MAX_MIDI_FX_JS][MAX_NAME_LEN];
     int midi_fx_js_count;
-    chord_type_t chord_type;
-    arp_mode_t arp_mode;
-    int arp_tempo_bpm;       /* BPM for arpeggiator */
-    int arp_note_division;   /* 1=quarter, 2=8th, 4=16th */
     midi_input_t midi_input;
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
     int knob_mapping_count;
@@ -193,23 +212,15 @@ typedef struct chain_instance {
     int patch_count;
     int current_patch;
 
-    /* MIDI FX state - Chords */
-    chord_type_t chord_type;
-
-    /* JS MIDI FX state */
-    int js_midi_fx_enabled;
-
-    /* MIDI FX state - Arpeggiator */
-    arp_mode_t arp_mode;
-    uint8_t arp_held_notes[MAX_ARP_NOTES];
-    uint8_t arp_held_velocities[MAX_ARP_NOTES];
-    int arp_held_count;
-    int arp_step;
-    int arp_direction;
-    int arp_sample_counter;
-    int arp_samples_per_step;
-    int8_t arp_last_note;
-    uint8_t arp_velocity;
+    /* MIDI FX module state */
+    void *midi_fx_handles[MAX_MIDI_FX];
+    midi_fx_api_v1_t *midi_fx_plugins[MAX_MIDI_FX];
+    void *midi_fx_instances[MAX_MIDI_FX];
+    int midi_fx_count;
+    char current_midi_fx_modules[MAX_MIDI_FX][MAX_NAME_LEN];
+    chain_param_info_t midi_fx_params[MAX_MIDI_FX][MAX_CHAIN_PARAMS];
+    int midi_fx_param_counts[MAX_MIDI_FX];
+    char midi_fx_ui_hierarchy[MAX_MIDI_FX][2048];  /* Cached ui_hierarchy JSON */
 
     /* Knob mapping state */
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
@@ -331,23 +342,8 @@ static int g_patch_count = 0;
 static int g_current_patch = 0;
 static char g_module_dir[MAX_PATH_LEN] = "";
 
-/* MIDI FX state - Chords */
-static chord_type_t g_chord_type = CHORD_NONE;
-
 /* JS MIDI FX state */
 static int g_js_midi_fx_enabled = 0;
-
-/* MIDI FX state - Arpeggiator */
-static arp_mode_t g_arp_mode = ARP_OFF;
-static uint8_t g_arp_held_notes[MAX_ARP_NOTES];  /* Sorted low to high */
-static uint8_t g_arp_held_velocities[MAX_ARP_NOTES];
-static int g_arp_held_count = 0;
-static int g_arp_step = 0;           /* Current step in arp sequence */
-static int g_arp_direction = 1;      /* 1=up, -1=down (for up-down mode) */
-static int g_arp_sample_counter = 0;
-static int g_arp_samples_per_step = 0;
-static int8_t g_arp_last_note = -1;  /* Currently sounding arp note, -1 if none */
-static uint8_t g_arp_velocity = 100; /* Velocity for arp notes */
 
 /* Knob mapping state */
 static knob_mapping_t g_knob_mappings[MAX_KNOB_MAPPINGS];
@@ -396,6 +392,7 @@ static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
+static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -757,165 +754,6 @@ static int midi_source_allowed(int source) {
     return 1;
 }
 
-/* === Arpeggiator Functions === */
-
-/* Add a note to the held notes array (sorted insertion) */
-static void arp_add_note(uint8_t note, uint8_t velocity) {
-    if (g_arp_held_count >= MAX_ARP_NOTES) return;
-
-    /* Find insertion point to keep sorted */
-    int i;
-    for (i = 0; i < g_arp_held_count; i++) {
-        if (g_arp_held_notes[i] == note) return;  /* Already held */
-        if (g_arp_held_notes[i] > note) break;
-    }
-
-    /* Shift higher notes up */
-    for (int j = g_arp_held_count; j > i; j--) {
-        g_arp_held_notes[j] = g_arp_held_notes[j - 1];
-        g_arp_held_velocities[j] = g_arp_held_velocities[j - 1];
-    }
-
-    /* Insert new note */
-    g_arp_held_notes[i] = note;
-    g_arp_held_velocities[i] = velocity;
-    g_arp_held_count++;
-
-    /* Use first note's velocity for arp */
-    if (g_arp_held_count == 1) {
-        g_arp_velocity = velocity;
-    }
-}
-
-/* Remove a note from the held notes array */
-static void arp_remove_note(uint8_t note) {
-    int found = -1;
-    for (int i = 0; i < g_arp_held_count; i++) {
-        if (g_arp_held_notes[i] == note) {
-            found = i;
-            break;
-        }
-    }
-
-    if (found < 0) return;
-
-    /* Shift remaining notes down */
-    for (int i = found; i < g_arp_held_count - 1; i++) {
-        g_arp_held_notes[i] = g_arp_held_notes[i + 1];
-        g_arp_held_velocities[i] = g_arp_held_velocities[i + 1];
-    }
-    g_arp_held_count--;
-
-    /* Reset step if we removed notes */
-    if (g_arp_step >= g_arp_held_count && g_arp_held_count > 0) {
-        g_arp_step = 0;
-    }
-}
-
-/* Reset arpeggiator state */
-static void arp_reset(void) {
-    g_arp_held_count = 0;
-    g_arp_step = 0;
-    g_arp_direction = 1;
-    g_arp_sample_counter = 0;
-    g_arp_last_note = -1;
-}
-
-/* Calculate samples per step from BPM and division */
-static void arp_set_tempo(int bpm, int division) {
-    /* division: 1=quarter notes, 2=8th notes, 4=16th notes */
-    if (bpm <= 0) bpm = 120;
-    if (division <= 0) division = 4;
-
-    /* beats per second = bpm / 60 */
-    /* notes per second = beats_per_second * division */
-    /* samples per note = sample_rate / notes_per_second */
-    float notes_per_second = (float)bpm / 60.0f * (float)division;
-    g_arp_samples_per_step = (int)(SAMPLE_RATE / notes_per_second);
-}
-
-/* Get the next note in the arp sequence */
-static int arp_get_next_note(void) {
-    if (g_arp_held_count == 0) return -1;
-
-    int note_index = g_arp_step;
-
-    /* Advance step based on mode */
-    switch (g_arp_mode) {
-        case ARP_UP:
-            g_arp_step = (g_arp_step + 1) % g_arp_held_count;
-            break;
-
-        case ARP_DOWN:
-            g_arp_step = g_arp_step - 1;
-            if (g_arp_step < 0) g_arp_step = g_arp_held_count - 1;
-            break;
-
-        case ARP_UPDOWN:
-            g_arp_step += g_arp_direction;
-            if (g_arp_step >= g_arp_held_count) {
-                g_arp_step = g_arp_held_count - 2;
-                if (g_arp_step < 0) g_arp_step = 0;
-                g_arp_direction = -1;
-            } else if (g_arp_step < 0) {
-                g_arp_step = 1;
-                if (g_arp_step >= g_arp_held_count) g_arp_step = 0;
-                g_arp_direction = 1;
-            }
-            break;
-
-        case ARP_RANDOM:
-            g_arp_step = rand() % g_arp_held_count;
-            break;
-
-        default:
-            break;
-    }
-
-    return g_arp_held_notes[note_index];
-}
-
-/* Send note to synth (helper for arp) */
-static void arp_send_note(uint8_t note, uint8_t velocity, int note_on) {
-    if (!synth_loaded()) return;
-
-    uint8_t msg[3];
-    msg[0] = note_on ? 0x90 : 0x80;  /* Note on/off, channel 0 */
-    msg[1] = note;
-    msg[2] = velocity;
-    synth_on_midi(msg, 3, 0);
-}
-
-/* Arp tick - called each render block */
-static void arp_tick(int frames) {
-    if (g_arp_mode == ARP_OFF || g_arp_held_count == 0) {
-        /* If arp was playing but now stopped, send note off */
-        if (g_arp_last_note >= 0) {
-            arp_send_note(g_arp_last_note, 0, 0);
-            g_arp_last_note = -1;
-        }
-        return;
-    }
-
-    g_arp_sample_counter += frames;
-
-    if (g_arp_sample_counter >= g_arp_samples_per_step) {
-        g_arp_sample_counter -= g_arp_samples_per_step;
-
-        /* Note off for previous note */
-        if (g_arp_last_note >= 0) {
-            arp_send_note(g_arp_last_note, 0, 0);
-        }
-
-        /* Get next note and play it */
-        int next_note = arp_get_next_note();
-        if (next_note >= 0) {
-            arp_send_note(next_note, g_arp_velocity, 1);
-            g_arp_last_note = next_note;
-        }
-    }
-}
-
 /* Load a sound generator sub-plugin */
 static int load_synth(const char *module_path, const char *config_json) {
     char msg[256];
@@ -1184,6 +1022,233 @@ static void unload_all_audio_fx(void) {
     chain_log("All audio FX unloaded");
 }
 
+/* Load a MIDI FX plugin into an instance slot */
+static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
+    char msg[256];
+
+    if (!inst || !fx_name || !fx_name[0]) return -1;
+
+    if (inst->midi_fx_count >= MAX_MIDI_FX) {
+        v2_chain_log(inst, "Max MIDI FX reached");
+        return -1;
+    }
+
+    /* Build path to MIDI FX - in modules/midi_fx/ */
+    char fx_path[MAX_PATH_LEN];
+    char fx_dir[MAX_PATH_LEN];
+    snprintf(fx_path, sizeof(fx_path), "%s/../midi_fx/%s/dsp.so",
+             inst->module_dir, fx_name);
+    snprintf(fx_dir, sizeof(fx_dir), "%s/../midi_fx/%s", inst->module_dir, fx_name);
+
+    snprintf(msg, sizeof(msg), "Loading MIDI FX: %s", fx_path);
+    v2_chain_log(inst, msg);
+
+    /* Open the shared library */
+    void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    int slot = inst->midi_fx_count;
+
+    /* Look for init function */
+    midi_fx_init_fn init_fn = (midi_fx_init_fn)dlsym(handle, MIDI_FX_INIT_SYMBOL);
+    if (!init_fn) {
+        snprintf(msg, sizeof(msg), "MIDI FX %s missing init symbol", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    midi_fx_api_v1_t *api = init_fn(&g_subplugin_host_api);
+    if (!api || api->api_version != MIDI_FX_API_VERSION) {
+        snprintf(msg, sizeof(msg), "MIDI FX %s API version mismatch", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    void *instance = api->create_instance(fx_dir, NULL);
+    if (!instance) {
+        snprintf(msg, sizeof(msg), "MIDI FX %s create_instance failed", fx_name);
+        v2_chain_log(inst, msg);
+        dlclose(handle);
+        return -1;
+    }
+
+    inst->midi_fx_handles[slot] = handle;
+    inst->midi_fx_plugins[slot] = api;
+    inst->midi_fx_instances[slot] = instance;
+    strncpy(inst->current_midi_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
+    inst->current_midi_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
+
+    /* Parse chain_params from module.json for type info */
+    parse_chain_params(fx_dir, inst->midi_fx_params[slot], &inst->midi_fx_param_counts[slot]);
+
+    /* Parse ui_hierarchy from module.json */
+    {
+        char json_path[MAX_PATH_LEN];
+        snprintf(json_path, sizeof(json_path), "%s/module.json", fx_dir);
+        FILE *f = fopen(json_path, "r");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (size > 0 && size < 8192) {
+                char *json = malloc(size + 1);
+                if (json) {
+                    fread(json, 1, size, f);
+                    json[size] = '\0';
+                    /* Find ui_hierarchy object */
+                    const char *hier_start = strstr(json, "\"ui_hierarchy\"");
+                    if (hier_start) {
+                        const char *obj_start = strchr(hier_start, '{');
+                        if (obj_start) {
+                            /* Find matching } by counting braces */
+                            int depth = 1;
+                            const char *obj_end = obj_start + 1;
+                            while (*obj_end && depth > 0) {
+                                if (*obj_end == '{') depth++;
+                                else if (*obj_end == '}') depth--;
+                                obj_end++;
+                            }
+                            int len = (int)(obj_end - obj_start);
+                            if (len > 0 && len < 2047) {
+                                strncpy(inst->midi_fx_ui_hierarchy[slot], obj_start, len);
+                                inst->midi_fx_ui_hierarchy[slot][len] = '\0';
+                            }
+                        }
+                    }
+                    free(json);
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    inst->midi_fx_count++;
+
+    snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d)", fx_name, slot);
+    v2_chain_log(inst, msg);
+    return 0;
+}
+
+/* Unload all MIDI FX from an instance */
+static void v2_unload_all_midi_fx(chain_instance_t *inst) {
+    if (!inst) return;
+
+    for (int i = 0; i < inst->midi_fx_count; i++) {
+        if (inst->midi_fx_plugins[i] && inst->midi_fx_instances[i] &&
+            inst->midi_fx_plugins[i]->destroy_instance) {
+            inst->midi_fx_plugins[i]->destroy_instance(inst->midi_fx_instances[i]);
+        }
+        if (inst->midi_fx_handles[i]) {
+            dlclose(inst->midi_fx_handles[i]);
+        }
+        inst->midi_fx_handles[i] = NULL;
+        inst->midi_fx_plugins[i] = NULL;
+        inst->midi_fx_instances[i] = NULL;
+        inst->current_midi_fx_modules[i][0] = '\0';
+        inst->midi_fx_param_counts[i] = 0;
+        inst->midi_fx_ui_hierarchy[i][0] = '\0';
+    }
+    inst->midi_fx_count = 0;
+}
+
+/* Process MIDI through all loaded MIDI FX modules */
+static int v2_process_midi_fx(chain_instance_t *inst,
+                              const uint8_t *in_msg, int in_len,
+                              uint8_t out_msgs[][3], int out_lens[],
+                              int max_out) {
+    if (!inst || inst->midi_fx_count == 0) {
+        /* No MIDI FX - copy input to output */
+        if (max_out > 0) {
+            out_msgs[0][0] = in_msg[0];
+            out_msgs[0][1] = in_len > 1 ? in_msg[1] : 0;
+            out_msgs[0][2] = in_len > 2 ? in_msg[2] : 0;
+            out_lens[0] = in_len;
+            return 1;
+        }
+        return 0;
+    }
+
+    /* Process through chain of MIDI FX */
+    uint8_t current[MIDI_FX_MAX_OUT_MSGS][3];
+    int current_lens[MIDI_FX_MAX_OUT_MSGS];
+    int current_count = 1;
+
+    current[0][0] = in_msg[0];
+    current[0][1] = in_len > 1 ? in_msg[1] : 0;
+    current[0][2] = in_len > 2 ? in_msg[2] : 0;
+    current_lens[0] = in_len;
+
+    for (int fx = 0; fx < inst->midi_fx_count; fx++) {
+        midi_fx_api_v1_t *api = inst->midi_fx_plugins[fx];
+        void *fx_inst = inst->midi_fx_instances[fx];
+        if (!api || !fx_inst || !api->process_midi) continue;
+
+        uint8_t next[MIDI_FX_MAX_OUT_MSGS][3];
+        int next_lens[MIDI_FX_MAX_OUT_MSGS];
+        int next_count = 0;
+
+        /* Process each message from previous stage */
+        for (int m = 0; m < current_count && next_count < MIDI_FX_MAX_OUT_MSGS; m++) {
+            int out_count = api->process_midi(fx_inst,
+                                              current[m], current_lens[m],
+                                              &next[next_count], &next_lens[next_count],
+                                              MIDI_FX_MAX_OUT_MSGS - next_count);
+            next_count += out_count;
+        }
+
+        /* Copy to current for next iteration */
+        current_count = next_count;
+        for (int i = 0; i < next_count; i++) {
+            current[i][0] = next[i][0];
+            current[i][1] = next[i][1];
+            current[i][2] = next[i][2];
+            current_lens[i] = next_lens[i];
+        }
+    }
+
+    /* Copy final output */
+    int out_count = 0;
+    for (int i = 0; i < current_count && out_count < max_out; i++) {
+        out_msgs[out_count][0] = current[i][0];
+        out_msgs[out_count][1] = current[i][1];
+        out_msgs[out_count][2] = current[i][2];
+        out_lens[out_count] = current_lens[i];
+        out_count++;
+    }
+    return out_count;
+}
+
+/* Call tick on all MIDI FX modules and send generated messages to synth */
+static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
+    if (!inst) return;
+
+    for (int fx = 0; fx < inst->midi_fx_count; fx++) {
+        midi_fx_api_v1_t *api = inst->midi_fx_plugins[fx];
+        void *fx_inst = inst->midi_fx_instances[fx];
+        if (!api || !fx_inst || !api->tick) continue;
+
+        uint8_t out_msgs[MIDI_FX_MAX_OUT_MSGS][3];
+        int out_lens[MIDI_FX_MAX_OUT_MSGS];
+        int count = api->tick(fx_inst, frames, SAMPLE_RATE,
+                              out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
+
+        /* Send generated messages to synth */
+        for (int i = 0; i < count; i++) {
+            if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+                inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], 0);
+            } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+                inst->synth_plugin->on_midi(out_msgs[i], out_lens[i], 0);
+            }
+        }
+    }
+}
+
 /* Simple JSON string extraction - finds "key": "value" and returns value */
 static int json_get_string(const char *json, const char *key, char *out, int out_len) {
     char search[128];
@@ -1364,13 +1429,14 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
         chain_param_info_t *p = &params[*count];
         memset(p, 0, sizeof(*p));
         p->type = KNOB_TYPE_FLOAT;  /* Default */
+        strcpy(p->type_str, "float");  /* Default type string */
         p->min_val = 0.0f;
         p->max_val = 1.0f;
 
-        /* Parse key */
-        const char *key_pos = strstr(obj_start, "\"key\"");
+        /* Parse key - look for "key": to find field, not value */
+        const char *key_pos = strstr(obj_start, "\"key\":");
         if (key_pos && key_pos < obj_end) {
-            const char *q1 = strchr(key_pos + 5, '"');
+            const char *q1 = strchr(key_pos + 6, '"');
             if (q1 && q1 < obj_end) {
                 q1++;
                 const char *q2 = strchr(q1, '"');
@@ -1382,10 +1448,10 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
             }
         }
 
-        /* Parse name */
-        const char *name_pos = strstr(obj_start, "\"name\"");
+        /* Parse name - look for "name": to find field */
+        const char *name_pos = strstr(obj_start, "\"name\":");
         if (name_pos && name_pos < obj_end) {
-            const char *q1 = strchr(name_pos + 6, '"');
+            const char *q1 = strchr(name_pos + 7, '"');
             if (q1 && q1 < obj_end) {
                 q1++;
                 const char *q2 = strchr(q1, '"');
@@ -1397,21 +1463,55 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
             }
         }
 
-        /* Parse type */
-        const char *type_pos = strstr(obj_start, "\"type\"");
+        /* Parse type - look for "type": to find field, not value */
+        const char *type_pos = strstr(obj_start, "\"type\":");
         if (type_pos && type_pos < obj_end) {
-            const char *q1 = strchr(type_pos + 6, '"');
+            const char *q1 = strchr(type_pos + 7, '"');
             if (q1 && q1 < obj_end) {
                 q1++;
+                const char *q2 = strchr(q1, '"');
+                if (q2 && q2 < obj_end) {
+                    int len = (int)(q2 - q1);
+                    if (len > 15) len = 15;
+                    strncpy(p->type_str, q1, len);
+                    p->type_str[len] = '\0';
+                }
                 if (strncmp(q1, "int", 3) == 0) {
                     p->type = KNOB_TYPE_INT;
                     p->max_val = 9999.0f;  /* Default for int */
+                } else if (strncmp(q1, "enum", 4) == 0) {
+                    p->type = KNOB_TYPE_INT;  /* Enums treated as int indices */
+                }
+            }
+        }
+
+        /* Parse options (for enum type) */
+        const char *options_pos = strstr(obj_start, "\"options\":");
+        if (options_pos && options_pos < obj_end) {
+            const char *arr_start2 = strchr(options_pos, '[');
+            if (arr_start2 && arr_start2 < obj_end) {
+                const char *arr_end2 = strchr(arr_start2, ']');
+                if (arr_end2 && arr_end2 < obj_end) {
+                    const char *opt_pos = arr_start2 + 1;
+                    while (opt_pos < arr_end2 && p->option_count < MAX_ENUM_OPTIONS) {
+                        const char *oq1 = strchr(opt_pos, '"');
+                        if (!oq1 || oq1 >= arr_end2) break;
+                        oq1++;
+                        const char *oq2 = strchr(oq1, '"');
+                        if (!oq2 || oq2 >= arr_end2) break;
+                        int olen = (int)(oq2 - oq1);
+                        if (olen > 31) olen = 31;
+                        strncpy(p->options[p->option_count], oq1, olen);
+                        p->options[p->option_count][olen] = '\0';
+                        p->option_count++;
+                        opt_pos = oq2 + 1;
+                    }
                 }
             }
         }
 
         /* Parse min */
-        const char *min_pos = strstr(obj_start, "\"min\"");
+        const char *min_pos = strstr(obj_start, "\"min\":");
         if (min_pos && min_pos < obj_end) {
             const char *colon = strchr(min_pos, ':');
             if (colon && colon < obj_end) {
@@ -1419,22 +1519,19 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
             }
         }
 
-        /* Parse max */
-        const char *max_pos = strstr(obj_start, "\"max\"");
+        /* Parse max - look for "max": but not "max_param": */
+        const char *max_pos = strstr(obj_start, "\"max\":");
         if (max_pos && max_pos < obj_end) {
-            /* Make sure it's not max_param */
-            if (strncmp(max_pos, "\"max_param\"", 11) != 0) {
-                const char *colon = strchr(max_pos, ':');
-                if (colon && colon < obj_end) {
-                    p->max_val = (float)atof(colon + 1);
-                }
+            const char *colon = strchr(max_pos, ':');
+            if (colon && colon < obj_end) {
+                p->max_val = (float)atof(colon + 1);
             }
         }
 
         /* Parse max_param (dynamic max) */
-        const char *max_param_pos = strstr(obj_start, "\"max_param\"");
+        const char *max_param_pos = strstr(obj_start, "\"max_param\":");
         if (max_param_pos && max_param_pos < obj_end) {
-            const char *q1 = strchr(max_param_pos + 11, '"');
+            const char *q1 = strchr(max_param_pos + 12, '"');
             if (q1 && q1 < obj_end) {
                 q1++;
                 const char *q2 = strchr(q1, '"');
@@ -1448,7 +1545,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
         }
 
         /* Parse default */
-        const char *def_pos = strstr(obj_start, "\"default\"");
+        const char *def_pos = strstr(obj_start, "\"default\":");
         if (def_pos && def_pos < obj_end) {
             const char *colon = strchr(def_pos, ':');
             if (colon && colon < obj_end) {
@@ -1618,164 +1715,6 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         }
     }
 
-    /* Parse MIDI FX from midi_fx array (new format) */
-    patch->chord_type = CHORD_NONE;
-    patch->arp_mode = ARP_OFF;
-    patch->arp_tempo_bpm = 120;
-    patch->arp_note_division = 4;  /* 16th notes default */
-
-    const char *midi_fx_pos = strstr(json, "\"midi_fx\"");
-    if (midi_fx_pos) {
-        const char *bracket = strchr(midi_fx_pos, '[');
-        if (bracket) {
-            const char *end_bracket = strchr(bracket, ']');
-            if (end_bracket) {
-                const char *obj_pos = bracket;
-                /* Iterate through objects in the array */
-                while (obj_pos && obj_pos < end_bracket) {
-                    const char *obj_start = strchr(obj_pos, '{');
-                    if (!obj_start || obj_start > end_bracket) break;
-
-                    const char *obj_end = strchr(obj_start, '}');
-                    if (!obj_end || obj_end > end_bracket) break;
-
-                    /* Extract type field */
-                    char fx_type[MAX_NAME_LEN] = "";
-                    const char *type_pos = strstr(obj_start, "\"type\"");
-                    if (type_pos && type_pos < obj_end) {
-                        const char *colon = strchr(type_pos, ':');
-                        if (colon && colon < obj_end) {
-                            const char *q1 = strchr(colon, '"');
-                            if (q1 && q1 < obj_end) {
-                                q1++;
-                                const char *q2 = strchr(q1, '"');
-                                if (q2 && q2 < obj_end) {
-                                    int len = q2 - q1;
-                                    if (len > 0 && len < MAX_NAME_LEN) {
-                                        strncpy(fx_type, q1, len);
-                                        fx_type[len] = '\0';
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    /* Parse based on type */
-                    if (strcmp(fx_type, "chord") == 0) {
-                        /* Extract chord value */
-                        const char *chord_pos = strstr(obj_start, "\"chord\"");
-                        if (chord_pos && chord_pos < obj_end) {
-                            const char *colon = strchr(chord_pos, ':');
-                            if (colon && colon < obj_end) {
-                                const char *q1 = strchr(colon, '"');
-                                if (q1 && q1 < obj_end) {
-                                    q1++;
-                                    const char *q2 = strchr(q1, '"');
-                                    if (q2 && q2 < obj_end) {
-                                        int len = q2 - q1;
-                                        char chord_str[MAX_NAME_LEN] = "";
-                                        if (len > 0 && len < MAX_NAME_LEN) {
-                                            strncpy(chord_str, q1, len);
-                                            chord_str[len] = '\0';
-                                            if (strcmp(chord_str, "major") == 0) {
-                                                patch->chord_type = CHORD_MAJOR;
-                                            } else if (strcmp(chord_str, "minor") == 0) {
-                                                patch->chord_type = CHORD_MINOR;
-                                            } else if (strcmp(chord_str, "power") == 0) {
-                                                patch->chord_type = CHORD_POWER;
-                                            } else if (strcmp(chord_str, "octave") == 0) {
-                                                patch->chord_type = CHORD_OCTAVE;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else if (strcmp(fx_type, "arp") == 0) {
-                        /* Extract arp mode */
-                        const char *mode_pos = strstr(obj_start, "\"mode\"");
-                        if (mode_pos && mode_pos < obj_end) {
-                            const char *colon = strchr(mode_pos, ':');
-                            if (colon && colon < obj_end) {
-                                const char *q1 = strchr(colon, '"');
-                                if (q1 && q1 < obj_end) {
-                                    q1++;
-                                    const char *q2 = strchr(q1, '"');
-                                    if (q2 && q2 < obj_end) {
-                                        int len = q2 - q1;
-                                        char mode_str[MAX_NAME_LEN] = "";
-                                        if (len > 0 && len < MAX_NAME_LEN) {
-                                            strncpy(mode_str, q1, len);
-                                            mode_str[len] = '\0';
-                                            if (strcmp(mode_str, "up") == 0) {
-                                                patch->arp_mode = ARP_UP;
-                                            } else if (strcmp(mode_str, "down") == 0) {
-                                                patch->arp_mode = ARP_DOWN;
-                                            } else if (strcmp(mode_str, "up_down") == 0 || strcmp(mode_str, "updown") == 0) {
-                                                patch->arp_mode = ARP_UPDOWN;
-                                            } else if (strcmp(mode_str, "random") == 0) {
-                                                patch->arp_mode = ARP_RANDOM;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        /* Extract bpm */
-                        const char *bpm_pos = strstr(obj_start, "\"bpm\"");
-                        if (bpm_pos && bpm_pos < obj_end) {
-                            const char *colon = strchr(bpm_pos, ':');
-                            if (colon && colon < obj_end) {
-                                patch->arp_tempo_bpm = atoi(colon + 1);
-                            }
-                        }
-                        /* Extract division */
-                        const char *div_pos = strstr(obj_start, "\"division\"");
-                        if (div_pos && div_pos < obj_end) {
-                            const char *colon = strchr(div_pos, ':');
-                            if (colon && colon < obj_end) {
-                                patch->arp_note_division = atoi(colon + 1);
-                            }
-                        }
-                    }
-
-                    obj_pos = obj_end + 1;
-                }
-            }
-        }
-    }
-
-    /* Backward compatibility: try old flat format if midi_fx array not found */
-    if (patch->chord_type == CHORD_NONE && patch->arp_mode == ARP_OFF) {
-        char chord_str[MAX_NAME_LEN] = "";
-        if (json_get_string(json, "chord", chord_str, MAX_NAME_LEN) == 0) {
-            if (strcmp(chord_str, "major") == 0) {
-                patch->chord_type = CHORD_MAJOR;
-            } else if (strcmp(chord_str, "minor") == 0) {
-                patch->chord_type = CHORD_MINOR;
-            } else if (strcmp(chord_str, "power") == 0) {
-                patch->chord_type = CHORD_POWER;
-            } else if (strcmp(chord_str, "octave") == 0) {
-                patch->chord_type = CHORD_OCTAVE;
-            }
-        }
-
-        char arp_str[MAX_NAME_LEN] = "";
-        if (json_get_string(json, "arp", arp_str, MAX_NAME_LEN) == 0) {
-            if (strcmp(arp_str, "up") == 0) {
-                patch->arp_mode = ARP_UP;
-            } else if (strcmp(arp_str, "down") == 0) {
-                patch->arp_mode = ARP_DOWN;
-            } else if (strcmp(arp_str, "up_down") == 0 || strcmp(arp_str, "updown") == 0) {
-                patch->arp_mode = ARP_UPDOWN;
-            } else if (strcmp(arp_str, "random") == 0) {
-                patch->arp_mode = ARP_RANDOM;
-            }
-        }
-        json_get_int(json, "arp_bpm", &patch->arp_tempo_bpm);
-        json_get_int(json, "arp_division", &patch->arp_note_division);
-    }
-
     /* Parse knob_mappings array */
     patch->knob_mapping_count = 0;
     const char *knob_pos = strstr(json, "\"knob_mappings\"");
@@ -1901,10 +1840,10 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
     free(json);
 
     snprintf(msg, sizeof(msg),
-             "Parsed patch: %s -> %s preset %d, source=%s, %d FX, chord=%d, arp=%d",
+             "Parsed patch: %s -> %s preset %d, source=%s, %d FX",
              patch->name, patch->synth_module, patch->synth_preset,
              patch->midi_source_module[0] ? patch->midi_source_module : "none",
-             patch->audio_fx_count, patch->chord_type, patch->arp_mode);
+             patch->audio_fx_count);
     chain_log(msg);
 
     return 0;
@@ -2243,12 +2182,8 @@ static void unload_patch(void) {
     g_current_patch = -1;
     g_current_synth_module[0] = '\0';
     g_current_source_module[0] = '\0';
-    g_chord_type = CHORD_NONE;
     g_js_midi_fx_enabled = 0;
     g_midi_input = MIDI_INPUT_ANY;
-    g_arp_mode = ARP_OFF;
-    arp_reset();
-    g_arp_last_note = -1;
     g_knob_mapping_count = 0;
     g_source_ui_active = 0;
     g_mute_countdown = 0;
@@ -2338,20 +2273,12 @@ static int load_patch(int index) {
 
     g_current_patch = index;
 
-    /* Set MIDI FX chord type */
-    g_chord_type = patch->chord_type;
-
     /* Enable JS MIDI FX if patch declares any */
     g_js_midi_fx_enabled = (patch->midi_fx_js_count > 0);
 
     /* Set MIDI input filter */
     g_midi_input = patch->midi_input;
     g_source_ui_active = 0;
-
-    /* Set arpeggiator mode and tempo */
-    g_arp_mode = patch->arp_mode;
-    arp_reset();
-    arp_set_tempo(patch->arp_tempo_bpm, patch->arp_note_division);
 
     /* Copy knob mappings and initialize current values */
     g_knob_mapping_count = patch->knob_mapping_count;
@@ -2462,8 +2389,8 @@ static int load_patch(int index) {
     /* Mute briefly to drain any old synth audio before FX process it */
     g_mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
-    snprintf(msg, sizeof(msg), "Loaded patch %d: %s (%d FX, arp=%d)",
-             index, patch->name, g_fx_count, g_arp_mode);
+    snprintf(msg, sizeof(msg), "Loaded patch %d: %s (%d FX)",
+             index, patch->name, g_fx_count);
     chain_log(msg);
 
     /* Update record button LED (white when patch loaded) */
@@ -2643,49 +2570,8 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
         }
     }
 
-    /* Handle note on/off for arpeggiator */
-    if (g_arp_mode != ARP_OFF && len >= 3 && (status == 0x90 || status == 0x80)) {
-        uint8_t note = msg[1];
-        uint8_t velocity = msg[2];
-
-        /* Note on with velocity > 0 */
-        if (status == 0x90 && velocity > 0) {
-            arp_add_note(note, velocity);
-        } else {
-            /* Note off (or note on with velocity 0) */
-            arp_remove_note(note);
-        }
-        return;  /* Arp handles note output in tick */
-    }
-
-    /* Handle chord generation for note on/off */
-    if ((status == 0x90 || status == 0x80) && len >= 3 && g_chord_type != CHORD_NONE) {
-        /* Send root note */
-        send_note_to_synth(msg, len, source, 0);
-
-        /* Add chord notes based on type */
-        switch (g_chord_type) {
-            case CHORD_MAJOR:
-                send_note_to_synth(msg, len, source, 4);   /* Major 3rd */
-                send_note_to_synth(msg, len, source, 7);   /* Perfect 5th */
-                break;
-            case CHORD_MINOR:
-                send_note_to_synth(msg, len, source, 3);   /* Minor 3rd */
-                send_note_to_synth(msg, len, source, 7);   /* Perfect 5th */
-                break;
-            case CHORD_POWER:
-                send_note_to_synth(msg, len, source, 7);   /* Perfect 5th */
-                break;
-            case CHORD_OCTAVE:
-                send_note_to_synth(msg, len, source, 12);  /* Octave */
-                break;
-            default:
-                break;
-        }
-    } else {
-        /* Non-note message or no MIDI FX, forward directly */
-        synth_on_midi(msg, len, source);
-    }
+    /* Forward to synth (V1 API - no MIDI FX processing, use V2 for that) */
+    synth_on_midi(msg, len, source);
 }
 
 static void plugin_set_param(const char *key, const char *val) {
@@ -2807,15 +2693,6 @@ static void plugin_set_param(const char *key, const char *val) {
         return;
     }
 
-    /* Handle octave changes - need to reset arp to avoid stuck notes */
-    if (strcmp(key, "octave_transpose") == 0) {
-        /* Send note-off for current arp note before octave changes */
-        if (g_arp_last_note >= 0) {
-            arp_send_note(g_arp_last_note, 0, 0);
-            g_arp_last_note = -1;
-        }
-    }
-
     /* Forward to synth (includes octave_transpose) */
     if (synth_loaded()) {
         synth_set_param(key, val);
@@ -2917,18 +2794,6 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             if (p->midi_input == MIDI_INPUT_PADS) input_str = "pads";
             else if (p->midi_input == MIDI_INPUT_EXTERNAL) input_str = "external";
 
-            const char *chord_str = "none";
-            if (p->chord_type == CHORD_MAJOR) chord_str = "major";
-            else if (p->chord_type == CHORD_MINOR) chord_str = "minor";
-            else if (p->chord_type == CHORD_POWER) chord_str = "power";
-            else if (p->chord_type == CHORD_OCTAVE) chord_str = "octave";
-
-            const char *arp_str = "off";
-            if (p->arp_mode == ARP_UP) arp_str = "up";
-            else if (p->arp_mode == ARP_DOWN) arp_str = "down";
-            else if (p->arp_mode == ARP_UPDOWN) arp_str = "up_down";
-            else if (p->arp_mode == ARP_RANDOM) arp_str = "random";
-
             /* Build audio_fx JSON array */
             char fx_json[512] = "[";
             for (int i = 0; i < p->audio_fx_count && i < MAX_AUDIO_FX; i++) {
@@ -2959,13 +2824,11 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
 
             snprintf(buf, buf_len,
                 "{\"synth\":\"%s\",\"preset\":%d,\"source\":\"%s\","
-                "\"input\":\"%s\",\"chord\":\"%s\",\"arp\":\"%s\","
-                "\"arp_bpm\":%d,\"arp_div\":%d,\"audio_fx\":%s,"
+                "\"input\":\"%s\",\"audio_fx\":%s,"
                 "\"knob_mappings\":%s}",
                 p->synth_module, p->synth_preset,
                 p->midi_source_module[0] ? p->midi_source_module : "",
-                input_str, chord_str, arp_str,
-                p->arp_tempo_bpm, p->arp_note_division, fx_json, knob_json);
+                input_str, fx_json, knob_json);
             return 0;
         }
         return -1;
@@ -3048,20 +2911,6 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         if (g_midi_input == MIDI_INPUT_PADS) input_str = "pads";
         else if (g_midi_input == MIDI_INPUT_EXTERNAL) input_str = "external";
 
-        /* Build chord string */
-        const char *chord_str = "none";
-        if (g_chord_type == CHORD_MAJOR) chord_str = "major";
-        else if (g_chord_type == CHORD_MINOR) chord_str = "minor";
-        else if (g_chord_type == CHORD_POWER) chord_str = "power";
-        else if (g_chord_type == CHORD_OCTAVE) chord_str = "octave";
-
-        /* Build arp string */
-        const char *arp_str = "off";
-        if (g_arp_mode == ARP_UP) arp_str = "up";
-        else if (g_arp_mode == ARP_DOWN) arp_str = "down";
-        else if (g_arp_mode == ARP_UPDOWN) arp_str = "up_down";
-        else if (g_arp_mode == ARP_RANDOM) arp_str = "random";
-
         /* Build audio_fx JSON array */
         char fx_json[512] = "[";
         for (int i = 0; i < p->audio_fx_count && i < MAX_AUDIO_FX; i++) {
@@ -3094,13 +2943,11 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         /* Build final JSON */
         snprintf(buf, buf_len,
             "{\"synth\":{\"module\":\"%s\",\"preset\":%d},"
-            "\"source\":\"%s\",\"input\":\"%s\",\"chord\":\"%s\",\"arp\":\"%s\","
-            "\"arp_bpm\":%d,\"arp_div\":%d,\"audio_fx\":%s,"
+            "\"source\":\"%s\",\"input\":\"%s\",\"audio_fx\":%s,"
             "\"knob_mappings\":%s}",
             g_current_synth_module, current_preset,
             g_current_source_module,
-            input_str, chord_str, arp_str,
-            p->arp_tempo_bpm, p->arp_note_division, fx_json, knob_json);
+            input_str, fx_json, knob_json);
         return 0;
     }
 
@@ -3124,9 +2971,6 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         return;
     }
-
-    /* Process arpeggiator timing (sends notes to synth) */
-    arp_tick(frames);
 
     if (synth_loaded()) {
         /* Get audio from synth */
@@ -3229,7 +3073,6 @@ static void v2_synth_panic(chain_instance_t *inst);
 static void v2_unload_synth(chain_instance_t *inst);
 static void v2_unload_all_audio_fx(chain_instance_t *inst);
 static void v2_unload_midi_source(chain_instance_t *inst);
-static void v2_arp_reset(chain_instance_t *inst);
 static int v2_load_synth(chain_instance_t *inst, const char *module_name);
 static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name);
 static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch);
@@ -3248,11 +3091,6 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     /* Initialize mutex and condition for recording thread */
     pthread_mutex_init(&inst->ring_mutex, NULL);
     pthread_cond_init(&inst->ring_cond, NULL);
-
-    /* Default arpeggiator settings */
-    inst->arp_velocity = 100;
-    inst->arp_last_note = -1;
-    inst->arp_direction = 1;
 
     /* Set up host API for sub-plugins */
     if (g_host) {
@@ -3503,27 +3341,6 @@ static void v2_unload_midi_source(chain_instance_t *inst) {
     inst->source_handle = NULL;
     inst->source_plugin = NULL;
     inst->current_source_module[0] = '\0';
-}
-
-/* V2 arpeggiator reset */
-static void v2_arp_reset(chain_instance_t *inst) {
-    if (!inst) return;
-
-    /* Send note off for any playing arp note */
-    if (inst->arp_last_note >= 0) {
-        uint8_t msg[3] = {0x80, (uint8_t)inst->arp_last_note, 0};
-        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
-            inst->synth_plugin_v2->on_midi(inst->synth_instance, msg, 3, MOVE_MIDI_SOURCE_HOST);
-        } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
-            inst->synth_plugin->on_midi(msg, 3, MOVE_MIDI_SOURCE_HOST);
-        }
-    }
-
-    inst->arp_held_count = 0;
-    inst->arp_step = 0;
-    inst->arp_direction = 1;
-    inst->arp_sample_counter = 0;
-    inst->arp_last_note = -1;
 }
 
 /* V2 load synth - loads a sound generator module */
@@ -3967,6 +3784,22 @@ static void scan_master_presets(void) {
     closedir(dir);
 }
 
+/* Helper to extract JSON object section as string */
+static int extract_fx_section(const char *json, const char *key, char *out, int out_len) {
+    const char *start = NULL;
+    const char *end = NULL;
+    if (json_get_section_bounds(json, key, &start, &end) != 0) {
+        strncpy(out, "null", out_len - 1);
+        out[out_len - 1] = '\0';
+        return -1;
+    }
+    int len = (int)(end - start + 1);
+    if (len >= out_len) len = out_len - 1;
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return 0;
+}
+
 static int save_master_preset(const char *json_str) {
     ensure_presets_master_dir();
 
@@ -3982,6 +3815,13 @@ static int save_master_preset(const char *json_str) {
     char path[MAX_PATH_LEN];
     snprintf(path, sizeof(path), "%s/%s.json", PRESETS_MASTER_DIR, filename);
 
+    /* Extract each FX section */
+    char fx1[512], fx2[512], fx3[512], fx4[512];
+    extract_fx_section(json_str, "fx1", fx1, sizeof(fx1));
+    extract_fx_section(json_str, "fx2", fx2, sizeof(fx2));
+    extract_fx_section(json_str, "fx3", fx3, sizeof(fx3));
+    extract_fx_section(json_str, "fx4", fx4, sizeof(fx4));
+
     /* Build wrapped JSON */
     char final_json[4096];
     snprintf(final_json, sizeof(final_json),
@@ -3995,51 +3835,24 @@ static int save_master_preset(const char *json_str) {
         "        \"fx4\": %s\n"
         "    }\n"
         "}\n",
-        name,
-        strstr(json_str, "\"fx1\":") ? "{}" : "null",  /* Simplified - will refine */
-        strstr(json_str, "\"fx2\":") ? "{}" : "null",
-        strstr(json_str, "\"fx3\":") ? "{}" : "null",
-        strstr(json_str, "\"fx4\":") ? "{}" : "null");
-
-    /* Actually parse and rebuild properly */
-    cJSON *input = cJSON_Parse(json_str);
-    if (input) {
-        cJSON *output = cJSON_CreateObject();
-        cJSON_AddStringToObject(output, "name", name);
-        cJSON_AddNumberToObject(output, "version", 1);
-
-        cJSON *master_fx = cJSON_CreateObject();
-        cJSON *fx1 = cJSON_GetObjectItem(input, "fx1");
-        cJSON *fx2 = cJSON_GetObjectItem(input, "fx2");
-        cJSON *fx3 = cJSON_GetObjectItem(input, "fx3");
-        cJSON *fx4 = cJSON_GetObjectItem(input, "fx4");
-
-        if (fx1) cJSON_AddItemToObject(master_fx, "fx1", cJSON_Duplicate(fx1, 1));
-        if (fx2) cJSON_AddItemToObject(master_fx, "fx2", cJSON_Duplicate(fx2, 1));
-        if (fx3) cJSON_AddItemToObject(master_fx, "fx3", cJSON_Duplicate(fx3, 1));
-        if (fx4) cJSON_AddItemToObject(master_fx, "fx4", cJSON_Duplicate(fx4, 1));
-
-        cJSON_AddItemToObject(output, "master_fx", master_fx);
-
-        char *out_str = cJSON_Print(output);
-        if (out_str) {
-            strncpy(final_json, out_str, sizeof(final_json) - 1);
-            free(out_str);
-        }
-        cJSON_Delete(output);
-        cJSON_Delete(input);
-    }
+        name, fx1, fx2, fx3, fx4);
 
     /* Write file */
     FILE *f = fopen(path, "w");
     if (!f) {
-        chain_log("Failed to save master preset: %s", path);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Failed to save master preset: %s", path);
+        chain_log(msg);
         return -1;
     }
 
     fputs(final_json, f);
     fclose(f);
-    chain_log("Saved master preset: %s", name);
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Saved master preset: %s", name);
+        chain_log(msg);
+    }
 
     scan_master_presets();
     return 0;
@@ -4047,7 +3860,9 @@ static int save_master_preset(const char *json_str) {
 
 static int update_master_preset(int index, const char *json_str) {
     if (index < 0 || index >= master_preset_count) {
-        chain_log("Invalid master preset index: %d", index);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Invalid master preset index: %d", index);
+        chain_log(msg);
         return -1;
     }
 
@@ -4057,64 +3872,66 @@ static int update_master_preset(int index, const char *json_str) {
         strncpy(name, master_preset_names[index], sizeof(name) - 1);
     }
 
-    /* Parse and rebuild JSON */
-    cJSON *input = cJSON_Parse(json_str);
-    if (!input) {
-        chain_log("Failed to parse master preset JSON");
-        return -1;
-    }
+    /* Extract each FX section */
+    char fx1[512], fx2[512], fx3[512], fx4[512];
+    extract_fx_section(json_str, "fx1", fx1, sizeof(fx1));
+    extract_fx_section(json_str, "fx2", fx2, sizeof(fx2));
+    extract_fx_section(json_str, "fx3", fx3, sizeof(fx3));
+    extract_fx_section(json_str, "fx4", fx4, sizeof(fx4));
 
-    cJSON *output = cJSON_CreateObject();
-    cJSON_AddStringToObject(output, "name", name);
-    cJSON_AddNumberToObject(output, "version", 1);
-
-    cJSON *master_fx = cJSON_CreateObject();
-    cJSON *fx1 = cJSON_GetObjectItem(input, "fx1");
-    cJSON *fx2 = cJSON_GetObjectItem(input, "fx2");
-    cJSON *fx3 = cJSON_GetObjectItem(input, "fx3");
-    cJSON *fx4 = cJSON_GetObjectItem(input, "fx4");
-
-    if (fx1) cJSON_AddItemToObject(master_fx, "fx1", cJSON_Duplicate(fx1, 1));
-    if (fx2) cJSON_AddItemToObject(master_fx, "fx2", cJSON_Duplicate(fx2, 1));
-    if (fx3) cJSON_AddItemToObject(master_fx, "fx3", cJSON_Duplicate(fx3, 1));
-    if (fx4) cJSON_AddItemToObject(master_fx, "fx4", cJSON_Duplicate(fx4, 1));
-
-    cJSON_AddItemToObject(output, "master_fx", master_fx);
-
-    char *out_str = cJSON_Print(output);
-    cJSON_Delete(output);
-    cJSON_Delete(input);
-
-    if (!out_str) return -1;
+    /* Build wrapped JSON */
+    char final_json[4096];
+    snprintf(final_json, sizeof(final_json),
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"master_fx\": {\n"
+        "        \"fx1\": %s,\n"
+        "        \"fx2\": %s,\n"
+        "        \"fx3\": %s,\n"
+        "        \"fx4\": %s\n"
+        "    }\n"
+        "}\n",
+        name, fx1, fx2, fx3, fx4);
 
     /* Write to existing path */
     FILE *f = fopen(master_preset_paths[index], "w");
     if (!f) {
-        free(out_str);
         return -1;
     }
 
-    fputs(out_str, f);
+    fputs(final_json, f);
     fclose(f);
-    free(out_str);
 
-    chain_log("Updated master preset: %s", name);
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Updated master preset: %s", name);
+        chain_log(msg);
+    }
     scan_master_presets();
     return 0;
 }
 
 static int delete_master_preset(int index) {
     if (index < 0 || index >= master_preset_count) {
-        chain_log("Invalid master preset index: %d", index);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Invalid master preset index: %d", index);
+        chain_log(msg);
         return -1;
     }
 
     if (remove(master_preset_paths[index]) != 0) {
-        chain_log("Failed to delete master preset: %s", master_preset_paths[index]);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Failed to delete master preset: %s", master_preset_paths[index]);
+        chain_log(msg);
         return -1;
     }
 
-    chain_log("Deleted master preset: %s", master_preset_names[index]);
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Deleted master preset: %s", master_preset_names[index]);
+        chain_log(msg);
+    }
     scan_master_presets();
     return 0;
 }
@@ -4220,6 +4037,133 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
         }
     }
 
+    /* Parse midi_fx array (native MIDI FX modules with params) */
+    const char *midi_fx_pos = strstr(json, "\"midi_fx\"");
+    if (midi_fx_pos) {
+        const char *arr_start = strchr(midi_fx_pos, '[');
+        const char *arr_end = arr_start ? strchr(arr_start, ']') : NULL;
+
+        if (arr_start && arr_end) {
+            const char *obj_start = arr_start;
+            while (patch->midi_fx_count < MAX_MIDI_FX) {
+                obj_start = strchr(obj_start + 1, '{');
+                if (!obj_start || obj_start > arr_end) break;
+
+                const char *obj_end = strchr(obj_start, '}');
+                if (!obj_end || obj_end > arr_end) break;
+
+                midi_fx_config_t *cfg = &patch->midi_fx[patch->midi_fx_count];
+                memset(cfg, 0, sizeof(*cfg));
+
+                /* Parse "type" (module name) - consistent with audio_fx format */
+                const char *type_pos = strstr(obj_start, "\"type\"");
+                if (type_pos && type_pos < obj_end) {
+                    const char *q1 = strchr(strchr(type_pos, ':'), '"');
+                    if (q1 && q1 < obj_end) {
+                        const char *q2 = strchr(q1 + 1, '"');
+                        if (q2 && q2 < obj_end) {
+                            int len = q2 - q1 - 1;
+                            if (len > MAX_NAME_LEN - 1) len = MAX_NAME_LEN - 1;
+                            strncpy(cfg->module, q1 + 1, len);
+                            cfg->module[len] = '\0';
+                        }
+                    }
+                }
+
+                /* Parse other fields as params (skip "type") */
+                const char *scan = obj_start;
+                while (cfg->param_count < MAX_MIDI_FX_PARAMS && scan < obj_end) {
+                    const char *key_start = strchr(scan, '"');
+                    if (!key_start || key_start >= obj_end) break;
+
+                    const char *key_end = strchr(key_start + 1, '"');
+                    if (!key_end || key_end >= obj_end) break;
+
+                    int key_len = key_end - key_start - 1;
+                    if (key_len <= 0 || key_len >= 32) {
+                        scan = key_end + 1;
+                        continue;
+                    }
+
+                    /* Skip "type" - already parsed as module name */
+                    if (key_len == 4 && strncmp(key_start + 1, "type", 4) == 0) {
+                        /* Skip past the value */
+                        const char *colon = strchr(key_end, ':');
+                        if (colon && colon < obj_end) {
+                            const char *vq1 = strchr(colon, '"');
+                            if (vq1 && vq1 < obj_end) {
+                                const char *vq2 = strchr(vq1 + 1, '"');
+                                scan = vq2 ? vq2 + 1 : obj_end;
+                            } else {
+                                scan = obj_end;
+                            }
+                        } else {
+                            scan = key_end + 1;
+                        }
+                        continue;
+                    }
+
+                    /* Found a param key */
+                    midi_fx_param_t *p = &cfg->params[cfg->param_count];
+                    strncpy(p->key, key_start + 1, key_len);
+                    p->key[key_len] = '\0';
+
+                    /* Get value */
+                    const char *colon = strchr(key_end, ':');
+                    if (!colon || colon >= obj_end) {
+                        scan = key_end + 1;
+                        continue;
+                    }
+
+                    /* Skip whitespace */
+                    const char *val_start = colon + 1;
+                    while (val_start < obj_end && (*val_start == ' ' || *val_start == '\t')) val_start++;
+
+                    if (val_start >= obj_end) {
+                        scan = obj_end;
+                        continue;
+                    }
+
+                    if (*val_start == '"') {
+                        /* String value */
+                        const char *vq1 = val_start;
+                        const char *vq2 = strchr(vq1 + 1, '"');
+                        if (vq2 && vq2 < obj_end) {
+                            int val_len = vq2 - vq1 - 1;
+                            if (val_len > 31) val_len = 31;
+                            strncpy(p->val, vq1 + 1, val_len);
+                            p->val[val_len] = '\0';
+                            cfg->param_count++;
+                            scan = vq2 + 1;
+                        } else {
+                            scan = obj_end;
+                        }
+                    } else {
+                        /* Numeric value */
+                        const char *val_end = val_start;
+                        while (val_end < obj_end && *val_end != ',' && *val_end != '}') val_end++;
+                        int val_len = val_end - val_start;
+                        if (val_len > 31) val_len = 31;
+                        strncpy(p->val, val_start, val_len);
+                        p->val[val_len] = '\0';
+                        /* Trim trailing whitespace */
+                        while (val_len > 0 && (p->val[val_len-1] == ' ' || p->val[val_len-1] == '\t' || p->val[val_len-1] == '\n')) {
+                            p->val[--val_len] = '\0';
+                        }
+                        cfg->param_count++;
+                        scan = val_end;
+                    }
+                }
+
+                if (cfg->module[0]) {
+                    patch->midi_fx_count++;
+                }
+
+                obj_start = obj_end;
+            }
+        }
+    }
+
     /* Parse knob_mappings - simplified */
     const char *mappings_pos = strstr(json, "\"knob_mappings\"");
     if (mappings_pos) {
@@ -4306,7 +4250,7 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
 
     /* Unload existing */
     v2_synth_panic(inst);
-    v2_arp_reset(inst);
+    v2_unload_all_midi_fx(inst);
     v2_unload_all_audio_fx(inst);
     v2_unload_synth(inst);
 
@@ -4334,6 +4278,31 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
             snprintf(msg, sizeof(msg), "Failed to load FX: %s", patch->audio_fx[i]);
             v2_chain_log(inst, msg);
             /* Continue loading other FX */
+        }
+    }
+
+    /* Load MIDI FX */
+    for (int i = 0; i < patch->midi_fx_count; i++) {
+        midi_fx_config_t *cfg = &patch->midi_fx[i];
+        if (v2_load_midi_fx(inst, cfg->module) != 0) {
+            snprintf(msg, sizeof(msg), "Failed to load MIDI FX: %s", cfg->module);
+            v2_chain_log(inst, msg);
+            continue;  /* Skip params if load failed */
+        }
+
+        /* Apply MIDI FX parameters */
+        int fx_idx = inst->midi_fx_count - 1;  /* Just loaded */
+        if (fx_idx >= 0 && fx_idx < MAX_MIDI_FX && inst->midi_fx_plugins[fx_idx]) {
+            midi_fx_api_v1_t *api = inst->midi_fx_plugins[fx_idx];
+            void *instance = inst->midi_fx_instances[fx_idx];
+            if (api->set_param && instance) {
+                for (int p = 0; p < cfg->param_count; p++) {
+                    snprintf(msg, sizeof(msg), "Setting MIDI FX param: %s = %s",
+                             cfg->params[p].key, cfg->params[p].val);
+                    v2_chain_log(inst, msg);
+                    api->set_param(instance, cfg->params[p].key, cfg->params[p].val);
+                }
+            }
         }
     }
 
@@ -4385,8 +4354,6 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     }
 
     /* Copy other settings */
-    inst->chord_type = patch->chord_type;
-    inst->arp_mode = patch->arp_mode;
     inst->midi_input = patch->midi_input;
 
     inst->current_patch = patch_idx;
@@ -4396,6 +4363,29 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     v2_chain_log(inst, msg);
 
     return 0;
+}
+
+/* ==========================================================================
+ * Per-instance MIDI FX helpers (for V2 API)
+ * ========================================================================== */
+
+/* Send a note to synth with optional transposition (for chords) */
+static void inst_send_note_to_synth(chain_instance_t *inst, const uint8_t *msg, int len, int source, int interval) {
+    if (!inst || len < 3) return;
+
+    uint8_t out_msg[3] = { msg[0], msg[1], msg[2] };
+
+    if (interval != 0) {
+        int transposed = (int)msg[1] + interval;
+        if (transposed < 0 || transposed > 127) return;  /* Out of range */
+        out_msg[1] = (uint8_t)transposed;
+    }
+
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+        inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msg, len, source);
+    } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+        inst->synth_plugin->on_midi(out_msg, len, source);
+    }
 }
 
 /* V2 on_midi handler */
@@ -4488,11 +4478,18 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
     }
 
-    /* Forward MIDI to synth */
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
-        inst->synth_plugin_v2->on_midi(inst->synth_instance, msg, len, source);
-    } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
-        inst->synth_plugin->on_midi(msg, len, source);
+    /* Process through MIDI FX modules (if any loaded) */
+    uint8_t out_msgs[MIDI_FX_MAX_OUT_MSGS][3];
+    int out_lens[MIDI_FX_MAX_OUT_MSGS];
+    int out_count = v2_process_midi_fx(inst, msg, len, out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
+
+    /* Send processed messages to synth */
+    for (int i = 0; i < out_count; i++) {
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+            inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], source);
+        } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+            inst->synth_plugin->on_midi(out_msgs[i], out_lens[i], source);
+        }
     }
 }
 
@@ -4582,6 +4579,33 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
                 inst->fx_plugins[1]->set_param(subkey, val);
             }
+        }
+    }
+    else if (strncmp(key, "midi_fx1:", 9) == 0) {
+        const char *subkey = key + 9;
+        /* Intercept module change to swap MIDI FX1 dynamically */
+        if (strcmp(subkey, "module") == 0) {
+            /* Unload existing MIDI FX if any */
+            if (inst->midi_fx_count > 0) {
+                v2_unload_all_midi_fx(inst);
+            }
+            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
+                v2_load_midi_fx(inst, val);
+            }
+        } else if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
+            inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], subkey, val);
+        }
+    }
+    else if (strncmp(key, "midi_fx2:", 9) == 0) {
+        const char *subkey = key + 9;
+        /* Intercept module change to swap MIDI FX2 dynamically */
+        if (strcmp(subkey, "module") == 0) {
+            /* For slot 2, we'd need to unload just slot 2 - simplified for now */
+            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
+                v2_load_midi_fx(inst, val);
+            }
+        } else if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
+            inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], subkey, val);
         }
     }
     /* Knob mapping set: knob_N_set with value "target:param" */
@@ -4763,6 +4787,15 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
     if (strcmp(key, "fx2_module") == 0) {
         return snprintf(buf, buf_len, "%s", inst->current_fx_modules[1]);
+    }
+    if (strcmp(key, "midi_fx_count") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->midi_fx_count);
+    }
+    if (strcmp(key, "midi_fx1_module") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[0]);
+    }
+    if (strcmp(key, "midi_fx2_module") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[1]);
     }
     /* Master preset queries */
     if (strcmp(key, "master_preset_count") == 0) {
@@ -4982,6 +5015,104 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return -1;
     }
 
+    /* Route midi_fx1: prefixed params to MIDI FX1 (strip prefix) */
+    if (strncmp(key, "midi_fx1:", 9) == 0) {
+        const char *subkey = key + 9;
+        /* For ui_hierarchy: return cached JSON from module.json */
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 0) {
+            if (inst->midi_fx_ui_hierarchy[0][0]) {
+                int len = strlen(inst->midi_fx_ui_hierarchy[0]);
+                if (len < buf_len) {
+                    strcpy(buf, inst->midi_fx_ui_hierarchy[0]);
+                    return len;
+                }
+            }
+            return -1;
+        }
+        /* For chain_params: return parsed module.json data */
+        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 0) {
+            if (inst->midi_fx_param_counts[0] > 0) {
+                int written = snprintf(buf, buf_len, "[");
+                for (int i = 0; i < inst->midi_fx_param_counts[0] && written < buf_len - 10; i++) {
+                    chain_param_info_t *p = &inst->midi_fx_params[0][i];
+                    if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
+                    written += snprintf(buf + written, buf_len - written,
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
+                        p->key, p->name, p->type_str);
+                    if (strcmp(p->type_str, "float") == 0 || strcmp(p->type_str, "int") == 0) {
+                        written += snprintf(buf + written, buf_len - written,
+                            ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
+                            p->min_val, p->max_val, p->default_val);
+                    } else if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                        written += snprintf(buf + written, buf_len - written, ",\"options\":[");
+                        for (int j = 0; j < p->option_count; j++) {
+                            if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
+                            written += snprintf(buf + written, buf_len - written, "\"%s\"", p->options[j]);
+                        }
+                        written += snprintf(buf + written, buf_len - written, "]");
+                    }
+                    written += snprintf(buf + written, buf_len - written, "}");
+                }
+                written += snprintf(buf + written, buf_len - written, "]");
+                return written;
+            }
+            return -1;  /* No chain_params available */
+        }
+        if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->get_param) {
+            return inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], subkey, buf, buf_len);
+        }
+        return -1;
+    }
+
+    /* Route midi_fx2: prefixed params to MIDI FX2 (strip prefix) */
+    if (strncmp(key, "midi_fx2:", 9) == 0) {
+        const char *subkey = key + 9;
+        /* For ui_hierarchy: return cached JSON from module.json */
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 1) {
+            if (inst->midi_fx_ui_hierarchy[1][0]) {
+                int len = strlen(inst->midi_fx_ui_hierarchy[1]);
+                if (len < buf_len) {
+                    strcpy(buf, inst->midi_fx_ui_hierarchy[1]);
+                    return len;
+                }
+            }
+            return -1;
+        }
+        /* For chain_params: return parsed module.json data */
+        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 1) {
+            if (inst->midi_fx_param_counts[1] > 0) {
+                int written = snprintf(buf, buf_len, "[");
+                for (int i = 0; i < inst->midi_fx_param_counts[1] && written < buf_len - 10; i++) {
+                    chain_param_info_t *p = &inst->midi_fx_params[1][i];
+                    if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
+                    written += snprintf(buf + written, buf_len - written,
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
+                        p->key, p->name, p->type_str);
+                    if (strcmp(p->type_str, "float") == 0 || strcmp(p->type_str, "int") == 0) {
+                        written += snprintf(buf + written, buf_len - written,
+                            ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
+                            p->min_val, p->max_val, p->default_val);
+                    } else if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                        written += snprintf(buf + written, buf_len - written, ",\"options\":[");
+                        for (int j = 0; j < p->option_count; j++) {
+                            if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
+                            written += snprintf(buf + written, buf_len - written, "\"%s\"", p->options[j]);
+                        }
+                        written += snprintf(buf + written, buf_len - written, "]");
+                    }
+                    written += snprintf(buf + written, buf_len - written, "}");
+                }
+                written += snprintf(buf + written, buf_len - written, "]");
+                return written;
+            }
+            return -1;
+        }
+        if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->get_param) {
+            return inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], subkey, buf, buf_len);
+        }
+        return -1;
+    }
+
     /* Forward unprefixed to synth as fallback */
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
         return inst->synth_plugin_v2->get_param(inst->synth_instance, key, buf, buf_len);
@@ -5007,7 +5138,8 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         return;
     }
 
-    /* TODO: Process arpeggiator timing here if needed */
+    /* Process MIDI FX tick (for arpeggiator timing) */
+    v2_tick_midi_fx(inst, frames);
 
     /* Render synth */
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {

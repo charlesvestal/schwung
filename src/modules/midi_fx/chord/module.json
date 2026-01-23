@@ -7,13 +7,22 @@
   "capabilities": {
     "chainable": true,
     "component_type": "midi_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "Chord",
+          "params": ["type"],
+          "knobs": ["type"]
+        }
+      }
+    },
     "chain_params": [
       {
         "key": "type",
         "name": "Chord Type",
         "type": "enum",
         "options": ["none", "major", "minor", "power", "octave"],
-        "default": "none"
+        "default": "major"
       }
     ]
   }

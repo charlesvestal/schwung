@@ -114,6 +114,22 @@ mkdir -p ./build/modules/audio_fx/freeverb/
     -Isrc \
     -lm
 
+echo "Building MIDI FX plugins..."
+
+# Build Chord MIDI FX
+mkdir -p ./build/modules/midi_fx/chord/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/midi_fx/chord/dsp/chord.c \
+    -o build/modules/midi_fx/chord/dsp.so \
+    -Isrc
+
+# Build Arpeggiator MIDI FX
+mkdir -p ./build/modules/midi_fx/arp/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/midi_fx/arp/dsp/arp.c \
+    -o build/modules/midi_fx/arp/dsp.so \
+    -Isrc
+
 echo "Building Sound Generator plugins..."
 
 # Build Line In sound generator

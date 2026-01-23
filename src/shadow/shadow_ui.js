@@ -440,10 +440,15 @@ function getModuleUiPath(moduleId) {
     return null;
 }
 
+/* Convert component key to DSP param prefix (midiFx -> midi_fx1) */
+function getComponentParamPrefix(componentKey) {
+    return componentKey === "midiFx" ? "midi_fx1" : componentKey;
+}
+
 /* Set up shims for host_module_get_param and host_module_set_param
  * These route to the correct slot and component in shadow mode */
 function setupModuleParamShims(slot, componentKey) {
-    const prefix = componentKey === "midiFx" ? "midi_fx" : componentKey;
+    const prefix = getComponentParamPrefix(componentKey);
 
     globalThis.host_module_get_param = function(key) {
         return getSlotParam(slot, `${prefix}:${key}`);
@@ -559,7 +564,7 @@ function loadChainConfigFromSlot(slotIndex) {
     /* Read current patch configuration from DSP
      * Note: get_param uses underscores (synth_module), set_param uses colons (synth:module) */
     const synthModule = getSlotParam(slotIndex, "synth_module");
-    const midiFxModule = getSlotParam(slotIndex, "midi_fx_type");
+    const midiFxModule = getSlotParam(slotIndex, "midi_fx1_module");
     const fx1Module = getSlotParam(slotIndex, "fx1_module");
     const fx2Module = getSlotParam(slotIndex, "fx2_module");
 
@@ -710,7 +715,8 @@ function getComponentChainParams(slot, componentKey) {
     /* Chain params are typically in module.json, but we query via get_param */
     const key = componentKey === "synth" ? "synth:chain_params" :
                 componentKey === "fx1" ? "fx1:chain_params" :
-                componentKey === "fx2" ? "fx2:chain_params" : null;
+                componentKey === "fx2" ? "fx2:chain_params" :
+                componentKey === "midiFx" ? "midi_fx1:chain_params" : null;
     if (!key) return [];
 
     const json = getSlotParam(slot, key);
@@ -727,7 +733,8 @@ function getComponentChainParams(slot, componentKey) {
 function getComponentHierarchy(slot, componentKey) {
     const key = componentKey === "synth" ? "synth:ui_hierarchy" :
                 componentKey === "fx1" ? "fx1:ui_hierarchy" :
-                componentKey === "fx2" ? "fx2:ui_hierarchy" : null;
+                componentKey === "fx2" ? "fx2:ui_hierarchy" :
+                componentKey === "midiFx" ? "midi_fx1:ui_hierarchy" : null;
     if (!key) {
         debugLog(`getComponentHierarchy: no key for componentKey=${componentKey}`);
         return null;
@@ -1753,8 +1760,7 @@ function applyComponentSelection() {
             paramKey = "fx2:module";
             break;
         case "midiFx":
-            /* MIDI FX handled differently - uses chord/arp type params */
-            /* TODO: implement midi_fx:type or similar */
+            paramKey = "midi_fx1:module";
             break;
     }
 
@@ -2022,7 +2028,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     }
 
     /* Fall back to simple preset browser */
-    const prefix = componentKey === "midiFx" ? "midi_fx" : componentKey;
+    const prefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
 
     /* Fetch preset count and current preset */
     const countStr = getSlotParam(slotIndex, `${prefix}:preset_count`);
@@ -2249,16 +2255,32 @@ function adjustHierSelectedParam(delta) {
 
     /* Skip special actions */
     if (key === SWAP_MODULE_ACTION) return;
-    const fullKey = `${hierEditorComponent}:${key}`;
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    const fullKey = `${prefix}:${key}`;
 
     const currentVal = getSlotParam(hierEditorSlot, fullKey);
     if (currentVal === null) return;
 
+    const meta = getParamMetadata(key);
+
+    /* Debug: log what we found */
+    debugLog(`adjustHierSelectedParam: key=${key}, currentVal=${currentVal}, meta=${JSON.stringify(meta)}, chainParams=${JSON.stringify(hierEditorChainParams)}`);
+
+    /* Handle enum type - cycle through options */
+    if (meta && meta.type === "enum" && meta.options && meta.options.length > 0) {
+        const currentIndex = meta.options.indexOf(currentVal);
+        let newIndex = currentIndex + delta;
+        if (newIndex < 0) newIndex = meta.options.length - 1;
+        if (newIndex >= meta.options.length) newIndex = 0;
+        setSlotParam(hierEditorSlot, fullKey, meta.options[newIndex]);
+        return;
+    }
+
+    /* Handle numeric types */
     const num = parseFloat(currentVal);
     if (isNaN(num)) return;
 
     /* Get step from metadata - default 1 for int, 0.02 for float */
-    const meta = getParamMetadata(key);
     const isInt = meta && meta.type === "int";
     const step = meta && meta.step ? meta.step : (isInt ? 1 : 0.02);
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
@@ -2286,9 +2308,10 @@ function buildKnobContextForKnob(knobIndex) {
     /* Hierarchy editor context */
     if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length) {
         const key = hierEditorKnobs[knobIndex];
-        const fullKey = `${hierEditorComponent}:${key}`;
+        const prefix = getComponentParamPrefix(hierEditorComponent);
+        const fullKey = `${prefix}:${key}`;
         const meta = getParamMetadata(key);
-        const pluginName = getSlotParam(hierEditorSlot, `${hierEditorComponent}:name`) || "";
+        const pluginName = getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
         const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
         return {
             slot: hierEditorSlot,
@@ -2651,15 +2674,17 @@ function drawHierarchyEditor() {
     /* Build breadcrumb header with plugin name */
     const componentName = hierEditorComponent === "synth" ? "Synth" :
                           hierEditorComponent === "fx1" ? "FX1" :
-                          hierEditorComponent === "fx2" ? "FX2" : hierEditorComponent;
+                          hierEditorComponent === "fx2" ? "FX2" :
+                          hierEditorComponent === "midiFx" ? "MIDI FX" : hierEditorComponent;
 
     /* Get plugin display name */
-    const pluginName = getSlotParam(hierEditorSlot, `${hierEditorComponent}:name`) || "";
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    const pluginName = getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
 
     /* Check for mode indicator - show * for performance mode */
     let modeIndicator = "";
     if (hierEditorHierarchy && hierEditorHierarchy.modes && hierEditorHierarchy.mode_param) {
-        const modeVal = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${hierEditorHierarchy.mode_param}`);
+        const modeVal = getSlotParam(hierEditorSlot, `${prefix}:${hierEditorHierarchy.mode_param}`);
         const modeIndex = modeVal !== null ? parseInt(modeVal) : 0;
         /* modes[1] is typically "performance" - show * indicator */
         if (modeIndex === 1) {
@@ -2708,6 +2733,7 @@ function drawHierarchyEditor() {
             print(4, 24, "No parameters", 1);
         } else {
             /* Build items with labels and values */
+            const paramPrefix = getComponentParamPrefix(hierEditorComponent);
             const items = hierEditorParams.map(param => {
                 const key = typeof param === "string" ? param : param.key || param;
 
@@ -2718,7 +2744,7 @@ function drawHierarchyEditor() {
 
                 const meta = getParamMetadata(key);
                 const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-                const val = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${key}`);
+                const val = getSlotParam(hierEditorSlot, `${paramPrefix}:${key}`);
                 const displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
                 return { label, value: displayVal, key };
             });
@@ -2750,7 +2776,7 @@ function changeComponentPreset(delta) {
     if (newPreset >= editComponentPresetCount) newPreset = 0;
 
     /* Apply the preset change */
-    const prefix = editingComponentKey === "midiFx" ? "midi_fx" : editingComponentKey;
+    const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
     setSlotParam(selectedSlot, `${prefix}:preset`, String(newPreset));
 
     /* Update local state */
@@ -3280,7 +3306,8 @@ function handleSelect() {
                     if (hierEditorHierarchy.mode_param) {
                         const modeIndex = hierEditorHierarchy.modes.indexOf(selectedMode);
                         if (modeIndex >= 0) {
-                            setSlotParam(hierEditorSlot, `${hierEditorComponent}:${hierEditorHierarchy.mode_param}`, String(modeIndex));
+                            const modePrefix = getComponentParamPrefix(hierEditorComponent);
+                            setSlotParam(hierEditorSlot, `${modePrefix}:${hierEditorHierarchy.mode_param}`, String(modeIndex));
                         }
                     }
                     hierEditorPath.push("Mode");
@@ -3865,7 +3892,7 @@ function drawChainEdit() {
         const moduleData = cfg[selectedComp.key];
         if (moduleData) {
             /* Get display name from DSP if available */
-            const prefix = selectedComp.key === "midiFx" ? "midi_fx" : selectedComp.key;
+            const prefix = selectedComp.key === "midiFx" ? "midi_fx1" : selectedComp.key;
             const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
             const preset = getSlotParam(selectedSlot, `${prefix}:preset_name`) ||
                           getSlotParam(selectedSlot, `${prefix}:preset`) || "";
@@ -3918,7 +3945,7 @@ function drawComponentEdit() {
     const moduleName = moduleData ? moduleData.module.toUpperCase() : "Unknown";
 
     /* Get display name from DSP if available */
-    const prefix = editingComponentKey === "midiFx" ? "midi_fx" : editingComponentKey;
+    const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
     const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleName;
 
     drawHeader(truncateText(displayName, 20));
