@@ -1,9 +1,11 @@
 import * as os from 'os';
 import * as std from 'std';
 
-/* Debug logging to file */
+/* Debug logging to file - disabled by default, enable for debugging */
+const DEBUG_LOG_ENABLED = false;
 const DEBUG_LOG_FILE = '/tmp/shadow_debug.log';
 function debugLog(msg) {
+    if (!DEBUG_LOG_ENABLED) return;
     try {
         const f = std.open(DEBUG_LOG_FILE, 'a');
         if (f) {
@@ -2571,8 +2573,10 @@ function buildKnobContextForKnob(knobIndex) {
     if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < CHAIN_COMPONENTS.length) {
         const comp = CHAIN_COMPONENTS[selectedChainComponent];
         if (comp && comp.key !== "settings") {
-            const pluginName = getSlotParam(selectedSlot, `${comp.key}:name`) || "";
+            const paramKey = `${comp.key}:name`;
+            const pluginName = getSlotParam(selectedSlot, paramKey) || "";
             const hasModule = pluginName && pluginName.length > 0;
+            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, paramKey=${paramKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
 
             /* No module loaded in this slot */
             if (!hasModule) {

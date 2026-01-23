@@ -185,27 +185,22 @@ export function getHostVersion() {
 
 /* Install a module, returns { success, error } */
 export function installModule(mod, hostVersion) {
-    console.log(`installModule: starting for ${mod.id}`);
+    console.log(`Installing module: ${mod.id}`);
 
     /* Check host version compatibility */
     if (mod.min_host_version && compareVersions(mod.min_host_version, hostVersion) > 0) {
-        console.log(`installModule: version check failed`);
         return { success: false, error: `Requires host v${mod.min_host_version}` };
     }
 
     /* Check if module has a download URL */
     if (!mod.download_url) {
-        console.log(`installModule: no download_url`);
         return { success: false, error: 'No release available' };
     }
 
     const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
-    console.log(`installModule: tarPath=${tarPath}, url=${mod.download_url}`);
 
     /* Download the module tarball */
-    console.log(`installModule: calling host_http_download`);
     const downloadOk = globalThis.host_http_download(mod.download_url, tarPath);
-    console.log(`installModule: download returned ${downloadOk}`);
     if (!downloadOk) {
         return { success: false, error: 'Download failed' };
     }
@@ -213,21 +208,17 @@ export function installModule(mod, hostVersion) {
     /* Determine extraction path based on component_type */
     const subdir = getInstallSubdir(mod.component_type);
     const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
-    console.log(`installModule: extractDir=${extractDir}`);
 
     /* Extract to appropriate directory */
-    console.log(`installModule: calling host_extract_tar`);
     const extractOk = globalThis.host_extract_tar(tarPath, extractDir);
-    console.log(`installModule: extract returned ${extractOk}`);
     if (!extractOk) {
         return { success: false, error: 'Extract failed' };
     }
 
     /* Rescan modules */
-    console.log(`installModule: calling host_rescan_modules`);
     globalThis.host_rescan_modules();
 
-    console.log(`installModule: success`);
+    console.log(`Installed module: ${mod.id}`);
     return { success: true, error: null };
 }
 
