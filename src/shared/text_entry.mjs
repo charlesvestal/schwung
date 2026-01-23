@@ -315,9 +315,19 @@ export function drawTextEntry() {
  * Draw the keyboard grid screen
  */
 function drawKeyboardScreen() {
-    /* Title */
+    /* Title with current buffer */
+    const bufferDisplay = state.buffer || 'Untitled';
     if (state.title) {
-        print(2, TITLE_Y, state.title, 1);
+        /* Combine title and buffer, truncate if needed */
+        const combined = `${state.title}: ${bufferDisplay}`;
+        const maxChars = Math.floor((SCREEN_WIDTH - 4) / 6);  /* 6px per char */
+        const displayText = combined.length > maxChars
+            ? combined.slice(0, maxChars - 1) + '…'
+            : combined;
+        print(2, TITLE_Y, displayText, 1);
+    } else {
+        /* No title, just show buffer */
+        print(2, TITLE_Y, bufferDisplay, 1);
     }
     fill_rect(0, RULE_Y, SCREEN_WIDTH, 1, 1);
 
