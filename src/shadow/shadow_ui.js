@@ -42,6 +42,7 @@ import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
     drawMenuList,
+    drawStatusOverlay,
     showOverlay,
     hideOverlay,
     tickOverlay,
@@ -1780,7 +1781,9 @@ function fetchStoreCatalogSync() {
     const onProgress = (title, message) => {
         storePickerLoadingTitle = title;
         storePickerLoadingMessage = message;
-        needsRedraw = true;
+        /* Update display during long fetch operations */
+        drawStorePickerLoading();
+        host_flush_display();
     };
 
     storeHostVersion = getHostVersion();
@@ -4205,91 +4208,58 @@ function drawStorePickerList() {
     const cat = CATEGORIES.find(c => c.id === storePickerCategory);
     const catName = cat ? cat.name : 'Modules';
 
-    /* Header */
-    fill_rect(0, 0, 128, 11, 1);
-    print(2, 1, catName, 0);
-    print(100, 1, `(${storePickerModules.length})`, 0);
+    /* Header shows "Store: <category>" for context */
+    drawHeader('Store: ' + catName);
 
     if (storePickerModules.length === 0) {
         print(2, 28, "No modules available", 1);
-        print(2, 54, "Back: return", 1);
+        drawFooter('Back: return');
         return;
     }
 
-    /* List area */
-    const listTop = 13;
-    const listBottom = 52;
-    const lineHeight = 10;
-    const visibleCount = Math.floor((listBottom - listTop) / lineHeight);
-
-    /* Calculate scroll offset */
-    let scrollOffset = 0;
-    if (storePickerSelectedIndex >= visibleCount) {
-        scrollOffset = storePickerSelectedIndex - visibleCount + 1;
-    }
-
-    /* Draw visible items */
-    for (let i = 0; i < visibleCount && (i + scrollOffset) < storePickerModules.length; i++) {
-        const idx = i + scrollOffset;
-        const mod = storePickerModules[idx];
-        const y = listTop + (i * lineHeight);
-        const isSelected = (idx === storePickerSelectedIndex);
-
-        /* Get status */
+    /* Build items for drawMenuList */
+    const items = storePickerModules.map(mod => {
         const status = getModuleStatus(mod, storeInstalledModules);
         let statusIcon = '';
         if (status.installed) {
             statusIcon = status.hasUpdate ? '^' : '*';
         }
+        return { ...mod, statusIcon };
+    });
 
-        if (isSelected) {
-            fill_rect(0, y, 128, lineHeight, 1);
-            print(2, y + 1, mod.name, 0);
-            if (statusIcon) print(120, y + 1, statusIcon, 0);
-        } else {
-            print(2, y + 1, mod.name, 1);
-            if (statusIcon) print(120, y + 1, statusIcon, 1);
-        }
-    }
+    drawMenuList({
+        items,
+        selectedIndex: storePickerSelectedIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        valueAlignRight: true,
+        getLabel: (item) => item.name,
+        getValue: (item) => item.statusIcon
+    });
 
-    /* Footer */
-    fill_rect(0, 54, 128, 10, 1);
-    print(2, 55, "Back:return  Jog:browse", 0);
+    drawFooter('Back:return  Jog:browse');
 }
 
 /* Draw store picker loading screen */
 function drawStorePickerLoading() {
     clear_screen();
-
-    /* Centered loading display */
-    const title = storePickerLoadingTitle || 'Loading';
-    const msg = storePickerLoadingMessage || '...';
-
-    /* Title */
-    fill_rect(0, 20, 128, 14, 1);
-    const titleX = Math.max(2, Math.floor((128 - title.length * 6) / 2));
-    print(titleX, 22, title, 0);
-
-    /* Message */
-    const msgX = Math.max(2, Math.floor((128 - msg.length * 6) / 2));
-    print(msgX, 40, msg, 1);
+    const title = storePickerLoadingTitle || 'Module Store';
+    const msg = storePickerLoadingMessage || 'Loading...';
+    drawStatusOverlay(title, msg);
 }
 
 /* Draw store picker result screen */
 function drawStorePickerResult() {
     clear_screen();
+    drawHeader('Module Store');
 
-    /* Header */
-    fill_rect(0, 0, 128, 11, 1);
-    print(2, 1, "Module Store", 0);
-
-    /* Message */
+    /* Message centered vertically */
     const msg = storePickerMessage || 'Done';
     print(2, 28, msg, 1);
 
-    /* Footer */
-    fill_rect(0, 54, 128, 10, 1);
-    print(2, 55, "Press to continue", 0);
+    drawFooter('Press to continue');
 }
 
 /* Draw store picker module detail */
@@ -4301,31 +4271,29 @@ function drawStorePickerDetail() {
 
     const status = getModuleStatus(mod, storeInstalledModules);
 
-    /* Header with name and version */
-    fill_rect(0, 0, 128, 11, 1);
+    /* Header with name and version - match regular store format */
     let title = mod.name;
-    if (title.length > 14) title = title.substring(0, 13) + '~';
-    print(2, 1, title, 0);
-    print(90, 1, `v${mod.latest_version}`, 0);
+    let versionStr = `v${mod.latest_version}`;
+    if (status.installed && status.hasUpdate) {
+        versionStr = `${status.installedVersion}->${mod.latest_version}`;
+        if (title.length > 8) title = title.substring(0, 7) + '~';
+    } else {
+        if (title.length > 12) title = title.substring(0, 11) + '~';
+    }
+    drawHeader(title, versionStr);
 
     /* Description */
     const desc = mod.description || '';
-    const truncDesc = desc.length > 21 ? desc.substring(0, 18) + '...' : desc;
-    print(2, 14, truncDesc, 1);
+    const truncDesc = desc.length > 20 ? desc.substring(0, 17) + '...' : desc;
+    print(2, 16, truncDesc, 1);
 
     /* Author */
-    print(2, 26, `by ${mod.author || 'Unknown'}`, 1);
+    print(2, 28, `by ${mod.author || 'Unknown'}`, 1);
 
-    /* Status line */
-    if (status.installed) {
-        if (status.hasUpdate) {
-            print(2, 38, `Installed: v${status.installedVersion}`, 1);
-        } else {
-            print(2, 38, "Installed", 1);
-        }
-    }
+    /* Divider */
+    fill_rect(0, 38, 128, 1, 1);
 
-    /* Action buttons */
+    /* Action buttons - match regular store layout */
     let action1, action2;
     if (status.installed) {
         action1 = status.hasUpdate ? 'Update' : 'Reinstall';
@@ -4335,21 +4303,21 @@ function drawStorePickerDetail() {
         action2 = null;
     }
 
-    const buttonY = 48;
+    const buttonY = 44;
 
     if (storePickerActionIndex === 0) {
-        fill_rect(2, buttonY, 58, 12, 1);
-        print(4, buttonY + 2, `[${action1}]`, 0);
+        fill_rect(2, buttonY - 1, 60, 12, 1);
+        print(4, buttonY, `[${action1}]`, 0);
     } else {
-        print(4, buttonY + 2, `[${action1}]`, 1);
+        print(4, buttonY, `[${action1}]`, 1);
     }
 
     if (action2) {
         if (storePickerActionIndex === 1) {
-            fill_rect(66, buttonY, 58, 12, 1);
-            print(68, buttonY + 2, `[${action2}]`, 0);
+            fill_rect(66, buttonY - 1, 58, 12, 1);
+            print(68, buttonY, `[${action2}]`, 0);
         } else {
-            print(68, buttonY + 2, `[${action2}]`, 1);
+            print(68, buttonY, `[${action2}]`, 1);
         }
     }
 }
