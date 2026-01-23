@@ -1726,7 +1726,21 @@ function scanModulesForType(componentType) {
         scanDir(dir);
     }
 
+    /* Add option to get more modules from store */
+    result.push({ id: "__get_more__", name: "[Get more...]" });
+
     return result;
+}
+
+/* Map component key to catalog category ID */
+function componentKeyToCategoryId(componentKey) {
+    switch (componentKey) {
+        case 'synth': return 'sound_generator';
+        case 'fx1':
+        case 'fx2': return 'audio_fx';
+        case 'midiFx': return 'midi_fx';
+        default: return null;
+    }
 }
 
 /* Enter component module selection view */
