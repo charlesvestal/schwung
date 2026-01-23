@@ -4798,6 +4798,18 @@ globalThis.tick = function() {
         case VIEWS.KNOB_PARAM_PICKER:
             drawKnobParamPicker();
             break;
+        case VIEWS.STORE_PICKER_LIST:
+            drawStorePickerList();
+            break;
+        case VIEWS.STORE_PICKER_DETAIL:
+            drawStorePickerDetail();
+            break;
+        case VIEWS.STORE_PICKER_LOADING:
+            drawStorePickerLoading();
+            break;
+        case VIEWS.STORE_PICKER_RESULT:
+            drawStorePickerResult();
+            break;
         default:
             drawSlots();
     }
