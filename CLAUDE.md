@@ -143,6 +143,18 @@ host_get_setting(key)         // -> value (velocity_curve, aftertouch_enabled, a
 host_set_setting(key, val)    // set setting
 host_save_settings()          // persist to disk
 host_reload_settings()        // reload from disk
+
+// Display control
+host_flush_display()          // Force immediate display update
+host_set_refresh_rate(hz)     // Set display refresh rate
+host_get_refresh_rate()       // Get current refresh rate
+
+// File system utilities (used by Module Store)
+host_file_exists(path)        // -> bool
+host_read_file(path)          // -> string or null
+host_http_download(url, dest) // -> bool
+host_extract_tar(tarball, dir) // -> bool
+host_remove_dir(path)         // -> bool
 ```
 
 ### Host Volume Control
@@ -159,6 +171,7 @@ Located in `src/shared/`:
 - `midi_messages.mjs` - MIDI helpers
 - `move_display.mjs` - Display utilities
 - `menu_layout.mjs` - Title/list/footer menu layout helpers
+- `store_utils.mjs` - Module Store catalog fetching and install/remove functions
 
 ## Move Hardware MIDI
 

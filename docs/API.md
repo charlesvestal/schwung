@@ -128,6 +128,19 @@ host_get_setting(key)         // Get setting value (velocity_curve, aftertouch_e
 host_set_setting(key, val)    // Set setting value
 host_save_settings()          // Save settings to disk
 host_reload_settings()        // Reload settings from disk
+
+// Display control
+host_flush_display()          // Force immediate display update
+host_set_refresh_rate(hz)     // Set display refresh rate (default ~11Hz)
+host_get_refresh_rate()       // Get current refresh rate
+
+// File system utilities (used by Module Store)
+host_file_exists(path)        // Returns bool - check if file/directory exists
+host_read_file(path)          // Returns file contents as string, or null on error
+host_http_download(url, dest) // Download URL to dest path, returns bool
+host_extract_tar(tarball, dir) // Extract .tar.gz to directory, returns bool
+host_extract_tar_strip(tarball, dir, strip) // Extract with --strip-components
+host_remove_dir(path)         // Recursively remove directory, returns bool
 ```
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).

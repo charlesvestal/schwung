@@ -1,8 +1,8 @@
 # Shadow Instrument - Status
 
 **Branch:** `main` (merged from `feature/shadow-instrument-poc`)
-**Date:** 2026-01-21
-**Status:** ✅ FULLY WORKING - Audio, MIDI routing, shadow UI display, track selection, knob control, Master FX, and parameter hierarchy editor all operational
+**Date:** 2026-01-23
+**Status:** ✅ FULLY WORKING - Audio, MIDI routing, shadow UI display, track selection, knob control, Master FX, parameter hierarchy editor, and in-UI module store all operational
 
 ## Goal
 
@@ -108,6 +108,7 @@ Segment names and buffer sizes are defined in `src/host/shadow_constants.h`.
 - ✅ Hierarchy parameter editor for deep module parameter access
 - ✅ ui_hierarchy support for modules to expose navigable parameter trees
 - ✅ chain_params support for quick knob mappings
+- ✅ Shadow UI Store Picker - install/update/remove modules without leaving shadow mode
 
 ## Audio Status
 
@@ -199,6 +200,23 @@ In-process shadow DSP is the working path: it autostarts in the shim, renders
 clean audio, and mixes with stock Move output. MIDI is gated to channels 5–8 to
 avoid UI events. The shadow UI runs in its own process and can swap patches
 per slot without stopping stock Move.
+
+## Notes (2026-01-23 - Shadow UI Store Picker)
+
+**New Feature:** Install, update, and remove modules directly from Shadow UI without switching to Move Anything mode.
+
+**How it works:**
+- When selecting a synth or effect slot, "[Get more...]" option opens the store picker
+- Browse modules by category (Sound Generators, Audio FX, MIDI FX)
+- See installed status, available updates, and version info
+- Install/Update/Remove modules with real-time progress display
+- Newly installed modules are immediately available for use
+
+**Implementation:**
+- Shared `store_utils.mjs` provides catalog fetching, install/remove functions
+- Shadow UI uses `host_http_download`, `host_extract_tar` for module operations
+- Consistent UX with shared `menu_layout.mjs` components (headers, footers, list)
+- Module list rescans filesystem after install (no reboot required)
 
 ## Notes (2026-01-20 - Track Selection & Knob Control)
 

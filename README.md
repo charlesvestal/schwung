@@ -143,13 +143,22 @@ While using stock Move (not in Shadow UI), hold Shift to control shadow synth pa
 - **Shift + turn knob**: Adjust shadow slot parameter with overlay feedback
 - **Shift + touch knob**: Peek at current value
 
+### Shadow UI Store Picker
+
+Install modules directly from Shadow UI without leaving shadow mode:
+
+1. When selecting a synth or effect slot, choose **[Get more...]**
+2. Browse modules by category
+3. Select a module to see details and install/update/remove options
+4. Newly installed modules are immediately available
+
 ### Extending Shadow Mode
 
 Shadow mode uses the same chain module and patches as standalone Move Anything. **Any module you install via Module Store is automatically available in shadow mode** - no recompilation required.
 
 To add new synths or effects to shadow mode:
 
-1. Install the module via Module Store (or copy to `/data/UserData/move-anything/modules/`)
+1. Install the module via Module Store or Shadow UI Store Picker
 2. Create a chain patch in `modules/chain/patches/` that references the module
 3. Select the patch in the shadow UI
 
