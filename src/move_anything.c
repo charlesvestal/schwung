@@ -1370,6 +1370,27 @@ static JSValue js_host_module_get_param(JSContext *ctx, JSValueConst this_val,
     return JS_NewString(ctx, buf);
 }
 
+/* host_module_get_error() -> string or undefined */
+static JSValue js_host_module_get_error(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+
+    if (!g_module_manager_initialized) {
+        return JS_UNDEFINED;
+    }
+
+    char buf[512];
+    int len = mm_get_error(&g_module_manager, buf, sizeof(buf));
+
+    if (len <= 0) {
+        return JS_UNDEFINED;  /* No error */
+    }
+
+    return JS_NewString(ctx, buf);
+}
+
 /* host_module_send_midi([status, data1, data2], source) */
 static JSValue js_host_module_send_midi(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv) {
@@ -1975,6 +1996,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_module_get_param_func = JS_NewCFunction(ctx, js_host_module_get_param, "host_module_get_param", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_module_get_param", host_module_get_param_func);
+
+    JSValue host_module_get_error_func = JS_NewCFunction(ctx, js_host_module_get_error, "host_module_get_error", 0);
+    JS_SetPropertyStr(ctx, global_obj, "host_module_get_error", host_module_get_error_func);
 
     JSValue host_module_send_midi_func = JS_NewCFunction(ctx, js_host_module_send_midi, "host_module_send_midi", 2);
     JS_SetPropertyStr(ctx, global_obj, "host_module_send_midi", host_module_send_midi_func);
