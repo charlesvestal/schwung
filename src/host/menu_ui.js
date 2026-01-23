@@ -14,6 +14,8 @@ import {
 import { isCapacitiveTouchMessage, clearAllLEDs } from '/data/UserData/move-anything/shared/input_filter.mjs';
 import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount, enterCategory, exitCategory, isInCategory, resetToMain } from './menu_main.mjs';
 import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
+import { drawMessageOverlay } from '/data/UserData/move-anything/shared/menu_layout.mjs';
+import { wrapText } from '/data/UserData/move-anything/shared/scrollable_text.mjs';
 
 /* State */
 let modules = [];
@@ -25,6 +27,11 @@ let statusTimeout = 0;
 
 /* Settings state */
 let settingsVisible = false;
+
+/* Error overlay state */
+let errorOverlayActive = false;
+let errorModuleName = '';
+let errorLines = [];
 
 /* Alias constants for clarity */
 const CC_JOG_WHEEL = MoveMainKnob;
@@ -117,9 +124,19 @@ function loadModule(mod) {
 
     const success = host_load_module(mod.id);
     if (success) {
-        showStatus(`Loaded: ${mod.name}`);
-        menuVisible = false;
-        console.log(`Module ${mod.id} loaded successfully`);
+        /* Check if module has an error state (e.g., missing assets) */
+        const errorMsg = host_module_get_error();
+        if (errorMsg) {
+            console.log(`Module ${mod.id} loaded with error: ${errorMsg}`);
+            errorModuleName = mod.name;
+            errorLines = wrapText(errorMsg, 18);
+            errorOverlayActive = true;
+            menuVisible = false;
+        } else {
+            showStatus(`Loaded: ${mod.name}`);
+            menuVisible = false;
+            console.log(`Module ${mod.id} loaded successfully`);
+        }
     } else {
         showStatus(`Failed to load!`);
         console.log(`Failed to load module ${mod.id}`);
@@ -143,6 +160,15 @@ function handleCC(cc, value) {
     /* Track shift state */
     if (cc === CC_SHIFT) {
         shiftHeld = (value > 0);
+        return;
+    }
+
+    /* Dismiss error overlay on any button press */
+    if (errorOverlayActive && value > 0) {
+        errorOverlayActive = false;
+        errorModuleName = '';
+        errorLines = [];
+        /* Module is still loaded, just continue to its UI */
         return;
     }
 
@@ -243,6 +269,13 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
+    if (errorOverlayActive) {
+        /* Draw error overlay on top of whatever is behind */
+        clear_screen();
+        drawMessageOverlay(`${errorModuleName} Error`, errorLines);
+        return;
+    }
+
     if (settingsVisible) {
         renderSettingsScreen();
     } else if (menuVisible) {
