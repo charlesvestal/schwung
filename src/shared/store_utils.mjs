@@ -60,7 +60,7 @@ export function fetchReleaseJson(github_repo) {
     const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
     const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
 
-    const success = host_http_download(releaseUrl, cacheFile);
+    const success = globalThis.host_http_download(releaseUrl, cacheFile);
     if (!success) {
         console.log(`Failed to fetch release.json for ${github_repo}`);
         return null;
@@ -92,13 +92,22 @@ export function fetchReleaseJson(github_repo) {
 export function fetchCatalog(onProgress) {
     if (onProgress) onProgress('Loading Catalog', 'Fetching...');
 
-    const success = host_http_download(CATALOG_URL, CATALOG_CACHE_PATH);
+    let success = false;
+    try {
+        const fn = globalThis.host_http_download;
+        if (!fn) {
+            return { success: false, catalog: null, error: 'host_http_download not available' };
+        }
+        success = fn(CATALOG_URL, CATALOG_CACHE_PATH);
+    } catch (e) {
+        return { success: false, catalog: null, error: 'Download error: ' + String(e) };
+    }
 
     if (success) {
         return loadCatalogFromCache(onProgress);
     } else {
         /* Try cached version */
-        if (host_file_exists(CATALOG_CACHE_PATH)) {
+        if (globalThis.host_file_exists(CATALOG_CACHE_PATH)) {
             console.log('Using cached catalog (network unavailable)');
             return loadCatalogFromCache(onProgress);
         } else {
@@ -176,39 +185,49 @@ export function getHostVersion() {
 
 /* Install a module, returns { success, error } */
 export function installModule(mod, hostVersion) {
+    console.log(`installModule: starting for ${mod.id}`);
+
     /* Check host version compatibility */
     if (mod.min_host_version && compareVersions(mod.min_host_version, hostVersion) > 0) {
+        console.log(`installModule: version check failed`);
         return { success: false, error: `Requires host v${mod.min_host_version}` };
     }
 
     /* Check if module has a download URL */
     if (!mod.download_url) {
+        console.log(`installModule: no download_url`);
         return { success: false, error: 'No release available' };
     }
 
     const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
+    console.log(`installModule: tarPath=${tarPath}, url=${mod.download_url}`);
 
     /* Download the module tarball */
-    console.log(`Downloading: ${mod.download_url}`);
-    const downloadOk = host_http_download(mod.download_url, tarPath);
+    console.log(`installModule: calling host_http_download`);
+    const downloadOk = globalThis.host_http_download(mod.download_url, tarPath);
+    console.log(`installModule: download returned ${downloadOk}`);
     if (!downloadOk) {
-        console.log('Download failed');
         return { success: false, error: 'Download failed' };
     }
 
     /* Determine extraction path based on component_type */
     const subdir = getInstallSubdir(mod.component_type);
     const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
+    console.log(`installModule: extractDir=${extractDir}`);
 
     /* Extract to appropriate directory */
-    const extractOk = host_extract_tar(tarPath, extractDir);
+    console.log(`installModule: calling host_extract_tar`);
+    const extractOk = globalThis.host_extract_tar(tarPath, extractDir);
+    console.log(`installModule: extract returned ${extractOk}`);
     if (!extractOk) {
         return { success: false, error: 'Extract failed' };
     }
 
     /* Rescan modules */
-    host_rescan_modules();
+    console.log(`installModule: calling host_rescan_modules`);
+    globalThis.host_rescan_modules();
 
+    console.log(`installModule: success`);
     return { success: true, error: null };
 }
 
@@ -221,13 +240,13 @@ export function removeModule(mod) {
         : `${MODULES_DIR}/${mod.id}`;
 
     /* Remove the module directory */
-    const removeOk = host_remove_dir(modulePath);
+    const removeOk = globalThis.host_remove_dir(modulePath);
     if (!removeOk) {
         return { success: false, error: 'Remove failed' };
     }
 
     /* Rescan modules */
-    host_rescan_modules();
+    globalThis.host_rescan_modules();
 
     return { success: true, error: null };
 }
@@ -235,7 +254,7 @@ export function removeModule(mod) {
 /* Scan installed modules, returns { moduleId: version } map */
 export function scanInstalledModules() {
     const installedModules = {};
-    const modules = host_list_modules();
+    const modules = globalThis.host_list_modules();
     for (const mod of modules) {
         installedModules[mod.id] = mod.version;
     }

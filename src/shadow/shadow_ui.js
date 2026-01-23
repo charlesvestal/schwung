@@ -1762,6 +1762,8 @@ function enterStorePicker(componentKey) {
 
         /* Fetch catalog (blocking) */
         fetchStoreCatalogSync();
+        /* Force display update after catalog load */
+        needsRedraw = true;
     } else {
         /* Catalog already loaded, go to list */
         storePickerModules = getModulesForCategory(storeCatalog, categoryId);
@@ -1779,9 +1781,6 @@ function fetchStoreCatalogSync() {
         storePickerLoadingTitle = title;
         storePickerLoadingMessage = message;
         needsRedraw = true;
-        /* Force redraw during fetch */
-        draw();
-        host_flush_display();
     };
 
     storeHostVersion = getHostVersion();
@@ -1835,22 +1834,43 @@ function handleStorePickerListSelect() {
 
 /* Handle selection in store picker detail */
 function handleStorePickerDetailSelect() {
+    debugLog(`handleStorePickerDetailSelect: starting`);
     const mod = storePickerCurrentModule;
-    if (!mod) return;
+    if (!mod) {
+        debugLog(`handleStorePickerDetailSelect: no mod`);
+        return;
+    }
 
+    debugLog(`handleStorePickerDetailSelect: mod=${mod.id}, actionIndex=${storePickerActionIndex}`);
+    debugLog(`handleStorePickerDetailSelect: getting status`);
     const status = getModuleStatus(mod, storeInstalledModules);
+    debugLog(`handleStorePickerDetailSelect: got status`);
 
     view = VIEWS.STORE_PICKER_LOADING;
-    needsRedraw = true;
-    draw();
-    host_flush_display();
 
     if (storePickerActionIndex === 0) {
         /* Install/Update/Reinstall */
         storePickerLoadingTitle = 'Installing';
         storePickerLoadingMessage = mod.name;
+    } else {
+        /* Remove */
+        storePickerLoadingTitle = 'Removing';
+        storePickerLoadingMessage = mod.name;
+    }
 
+    debugLog(`handleStorePickerDetailSelect: before draw`);
+    /* Show loading screen before blocking operation */
+    drawStorePickerLoading();
+    debugLog(`handleStorePickerDetailSelect: after draw, before flush`);
+    host_flush_display();
+    debugLog(`handleStorePickerDetailSelect: after flush`);
+
+    debugLog(`handleStorePickerDetailSelect: calling operation`);
+
+    if (storePickerActionIndex === 0) {
+        debugLog(`handleStorePickerDetailSelect: calling sharedInstallModule`);
         const result = sharedInstallModule(mod, storeHostVersion);
+        debugLog(`handleStorePickerDetailSelect: install result=${JSON.stringify(result)}`);
 
         if (result.success) {
             storeInstalledModules = scanInstalledModules();
@@ -1860,10 +1880,9 @@ function handleStorePickerDetailSelect() {
         }
     } else {
         /* Remove */
-        storePickerLoadingTitle = 'Removing';
-        storePickerLoadingMessage = mod.name;
-
+        debugLog(`handleStorePickerDetailSelect: calling sharedRemoveModule`);
         const result = sharedRemoveModule(mod);
+        debugLog(`handleStorePickerDetailSelect: remove result=${JSON.stringify(result)}`);
 
         if (result.success) {
             storeInstalledModules = scanInstalledModules();
@@ -1873,6 +1892,7 @@ function handleStorePickerDetailSelect() {
         }
     }
 
+    debugLog(`handleStorePickerDetailSelect: done, message=${storePickerMessage}`);
     view = VIEWS.STORE_PICKER_RESULT;
     needsRedraw = true;
 }
@@ -1906,7 +1926,12 @@ function handleStorePickerBack() {
             storePickerCurrentModule = null;
             break;
         case VIEWS.STORE_PICKER_LOADING:
-            /* Can't cancel during loading */
+            /* Allow cancel during loading - return to component select */
+            availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
+            view = VIEWS.COMPONENT_SELECT;
+            storePickerCategory = null;
+            storePickerModules = [];
+            storeFetchPending = false;
             break;
     }
     needsRedraw = true;

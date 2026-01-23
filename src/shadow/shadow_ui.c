@@ -16,6 +16,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <dirent.h>
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
@@ -398,6 +399,279 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     return JS_NewString(ctx, shadow_param->value);
 }
 
+/* === Host functions for store operations === */
+
+#define BASE_DIR "/data/UserData/move-anything"
+#define MODULES_DIR "/data/UserData/move-anything/modules"
+#define CURL_PATH "/data/UserData/move-anything/bin/curl"
+
+/* Helper: validate path is within BASE_DIR to prevent directory traversal */
+static int validate_path(const char *path) {
+    if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
+    if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
+    if (strstr(path, "..") != NULL) return 0;
+    return 1;
+}
+
+/* host_file_exists(path) -> bool */
+static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    struct stat st;
+    int exists = (stat(path, &st) == 0);
+
+    JS_FreeCString(ctx, path);
+    return exists ? JS_TRUE : JS_FALSE;
+}
+
+/* host_http_download(url, dest_path) -> bool */
+static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val;
+    shadow_ui_log_line("host_http_download: called");
+    if (argc < 2) {
+        shadow_ui_log_line("host_http_download: argc < 2");
+        return JS_FALSE;
+    }
+
+    const char *url = JS_ToCString(ctx, argv[0]);
+    const char *dest_path = JS_ToCString(ctx, argv[1]);
+
+    if (!url || !dest_path) {
+        shadow_ui_log_line("host_http_download: null url or dest_path");
+        if (url) JS_FreeCString(ctx, url);
+        if (dest_path) JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
+    shadow_ui_log_line("host_http_download: url and path ok");
+    shadow_ui_log_line(url);
+    shadow_ui_log_line(dest_path);
+
+    /* Validate destination path */
+    if (!validate_path(dest_path)) {
+        shadow_ui_log_line("host_http_download: invalid dest path");
+        fprintf(stderr, "host_http_download: invalid dest path: %s\n", dest_path);
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
+    shadow_ui_log_line("host_http_download: path validated, running curl");
+
+    /* Build curl command - use -k to skip SSL verification, timeouts to prevent hangs */
+    /* Short timeout (15s) is fine for catalog/release.json; module tarballs are small enough too */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "%s -fsSLk --connect-timeout 5 --max-time 15 -o \"%s\" \"%s\" 2>&1",
+             CURL_PATH, dest_path, url);
+
+    shadow_ui_log_line(cmd);
+
+    int result = system(cmd);
+
+    shadow_ui_log_line("host_http_download: curl returned");
+
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, dest_path);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_extract_tar(tar_path, dest_dir) -> bool */
+static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) {
+        return JS_FALSE;
+    }
+
+    const char *tar_path = JS_ToCString(ctx, argv[0]);
+    const char *dest_dir = JS_ToCString(ctx, argv[1]);
+
+    if (!tar_path || !dest_dir) {
+        if (tar_path) JS_FreeCString(ctx, tar_path);
+        if (dest_dir) JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate paths */
+    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
+        fprintf(stderr, "host_extract_tar: invalid path(s)\n");
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Build tar command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>&1",
+             tar_path, dest_dir);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, tar_path);
+    JS_FreeCString(ctx, dest_dir);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_remove_dir(path) -> bool */
+static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    /* Validate path - must be within modules directory for safety */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_remove_dir: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Additional safety: must be within modules directory */
+    if (strncmp(path, MODULES_DIR, strlen(MODULES_DIR)) != 0) {
+        fprintf(stderr, "host_remove_dir: path must be within modules dir: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Build rm command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>&1", path);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, path);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* Helper: read a simple JSON string value from a file */
+static int read_json_string(const char *filepath, const char *key, char *out, size_t out_len) {
+    FILE *f = fopen(filepath, "r");
+    if (!f) return 0;
+
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    /* Simple key search: "key": "value" */
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    char *pos = strstr(buf, search);
+    if (!pos) return 0;
+
+    pos += strlen(search);
+    /* Skip whitespace and colon */
+    while (*pos && (*pos == ' ' || *pos == ':' || *pos == '\t')) pos++;
+    if (*pos != '"') return 0;
+    pos++;  /* Skip opening quote */
+
+    /* Copy until closing quote */
+    size_t i = 0;
+    while (*pos && *pos != '"' && i < out_len - 1) {
+        out[i++] = *pos++;
+    }
+    out[i] = '\0';
+    return 1;
+}
+
+/* host_list_modules() -> [{id, name, version}, ...] */
+static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+
+    JSValue arr = JS_NewArray(ctx);
+    int idx = 0;
+
+    /* Subdirectories to scan */
+    const char *subdirs[] = { "", "sound_generators", "audio_fx", "midi_fx", "utilities", NULL };
+
+    for (int s = 0; subdirs[s] != NULL; s++) {
+        char dir_path[512];
+        if (subdirs[s][0] == '\0') {
+            snprintf(dir_path, sizeof(dir_path), "%s", MODULES_DIR);
+        } else {
+            snprintf(dir_path, sizeof(dir_path), "%s/%s", MODULES_DIR, subdirs[s]);
+        }
+
+        DIR *dir = opendir(dir_path);
+        if (!dir) continue;
+
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            if (ent->d_name[0] == '.') continue;
+
+            /* Check if it's a directory with module.json */
+            char module_json_path[1024];
+            snprintf(module_json_path, sizeof(module_json_path), "%s/%s/module.json",
+                     dir_path, ent->d_name);
+
+            struct stat st;
+            if (stat(module_json_path, &st) != 0) continue;
+
+            /* Read module.json */
+            char id[128] = "", name[256] = "", version[64] = "";
+            read_json_string(module_json_path, "id", id, sizeof(id));
+            read_json_string(module_json_path, "name", name, sizeof(name));
+            read_json_string(module_json_path, "version", version, sizeof(version));
+
+            if (id[0] == '\0') continue;  /* Skip if no id */
+
+            JSValue obj = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, obj, "id", JS_NewString(ctx, id));
+            JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, name[0] ? name : id));
+            JS_SetPropertyStr(ctx, obj, "version", JS_NewString(ctx, version[0] ? version : "0.0.0"));
+            JS_SetPropertyUint32(ctx, arr, idx++, obj);
+        }
+        closedir(dir);
+    }
+
+    return arr;
+}
+
+/* host_rescan_modules() -> void
+ * In shadow UI context, this is a no-op since the host manages module loading.
+ * After installing, the shadow UI just needs to rescan its own list.
+ */
+static JSValue js_host_rescan_modules(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    /* No-op - shadow UI doesn't manage the host's module list */
+    return JS_UNDEFINED;
+}
+
+/* host_flush_display() -> void
+ * In shadow UI context, just mark display as dirty.
+ * The main loop handles copying to shared memory.
+ */
+static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    /* Mark display as dirty - main loop will copy to shared memory */
+    js_display_screen_dirty = 1;
+    return JS_UNDEFINED;
+}
+
+/* === End host functions === */
+
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     global_exit_flag = 1;
@@ -434,6 +708,16 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
+
+    /* Register host functions for store operations */
+    JS_SetPropertyStr(ctx, global_obj, "host_file_exists", JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_http_download", JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_list_modules", JS_NewCFunction(ctx, js_host_list_modules, "host_list_modules", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_flush_display", JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0));
+
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
     *prt = rt;
