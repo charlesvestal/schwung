@@ -4,8 +4,8 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.3.0",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.3.0/move-anything.tar.gz",
+    "latest_version": "0.3.5",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.3.5/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -17,7 +17,7 @@
       "component_type": "utility",
       "github_repo": "charlesvestal/move-anything-fourtrack",
       "asset_name": "fourtrack-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.3.5"
     },
     {
       "id": "dx7",
@@ -47,7 +47,7 @@
       "component_type": "utility",
       "github_repo": "charlesvestal/move-anything-m8",
       "asset_name": "m8-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.3.5"
     },
     {
       "id": "jv880",
@@ -117,7 +117,7 @@
       "component_type": "utility",
       "github_repo": "charlesvestal/move-anything-sidcontrol",
       "asset_name": "sidcontrol-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.3.5"
     }
   ]
 }
