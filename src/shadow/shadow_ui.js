@@ -2496,6 +2496,14 @@ function changeHierPreset(delta) {
     /* Fetch new preset name */
     const nameParam = levelDef.name_param || "preset_name";
     hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
+
+    /* Re-fetch chain_params for new preset/plugin and invalidate knob cache */
+    if (hierEditorIsMasterFx) {
+        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
+    } else {
+        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
+    }
+    invalidateKnobContextCache();
 }
 
 /* Exit hierarchy editor */
@@ -3727,6 +3735,14 @@ function handleSelect() {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
                     hierEditorSelectedIdx = 0;
+                    /* Re-fetch chain_params now that a preset/plugin is selected */
+                    if (hierEditorIsMasterFx) {
+                        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
+                    } else {
+                        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
+                    }
+                    /* Invalidate knob context cache to use new chain_params */
+                    invalidateKnobContextCache();
                 }
             } else if (hierEditorPresetEditMode || !hierEditorIsPresetLevel) {
                 /* On params level - check for special actions */

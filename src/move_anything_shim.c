@@ -2473,7 +2473,20 @@ static void shadow_inprocess_handle_param_request(void) {
                     }
                 }
             } else if (strcmp(param_key, "chain_params") == 0) {
-                /* Read chain_params from module.json
+                /* Try module's get_param first (for dynamic params like CLAP FX) */
+                if (mfx->api && mfx->instance && mfx->api->get_param) {
+                    int len = mfx->api->get_param(mfx->instance, "chain_params",
+                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                    if (len > 2) {  /* More than empty "[]" */
+                        shadow_param->error = 0;
+                        shadow_param->result_len = len;
+                        shadow_param->response_ready = 1;
+                        shadow_param->request_type = 0;
+                        return;
+                    }
+                }
+
+                /* Fall back to reading chain_params from module.json
                  * mfx->module_path is like: .../modules/audio_fx/cloudseed/cloudseed.so
                  * We need: .../modules/audio_fx/cloudseed/module.json
                  * So strip just the filename */

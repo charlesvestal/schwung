@@ -153,6 +153,13 @@ typedef struct {
     int param_count;
 } midi_fx_config_t;
 
+/* Audio FX configuration (module + params) - allows CLAP plugin_id etc */
+typedef struct {
+    char module[MAX_NAME_LEN];
+    midi_fx_param_t params[MAX_MIDI_FX_PARAMS];  /* Reuse param struct */
+    int param_count;
+} audio_fx_config_t;
+
 /* Patch info */
 typedef struct {
     char name[MAX_NAME_LEN];
@@ -160,7 +167,7 @@ typedef struct {
     char synth_module[MAX_NAME_LEN];
     int synth_preset;
     char midi_source_module[MAX_NAME_LEN];
-    char audio_fx[MAX_AUDIO_FX][MAX_NAME_LEN];
+    audio_fx_config_t audio_fx[MAX_AUDIO_FX];  /* Now includes params */
     int audio_fx_count;
     midi_fx_config_t midi_fx[MAX_MIDI_FX];      /* Native MIDI FX with params */
     int midi_fx_count;
@@ -404,6 +411,7 @@ static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
+static void parse_debug_log(const char *msg);  /* Forward declaration */
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -1688,8 +1696,9 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
 
                 int len = quote2 - quote1;
                 if (len > 0 && len < MAX_NAME_LEN) {
-                    strncpy(patch->audio_fx[patch->audio_fx_count], quote1, len);
-                    patch->audio_fx[patch->audio_fx_count][len] = '\0';
+                    strncpy(patch->audio_fx[patch->audio_fx_count].module, quote1, len);
+                    patch->audio_fx[patch->audio_fx_count].module[len] = '\0';
+                    patch->audio_fx[patch->audio_fx_count].param_count = 0;
                     patch->audio_fx_count++;
                 }
 
@@ -2276,9 +2285,30 @@ static int load_patch(int index) {
     /* Unload old audio FX and load new ones */
     unload_all_audio_fx();
     for (int i = 0; i < patch->audio_fx_count; i++) {
-        if (load_audio_fx(patch->audio_fx[i]) != 0) {
-            snprintf(msg, sizeof(msg), "Warning: Failed to load FX: %s", patch->audio_fx[i]);
+        audio_fx_config_t *cfg = &patch->audio_fx[i];
+        if (load_audio_fx(cfg->module) != 0) {
+            snprintf(msg, sizeof(msg), "Warning: Failed to load FX: %s", cfg->module);
             chain_log(msg);
+            continue;
+        }
+
+        /* Apply audio FX params (e.g., plugin_id for CLAP) */
+        int fx_idx = g_fx_count - 1;  /* Just loaded */
+        if (fx_idx >= 0 && fx_idx < MAX_AUDIO_FX && cfg->param_count > 0) {
+            snprintf(msg, sizeof(msg), "Applying %d params to FX%d", cfg->param_count, fx_idx + 1);
+            chain_log(msg);
+            for (int p = 0; p < cfg->param_count; p++) {
+                snprintf(msg, sizeof(msg), "  FX%d param: %s = %s",
+                         fx_idx + 1, cfg->params[p].key, cfg->params[p].val);
+                chain_log(msg);
+                if (g_fx_is_v2[fx_idx] && g_fx_plugins_v2[fx_idx] && g_fx_instances[fx_idx] &&
+                    g_fx_plugins_v2[fx_idx]->set_param) {
+                    g_fx_plugins_v2[fx_idx]->set_param(g_fx_instances[fx_idx],
+                                                       cfg->params[p].key, cfg->params[p].val);
+                } else if (g_fx_plugins[fx_idx] && g_fx_plugins[fx_idx]->set_param) {
+                    g_fx_plugins[fx_idx]->set_param(cfg->params[p].key, cfg->params[p].val);
+                }
+            }
         }
     }
 
@@ -2586,6 +2616,12 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
 }
 
 static void plugin_set_param(const char *key, const char *val) {
+    {
+        char dbg[256];
+        snprintf(dbg, sizeof(dbg), "[v1_set_param] key='%s' val='%s'", key, val ? val : "null");
+        parse_debug_log(dbg);
+    }
+
     if (strcmp(key, "source_ui_active") == 0) {
         g_source_ui_active = atoi(val) ? 1 : 0;
         return;
@@ -2810,7 +2846,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             for (int i = 0; i < p->audio_fx_count && i < MAX_AUDIO_FX; i++) {
                 if (i > 0) strcat(fx_json, ",");
                 char fx_item[64];
-                snprintf(fx_item, sizeof(fx_item), "\"%s\"", p->audio_fx[i]);
+                snprintf(fx_item, sizeof(fx_item), "\"%s\"", p->audio_fx[i].module);
                 strcat(fx_json, fx_item);
             }
             strcat(fx_json, "]");
@@ -2873,7 +2909,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     if (strcmp(key, "fx1_module") == 0) {
         if (g_current_patch >= 0 && g_current_patch < g_patch_count &&
             g_patches[g_current_patch].audio_fx_count > 0) {
-            snprintf(buf, buf_len, "%s", g_patches[g_current_patch].audio_fx[0]);
+            snprintf(buf, buf_len, "%s", g_patches[g_current_patch].audio_fx[0].module);
         } else {
             buf[0] = '\0';
         }
@@ -2882,7 +2918,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     if (strcmp(key, "fx2_module") == 0) {
         if (g_current_patch >= 0 && g_current_patch < g_patch_count &&
             g_patches[g_current_patch].audio_fx_count > 1) {
-            snprintf(buf, buf_len, "%s", g_patches[g_current_patch].audio_fx[1]);
+            snprintf(buf, buf_len, "%s", g_patches[g_current_patch].audio_fx[1].module);
         } else {
             buf[0] = '\0';
         }
@@ -2930,7 +2966,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         for (int i = 0; i < p->audio_fx_count && i < MAX_AUDIO_FX; i++) {
             if (i > 0) strcat(fx_json, ",");
             char fx_item[64];
-            snprintf(fx_item, sizeof(fx_item), "{\"type\":\"%s\"}", p->audio_fx[i]);
+            snprintf(fx_item, sizeof(fx_item), "{\"type\":\"%s\"}", p->audio_fx[i].module);
             strcat(fx_json, fx_item);
         }
         strcat(fx_json, "]");
@@ -3990,9 +4026,22 @@ static int load_master_preset_json(int index, char *buf, int buf_len) {
 
 /* ========== End Master Preset Functions ========== */
 
+/* Debug logging helper for parsing */
+static void parse_debug_log(const char *msg) {
+    FILE *dbg = fopen("/tmp/chain_parse_debug.txt", "a");
+    if (dbg) {
+        fprintf(dbg, "%s\n", msg);
+        fclose(dbg);
+    }
+}
+
 /* V2 parse patch file - simplified version */
 static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch) {
     (void)inst;
+
+    char dbgmsg[512];
+    snprintf(dbgmsg, sizeof(dbgmsg), "=== Parsing: %s ===", path);
+    parse_debug_log(dbgmsg);
 
     FILE *f = fopen(path, "r");
     if (!f) return -1;
@@ -4040,27 +4089,155 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
         if (bracket) {
             bracket++;
             while (patch->audio_fx_count < MAX_AUDIO_FX) {
-                const char *type_pos = strstr(bracket, "\"type\"");
-                if (!type_pos) break;
+                /* Find the start of next FX object */
+                const char *obj_start = strchr(bracket, '{');
+                if (!obj_start) break;
+
+                /* Find matching closing brace (handle nested objects) */
+                const char *obj_end = obj_start + 1;
+                int depth = 1;
+                while (*obj_end && depth > 0) {
+                    if (*obj_end == '{') depth++;
+                    else if (*obj_end == '}') depth--;
+                    if (depth > 0) obj_end++;
+                }
+                if (!*obj_end || depth != 0) break;
+
+                audio_fx_config_t *cfg = &patch->audio_fx[patch->audio_fx_count];
+                memset(cfg, 0, sizeof(*cfg));
+
+                /* Parse "type" field */
+                const char *type_pos = strstr(obj_start, "\"type\"");
+                if (!type_pos || type_pos > obj_end) {
+                    bracket = obj_end + 1;
+                    continue;
+                }
 
                 const char *colon = strchr(type_pos, ':');
-                if (!colon) break;
+                if (!colon || colon > obj_end) {
+                    bracket = obj_end + 1;
+                    continue;
+                }
 
                 const char *quote1 = strchr(colon, '"');
-                if (!quote1) break;
+                if (!quote1 || quote1 > obj_end) {
+                    bracket = obj_end + 1;
+                    continue;
+                }
                 quote1++;
 
                 const char *quote2 = strchr(quote1, '"');
-                if (!quote2) break;
+                if (!quote2 || quote2 > obj_end) {
+                    bracket = obj_end + 1;
+                    continue;
+                }
 
                 int len = quote2 - quote1;
                 if (len > 0 && len < MAX_NAME_LEN) {
-                    strncpy(patch->audio_fx[patch->audio_fx_count], quote1, len);
-                    patch->audio_fx[patch->audio_fx_count][len] = '\0';
-                    patch->audio_fx_count++;
+                    strncpy(cfg->module, quote1, len);
+                    cfg->module[len] = '\0';
                 }
 
-                bracket = quote2 + 1;
+                /* Parse "params" object if present */
+                const char *params_pos = strstr(obj_start, "\"params\"");
+                {
+                    char dbg[256];
+                    snprintf(dbg, sizeof(dbg), "[parse] audio_fx type='%s' params_pos=%s",
+                             cfg->module, params_pos ? "found" : "null");
+                    parse_debug_log(dbg);
+                }
+                if (params_pos && params_pos < obj_end) {
+                    const char *params_obj = strchr(params_pos, '{');
+                    const char *params_end = params_obj ? strchr(params_obj, '}') : NULL;
+                    {
+                        char dbg[256];
+                        snprintf(dbg, sizeof(dbg), "[parse] params_obj=%p params_end=%p obj_end=%p check=%s",
+                                 (void*)params_obj, (void*)params_end, (void*)obj_end,
+                                 (params_obj && params_end && params_end <= obj_end) ? "pass" : "fail");
+                        parse_debug_log(dbg);
+                    }
+                    if (params_obj && params_end && params_end <= obj_end) {
+                        /* Parse key-value pairs in params object */
+                        const char *scan = params_obj;
+                        while (cfg->param_count < MAX_MIDI_FX_PARAMS && scan < params_end) {
+                            const char *key_start = strchr(scan, '"');
+                            if (!key_start || key_start >= params_end) break;
+
+                            const char *key_end = strchr(key_start + 1, '"');
+                            if (!key_end || key_end >= params_end) break;
+
+                            int key_len = key_end - key_start - 1;
+                            if (key_len <= 0 || key_len >= 32) {
+                                scan = key_end + 1;
+                                continue;
+                            }
+
+                            /* Find value after colon */
+                            const char *val_colon = strchr(key_end, ':');
+                            if (!val_colon || val_colon >= params_end) {
+                                scan = key_end + 1;
+                                continue;
+                            }
+
+                            /* Skip whitespace */
+                            const char *val_start = val_colon + 1;
+                            while (val_start < params_end && (*val_start == ' ' || *val_start == '\t')) {
+                                val_start++;
+                            }
+
+                            char val_buf[32] = "";
+                            if (*val_start == '"') {
+                                /* String value */
+                                val_start++;
+                                const char *val_end = strchr(val_start, '"');
+                                if (val_end && val_end < params_end) {
+                                    int val_len = val_end - val_start;
+                                    if (val_len > 31) val_len = 31;
+                                    strncpy(val_buf, val_start, val_len);
+                                    val_buf[val_len] = '\0';
+                                    scan = val_end + 1;
+                                } else {
+                                    scan = val_start;
+                                    continue;
+                                }
+                            } else {
+                                /* Numeric value */
+                                const char *val_end = val_start;
+                                while (val_end < params_end && *val_end != ',' && *val_end != '}' &&
+                                       *val_end != ' ' && *val_end != '\n' && *val_end != '\r') {
+                                    val_end++;
+                                }
+                                int val_len = val_end - val_start;
+                                if (val_len > 31) val_len = 31;
+                                strncpy(val_buf, val_start, val_len);
+                                val_buf[val_len] = '\0';
+                                scan = val_end;
+                            }
+
+                            /* Store the param */
+                            strncpy(cfg->params[cfg->param_count].key, key_start + 1, key_len);
+                            cfg->params[cfg->param_count].key[key_len] = '\0';
+                            strncpy(cfg->params[cfg->param_count].val, val_buf, 31);
+                            cfg->params[cfg->param_count].val[31] = '\0';
+                            {
+                                char dbg[256];
+                                snprintf(dbg, sizeof(dbg), "[parse] stored param[%d]: key='%s' val='%s'",
+                                         cfg->param_count, cfg->params[cfg->param_count].key, val_buf);
+                                parse_debug_log(dbg);
+                            }
+                            cfg->param_count++;
+                        }
+                    }
+                }
+
+                {
+                    char dbg[128];
+                    snprintf(dbg, sizeof(dbg), "[parse] audio_fx[%d] param_count: %d",
+                             patch->audio_fx_count, cfg->param_count);
+                    parse_debug_log(dbg);
+                }
+                patch->audio_fx_count++;
+                bracket = obj_end + 1;
             }
         }
     }
@@ -4302,10 +4479,52 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
 
     /* Load audio FX */
     for (int i = 0; i < patch->audio_fx_count; i++) {
-        if (v2_load_audio_fx(inst, patch->audio_fx[i]) != 0) {
-            snprintf(msg, sizeof(msg), "Failed to load FX: %s", patch->audio_fx[i]);
+        audio_fx_config_t *cfg = &patch->audio_fx[i];
+        {
+            char dbg[256];
+            snprintf(dbg, sizeof(dbg), "[load] Loading audio_fx[%d]: module='%s' param_count=%d",
+                     i, cfg->module, cfg->param_count);
+            parse_debug_log(dbg);
+        }
+        if (v2_load_audio_fx(inst, cfg->module) != 0) {
+            snprintf(msg, sizeof(msg), "Failed to load FX: %s", cfg->module);
             v2_chain_log(inst, msg);
+            parse_debug_log("[load] FX load failed!");
             /* Continue loading other FX */
+            continue;
+        }
+
+        /* Apply audio FX parameters (e.g., plugin_id for CLAP) */
+        int fx_idx = inst->fx_count - 1;  /* Just loaded */
+        {
+            char dbg[256];
+            snprintf(dbg, sizeof(dbg), "[load] FX loaded, fx_idx=%d is_v2=%d plugins_v2=%p instances=%p",
+                     fx_idx, inst->fx_is_v2[fx_idx], (void*)inst->fx_plugins_v2[fx_idx],
+                     (void*)inst->fx_instances[fx_idx]);
+            parse_debug_log(dbg);
+        }
+        if (fx_idx >= 0 && fx_idx < MAX_AUDIO_FX && cfg->param_count > 0) {
+            if (inst->fx_is_v2[fx_idx] && inst->fx_plugins_v2[fx_idx] && inst->fx_instances[fx_idx]) {
+                for (int p = 0; p < cfg->param_count; p++) {
+                    snprintf(msg, sizeof(msg), "Setting FX%d param: %s = %s",
+                             fx_idx + 1, cfg->params[p].key, cfg->params[p].val);
+                    v2_chain_log(inst, msg);
+                    parse_debug_log(msg);
+                    inst->fx_plugins_v2[fx_idx]->set_param(inst->fx_instances[fx_idx],
+                                                           cfg->params[p].key, cfg->params[p].val);
+                }
+            } else if (inst->fx_plugins[fx_idx] && inst->fx_plugins[fx_idx]->set_param) {
+                parse_debug_log("[load] Using v1 API for params");
+                for (int p = 0; p < cfg->param_count; p++) {
+                    inst->fx_plugins[fx_idx]->set_param(cfg->params[p].key, cfg->params[p].val);
+                }
+            } else {
+                parse_debug_log("[load] No API available for setting params!");
+            }
+        } else {
+            char dbg[128];
+            snprintf(dbg, sizeof(dbg), "[load] Skipping params: fx_idx=%d param_count=%d", fx_idx, cfg->param_count);
+            parse_debug_log(dbg);
         }
     }
 
@@ -4526,9 +4745,24 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
 
-    if (strcmp(key, "load_patch") == 0) {
+    {
+        char dbg[256];
+        snprintf(dbg, sizeof(dbg), "[v2_set_param] key='%s' val='%s'", key, val ? val : "null");
+        parse_debug_log(dbg);
+    }
+
+    if (strcmp(key, "load_patch") == 0 || strcmp(key, "patch") == 0) {
         int idx = atoi(val);
-        v2_load_patch(inst, idx);
+        if (idx < 0) {
+            /* Unload patch */
+            v2_synth_panic(inst);
+            v2_unload_all_midi_fx(inst);
+            v2_unload_all_audio_fx(inst);
+            v2_unload_synth(inst);
+            inst->current_patch = -1;
+        } else {
+            v2_load_patch(inst, idx);
+        }
     }
     else if (strcmp(key, "save_patch") == 0) {
         /* Save new patch to disk, then rescan this instance's patch list */
@@ -5249,7 +5483,7 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
 
 /* V2 Plugin API structure */
 static plugin_api_v2_t g_plugin_api_v2 = {
-    .api_version = MOVE_PLUGIN_API_VERSION,
+    .api_version = MOVE_PLUGIN_API_VERSION_2,
     .create_instance = v2_create_instance,
     .destroy_instance = v2_destroy_instance,
     .on_midi = v2_on_midi,
