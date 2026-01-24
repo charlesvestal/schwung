@@ -1170,6 +1170,7 @@ function applyPatchSelection() {
     /* Refresh detail info and knob mappings after loading/clearing patch */
     fetchPatchDetail(selectedSlot);
     fetchKnobMappings(selectedSlot);
+    invalidateKnobContextCache();  /* Clear stale knob contexts after patch change */
     view = VIEWS.SLOTS;
     needsRedraw = true;
 }
@@ -1342,6 +1343,7 @@ function doDeletePreset(slotIndex) {
     /* Refresh detail info and knob mappings */
     fetchPatchDetail(slotIndex);
     fetchKnobMappings(slotIndex);
+    invalidateKnobContextCache();  /* Clear stale knob contexts after slot clear */
 
     confirmingDelete = false;
     loadPatchList();
@@ -2067,6 +2069,7 @@ function applyComponentSelection() {
         }
     }
 
+    invalidateKnobContextCache();  /* Clear stale knob contexts after module change */
     view = VIEWS.CHAIN_EDIT;
     needsRedraw = true;
 }
@@ -3990,6 +3993,7 @@ function refreshPendingKnobOverlay() {
     /* Refresh knob mappings if slot changed */
     if (lastKnobSlot !== targetSlot) {
         fetchKnobMappings(targetSlot);
+        invalidateKnobContextCache();  /* Clear stale contexts when target slot changes */
     }
 
     /* Apply accumulated delta to global slot knob mapping */
@@ -5006,6 +5010,7 @@ globalThis.tick = function() {
     }
     if (lastKnobSlot !== currentTargetSlot) {
         fetchKnobMappings(currentTargetSlot);
+        invalidateKnobContextCache();  /* Clear stale contexts when target slot changes */
         /* If in Master FX view, switch to that slot's detail when track button pressed */
         if (view === VIEWS.MASTER_FX) {
             enterChainEdit(currentTargetSlot);
