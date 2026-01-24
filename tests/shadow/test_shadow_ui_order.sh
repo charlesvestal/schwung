@@ -17,7 +17,7 @@ fi
 ioctl_line=$(rg -n "real_ioctl\\(fd" "$file" | head -n 1 | cut -d: -f1 || true)
 
 # Find the POST-IOCTL comment which marks the critical section
-post_ioctl_comment=$(rg -n "POST-IOCTL.*FILTER.*INCOMING.*MIDI" "$file" | head -n 1 | cut -d: -f1 || true)
+post_ioctl_comment=$(rg -n "POST-IOCTL: FORWARD MIDI TO SHADOW UI" "$file" | head -n 1 | cut -d: -f1 || true)
 
 if [ -z "${ioctl_line}" ] || [ -z "${post_ioctl_comment}" ]; then
   echo "Failed to locate real_ioctl or POST-IOCTL section in ${file}" >&2
