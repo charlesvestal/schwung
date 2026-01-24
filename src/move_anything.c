@@ -1282,18 +1282,33 @@ static JSValue js_host_load_module(JSContext *ctx, JSValueConst this_val,
 
     /* If DSP loaded successfully, check for errors before loading UI */
     if (result == 0) {
+        printf("host_load_module: DSP loaded, getting module info\n");
+        fflush(stdout);
         const module_info_t *info = mm_get_current_module(&g_module_manager);
 
         /* Check if module has an error (e.g., missing assets) */
         char error_buf[256];
         error_buf[0] = '\0';
         int has_error = mm_get_error(&g_module_manager, error_buf, sizeof(error_buf));
+        printf("host_load_module: has_error=%d, info=%p, ui_script='%s'\n",
+               has_error, (void*)info, info ? info->ui_script : "(null)");
+        fflush(stdout);
 
         /* Only load UI if there's no error (let host menu handle errors) */
         if (!has_error && info && info->ui_script[0]) {
+            printf("host_load_module: loading UI script\n");
+            fflush(stdout);
             /* Load as ES module to enable imports */
             eval_file_safe(ctx, info->ui_script, 1);
+            printf("host_load_module: UI script loaded\n");
+            fflush(stdout);
+        } else {
+            printf("host_load_module: skipping UI (has_error=%d)\n", has_error);
+            fflush(stdout);
         }
+    } else {
+        printf("host_load_module: DSP load failed with result=%d\n", result);
+        fflush(stdout);
     }
 
     return result == 0 ? JS_TRUE : JS_FALSE;
@@ -1828,6 +1843,36 @@ static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
     return (result == 0) ? JS_TRUE : JS_FALSE;
 }
 
+/* host_ensure_dir(path) -> bool - creates directory if it doesn't exist */
+static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    /* Validate path */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_ensure_dir: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Build mkdir command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\" 2>&1", path);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, path);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
 /* host_remove_dir(path) -> bool */
 static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -2058,6 +2103,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_extract_tar_strip_func = JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3);
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", host_extract_tar_strip_func);
+
+    JSValue host_ensure_dir_func = JS_NewCFunction(ctx, js_host_ensure_dir, "host_ensure_dir", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_ensure_dir", host_ensure_dir_func);
 
     JSValue host_remove_dir_func = JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", host_remove_dir_func);

@@ -221,6 +221,11 @@ export function installModule(mod, hostVersion) {
     const subdir = getInstallSubdir(mod.component_type);
     const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
 
+    /* Ensure extraction directory exists */
+    if (globalThis.host_ensure_dir) {
+        globalThis.host_ensure_dir(extractDir);
+    }
+
     /* Extract to appropriate directory */
     const extractOk = globalThis.host_extract_tar(tarPath, extractDir);
     if (!extractOk) {

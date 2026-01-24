@@ -384,6 +384,9 @@ int mm_load_module(module_manager_t *mm, int index) {
 
     mm->current_module_index = index;
     printf("mm: module '%s' loaded successfully\n", info->name);
+    fflush(stdout);
+    printf("mm: returning from mm_load_module\n");
+    fflush(stdout);
     return 0;
 }
 

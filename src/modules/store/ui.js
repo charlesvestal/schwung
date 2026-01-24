@@ -257,6 +257,11 @@ function updateAllModules() {
         const subdir = getInstallSubdir(mod.component_type);
         const extractDir = subdir ? `${MODULES_DIR}/${subdir}` : MODULES_DIR;
 
+        /* Ensure extraction directory exists */
+        if (typeof host_ensure_dir === 'function') {
+            host_ensure_dir(extractDir);
+        }
+
         /* Extract to appropriate directory */
         const extractOk = host_extract_tar(tarPath, extractDir);
         if (!extractOk) {
