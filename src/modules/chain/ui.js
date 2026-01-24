@@ -1987,7 +1987,7 @@ function handleCC(cc, val) {
         }
     }
 
-    /* Jog wheel for patch navigation */
+    /* Jog wheel for patch navigation (list) or preset navigation (patch) */
     if (cc === CC_JOG) {
         if (viewMode === "list") {
             const delta = val < 64 ? val : val - 128;
@@ -2002,6 +2002,24 @@ function handleCC(cc, val) {
                     selectedPatch = next;
                 }
                 needsRedraw = true;
+            }
+            return true;
+        }
+        if (viewMode === "patch" && !sourceUiActive) {
+            /* Jog changes synth preset when in patch view */
+            const delta = val < 64 ? val : val - 128;
+            if (delta !== 0) {
+                const countStr = host_module_get_param("synth:preset_count");
+                const presetCount = countStr ? parseInt(countStr) : 0;
+                if (presetCount > 0) {
+                    const currentStr = host_module_get_param("synth:preset");
+                    const current = currentStr ? parseInt(currentStr) : 0;
+                    let next = current + (delta > 0 ? 1 : -1);
+                    if (next < 0) next = presetCount - 1;
+                    if (next >= presetCount) next = 0;
+                    host_module_set_param("synth:preset", String(next));
+                    needsRedraw = true;
+                }
             }
             return true;
         }
@@ -2194,7 +2212,7 @@ function drawUI() {
     print(2, 44, `Oct:${octStr}  Voices:${polyphony}`, 1);
 
     /* Hint for navigation */
-    const hint = sourceUi ? "Menu:src Back:list" : "Up/Dn:oct Back:list";
+    const hint = sourceUi ? "Menu:src Back:list" : "Jog:prst Up/Dn:oct";
     if (sourceUiLoadError) {
         print(2, 54, "No ui_chain.js", 1);
     } else {
