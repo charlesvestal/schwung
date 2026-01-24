@@ -145,7 +145,7 @@ const moduleAbbrevCache = {
 function createEmptyChainConfig() {
     return {
         midiFx: null,    // { module: "chord", params: {} } or null
-        synth: null,     // { module: "dx7", params: {} } or null
+        synth: null,     // { module: "dexed", params: {} } or null
         fx1: null,       // { module: "freeverb", params: {} } or null
         fx2: null        // { module: "cloudseed", params: {} } or null
     };
@@ -417,7 +417,7 @@ let moduleUiLoadError = false;   // True if load failed
 
 /* Asset warning overlay state */
 let assetWarningActive = false;  // True when showing asset warning overlay
-let assetWarningTitle = "";      // e.g., "DX7 Warning"
+let assetWarningTitle = "";      // e.g., "Dexed Warning"
 let assetWarningLines = [];      // Wrapped error message lines
 let assetWarningShownForSlots = new Set();  // Track which chain slots have shown warnings
 let assetWarningShownForMasterFx = new Set();  // Track which Master FX slots have shown warnings

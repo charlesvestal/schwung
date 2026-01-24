@@ -44,7 +44,7 @@
 #define SHADOW_UI_SLOTS 4
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
-#define SHADOW_PARAM_VALUE_LEN 2048  /* JV-880 needs ~1600 bytes for ui_hierarchy */
+#define SHADOW_PARAM_VALUE_LEN 2048  /* Mini-JV needs ~1600 bytes for ui_hierarchy */
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)

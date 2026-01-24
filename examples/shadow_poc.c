@@ -319,12 +319,12 @@ static int open_shm(void) {
  * ============================================================================ */
 
 static int load_synth(const char *soundfont_path) {
-    /* Set to 0 to use SF2, 1 to use DX7 */
-    #define USE_DX7 1
+    /* Set to 0 to use SF2, 1 to use Dexed */
+    #define USE_DEXED 1
 
-    #if USE_DX7
-    const char *module_path = "/data/UserData/move-anything/modules/dx7/dsp.so";
-    const char *module_dir = "/data/UserData/move-anything/modules/dx7";
+    #if USE_DEXED
+    const char *module_path = "/data/UserData/move-anything/modules/dexed/dsp.so";
+    const char *module_dir = "/data/UserData/move-anything/modules/dexed";
     #else
     const char *module_path = "/data/UserData/move-anything/modules/sf2/dsp.so";
     const char *module_dir = "/data/UserData/move-anything/modules/sf2";
@@ -367,8 +367,8 @@ static int load_synth(const char *soundfont_path) {
 
     /* Call on_load with JSON defaults */
     if (synth_plugin->on_load) {
-        #if USE_DX7
-        const char *json_defaults = "{\"syx_path\":\"/data/UserData/move-anything/modules/dx7/patches.syx\",\"preset\":0}";
+        #if USE_DEXED
+        const char *json_defaults = "{\"syx_path\":\"/data/UserData/move-anything/modules/dexed/patches.syx\",\"preset\":0}";
         #else
         const char *json_defaults = NULL;
         #endif
@@ -384,17 +384,17 @@ static int load_synth(const char *soundfont_path) {
     }
 
     /* Set soundfont/patches depending on synth type */
-    #if !USE_DX7
+    #if !USE_DEXED
     if (soundfont_path && synth_plugin->set_param) {
         printf("Setting soundfont: %s\n", soundfont_path);
         synth_plugin->set_param("soundfont_path", soundfont_path);
     }
     #else
     (void)soundfont_path;
-    /* Load DX7 patches */
+    /* Load Dexed patches */
     if (synth_plugin->set_param) {
-        const char *syx_path = "/data/UserData/move-anything/modules/dx7/patches.syx";
-        printf("Loading DX7 patches: %s\n", syx_path);
+        const char *syx_path = "/data/UserData/move-anything/modules/dexed/patches.syx";
+        printf("Loading Dexed patches: %s\n", syx_path);
         synth_plugin->set_param("syx_path", syx_path);
     }
     #endif

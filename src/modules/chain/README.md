@@ -75,7 +75,7 @@ Available JS MIDI FX live in `midi_fx/` (see `index.mjs` for the registry).
 
 ### Sound Generators
 
-Sound generators can be built-in or external modules. Built-in: `linein`. External modules that work as chain sound generators include `sf2`, `dx7`, `jv880`, and `obxd` (plus any other module that is `chainable` with `component_type: "sound_generator"`).
+Sound generators can be built-in or external modules. Built-in: `linein`. External modules that work as chain sound generators include `sf2`, `dexed`, `minijv`, and `obxd` (plus any other module that is `chainable` with `component_type: "sound_generator"`).
 
 ### Audio FX
 
@@ -121,4 +121,4 @@ By default, the host filters knob-touch notes (0-9) from internal MIDI. To bypas
 
 ## External Module Presets
 
-External modules can install chain presets into `patches/` via their install scripts (for example JV-880 and OB-Xd).
+External modules can install chain presets into `patches/` via their install scripts (for example Mini-JV and OB-Xd).

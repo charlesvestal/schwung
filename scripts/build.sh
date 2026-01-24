@@ -48,7 +48,7 @@ mkdir -p ./build/
 mkdir -p ./build/host/
 mkdir -p ./build/shared/
 # Module directories are created automatically when copying files
-# External modules (sf2, dx7, m8, jv880, obxd, clap) are in separate repos
+# External modules (sf2, dexed, m8, minijv, obxd, clap) are in separate repos
 
 echo "Building host..."
 

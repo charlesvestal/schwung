@@ -10,7 +10,7 @@
  *   import { createSoundGeneratorUI } from '../../shared/sound_generator_ui.mjs';
  *
  *   const ui = createSoundGeneratorUI({
- *       moduleName: 'DX7',
+ *       moduleName: 'Dexed',
  *       // Optional hooks for customization
  *       onInit: () => { ... },
  *       onTick: () => { ... },
