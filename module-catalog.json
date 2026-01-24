@@ -20,13 +20,13 @@
       "min_host_version": "0.3.6"
     },
     {
-      "id": "dx7",
-      "name": "DX7 Synth",
-      "description": "Yamaha DX7 FM synthesizer emulator (Dexed/MSFA)",
+      "id": "dexed",
+      "name": "Dexed",
+      "description": "6-operator FM synthesizer (Dexed/MSFA) with .syx patch support",
       "author": "Dexed/MSFA by google/asb2m10 (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-dx7",
-      "asset_name": "dx7-module.tar.gz",
+      "asset_name": "dexed-module.tar.gz",
       "min_host_version": "0.3.0",
       "requires": "patches.syx file (place in module's patches/ folder)"
     },
@@ -52,15 +52,15 @@
       "min_host_version": "0.3.6"
     },
     {
-      "id": "jv880",
-      "name": "JV-880",
-      "description": "Roland JV-880 emulator (mini-jv880)",
+      "id": "minijv",
+      "name": "Mini-JV",
+      "description": "ROM-based PCM rompler emulator",
       "author": "nukeykt/giulioz",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-jv880",
-      "asset_name": "jv880-module.tar.gz",
+      "asset_name": "minijv-module.tar.gz",
       "min_host_version": "0.3.0",
-      "requires": "JV-880 ROM files (place in module's roms/ folder)"
+      "requires": "ROM files (place in module's roms/ folder)"
     },
     {
       "id": "obxd",
@@ -103,13 +103,13 @@
       "min_host_version": "0.3.0"
     },
     {
-      "id": "spacecho",
-      "name": "Space Echo",
-      "description": "RE-201 style tape delay",
+      "id": "tapedelay",
+      "name": "TapeDelay",
+      "description": "Tape delay with flutter, tone shaping, and saturation",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-space-delay",
-      "asset_name": "spacecho-module.tar.gz",
+      "asset_name": "tapedelay-module.tar.gz",
       "min_host_version": "0.3.0"
     },
     {

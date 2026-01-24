@@ -9,9 +9,9 @@ Add support for modules that require external assets (ROM files, patches, soundf
 
 ## Affected Modules
 
-- **DX7**: Requires .syx patch files (DX7 voice banks)
+- **Dexed**: Requires .syx patch files (Dexed voice banks)
 - **SF2**: Requires .sf2 soundfont files
-- **JV-880**: Requires ROM files from original hardware
+- **Mini-JV**: Requires ROM files from original hardware
 
 ## Design
 
@@ -22,12 +22,12 @@ Each module's `release.json` becomes the source of truth for store metadata:
 ```json
 {
   "version": "0.2.1",
-  "download_url": "https://github.com/.../dx7-module.tar.gz",
+  "download_url": "https://github.com/.../dexed-module.tar.gz",
   "repo_url": "https://github.com/charlesvestal/move-anything-dx7",
-  "name": "DX7 Synth",
-  "description": "Yamaha DX7 FM synthesizer emulation with full 6-operator FM synthesis. Loads standard .syx patch banks from the original DX7.",
-  "requires": ".syx patch files (DX7 voice banks)",
-  "post_install": "Place .syx files in modules/dx7/patches/"
+  "name": "Dexed",
+  "description": "Dexed FM synth with full 6-operator synthesis. Loads standard .syx patch banks.",
+  "requires": ".syx patch files (Dexed voice banks)",
+  "post_install": "Place .syx files in modules/dexed/patches/"
 }
 ```
 
@@ -47,9 +47,9 @@ Module detail screen shows scrollable description with fixed Install button:
 
 ```
 ┌──────────────────────────┐
-│ DX7 Synth         v0.2.1 │
+│ Dexed         v0.2.1 │
 ├──────────────────────────┤
-│   Yamaha DX7 FM synth    │
+│   Dexed FM synth            │
 │   emulation with full    │
 │   6-operator synthesis.  │
 │                          │▼
@@ -69,7 +69,7 @@ Module detail screen shows scrollable description with fixed Install button:
 **After scrolling to end:**
 ```
 ┌──────────────────────────┐
-│ DX7 Synth         v0.2.1 │
+│ Dexed         v0.2.1 │
 ├──────────────────────────┤
 │   Loads .syx patches.    │▲
 │   ⚠ Requires: .syx files │
@@ -93,7 +93,7 @@ After successful install, if `post_install` is present, show overlay:
 │ │  Install Complete    │ │
 │ │                      │ │
 │ │  Place .syx files in │ │
-│ │  modules/dx7/patches │ │
+│ │  modules/dexed/patches │ │
 │ │                      │ │
 │ │       [OK]           │ │
 │ └──────────────────────┘ │
@@ -139,14 +139,14 @@ if (result != 0) {
 }
 ```
 
-**Module implementation example (DX7):**
+**Module implementation example (Dexed):**
 ```c
 static char load_error[256] = "";
 
 int on_load(const char *dir, const char *defaults) {
     if (!find_syx_files(dir)) {
         snprintf(load_error, sizeof(load_error),
-            "No .syx patches found.\nPlace files in modules/dx7/patches/");
+            "No .syx patches found.\nPlace files in modules/dexed/patches/");
         return -1;
     }
     return 0;
@@ -167,7 +167,7 @@ int get_error(char *buf, int len) {
 3. **Post-install overlay** - Show after successful install
 4. **Plugin API get_error** - Add to API header
 5. **Host error handling** - Call get_error, show overlay
-6. **Update DX7, SF2, JV-880** - Add release.json fields and get_error
+6. **Update Dexed, SF2, Mini-JV** - Add release.json fields and get_error
 
 ## Files to Modify
 

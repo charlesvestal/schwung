@@ -1,8 +1,8 @@
 {
   "patches": [
     { "name": "SF2 + Freeverb (Preset 1)", "channel": 5 },
-    { "name": "DX7 + Freeverb", "channel": 6 },
+    { "name": "Dexed + Freeverb", "channel": 6 },
     { "name": "OB-Xd + Freeverb", "channel": 7 },
-    { "name": "JV-880 + Freeverb", "channel": 8 }
+    { "name": "Mini-JV + Freeverb", "channel": 8 }
   ]
 }

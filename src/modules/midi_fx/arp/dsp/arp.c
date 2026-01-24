@@ -3,6 +3,7 @@
  *
  * Converts held notes into arpeggiated sequences.
  * Supports: up, down, up_down, random modes.
+ * Can sync to internal BPM or external MIDI clock.
  */
 
 #include <stdlib.h>
@@ -14,6 +15,7 @@
 #define MAX_ARP_NOTES 16
 #define DEFAULT_BPM 120
 #define DEFAULT_DIVISION 4  /* 1/16 notes */
+#define CLOCKS_PER_QUARTER 24  /* MIDI standard: 24 PPQN */
 
 typedef enum {
     ARP_OFF = 0,
@@ -23,10 +25,16 @@ typedef enum {
     ARP_RANDOM
 } arp_mode_t;
 
+typedef enum {
+    SYNC_INTERNAL = 0,
+    SYNC_CLOCK
+} sync_mode_t;
+
 typedef struct {
     arp_mode_t mode;
     int bpm;
     int division;  /* 1=quarter, 2=8th, 4=16th */
+    sync_mode_t sync_mode;
 
     /* Held notes (sorted low to high) */
     uint8_t held_notes[MAX_ARP_NOTES];
@@ -40,6 +48,11 @@ typedef struct {
     int samples_per_step;
     int8_t last_note;  /* Currently sounding note, -1 if none */
     uint8_t velocity;  /* Velocity for arp notes */
+
+    /* MIDI clock sync state */
+    int clock_counter;     /* Counts 0xF8 clock messages */
+    int clocks_per_step;   /* How many clocks per arp step */
+    int clock_running;     /* Has start message been received */
 } arp_instance_t;
 
 static const host_api_v1_t *g_host = NULL;
@@ -53,6 +66,14 @@ static void arp_calc_samples_per_step(arp_instance_t *inst, int sample_rate) {
     if (inst->samples_per_step <= 0) inst->samples_per_step = sample_rate / 8;
 }
 
+static void arp_calc_clocks_per_step(arp_instance_t *inst) {
+    /* MIDI clock: 24 PPQN (pulses per quarter note) */
+    /* division=1 (quarter): 24 clocks, division=2 (8th): 12, division=4 (16th): 6 */
+    if (inst->division <= 0) inst->division = DEFAULT_DIVISION;
+    inst->clocks_per_step = CLOCKS_PER_QUARTER / inst->division;
+    if (inst->clocks_per_step < 1) inst->clocks_per_step = 1;
+}
+
 static void* arp_create_instance(const char *module_dir, const char *config_json) {
     (void)module_dir;
     (void)config_json;
@@ -63,6 +84,7 @@ static void* arp_create_instance(const char *module_dir, const char *config_json
     inst->mode = ARP_UP;
     inst->bpm = DEFAULT_BPM;
     inst->division = DEFAULT_DIVISION;
+    inst->sync_mode = SYNC_INTERNAL;
     inst->held_count = 0;
     inst->step = 0;
     inst->direction = 1;
@@ -70,6 +92,9 @@ static void* arp_create_instance(const char *module_dir, const char *config_json
     inst->samples_per_step = 0;  /* Will be calculated on first tick */
     inst->last_note = -1;
     inst->velocity = 100;
+    inst->clock_counter = 0;
+    inst->clocks_per_step = 6;  /* Default 1/16 notes */
+    inst->clock_running = 0;
 
     return inst;
 }
@@ -173,6 +198,33 @@ static int arp_get_next_note(arp_instance_t *inst) {
     return inst->held_notes[note_idx];
 }
 
+/* Trigger an arp step - note off for previous, note on for next */
+static int arp_trigger_step(arp_instance_t *inst, uint8_t out_msgs[][3], int out_lens[], int max_out) {
+    int count = 0;
+
+    /* Note off for previous note */
+    if (inst->last_note >= 0 && count < max_out) {
+        out_msgs[count][0] = 0x80;
+        out_msgs[count][1] = (uint8_t)inst->last_note;
+        out_msgs[count][2] = 0;
+        out_lens[count] = 3;
+        count++;
+    }
+
+    /* Get and play next note */
+    int next = arp_get_next_note(inst);
+    if (next >= 0 && count < max_out) {
+        out_msgs[count][0] = 0x90;  /* Note on */
+        out_msgs[count][1] = (uint8_t)next;
+        out_msgs[count][2] = inst->velocity;
+        out_lens[count] = 3;
+        count++;
+        inst->last_note = (int8_t)next;
+    }
+
+    return count;
+}
+
 static int arp_process_midi(void *instance,
                             const uint8_t *in_msg, int in_len,
                             uint8_t out_msgs[][3], int out_lens[],
@@ -180,19 +232,58 @@ static int arp_process_midi(void *instance,
     arp_instance_t *inst = (arp_instance_t *)instance;
     if (!inst || in_len < 1 || max_out < 1) return 0;
 
-    uint8_t status = in_msg[0] & 0xF0;
+    uint8_t status = in_msg[0];
+    uint8_t status_type = status & 0xF0;
+
+    /* Handle MIDI clock messages when in clock sync mode */
+    if (inst->sync_mode == SYNC_CLOCK) {
+        if (status == 0xF8) {  /* Timing clock */
+            if (inst->mode != ARP_OFF && inst->held_count > 0 && inst->clock_running) {
+                inst->clock_counter++;
+                if (inst->clock_counter >= inst->clocks_per_step) {
+                    inst->clock_counter = 0;
+                    return arp_trigger_step(inst, out_msgs, out_lens, max_out);
+                }
+            }
+            return 0;  /* Don't pass clock through */
+        }
+        else if (status == 0xFA) {  /* Start */
+            inst->clock_counter = 0;
+            inst->step = 0;
+            inst->direction = 1;
+            inst->clock_running = 1;
+            return 0;
+        }
+        else if (status == 0xFC) {  /* Stop */
+            inst->clock_running = 0;
+            /* Send note off if playing */
+            if (inst->last_note >= 0 && max_out > 0) {
+                out_msgs[0][0] = 0x80;
+                out_msgs[0][1] = (uint8_t)inst->last_note;
+                out_msgs[0][2] = 0;
+                out_lens[0] = 3;
+                inst->last_note = -1;
+                return 1;
+            }
+            return 0;
+        }
+        else if (status == 0xFB) {  /* Continue */
+            inst->clock_running = 1;
+            return 0;
+        }
+    }
 
     /* Only intercept note on/off when arp is active */
-    if (inst->mode != ARP_OFF && (status == 0x90 || status == 0x80) && in_len >= 3) {
+    if (inst->mode != ARP_OFF && (status_type == 0x90 || status_type == 0x80) && in_len >= 3) {
         uint8_t note = in_msg[1];
         uint8_t velocity = in_msg[2];
 
-        if (status == 0x90 && velocity > 0) {
+        if (status_type == 0x90 && velocity > 0) {
             arp_add_note(inst, note, velocity);
         } else {
             arp_remove_note(inst, note);
         }
-        /* Don't output - arp generates notes via tick */
+        /* Don't output - arp generates notes via tick or clock */
         return 0;
     }
 
@@ -226,6 +317,12 @@ static int arp_tick(void *instance,
         return count;
     }
 
+    /* If using clock sync, timing is driven by process_midi, not tick */
+    if (inst->sync_mode == SYNC_CLOCK) {
+        return 0;
+    }
+
+    /* Internal timing mode */
     /* Calculate samples per step if not set */
     if (inst->samples_per_step <= 0) {
         arp_calc_samples_per_step(inst, sample_rate);
@@ -235,26 +332,7 @@ static int arp_tick(void *instance,
 
     if (inst->sample_counter >= inst->samples_per_step) {
         inst->sample_counter -= inst->samples_per_step;
-
-        /* Note off for previous note */
-        if (inst->last_note >= 0 && count < max_out) {
-            out_msgs[count][0] = 0x80;
-            out_msgs[count][1] = (uint8_t)inst->last_note;
-            out_msgs[count][2] = 0;
-            out_lens[count] = 3;
-            count++;
-        }
-
-        /* Get and play next note */
-        int next = arp_get_next_note(inst);
-        if (next >= 0 && count < max_out) {
-            out_msgs[count][0] = 0x90;  /* Note on */
-            out_msgs[count][1] = (uint8_t)next;
-            out_msgs[count][2] = inst->velocity;
-            out_lens[count] = 3;
-            count++;
-            inst->last_note = (int8_t)next;
-        }
+        return arp_trigger_step(inst, out_msgs, out_lens, max_out);
     }
 
     return count;
@@ -283,6 +361,18 @@ static void arp_set_param(void *instance, const char *key, const char *val) {
         else if (strcmp(val, "1/16") == 0) inst->division = 4;
         else inst->division = atoi(val);
         inst->samples_per_step = 0;  /* Recalculate on next tick */
+        arp_calc_clocks_per_step(inst);  /* Also update clock timing */
+    }
+    else if (strcmp(key, "sync") == 0) {
+        if (strcmp(val, "internal") == 0) {
+            inst->sync_mode = SYNC_INTERNAL;
+        }
+        else if (strcmp(val, "clock") == 0) {
+            inst->sync_mode = SYNC_CLOCK;
+            inst->clock_counter = 0;
+            inst->clock_running = 1;  /* Assume clock is running */
+            arp_calc_clocks_per_step(inst);
+        }
     }
 }
 
@@ -299,11 +389,7 @@ static int arp_get_param(void *instance, const char *key, char *buf, int buf_len
             case ARP_RANDOM: val = "random"; break;
             default: break;
         }
-        int len = strlen(val);
-        if (len >= buf_len) len = buf_len - 1;
-        memcpy(buf, val, len);
-        buf[len] = '\0';
-        return len;
+        return snprintf(buf, buf_len, "%s", val);
     }
     else if (strcmp(key, "bpm") == 0) {
         return snprintf(buf, buf_len, "%d", inst->bpm);
@@ -312,11 +398,10 @@ static int arp_get_param(void *instance, const char *key, char *buf, int buf_len
         const char *val = "1/16";
         if (inst->division == 1) val = "1/4";
         else if (inst->division == 2) val = "1/8";
-        int len = strlen(val);
-        if (len >= buf_len) len = buf_len - 1;
-        memcpy(buf, val, len);
-        buf[len] = '\0';
-        return len;
+        return snprintf(buf, buf_len, "%s", val);
+    }
+    else if (strcmp(key, "sync") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->sync_mode == SYNC_CLOCK ? "clock" : "internal");
     }
 
     return -1;

@@ -296,7 +296,7 @@ function drawRect(x, y, w, h, color) {
  * Draw a centered status overlay with title and message
  * Used for loading states, installation progress, etc.
  * @param {string} title - Title text (e.g., "Installing")
- * @param {string} message - Message text (e.g., "JV-880 v0.2.0")
+ * @param {string} message - Message text (e.g., "Mini-JV v0.2.0")
  */
 export function drawStatusOverlay(title, message) {
     const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;

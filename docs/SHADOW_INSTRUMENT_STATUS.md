@@ -48,9 +48,9 @@ Example:
 {
   "patches": [
     { "name": "SF2 + Freeverb (Preset 1)", "channel": 5 },
-    { "name": "DX7 + Freeverb", "channel": 6 },
+    { "name": "Dexed + Freeverb", "channel": 6 },
     { "name": "OB-Xd + Freeverb", "channel": 7 },
-    { "name": "JV-880 + Freeverb", "channel": 8 }
+    { "name": "Mini-JV + Freeverb", "channel": 8 }
   ]
 }
 ```
@@ -164,10 +164,10 @@ Example patch using an external module:
 
 ```json
 {
-    "name": "JV-880 + CloudSeed",
+    "name": "Mini-JV + CloudSeed",
     "version": 1,
     "chain": {
-        "synth": { "module": "jv880" },
+        "synth": { "module": "minijv" },
         "audio_fx": [
             { "type": "cloudseed", "params": { "wet": 0.3 } }
         ]
@@ -190,7 +190,7 @@ Modules must declare chainable capabilities in `module.json`:
 
 ### Future Enhancements
 
-- **Per-patch default channel override**: Allow patches to specify a preferred receive channel (e.g., JV-880 expects channel 1), which the shadow chain would use when loading instead of the slot's default channel 5-8.
+- **Per-patch default channel override**: Allow patches to specify a preferred receive channel (e.g., Mini-JV expects channel 1), which the shadow chain would use when loading instead of the slot's default channel 5-8.
 
 See [MODULES.md](MODULES.md#shadow-mode-integration) for complete documentation.
 

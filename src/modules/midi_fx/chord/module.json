@@ -2,7 +2,7 @@
   "id": "chord",
   "name": "Chord",
   "abbrev": "CH",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "builtin": true,
   "capabilities": {
     "chainable": true,
@@ -11,8 +11,8 @@
       "levels": {
         "root": {
           "name": "Chord",
-          "params": ["type"],
-          "knobs": ["type"]
+          "params": ["type", "strum", "strum_dir"],
+          "knobs": ["type", "strum", "strum_dir"]
         }
       }
     },
@@ -23,6 +23,21 @@
         "type": "enum",
         "options": ["none", "major", "minor", "power", "octave"],
         "default": "major"
+      },
+      {
+        "key": "strum",
+        "name": "Strum",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "default": 0
+      },
+      {
+        "key": "strum_dir",
+        "name": "Strum Dir",
+        "type": "enum",
+        "options": ["up", "down"],
+        "default": "up"
       }
     ]
   }

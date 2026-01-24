@@ -80,7 +80,7 @@ build/
 move-anything.tar.gz         # Deployable package
 ```
 
-**Note:** Sound generators (SF2, DX7, JV-880, OB-Xd) and audio effects (CloudSeed, PSX Verb, etc.) are external modules installed via the Module Store, not built with the host.
+**Note:** Sound generators (SF2, Dexed, Mini-JV, OB-Xd) and audio effects (CloudSeed, PSX Verb, etc.) are external modules installed via the Module Store, not built with the host.
 
 ## Troubleshooting
 
@@ -187,7 +187,7 @@ GitHub Actions will automatically create a release when you push a tag matching 
 
 ## External Module Releases
 
-External modules (SF2, DX7, JV-880, etc.) are built and released separately. Each module repo has its own release workflow.
+External modules (SF2, Dexed, Mini-JV, etc.) are built and released separately. Each module repo has its own release workflow.
 
 ### Build Script Requirements
 

@@ -240,7 +240,7 @@ Modules can expose parameters to the Shadow UI via `ui_hierarchy` in their get_p
 ```json
 {
   "ui_hierarchy": {
-    "label": "DX7",
+    "label": "Dexed",
     "children": [
       {
         "label": "Algorithm",
@@ -302,8 +302,8 @@ External modules are maintained in separate repositories and available via Modul
 
 **Sound Generators:**
 - `sf2` - SoundFont synthesizer (TinySoundFont)
-- `dx7` - Yamaha DX7 FM synthesizer (Dexed/MSFA)
-- `jv880` - Roland JV-880 emulator
+- `dexed` - 6-operator FM synthesizer (Dexed/MSFA)
+- `minijv` - ROM-based PCM rompler emulator
 - `obxd` - Oberheim OB-X emulator
 - `clap` - CLAP plugin host
 
@@ -311,7 +311,7 @@ External modules are maintained in separate repositories and available via Modul
 - `cloudseed` - Algorithmic reverb
 - `psxverb` - PlayStation SPU reverb
 - `tapescam` - Tape saturation
-- `spacecho` - RE-201 style tape delay
+- `tapedelay` - Tape delay with flutter and saturation
 
 **Utilities:**
 - `m8` - Dirtywave M8 Launchpad Pro emulator
@@ -383,7 +383,7 @@ Edit `module-catalog.json` and add an entry:
 
 ## External Module Development
 
-External modules live in separate repos (e.g., `move-anything-sf2`, `move-anything-dx7`).
+External modules live in separate repos (e.g., `move-anything-sf2`, `move-anything-obxd`).
 
 ### Module Repo Structure
 

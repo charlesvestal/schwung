@@ -335,12 +335,12 @@ https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalo
 Example catalog entry:
 ```json
 {
-  "id": "dx7",
-  "name": "DX7 Synth",
-  "description": "Yamaha DX7 FM synthesizer emulator",
+  "id": "dexed",
+  "name": "Dexed",
+  "description": "Dexed FM synth with DX7-compatible sysex support",
   "component_type": "sound_generator",
   "latest_version": "0.1.0",
-  "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.1.0/dx7-module.tar.gz"
+  "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.1.0/dexed-module.tar.gz"
 }
 ```
 
@@ -517,9 +517,9 @@ Shadow slot configuration is saved to `/data/UserData/move-anything/shadow_confi
 {
   "patches": [
     { "name": "SF2 + Freeverb", "channel": 5 },
-    { "name": "DX7 + Freeverb", "channel": 6 },
+    { "name": "Dexed + Freeverb", "channel": 6 },
     { "name": "OB-Xd + Freeverb", "channel": 7 },
-    { "name": "JV-880 + Freeverb", "channel": 8 }
+    { "name": "Mini-JV + Freeverb", "channel": 8 }
   ]
 }
 ```

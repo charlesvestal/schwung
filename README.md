@@ -57,7 +57,7 @@ The Signal Chain module lets you combine MIDI sources, MIDI effects, sound gener
 
 **Sound Generators:**
 - Line In (external audio input, built-in)
-- SF2, DX7, OB-Xd, JV-880, CLAP (install via Module Store)
+- SF2, Dexed, OB-Xd, Mini-JV, CLAP (install via Module Store)
 
 **MIDI Effects:**
 - Chord generator (major, minor, power, octave)
@@ -65,7 +65,7 @@ The Signal Chain module lets you combine MIDI sources, MIDI effects, sound gener
 
 **Audio Effects:**
 - Freeverb (Schroeder-Moorer reverb, built-in)
-- CloudSeed, PSX Verb, TAPESCAM, Space Echo (install via Module Store)
+- CloudSeed, PSX Verb, TAPESCAM, TapeDelay (install via Module Store)
 
 #### Recording
 
@@ -85,7 +85,7 @@ Patches are JSON files in `modules/chain/patches/`. Create your own:
   "name": "My Patch",
   "version": 1,
   "chain": {
-    "synth": { "module": "dx7" },
+    "synth": { "module": "dexed" },
     "audio_fx": [
       { "type": "freeverb", "params": { "wet": 0.3 } }
     ]
@@ -172,9 +172,9 @@ Install these from the Module Store on your device:
 | Module | Description |
 |--------|-------------|
 | SF2 Synth | SoundFont (.sf2) synthesizer |
-| DX7 Synth | Yamaha DX7 FM synthesizer (loads .syx patches) |
+| Dexed | 6-operator FM synth (loads .syx patches) |
 | OB-Xd | Oberheim OB-X synthesizer emulator |
-| JV-880 | Roland JV-880 rompler (requires ROM files) |
+| Mini-JV | ROM-based PCM rompler (requires ROM files) |
 | CLAP Host | Host for CLAP audio plugins |
 
 **Audio FX:**
@@ -183,7 +183,7 @@ Install these from the Module Store on your device:
 | CloudSeed | Algorithmic reverb |
 | PSX Verb | PlayStation 1 SPU reverb emulation |
 | TAPESCAM | Tape saturation and degradation |
-| Space Echo | RE-201 style tape delay |
+| TapeDelay | Tape delay with flutter, tone shaping, and saturation |
 
 **Utilities:**
 | Module | Description |

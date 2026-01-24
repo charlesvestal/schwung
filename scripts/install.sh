@@ -308,8 +308,8 @@ for m in catalog['modules']:
     echo "========================================"
     echo
     echo "NOTE: Some modules require additional assets:"
-    echo "  - DX7: Requires Dexed cartridge files (.syx)"
-    echo "  - JV-880: Requires Roland JV-880 ROM files"
+    echo "  - Dexed: Requires .syx patch files"
+    echo "  - Mini-JV: Requires ROM files"
     echo "  - SF2: Requires SoundFont files (.sf2)"
     echo "Modules are also available in the Module Store."
 fi

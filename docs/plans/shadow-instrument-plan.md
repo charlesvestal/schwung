@@ -2,7 +2,7 @@
 
 ## Overview
 
-Add a "shadow mode" to Move Anything that runs alongside stock Move, allowing custom synths (DX7, OB-Xd, SF2, etc.) to layer with native Move sounds. The existing fourtrack module provides the multi-track engine.
+Add a "shadow mode" to Move Anything that runs alongside stock Move, allowing custom synths (Dexed, OB-Xd, SF2, etc.) to layer with native Move sounds. The existing fourtrack module provides the multi-track engine.
 
 ## What Works Without Knobs
 
@@ -325,7 +325,7 @@ Just ensure this mode is enabled by default in shadow.
 - [ ] Link fourtrack rendering code
 - [ ] MIDI processing from shm
 - [ ] Audio output to shm
-- [ ] Test: load DX7 patch, play Move pads, hear DX7 layered
+- [ ] Test: load Dexed patch, play Move pads, hear Dexed layered
 
 ---
 
@@ -386,10 +386,10 @@ Adapt fourtrack's UI or create minimal UI:
 ┌────────────────────────────────────┐
 │ SHADOW                             │
 │ ─────────────────────────────────  │
-│ 1: DX7 E.Piano      [ch1]          │
+│ 1: Dexed E.Piano      [ch1]          │
 │ 2: OB-Xd Pad        [ch2]          │
 │ 3: SF2 Piano        [ch3]          │
-│ 4: JV-880 Strings   [ch4]          │
+│ 4: Mini-JV Strings   [ch4]          │
 │                                    │
 │ Shift+Vol+Jog: Return to Move      │
 └────────────────────────────────────┘
@@ -525,7 +525,7 @@ shm_unlink("/move-shadow-audio");
 ### Phase 2
 - [ ] Shadow process starts and connects to shm
 - [ ] MIDI notes reach shadow tracks (verify with logging)
-- [ ] DX7/OB-Xd sounds play when Move pads pressed
+- [ ] Dexed/OB-Xd sounds play when Move pads pressed
 
 ### Phase 3
 - [ ] Hotkey toggles display

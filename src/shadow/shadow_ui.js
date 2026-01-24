@@ -145,7 +145,7 @@ const moduleAbbrevCache = {
 function createEmptyChainConfig() {
     return {
         midiFx: null,    // { module: "chord", params: {} } or null
-        synth: null,     // { module: "dx7", params: {} } or null
+        synth: null,     // { module: "dexed", params: {} } or null
         fx1: null,       // { module: "freeverb", params: {} } or null
         fx2: null        // { module: "cloudseed", params: {} } or null
     };
@@ -417,7 +417,7 @@ let moduleUiLoadError = false;   // True if load failed
 
 /* Asset warning overlay state */
 let assetWarningActive = false;  // True when showing asset warning overlay
-let assetWarningTitle = "";      // e.g., "DX7 Warning"
+let assetWarningTitle = "";      // e.g., "Dexed Warning"
 let assetWarningLines = [];      // Wrapped error message lines
 let assetWarningShownForSlots = new Set();  // Track which chain slots have shown warnings
 let assetWarningShownForMasterFx = new Set();  // Track which Master FX slots have shown warnings
@@ -2437,12 +2437,15 @@ function loadHierarchyLevel() {
     const levelDef = hierEditorLevel ? levels[hierEditorLevel] : null;
 
     if (!levelDef) {
-        /* At mode selection level */
-        hierEditorParams = hierEditorHierarchy.modes || [];
+        /* At mode selection level - include swap module here */
+        hierEditorParams = [...(hierEditorHierarchy.modes || []), SWAP_MODULE_ACTION];
         hierEditorKnobs = [];
         hierEditorIsPresetLevel = false;
         return;
     }
+
+    /* Determine if this is the top level (swap module only at top) */
+    const isTopLevel = hierEditorLevel === "root" && !hierEditorHierarchy.modes;
 
     /* Check if this is a preset browser level */
     if (levelDef.list_param && levelDef.count_param) {
@@ -2462,13 +2465,17 @@ function loadHierarchyLevel() {
         const nameParam = levelDef.name_param || "preset_name";
         hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
 
-        /* Also load params for preset edit mode (append swap action at end) */
-        hierEditorParams = [...(levelDef.params || []), SWAP_MODULE_ACTION];
+        /* Also load params for preset edit mode (swap only at top level) */
+        hierEditorParams = isTopLevel
+            ? [...(levelDef.params || []), SWAP_MODULE_ACTION]
+            : (levelDef.params || []);
     } else {
         hierEditorIsPresetLevel = false;
         hierEditorPresetEditMode = false;
         /* Use hierarchy params for scrollable list, knobs for physical mapping */
-        hierEditorParams = [...(levelDef.params || []), SWAP_MODULE_ACTION];
+        hierEditorParams = isTopLevel
+            ? [...(levelDef.params || []), SWAP_MODULE_ACTION]
+            : (levelDef.params || []);
         hierEditorKnobs = levelDef.knobs || [];
     }
 }

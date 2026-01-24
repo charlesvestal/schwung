@@ -12,11 +12,11 @@ The v2 API moves from global state to instance-based state, enabling:
 ### Sound Generators: plugin_api_v2
 - `create_instance()` / `destroy_instance()` replace `on_load()` / `on_unload()`
 - All functions now take an `instance` pointer
-- Migrated: linein, sf2, dx7, jv880, obxd, clap
+- Migrated: linein, sf2, dexed, minijv, obxd, clap
 
 ### Audio Effects: audio_fx_api_v2
 - Same pattern as sound generators
-- Migrated: psxverb, cloudseed, tapescam, spacecho
+- Migrated: psxverb, cloudseed, tapescam, tapedelay
 
 ## Installation
 
@@ -54,9 +54,9 @@ The following test patches are included to validate v2 API functionality:
 |------------|-------|----------|---------|
 | V2 Test: LineIn + CloudSeed | linein (v2) | cloudseed (v2) | Basic v2 audio FX test |
 | V2 Test: LineIn + Tapescam | linein (v2) | tapescam (v2) | Tape saturation v2 test |
-| V2 Test: Multi FX Chain | linein (v2) | tapescam + spacecho + cloudseed | Multiple v2 FX instances |
+| V2 Test: Multi FX Chain | linein (v2) | tapescam + tapedelay + cloudseed | Multiple v2 FX instances |
 | V2 Test: SF2 + PSXVerb | sf2 (v2) | psxverb (v2) | v2 synth + v2 FX |
-| V2 Test: DX7 + Space Echo | dx7 (v2) | spacecho (v2) | FM synth + delay |
+| V2 Test: Dexed + TapeDelay | dexed (v2) | tapedelay (v2) | FM synth + delay |
 | V2 Test: Dual Reverb | linein (v2) | psxverb + cloudseed | Two reverbs in series |
 
 ## Manual Test Procedure
@@ -80,7 +80,7 @@ The following test patches are included to validate v2 API functionality:
 This tests the core v2 benefit - multiple independent instances:
 
 1. Load patch **"V2 Test: Multi FX Chain"**
-2. This chain has: tapescam → spacecho → cloudseed
+2. This chain has: tapescam → tapedelay → cloudseed
 3. **Verify:** All three effects are audible in series
 4. **Verify:** Each effect's parameters are independently controllable
 5. **Verify:** No parameter crosstalk between effects
@@ -155,9 +155,9 @@ You should see v2 initialization messages for each plugin.
 ### V2 Test: Multi FX Chain
 - Knob 1 (CC 71): Tapescam Drive
 - Knob 2 (CC 72): Tapescam Wobble
-- Knob 3 (CC 73): Space Echo Time
-- Knob 4 (CC 74): Space Echo Feedback
-- Knob 5 (CC 75): Space Echo Mix
+- Knob 3 (CC 73): TapeDelay Time
+- Knob 4 (CC 74): TapeDelay Feedback
+- Knob 5 (CC 75): TapeDelay Mix
 - Knob 6 (CC 76): CloudSeed Decay
 - Knob 7 (CC 77): CloudSeed Mix
 - Knob 8 (CC 78): CloudSeed Size

@@ -922,7 +922,7 @@ git commit -m "feat(ui): show error overlay when module fails to load"
 
 ---
 
-## Task 10: Update DX7 Module
+## Task 10: Update Dexed Module
 
 **Files (external repo):**
 - Modify: `move-anything-dx7/release.json`
@@ -933,12 +933,12 @@ git commit -m "feat(ui): show error overlay when module fails to load"
 ```json
 {
   "version": "0.2.1",
-  "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.2.1/dx7-module.tar.gz",
+  "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.2.1/dexed-module.tar.gz",
   "repo_url": "https://github.com/charlesvestal/move-anything-dx7",
-  "name": "DX7 Synth",
-  "description": "Yamaha DX7 FM synthesizer emulation with full 6-operator FM synthesis. Loads standard .syx patch banks from the original DX7 or compatible editors.",
-  "requires": ".syx patch files (DX7 voice banks)",
-  "post_install": "Place .syx files in modules/sound_generators/dx7/patches/"
+  "name": "Dexed",
+  "description": "Dexed FM synth with full 6-operator synthesis. Loads standard .syx patch banks from compatible editors.",
+  "requires": ".syx patch files (Dexed voice banks)",
+  "post_install": "Place .syx files in modules/sound_generators/dexed/patches/"
 }
 ```
 
@@ -1025,20 +1025,20 @@ Same pattern as Task 10, with SF2-specific messages:
 
 ---
 
-## Task 12: Update JV-880 Module
+## Task 12: Update Mini-JV Module
 
 **Files (external repo):**
 - Modify: `move-anything-jv880/release.json`
 - Modify: `move-anything-jv880/src/dsp/plugin.cpp`
 
-Same pattern as Task 10, with JV-880-specific messages:
+Same pattern as Task 10, with Mini-JV-specific messages:
 
 **release.json:**
 ```json
 {
-  "description": "Roland JV-880 rompler emulation. Requires original ROM files dumped from JV-880/JV-1080 hardware.",
-  "requires": "ROM files from original JV-880 hardware",
-  "post_install": "Place ROM files (jv880_waverom*.bin, jv880_nvram.bin) in modules/sound_generators/jv880/"
+  "description": "Mini-JV rompler emulation. Requires ROM files dumped from compatible hardware.",
+  "requires": "ROM files from compatible hardware",
+  "post_install": "Place ROM files (jv880_waverom*.bin, jv880_nvram.bin) in modules/sound_generators/minijv/"
 }
 ```
 
@@ -1055,8 +1055,8 @@ After completing all tasks:
 
 1. **Store displays descriptions**: Open Module Store, navigate to a module, see scrollable description
 2. **Requires line shown**: Modules with `requires` show it after description
-3. **Post-install message**: After installing DX7/SF2/JV880, see post-install overlay
-4. **Load error overlay**: Load DX7 without patches, see error overlay
+3. **Post-install message**: After installing Dexed/SF2/JV880, see post-install overlay
+4. **Load error overlay**: Load Dexed without patches, see error overlay
 5. **Shadow UI works**: Same behavior in Shadow UI store picker
 
 ---

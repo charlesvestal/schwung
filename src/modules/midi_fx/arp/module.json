@@ -2,7 +2,7 @@
   "id": "arp",
   "name": "Arpeggiator",
   "abbrev": "AR",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "builtin": true,
   "capabilities": {
     "chainable": true,
@@ -11,8 +11,8 @@
       "levels": {
         "root": {
           "name": "Arpeggiator",
-          "params": ["mode", "bpm", "division"],
-          "knobs": ["mode", "bpm", "division"]
+          "params": ["mode", "bpm", "division", "sync"],
+          "knobs": ["mode", "bpm", "division", "sync"]
         }
       }
     },
@@ -39,6 +39,13 @@
         "type": "enum",
         "options": ["1/4", "1/8", "1/16"],
         "default": "1/16"
+      },
+      {
+        "key": "sync",
+        "name": "Sync",
+        "type": "enum",
+        "options": ["internal", "clock"],
+        "default": "internal"
       }
     ]
   }

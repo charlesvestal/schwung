@@ -60,17 +60,17 @@ git commit -m "feat(sf2): add chain_params for preset configuration"
 
 ---
 
-## Task 2: Add chain_params to DX7 module.json
+## Task 2: Add chain_params to Dexed module.json
 
 **Files:**
-- Modify: `src/modules/dx7/module.json`
+- Modify: `src/modules/dexed/module.json`
 
 **Step 1: Update module.json with chain_params**
 
 ```json
 {
-  "id": "dx7",
-  "name": "DX7 Synth",
+  "id": "dexed",
+  "name": "Dexed",
   "version": "0.1.0",
   "ui": "ui.js",
   "dsp": "dsp.so",
@@ -95,7 +95,7 @@ git commit -m "feat(sf2): add chain_params for preset configuration"
     ]
   },
   "defaults": {
-    "syx_path": "/data/UserData/move-anything/modules/dx7/patches.syx",
+    "syx_path": "/data/UserData/move-anything/modules/dexed/patches.syx",
     "preset": 0
   }
 }
@@ -104,8 +104,8 @@ git commit -m "feat(sf2): add chain_params for preset configuration"
 **Step 2: Commit**
 
 ```bash
-git add src/modules/dx7/module.json
-git commit -m "feat(dx7): add chain_params for preset configuration"
+git add src/modules/dexed/module.json
+git commit -m "feat(dexed): add chain_params for preset configuration"
 ```
 
 ---
@@ -348,7 +348,7 @@ function scanChainableModules() {
     /* For now, use known modules - will be replaced with dynamic scan */
     availableComponents.sound_generators = [
         { id: "sf2", name: "SF2 Synth", params: [{ key: "preset", name: "Preset", type: "int", min: 0, max: 127, default: 0 }] },
-        { id: "dx7", name: "DX7 Synth", params: [{ key: "preset", name: "Preset", type: "int", min: 0, max: 31, default: 0 }] },
+        { id: "dexed", name: "Dexed", params: [{ key: "preset", name: "Preset", type: "int", min: 0, max: 31, default: 0 }] },
         { id: "linein", name: "Line In", params: [] }
     ];
 
@@ -1514,7 +1514,7 @@ Address compilation errors, runtime issues, or UI bugs.
 git add -A
 git commit -m "feat(chain): complete chain editor implementation
 
-- Add chain_params to SF2, DX7, freeverb, linein, chord, arp
+- Add chain_params to SF2, Dexed, freeverb, linein, chord, arp
 - Add component discovery for available synths, FX, MIDI FX
 - Add editor UI with overview, slot menu, component picker, param editor
 - Add save/delete functionality through DSP layer

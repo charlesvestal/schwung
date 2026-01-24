@@ -188,4 +188,4 @@ setSlotParam(MASTER_SLOT, "delete_master_preset", String(index));
 3. **Default presets**: Yes - ship 2-3 examples:
    - "Subtle Verb" - light freeverb
    - "Tape Warmth" - tapescam saturation
-   - "Space Echo" - spacecho delay (if available)
+   - "TapeDelay" - tapedelay delay (if available)

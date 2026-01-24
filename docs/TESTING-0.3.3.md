@@ -159,8 +159,8 @@
 ### 5.1 All Sound Generators
 Test each available synth module loads and produces sound:
 - [ ] sf2 (SoundFont) - load preset, play pads
-- [ ] dx7 (DX7 FM) - load preset, play pads
-- [ ] jv880 (Roland JV-880) - load preset, play pads
+- [ ] dexed (Dexed FM) - load preset, play pads
+- [ ] minijv (Mini-JV rompler) - load preset, play pads
 - [ ] obxd (OB-X) - load preset, play pads
 - [ ] linein (Line In) - connect audio, verify passthrough
 - [ ] clap (CLAP host) - if available, load plugin
