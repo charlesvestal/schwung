@@ -27,7 +27,8 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-dx7",
       "asset_name": "dx7-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.3.0",
+      "requires": "patches.syx file (place in module's patches/ folder)"
     },
     {
       "id": "sf2",
@@ -37,7 +38,8 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-sf2",
       "asset_name": "sf2-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.3.0",
+      "requires": ".sf2 soundfont files (place in module's soundfonts/ folder)"
     },
     {
       "id": "m8",
@@ -57,7 +59,8 @@
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-jv880",
       "asset_name": "jv880-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.3.0",
+      "requires": "JV-880 ROM files (place in module's roms/ folder)"
     },
     {
       "id": "obxd",
