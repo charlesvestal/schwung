@@ -3,9 +3,9 @@
 ## Goal
 
 Allow each shadow slot to have multiple MIDI routes, enabling scenarios like:
-- Move Track 1 (Ch5) → JV-880 Ch5 (piano part)
-- Move Track 4 (Ch10) → JV-880 Ch10 (rhythm part)
-- Both routes go to the SAME JV-880 instance
+- Move Track 1 (Ch5) → Mini-JV Ch5 (piano part)
+- Move Track 4 (Ch10) → Mini-JV Ch10 (rhythm part)
+- Both routes go to the SAME Mini-JV instance
 
 ## Current State
 
@@ -112,12 +112,12 @@ typedef struct shadow_chain_slot_t {
 
 ```
 SLOTS view:
-  > JV-880 Perf        Ch5,10
+  > Mini-JV Perf        Ch5,10
     SF2 Piano          Ch6
     ...
 
-SLOT_SETTINGS view (for JV-880):
-  > Patch:       JV-880 Perf
+SLOT_SETTINGS view (for Mini-JV):
+  > Patch:       Mini-JV Perf
     Volume:      100%
     Route 1:     Ch5 → Auto
     Route 2:     Ch10 → Ch10

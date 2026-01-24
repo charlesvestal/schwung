@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add three enhancements: JV-880 swap module placement, chord strum control, arp MIDI clock sync.
+**Goal:** Add three enhancements: Mini-JV swap module placement, chord strum control, arp MIDI clock sync.
 
 **Architecture:** Modifications to Shadow UI hierarchy handling and two MIDI FX modules (chord, arp).
 
@@ -10,17 +10,17 @@
 
 ---
 
-## Feature 1: JV-880 "Swap Module" at Top Level
+## Feature 1: Mini-JV "Swap Module" at Top Level
 
 ### Problem
-Currently "Swap Module" appears at the bottom of every parameter list in the hierarchy editor. For modules with modes (like JV-880), it should appear at the mode selection level alongside "Patch" and "Performance".
+Currently "Swap Module" appears at the bottom of every parameter list in the hierarchy editor. For modules with modes (like Mini-JV), it should appear at the mode selection level alongside "Patch" and "Performance".
 
 ### Solution
 Modify Shadow UI's `loadHierarchyLevel()` to add "Swap Module" at the mode selection level instead of appending to every parameter list.
 
 ### UI Flow
 ```
-JV-880 Hierarchy Editor:
+Mini-JV Hierarchy Editor:
 ├── Patch          (select to enter patch mode)
 ├── Performance    (select to enter performance mode)
 └── Swap module... (select to change sound generator)
@@ -131,6 +131,6 @@ All three can be developed in parallel if desired.
 
 ## Testing
 
-- **Feature 1:** Load JV-880 in chain, verify swap module appears at mode level
+- **Feature 1:** Load Mini-JV in chain, verify swap module appears at mode level
 - **Feature 2:** Set chord type, increase strum, verify notes are delayed
 - **Feature 3:** Set sync=clock, change host tempo, verify arp follows

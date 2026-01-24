@@ -221,7 +221,7 @@ scripts/test_shadow_display_order.sh
 
 ### Future Enhancements
 
-10. **Per-patch default channel override** - Allow patches to specify a default receive channel (e.g., JV-880 expects channel 1, not the slot's default channel 5-8). The shadow chain could read this from the patch config and override the slot's channel when loading.
+10. **Per-patch default channel override** - Allow patches to specify a default receive channel (e.g., Mini-JV expects channel 1, not the slot's default channel 5-8). The shadow chain could read this from the patch config and override the slot's channel when loading.
 
 ---
 

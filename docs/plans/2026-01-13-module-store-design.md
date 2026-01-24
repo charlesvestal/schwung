@@ -30,7 +30,7 @@ Design for browsing, installing, updating, and removing external modules from th
                           ↓ downloads
 ┌─────────────────────────────────────────────────────────┐
 │ GitHub Releases (per module repo)                        │
-│  - jv880-module.tar.gz                                  │
+│  - minijv-module.tar.gz                                  │
 │  - obxd-module.tar.gz                                   │
 │  - etc.                                                 │
 └─────────────────────────────────────────────────────────┘
@@ -45,14 +45,14 @@ The `module-catalog.json` file lives in the move-anything repo root:
   "catalog_version": 1,
   "modules": [
     {
-      "id": "jv880",
-      "name": "JV-880",
-      "description": "Roland JV-880 emulator",
+      "id": "minijv",
+      "name": "Mini-JV",
+      "description": "Mini-JV rompler (ROMs required)",
       "author": "nukeykt/giulioz",
       "component_type": "sound_generator",
       "latest_version": "0.1.0",
       "min_host_version": "1.0.0",
-      "download_url": "https://github.com/charlesvestal/move-anything-jv880/releases/download/v0.1.0/jv880-module.tar.gz"
+      "download_url": "https://github.com/charlesvestal/move-anything-jv880/releases/download/v0.1.0/minijv-module.tar.gz"
     }
   ]
 }
@@ -87,20 +87,20 @@ Implementation:
       ↓ jog + select
 [MODULE LIST]
   < Sound Generators
-  JV-880          ✓    (checkmark = installed)
+  Mini-JV          ✓    (checkmark = installed)
   OB-Xd           *    (asterisk = update available)
   CloudSeed            (blank = not installed)
       ↓ jog + select
 [MODULE DETAIL]
   < Back
-  JV-880              v0.1.0
-  Roland JV-880 emulator
+  Mini-JV              v0.1.0
+  Mini-JV rompler (ROMs required)
   by nukeykt/giulioz
   ────────────────────
   [Reinstall]  [Remove]
       ↓ select action
 [INSTALLING/REMOVING]
-  "Installing JV-880..."
+  "Installing Mini-JV..."
       ↓ complete
 [RESULT]
   "Installed successfully" or error

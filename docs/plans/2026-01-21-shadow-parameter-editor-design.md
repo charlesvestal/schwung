@@ -12,7 +12,7 @@ A generic parameter editor for the shadow UI that works with all Move Anything p
 1. Browse and select presets for any plugin
 2. Edit parameters with knobs (8 key params per context)
 3. Deep edit any parameter via jog + push-to-edit
-4. Support complex hierarchies (JV-880: modes → patches/performances → tones/parts → params)
+4. Support complex hierarchies (Mini-JV: modes → patches/performances → tones/parts → params)
 5. Future-proof: plugins can add parameter editing without move-anything changes
 
 ## Navigation Model
@@ -26,12 +26,12 @@ Plugins define their navigation hierarchy. Examples:
 [params] - flat list of 10 parameters
 ```
 
-**Preset synth (SF2, DX7):**
+**Preset synth (SF2, Dexed):**
 ```
 [presets] - browse and select
 ```
 
-**Complex synth (JV-880):**
+**Complex synth (Mini-JV):**
 ```
 [mode: patch/performance]
   patch mode:  [patches] → [tone 1-4] → [tone params]
@@ -42,7 +42,7 @@ Plugins define their navigation hierarchy. Examples:
 
 ```
 ┌─────────────────────────────────┐
-│ JV-880 > Perf 3 > Part 2        │  ← Breadcrumb header (full context)
+│ Mini-JV > Perf 3 > Part 2        │  ← Breadcrumb header (full context)
 ├─────────────────────────────────┤
 │ > Patch: Piano1                 │  ← Current level items
 │   Level: 100                    │     (scrollable via jog)
@@ -120,7 +120,7 @@ Use existing shared menu methods for all value editing - same patterns as settin
 
 Plugins expose hierarchy via `get_param("ui_hierarchy")` returning JSON:
 
-### Complex Example (JV-880)
+### Complex Example (Mini-JV)
 
 ```json
 {
@@ -203,11 +203,11 @@ Plugins expose hierarchy via `get_param("ui_hierarchy")` returning JSON:
 | CloudSeed | Simple | ✅ Done | ✅ Done | Low |
 | PSXVerb | Simple + presets | ✅ Done | ✅ Done | Low |
 | Tapescam | Simple | ✅ Done | ✅ Done | Low |
-| Space Echo | Simple | ✅ Done | ✅ Done | Low |
+| TapeDelay | Simple | ✅ Done | ✅ Done | Low |
 | SF2 | Presets only | Partial | ✅ Done | Low |
-| DX7 | Presets only | Partial | ✅ Done | Low |
+| Dexed | Presets only | Partial | ✅ Done | Low |
 | OBXd | Presets + params | ✅ Done | ✅ Done | Medium |
-| JV-880 | Complex hierarchy | Needs work | ✅ Done | High |
+| Mini-JV | Complex hierarchy | Needs work | ✅ Done | High |
 
 ## Architecture
 
@@ -232,7 +232,7 @@ Shadow UI                          Plugin DSP
 1. **No hardcoding** - move-anything contains no plugin-specific code
 2. **Plugins describe themselves** - hierarchy, params, metadata all from plugin
 3. **Use shared methods** - menu_layout.mjs, move_display.mjs, existing value editing
-4. **Future extensible** - DX7 can add operator editing later by updating its hierarchy
+4. **Future extensible** - Dexed can add operator editing later by updating its hierarchy
 
 ## Implementation Plan
 
@@ -243,12 +243,12 @@ Shadow UI                          Plugin DSP
 
 ### Phase 2: Preset-Based Synths
 - Add preset list navigation
-- Test with SF2, DX7
+- Test with SF2, Dexed
 - Validate preset browsing and selection
 
 ### Phase 3: Complex Hierarchies
 - Add mode selection, multi-level navigation
-- Add ui_hierarchy and chain_params to JV-880
+- Add ui_hierarchy and chain_params to Mini-JV
 - Test full Patch/Performance/Tone/Part navigation
 
 ### Phase 4: Polish

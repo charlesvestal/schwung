@@ -19,7 +19,7 @@ move-anything-<name>/
 ├── README.md
 ├── CLAUDE.md               # Claude instructions
 ├── scripts/
-│   ├── Dockerfile          # Cross-compilation (copy from jv880)
+│   ├── Dockerfile          # Cross-compilation (copy from minijv)
 │   ├── build.sh            # Build script
 │   └── install.sh          # Deploy to Move
 ├── src/
@@ -82,7 +82,7 @@ SOFTWARE.
 mkdir -p scripts src/dsp src/chain_patches
 ```
 
-### Step 1.4: Copy build infrastructure from jv880
+### Step 1.4: Copy build infrastructure from minijv
 
 ```bash
 cp ../move-anything-jv880/scripts/Dockerfile scripts/
@@ -353,7 +353,7 @@ Follow same steps as Task 1 with these differences:
         "min": 0,
         "max": 5,
         "default": 4,
-        "labels": ["Room", "Studio S", "Studio M", "Studio L", "Hall", "Space Echo"]
+        "labels": ["Room", "Studio S", "Studio M", "Studio L", "Hall", "TapeDelay"]
       },
       {
         "key": "decay",
@@ -468,12 +468,12 @@ Core DSP stages to implement:
 
 ```json
 {
-  "id": "spacecho",
-  "name": "Space Echo",
+  "id": "tapedelay",
+  "name": "TapeDelay",
   "version": "0.1.0",
   "description": "RE-201 style tape delay",
   "author": "Charles Vestal",
-  "dsp": "spacecho.so",
+  "dsp": "tapedelay.so",
   "api_version": 1,
   "capabilities": {
     "chainable": true,
@@ -584,7 +584,7 @@ cd ../move-anything-delay && ./scripts/install.sh
 Recommended order based on complexity:
 
 1. **TapeScam** (simplest - mostly filters and waveshaping)
-2. **Space Echo** (delay line + filters)
+2. **TapeDelay** (delay line + filters)
 3. **PSXVerb** (direct port from your code)
 4. **CloudSeed** (most complex algorithm)
 
@@ -597,4 +597,4 @@ Recommended order based on complexity:
 | CloudSeed | MIT | Ghost Note Audio (algorithm), Charles Vestal (port) |
 | PSXVerb | MIT | Charles Vestal |
 | TapeScam | MIT | Charles Vestal |
-| Space Echo | MIT | Charles Vestal |
+| TapeDelay | MIT | Charles Vestal |

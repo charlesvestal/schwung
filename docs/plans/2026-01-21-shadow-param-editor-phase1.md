@@ -600,9 +600,9 @@ Phase 1 implements the core hierarchy editor with:
 - Contextual overlay
 
 Phase 2 will add:
-- Preset list navigation for SF2, DX7
+- Preset list navigation for SF2, Dexed
 - Children/drill-down support for nested levels
 
 Phase 3 will add:
-- Mode selection for JV-880
+- Mode selection for Mini-JV
 - Full Patch/Performance/Tone/Part hierarchy

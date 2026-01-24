@@ -10,9 +10,9 @@
 
 ## Naming Map
 
-- `dx7` → `dexed` (display name: "Dexed", abbrev: "DX")
-- `jv880` → `minijv` (display name: "Mini-JV", abbrev: "JV")
-- `spacecho` → `tapedelay` (display name: "TapeDelay", abbrev: "TD")
+- `dexed` → `dexed` (display name: "Dexed", abbrev: "DX")
+- `minijv` → `minijv` (display name: "Mini-JV", abbrev: "JV")
+- `tapedelay` → `tapedelay` (display name: "TapeDelay", abbrev: "TD")
 
 ### Task 1: Create worktrees for module repos
 
@@ -134,8 +134,8 @@ Edit `../move-anything-dx7/src/ui.js` and `../move-anything-dx7/src/dsp/dx7_plug
 
 Edit `../move-anything-dx7/scripts/build.sh` and `../move-anything-dx7/scripts/install.sh`:
 - `dist/dx7` → `dist/dexed`
-- Tarball `dx7-module.tar.gz` → `dexed-module.tar.gz`
-- Install path `/modules/sound_generators/dx7` → `/modules/sound_generators/dexed`
+- Tarball `dexed-module.tar.gz` → `dexed-module.tar.gz`
+- Install path `/modules/sound_generators/dexed` → `/modules/sound_generators/dexed`
 
 Edit `../move-anything-dx7/release.json`:
 - `download_url` → `.../dexed-module.tar.gz`
@@ -202,8 +202,8 @@ and `../move-anything-jv880/src/dsp/jv880_plugin.cpp`:
 
 Edit `../move-anything-jv880/scripts/build.sh` and `../move-anything-jv880/scripts/install.sh`:
 - `dist/jv880` → `dist/minijv`
-- Tarball `jv880-module.tar.gz` → `minijv-module.tar.gz`
-- Install path `/modules/sound_generators/jv880` → `/modules/sound_generators/minijv`
+- Tarball `minijv-module.tar.gz` → `minijv-module.tar.gz`
+- Install path `/modules/sound_generators/minijv` → `/modules/sound_generators/minijv`
 
 Edit `../move-anything-jv880/release.json`:
 - `download_url` → `.../minijv-module.tar.gz`
@@ -270,8 +270,8 @@ Edit `../move-anything-space-delay/src/dsp/spacecho.c`:
 Edit `../move-anything-space-delay/scripts/build.sh` and `../move-anything-space-delay/scripts/install.sh`:
 - `dist/spacecho` → `dist/tapedelay`
 - `spacecho.so` → `tapedelay.so`
-- Tarball `spacecho-module.tar.gz` → `tapedelay-module.tar.gz`
-- Install path `/modules/audio_fx/spacecho` → `/modules/audio_fx/tapedelay`
+- Tarball `tapedelay-module.tar.gz` → `tapedelay-module.tar.gz`
+- Install path `/modules/audio_fx/tapedelay` → `/modules/audio_fx/tapedelay`
 
 Edit `../move-anything-space-delay/release.json`:
 - `download_url` → `.../tapedelay-module.tar.gz`

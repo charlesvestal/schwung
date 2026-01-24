@@ -36,7 +36,7 @@ Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `
 
 **Notes:**
 - `api_version`: Use `2` for new modules (supports multiple instances, required for Signal Chain)
-- `abbrev`: Short display name (3-6 chars) for Shadow UI slot display (e.g., "SF2", "DX7", "CLAP")
+- `abbrev`: Short display name (3-6 chars) for Shadow UI slot display (e.g., "SF2", "Dexed", "CLAP")
 - `module.json` is parsed by a minimal JSON reader. Use double quotes for keys, lowercase `true`/`false`, and avoid comments.
 - Keep `module.json` reasonably small (the loader caps it at 8KB).
 
@@ -518,7 +518,7 @@ Modules can expose a navigable parameter hierarchy to the Shadow UI by respondin
 int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "ui_hierarchy") == 0) {
         const char *json = "{"
-            "\"label\": \"DX7\","
+            "\"label\": \"Dexed\","
             "\"children\": ["
                 "{\"label\": \"Algorithm\", \"param\": \"algorithm\", \"type\": \"int\", \"min\": 1, \"max\": 32},"
                 "{\"label\": \"Feedback\", \"param\": \"feedback\", \"type\": \"int\", \"min\": 0, \"max\": 7},"
@@ -653,7 +653,7 @@ For native code, shared headers are in `src/host/`:
 See these modules for reference:
 
 - **chain**: Signal chain with synths, MIDI FX, and audio FX
-- **dx7**: DX7 FM synthesizer with native DSP (loads .syx patches)
+- **dexed**: Dexed FM synthesizer with native DSP (loads .syx patches)
 - **sf2**: SoundFont synthesizer with native DSP
 - **m8**: MIDI translator (UI-only, no DSP)
 - **controller**: MIDI controller with banks (UI-only)
@@ -673,7 +673,7 @@ The Signal Chain module allows combining MIDI sources, MIDI effects, sound gener
 | Type | Components |
 |------|------------|
 | MIDI Sources | Sequencers or other modules referenced via `midi_source` |
-| Sound Generators | Line In, SF2, DX7, CLAP, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `jv880`) |
+| Sound Generators | Line In, SF2, Dexed, CLAP, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `minijv`) |
 | MIDI Effects | Chord generator (major, minor, power, octave), Arpeggiator (up, down, updown, random) |
 | Audio Effects | Freeverb (reverb), CLAP effects |
 
@@ -935,9 +935,9 @@ Shadow slot configuration is stored in `/data/UserData/move-anything/shadow_chai
 {
     "patches": [
         { "name": "SF2 + Freeverb", "channel": 5 },
-        { "name": "DX7 + Freeverb", "channel": 6 },
+        { "name": "Dexed + Freeverb", "channel": 6 },
         { "name": "OB-Xd + Freeverb", "channel": 7 },
-        { "name": "JV-880 + Freeverb", "channel": 8 }
+        { "name": "Mini-JV + Freeverb", "channel": 8 }
     ]
 }
 ```
@@ -951,7 +951,7 @@ External modules can be distributed via the built-in Module Store. Users can bro
 ### Requirements
 
 1. Module builds as a self-contained tarball: `<id>-module.tar.gz`
-2. Tarball extracts to a folder matching the module ID (e.g., `jv880/`)
+2. Tarball extracts to a folder matching the module ID (e.g., `minijv/`)
 3. GitHub repository with releases enabled
 4. GitHub Actions workflow for automated builds
 

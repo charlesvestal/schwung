@@ -39,7 +39,7 @@ Extend the Signal Chain module to allow creating and editing chains directly fro
 ├────────────────────────┤
 │ ▸ [+ New Chain]        │
 │   Piano Verb           │
-│   DX7 Brass Arp        │
+│   Dexed Brass Arp        │
 │   Line In Reverb       │
 │   ...                  │
 └────────────────────────┘
@@ -88,9 +88,9 @@ For new chains, [Delete] is not shown.
 │  Sound Generator       │
 ├────────────────────────┤
 │ ▸ SF2 Soundfont        │
-│   DX7 FM Synth         │
+│   Dexed FM Synth         │
 │   Line In              │
-│   JV-880               │
+│   Mini-JV               │
 │   [none]               │
 └────────────────────────┘
 ```
@@ -215,7 +215,7 @@ Modules without chain_params are still selectable - they work with defaults and 
 
 - "SF2 01 Ac Piano 2"
 - "SF2 01 Ac Piano 2 + Reverb"
-- "DX7 32 Brass + Chord + Arp"
+- "Dexed 32 Brass + Chord + Arp"
 - "Line In + Reverb"
 
 ### Collision Handling
@@ -291,7 +291,7 @@ Move knobs (CC 71-78) could be intercepted by chain host and routed to component
 - `chain/ui.js` - Add "[+ New Chain]", menu handler for edit mode
 - `chain/dsp/chain_host.c` - Component discovery, save/delete functions
 - `modules/sf2/module.json` - Add chain_params (preset, bank)
-- `modules/dx7/module.json` - Add chain_params (preset)
+- `modules/dexed/module.json` - Add chain_params (preset)
 
 ### Implementation Order
 
