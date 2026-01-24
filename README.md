@@ -183,7 +183,7 @@ Install these from the Module Store on your device:
 | CloudSeed | Algorithmic reverb |
 | PSX Verb | PlayStation 1 SPU reverb emulation |
 | TAPESCAM | Tape saturation and degradation |
-| TapeDelay | Tape delay with flutter, tone shaping, and saturation |
+| TapeDelay | Tape delay with flutter and tone shaping |
 
 **Utilities:**
 | Module | Description |

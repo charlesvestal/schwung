@@ -105,7 +105,7 @@
     {
       "id": "tapedelay",
       "name": "TapeDelay",
-      "description": "Tape delay with flutter, tone shaping, and saturation",
+      "description": "Tape delay with flutter and tone shaping",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-space-delay",
