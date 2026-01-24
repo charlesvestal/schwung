@@ -3,6 +3,7 @@
  *
  * Generates chord notes from single note input.
  * Supports: major, minor, power, octave chords.
+ * Optional strum delay between successive chord notes.
  */
 
 #include <stdlib.h>
@@ -10,6 +11,9 @@
 #include <stdio.h>
 #include "host/midi_fx_api_v1.h"
 #include "host/plugin_api_v1.h"
+
+#define SAMPLE_RATE 44100
+#define MAX_PENDING 16
 
 typedef enum {
     CHORD_NONE = 0,
@@ -19,8 +23,24 @@ typedef enum {
     CHORD_OCTAVE
 } chord_type_t;
 
+typedef enum {
+    STRUM_UP = 0,
+    STRUM_DOWN
+} strum_dir_t;
+
+typedef struct {
+    uint8_t status;         /* Note on/off status byte */
+    uint8_t note;
+    uint8_t velocity;
+    int delay_samples;      /* Samples remaining until trigger */
+} pending_note_t;
+
 typedef struct {
     chord_type_t type;
+    int strum_ms;           /* 0-100 ms delay between notes */
+    strum_dir_t strum_dir;  /* up or down */
+    pending_note_t pending[MAX_PENDING];
+    int pending_count;
 } chord_instance_t;
 
 static const host_api_v1_t *g_host = NULL;
@@ -33,11 +53,25 @@ static void* chord_create_instance(const char *module_dir, const char *config_js
     if (!inst) return NULL;
 
     inst->type = CHORD_MAJOR;
+    inst->strum_ms = 0;
+    inst->strum_dir = STRUM_UP;
+    inst->pending_count = 0;
     return inst;
 }
 
 static void chord_destroy_instance(void *instance) {
     if (instance) free(instance);
+}
+
+/* Queue a note for delayed emission */
+static void queue_note(chord_instance_t *inst, uint8_t status, uint8_t note, uint8_t velocity, int delay_samples) {
+    if (inst->pending_count >= MAX_PENDING) return;
+
+    pending_note_t *p = &inst->pending[inst->pending_count++];
+    p->status = status;
+    p->note = note;
+    p->velocity = velocity;
+    p->delay_samples = delay_samples;
 }
 
 static int chord_process_midi(void *instance,
@@ -69,50 +103,71 @@ static int chord_process_midi(void *instance,
     }
 
     uint8_t note = in_msg[1];
+    uint8_t velocity = in_msg[2];
     int count = 0;
 
-    /* Root note */
-    out_msgs[count][0] = in_msg[0];
-    out_msgs[count][1] = note;
-    out_msgs[count][2] = in_msg[2];
-    out_lens[count] = 3;
-    count++;
-
-    /* Add chord intervals */
-    int intervals[3] = {0, 0, 0};
-    int num_intervals = 0;
+    /* Build chord intervals */
+    int intervals[4] = {0, 0, 0, 0};  /* Root + up to 3 intervals */
+    int num_notes = 1;  /* Always have root */
 
     switch (inst->type) {
         case CHORD_MAJOR:
-            intervals[0] = 4;   /* Major 3rd */
-            intervals[1] = 7;   /* Perfect 5th */
-            num_intervals = 2;
+            intervals[1] = 4;   /* Major 3rd */
+            intervals[2] = 7;   /* Perfect 5th */
+            num_notes = 3;
             break;
         case CHORD_MINOR:
-            intervals[0] = 3;   /* Minor 3rd */
-            intervals[1] = 7;   /* Perfect 5th */
-            num_intervals = 2;
+            intervals[1] = 3;   /* Minor 3rd */
+            intervals[2] = 7;   /* Perfect 5th */
+            num_notes = 3;
             break;
         case CHORD_POWER:
-            intervals[0] = 7;   /* Perfect 5th */
-            num_intervals = 1;
+            intervals[1] = 7;   /* Perfect 5th */
+            num_notes = 2;
             break;
         case CHORD_OCTAVE:
-            intervals[0] = 12;  /* Octave */
-            num_intervals = 1;
+            intervals[1] = 12;  /* Octave */
+            num_notes = 2;
             break;
         default:
             break;
     }
 
-    for (int i = 0; i < num_intervals && count < max_out; i++) {
-        int transposed = (int)note + intervals[i];
-        if (transposed <= 127) {
-            out_msgs[count][0] = in_msg[0];
+    /* Calculate strum delay in samples */
+    int strum_samples = (inst->strum_ms * SAMPLE_RATE) / 1000;
+
+    /* Determine note order based on strum direction */
+    int order[4];
+    if (inst->strum_dir == STRUM_DOWN) {
+        /* Reverse order: high to low */
+        for (int i = 0; i < num_notes; i++) {
+            order[i] = num_notes - 1 - i;
+        }
+    } else {
+        /* Normal order: low to high */
+        for (int i = 0; i < num_notes; i++) {
+            order[i] = i;
+        }
+    }
+
+    /* Process each note in the chord */
+    for (int i = 0; i < num_notes && count < max_out; i++) {
+        int idx = order[i];
+        int transposed = (int)note + intervals[idx];
+        if (transposed > 127) continue;
+
+        int delay = i * strum_samples;
+
+        if (delay == 0 || strum_samples == 0) {
+            /* Emit immediately */
+            out_msgs[count][0] = in_msg[0];  /* Preserve channel */
             out_msgs[count][1] = (uint8_t)transposed;
-            out_msgs[count][2] = in_msg[2];
+            out_msgs[count][2] = velocity;
             out_lens[count] = 3;
             count++;
+        } else {
+            /* Queue for later emission */
+            queue_note(inst, in_msg[0], (uint8_t)transposed, velocity, delay);
         }
     }
 
@@ -123,14 +178,38 @@ static int chord_tick(void *instance,
                       int frames, int sample_rate,
                       uint8_t out_msgs[][3], int out_lens[],
                       int max_out) {
-    /* Chord FX doesn't generate time-based events */
-    (void)instance;
-    (void)frames;
+    chord_instance_t *inst = (chord_instance_t *)instance;
+    if (!inst || inst->pending_count == 0) return 0;
+
     (void)sample_rate;
-    (void)out_msgs;
-    (void)out_lens;
-    (void)max_out;
-    return 0;
+    int count = 0;
+
+    /* Process pending notes */
+    int i = 0;
+    while (i < inst->pending_count) {
+        pending_note_t *p = &inst->pending[i];
+        p->delay_samples -= frames;
+
+        if (p->delay_samples <= 0 && count < max_out) {
+            /* Emit this note */
+            out_msgs[count][0] = p->status;
+            out_msgs[count][1] = p->note;
+            out_msgs[count][2] = p->velocity;
+            out_lens[count] = 3;
+            count++;
+
+            /* Remove from queue by shifting remaining */
+            for (int j = i; j < inst->pending_count - 1; j++) {
+                inst->pending[j] = inst->pending[j + 1];
+            }
+            inst->pending_count--;
+            /* Don't increment i - we shifted the next item into current position */
+        } else {
+            i++;
+        }
+    }
+
+    return count;
 }
 
 static void chord_set_param(void *instance, const char *key, const char *val) {
@@ -143,6 +222,16 @@ static void chord_set_param(void *instance, const char *key, const char *val) {
         else if (strcmp(val, "minor") == 0) inst->type = CHORD_MINOR;
         else if (strcmp(val, "power") == 0) inst->type = CHORD_POWER;
         else if (strcmp(val, "octave") == 0) inst->type = CHORD_OCTAVE;
+    }
+    else if (strcmp(key, "strum") == 0) {
+        int ms = atoi(val);
+        if (ms < 0) ms = 0;
+        if (ms > 100) ms = 100;
+        inst->strum_ms = ms;
+    }
+    else if (strcmp(key, "strum_dir") == 0) {
+        if (strcmp(val, "up") == 0) inst->strum_dir = STRUM_UP;
+        else if (strcmp(val, "down") == 0) inst->strum_dir = STRUM_DOWN;
     }
 }
 
@@ -159,11 +248,13 @@ static int chord_get_param(void *instance, const char *key, char *buf, int buf_l
             case CHORD_OCTAVE: val = "octave"; break;
             default: break;
         }
-        int len = strlen(val);
-        if (len >= buf_len) len = buf_len - 1;
-        memcpy(buf, val, len);
-        buf[len] = '\0';
-        return len;
+        return snprintf(buf, buf_len, "%s", val);
+    }
+    else if (strcmp(key, "strum") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->strum_ms);
+    }
+    else if (strcmp(key, "strum_dir") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->strum_dir == STRUM_DOWN ? "down" : "up");
     }
 
     return -1;
