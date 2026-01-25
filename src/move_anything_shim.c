@@ -1773,6 +1773,40 @@ static void shadow_log(const char *msg) {
     }
 }
 
+static FILE *shadow_midi_out_log = NULL;
+
+static int shadow_midi_out_log_enabled(void)
+{
+    static int enabled = 0;
+    static int announced = 0;
+    enabled = (access("/data/UserData/move-anything/shadow_midi_out_log_on", F_OK) == 0);
+    if (!enabled && shadow_midi_out_log) {
+        fclose(shadow_midi_out_log);
+        shadow_midi_out_log = NULL;
+    }
+    if (enabled && !announced) {
+        shadow_log("shadow_midi_out_log enabled");
+        announced = 1;
+    }
+    return enabled;
+}
+
+static void shadow_midi_out_logf(const char *fmt, ...)
+{
+    if (!shadow_midi_out_log_enabled()) return;
+    if (!shadow_midi_out_log) {
+        shadow_midi_out_log = fopen("/data/UserData/move-anything/shadow_midi_out.log", "a");
+        if (!shadow_midi_out_log) return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(shadow_midi_out_log, fmt, args);
+    va_end(args);
+    fputc('\n', shadow_midi_out_log);
+    fflush(shadow_midi_out_log);
+}
+
 static void shadow_chain_defaults(void) {
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_chain_slots[i].instance = NULL;
@@ -2151,8 +2185,24 @@ static int shadow_inprocess_load_chain(void) {
 
 static int shadow_chain_slot_for_channel(int ch) {
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
-        if (shadow_chain_slots[i].active && shadow_chain_slots[i].channel == ch) {
+        if (shadow_chain_slots[i].channel != ch) continue;
+        if (shadow_chain_slots[i].active) {
             return i;
+        }
+        if (shadow_plugin_v2 && shadow_plugin_v2->get_param &&
+            shadow_chain_slots[i].instance) {
+            char buf[64];
+            int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                                                  "synth_module", buf, sizeof(buf));
+            if (len > 0) {
+                if (len < (int)sizeof(buf)) buf[len] = '\0';
+                else buf[sizeof(buf) - 1] = '\0';
+                if (buf[0] != '\0') {
+                    shadow_chain_slots[i].active = 1;
+                    shadow_ui_state_update_slot(i);
+                    return i;
+                }
+            }
         }
     }
     return -1;
@@ -2684,6 +2734,32 @@ static void shadow_inprocess_handle_param_request(void) {
                     shadow_chain_slots[slot].active = 0;
                 }
             }
+            /* Activate slot when a patch is loaded via set_param */
+            if (strcmp(shadow_param->key, "load_patch") == 0 ||
+                strcmp(shadow_param->key, "patch") == 0) {
+                int idx = atoi(shadow_param->value);
+                if (idx < 0 || idx == SHADOW_PATCH_INDEX_NONE) {
+                    shadow_chain_slots[slot].active = 0;
+                    shadow_chain_slots[slot].patch_index = -1;
+                    capture_clear(&shadow_chain_slots[slot].capture);
+                    shadow_chain_slots[slot].patch_name[0] = '\0';
+                } else {
+                    shadow_chain_slots[slot].active = 1;
+                    shadow_chain_slots[slot].patch_index = idx;
+                    shadow_slot_load_capture(slot, idx);
+                }
+                shadow_ui_state_update_slot(slot);
+            }
+
+            if (shadow_midi_out_log_enabled()) {
+                if (strcmp(shadow_param->key, "synth:module") == 0 ||
+                    strcmp(shadow_param->key, "fx1:module") == 0 ||
+                    strcmp(shadow_param->key, "fx2:module") == 0 ||
+                    strcmp(shadow_param->key, "midi_fx1:module") == 0) {
+                    shadow_midi_out_logf("param_set: slot=%d key=%s val=%s active=%d",
+                        slot, shadow_param->key, shadow_param->value, shadow_chain_slots[slot].active);
+                }
+            }
         } else {
             shadow_param->error = 3;
             shadow_param->result_len = -1;
@@ -2733,6 +2809,8 @@ static void shadow_inprocess_process_midi(void) {
      * Internal controls (knob touches, step buttons) do NOT appear in MIDI_OUT.
      * We must clear packets after reading to avoid re-processing stale data. */
     uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
+    int log_on = shadow_midi_out_log_enabled();
+    static int midi_log_count = 0;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         const uint8_t *pkt = &out_src[i];
         if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
@@ -2758,6 +2836,43 @@ static void shadow_inprocess_process_midi(void) {
                 continue;
             }
             int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
+            if (log_on && type == 0x90 && pkt[3] > 0) {
+                if (midi_log_count < 100) {
+                    char dbg[256];
+                    if (slot < 0) {
+                        snprintf(dbg, sizeof(dbg),
+                            "midi_out: note=%u vel=%u ch=%u slot=-1 slots=[0:%d/%d 1:%d/%d 2:%d/%d 3:%d/%d]",
+                            note, pkt[3], status_usb & 0x0F,
+                            shadow_chain_slots[0].active, shadow_chain_slots[0].channel,
+                            shadow_chain_slots[1].active, shadow_chain_slots[1].channel,
+                            shadow_chain_slots[2].active, shadow_chain_slots[2].channel,
+                            shadow_chain_slots[3].active, shadow_chain_slots[3].channel);
+                    } else {
+                        snprintf(dbg, sizeof(dbg),
+                            "midi_out: note=%u vel=%u ch=%u slot=%d slot_active=%d slot_ch=%d",
+                            note, pkt[3], status_usb & 0x0F, slot,
+                            shadow_chain_slots[slot].active,
+                            shadow_chain_slots[slot].channel);
+                    }
+                    shadow_log(dbg);
+                    midi_log_count++;
+                }
+                if (slot < 0) {
+                    shadow_midi_out_logf(
+                        "midi_out: note=%u vel=%u ch=%u slot=-1 slots=[0:%d/%d 1:%d/%d 2:%d/%d 3:%d/%d]",
+                        note, pkt[3], status_usb & 0x0F,
+                        shadow_chain_slots[0].active, shadow_chain_slots[0].channel,
+                        shadow_chain_slots[1].active, shadow_chain_slots[1].channel,
+                        shadow_chain_slots[2].active, shadow_chain_slots[2].channel,
+                        shadow_chain_slots[3].active, shadow_chain_slots[3].channel);
+                } else {
+                    shadow_midi_out_logf(
+                        "midi_out: note=%u vel=%u ch=%u slot=%d slot_active=%d slot_ch=%d",
+                        note, pkt[3], status_usb & 0x0F, slot,
+                        shadow_chain_slots[slot].active,
+                        shadow_chain_slots[slot].channel);
+                }
+            }
             if (slot < 0) continue;
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
                 uint8_t msg[3] = { shadow_chain_remap_channel(slot, pkt[1]), pkt[2], pkt[3] };
@@ -3233,8 +3348,7 @@ static void shadow_forward_midi(void)
     if (!shadow_midi_shm || !global_mmap_addr) return;
     if (!shadow_control) return;
 
-    /* Cache flag file checks - only re-check every 100000 calls (~5 minutes) to minimize syscall overhead.
-     * These are debug flags that are rarely changed while running. */
+    /* Cache flag file checks - re-check frequently so debug flags take effect quickly. */
     static int cache_counter = 0;
     static int cached_ch3_only = 0;
     static int cached_block_ch1 = 0;
@@ -3246,8 +3360,8 @@ static void shadow_forward_midi(void)
     static int cached_drop_ui = 0;
     static int cache_initialized = 0;
 
-    /* Only check on first call and then every 100000 calls */
-    if (!cache_initialized || (cache_counter++ % 100000 == 0)) {
+    /* Only check on first call and then every 200 calls */
+    if (!cache_initialized || (cache_counter++ % 200 == 0)) {
         cache_initialized = 1;
         cached_ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
         cached_block_ch1 = (access("/data/UserData/move-anything/shadow_midi_block_ch1", F_OK) == 0);

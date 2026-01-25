@@ -233,6 +233,7 @@ let knobEditorAssignments = [];  // Array of 8 {target, param} for current slot
 let knobParamPickerFolder = null; // null = main (targets), string = target name for params
 let knobParamPickerIndex = 0;    // Selected index in param picker
 let knobParamPickerParams = [];  // Available params in current folder
+let lastSlotModuleSignatures = [];  // Track per-slot module changes for knob cache refresh
 
 /* Master FX state */
 let selectedMasterFx = 0;    // Index into MASTER_FX_OPTIONS
@@ -638,8 +639,10 @@ function dismissAssetWarning() {
 /* Initialize chain configs for all slots */
 function initChainConfigs() {
     chainConfigs = [];
+    lastSlotModuleSignatures = [];
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         chainConfigs.push(createEmptyChainConfig());
+        lastSlotModuleSignatures.push("");
     }
 }
 
@@ -664,6 +667,29 @@ function loadChainConfigFromSlot(slotIndex) {
 
     chainConfigs[slotIndex] = cfg;
     return cfg;
+}
+
+/* Build a signature of module IDs for a slot to detect changes */
+function getSlotModuleSignature(slotIndex) {
+    const synthModule = getSlotParam(slotIndex, "synth_module") || "";
+    const midiFxModule = getSlotParam(slotIndex, "midi_fx1_module") || "";
+    const fx1Module = getSlotParam(slotIndex, "fx1_module") || "";
+    const fx2Module = getSlotParam(slotIndex, "fx2_module") || "";
+    return `${synthModule}|${midiFxModule}|${fx1Module}|${fx2Module}`;
+}
+
+/* Refresh module signature for a slot and invalidate knob cache on changes */
+function refreshSlotModuleSignature(slotIndex) {
+    if (slotIndex < 0 || slotIndex >= SHADOW_UI_SLOTS) return false;
+    const signature = getSlotModuleSignature(slotIndex);
+    if (signature !== lastSlotModuleSignatures[slotIndex]) {
+        lastSlotModuleSignatures[slotIndex] = signature;
+        loadChainConfigFromSlot(slotIndex);
+        invalidateKnobContextCache();
+        needsRedraw = true;
+        return true;
+    }
+    return false;
 }
 
 /* Cache a module's abbreviation from its module.json */
@@ -991,11 +1017,23 @@ function loadSlotsFromConfig() {
     if (!data || !Array.isArray(data.patches)) {
         return DEFAULT_SLOTS.map((slot) => ({ ...slot }));
     }
+    let needsMigration = false;
     /* Load saved slots, preserving both channel and name */
-    return data.patches.map((entry, idx) => ({
-        channel: (typeof entry.channel === "number") ? entry.channel : (DEFAULT_SLOTS[idx]?.channel ?? 5 + idx),
-        name: (typeof entry.name === "string") ? entry.name : (DEFAULT_SLOTS[idx]?.name ?? "Unknown")
-    }));
+    const slotsFromConfig = data.patches.map((entry, idx) => {
+        let channel = (typeof entry.channel === "number") ? entry.channel : (DEFAULT_SLOTS[idx]?.channel ?? 5 + idx);
+        if (channel >= 1 && channel <= 4) {
+            channel = channel + 4;
+            needsMigration = true;
+        }
+        return {
+            channel: channel,
+            name: (typeof entry.name === "string") ? entry.name : (DEFAULT_SLOTS[idx]?.name ?? "Unknown")
+        };
+    });
+    if (needsMigration) {
+        saveSlotsToConfig(slotsFromConfig);
+    }
+    return slotsFromConfig;
 }
 
 function loadMasterFxFromConfig() {
@@ -2649,15 +2687,17 @@ function buildKnobContextForKnob(knobIndex) {
 
     /* Chain editor with component selected */
     if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < CHAIN_COMPONENTS.length) {
-        const comp = CHAIN_COMPONENTS[selectedChainComponent];
-        if (comp && comp.key !== "settings") {
-            const prefix = getComponentParamPrefix(comp.key);
-            /* MIDI FX uses different param key format than synth/fx */
-            const isMidiFx = comp.key === "midiFx";
-            const nameParamKey = isMidiFx ? "midi_fx1_module" : `${prefix}:name`;
-            const pluginName = getSlotParam(selectedSlot, nameParamKey) || "";
-            const hasModule = pluginName && pluginName.length > 0;
-            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, prefix=${prefix}, nameParamKey=${nameParamKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
+            const comp = CHAIN_COMPONENTS[selectedChainComponent];
+            if (comp && comp.key !== "settings") {
+                const prefix = getComponentParamPrefix(comp.key);
+                /* MIDI FX uses different param key format than synth/fx */
+                const isMidiFx = comp.key === "midiFx";
+                const moduleIdKey = isMidiFx ? "midi_fx1_module" : `${prefix}_module`;
+                const moduleId = getSlotParam(selectedSlot, moduleIdKey) || "";
+                const nameParamKey = isMidiFx ? null : `${prefix}:name`;
+                const pluginName = (nameParamKey ? getSlotParam(selectedSlot, nameParamKey) : null) || moduleId || "";
+                const hasModule = moduleId && moduleId.length > 0;
+                debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, prefix=${prefix}, nameParamKey=${nameParamKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
 
             /* No module loaded in this slot */
             if (!hasModule) {
@@ -2705,6 +2745,26 @@ function buildKnobContextForKnob(knobIndex) {
                 debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex}, levelDef.knobs=${levelDef?.knobs ? JSON.stringify(levelDef.knobs) : 'undefined'}`);
             } else {
                 debugLog(`buildKnobContext: no hierarchy or no levels`);
+            }
+
+            /* Fallback to chain_params if ui_hierarchy is missing */
+            if (!hierarchy || !hierarchy.levels) {
+                const chainParams = getComponentChainParams(selectedSlot, comp.key);
+                if (chainParams && chainParams.length > 0 && knobIndex < chainParams.length) {
+                    const param = chainParams[knobIndex];
+                    const key = param.key;
+                    const fullKey = `${prefix}:${key}`;
+                    const displayName = param.name || key.replace(/_/g, " ");
+                    return {
+                        slot: selectedSlot,
+                        key,
+                        fullKey,
+                        meta: param,
+                        pluginName,
+                        displayName,
+                        title: `${pluginName} ${displayName}`
+                    };
+                }
             }
             /* Component selected but no knob mappings - return generic context */
             return {
@@ -5008,6 +5068,17 @@ globalThis.tick = function() {
         refreshSlots();
     }
 
+    let currentTargetSlot = 0;
+    if (typeof shadow_get_selected_slot === "function") {
+        currentTargetSlot = shadow_get_selected_slot();
+    }
+    if (refreshCounter % 30 === 0) {
+        refreshSlotModuleSignature(selectedSlot);
+        if (currentTargetSlot !== selectedSlot) {
+            refreshSlotModuleSignature(currentTargetSlot);
+        }
+    }
+
     /* Update text entry state */
     if (isTextEntryActive()) {
         if (tickTextEntry()) {
@@ -5027,10 +5098,6 @@ globalThis.tick = function() {
     processPendingHierKnob();
 
     /* Refresh knob mappings if track-selected slot changed */
-    let currentTargetSlot = 0;
-    if (typeof shadow_get_selected_slot === "function") {
-        currentTargetSlot = shadow_get_selected_slot();
-    }
     if (lastKnobSlot !== currentTargetSlot) {
         fetchKnobMappings(currentTargetSlot);
         invalidateKnobContextCache();  /* Clear stale contexts when target slot changes */
