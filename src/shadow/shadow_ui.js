@@ -225,6 +225,7 @@ let cachedKnobContextsView = ""; // View when cache was built
 let cachedKnobContextsSlot = -1; // Slot when cache was built
 let cachedKnobContextsComp = -1; // Component when cache was built
 let cachedKnobContextsLevel = ""; // Hierarchy level when cache was built
+let cachedKnobContextsChildIndex = -1; // Child index when cache was built
 
 /* Knob editor state - for creating/editing knob assignments */
 let knobEditorSlot = 0;          // Which slot we're editing knobs for
@@ -393,6 +394,9 @@ let hierEditorComponent = "";
 let hierEditorHierarchy = null;
 let hierEditorLevel = "root";
 let hierEditorPath = [];          // breadcrumb path
+let hierEditorChildIndex = -1;    // selected child index for child_prefix levels
+let hierEditorChildCount = 0;     // number of child entries for child_prefix levels
+let hierEditorChildLabel = "";    // label for child entries (e.g., "Tone")
 let hierEditorParams = [];        // current level's params
 let hierEditorKnobs = [];         // current level's knob-mapped params
 let hierEditorSelectedIdx = 0;
@@ -2404,6 +2408,9 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     hierEditorHierarchy = hierarchy;
     hierEditorLevel = hierarchy.modes ? null : "root";  // Start at mode select if modes exist
     hierEditorPath = [];
+    hierEditorChildIndex = -1;
+    hierEditorChildCount = 0;
+    hierEditorChildLabel = "";
     hierEditorSelectedIdx = 0;
     hierEditorEditMode = false;
 
@@ -2449,6 +2456,9 @@ function enterMasterFxHierarchyEditor(fxSlot) {
     hierEditorHierarchy = hierarchy;
     hierEditorLevel = hierarchy.modes ? null : "root";
     hierEditorPath = [];
+    hierEditorChildIndex = -1;
+    hierEditorChildCount = 0;
+    hierEditorChildLabel = "";
     hierEditorSelectedIdx = 0;
     hierEditorEditMode = false;
     hierEditorIsMasterFx = true;
@@ -2484,6 +2494,23 @@ function loadHierarchyLevel() {
 
     /* Determine if this is the top level (swap module only at top) */
     const isTopLevel = hierEditorLevel === "root" && !hierEditorHierarchy.modes;
+
+    /* Child selector for levels that require child_prefix */
+    if (levelDef.child_prefix && hierEditorChildCount > 0 && hierEditorChildIndex < 0) {
+        hierEditorIsPresetLevel = false;
+        hierEditorPresetEditMode = false;
+        hierEditorKnobs = [];
+        hierEditorParams = [];
+        const label = hierEditorChildLabel || "Child";
+        for (let i = 0; i < hierEditorChildCount; i++) {
+            hierEditorParams.push({
+                isChild: true,
+                childIndex: i,
+                label: `${label} ${i + 1}`
+            });
+        }
+        return;
+    }
 
     /* Check if this is a preset browser level */
     if (levelDef.list_param && levelDef.count_param) {
@@ -2566,6 +2593,9 @@ function exitHierarchyEditor() {
     hierEditorComponent = "";
     hierEditorHierarchy = null;
     hierEditorChainParams = [];
+    hierEditorChildIndex = -1;
+    hierEditorChildCount = 0;
+    hierEditorChildLabel = "";
     hierEditorIsPresetLevel = false;
     hierEditorPresetEditMode = false;
     hierEditorIsMasterFx = false;
@@ -2607,17 +2637,31 @@ function formatParamForOverlay(val, meta) {
     return val.toFixed(2);
 }
 
+function getHierarchyLevelDef() {
+    if (!hierEditorHierarchy || !hierEditorLevel) return null;
+    return hierEditorHierarchy.levels ? hierEditorHierarchy.levels[hierEditorLevel] : null;
+}
+
+function buildHierarchyParamKey(key) {
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    const levelDef = getHierarchyLevelDef();
+    if (levelDef && levelDef.child_prefix && hierEditorChildIndex >= 0) {
+        return `${prefix}:${levelDef.child_prefix}${hierEditorChildIndex}_${key}`;
+    }
+    return `${prefix}:${key}`;
+}
+
 /* Adjust selected param value via jog */
 function adjustHierSelectedParam(delta) {
     if (hierEditorSelectedIdx >= hierEditorParams.length) return;
 
     const param = hierEditorParams[hierEditorSelectedIdx];
+    if (param && typeof param === "object" && param.isChild) return;
     const key = typeof param === "string" ? param : param.key || param;
 
     /* Skip special actions */
     if (key === SWAP_MODULE_ACTION) return;
-    const prefix = getComponentParamPrefix(hierEditorComponent);
-    const fullKey = `${prefix}:${key}`;
+    const fullKey = buildHierarchyParamKey(key);
 
     const currentVal = getSlotParam(hierEditorSlot, fullKey);
     if (currentVal === null) return;
@@ -2660,6 +2704,7 @@ function invalidateKnobContextCache() {
     cachedKnobContextsSlot = -1;
     cachedKnobContextsComp = -1;
     cachedKnobContextsLevel = "";
+    cachedKnobContextsChildIndex = -1;
 }
 
 /*
@@ -2669,9 +2714,9 @@ function buildKnobContextForKnob(knobIndex) {
     /* Hierarchy editor context */
     if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length) {
         const key = hierEditorKnobs[knobIndex];
-        const prefix = getComponentParamPrefix(hierEditorComponent);
-        const fullKey = `${prefix}:${key}`;
+        const fullKey = buildHierarchyParamKey(key);
         const meta = getParamMetadata(key);
+        const prefix = getComponentParamPrefix(hierEditorComponent);
         const pluginName = getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
         const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
         return {
@@ -2885,6 +2930,7 @@ function rebuildKnobContextCache() {
     cachedKnobContextsSlot = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorSlot : selectedSlot;
     cachedKnobContextsComp = (view === VIEWS.HIERARCHY_EDITOR) ? -1 : selectedChainComponent;
     cachedKnobContextsLevel = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorLevel : "";
+    cachedKnobContextsChildIndex = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorChildIndex : -1;
 }
 
 /*
@@ -2899,6 +2945,7 @@ function getKnobContext(knobIndex) {
     const currentSlot = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorSlot : selectedSlot;
     const currentComp = (view === VIEWS.HIERARCHY_EDITOR) ? -1 : selectedChainComponent;
     const currentLevel = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorLevel : "";
+    const currentChildIndex = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorChildIndex : -1;
     const currentMasterFxComp = (view === VIEWS.MASTER_FX) ? selectedMasterFxComponent : -1;
 
     const cacheValid = (
@@ -2907,6 +2954,7 @@ function getKnobContext(knobIndex) {
         cachedKnobContextsSlot === currentSlot &&
         cachedKnobContextsComp === currentComp &&
         cachedKnobContextsLevel === currentLevel &&
+        cachedKnobContextsChildIndex === currentChildIndex &&
         cachedKnobContextsMasterFxComp === currentMasterFxComp
     );
 
@@ -3160,8 +3208,16 @@ function drawHierarchyEditor() {
             print(4, 24, "No parameters", 1);
         } else {
             /* Build items with labels and values */
-            const paramPrefix = getComponentParamPrefix(hierEditorComponent);
             const items = hierEditorParams.map(param => {
+                if (param && typeof param === "object" && param.isChild) {
+                    return {
+                        label: param.label,
+                        value: "",
+                        key: `child_${param.childIndex}`,
+                        isChild: true,
+                        childIndex: param.childIndex
+                    };
+                }
                 const key = typeof param === "string" ? param : param.key || param;
 
                 /* Handle special swap module action */
@@ -3171,7 +3227,7 @@ function drawHierarchyEditor() {
 
                 const meta = getParamMetadata(key);
                 const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-                const val = getSlotParam(hierEditorSlot, `${paramPrefix}:${key}`);
+                const val = getSlotParam(hierEditorSlot, buildHierarchyParamKey(key));
                 const displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
                 return { label, value: displayVal, key };
             });
@@ -3795,9 +3851,13 @@ function handleSelect() {
                 if (levelDef && levelDef.children) {
                     /* Push current level onto path and enter children level */
                     hierEditorPath.push(hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`);
+                    hierEditorChildIndex = -1;
+                    hierEditorChildCount = levelDef.child_count || 0;
+                    hierEditorChildLabel = levelDef.child_label || "Child";
                     hierEditorLevel = levelDef.children;
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
+                    invalidateKnobContextCache();
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -3814,6 +3874,14 @@ function handleSelect() {
             } else if (hierEditorPresetEditMode || !hierEditorIsPresetLevel) {
                 /* On params level - check for special actions */
                 const selectedParam = hierEditorParams[hierEditorSelectedIdx];
+                if (selectedParam && typeof selectedParam === "object" && selectedParam.isChild) {
+                    hierEditorChildIndex = selectedParam.childIndex;
+                    hierEditorPath.push(selectedParam.label);
+                    hierEditorSelectedIdx = 0;
+                    loadHierarchyLevel();
+                    invalidateKnobContextCache();
+                    break;
+                }
                 if (selectedParam === SWAP_MODULE_ACTION) {
                     /* Swap module - handle Master FX vs regular chain slots */
                     if (hierEditorIsMasterFx) {
@@ -3996,6 +4064,19 @@ function handleBack() {
                 /* Exit preset edit mode - return to preset browser */
                 hierEditorPresetEditMode = false;
                 needsRedraw = true;
+            } else if (hierEditorChildIndex >= 0) {
+                const levelDef = getHierarchyLevelDef();
+                if (levelDef && levelDef.child_prefix) {
+                    /* Return to child selector list */
+                    hierEditorChildIndex = -1;
+                    if (hierEditorPath.length > 0) {
+                        hierEditorPath.pop();
+                    }
+                    hierEditorSelectedIdx = 0;
+                    loadHierarchyLevel();
+                    invalidateKnobContextCache();
+                    needsRedraw = true;
+                }
             } else if (hierEditorPath.length > 0) {
                 /* Go back to parent level */
                 hierEditorPath.pop();
@@ -4007,6 +4088,12 @@ function handleBack() {
                     loadHierarchyLevel();
                     needsRedraw = true;
                 } else {
+                    const levelDef = getHierarchyLevelDef();
+                    if (levelDef && levelDef.child_prefix) {
+                        hierEditorChildIndex = -1;
+                        hierEditorChildCount = 0;
+                        hierEditorChildLabel = "";
+                    }
                     /* Find the parent level that has children pointing to current level */
                     const levels = hierEditorHierarchy.levels;
                     let parentLevel = "root";
