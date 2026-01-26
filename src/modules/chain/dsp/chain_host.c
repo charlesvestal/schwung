@@ -5207,21 +5207,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
 
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
-            int result = inst->synth_plugin_v2->get_param(inst->synth_instance, subkey, buf, buf_len);
-            /* Debug: log ui_hierarchy result */
-            if (strcmp(subkey, "ui_hierarchy") == 0) {
-                char dbg[512];
-                snprintf(dbg, sizeof(dbg), "ui_hierarchy result: %d, buf_start='%.100s'",
-                         result, result > 0 ? buf : "(empty)");
-                v2_chain_log(inst, dbg);
-            }
-            return result;
+            return inst->synth_plugin_v2->get_param(inst->synth_instance, subkey, buf, buf_len);
         } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
             return inst->synth_plugin->get_param(subkey, buf, buf_len);
-        }
-        /* Debug: log if we return -1 for ui_hierarchy */
-        if (strcmp(subkey, "ui_hierarchy") == 0) {
-            v2_chain_log(inst, "ui_hierarchy: no synth_plugin_v2 or get_param - returning -1");
         }
         return -1;
     }

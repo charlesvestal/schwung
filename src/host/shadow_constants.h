@@ -34,7 +34,7 @@
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
-#define SHADOW_PARAM_BUFFER_SIZE  2176  /* Increased for larger ui_hierarchy JSON */
+#define SHADOW_PARAM_BUFFER_SIZE  4224  /* Increased for larger chain_params JSON */
 
 /* ============================================================================
  * Slot Configuration
@@ -44,7 +44,7 @@
 #define SHADOW_UI_SLOTS 4
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
-#define SHADOW_PARAM_VALUE_LEN 2048  /* Mini-JV needs ~1600 bytes for ui_hierarchy */
+#define SHADOW_PARAM_VALUE_LEN 4096  /* Mini-JV needs ~2700 bytes for chain_params */
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)
