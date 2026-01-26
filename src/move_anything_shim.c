@@ -1812,7 +1812,7 @@ static void shadow_chain_defaults(void) {
         shadow_chain_slots[i].instance = NULL;
         shadow_chain_slots[i].active = 0;
         shadow_chain_slots[i].patch_index = -1;
-        shadow_chain_slots[i].channel = shadow_chain_parse_channel(5 + i);
+        shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
         shadow_chain_slots[i].volume = 1.0f;
         shadow_chain_slots[i].forward_channel = -1;
         capture_clear(&shadow_chain_slots[i].capture);
@@ -2866,6 +2866,7 @@ static void shadow_inprocess_process_midi(void) {
         if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
 
         uint8_t cin = pkt[0] & 0x0F;
+        uint8_t cable = (pkt[0] >> 4) & 0x0F;
         uint8_t status_usb = pkt[1];
         uint8_t status_raw = pkt[0];
 
@@ -2878,6 +2879,11 @@ static void shadow_inprocess_process_midi(void) {
             uint8_t expected_cin = (type >> 4);  /* Note-off=0x8, Note-on=0x9, etc. */
             if (cin != expected_cin) {
                 continue;  /* CIN doesn't match status - skip invalid packet */
+            }
+
+            /* Filter cable 0 (Move UI events) - track output is on cable 2 */
+            if (cable == 0) {
+                continue;
             }
 
             /* Filter internal control notes: knob touches (0-9) */
