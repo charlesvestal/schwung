@@ -15,6 +15,41 @@
 #define SAMPLE_RATE 44100
 #define MAX_PENDING 16
 
+/* JSON helpers for state parsing */
+static int json_get_string(const char *json, const char *key, char *out, int out_len) {
+    if (!json || !key || !out || out_len < 1) return 0;
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return 0;
+    const char *colon = strchr(pos, ':');
+    if (!colon) return 0;
+    while (*colon && (*colon == ':' || *colon == ' ' || *colon == '\t')) colon++;
+    if (*colon != '"') return 0;
+    colon++;
+    const char *end = strchr(colon, '"');
+    if (!end) return 0;
+    int len = (int)(end - colon);
+    if (len >= out_len) len = out_len - 1;
+    strncpy(out, colon, len);
+    out[len] = '\0';
+    return len;
+}
+
+static int json_get_int(const char *json, const char *key, int *out) {
+    if (!json || !key || !out) return 0;
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return 0;
+    const char *colon = strchr(pos, ':');
+    if (!colon) return 0;
+    colon++;
+    while (*colon && (*colon == ' ' || *colon == '\t')) colon++;
+    *out = atoi(colon);
+    return 1;
+}
+
 typedef enum {
     CHORD_NONE = 0,
     CHORD_MAJOR,
@@ -233,6 +268,29 @@ static void chord_set_param(void *instance, const char *key, const char *val) {
         if (strcmp(val, "up") == 0) inst->strum_dir = STRUM_UP;
         else if (strcmp(val, "down") == 0) inst->strum_dir = STRUM_DOWN;
     }
+    else if (strcmp(key, "state") == 0) {
+        /* Restore from JSON state */
+        char type_str[16];
+        int strum_val;
+        char strum_dir_str[8];
+
+        if (json_get_string(val, "type", type_str, sizeof(type_str))) {
+            if (strcmp(type_str, "none") == 0) inst->type = CHORD_NONE;
+            else if (strcmp(type_str, "major") == 0) inst->type = CHORD_MAJOR;
+            else if (strcmp(type_str, "minor") == 0) inst->type = CHORD_MINOR;
+            else if (strcmp(type_str, "power") == 0) inst->type = CHORD_POWER;
+            else if (strcmp(type_str, "octave") == 0) inst->type = CHORD_OCTAVE;
+        }
+        if (json_get_int(val, "strum", &strum_val)) {
+            if (strum_val < 0) strum_val = 0;
+            if (strum_val > 100) strum_val = 100;
+            inst->strum_ms = strum_val;
+        }
+        if (json_get_string(val, "strum_dir", strum_dir_str, sizeof(strum_dir_str))) {
+            if (strcmp(strum_dir_str, "up") == 0) inst->strum_dir = STRUM_UP;
+            else if (strcmp(strum_dir_str, "down") == 0) inst->strum_dir = STRUM_DOWN;
+        }
+    }
 }
 
 static int chord_get_param(void *instance, const char *key, char *buf, int buf_len) {
@@ -255,6 +313,19 @@ static int chord_get_param(void *instance, const char *key, char *buf, int buf_l
     }
     else if (strcmp(key, "strum_dir") == 0) {
         return snprintf(buf, buf_len, "%s", inst->strum_dir == STRUM_DOWN ? "down" : "up");
+    }
+    else if (strcmp(key, "state") == 0) {
+        const char *type_str = "none";
+        switch (inst->type) {
+            case CHORD_MAJOR: type_str = "major"; break;
+            case CHORD_MINOR: type_str = "minor"; break;
+            case CHORD_POWER: type_str = "power"; break;
+            case CHORD_OCTAVE: type_str = "octave"; break;
+            default: break;
+        }
+        return snprintf(buf, buf_len, "{\"type\":\"%s\",\"strum\":%d,\"strum_dir\":\"%s\"}",
+                        type_str, inst->strum_ms,
+                        inst->strum_dir == STRUM_DOWN ? "down" : "up");
     }
 
     return -1;

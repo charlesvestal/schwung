@@ -146,18 +146,23 @@ typedef struct {
     char val[32];
 } midi_fx_param_t;
 
-/* MIDI FX configuration (module + params) */
+/* State storage size for FX plugins */
+#define MAX_FX_STATE_LEN 2048
+
+/* MIDI FX configuration (module + params + state) */
 typedef struct {
     char module[MAX_NAME_LEN];
     midi_fx_param_t params[MAX_MIDI_FX_PARAMS];
     int param_count;
+    char state[MAX_FX_STATE_LEN];  /* JSON state for MIDI FX plugin */
 } midi_fx_config_t;
 
-/* Audio FX configuration (module + params) - allows CLAP plugin_id etc */
+/* Audio FX configuration (module + params + state) */
 typedef struct {
     char module[MAX_NAME_LEN];
     midi_fx_param_t params[MAX_MIDI_FX_PARAMS];  /* Reuse param struct */
     int param_count;
+    char state[MAX_FX_STATE_LEN];  /* JSON state for audio FX plugin */
 } audio_fx_config_t;
 
 /* Synth state storage size - large synths may need 5-6KB for full state */
@@ -4214,7 +4219,18 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                 }
                 if (params_pos && params_pos < obj_end) {
                     const char *params_obj = strchr(params_pos, '{');
-                    const char *params_end = params_obj ? strchr(params_obj, '}') : NULL;
+                    /* Find matching closing brace for params (handle nested objects) */
+                    const char *params_end = NULL;
+                    if (params_obj && params_obj < obj_end) {
+                        const char *p = params_obj + 1;
+                        int pdepth = 1;
+                        while (*p && pdepth > 0 && p < obj_end) {
+                            if (*p == '{') pdepth++;
+                            else if (*p == '}') pdepth--;
+                            if (pdepth > 0) p++;
+                        }
+                        if (pdepth == 0) params_end = p;
+                    }
                     {
                         char dbg[256];
                         snprintf(dbg, sizeof(dbg), "[parse] params_obj=%p params_end=%p obj_end=%p check=%s",
@@ -4223,6 +4239,36 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                         parse_debug_log(dbg);
                     }
                     if (params_obj && params_end && params_end <= obj_end) {
+                        /* Check for nested "state" object in params */
+                        cfg->state[0] = '\0';
+                        const char *state_key = strstr(params_obj, "\"state\"");
+                        if (state_key && state_key < params_end) {
+                            const char *state_colon = strchr(state_key, ':');
+                            if (state_colon && state_colon < params_end) {
+                                /* Skip whitespace */
+                                const char *sv = state_colon + 1;
+                                while (sv < params_end && (*sv == ' ' || *sv == '\t' || *sv == '\n')) sv++;
+                                if (*sv == '{') {
+                                    /* Extract entire state object */
+                                    const char *state_start = sv;
+                                    const char *se = sv + 1;
+                                    int sdepth = 1;
+                                    while (*se && sdepth > 0 && se < params_end) {
+                                        if (*se == '{') sdepth++;
+                                        else if (*se == '}') sdepth--;
+                                        if (sdepth > 0) se++;
+                                    }
+                                    if (sdepth == 0) {
+                                        int slen = se - state_start + 1;
+                                        if (slen > 0 && slen < MAX_FX_STATE_LEN) {
+                                            strncpy(cfg->state, state_start, slen);
+                                            cfg->state[slen] = '\0';
+                                            parse_debug_log("[parse] Extracted audio_fx state object");
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         /* Parse key-value pairs in params object */
                         const char *scan = params_obj;
                         while (cfg->param_count < MAX_MIDI_FX_PARAMS && scan < params_end) {
@@ -4238,6 +4284,32 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                                 continue;
                             }
 
+                            /* Skip "state" key - already extracted separately */
+                            if (key_len == 5 && strncmp(key_start + 1, "state", 5) == 0) {
+                                /* Skip to end of state object */
+                                const char *sc = strchr(key_end, ':');
+                                if (sc && sc < params_end) {
+                                    const char *sv = sc + 1;
+                                    while (sv < params_end && (*sv == ' ' || *sv == '\t' || *sv == '\n')) sv++;
+                                    if (*sv == '{') {
+                                        /* Skip object */
+                                        int od = 1;
+                                        sv++;
+                                        while (*sv && od > 0 && sv < params_end) {
+                                            if (*sv == '{') od++;
+                                            else if (*sv == '}') od--;
+                                            sv++;
+                                        }
+                                        scan = sv;
+                                    } else {
+                                        scan = sv;
+                                    }
+                                } else {
+                                    scan = key_end + 1;
+                                }
+                                continue;
+                            }
+
                             /* Find value after colon */
                             const char *val_colon = strchr(key_end, ':');
                             if (!val_colon || val_colon >= params_end) {
@@ -4249,6 +4321,19 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                             const char *val_start = val_colon + 1;
                             while (val_start < params_end && (*val_start == ' ' || *val_start == '\t')) {
                                 val_start++;
+                            }
+
+                            /* Skip object values (other nested objects besides state) */
+                            if (*val_start == '{') {
+                                int od = 1;
+                                const char *ov = val_start + 1;
+                                while (*ov && od > 0 && ov < params_end) {
+                                    if (*ov == '{') od++;
+                                    else if (*ov == '}') od--;
+                                    ov++;
+                                }
+                                scan = ov;
+                                continue;
                             }
 
                             char val_buf[32] = "";
@@ -4320,8 +4405,15 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                 obj_start = strchr(obj_start + 1, '{');
                 if (!obj_start || obj_start > arr_end) break;
 
-                const char *obj_end = strchr(obj_start, '}');
-                if (!obj_end || obj_end > arr_end) break;
+                /* Find matching closing brace for midi_fx object (handle nested objects) */
+                const char *obj_end = obj_start + 1;
+                int mfx_depth = 1;
+                while (*obj_end && mfx_depth > 0 && obj_end < arr_end) {
+                    if (*obj_end == '{') mfx_depth++;
+                    else if (*obj_end == '}') mfx_depth--;
+                    if (mfx_depth > 0) obj_end++;
+                }
+                if (!*obj_end || mfx_depth != 0) break;
 
                 midi_fx_config_t *cfg = &patch->midi_fx[patch->midi_fx_count];
                 memset(cfg, 0, sizeof(*cfg));
@@ -4341,7 +4433,53 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                     }
                 }
 
-                /* Parse other fields as params (skip "type") */
+                /* Check for "params" object and extract state if present */
+                cfg->state[0] = '\0';
+                const char *params_pos = strstr(obj_start, "\"params\"");
+                if (params_pos && params_pos < obj_end) {
+                    const char *params_obj = strchr(params_pos, '{');
+                    if (params_obj && params_obj < obj_end) {
+                        /* Find matching closing brace for params */
+                        const char *params_end = params_obj + 1;
+                        int pdepth = 1;
+                        while (*params_end && pdepth > 0 && params_end < obj_end) {
+                            if (*params_end == '{') pdepth++;
+                            else if (*params_end == '}') pdepth--;
+                            if (pdepth > 0) params_end++;
+                        }
+                        if (pdepth == 0) {
+                            /* Look for state object inside params */
+                            const char *state_key = strstr(params_obj, "\"state\"");
+                            if (state_key && state_key < params_end) {
+                                const char *state_colon = strchr(state_key, ':');
+                                if (state_colon && state_colon < params_end) {
+                                    const char *sv = state_colon + 1;
+                                    while (sv < params_end && (*sv == ' ' || *sv == '\t' || *sv == '\n')) sv++;
+                                    if (*sv == '{') {
+                                        const char *state_start = sv;
+                                        const char *se = sv + 1;
+                                        int sdepth = 1;
+                                        while (*se && sdepth > 0 && se < params_end) {
+                                            if (*se == '{') sdepth++;
+                                            else if (*se == '}') sdepth--;
+                                            if (sdepth > 0) se++;
+                                        }
+                                        if (sdepth == 0) {
+                                            int slen = se - state_start + 1;
+                                            if (slen > 0 && slen < MAX_FX_STATE_LEN) {
+                                                strncpy(cfg->state, state_start, slen);
+                                                cfg->state[slen] = '\0';
+                                                parse_debug_log("[parse] Extracted midi_fx state object");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                /* Parse other fields as params (skip "type" and "params") */
                 const char *scan = obj_start;
                 while (cfg->param_count < MAX_MIDI_FX_PARAMS && scan < obj_end) {
                     const char *key_start = strchr(scan, '"');
@@ -4358,7 +4496,6 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
 
                     /* Skip "type" - already parsed as module name */
                     if (key_len == 4 && strncmp(key_start + 1, "type", 4) == 0) {
-                        /* Skip past the value */
                         const char *colon = strchr(key_end, ':');
                         if (colon && colon < obj_end) {
                             const char *vq1 = strchr(colon, '"');
@@ -4367,6 +4504,30 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                                 scan = vq2 ? vq2 + 1 : obj_end;
                             } else {
                                 scan = obj_end;
+                            }
+                        } else {
+                            scan = key_end + 1;
+                        }
+                        continue;
+                    }
+
+                    /* Skip "params" - contains nested state object */
+                    if (key_len == 6 && strncmp(key_start + 1, "params", 6) == 0) {
+                        const char *colon = strchr(key_end, ':');
+                        if (colon && colon < obj_end) {
+                            const char *pv = colon + 1;
+                            while (pv < obj_end && (*pv == ' ' || *pv == '\t' || *pv == '\n')) pv++;
+                            if (*pv == '{') {
+                                int pd = 1;
+                                pv++;
+                                while (*pv && pd > 0 && pv < obj_end) {
+                                    if (*pv == '{') pd++;
+                                    else if (*pv == '}') pd--;
+                                    pv++;
+                                }
+                                scan = pv;
+                            } else {
+                                scan = pv;
                             }
                         } else {
                             scan = key_end + 1;
@@ -4599,6 +4760,17 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
             snprintf(dbg, sizeof(dbg), "[load] Skipping params: fx_idx=%d param_count=%d", fx_idx, cfg->param_count);
             parse_debug_log(dbg);
         }
+
+        /* Apply saved audio FX state if present */
+        if (cfg->state[0] && fx_idx >= 0 && fx_idx < MAX_AUDIO_FX) {
+            if (inst->fx_is_v2[fx_idx] && inst->fx_plugins_v2[fx_idx] && inst->fx_instances[fx_idx]) {
+                snprintf(msg, sizeof(msg), "Applying FX%d state: %.50s...", fx_idx + 1, cfg->state);
+                v2_chain_log(inst, msg);
+                inst->fx_plugins_v2[fx_idx]->set_param(inst->fx_instances[fx_idx], "state", cfg->state);
+            } else if (inst->fx_plugins[fx_idx] && inst->fx_plugins[fx_idx]->set_param) {
+                inst->fx_plugins[fx_idx]->set_param("state", cfg->state);
+            }
+        }
     }
 
     /* Load MIDI FX */
@@ -4621,6 +4793,13 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
                              cfg->params[p].key, cfg->params[p].val);
                     v2_chain_log(inst, msg);
                     api->set_param(instance, cfg->params[p].key, cfg->params[p].val);
+                }
+
+                /* Apply saved MIDI FX state if present */
+                if (cfg->state[0]) {
+                    snprintf(msg, sizeof(msg), "Applying MIDI FX state: %.50s...", cfg->state);
+                    v2_chain_log(inst, msg);
+                    api->set_param(instance, "state", cfg->state);
                 }
             }
         }

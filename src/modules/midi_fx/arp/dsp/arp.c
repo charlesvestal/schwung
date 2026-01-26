@@ -17,6 +17,41 @@
 #define DEFAULT_DIVISION 4  /* 1/16 notes */
 #define CLOCKS_PER_QUARTER 24  /* MIDI standard: 24 PPQN */
 
+/* JSON helpers for state parsing */
+static int json_get_string(const char *json, const char *key, char *out, int out_len) {
+    if (!json || !key || !out || out_len < 1) return 0;
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return 0;
+    const char *colon = strchr(pos, ':');
+    if (!colon) return 0;
+    while (*colon && (*colon == ':' || *colon == ' ' || *colon == '\t')) colon++;
+    if (*colon != '"') return 0;
+    colon++;
+    const char *end = strchr(colon, '"');
+    if (!end) return 0;
+    int len = (int)(end - colon);
+    if (len >= out_len) len = out_len - 1;
+    strncpy(out, colon, len);
+    out[len] = '\0';
+    return len;
+}
+
+static int json_get_int(const char *json, const char *key, int *out) {
+    if (!json || !key || !out) return 0;
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return 0;
+    const char *colon = strchr(pos, ':');
+    if (!colon) return 0;
+    colon++;
+    while (*colon && (*colon == ' ' || *colon == '\t')) colon++;
+    *out = atoi(colon);
+    return 1;
+}
+
 typedef enum {
     ARP_OFF = 0,
     ARP_UP,
@@ -374,6 +409,43 @@ static void arp_set_param(void *instance, const char *key, const char *val) {
             arp_calc_clocks_per_step(inst);
         }
     }
+    else if (strcmp(key, "state") == 0) {
+        /* Restore from JSON state */
+        char mode_str[16];
+        int bpm_val;
+        char division_str[8];
+        char sync_str[16];
+
+        if (json_get_string(val, "mode", mode_str, sizeof(mode_str))) {
+            if (strcmp(mode_str, "off") == 0) inst->mode = ARP_OFF;
+            else if (strcmp(mode_str, "up") == 0) inst->mode = ARP_UP;
+            else if (strcmp(mode_str, "down") == 0) inst->mode = ARP_DOWN;
+            else if (strcmp(mode_str, "up_down") == 0) inst->mode = ARP_UPDOWN;
+            else if (strcmp(mode_str, "random") == 0) inst->mode = ARP_RANDOM;
+        }
+        if (json_get_int(val, "bpm", &bpm_val)) {
+            if (bpm_val < 40) bpm_val = 40;
+            if (bpm_val > 240) bpm_val = 240;
+            inst->bpm = bpm_val;
+            inst->samples_per_step = 0;
+        }
+        if (json_get_string(val, "division", division_str, sizeof(division_str))) {
+            if (strcmp(division_str, "1/4") == 0) inst->division = 1;
+            else if (strcmp(division_str, "1/8") == 0) inst->division = 2;
+            else if (strcmp(division_str, "1/16") == 0) inst->division = 4;
+            inst->samples_per_step = 0;
+            arp_calc_clocks_per_step(inst);
+        }
+        if (json_get_string(val, "sync", sync_str, sizeof(sync_str))) {
+            if (strcmp(sync_str, "internal") == 0) inst->sync_mode = SYNC_INTERNAL;
+            else if (strcmp(sync_str, "clock") == 0) {
+                inst->sync_mode = SYNC_CLOCK;
+                inst->clock_counter = 0;
+                inst->clock_running = 1;
+                arp_calc_clocks_per_step(inst);
+            }
+        }
+    }
 }
 
 static int arp_get_param(void *instance, const char *key, char *buf, int buf_len) {
@@ -402,6 +474,22 @@ static int arp_get_param(void *instance, const char *key, char *buf, int buf_len
     }
     else if (strcmp(key, "sync") == 0) {
         return snprintf(buf, buf_len, "%s", inst->sync_mode == SYNC_CLOCK ? "clock" : "internal");
+    }
+    else if (strcmp(key, "state") == 0) {
+        const char *mode_str = "off";
+        switch (inst->mode) {
+            case ARP_UP: mode_str = "up"; break;
+            case ARP_DOWN: mode_str = "down"; break;
+            case ARP_UPDOWN: mode_str = "up_down"; break;
+            case ARP_RANDOM: mode_str = "random"; break;
+            default: break;
+        }
+        const char *div_str = "1/16";
+        if (inst->division == 1) div_str = "1/4";
+        else if (inst->division == 2) div_str = "1/8";
+        return snprintf(buf, buf_len, "{\"mode\":\"%s\",\"bpm\":%d,\"division\":\"%s\",\"sync\":\"%s\"}",
+                        mode_str, inst->bpm, div_str,
+                        inst->sync_mode == SYNC_CLOCK ? "clock" : "internal");
     }
 
     return -1;

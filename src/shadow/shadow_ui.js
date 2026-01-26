@@ -1321,22 +1321,55 @@ function buildSlotPatchJson(slotIndex, name) {
     }
 
     if (cfg.midiFx && cfg.midiFx.module) {
+        /* Try to get full state from midi_fx plugin */
+        let midiFxConfig = cfg.midiFx.params || {};
+        const midiFxStateJson = getSlotParam(slotIndex, "midi_fx1:state");
+        if (midiFxStateJson) {
+            try {
+                const state = JSON.parse(midiFxStateJson);
+                midiFxConfig = { state: state };
+            } catch (e) {
+                /* Keep original params if state parse fails */
+            }
+        }
         patch.midi_fx = [{
             type: cfg.midiFx.module,
-            params: cfg.midiFx.params || {}
+            params: midiFxConfig
         }];
     }
 
     if (cfg.fx1 && cfg.fx1.module) {
+        /* Try to get full state from fx1 plugin */
+        let fx1Config = cfg.fx1.params || {};
+        const fx1StateJson = getSlotParam(slotIndex, "fx1:state");
+        if (fx1StateJson) {
+            try {
+                const state = JSON.parse(fx1StateJson);
+                fx1Config = { state: state };
+            } catch (e) {
+                /* Keep original params if state parse fails */
+            }
+        }
         patch.audio_fx.push({
             type: cfg.fx1.module,
-            params: cfg.fx1.params || {}
+            params: fx1Config
         });
     }
     if (cfg.fx2 && cfg.fx2.module) {
+        /* Try to get full state from fx2 plugin */
+        let fx2Config = cfg.fx2.params || {};
+        const fx2StateJson = getSlotParam(slotIndex, "fx2:state");
+        if (fx2StateJson) {
+            try {
+                const state = JSON.parse(fx2StateJson);
+                fx2Config = { state: state };
+            } catch (e) {
+                /* Keep original params if state parse fails */
+            }
+        }
         patch.audio_fx.push({
             type: cfg.fx2.module,
-            params: cfg.fx2.params || {}
+            params: fx2Config
         });
     }
 
