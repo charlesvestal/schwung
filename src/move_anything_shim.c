@@ -2734,14 +2734,22 @@ static void shadow_inprocess_handle_param_request(void) {
 
     if (req_type == 1) {  /* SET param */
         if (shadow_plugin_v2->set_param) {
+            /* Make local copies - shared memory may be modified during set_param */
+            char key_copy[SHADOW_PARAM_KEY_LEN];
+            char value_copy[256];  /* Enough for module names */
+            strncpy(key_copy, shadow_param->key, sizeof(key_copy) - 1);
+            key_copy[sizeof(key_copy) - 1] = '\0';
+            strncpy(value_copy, shadow_param->value, sizeof(value_copy) - 1);
+            value_copy[sizeof(value_copy) - 1] = '\0';
+
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
-                                        shadow_param->key, shadow_param->value);
+                                        key_copy, value_copy);
             shadow_param->error = 0;
             shadow_param->result_len = 0;
 
             /* Activate slot when synth module is loaded */
-            if (strcmp(shadow_param->key, "synth:module") == 0) {
-                if (shadow_param->value[0] != '\0') {
+            if (strcmp(key_copy, "synth:module") == 0) {
+                if (value_copy[0] != '\0') {
                     shadow_chain_slots[slot].active = 1;
 
                     /* Query synth's default forward channel and apply if valid */
@@ -2763,9 +2771,9 @@ static void shadow_inprocess_handle_param_request(void) {
                 }
             }
             /* Activate slot when a patch is loaded via set_param */
-            if (strcmp(shadow_param->key, "load_patch") == 0 ||
-                strcmp(shadow_param->key, "patch") == 0) {
-                int idx = atoi(shadow_param->value);
+            if (strcmp(key_copy, "load_patch") == 0 ||
+                strcmp(key_copy, "patch") == 0) {
+                int idx = atoi(value_copy);
                 if (idx < 0 || idx == SHADOW_PATCH_INDEX_NONE) {
                     shadow_chain_slots[slot].active = 0;
                     shadow_chain_slots[slot].patch_index = -1;
@@ -2794,12 +2802,12 @@ static void shadow_inprocess_handle_param_request(void) {
             }
 
             if (shadow_midi_out_log_enabled()) {
-                if (strcmp(shadow_param->key, "synth:module") == 0 ||
-                    strcmp(shadow_param->key, "fx1:module") == 0 ||
-                    strcmp(shadow_param->key, "fx2:module") == 0 ||
-                    strcmp(shadow_param->key, "midi_fx1:module") == 0) {
+                if (strcmp(key_copy, "synth:module") == 0 ||
+                    strcmp(key_copy, "fx1:module") == 0 ||
+                    strcmp(key_copy, "fx2:module") == 0 ||
+                    strcmp(key_copy, "midi_fx1:module") == 0) {
                     shadow_midi_out_logf("param_set: slot=%d key=%s val=%s active=%d",
-                        slot, shadow_param->key, shadow_param->value, shadow_chain_slots[slot].active);
+                        slot, key_copy, value_copy, shadow_chain_slots[slot].active);
                 }
             }
         } else {
