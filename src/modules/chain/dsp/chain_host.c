@@ -193,6 +193,7 @@ typedef struct chain_instance {
     plugin_api_v2_t *synth_plugin_v2;
     void *synth_instance;
     char current_synth_module[MAX_NAME_LEN];
+    int synth_default_forward_channel;  /* -1 = no default, 0-15 = channel */
 
     /* Sub-plugin state - MIDI Source */
     void *source_handle;
@@ -3249,6 +3250,7 @@ static void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_instance = NULL;
     inst->current_synth_module[0] = '\0';
     inst->synth_param_count = 0;
+    inst->synth_default_forward_channel = -1;
 }
 
 /* V2 unload all audio FX */
@@ -3477,6 +3479,36 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
 
     /* Parse chain_params from module.json for type info */
     parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
+
+    /* Parse default_forward_channel from capabilities in module.json */
+    inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
+    {
+        char json_path[MAX_PATH_LEN];
+        snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
+        FILE *f = fopen(json_path, "r");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (size > 0 && size < 65536) {
+                char *json = malloc(size + 1);
+                if (json) {
+                    fread(json, 1, size, f);
+                    json[size] = '\0';
+                    int fwd_ch = -1;
+                    if (json_get_int_in_section(json, "capabilities", "default_forward_channel", &fwd_ch) == 0) {
+                        if (fwd_ch >= 1 && fwd_ch <= 16) {
+                            inst->synth_default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
+                            snprintf(msg, sizeof(msg), "Synth default_forward_channel: %d", fwd_ch);
+                            v2_chain_log(inst, msg);
+                        }
+                    }
+                    free(json);
+                }
+            }
+            fclose(f);
+        }
+    }
 
     snprintf(msg, sizeof(msg), "Synth v2 loaded: %s (%d params)", module_name, inst->synth_param_count);
     v2_chain_log(inst, msg);
@@ -5175,6 +5207,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                      inst->synth_plugin_v2 ? (void*)inst->synth_plugin_v2->get_param : NULL,
                      inst->current_synth_module);
             v2_chain_log(inst, dbg);
+        }
+
+        /* Return synth's default forward channel from module.json capabilities */
+        if (strcmp(subkey, "default_forward_channel") == 0) {
+            return snprintf(buf, buf_len, "%d", inst->synth_default_forward_channel);
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
