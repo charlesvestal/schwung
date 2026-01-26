@@ -3283,8 +3283,8 @@ function getSlotSettingValue(slot, setting) {
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
-        /* -1 means no remapping, otherwise forward to specific channel */
-        return ch < 0 ? "Off" : `Ch ${ch + 1}`;
+        /* -1 means auto (use track channel), otherwise forward to specific channel */
+        return ch < 0 ? "Auto" : `Ch ${ch + 1}`;
     }
     if (setting.key === "slot:receive_channel") {
         return `Ch ${val}`;
