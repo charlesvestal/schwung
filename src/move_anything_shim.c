@@ -2736,7 +2736,7 @@ static void shadow_inprocess_handle_param_request(void) {
         if (shadow_plugin_v2->set_param) {
             /* Make local copies - shared memory may be modified during set_param */
             char key_copy[SHADOW_PARAM_KEY_LEN];
-            char value_copy[256];  /* Enough for module names */
+            char value_copy[SHADOW_PARAM_VALUE_LEN];  /* Full size for patch JSON with state */
             strncpy(key_copy, shadow_param->key, sizeof(key_copy) - 1);
             key_copy[sizeof(key_copy) - 1] = '\0';
             strncpy(value_copy, shadow_param->value, sizeof(value_copy) - 1);

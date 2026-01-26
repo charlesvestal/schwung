@@ -1303,9 +1303,20 @@ function buildSlotPatchJson(slotIndex, name) {
     };
 
     if (cfg.synth && cfg.synth.module) {
+        /* Try to get full state from synth plugin */
+        let synthConfig = cfg.synth.params || {};
+        const stateJson = getSlotParam(slotIndex, "synth:state");
+        if (stateJson) {
+            try {
+                const state = JSON.parse(stateJson);
+                synthConfig = { state: state };
+            } catch (e) {
+                /* Keep original params if state parse fails */
+            }
+        }
         patch.synth = {
             module: cfg.synth.module,
-            config: cfg.synth.params || {}
+            config: synthConfig
         };
     }
 

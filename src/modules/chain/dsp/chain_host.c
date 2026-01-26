@@ -160,12 +160,16 @@ typedef struct {
     int param_count;
 } audio_fx_config_t;
 
+/* Synth state storage size - large synths may need 5-6KB for full state */
+#define MAX_SYNTH_STATE_LEN 8192
+
 /* Patch info */
 typedef struct {
     char name[MAX_NAME_LEN];
     char path[MAX_PATH_LEN];
     char synth_module[MAX_NAME_LEN];
     int synth_preset;
+    char synth_state[MAX_SYNTH_STATE_LEN];  /* JSON state for synth plugin */
     char midi_source_module[MAX_NAME_LEN];
     audio_fx_config_t audio_fx[MAX_AUDIO_FX];  /* Now includes params */
     int audio_fx_count;
@@ -2017,7 +2021,7 @@ static int save_patch(const char *json_data) {
     }
 
     /* Build final JSON with generated name */
-    char final_json[4096];
+    char final_json[8192];
     snprintf(final_json, sizeof(final_json),
         "{\n"
         "    \"name\": \"%s\",\n"
@@ -2067,7 +2071,7 @@ static int update_patch(int index, const char *json_data) {
     }
 
     /* Build final JSON with name */
-    char final_json[4096];
+    char final_json[8192];
     snprintf(final_json, sizeof(final_json),
         "{\n"
         "    \"name\": \"%s\",\n"
@@ -3710,7 +3714,7 @@ static int v2_save_patch(chain_instance_t *inst, const char *json_data) {
     }
 
     /* Build final JSON with generated name */
-    char final_json[4096];
+    char final_json[8192];
     snprintf(final_json, sizeof(final_json),
         "{\n"
         "    \"name\": \"%s\",\n"
@@ -3756,7 +3760,7 @@ static int v2_update_patch(chain_instance_t *inst, int index, const char *json_d
     }
 
     /* Build final JSON with name */
-    char final_json[4096];
+    char final_json[8192];
     snprintf(final_json, sizeof(final_json),
         "{\n"
         "    \"name\": \"%s\",\n"
@@ -3919,7 +3923,7 @@ static int save_master_preset(const char *json_str) {
     extract_fx_section(json_str, "fx4", fx4, sizeof(fx4));
 
     /* Build wrapped JSON */
-    char final_json[4096];
+    char final_json[8192];
     snprintf(final_json, sizeof(final_json),
         "{\n"
         "    \"name\": \"%s\",\n"
@@ -3976,7 +3980,7 @@ static int update_master_preset(int index, const char *json_str) {
     extract_fx_section(json_str, "fx4", fx4, sizeof(fx4));
 
     /* Build wrapped JSON */
-    char final_json[4096];
+    char final_json[8192];
     snprintf(final_json, sizeof(final_json),
         "{\n"
         "    \"name\": \"%s\",\n"
@@ -4113,6 +4117,36 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
     /* Parse synth */
     json_get_string_in_section(json, "synth", "module", patch->synth_module, MAX_NAME_LEN);
     json_get_int_in_section(json, "synth", "preset", &patch->synth_preset);
+
+    /* Parse synth config.state if present */
+    patch->synth_state[0] = '\0';
+    const char *synth_pos = strstr(json, "\"synth\"");
+    if (synth_pos) {
+        const char *config_pos = strstr(synth_pos, "\"config\"");
+        if (config_pos) {
+            const char *state_pos = strstr(config_pos, "\"state\"");
+            if (state_pos) {
+                const char *state_obj = strchr(state_pos, '{');
+                if (state_obj) {
+                    /* Find matching closing brace */
+                    const char *end = state_obj + 1;
+                    int depth = 1;
+                    while (*end && depth > 0) {
+                        if (*end == '{') depth++;
+                        else if (*end == '}') depth--;
+                        if (depth > 0) end++;
+                    }
+                    if (*end && depth == 0) {
+                        int len = end - state_obj + 1;
+                        if (len > 0 && len < MAX_SYNTH_STATE_LEN) {
+                            strncpy(patch->synth_state, state_obj, len);
+                            patch->synth_state[len] = '\0';
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /* Parse audio_fx array */
     const char *fx_pos = strstr(json, "\"audio_fx\"");
@@ -4499,13 +4533,20 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
             return -1;
         }
 
-        /* Set preset */
+        /* Set preset first (state may override params set by preset) */
         char preset_str[16];
         snprintf(preset_str, sizeof(preset_str), "%d", patch->synth_preset);
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
             inst->synth_plugin_v2->set_param(inst->synth_instance, "preset", preset_str);
         } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
             inst->synth_plugin->set_param("preset", preset_str);
+        }
+
+        /* Apply saved state if present */
+        if (patch->synth_state[0] && inst->synth_plugin_v2 && inst->synth_instance) {
+            snprintf(msg, sizeof(msg), "Applying synth state: %.50s...", patch->synth_state);
+            v2_chain_log(inst, msg);
+            inst->synth_plugin_v2->set_param(inst->synth_instance, "state", patch->synth_state);
         }
     }
 
