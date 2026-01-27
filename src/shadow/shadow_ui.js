@@ -94,10 +94,10 @@ const NUM_KNOBS = 8;
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/patches";
 const DEFAULT_SLOTS = [
-    { channel: 5, name: "" },
-    { channel: 6, name: "" },
-    { channel: 7, name: "" },
-    { channel: 8, name: "" }
+    { channel: 1, name: "" },
+    { channel: 2, name: "" },
+    { channel: 3, name: "" },
+    { channel: 4, name: "" }
 ];
 
 /* View constants */
@@ -1021,22 +1021,14 @@ function loadSlotsFromConfig() {
     if (!data || !Array.isArray(data.patches)) {
         return DEFAULT_SLOTS.map((slot) => ({ ...slot }));
     }
-    let needsMigration = false;
     /* Load saved slots, preserving both channel and name */
     const slotsFromConfig = data.patches.map((entry, idx) => {
-        let channel = (typeof entry.channel === "number") ? entry.channel : (DEFAULT_SLOTS[idx]?.channel ?? 5 + idx);
-        if (channel >= 1 && channel <= 4) {
-            channel = channel + 4;
-            needsMigration = true;
-        }
+        const channel = (typeof entry.channel === "number") ? entry.channel : (DEFAULT_SLOTS[idx]?.channel ?? 1 + idx);
         return {
             channel: channel,
             name: (typeof entry.name === "string") ? entry.name : (DEFAULT_SLOTS[idx]?.name ?? "Unknown")
         };
     });
-    if (needsMigration) {
-        saveSlotsToConfig(slotsFromConfig);
-    }
     return slotsFromConfig;
 }
 
@@ -1092,7 +1084,7 @@ function refreshSlots() {
     }
     if (Array.isArray(hostSlots) && hostSlots.length) {
         slots = hostSlots.map((slot, idx) => ({
-            channel: slot.channel || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].channel : 5 + idx),
+            channel: slot.channel || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].channel : 1 + idx),
             name: slot.name || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].name : "Unknown Patch")
         }));
     } else {
@@ -4344,7 +4336,7 @@ function drawSlotSettings() {
 
 function drawPatches() {
     clear_screen();
-    const channel = slots[selectedSlot]?.channel || (DEFAULT_SLOTS[selectedSlot]?.channel ?? 5 + selectedSlot);
+    const channel = slots[selectedSlot]?.channel || (DEFAULT_SLOTS[selectedSlot]?.channel ?? 1 + selectedSlot);
     drawHeader(`Ch${channel} Patch`);
     if (patches.length === 0) {
         print(LIST_LABEL_X, LIST_TOP_Y, "No patches found", 1);
