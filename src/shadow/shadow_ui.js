@@ -1057,11 +1057,7 @@ function saveSlotsToConfig(nextSlots) {
         master_fx: currentMasterFxId || ""
     };
     try {
-        const file = std.open(CONFIG_PATH, "w");
-        if (!file) return;
-        file.puts(JSON.stringify(payload, null, 2));
-        file.puts("\n");
-        file.close();
+        host_write_file(CONFIG_PATH, JSON.stringify(payload, null, 2) + "\n");
     } catch (e) {
         /* ignore */
     }
@@ -1079,11 +1075,7 @@ function saveConfigMasterFx() {
         master_fx_path: currentMasterFxPath || ""
     };
     try {
-        const file = std.open(CONFIG_PATH, "w");
-        if (!file) return;
-        file.puts(JSON.stringify(payload, null, 2));
-        file.puts("\n");
-        file.close();
+        host_write_file(CONFIG_PATH, JSON.stringify(payload, null, 2) + "\n");
     } catch (e) {
         /* ignore */
     }
@@ -1454,9 +1446,16 @@ function loadMasterPresetList() {
     masterPresets = [];
     const countStr = getSlotParam(0, "master_preset_count");
     const count = parseInt(countStr, 10) || 0;
+    debugLog(`loadMasterPresetList: countStr='${countStr}' count=${count}`);
 
     for (let i = 0; i < count; i++) {
         const name = getSlotParam(0, `master_preset_name_${i}`) || `Preset ${i + 1}`;
+        /* Hex dump first 20 chars to debug garbage issue */
+        let hex = "";
+        for (let j = 0; j < Math.min(20, name.length); j++) {
+            hex += name.charCodeAt(j).toString(16).padStart(2, '0') + " ";
+        }
+        debugLog(`loadMasterPresetList: preset ${i} name='${name}' len=${name.length} hex=[${hex.trim()}]`);
         masterPresets.push({ name: name, index: i });
     }
 }
@@ -1487,7 +1486,7 @@ function drawMasterPresetPicker() {
         selectedIndex: selectedMasterPresetIndex,
         getLabel: (item) => {
             const isCurrent = item.index >= 0 && masterPresets[item.index]?.name === currentMasterPresetName;
-            return isCurrent ? `► ${item.name}` : item.name;
+            return isCurrent ? `* ${item.name}` : item.name;
         },
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
     });
@@ -1528,7 +1527,7 @@ function clearMasterFx() {
     needsRedraw = true;
 }
 
-function loadMasterPreset(index) {
+function loadMasterPreset(index, presetName) {
     /* Get preset JSON from DSP */
     const json = getSlotParam(0, `master_preset_json_${index}`);
     if (!json) return;
@@ -1558,6 +1557,10 @@ function loadMasterPreset(index) {
             }
         }
 
+        /* Set preset name before saving so it persists */
+        if (presetName) {
+            currentMasterPresetName = presetName;
+        }
         saveMasterFxChainConfig();
     } catch (e) {
         /* Parse error - ignore */
@@ -1762,7 +1765,9 @@ function saveMasterFxChainConfig() {
         } catch (e) {}
 
         /* Save master FX chain - store dspPaths for each slot */
-        config.master_fx_chain = {};
+        config.master_fx_chain = {
+            preset_name: currentMasterPresetName || ""
+        };
         for (let i = 1; i <= 4; i++) {
             const key = `fx${i}`;
             const moduleId = masterFxConfig[key]?.module || "";
@@ -1790,6 +1795,11 @@ function loadMasterFxChainFromConfig() {
 
         const config = JSON.parse(content);
         if (!config.master_fx_chain) return;
+
+        /* Restore loaded preset name */
+        if (config.master_fx_chain.preset_name) {
+            currentMasterPresetName = config.master_fx_chain.preset_name;
+        }
 
         /* Load each slot from config */
         for (let i = 1; i <= 4; i++) {
@@ -3613,8 +3623,7 @@ function handleSelect() {
                 } else {
                     /* Load selected preset */
                     const preset = masterPresets[selectedMasterPresetIndex - 1];
-                    loadMasterPreset(preset.index);
-                    currentMasterPresetName = preset.name;
+                    loadMasterPreset(preset.index, preset.name);
                     exitMasterPresetPicker();
                 }
             } else if (inMasterFxSettingsMenu) {
@@ -4341,11 +4350,15 @@ function drawPatches() {
         print(LIST_LABEL_X, LIST_TOP_Y, "No patches found", 1);
         drawFooter("Back: settings");
     } else {
+        const loadedName = slots[selectedSlot]?.name;
         drawMenuList({
             items: patches,
             selectedIndex: selectedPatch,
             listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-            getLabel: (item) => item.name
+            getLabel: (item) => {
+                const isCurrent = loadedName && item.name === loadedName;
+                return isCurrent ? `* ${item.name}` : item.name;
+            }
         });
         drawFooter("Click: load  Back: settings");
     }

@@ -317,6 +317,10 @@ fi
 echo
 echo "Restarting Move binary with shim installed..."
 
+# Kill any running Move processes to ensure fresh load of updated modules
+$ssh_root "for name in MoveOriginal Move shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
+$ssh_ableton "sleep 1"
+
 $ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
 $ssh_ableton "nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &"
 $ssh_ableton "sleep 1"

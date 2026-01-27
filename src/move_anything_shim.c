@@ -2817,6 +2817,8 @@ static void shadow_inprocess_handle_param_request(void) {
     }
     else if (req_type == 2) {  /* GET param */
         if (shadow_plugin_v2->get_param) {
+            /* Clear buffer before get_param to prevent any stale data */
+            memset(shadow_param->value, 0, 256);  /* Clear first 256 bytes */
             int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                                                   shadow_param->key,
                                                   shadow_param->value,

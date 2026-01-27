@@ -375,7 +375,8 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     /* Copy key to shared memory */
     strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
     shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
-    shadow_param->value[0] = '\0';
+    /* Clear entire value buffer to prevent any stale data */
+    memset(shadow_param->value, 0, SHADOW_PARAM_VALUE_LEN);
 
     JS_FreeCString(ctx, key);
 
@@ -562,6 +563,108 @@ static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
     return (result == 0) ? JS_TRUE : JS_FALSE;
 }
 
+/* host_read_file(path) -> string or null */
+static JSValue js_host_read_file(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) {
+        return JS_NULL;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_NULL;
+    }
+
+    /* Validate path */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_read_file: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    /* Get file size */
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    /* Limit to 1MB for safety */
+    if (size > 1024 * 1024) {
+        fprintf(stderr, "host_read_file: file too large: %s\n", path);
+        fclose(f);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    char *buf = malloc(size + 1);
+    if (!buf) {
+        fclose(f);
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+
+    size_t bytes_read = fread(buf, 1, size, f);
+    buf[bytes_read] = '\0';
+    fclose(f);
+
+    JSValue result = JS_NewString(ctx, buf);
+    free(buf);
+    JS_FreeCString(ctx, path);
+
+    return result;
+}
+
+/* host_write_file(path, content) -> bool */
+static JSValue js_host_write_file(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    const char *content = JS_ToCString(ctx, argv[1]);
+    if (!content) {
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Validate path */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_write_file: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        JS_FreeCString(ctx, content);
+        return JS_FALSE;
+    }
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "host_write_file: cannot open file: %s\n", path);
+        JS_FreeCString(ctx, path);
+        JS_FreeCString(ctx, content);
+        return JS_FALSE;
+    }
+
+    size_t len = strlen(content);
+    size_t written = fwrite(content, 1, len, f);
+    fclose(f);
+
+    JS_FreeCString(ctx, path);
+    JS_FreeCString(ctx, content);
+
+    return (written == len) ? JS_TRUE : JS_FALSE;
+}
+
 /* host_ensure_dir(path) -> bool - creates directory if it doesn't exist */
 static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -742,6 +845,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register host functions for store operations */
     JS_SetPropertyStr(ctx, global_obj, "host_file_exists", JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_read_file", JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_write_file", JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_http_download", JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_ensure_dir", JS_NewCFunction(ctx, js_host_ensure_dir, "host_ensure_dir", 1));

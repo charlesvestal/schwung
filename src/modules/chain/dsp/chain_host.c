@@ -2162,6 +2162,8 @@ static int scan_patches(const char *module_dir) {
     }
 
     g_patch_count = 0;
+    /* Clear old data to prevent stale/garbage entries */
+    memset(g_patches, 0, sizeof(g_patches));
     struct dirent *entry;
 
     while ((entry = readdir(dir)) != NULL && g_patch_count < MAX_PATCHES) {
@@ -3600,6 +3602,8 @@ static int v2_scan_patches(chain_instance_t *inst) {
 
     snprintf(patches_dir, sizeof(patches_dir), "%s/../../patches", inst->module_dir);
     inst->patch_count = 0;
+    /* Clear old data to prevent stale/garbage entries */
+    memset(inst->patches, 0, sizeof(inst->patches));
 
     DIR *dir = opendir(patches_dir);
     if (!dir) {
@@ -3841,6 +3845,9 @@ static void ensure_presets_master_dir(void) {
 
 static void scan_master_presets(void) {
     master_preset_count = 0;
+    /* Clear old data to prevent stale/garbage entries */
+    memset(master_preset_names, 0, sizeof(master_preset_names));
+    memset(master_preset_paths, 0, sizeof(master_preset_paths));
     ensure_presets_master_dir();
 
     DIR *dir = opendir(PRESETS_MASTER_DIR);
@@ -3870,9 +3877,10 @@ static void scan_master_presets(void) {
             fclose(f);
 
             /* Try to get name from JSON */
-            char parsed_name[MAX_NAME_LEN];
+            char parsed_name[MAX_NAME_LEN] = {0};
             if (json_get_string(json_buf, "name", parsed_name, sizeof(parsed_name)) == 0) {
                 strncpy(master_preset_names[master_preset_count], parsed_name, MAX_NAME_LEN - 1);
+                master_preset_names[master_preset_count][MAX_NAME_LEN - 1] = '\0';
             } else {
                 /* Fall back to filename */
                 memcpy(master_preset_names[master_preset_count], name, name_len);
@@ -3884,6 +3892,7 @@ static void scan_master_presets(void) {
         }
 
         strncpy(master_preset_paths[master_preset_count], path, MAX_PATH_LEN - 1);
+        master_preset_paths[master_preset_count][MAX_PATH_LEN - 1] = '\0';
         master_preset_count++;
     }
     closedir(dir);
@@ -3911,6 +3920,16 @@ static int save_master_preset(const char *json_str) {
     /* Get custom_name from JSON */
     char name[MAX_NAME_LEN] = "Master FX";
     json_get_string(json_str, "custom_name", name, sizeof(name));
+
+    /* Debug: log incoming JSON and extracted name */
+    {
+        FILE *dbg = fopen("/tmp/save_preset_debug.log", "a");
+        if (dbg) {
+            fprintf(dbg, "json_str='%.200s'\n", json_str);
+            fprintf(dbg, "extracted name='%s' len=%zu\n", name, strlen(name));
+            fclose(dbg);
+        }
+    }
 
     /* Sanitize name for filename */
     char filename[MAX_NAME_LEN];
@@ -5271,6 +5290,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 /* V2 get_param handler */
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
+    /* Debug: log all get_param calls */
+    {
+        FILE *dbg = fopen("/tmp/v2_get_param.log", "a");
+        if (dbg) {
+            fprintf(dbg, "key='%s' inst=%p\n", key ? key : "(null)", (void*)inst);
+            fclose(dbg);
+        }
+    }
     if (!inst) return -1;
 
     if (strcmp(key, "patch_count") == 0) {
@@ -5322,7 +5349,14 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strncmp(key, "master_preset_name_", 19) == 0) {
         int idx = atoi(key + 19);
         if (idx >= 0 && idx < master_preset_count) {
-            return snprintf(buf, buf_len, "%s", master_preset_names[idx]);
+            int len = snprintf(buf, buf_len, "%s", master_preset_names[idx]);
+            FILE *dbg = fopen("/tmp/preset_name.log", "a");
+            if (dbg) {
+                fprintf(dbg, "idx=%d array='%s' buf='%s' len=%d\n",
+                        idx, master_preset_names[idx], buf, len);
+                fclose(dbg);
+            }
+            return len;
         }
         return -1;
     }

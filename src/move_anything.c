@@ -1966,6 +1966,50 @@ static JSValue js_host_read_file(JSContext *ctx, JSValueConst this_val,
     return result;
 }
 
+/* host_write_file(path, content) -> bool */
+static JSValue js_host_write_file(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    if (argc < 2) {
+        return JS_FALSE;
+    }
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_FALSE;
+    }
+
+    const char *content = JS_ToCString(ctx, argv[1]);
+    if (!content) {
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Validate path */
+    if (!validate_path(path)) {
+        fprintf(stderr, "host_write_file: invalid path: %s\n", path);
+        JS_FreeCString(ctx, path);
+        JS_FreeCString(ctx, content);
+        return JS_FALSE;
+    }
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "host_write_file: cannot open file: %s\n", path);
+        JS_FreeCString(ctx, path);
+        JS_FreeCString(ctx, content);
+        return JS_FALSE;
+    }
+
+    size_t len = strlen(content);
+    size_t written = fwrite(content, 1, len, f);
+    fclose(f);
+
+    JS_FreeCString(ctx, path);
+    JS_FreeCString(ctx, content);
+
+    return (written == len) ? JS_TRUE : JS_FALSE;
+}
+
 void init_javascript(JSRuntime **prt, JSContext **pctx)
 {
 
@@ -2112,6 +2156,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_read_file_func = JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_read_file", host_read_file_func);
+
+    JSValue host_write_file_func = JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2);
+    JS_SetPropertyStr(ctx, global_obj, "host_write_file", host_write_file_func);
 
     JS_FreeValue(ctx, global_obj);
 
@@ -2531,7 +2578,11 @@ int main(int argc, char *argv[])
 
             if (cable == 2)
             {
-                /* External MIDI: no transforms, no UI - direct to DSP only */
+                /* External MIDI: no transforms - route to both JS and DSP */
+                /* Route to JS handler */
+                if (callGlobalFunction(&ctx, &JSonMidiMessageExternal, &byte[1])) {
+                    printf("JS:onMidiMessageExternal failed\n");
+                }
                 /* Route to DSP plugin */
                 mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_EXTERNAL);
             }
