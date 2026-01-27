@@ -3878,7 +3878,15 @@ function handleSelect() {
             if (!hierEditorLevel && hierEditorHierarchy.modes) {
                 /* Select mode and navigate into it */
                 const selectedMode = hierEditorParams[hierEditorSelectedIdx];
-                if (selectedMode && hierEditorHierarchy.levels[selectedMode]) {
+                /* Check for swap module action first */
+                if (selectedMode === SWAP_MODULE_ACTION) {
+                    const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
+                    const slotToSwap = hierEditorSlot;
+                    if (compIndex >= 0) {
+                        exitHierarchyEditor();
+                        enterComponentSelect(slotToSwap, compIndex);
+                    }
+                } else if (selectedMode && hierEditorHierarchy.levels[selectedMode]) {
                     /* If hierarchy specifies mode_param, set it to the mode index */
                     if (hierEditorHierarchy.mode_param) {
                         const modeIndex = hierEditorHierarchy.modes.indexOf(selectedMode);

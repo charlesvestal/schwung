@@ -4899,10 +4899,9 @@ do_ioctl:
 
                 /* Only filter internal cable (0x00) */
                 if (cable == 0x00) {
-                    /* CC messages: filter jog/back/menu controls */
+                    /* CC messages: filter jog/back controls (let up/down through for octave) */
                     if (cin == 0x0B && type == 0xB0) {
-                        if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK ||
-                            d1 == CC_BACK || d1 == CC_UP || d1 == CC_DOWN) {
+                        if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
                             filter = 1;
                         }
                         /* Filter knob CCs when shift held */
