@@ -9,9 +9,11 @@ The Move has a 128x64 pixel 1-bit (black/white) display.
 ### Functions
 
 ```javascript
-clear_screen()              // Clear display to black
-print(x, y, text, scale)    // Draw text at position with scale (1-4)
-draw_image(x, y, path)      // Draw PNG image at position
+clear_screen()                    // Clear display to black
+print(x, y, text, color)          // Draw text at position (color: 0=black, 1=white)
+set_pixel(x, y, value)            // Set pixel at position (value: 0=black, 1=white)
+draw_rect(x, y, w, h, value)      // Draw rectangle outline
+fill_rect(x, y, w, h, value)      // Draw filled rectangle
 ```
 
 ## MIDI
@@ -171,7 +173,7 @@ console.log(msg)              // Log to /data/UserData/move-anything/move-anythi
 | CC  | Control           | Notes                          |
 |-----|-------------------|--------------------------------|
 | 3   | Jog wheel click   | 127 = pressed                  |
-| 14  | Jog wheel rotate  | 1 = CW, 127 = CCW              |
+| 14  | Jog wheel rotate  | 1-63 = CW, 65-127 = CCW        |
 | 49  | Shift             | 127 = held                     |
 | 50  | Menu              |                                |
 | 51  | Back              |                                |
@@ -180,11 +182,13 @@ console.log(msg)              // Log to /data/UserData/move-anything/move-anythi
 | 55  | Up arrow          |                                |
 | 62  | Left arrow        |                                |
 | 63  | Right arrow       |                                |
-| 71-78 | Knob LEDs       | 8 knobs                        |
+| 71-78 | Knobs 1-8       | Relative encoder (1-63 CW, 65-127 CCW) |
 | 79  | Master volume     | Relative encoder (1-63 CW, 65-127 CCW) |
 | 85  | Play              |                                |
 | 86  | Record            |                                |
 | 88  | Mute              |                                |
+| 118 | Record button     | LED: RGB (use Note for input)  |
+| 119 | Delete            |                                |
 
 ### Knob Touch (Capacitive)
 Notes 0-9 are generated when knobs are touched. Filter these if you don't need them:
@@ -270,11 +274,15 @@ Note: Audio input routing depends on the last selected input in the stock Move i
 
 ## LED Colors
 
-Common color values for pad LEDs:
+Common color values for pad LEDs (from `constants.mjs`):
 ```javascript
-const Black = 0x00;
-const White = 0x7a;
-const LightGrey = 0x7c;
-const Red = 0x7f;
-const Blue = 0x5f;
+const Black = 0;        // 0x00
+const White = 120;      // 0x78
+const LightGrey = 118;  // 0x76
+const Red = 127;        // 0x7F
+const Blue = 125;       // 0x7D
+const BrightGreen = 8;  // 0x08
+const BrightRed = 1;    // 0x01
 ```
+
+See `src/shared/constants.mjs` for the full RGB color palette (0-127).
