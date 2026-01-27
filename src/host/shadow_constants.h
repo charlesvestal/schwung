@@ -34,7 +34,7 @@
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
-#define SHADOW_PARAM_BUFFER_SIZE  8320  /* Increased for large synth state JSON */
+#define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 
 /* ============================================================================
  * Slot Configuration
@@ -44,7 +44,7 @@
 #define SHADOW_UI_SLOTS 4
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
-#define SHADOW_PARAM_VALUE_LEN 8192  /* Large synths may need 5-6KB for full state */
+#define SHADOW_PARAM_VALUE_LEN 65536  /* 64KB for large ui_hierarchy and state */
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)
