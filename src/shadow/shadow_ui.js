@@ -2459,6 +2459,8 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     hierEditorChildLabel = "";
     hierEditorSelectedIdx = 0;
     hierEditorEditMode = false;
+    hierEditorIsMasterFx = false;
+    hierEditorMasterFxSlot = -1;
 
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);

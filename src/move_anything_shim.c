@@ -2872,6 +2872,26 @@ static void shadow_inprocess_process_midi(void) {
         uint8_t status_usb = pkt[1];
         uint8_t status_raw = pkt[0];
 
+        /* Handle system realtime messages (CIN=0x0F): clock, start, continue, stop
+         * These are 1-byte messages that should be broadcast to ALL active slots */
+        if (cin == 0x0F && status_usb >= 0xF8 && status_usb <= 0xFF) {
+            /* Filter cable 0 (Move UI events) - track output is on cable 2 */
+            if (cable == 0) {
+                continue;
+            }
+            /* Broadcast to all active slots */
+            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                uint8_t msg[3] = { status_usb, 0, 0 };
+                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                    if (shadow_chain_slots[s].active && shadow_chain_slots[s].instance) {
+                        shadow_plugin_v2->on_midi(shadow_chain_slots[s].instance, msg, 1,
+                                                  MOVE_MIDI_SOURCE_INTERNAL);
+                    }
+                }
+            }
+            continue;  /* Done with this packet */
+        }
+
         /* USB MIDI format: CIN in low nibble of byte 0 */
         if (cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
             if ((status_usb & 0xF0) < 0x80 || (status_usb & 0xF0) > 0xE0) continue;
