@@ -234,6 +234,9 @@ let knobEditorAssignments = [];  // Array of 8 {target, param} for current slot
 let knobParamPickerFolder = null; // null = main (targets), string = target name for params
 let knobParamPickerIndex = 0;    // Selected index in param picker
 let knobParamPickerParams = [];  // Available params in current folder
+let knobParamPickerHierarchy = null; // Parsed ui_hierarchy for current target
+let knobParamPickerLevel = null;     // Current level name in hierarchy (null = flat mode)
+let knobParamPickerPath = [];        // Navigation path for back in hierarchy
 let lastSlotModuleSignatures = [];  // Track per-slot module changes for knob cache refresh
 
 /* Master FX state */
@@ -2341,8 +2344,68 @@ function enterKnobParamPicker() {
     knobParamPickerFolder = null;
     knobParamPickerIndex = 0;
     knobParamPickerParams = [];
+    knobParamPickerHierarchy = null;
+    knobParamPickerLevel = null;
+    knobParamPickerPath = [];
     view = VIEWS.KNOB_PARAM_PICKER;
     needsRedraw = true;
+}
+
+/* Get items for current level in knob param picker hierarchy */
+function getKnobPickerLevelItems(hierarchy, levelName) {
+    const items = [];
+    if (!hierarchy || !hierarchy.levels || !hierarchy.levels[levelName]) {
+        return items;
+    }
+    const level = hierarchy.levels[levelName];
+
+    /* Add navigation items (levels) and param items */
+    if (level.params && Array.isArray(level.params)) {
+        for (const p of level.params) {
+            if (typeof p === "string") {
+                /* Simple param name */
+                items.push({ type: "param", key: p, label: p });
+            } else if (p && typeof p === "object") {
+                if (p.level) {
+                    /* Navigation item - drill into another level */
+                    items.push({ type: "nav", level: p.level, label: p.label || p.level });
+                } else if (p.key) {
+                    /* Param with label */
+                    items.push({ type: "param", key: p.key, label: p.label || p.key });
+                }
+            }
+        }
+    }
+
+    /* If no params but has knobs, use knobs as params */
+    if (items.length === 0 && level.knobs && Array.isArray(level.knobs)) {
+        for (const k of level.knobs) {
+            if (typeof k === "string") {
+                items.push({ type: "param", key: k, label: k });
+            } else if (k && k.key) {
+                items.push({ type: "param", key: k.key, label: k.label || k.key });
+            }
+        }
+    }
+
+    return items;
+}
+
+/* Find first level with params in hierarchy (skip preset browsers) */
+function findFirstParamLevel(hierarchy) {
+    if (!hierarchy || !hierarchy.levels) return "root";
+
+    /* Check if root has children, follow to first real params level */
+    let level = hierarchy.levels.root;
+    let levelName = "root";
+
+    /* Skip preset browser levels (those with list_param) */
+    while (level && level.list_param && level.children) {
+        levelName = level.children;
+        level = hierarchy.levels[levelName];
+    }
+
+    return levelName;
 }
 
 /* Apply knob assignment from picker */
@@ -4095,11 +4158,47 @@ function handleSelect() {
                         /* Enter param selection for this target */
                         knobParamPickerFolder = selected.id;
                         knobParamPickerIndex = 0;
-                        knobParamPickerParams = getKnobParamsForTarget(knobEditorSlot, selected.id);
+                        knobParamPickerPath = [];
+
+                        /* Try to load hierarchy for this target */
+                        const hierarchyJson = getSlotParam(knobEditorSlot, `${selected.id}:ui_hierarchy`);
+                        if (hierarchyJson) {
+                            try {
+                                knobParamPickerHierarchy = JSON.parse(hierarchyJson);
+                                /* Find first level with actual params (skip preset browser) */
+                                knobParamPickerLevel = findFirstParamLevel(knobParamPickerHierarchy);
+                                knobParamPickerParams = getKnobPickerLevelItems(knobParamPickerHierarchy, knobParamPickerLevel);
+                            } catch (e) {
+                                /* Parse error - fall back to flat mode */
+                                knobParamPickerHierarchy = null;
+                                knobParamPickerLevel = null;
+                                knobParamPickerParams = getKnobParamsForTarget(knobEditorSlot, selected.id);
+                            }
+                        } else {
+                            /* No hierarchy - use flat mode */
+                            knobParamPickerHierarchy = null;
+                            knobParamPickerLevel = null;
+                            knobParamPickerParams = getKnobParamsForTarget(knobEditorSlot, selected.id);
+                        }
+                    }
+                }
+            } else if (knobParamPickerHierarchy && knobParamPickerLevel) {
+                /* Hierarchy mode - check if selecting nav item or param */
+                const selected = knobParamPickerParams[knobParamPickerIndex];
+                if (selected) {
+                    if (selected.type === "nav") {
+                        /* Navigate into sub-level */
+                        knobParamPickerPath.push(knobParamPickerLevel);
+                        knobParamPickerLevel = selected.level;
+                        knobParamPickerIndex = 0;
+                        knobParamPickerParams = getKnobPickerLevelItems(knobParamPickerHierarchy, knobParamPickerLevel);
+                    } else if (selected.type === "param") {
+                        /* Select this param */
+                        applyKnobAssignment(knobParamPickerFolder, selected.key);
                     }
                 }
             } else {
-                /* Param view - selecting a param */
+                /* Flat mode - selecting a param */
                 const selected = knobParamPickerParams[knobParamPickerIndex];
                 if (selected) {
                     applyKnobAssignment(knobParamPickerFolder, selected.key);
@@ -4266,13 +4365,28 @@ function handleBack() {
                         hierEditorChildCount = 0;
                         hierEditorChildLabel = "";
                     }
-                    /* Find the parent level that has children pointing to current level */
+                    /* Find the parent level that has children pointing to current level,
+                     * or has a navigation param with level pointing to current level */
                     const levels = hierEditorHierarchy.levels;
                     let parentLevel = "root";
+                    let foundParent = false;
                     for (const [name, def] of Object.entries(levels)) {
+                        /* Check children property */
                         if (def.children === hierEditorLevel) {
                             parentLevel = name;
+                            foundParent = true;
                             break;
+                        }
+                        /* Check params array for navigation params with level property */
+                        if (def.params && Array.isArray(def.params)) {
+                            for (const p of def.params) {
+                                if (p && typeof p === "object" && p.level === hierEditorLevel) {
+                                    parentLevel = name;
+                                    foundParent = true;
+                                    break;
+                                }
+                            }
+                            if (foundParent) break;
                         }
                     }
                     hierEditorLevel = parentLevel;
@@ -4292,11 +4406,22 @@ function handleBack() {
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder !== null) {
-                /* Return to target selection */
-                knobParamPickerFolder = null;
-                knobParamPickerIndex = 0;
-                knobParamPickerParams = [];
-                needsRedraw = true;
+                if (knobParamPickerHierarchy && knobParamPickerPath.length > 0) {
+                    /* In hierarchy mode with path - go back up one level */
+                    knobParamPickerLevel = knobParamPickerPath.pop();
+                    knobParamPickerIndex = 0;
+                    knobParamPickerParams = getKnobPickerLevelItems(knobParamPickerHierarchy, knobParamPickerLevel);
+                    needsRedraw = true;
+                } else {
+                    /* At top of hierarchy or flat mode - return to target selection */
+                    knobParamPickerFolder = null;
+                    knobParamPickerIndex = 0;
+                    knobParamPickerParams = [];
+                    knobParamPickerHierarchy = null;
+                    knobParamPickerLevel = null;
+                    knobParamPickerPath = [];
+                    needsRedraw = true;
+                }
             } else {
                 /* Return to knob editor */
                 view = VIEWS.KNOB_EDITOR;
@@ -5042,8 +5167,24 @@ function drawKnobParamPicker() {
         });
 
         drawFooter("Click: select  Back: cancel");
+    } else if (knobParamPickerHierarchy && knobParamPickerLevel) {
+        /* Hierarchy mode - show current level */
+        const levelDef = knobParamPickerHierarchy.levels[knobParamPickerLevel];
+        const levelLabel = levelDef && levelDef.label ? levelDef.label : knobParamPickerLevel;
+        drawHeader(`K${knobNum}: ${levelLabel}`);
+
+        drawMenuList({
+            items: knobParamPickerParams,
+            selectedIndex: knobParamPickerIndex,
+            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+            getLabel: (item) => item.type === "nav" ? `${item.label} >` : item.label,
+            getValue: () => ""
+        });
+
+        const hasNav = knobParamPickerParams.some(p => p.type === "nav");
+        drawFooter(hasNav ? "Click: select  Back: up" : "Click: assign  Back: up");
     } else {
-        /* Param view - show params for selected target */
+        /* Flat mode - show params for selected target */
         drawHeader(`Knob ${knobNum} Param`);
 
         /* Get params for this target */
