@@ -348,6 +348,22 @@ Communication between shim and Shadow UI uses flags in `shadow_control_t.ui_flag
 - `SHADOW_UI_FLAG_JUMP_TO_SLOT (0x01)` - Jump to slot settings on open
 - `SHADOW_UI_FLAG_JUMP_TO_MASTER_FX (0x02)` - Jump to Master FX on open
 
+### Shadow Slot Features
+
+Each of the 4 shadow slots has:
+- **Receive channel**: MIDI channel to listen on (default 1-4)
+- **Forward channel**: Remap MIDI to specific channel for synths that require it (-1 = auto/passthrough)
+- **Volume**: Per-slot volume control
+- **State persistence**: Synth, audio FX, and MIDI FX states saved/restored automatically
+
+### MIDI Cable Filtering
+
+The shim filters MIDI by USB cable number:
+- Cable 0 out: Move UI events (filtered from shadow processing)
+- Cable 2 out: Track MIDI output (routed to shadow slots)
+
+This prevents Move's UI MIDI from accidentally triggering shadow synths.
+
 ### Master FX Chain
 
 Shadow mode includes a 4-slot Master FX chain that processes mixed output from all shadow slots. Access via Shift+Vol+Menu.

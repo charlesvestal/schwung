@@ -412,6 +412,19 @@ Shadow Mode uses several shared memory regions for IPC:
 | `/shadow_ui_state` | Slot state (names, channels, active status) |
 | `/shadow_param` | Parameter read/write requests |
 
+### MIDI Cables
+
+Move uses USB-MIDI cable numbers to separate different MIDI streams:
+
+| Cable | Direction | Purpose |
+|-------|-----------|---------|
+| 0 | In | Move hardware controls (pads, knobs, buttons) |
+| 0 | Out | Move UI events (filtered from shadow MIDI output) |
+| 2 | Out | Track MIDI output (routed to shadow synths) |
+| 15 | Both | Special/system messages |
+
+**Important:** When processing outgoing MIDI from Move (for shadow synth input), the shim filters cable 0 to prevent Move's UI events from triggering shadow synths. Only cable 2 (track MIDI output) is routed to shadow slots.
+
 ### MIDI Routing
 
 The shim filters incoming MIDI based on control type:
@@ -435,17 +448,32 @@ The shim filters incoming MIDI based on control type:
 
 Shadow Mode supports 4 independent chain slots, each with:
 - A loaded patch (synth + effects chain)
-- A MIDI channel assignment (for external controller routing)
+- A receive channel (MIDI channel to listen on, default 1-4)
+- A forward channel (channel remapping for synths that need specific channels)
+- Per-slot volume control
 - Independent knob mappings
+- State persistence (synth, audio FX, MIDI FX states saved/restored)
 
 ```c
 typedef struct {
     void *instance;           // Chain DSP instance
+    int channel;              // Receive channel (0-15, 0-based)
     int active;               // Slot has loaded patch
-    int midi_channel;         // MIDI channel (1-16, 0 = omni)
-    int forward_channel;      // Channel remapping for synth
+    float volume;             // 0.0 to 1.0, applied to audio output
+    int forward_channel;      // -1 = auto (use receive channel), 0-15 = specific channel
+    char patch_name[64];      // Currently loaded patch name
+    shadow_capture_rules_t capture;  // MIDI controls this slot captures
 } shadow_chain_slot_t;
 ```
+
+**Forward Channel:** Some synths (like Mini-JV) need MIDI on a specific channel regardless of which slot they're in. The `forward_channel` setting remaps MIDI before sending to the synth. When set to -1 (auto), MIDI passes through unchanged on the receive channel.
+
+**State Persistence:** When saving slot configuration, the system queries and stores:
+- Synth state via `synth:get_state`
+- Audio FX state via `audio_fx_<n>:get_state`
+- MIDI FX state via `midi_fx_<type>:get_state`
+
+States are restored when the patch is reloaded.
 
 ### Capture Rules
 

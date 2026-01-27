@@ -544,6 +544,27 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | Enum | `label`, `param`, `type:"enum"`, `options` | List of string options |
 | Mode | `label`, `param`, `type:"mode"`, `options` | Mode selector (like enum, triggers mode switch) |
 
+### Child Selectors (for repeated elements)
+
+For synths with multiple similar elements (tones, operators, parts), use child selectors:
+
+```json
+{
+  "levels": {
+    "tones": {
+      "name": "Tones",
+      "child_prefix": "nvram_tone_",
+      "child_count": 4,
+      "child_label": "Tone",
+      "params": ["cutofffrequency", "resonance", "level"],
+      "knobs": ["cutofffrequency", "resonance", "level"]
+    }
+  }
+}
+```
+
+The Shadow UI will show a selector (Tone 1, Tone 2, etc.) and prefix parameter keys with `child_prefix` + index (e.g., `synth:nvram_tone_0_cutofffrequency`).
+
 ### Example Hierarchy
 
 ```json
@@ -570,16 +591,46 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 
 ## Chain Parameters (Knob Mappings)
 
-Modules can expose quick-access knob mappings via `get_param("chain_params")`:
+Modules can expose quick-access knob mappings via `chain_params`. This can be defined statically in `module.json` or dynamically via `get_param("chain_params")`.
+
+### Static Definition (module.json)
+
+For modules with fixed parameters, define in capabilities:
+
+```json
+{
+  "capabilities": {
+    "chain_params": [
+      {
+        "key": "cutoff",
+        "name": "Cutoff",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "default": 64
+      },
+      {
+        "key": "type",
+        "name": "Filter Type",
+        "type": "enum",
+        "options": ["lowpass", "highpass", "bandpass"],
+        "default": "lowpass"
+      }
+    ]
+  }
+}
+```
+
+### Dynamic Definition (get_param)
+
+For modules with state-dependent parameters:
 
 ```c
 int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "chain_params") == 0) {
         const char *json = "["
-            "{\"label\": \"Cutoff\", \"cc\": 71, \"value\": 64},"
-            "{\"label\": \"Resonance\", \"cc\": 72, \"value\": 32},"
-            "{\"label\": \"Attack\", \"cc\": 73, \"value\": 10},"
-            "{\"label\": \"Release\", \"cc\": 74, \"value\": 50}"
+            "{\"key\": \"cutoff\", \"name\": \"Cutoff\", \"type\": \"int\", \"min\": 0, \"max\": 127, \"value\": 64},"
+            "{\"key\": \"resonance\", \"name\": \"Resonance\", \"type\": \"int\", \"min\": 0, \"max\": 127, \"value\": 32}"
         "]";
         strncpy(buf, json, buf_len);
         return strlen(json);
@@ -588,10 +639,15 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 }
 ```
 
-These map to knobs 1-8 in the Shadow UI. Each entry needs:
-- `label`: Display name for the parameter
-- `cc`: CC number (71-78 for knobs 1-8)
-- `value`: Current value (0-127)
+### Parameter Types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `int` | `min`, `max`, `default`/`value` | Integer value |
+| `float` | `min`, `max`, `default`/`value` | Float value |
+| `enum` | `options`, `default`/`value` | List of string options |
+
+These map to knobs 1-8 in the Shadow UI for quick access.
 
 ## Shared Utilities
 
@@ -674,7 +730,7 @@ The Signal Chain module allows combining MIDI sources, MIDI effects, sound gener
 |------|------------|
 | MIDI Sources | Sequencers or other modules referenced via `midi_source` |
 | Sound Generators | Line In, SF2, Dexed, CLAP, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `minijv`) |
-| MIDI Effects | Chord generator (major, minor, power, octave), Arpeggiator (up, down, updown, random) |
+| MIDI Effects | Chord (none, major, minor, power, octave with strum), Arpeggiator (off, up, down, up_down, random with BPM/division/sync) |
 | Audio Effects | Freeverb (reverb), CLAP effects |
 
 ### CLAP Host Module
@@ -846,16 +902,20 @@ The `module` field must match the `id` in your module's `module.json`.
 
 ### Shadow Mode MIDI Routing
 
-In shadow mode, Move tracks 1-4 send MIDI on channels 5-8:
+Each shadow slot listens on a configurable MIDI channel (default 1-4):
 
-| Move Track | MIDI Channel | Shadow Slot |
-|------------|--------------|-------------|
-| Track 1 | Ch 5 | Slot A |
-| Track 2 | Ch 6 | Slot B |
-| Track 3 | Ch 7 | Slot C |
-| Track 4 | Ch 8 | Slot D |
+| Shadow Slot | Default Channel |
+|-------------|-----------------|
+| Slot A | Ch 1 |
+| Slot B | Ch 2 |
+| Slot C | Ch 3 |
+| Slot D | Ch 4 |
 
-Each shadow slot can load a different chain patch. MIDI on channels 1-4 passes through to stock Move.
+**Forward Channel:** Some synths need MIDI on a specific channel regardless of slot. Configure via the slot's "Forward Ch" setting:
+- **Auto**: Pass MIDI through on the receive channel (default)
+- **1-16**: Remap all MIDI to that specific channel before sending to the synth
+
+Each shadow slot can load a different chain patch. Slot settings and synth states persist across restarts.
 
 ### Testing Shadow Mode
 

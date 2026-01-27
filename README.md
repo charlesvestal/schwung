@@ -104,18 +104,25 @@ Shadow Mode lets you run custom signal chains **alongside** stock Ableton Move w
 - **Toggle**: Shift + touch Volume knob + touch Knob 1 (while Move is running)
 - **Display**: Shadow UI takes over the screen to show slots and patches
 - **Audio**: Shadow synths mix with Move's audio output
-- **MIDI Routing**: Move tracks 1-4 send MIDI on channels 5-8 to shadow slots
+- **MIDI Routing**: Shadow slots receive MIDI on their configured channels (default 1-4)
 
 ### Shadow Slots
 
 Shadow mode provides 4 independent slots, each with its own chain patch:
 
-| Slot | MIDI Channel | Default Use |
-|------|--------------|-------------|
-| Slot A | Ch 5 | Move Track 1 |
-| Slot B | Ch 6 | Move Track 2 |
-| Slot C | Ch 7 | Move Track 3 |
-| Slot D | Ch 8 | Move Track 4 |
+| Slot | Default Channel | Description |
+|------|-----------------|-------------|
+| Slot A | Ch 1 | First shadow slot |
+| Slot B | Ch 2 | Second shadow slot |
+| Slot C | Ch 3 | Third shadow slot |
+| Slot D | Ch 4 | Fourth shadow slot |
+
+Each slot has configurable settings:
+- **Receive Channel**: Which MIDI channel the slot listens to (1-16)
+- **Forward Channel**: Remap MIDI to a specific channel for synths that require it (Auto = pass through)
+- **Volume**: Per-slot volume control (0-100%)
+
+Slot settings and synth states are automatically saved and restored across restarts.
 
 ### Shadow UI Navigation
 
