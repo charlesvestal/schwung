@@ -219,9 +219,43 @@ static void v2_process_block(void *instance, int16_t *audio_inout, int frames) {
     }
 }
 
+/* Simple JSON number extraction */
+static int json_get_float(const char *json, const char *key, float *out) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *p = strstr(json, search);
+    if (!p) return -1;
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t') p++;
+    *out = atof(p);
+    return 0;
+}
+
 static void v2_set_param(void *instance, const char *key, const char *val) {
     freeverb_instance_t *inst = (freeverb_instance_t*)instance;
     if (!inst) return;
+
+    /* State restore from patch save */
+    if (strcmp(key, "state") == 0) {
+        float v;
+        if (json_get_float(val, "room_size", &v) == 0) {
+            inst->room_size = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        }
+        if (json_get_float(val, "damping", &v) == 0) {
+            inst->damping = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        }
+        if (json_get_float(val, "wet", &v) == 0) {
+            inst->wet = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        }
+        if (json_get_float(val, "dry", &v) == 0) {
+            inst->dry = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        }
+        if (json_get_float(val, "width", &v) == 0) {
+            inst->width = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+        }
+        v2_update_params(inst);
+        return;
+    }
 
     float v = atof(val);
 
@@ -256,6 +290,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%.2f", inst->width);
     } else if (strcmp(key, "name") == 0) {
         return snprintf(buf, buf_len, "Freeverb");
+    } else if (strcmp(key, "state") == 0) {
+        return snprintf(buf, buf_len,
+            "{\"room_size\":%.4f,\"damping\":%.4f,\"wet\":%.4f,\"dry\":%.4f,\"width\":%.4f}",
+            inst->room_size, inst->damping, inst->wet, inst->dry, inst->width);
     } else if (strcmp(key, "ui_hierarchy") == 0) {
         const char *hierarchy = "{"
             "\"modes\":null,"
@@ -270,6 +308,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         int len = strlen(hierarchy);
         if (len < buf_len) {
             strcpy(buf, hierarchy);
+            return len;
+        }
+        return -1;
+    } else if (strcmp(key, "chain_params") == 0) {
+        const char *params = "["
+            "{\"key\":\"room_size\",\"name\":\"Room Size\",\"type\":\"float\",\"min\":0,\"max\":1},"
+            "{\"key\":\"damping\",\"name\":\"Damping\",\"type\":\"float\",\"min\":0,\"max\":1},"
+            "{\"key\":\"wet\",\"name\":\"Wet\",\"type\":\"float\",\"min\":0,\"max\":1},"
+            "{\"key\":\"dry\",\"name\":\"Dry\",\"type\":\"float\",\"min\":0,\"max\":1},"
+            "{\"key\":\"width\",\"name\":\"Width\",\"type\":\"float\",\"min\":0,\"max\":1}"
+        "]";
+        int len = strlen(params);
+        if (len < buf_len) {
+            strcpy(buf, params);
             return len;
         }
         return -1;
