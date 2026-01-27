@@ -41,22 +41,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update release.json
+      - name: Commit release.json
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          git fetch origin main
+          git checkout -f main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Recreate release.json on main branch
           cat > release.json << EOF
           {
             "version": "${VERSION}",
             "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/move-anything.tar.gz"
           }
           EOF
-
-      - name: Commit release.json
-        run: |
-          git fetch origin main
-          git checkout main
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add release.json
           if git diff --cached --quiet; then
             echo "release.json already up to date"
