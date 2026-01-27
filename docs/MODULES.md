@@ -689,7 +689,7 @@ The CLAP module (separate repo: `move-anything-clap`) hosts arbitrary CLAP audio
 
 ### Patch Files
 
-Patches are stored in `modules/chain/patches/` as JSON:
+Patches are stored in `/data/UserData/move-anything/patches/` on the device as JSON:
 
 ```json
 {
@@ -794,7 +794,7 @@ Shadow mode loads the same chain module and patches that Move Anything uses stan
 
 Both modes read from the same directories:
 - Modules: `/data/UserData/move-anything/modules/`
-- Patches: `/data/UserData/move-anything/modules/chain/patches/`
+- Patches: `/data/UserData/move-anything/patches/`
 
 ### Making Your Module Shadow-Compatible
 
@@ -815,7 +815,7 @@ Valid `component_type` values for chainable modules:
 
 ### Creating Shadow Chain Patches
 
-Patches are JSON files in `modules/chain/patches/`. To create a patch using your module:
+Patches are JSON files in `/data/UserData/move-anything/patches/`. To create a patch using your module:
 
 ```json
 {

@@ -12,7 +12,8 @@ Components live under `src/modules/chain/`:
 - `midi_fx/`: JavaScript MIDI effects registry and implementations
 - `sound_generators/`: Built-in generators (linein)
 - `audio_fx/`: Audio effects (freeverb)
-- `patches/`: Patch JSON files used by the chain browser
+
+Patch JSON files are stored in `/data/UserData/move-anything/patches/` on the device.
 
 ## Patch Format
 
@@ -121,4 +122,4 @@ By default, the host filters knob-touch notes (0-9) from internal MIDI. To bypas
 
 ## External Module Presets
 
-External modules can install chain presets into `patches/` via their install scripts (for example Mini-JV and OB-Xd).
+External modules can install chain presets into `/data/UserData/move-anything/patches/` via their install scripts (for example Mini-JV and OB-Xd).

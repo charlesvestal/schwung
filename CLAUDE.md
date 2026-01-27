@@ -280,7 +280,7 @@ These map to knobs 1-8 in the Shadow UI for quick parameter access.
 
 - Chain host (`modules/chain/dsp/chain_host.c`) loads sub-plugins via dlopen
 - Forwards MIDI to sound generator, routes audio through effects
-- Patch files in `modules/chain/patches/*.json` define chain configurations
+- Patch files stored in `/data/UserData/move-anything/patches/*.json` on device define chain configurations
 - MIDI FX: chord generator, arpeggiator (up, down, up_down, random)
 - Audio FX: freeverb
 - MIDI sources (optional): DSP modules that generate MIDI; can provide `ui_chain.js` for full-screen chain UI

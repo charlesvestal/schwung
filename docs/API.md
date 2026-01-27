@@ -114,6 +114,7 @@ host_unload_module()          // Unload current module
 host_return_to_menu()         // Unload module and return to host menu UI
 host_module_set_param(k, v)   // Set DSP parameter
 host_module_get_param(k)      // Get DSP parameter
+host_module_get_error()       // Get error message from last module operation
 host_module_send_midi(msg, source) // Send MIDI into current DSP module
 host_is_module_loaded()       // Returns bool
 host_get_current_module()     // Returns {id, name, version, ui_script} or null
@@ -137,9 +138,11 @@ host_get_refresh_rate()       // Get current refresh rate
 // File system utilities (used by Module Store)
 host_file_exists(path)        // Returns bool - check if file/directory exists
 host_read_file(path)          // Returns file contents as string, or null on error
+host_write_file(path, content) // Write string content to file, returns bool
 host_http_download(url, dest) // Download URL to dest path, returns bool
 host_extract_tar(tarball, dir) // Extract .tar.gz to directory, returns bool
 host_extract_tar_strip(tarball, dir, strip) // Extract with --strip-components
+host_ensure_dir(path)         // Create directory if it doesn't exist, returns bool
 host_remove_dir(path)         // Recursively remove directory, returns bool
 ```
 

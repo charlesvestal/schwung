@@ -78,7 +78,7 @@ Signal Chain can record audio output to WAV files:
 
 #### Creating Custom Patches
 
-Patches are JSON files in `modules/chain/patches/`. Create your own:
+Patches are JSON files in `/data/UserData/move-anything/patches/` on your Move device. Create your own:
 
 ```json
 {
@@ -159,7 +159,7 @@ Shadow mode uses the same chain module and patches as standalone Move Anything. 
 To add new synths or effects to shadow mode:
 
 1. Install the module via Module Store or Shadow UI Store Picker
-2. Create a chain patch in `modules/chain/patches/` that references the module
+2. Create a chain patch in `/data/UserData/move-anything/patches/` that references the module
 3. Select the patch in the shadow UI
 
 See [MODULES.md](docs/MODULES.md#shadow-mode-integration) for details on creating shadow-compatible patches.

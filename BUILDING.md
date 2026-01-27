@@ -68,12 +68,12 @@ build/
   move-anything-shim.so      # LD_PRELOAD shim
   host/menu_ui.js            # Host menu
   shared/                    # Shared JS utilities
+  patches/                   # Chain patches
   modules/
     chain/                   # Signal Chain module
       audio_fx/              # Audio FX plugins (Freeverb)
       sound_generators/      # Sound generators (Line In)
       midi_fx/               # MIDI FX (Chord, Arp)
-      patches/               # Chain patches
     controller/              # MIDI controller
     store/                   # Module Store
 

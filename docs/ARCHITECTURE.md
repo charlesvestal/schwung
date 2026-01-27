@@ -511,7 +511,7 @@ The shadow UI process draws to a shared display buffer. The shim swaps this buff
 
 ### Configuration Persistence
 
-Shadow slot configuration is saved to `/data/UserData/move-anything/shadow_config.json`:
+Shadow slot configuration is saved to `/data/UserData/move-anything/shadow_chain_config.json`:
 
 ```json
 {
