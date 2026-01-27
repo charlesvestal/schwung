@@ -235,31 +235,49 @@ Component types: `sound_generator`, `audio_fx`, `midi_fx`
 
 ### Shadow UI Parameter Hierarchy
 
-Modules can expose parameters to the Shadow UI via `ui_hierarchy` in their get_param response:
+Modules expose parameters to the Shadow UI via `ui_hierarchy` in their get_param response. The hierarchy defines menu structure, knob mappings, and navigation.
 
+**Structure:**
 ```json
 {
-  "ui_hierarchy": {
-    "label": "Dexed",
-    "children": [
-      {
-        "label": "Algorithm",
-        "param": "algorithm",
-        "type": "int",
-        "min": 1, "max": 32
-      },
-      {
-        "label": "Operators",
-        "children": [
-          { "label": "OP1", "children": [...] }
-        ]
-      }
-    ]
+  "modes": null,
+  "levels": {
+    "root": {
+      "label": "SF2",
+      "list_param": "preset",
+      "count_param": "preset_count",
+      "name_param": "preset_name",
+      "children": null,
+      "knobs": ["octave_transpose", "gain"],
+      "params": [
+        {"key": "octave_transpose", "label": "Octave"},
+        {"key": "gain", "label": "Gain"},
+        {"level": "soundfont", "label": "Choose Soundfont"}
+      ]
+    },
+    "soundfont": {
+      "label": "Soundfont",
+      "items_param": "soundfont_list",
+      "select_param": "soundfont_index",
+      "children": null,
+      "knobs": [],
+      "params": []
+    }
   }
 }
 ```
 
-The Shadow UI renders this as a navigable hierarchy with knob control for leaf parameters.
+**Key fields:**
+
+- `knobs`: Array of **strings** (parameter keys) mapped to physical knobs 1-8
+- `params`: Array for menu items. Each entry is either:
+  - **String**: Parameter key (e.g., `"gain"`)
+  - **Editable param object**: `{"key": "gain", "label": "Gain"}`
+  - **Navigation object**: `{"level": "soundfont", "label": "Choose Soundfont"}`
+- `list_param`/`count_param`/`name_param`: For preset browser levels
+- `items_param`/`select_param`: For dynamic item selection levels
+
+**Important:** Use `key` (not `param`) for editable parameter objects. Metadata (type, min, max) comes from `chain_params`.
 
 ### Chain Parameters
 

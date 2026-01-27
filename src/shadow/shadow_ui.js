@@ -414,6 +414,10 @@ let hierEditorPresetIndex = 0;
 let hierEditorPresetName = "";
 let hierEditorPresetEditMode = false; // true when editing params within a preset browser level
 
+/* Dynamic items level state (for items_param type levels) */
+let hierEditorIsDynamicItems = false; // true when current level uses items_param
+let hierEditorSelectParam = "";       // param to set when item selected
+
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
 let loadedModuleSlot = -1;       // Which slot the module UI is for
@@ -2563,6 +2567,7 @@ function loadHierarchyLevel() {
     /* Check if this is a preset browser level */
     if (levelDef.list_param && levelDef.count_param) {
         hierEditorIsPresetLevel = true;
+        hierEditorIsDynamicItems = false;
         hierEditorPresetEditMode = false;  /* Reset edit mode when entering preset level */
         hierEditorKnobs = levelDef.knobs || [];
 
@@ -2582,8 +2587,35 @@ function loadHierarchyLevel() {
         hierEditorParams = isTopLevel
             ? [...(levelDef.params || []), SWAP_MODULE_ACTION]
             : (levelDef.params || []);
+    } else if (levelDef.items_param) {
+        /* Dynamic items level - fetch items from plugin */
+        hierEditorIsPresetLevel = false;
+        hierEditorIsDynamicItems = true;
+        hierEditorPresetEditMode = false;
+        hierEditorSelectParam = levelDef.select_param || "";
+        hierEditorKnobs = levelDef.knobs || [];
+
+        /* Fetch items list from plugin */
+        const prefix = hierEditorComponent;
+        const itemsJson = getSlotParam(hierEditorSlot, `${prefix}:${levelDef.items_param}`);
+        let items = [];
+        if (itemsJson) {
+            try {
+                items = JSON.parse(itemsJson);
+            } catch (e) {
+                console.log(`Failed to parse items_param: ${e}`);
+            }
+        }
+
+        /* Convert items to params format with isDynamicItem flag */
+        hierEditorParams = items.map(item => ({
+            isDynamicItem: true,
+            label: item.label || item.name || `Item ${item.index}`,
+            index: item.index
+        }));
     } else {
         hierEditorIsPresetLevel = false;
+        hierEditorIsDynamicItems = false;
         hierEditorPresetEditMode = false;
         /* Use hierarchy params for scrollable list, knobs for physical mapping */
         hierEditorParams = isTopLevel
@@ -3194,15 +3226,23 @@ function formatHierDisplayValue(key, val) {
 function drawHierarchyEditor() {
     clear_screen();
 
-    /* Build breadcrumb header with plugin name */
-    const componentName = hierEditorComponent === "synth" ? "Synth" :
-                          hierEditorComponent === "fx1" ? "FX1" :
-                          hierEditorComponent === "fx2" ? "FX2" :
-                          hierEditorComponent === "midiFx" ? "MIDI FX" : hierEditorComponent;
-
-    /* Get plugin display name */
+    /* Get plugin info */
     const prefix = getComponentParamPrefix(hierEditorComponent);
-    const pluginName = getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
+    const cfg = chainConfigs[hierEditorSlot] || createEmptyChainConfig();
+    const moduleData = cfg && cfg[hierEditorComponent];
+    const abbrev = moduleData ? getModuleAbbrev(moduleData.module) : hierEditorComponent.toUpperCase();
+
+    /* Get bank or preset name for header depending on view */
+    let headerName;
+    if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
+        /* Preset browser: show bank/soundfont name */
+        headerName = getSlotParam(hierEditorSlot, `${prefix}:bank_name`) ||
+                     getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
+    } else {
+        /* Edit mode: show preset name */
+        headerName = getSlotParam(hierEditorSlot, `${prefix}:preset_name`) ||
+                     getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
+    }
 
     /* Check for mode indicator - show * for performance mode */
     let modeIndicator = "";
@@ -3215,20 +3255,35 @@ function drawHierarchyEditor() {
         }
     }
 
-    let breadcrumb = `S${hierEditorSlot + 1} ${componentName}`;
-    if (pluginName) {
-        breadcrumb += ` ${pluginName}${modeIndicator}`;
-    }
+    /* Build header: S#: Module: Bank (preset browser) or Preset (edit view) */
+    let headerText = `S${hierEditorSlot + 1}: ${abbrev}: ${headerName}${modeIndicator}`;
     if (hierEditorPath.length > 0) {
-        breadcrumb += " > " + hierEditorPath.join(" > ");
+        /* If navigated into sub-levels, append path */
+        headerText = `S${hierEditorSlot + 1}: ${abbrev} > ${hierEditorPath[hierEditorPath.length - 1]}`;
     }
 
-    drawHeader(truncateText(breadcrumb, 24));
+    drawHeader(truncateText(headerText, 24));
 
     /* Check if this is a preset browser level (and not in edit mode) */
     if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
         /* Draw preset browser UI */
         const centerY = 32;
+
+        /* Re-fetch preset count if zero (module may still be loading) */
+        if (hierEditorPresetCount === 0 && hierEditorLevel && hierEditorHierarchy && hierEditorHierarchy.levels) {
+            const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
+            if (levelDef && levelDef.count_param) {
+                const countStr = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${levelDef.count_param}`);
+                const newCount = countStr ? parseInt(countStr) : 0;
+                if (newCount > 0) {
+                    hierEditorPresetCount = newCount;
+                    const presetStr = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${levelDef.list_param}`);
+                    hierEditorPresetIndex = presetStr ? parseInt(presetStr) : 0;
+                    const nameParam = levelDef.name_param || "preset_name";
+                    hierEditorPresetName = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${nameParam}`) || "";
+                }
+            }
+        }
 
         if (hierEditorPresetCount > 0) {
             /* Show preset number */
@@ -3266,6 +3321,28 @@ function drawHierarchyEditor() {
                         childIndex: param.childIndex
                     };
                 }
+                /* Handle navigation params (params with level property) */
+                if (param && typeof param === "object" && param.level) {
+                    return {
+                        label: `[${param.label || param.level}...]`,
+                        value: "",
+                        key: `nav_${param.level}`,
+                        isNavigation: true,
+                        targetLevel: param.level
+                    };
+                }
+
+                /* Handle dynamic items (from items_param) */
+                if (param && typeof param === "object" && param.isDynamicItem) {
+                    return {
+                        label: param.label,
+                        value: "",
+                        key: `item_${param.index}`,
+                        isDynamicItem: true,
+                        itemIndex: param.index
+                    };
+                }
+
                 const key = typeof param === "string" ? param : param.key || param;
 
                 /* Handle special swap module action */
@@ -3937,6 +4014,46 @@ function handleSelect() {
                     invalidateKnobContextCache();
                     break;
                 }
+                /* Handle navigation params (params with level property) */
+                if (selectedParam && typeof selectedParam === "object" && selectedParam.level) {
+                    hierEditorPath.push(selectedParam.label || selectedParam.level);
+                    hierEditorLevel = selectedParam.level;
+                    hierEditorSelectedIdx = 0;
+                    hierEditorPresetEditMode = false;
+                    loadHierarchyLevel();
+                    invalidateKnobContextCache();
+                    break;
+                }
+                /* Handle dynamic items (from items_param) */
+                if (selectedParam && typeof selectedParam === "object" && selectedParam.isDynamicItem) {
+                    /* Set the select_param to this item's index */
+                    if (hierEditorSelectParam) {
+                        const prefix = hierEditorComponent;
+                        setSlotParam(hierEditorSlot, `${prefix}:${hierEditorSelectParam}`, String(selectedParam.index));
+                    }
+                    /* Go back to previous level */
+                    if (hierEditorPath.length > 0) {
+                        hierEditorPath.pop();
+                    }
+                    /* Find parent level - look for level that navigates here */
+                    const levels = hierEditorHierarchy.levels;
+                    let parentLevel = "root";
+                    for (const [name, def] of Object.entries(levels)) {
+                        if (def.params) {
+                            for (const p of def.params) {
+                                if (p && typeof p === "object" && p.level === hierEditorLevel) {
+                                    parentLevel = name;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    hierEditorLevel = parentLevel;
+                    hierEditorSelectedIdx = 0;
+                    loadHierarchyLevel();
+                    invalidateKnobContextCache();
+                    break;
+                }
                 if (selectedParam === SWAP_MODULE_ACTION) {
                     /* Swap module - handle Master FX vs regular chain slots */
                     if (hierEditorIsMasterFx) {
@@ -4460,8 +4577,8 @@ function drawComponentParams() {
 /* Draw horizontal chain editor with boxed icons */
 function drawChainEdit() {
     clear_screen();
+    /* Slot view: show slot patch name in header */
     const slotName = slots[selectedSlot]?.name || "Unknown";
-    /* Show slot number and preset name in header */
     const headerText = truncateText(`S${selectedSlot + 1} ${slotName}`, 24);
     drawHeader(headerText);
 
@@ -4708,9 +4825,25 @@ function drawComponentEdit() {
     const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
     const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleName;
 
-    drawHeader(truncateText(displayName, 20));
+    /* Build header: S#: Module: Bank (preset selection shows bank/soundfont) */
+    const abbrev = moduleData ? getModuleAbbrev(moduleData.module) : moduleName;
+    const bankName = getSlotParam(selectedSlot, `${prefix}:bank_name`) || displayName;
+    const headerText = truncateText(`S${selectedSlot + 1}: ${abbrev}: ${bankName}`, 24);
+    drawHeader(headerText);
 
     const centerY = 32;
+
+    /* Re-fetch preset count if zero (module may still be loading) */
+    if (editComponentPresetCount === 0) {
+        const countStr = getSlotParam(selectedSlot, `${prefix}:preset_count`);
+        const newCount = countStr ? parseInt(countStr) : 0;
+        if (newCount > 0) {
+            editComponentPresetCount = newCount;
+            const presetStr = getSlotParam(selectedSlot, `${prefix}:preset`);
+            editComponentPreset = presetStr ? parseInt(presetStr) : 0;
+            editComponentPresetName = getSlotParam(selectedSlot, `${prefix}:preset_name`) || "";
+        }
+    }
 
     if (editComponentPresetCount > 0) {
         /* Show preset number */
