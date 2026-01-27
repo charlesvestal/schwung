@@ -33,8 +33,8 @@
     {
       "id": "sf2",
       "name": "SF2 Synth",
-      "description": "SoundFont (.sf2) synthesizer using TinySoundFont",
-      "author": "TinySoundFont by schellingb (port: charlesvestal)",
+      "description": "SoundFont (.sf2) synthesizer using FluidLite",
+      "author": "FluidLite by Robin Lobel (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-sf2",
       "asset_name": "sf2-module.tar.gz",
