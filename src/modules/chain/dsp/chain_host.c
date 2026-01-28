@@ -5173,21 +5173,51 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 }
 
                 if (target[0] && param[0]) {
+                    /* Look up param info from the target's chain_params */
+                    chain_param_info_t *pinfo = NULL;
+                    if (strcmp(target, "synth") == 0) {
+                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
+                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
+                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
+                    }
+
                     /* Set mapping */
                     if (found >= 0) {
-                        /* Update existing */
+                        /* Update existing - also update type/range from param info */
                         strncpy(inst->knob_mappings[found].target, target, 31);
                         strncpy(inst->knob_mappings[found].param, param, 63);
+                        if (pinfo) {
+                            inst->knob_mappings[found].type = pinfo->type;
+                            inst->knob_mappings[found].min_val = pinfo->min_val;
+                            inst->knob_mappings[found].max_val = pinfo->max_val;
+                        }
                     } else if (inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
                         /* Add new */
                         int i = inst->knob_mapping_count++;
                         inst->knob_mappings[i].cc = cc;
                         strncpy(inst->knob_mappings[i].target, target, 31);
                         strncpy(inst->knob_mappings[i].param, param, 63);
-                        inst->knob_mappings[i].type = KNOB_TYPE_FLOAT;
-                        inst->knob_mappings[i].min_val = 0.0f;
-                        inst->knob_mappings[i].max_val = 1.0f;
-                        inst->knob_mappings[i].current_value = 0.5f;
+                        if (pinfo) {
+                            /* Use actual param type and range */
+                            inst->knob_mappings[i].type = pinfo->type;
+                            inst->knob_mappings[i].min_val = pinfo->min_val;
+                            inst->knob_mappings[i].max_val = pinfo->max_val;
+                            inst->knob_mappings[i].current_value = pinfo->default_val;
+                        } else {
+                            /* Fallback to defaults if param not found */
+                            inst->knob_mappings[i].type = KNOB_TYPE_FLOAT;
+                            inst->knob_mappings[i].min_val = 0.0f;
+                            inst->knob_mappings[i].max_val = 1.0f;
+                            inst->knob_mappings[i].current_value = 0.5f;
+                        }
                     }
                 }
             }
@@ -5290,14 +5320,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 /* V2 get_param handler */
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
-    /* Debug: log all get_param calls */
-    {
-        FILE *dbg = fopen("/tmp/v2_get_param.log", "a");
-        if (dbg) {
-            fprintf(dbg, "key='%s' inst=%p\n", key ? key : "(null)", (void*)inst);
-            fclose(dbg);
-        }
-    }
     if (!inst) return -1;
 
     if (strcmp(key, "patch_count") == 0) {
@@ -5349,14 +5371,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strncmp(key, "master_preset_name_", 19) == 0) {
         int idx = atoi(key + 19);
         if (idx >= 0 && idx < master_preset_count) {
-            int len = snprintf(buf, buf_len, "%s", master_preset_names[idx]);
-            FILE *dbg = fopen("/tmp/preset_name.log", "a");
-            if (dbg) {
-                fprintf(dbg, "idx=%d array='%s' buf='%s' len=%d\n",
-                        idx, master_preset_names[idx], buf, len);
-                fclose(dbg);
-            }
-            return len;
+            return snprintf(buf, buf_len, "%s", master_preset_names[idx]);
         }
         return -1;
     }
