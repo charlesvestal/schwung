@@ -171,6 +171,30 @@ To add new synths or effects to shadow mode:
 
 See [MODULES.md](docs/MODULES.md#shadow-mode-integration) for details on creating shadow-compatible patches.
 
+## Overtake Modules
+
+Overtake modules take **complete control** of Move's UI while running in shadow mode. Unlike regular shadow mode (which overlays a custom UI), overtake modules fully replace Move's display and control all LEDs.
+
+### Available Overtake Modules
+
+| Module | Description |
+|--------|-------------|
+| **MIDI Controller** | 16-bank MIDI controller with configurable pads and knobs (built-in) |
+| **M8 LPP** | Launchpad Pro emulation for Dirtywave M8 (via Module Store) |
+| **SID Control** | MIDI controller for SIDaster III synthesizer (via Module Store) |
+
+### Using Overtake Modules
+
+1. Enter shadow mode: **Shift + Vol + Knob 1**
+2. Navigate to **Overtake Modules** in the menu
+3. Select a module to load it
+4. The module takes full control of the display and LEDs
+5. Exit anytime: **Shift + Vol + Jog Click**
+
+### Creating Overtake Modules
+
+Set `"component_type": "overtake"` in your module.json. See [MODULES.md](docs/MODULES.md#overtake-modules) for full documentation.
+
 ## External Modules (via Module Store)
 
 Install these from the Module Store on your device:
@@ -196,6 +220,7 @@ Install these from the Module Store on your device:
 | Module | Description |
 |--------|-------------|
 | M8 LPP | Dirtywave M8 Launchpad Pro emulation |
+| SID Control | MIDI controller for SIDaster III synthesizer |
 
 ### Using the Module Store
 

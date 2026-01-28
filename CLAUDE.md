@@ -76,7 +76,8 @@ Valid component types:
 - `sound_generator` - Synths and samplers
 - `audio_fx` - Audio effects
 - `midi_fx` - MIDI processors
-- `utility` - Utility modules (MIDI Controller, M8 emulator)
+- `utility` - Utility modules
+- `overtake` - Overtake modules (full UI control in shadow mode)
 - `system` - System modules (Module Store), shown last
 
 The main menu automatically organizes modules by category, reading from each module's `component_type` field.
@@ -331,8 +332,10 @@ External modules are maintained in separate repositories and available via Modul
 - `tapescam` - Tape saturation
 - `tapedelay` - Tape delay with flutter and saturation
 
-**Utilities:**
+**Utilities/Overtake:**
 - `m8` - Dirtywave M8 Launchpad Pro emulator
+- `sidcontrol` - SID Control for SIDaster III
+- `controller` - MIDI Controller with 16 banks (built-in)
 
 External modules install their own Signal Chain presets via their install scripts.
 
@@ -345,6 +348,7 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 - **Shift+Vol+Knob1**: Toggle shadow mode on/off
 - **Shift+Vol+Track 1-4**: Jump directly to slot settings (works from Move or Shadow UI)
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
+- **Shift+Vol+Jog Click**: Exit overtake module (when in overtake mode)
 
 ### Shadow Architecture
 
@@ -365,6 +369,7 @@ Key shared memory segments:
 Communication between shim and Shadow UI uses flags in `shadow_control_t.ui_flags`:
 - `SHADOW_UI_FLAG_JUMP_TO_SLOT (0x01)` - Jump to slot settings on open
 - `SHADOW_UI_FLAG_JUMP_TO_MASTER_FX (0x02)` - Jump to Master FX on open
+- `SHADOW_UI_FLAG_JUMP_TO_OVERTAKE (0x04)` - Jump to overtake module menu
 
 ### Shadow Slot Features
 
@@ -385,6 +390,44 @@ This prevents Move's UI MIDI from accidentally triggering shadow synths.
 ### Master FX Chain
 
 Shadow mode includes a 4-slot Master FX chain that processes mixed output from all shadow slots. Access via Shift+Vol+Menu.
+
+### Overtake Modules
+
+Overtake modules take complete control of Move's UI in shadow mode. They're accessed via the shadow UI's "Overtake Modules" menu.
+
+**Module Requirements:**
+- Set `"component_type": "overtake"` in module.json
+- Use progressive LED initialization (buffer holds ~64 packets)
+- Handle all MIDI input via `onMidiMessageInternal`/`onMidiMessageExternal`
+
+**Lifecycle:**
+1. Host clears all LEDs progressively (shows "Loading...")
+2. ~500ms delay before calling module's `init()`
+3. Module runs with full UI control
+4. Shift+Vol+Jog Click triggers exit (host-level, always works)
+5. Host clears LEDs progressively (shows "Exiting...")
+6. Returns to Move
+
+**LED Buffer Constraint:**
+The MIDI output buffer holds ~64 USB-MIDI packets. Sending more than 60 LED commands per frame causes overflow. Use progressive LED initialization:
+
+```javascript
+const LEDS_PER_FRAME = 8;
+let ledInitPending = true;
+let ledInitIndex = 0;
+
+globalThis.tick = function() {
+    if (ledInitPending) {
+        // Set 8 LEDs per frame
+        setupLedBatch();
+    }
+    drawUI();
+};
+```
+
+**Key Files:**
+- `src/shadow/shadow_ui.js` - Overtake module loading and lifecycle
+- `src/modules/controller/ui.js` - Example overtake module
 
 ## Module Store
 
