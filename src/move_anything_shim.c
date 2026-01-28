@@ -27,6 +27,7 @@
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
 #define SHADOW_TRACE_DEBUG 0     /* SPI/MIDI trace logging */
+#define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
 
 unsigned char *global_mmap_addr = NULL;  /* Points to shadow_mailbox (what Move sees) */
 unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
@@ -1040,6 +1041,8 @@ typedef struct {
     char module_path[256];           /* Full DSP path */
     char module_id[64];              /* Module ID for display */
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
+    char chain_params_cache[2048];   /* Cached chain_params to avoid file I/O in audio thread */
+    int chain_params_cached;         /* 1 if cache is valid */
 } master_fx_slot_t;
 
 static master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
@@ -1765,7 +1768,17 @@ static int shadow_chain_parse_channel(int ch) {
     return ch;
 }
 
+static int shadow_inprocess_log_enabled(void) {
+    static int enabled = -1;
+    static int check_counter = 0;
+    if (enabled < 0 || (check_counter++ % 200 == 0)) {
+        enabled = (access("/data/UserData/move-anything/shadow_inprocess_log_on", F_OK) == 0);
+    }
+    return enabled;
+}
+
 static void shadow_log(const char *msg) {
+    if (!shadow_inprocess_log_enabled()) return;
     FILE *log = fopen("/data/UserData/move-anything/shadow_inprocess.log", "a");
     if (log) {
         fprintf(log, "%s\n", msg ? msg : "(null)");
@@ -2066,6 +2079,8 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
     /* Load capture rules from module.json capabilities */
     char module_json_path[512];
     snprintf(module_json_path, sizeof(module_json_path), "%s/module.json", module_dir);
+    s->chain_params_cached = 0;
+    s->chain_params_cache[0] = '\0';
     FILE *f = fopen(module_json_path, "r");
     if (f) {
         fseek(f, 0, SEEK_END);
@@ -2079,6 +2094,26 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
                 const char *caps = strstr(json, "\"capabilities\"");
                 if (caps) {
                     capture_parse_json(&s->capture, caps);
+                }
+                /* Cache chain_params to avoid file I/O in audio thread */
+                const char *chain_params = strstr(json, "\"chain_params\"");
+                if (chain_params) {
+                    const char *arr_start = strchr(chain_params, '[');
+                    if (arr_start) {
+                        int depth = 1;
+                        const char *arr_end = arr_start + 1;
+                        while (*arr_end && depth > 0) {
+                            if (*arr_end == '[') depth++;
+                            else if (*arr_end == ']') depth--;
+                            arr_end++;
+                        }
+                        int len = (int)(arr_end - arr_start);
+                        if (len > 0 && len < (int)sizeof(s->chain_params_cache) - 1) {
+                            memcpy(s->chain_params_cache, arr_start, len);
+                            s->chain_params_cache[len] = '\0';
+                            s->chain_params_cached = 1;
+                        }
+                    }
                 }
                 free(json);
             }
@@ -2549,63 +2584,19 @@ static void shadow_inprocess_handle_param_request(void) {
                     }
                 }
 
-                /* Fall back to reading chain_params from module.json
-                 * mfx->module_path is like: .../modules/audio_fx/cloudseed/cloudseed.so
-                 * We need: .../modules/audio_fx/cloudseed/module.json
-                 * So strip just the filename */
-                char module_dir[256];
-                strncpy(module_dir, mfx->module_path, sizeof(module_dir) - 1);
-                module_dir[sizeof(module_dir) - 1] = '\0';
-                char *last_slash = strrchr(module_dir, '/');
-                if (last_slash) *last_slash = '\0';  /* Remove filename */
-
-                char json_path[512];
-                snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
-
-                FILE *f = fopen(json_path, "r");
-                if (f) {
-                    fseek(f, 0, SEEK_END);
-                    long size = ftell(f);
-                    fseek(f, 0, SEEK_SET);
-                    /* Allow larger files - we only extract chain_params array */
-                    if (size > 0 && size < 32768) {
-                        char *json = malloc(size + 1);
-                        if (json) {
-                            fread(json, 1, size, f);
-                            json[size] = '\0';
-
-                            /* Find chain_params in capabilities */
-                            const char *chain_params = strstr(json, "\"chain_params\"");
-                            if (chain_params) {
-                                const char *arr_start = strchr(chain_params, '[');
-                                if (arr_start) {
-                                    int depth = 1;
-                                    const char *arr_end = arr_start + 1;
-                                    while (*arr_end && depth > 0) {
-                                        if (*arr_end == '[') depth++;
-                                        else if (*arr_end == ']') depth--;
-                                        arr_end++;
-                                    }
-                                    int len = (int)(arr_end - arr_start);
-                                    if (len > 0 && len < SHADOW_PARAM_VALUE_LEN - 1) {
-                                        memcpy(shadow_param->value, arr_start, len);
-                                        shadow_param->value[len] = '\0';
-                                        shadow_param->error = 0;
-                                        shadow_param->result_len = len;
-                                        free(json);
-                                        fclose(f);
-                                        shadow_param->response_ready = 1;
-                                        shadow_param->request_type = 0;
-                                        return;
-                                    }
-                                }
-                            }
-                            free(json);
-                        }
+                /* Use cached chain_params (avoids file I/O in audio thread) */
+                if (mfx->chain_params_cached && mfx->chain_params_cache[0]) {
+                    int len = strlen(mfx->chain_params_cache);
+                    if (len < SHADOW_PARAM_VALUE_LEN - 1) {
+                        memcpy(shadow_param->value, mfx->chain_params_cache, len + 1);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = len;
+                        shadow_param->response_ready = 1;
+                        shadow_param->request_type = 0;
+                        return;
                     }
-                    fclose(f);
                 }
-                /* Fall through if chain_params not found */
+                /* Fall through if chain_params not cached */
                 shadow_param->value[0] = '[';
                 shadow_param->value[1] = ']';
                 shadow_param->value[2] = '\0';
@@ -3095,6 +3086,8 @@ static int16_t *shadow_movein_shm = NULL;   /* Move's audio for shadow to read *
 static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
+static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
+static uint8_t last_shadow_midi_out_ready = 0;
 
 /* Shadow shared memory file descriptors */
 static int shm_audio_fd = -1;
@@ -3105,6 +3098,7 @@ static int shm_display_fd = -1;
 static int shm_control_fd = -1;
 static int shm_ui_fd = -1;
 static int shm_param_fd = -1;
+static int shm_midi_out_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -3266,10 +3260,27 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create param shm\n");
     }
 
+    /* Create/open MIDI out shared memory (for shadow UI to send MIDI) */
+    shm_midi_out_fd = shm_open(SHM_SHADOW_MIDI_OUT, O_CREAT | O_RDWR, 0666);
+    if (shm_midi_out_fd >= 0) {
+        ftruncate(shm_midi_out_fd, sizeof(shadow_midi_out_t));
+        shadow_midi_out_shm = (shadow_midi_out_t *)mmap(NULL, sizeof(shadow_midi_out_t),
+                                                         PROT_READ | PROT_WRITE,
+                                                         MAP_SHARED, shm_midi_out_fd, 0);
+        if (shadow_midi_out_shm == MAP_FAILED) {
+            shadow_midi_out_shm = NULL;
+            printf("Shadow: Failed to mmap midi_out shm\n");
+        } else {
+            memset(shadow_midi_out_shm, 0, sizeof(shadow_midi_out_t));
+        }
+    } else {
+        printf("Shadow: Failed to create midi_out shm\n");
+    }
+
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm);
 }
 
 #if SHADOW_DEBUG
@@ -3364,6 +3375,38 @@ static void shadow_mix_audio(void)
         mailbox_audio[i] = (int16_t)mixed;
     }
     #endif
+}
+
+/* Inject shadow UI MIDI out into mailbox before ioctl */
+static void shadow_inject_ui_midi_out(void) {
+    if (!shadow_midi_out_shm) return;
+    if (shadow_midi_out_shm->ready == last_shadow_midi_out_ready) return;
+
+    last_shadow_midi_out_ready = shadow_midi_out_shm->ready;
+
+    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
+    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+
+    /* Find empty slots and copy packets */
+    int hw_offset = 0;
+    for (int i = 0; i < shadow_midi_out_shm->write_idx && i < SHADOW_MIDI_OUT_BUFFER_SIZE; i += 4) {
+        /* Find empty 4-byte slot */
+        while (hw_offset < MIDI_BUFFER_SIZE) {
+            if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
+                midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
+                break;
+            }
+            hw_offset += 4;
+        }
+        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+
+        memcpy(&midi_out[hw_offset], &shadow_midi_out_shm->buffer[i], 4);
+        hw_offset += 4;
+    }
+
+    /* Clear after processing */
+    shadow_midi_out_shm->write_idx = 0;
+    memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
 }
 
 static int shadow_has_midi_packets(const uint8_t *src)
@@ -3655,6 +3698,7 @@ static void shadow_filter_move_input(void)
 
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
     const shadow_capture_rules_t *capture = shadow_get_focused_capture();
+    int overtake_mode = shadow_control->overtake_mode;
 
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cin = src[i] & 0x0F;
@@ -3672,6 +3716,29 @@ static void shadow_filter_move_input(void)
         uint8_t type = status & 0xF0;
         uint8_t d1 = src[i + 2];
         uint8_t d2 = src[i + 3];
+
+        /* In overtake mode, forward ALL MIDI to shadow UI and block from Move */
+        if (overtake_mode) {
+            /* Forward to shadow UI */
+            if (shadow_ui_midi_shm) {
+                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                    if (shadow_ui_midi_shm[slot] == 0) {
+                        shadow_ui_midi_shm[slot] = src[i];
+                        shadow_ui_midi_shm[slot + 1] = status;
+                        shadow_ui_midi_shm[slot + 2] = d1;
+                        shadow_ui_midi_shm[slot + 3] = d2;
+                        shadow_control->midi_ready++;
+                        break;
+                    }
+                }
+            }
+            /* Block ALL from Move in overtake mode */
+            src[i] = 0;
+            src[i + 1] = 0;
+            src[i + 2] = 0;
+            src[i + 3] = 0;
+            continue;
+        }
 
         /* Handle CC events */
         if (type == 0xB0) {
@@ -4587,10 +4654,12 @@ int ioctl(int fd, unsigned long request, ...)
     if (baseline_mode < 0) {
         const char *env = getenv("SHADOW_BASELINE");
         baseline_mode = (env && env[0] == '1') ? 1 : 0;
+#if SHADOW_TIMING_LOG
         if (baseline_mode) {
             FILE *f = fopen("/tmp/ioctl_timing.log", "a");
             if (f) { fprintf(f, "=== BASELINE MODE: All processing disabled ===\n"); fclose(f); }
         }
+#endif
     }
 
     clock_gettime(CLOCK_MONOTONIC, &ioctl_start);
@@ -4600,6 +4669,7 @@ int ioctl(int fd, unsigned long request, ...)
         consecutive_overruns++;
         if (consecutive_overruns >= SKIP_DSP_THRESHOLD) {
             skip_dsp_this_frame = 1;
+#if SHADOW_TIMING_LOG
             static int skip_log_count = 0;
             if (skip_log_count++ < 10 || skip_log_count % 100 == 0) {
                 FILE *f = fopen("/tmp/ioctl_timing.log", "a");
@@ -4609,6 +4679,7 @@ int ioctl(int fd, unsigned long request, ...)
                     fclose(f);
                 }
             }
+#endif
         }
     } else {
         consecutive_overruns = 0;
@@ -4699,6 +4770,7 @@ int ioctl(int fd, unsigned long request, ...)
 
     /* Log pre-ioctl mix timing every 1000 blocks (~23 seconds) */
     if (mix_time_count >= 1000) {
+#if SHADOW_TIMING_LOG
         uint64_t avg = mix_time_sum / mix_time_count;
         FILE *f = fopen("/tmp/dsp_timing.log", "a");
         if (f) {
@@ -4706,6 +4778,7 @@ int ioctl(int fd, unsigned long request, ...)
                     (unsigned long long)avg, (unsigned long long)mix_time_max);
             fclose(f);
         }
+#endif
         mix_time_sum = 0;
         mix_time_count = 0;
         mix_time_max = 0;
@@ -4857,6 +4930,10 @@ do_ioctl:
     /* In baseline mode, pre_end wasn't set - set it now */
     if (baseline_mode) clock_gettime(CLOCK_MONOTONIC, &pre_end);
 
+    /* === SHADOW UI MIDI OUT (PRE-IOCTL) ===
+     * Inject any MIDI from shadow UI into the mailbox before sync. */
+    shadow_inject_ui_midi_out();
+
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
      * Copy shadow mailbox to hardware before ioctl.
      * Move has been writing to shadow_mailbox; now we send that to hardware. */
@@ -4885,6 +4962,7 @@ do_ioctl:
         /* Copy MIDI_IN with filtering when in shadow display mode */
         uint8_t *hw_midi = hardware_mmap_addr + MIDI_IN_OFFSET;
         uint8_t *sh_midi = shadow_mailbox + MIDI_IN_OFFSET;
+        int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
 
         if (shadow_display_mode && shadow_control) {
             /* Filter MIDI_IN: zero out jog/back/knobs */
@@ -4899,24 +4977,29 @@ do_ioctl:
 
                 /* Only filter internal cable (0x00) */
                 if (cable == 0x00) {
-                    /* CC messages: filter jog/back controls (let up/down through for octave) */
-                    if (cin == 0x0B && type == 0xB0) {
-                        if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
-                            filter = 1;
+                    /* In overtake mode, filter ALL cable 0 events from Move */
+                    if (overtake_mode) {
+                        filter = 1;
+                    } else {
+                        /* CC messages: filter jog/back controls (let up/down through for octave) */
+                        if (cin == 0x0B && type == 0xB0) {
+                            if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
+                                filter = 1;
+                            }
+                            /* Filter knob CCs when shift held */
+                            if (d1 >= CC_KNOB1 && d1 <= CC_KNOB8) {
+                                filter = 1;
+                            }
+                            /* Filter Menu and Jog Click CCs when Shift+Volume shortcut is active */
+                            if ((d1 == CC_MENU || d1 == CC_JOG_CLICK) && shadow_shift_held && shadow_volume_knob_touched) {
+                                filter = 1;
+                            }
                         }
-                        /* Filter knob CCs when shift held */
-                        if (d1 >= CC_KNOB1 && d1 <= CC_KNOB8) {
-                            filter = 1;
-                        }
-                        /* Filter Menu CC when Shift+Volume shortcut is active */
-                        if (d1 == CC_MENU && shadow_shift_held && shadow_volume_knob_touched) {
-                            filter = 1;
-                        }
-                    }
-                    /* Note messages: filter knob touches (0-9) */
-                    if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
-                        if (d1 <= 9) {
-                            filter = 1;
+                        /* Note messages: filter knob touches (0-9) */
+                        if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
+                            if (d1 <= 9) {
+                                filter = 1;
+                            }
                         }
                     }
                 }
@@ -5018,6 +5101,24 @@ do_ioctl:
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                         }
                         /* Block Menu CC from reaching Move */
+                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    }
+                }
+
+                /* Shift + Volume + Jog Click = toggle overtake module menu */
+                if (d1 == CC_JOG_CLICK && d2 > 0) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
+                        if (!shadow_display_mode) {
+                            /* From Move mode: launch shadow UI and show overtake menu */
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
+                            shadow_display_mode = 1;
+                            shadow_control->display_mode = 1;
+                            launch_shadow_ui();
+                        } else {
+                            /* Already in shadow mode: toggle - if in overtake, exit to Move */
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
+                        }
+                        /* Block Jog Click from reaching Move */
                         src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     }
                 }
@@ -5160,6 +5261,7 @@ do_ioctl:
 #if !SHADOW_DISABLE_POST_IOCTL_MIDI
     if (shadow_display_mode && shadow_control && hardware_mmap_addr) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;  /* Scan unfiltered hardware buffer */
+        int overtake_mode = shadow_control->overtake_mode;
 
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
@@ -5171,6 +5273,21 @@ do_ioctl:
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
+
+            /* In overtake mode, forward ALL events to shadow UI */
+            if (overtake_mode && shadow_ui_midi_shm) {
+                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                    if (shadow_ui_midi_shm[slot] == 0) {
+                        shadow_ui_midi_shm[slot] = src[j];
+                        shadow_ui_midi_shm[slot + 1] = status;
+                        shadow_ui_midi_shm[slot + 2] = d1;
+                        shadow_ui_midi_shm[slot + 3] = d2;
+                        shadow_control->midi_ready++;
+                        break;
+                    }
+                }
+                continue;  /* Skip normal processing in overtake mode */
+            }
 
             /* Handle CC events */
             if (type == 0xB0) {
@@ -5315,6 +5432,7 @@ do_ioctl:
 
         /* Log DSP render timing every 1000 blocks (~23 seconds) */
         if (render_time_count >= 1000) {
+#if SHADOW_TIMING_LOG
             uint64_t avg = render_time_sum / render_time_count;
             FILE *f = fopen("/tmp/dsp_timing.log", "a");
             if (f) {
@@ -5322,6 +5440,7 @@ do_ioctl:
                         (unsigned long long)avg, (unsigned long long)render_time_max);
                 fclose(f);
             }
+#endif
             render_time_sum = 0;
             render_time_count = 0;
             render_time_max = 0;
@@ -5353,6 +5472,7 @@ do_timing:
     if (ioctl_us > ioctl_max) ioctl_max = ioctl_us;
     if (post_us > post_max) post_max = post_us;
 
+#if SHADOW_TIMING_LOG
     /* Warn immediately if total hook time >2ms */
     if (total_us > 2000) {
         static int hook_overrun_count = 0;
@@ -5368,9 +5488,11 @@ do_timing:
             }
         }
     }
+#endif
 
     /* Log every 1000 blocks (~23 seconds) */
     if (timing_count >= 1000) {
+#if SHADOW_TIMING_LOG
         FILE *f = fopen("/tmp/ioctl_timing.log", "a");
         if (f) {
             fprintf(f, "Ioctl timing (1000 blocks): total avg=%llu max=%llu | pre avg=%llu max=%llu | ioctl avg=%llu max=%llu | post avg=%llu max=%llu\n",
@@ -5380,6 +5502,7 @@ do_timing:
                     (unsigned long long)(post_sum / timing_count), (unsigned long long)post_max);
             fclose(f);
         }
+#endif
         total_sum = pre_sum = ioctl_sum = post_sum = 0;
         total_max = pre_max = ioctl_max = post_max = 0;
         timing_count = 0;
@@ -5388,6 +5511,7 @@ do_timing:
     /* Log granular pre-ioctl timing every 1000 blocks */
     granular_count++;
     if (granular_count >= 1000) {
+#if SHADOW_TIMING_LOG
         FILE *f = fopen("/tmp/ioctl_timing.log", "a");
         if (f) {
             fprintf(f, "Granular: midi_mon avg=%llu max=%llu | fwd_midi avg=%llu max=%llu | "
@@ -5404,6 +5528,7 @@ do_timing:
                     (unsigned long long)(display_sum / granular_count), (unsigned long long)display_max);
             fclose(f);
         }
+#endif
         midi_mon_sum = midi_mon_max = fwd_midi_sum = fwd_midi_max = 0;
         mix_audio_sum = mix_audio_max = ui_req_sum = ui_req_max = 0;
         param_req_sum = param_req_max = proc_midi_sum = proc_midi_max = 0;

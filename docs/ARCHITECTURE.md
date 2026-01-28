@@ -552,6 +552,89 @@ Shadow slot configuration is saved to `/data/UserData/move-anything/shadow_chain
 }
 ```
 
+### Overtake Mode
+
+Overtake mode is a special shadow mode variant where a module takes complete control of Move's UI. Unlike regular shadow mode (which overlays a custom UI), overtake modules fully replace Move's display and control all LEDs.
+
+**Activation:** Accessed via the shadow UI menu (select an overtake module like MIDI Controller or M8).
+
+**Lifecycle:**
+
+```
+Shadow UI selects overtake module
+         ↓
+Host clears all LEDs progressively
+(20 LEDs per frame to avoid buffer overflow)
+         ↓
+"Loading..." displayed (~500ms)
+         ↓
+Module's init() called
+         ↓
+Module takes full control
+(display, LEDs, MIDI input)
+         ↓
+Shift+Vol+Jog Click exits
+         ↓
+Returns to shadow UI
+```
+
+**Host-Level Escape:**
+
+The host tracks shift (CC 49) and volume touch (Note 8) state locally within the shadow UI process. When Shift+Vol+Jog Click is detected, the host exits overtake mode before the module sees the jog click. This ensures escape always works regardless of module behavior.
+
+```javascript
+// In shadow_ui.js
+let hostShiftHeld = false;
+let hostVolumeKnobTouched = false;
+
+// On MIDI input (before passing to module)
+if (ccNumber === MoveShift) {
+    hostShiftHeld = value === 127;
+}
+if (isNote && note === 8) {
+    hostVolumeKnobTouched = velocity > 0;
+}
+if (ccNumber === MoveMainButton && value > 0) {
+    if (hostShiftHeld && hostVolumeKnobTouched) {
+        exitOvertakeMode();
+        return; // Don't pass to module
+    }
+}
+```
+
+**LED Buffer Management:**
+
+The MIDI output buffer (`SHADOW_MIDI_OUT_BUFFER_SIZE = 256 bytes`) holds 64 USB-MIDI packets. The host clears LEDs progressively:
+
+| LED Type | Addressing | Count |
+|----------|-----------|-------|
+| Pads | Notes 68-99 | 32 |
+| Steps | Notes 16-31 | 16 |
+| Knob touch | Notes 0-7 | 8 |
+| Step icons | CCs 16-31 | 16 |
+| Buttons | Various CCs | ~20 |
+| Knob indicators | CCs 71-78 | 8 |
+
+Total: ~100 LEDs, cleared in batches of 20 per frame (~5 frames = ~80ms).
+
+**Module Initialization:**
+
+Modules should also use progressive LED setup to avoid buffer overflow:
+
+```javascript
+const LEDS_PER_FRAME = 8;
+let ledInitPending = true;
+let ledInitIndex = 0;
+
+globalThis.tick = function() {
+    if (ledInitPending) {
+        // Set 8 LEDs per frame
+        setupLedBatch();
+    }
+    drawUI();
+};
+```
+
 ## Security Considerations
 
 - The shim runs with elevated privileges (setuid) to access hardware

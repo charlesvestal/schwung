@@ -252,6 +252,59 @@ Modules that need unprocessed MIDI input can opt out of transforms by setting `"
 Modules that want full control of UI input can opt out of host Back-to-menu handling by setting `"raw_ui": true` in module.json.
 Some modules (like Signal Chain) also use `raw_midi` to bypass their own MIDI filters (for example, allowing knob-touch notes through).
 
+## Overtake Mode
+
+Overtake modules take full control of Move's UI. The host provides special handling for these modules.
+
+### LED Buffer Constraints
+
+The MIDI output buffer holds approximately 64 USB-MIDI packets. Sending more than ~60 LED commands in a single frame causes buffer overflow. Use progressive LED handling:
+
+```javascript
+const LEDS_PER_FRAME = 8;
+let ledInitIndex = 0;
+let ledInitPending = true;
+
+function setupLedBatch() {
+    const ledsToSet = [...]; // All LEDs you want to set
+    const start = ledInitIndex;
+    const end = Math.min(start + LEDS_PER_FRAME, ledsToSet.length);
+
+    for (let i = start; i < end; i++) {
+        setLED(ledsToSet[i].note, ledsToSet[i].color);
+    }
+
+    ledInitIndex = end;
+    if (ledInitIndex >= ledsToSet.length) {
+        ledInitPending = false;
+    }
+}
+
+globalThis.tick = function() {
+    if (ledInitPending) setupLedBatch();
+    drawUI();
+};
+```
+
+### Host-Level Escape
+
+The host provides a built-in escape that works regardless of module behavior:
+
+**Shift + Volume Touch + Jog Click**
+
+The host tracks these inputs locally (independent of the shim) to ensure escape always works. Modules should not block or consume these inputs for other purposes.
+
+### MIDI Routing in Overtake Mode
+
+| Input | Behavior |
+|-------|----------|
+| Shift (CC 49) | Tracked by host for escape; passed to module |
+| Volume touch (Note 8) | Tracked by host for escape; passed to module |
+| Jog click (CC 3) | If Shift+Vol held, triggers escape; otherwise passed to module |
+| All other MIDI | Passed directly to module |
+
+Modules receive full MIDI access and can send to both internal (LEDs) and external (USB-A) targets.
+
 ## Audio (DSP Modules Only)
 
 Audio is handled by native DSP plugins (`.so` files). See [MODULES.md](MODULES.md) for plugin API.

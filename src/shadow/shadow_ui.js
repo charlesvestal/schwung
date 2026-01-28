@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as std from 'std';
 
 /* Debug logging to file - disabled by default, enable for debugging */
-const DEBUG_LOG_ENABLED = false;
+const DEBUG_LOG_ENABLED = true;
 const DEBUG_LOG_FILE = '/tmp/shadow_debug.log';
 function debugLog(msg) {
     if (!DEBUG_LOG_ENABLED) return;
@@ -16,6 +16,9 @@ function debugLog(msg) {
         /* Ignore logging errors */
     }
 }
+
+/* Log at startup */
+debugLog("shadow_ui.js loaded");
 
 /* Import shared utilities - single source of truth */
 import {
@@ -39,6 +42,9 @@ import {
 } from '/data/UserData/move-anything/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
+
+/* Volume touch note for Shift+Vol+Jog detection */
+const VOLUME_TOUCH_NOTE = 8;
 
 import {
     drawMenuHeader as drawHeader,
@@ -85,6 +91,7 @@ const SHADOW_UI_SLOTS = 4;
 /* UI flags from shim (must match SHADOW_UI_FLAG_* in shim) */
 const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
 const SHADOW_UI_FLAG_JUMP_TO_MASTER_FX = 0x02;
+const SHADOW_UI_FLAG_JUMP_TO_OVERTAKE = 0x04;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -119,7 +126,9 @@ const VIEWS = {
     STORE_PICKER_DETAIL: "storepickerdetail", // Store: module info and actions
     STORE_PICKER_LOADING: "storepickerloading", // Store: fetching catalog or installing
     STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
-    STORE_PICKER_POST_INSTALL: "storepickerpostinstall"  // Store: post-install message
+    STORE_PICKER_POST_INSTALL: "storepickerpostinstall",  // Store: post-install message
+    OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
+    OVERTAKE_MODULE: "overtakemodule" // Running an overtake module
 };
 
 /* Special action key for swap module option */
@@ -166,6 +175,85 @@ let needsRedraw = true;
 let refreshCounter = 0;
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
+
+/* Overtake module state */
+let overtakeModules = [];        // List of available overtake modules
+let selectedOvertakeModule = 0;  // Currently selected module in menu
+let overtakeModuleLoaded = false; // True if an overtake module is running
+let overtakeModulePath = "";      // Path to loaded overtake module
+let previousView = VIEWS.SLOTS;   // View to return to after overtake
+let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
+
+/* Host-side tracking for Shift+Vol+Jog escape (redundant with shim, but ensures escape always works) */
+let hostVolumeKnobTouched = false;
+let hostShiftHeld = false;  /* Local shift tracking - shim tracking doesn't work in overtake mode */
+
+/* Deferred module init - clear LEDs and wait before calling init() */
+let overtakeInitPending = false;
+let overtakeInitTicks = 0;
+const OVERTAKE_INIT_DELAY_TICKS = 30; // ~500ms at 16ms tick
+
+/* Progressive LED clearing - buffer only holds ~60 packets, so clear in batches */
+const LEDS_PER_BATCH = 20;
+let ledClearIndex = 0;
+
+function clearLedBatch() {
+    /* Clear LEDs in batches. Notes for pads/steps, CCs for buttons/knob indicators. */
+    const noteLeds = [];
+    /* Knob touch LEDs (0-7) */
+    for (let i = 0; i <= 7; i++) noteLeds.push(i);
+    /* Steps (16-31) */
+    for (let i = 16; i <= 31; i++) noteLeds.push(i);
+    /* Pads (68-99) */
+    for (let i = 68; i <= 99; i++) noteLeds.push(i);
+
+    /* All button/indicator CCs with LEDs */
+    const ccLeds = [];
+    /* Step icon LEDs (16-31) - CCs, separate from step note LEDs */
+    for (let i = 16; i <= 31; i++) ccLeds.push(i);
+    /* Tracks/Rows */
+    ccLeds.push(40, 41, 42, 43);
+    /* Shift */
+    ccLeds.push(49);
+    /* Menu, Back, Capture */
+    ccLeds.push(50, 51, 52);
+    /* Down, Up */
+    ccLeds.push(54, 55);
+    /* Undo */
+    ccLeds.push(56);
+    /* Loop */
+    ccLeds.push(58);
+    /* Copy */
+    ccLeds.push(60);
+    /* Left, Right */
+    ccLeds.push(62, 63);
+    /* Knob indicators */
+    ccLeds.push(71, 72, 73, 74, 75, 76, 77, 78);
+    /* Play, Rec */
+    ccLeds.push(85, 86);
+    /* Mute */
+    ccLeds.push(88);
+    /* Record, Delete */
+    ccLeds.push(118, 119);
+
+    const totalItems = noteLeds.length + ccLeds.length;
+    const start = ledClearIndex;
+    const end = Math.min(start + LEDS_PER_BATCH, totalItems);
+
+    for (let i = start; i < end; i++) {
+        if (i < noteLeds.length) {
+            /* Note LED - send note on with velocity 0 */
+            move_midi_internal_send([0x09, 0x90, noteLeds[i], 0]);
+        } else {
+            /* CC LED - send CC with value 0 */
+            const ccIdx = i - noteLeds.length;
+            move_midi_internal_send([0x0B, 0xB0, ccLeds[ccIdx], 0]);
+        }
+    }
+
+    ledClearIndex = end;
+    return ledClearIndex >= totalItems;
+}
 
 /* Knob mapping state (overlay uses shared menu_layout.mjs) */
 let knobMappings = [];       // {cc, name, value} for each knob
@@ -783,6 +871,265 @@ function scanForAudioFxModules() {
     scanDir(AUDIO_FX_DIR);
 
     return result;
+}
+
+/* Scan modules directory for overtake modules */
+function scanForOvertakeModules() {
+    const MODULES_DIR = "/data/UserData/move-anything/modules";
+    const result = [];
+
+    debugLog("scanForOvertakeModules starting");
+
+    /* Helper to check a directory for an overtake module */
+    function checkDir(dirPath, name) {
+        const modulePath = `${dirPath}/module.json`;
+        try {
+            const content = std.loadFile(modulePath);
+            if (!content) return;
+
+            const json = JSON.parse(content);
+            debugLog(name + ": component_type=" + json.component_type);
+            /* Check if this is an overtake module */
+            if (json.component_type === "overtake" ||
+                (json.capabilities && json.capabilities.component_type === "overtake")) {
+                debugLog("FOUND overtake: " + json.name);
+                result.push({
+                    id: json.id || name,
+                    name: json.name || name,
+                    path: dirPath,
+                    uiPath: `${dirPath}/${json.ui || 'ui.js'}`
+                });
+            }
+        } catch (e) {
+            /* Skip directories without readable module.json */
+        }
+    }
+
+    /* Scan the modules directory for overtake modules */
+    try {
+        const entries = os.readdir(MODULES_DIR) || [];
+        debugLog("readdir result: " + JSON.stringify(entries));
+        const dirList = entries[0];
+        if (!Array.isArray(dirList)) {
+            debugLog("dirList not an array, returning empty");
+            return result;
+        }
+        debugLog("found entries: " + dirList.join(", "));
+
+        for (const entry of dirList) {
+            if (entry === "." || entry === "..") continue;
+
+            const entryPath = `${MODULES_DIR}/${entry}`;
+
+            /* Check if this entry itself is a module */
+            checkDir(entryPath, entry);
+
+            /* Also scan subdirectories (utilities/, sound_generators/, etc.) */
+            try {
+                const subEntries = os.readdir(entryPath) || [];
+                const subDirList = subEntries[0];
+                if (Array.isArray(subDirList)) {
+                    for (const subEntry of subDirList) {
+                        if (subEntry === "." || subEntry === "..") continue;
+                        checkDir(`${entryPath}/${subEntry}`, subEntry);
+                    }
+                }
+            } catch (e) {
+                /* Not a directory or can't read, skip */
+            }
+        }
+    } catch (e) {
+        debugLog("scan error: " + e);
+        /* Failed to read modules directory */
+    }
+
+    debugLog("returning " + result.length + " modules");
+    return result;
+}
+
+/* Enter the overtake module selection menu */
+function enterOvertakeMenu() {
+    overtakeModules = scanForOvertakeModules();
+    selectedOvertakeModule = 0;
+    previousView = view;
+    view = VIEWS.OVERTAKE_MENU;
+    needsRedraw = true;
+}
+
+/* Overtake exit state - clear LEDs before returning to Move */
+let overtakeExitPending = false;
+
+/* Exit overtake mode back to Move */
+function exitOvertakeMode() {
+    overtakeModuleLoaded = false;
+    overtakeModulePath = "";
+    overtakeModuleCallbacks = null;
+
+    /* Start progressive LED clearing before exiting */
+    overtakeExitPending = true;
+    ledClearIndex = 0;
+    needsRedraw = true;
+}
+
+/* Complete the exit after LEDs are cleared */
+function completeOvertakeExit() {
+    overtakeExitPending = false;
+
+    /* Disable overtake mode to allow MIDI to reach Move again */
+    if (typeof shadow_set_overtake_mode === "function") {
+        shadow_set_overtake_mode(0);
+    }
+
+    /* Return to slots view */
+    view = VIEWS.SLOTS;
+    needsRedraw = true;
+    /* Request exit from shadow UI to return to Move */
+    if (typeof shadow_request_exit === "function") {
+        shadow_request_exit();
+    }
+}
+
+/* Load and run an overtake module */
+function loadOvertakeModule(moduleInfo) {
+    debugLog("loadOvertakeModule called with: " + JSON.stringify(moduleInfo));
+    if (!moduleInfo || !moduleInfo.uiPath) {
+        debugLog("loadOvertakeModule: no moduleInfo or uiPath");
+        return false;
+    }
+
+    try {
+        /* Step 1: Enable overtake mode to block Move's LED updates */
+        if (typeof shadow_set_overtake_mode === "function") {
+            shadow_set_overtake_mode(1);
+            debugLog("loadOvertakeModule: overtake_mode enabled");
+        }
+
+        /* Save current globals before loading - module may overwrite them */
+        const savedInit = globalThis.init;
+        const savedTick = globalThis.tick;
+        const savedMidi = globalThis.onMidiMessageInternal;
+
+        overtakeModulePath = moduleInfo.uiPath;
+        view = VIEWS.OVERTAKE_MODULE;
+        needsRedraw = true;
+
+        /* Load the module's UI script */
+        debugLog("loadOvertakeModule: loading " + moduleInfo.uiPath);
+        if (typeof shadow_load_ui_module === "function") {
+            const result = shadow_load_ui_module(moduleInfo.uiPath);
+            debugLog("loadOvertakeModule: shadow_load_ui_module returned " + result);
+            if (!result) {
+                overtakeModuleLoaded = false;
+                overtakeModuleCallbacks = null;
+                if (typeof shadow_set_overtake_mode === "function") {
+                    shadow_set_overtake_mode(0);
+                }
+                return false;
+            }
+        } else {
+            debugLog("loadOvertakeModule: shadow_load_ui_module not available");
+            return false;
+        }
+
+        /* Capture the module's callbacks */
+        overtakeModuleCallbacks = {
+            init: (globalThis.init !== savedInit) ? globalThis.init : null,
+            tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
+            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
+        };
+
+        /* Restore shadow UI's globals */
+        globalThis.init = savedInit;
+        globalThis.tick = savedTick;
+        globalThis.onMidiMessageInternal = savedMidi;
+
+        debugLog("loadOvertakeModule: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
+                 " tick:" + !!overtakeModuleCallbacks.tick +
+                 " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
+
+        overtakeModuleLoaded = true;
+
+        /* Step 2: Defer init() call - LEDs will be cleared progressively during loading screen */
+        overtakeInitPending = true;
+        overtakeInitTicks = 0;
+        ledClearIndex = 0;  /* Start LED clearing from beginning */
+        debugLog("loadOvertakeModule: init deferred, LEDs will clear progressively");
+
+        return true;
+    } catch (e) {
+        debugLog("loadOvertakeModule error: " + e);
+        overtakeModuleLoaded = false;
+        overtakeModuleCallbacks = null;
+        if (typeof shadow_set_overtake_mode === "function") {
+            shadow_set_overtake_mode(0);
+        }
+        return false;
+    }
+}
+
+/* Draw the overtake module selection menu */
+function drawOvertakeMenu() {
+    debugLog("drawOvertakeMenu called, overtakeModules.length=" + overtakeModules.length);
+    clear_screen();
+
+    drawHeader("Overtake Modules");
+
+    if (overtakeModules.length === 0) {
+        debugLog("drawing 'no modules found' message");
+        print(4, LIST_TOP_Y + 10, "No overtake modules found", 1);
+        print(4, LIST_TOP_Y + 26, "Install modules with", 1);
+        print(4, LIST_TOP_Y + 42, "component_type: \"overtake\"", 1);
+    } else {
+        debugLog("drawing menu list with " + overtakeModules.length + " items");
+        const items = overtakeModules.map(m => ({
+            label: m.name,
+            value: ""
+        }));
+        debugLog("items: " + JSON.stringify(items));
+        drawMenuList({
+            items,
+            selectedIndex: selectedOvertakeModule,
+            listArea: {
+                topY: menuLayoutDefaults.listTopY,
+                bottomY: menuLayoutDefaults.listBottomWithFooter
+            },
+            getLabel: (item) => item.label,
+            getValue: (item) => item.value
+        });
+    }
+
+    drawFooter("Jog:Select  Back:Exit");
+}
+
+/* Handle input in overtake menu */
+function handleOvertakeMenuInput(cc, value) {
+    if (cc === MoveMainKnob) {
+        /* Jog wheel */
+        const delta = decodeDelta(value);
+        selectedOvertakeModule += delta;
+        if (selectedOvertakeModule < 0) selectedOvertakeModule = 0;
+        if (selectedOvertakeModule >= overtakeModules.length) {
+            selectedOvertakeModule = Math.max(0, overtakeModules.length - 1);
+        }
+        needsRedraw = true;
+        return true;
+    }
+
+    if (cc === MoveMainButton && value > 0) {
+        /* Jog click - select module */
+        if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
+            loadOvertakeModule(overtakeModules[selectedOvertakeModule]);
+        }
+        return true;
+    }
+
+    if (cc === MoveBack && value > 0) {
+        /* Back button - exit to Move */
+        exitOvertakeMode();
+        return true;
+    }
+
+    return false;
 }
 
 /* Master FX param helpers - use slot 0 with master_fx: prefix */
@@ -3319,10 +3666,15 @@ function drawHierarchyEditor() {
     }
 
     /* Build header: S#: Module: Bank (preset browser) or Preset (edit view) */
-    let headerText = `S${hierEditorSlot + 1}: ${abbrev}: ${headerName}${modeIndicator}`;
-    if (hierEditorPath.length > 0) {
+    let headerText;
+    if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
+        /* In preset browser, always show bank name */
+        headerText = `S${hierEditorSlot + 1}: ${abbrev}: ${headerName}${modeIndicator}`;
+    } else if (hierEditorPath.length > 0) {
         /* If navigated into sub-levels, append path */
         headerText = `S${hierEditorSlot + 1}: ${abbrev} > ${hierEditorPath[hierEditorPath.length - 1]}`;
+    } else {
+        headerText = `S${hierEditorSlot + 1}: ${abbrev}: ${headerName}${modeIndicator}`;
     }
 
     drawHeader(truncateText(headerText, 24));
@@ -3373,8 +3725,14 @@ function drawHierarchyEditor() {
         if (hierEditorParams.length === 0) {
             print(4, 24, "No parameters", 1);
         } else {
+            /* Calculate visible range - only fetch values for items on screen */
+            const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / LIST_LINE_HEIGHT));
+            const halfVisible = Math.floor(maxVisible / 2);
+            const visibleStart = Math.max(0, hierEditorSelectedIdx - halfVisible);
+            const visibleEnd = Math.min(hierEditorParams.length, visibleStart + maxVisible + 1);
+
             /* Build items with labels and values */
-            const items = hierEditorParams.map(param => {
+            const items = hierEditorParams.map((param, idx) => {
                 if (param && typeof param === "object" && param.isChild) {
                     return {
                         label: param.label,
@@ -3415,8 +3773,13 @@ function drawHierarchyEditor() {
 
                 const meta = getParamMetadata(key);
                 const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-                const val = getSlotParam(hierEditorSlot, buildHierarchyParamKey(key));
-                const displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
+
+                /* Only fetch param value if this item is visible on screen */
+                let displayVal = "";
+                if (idx >= visibleStart && idx < visibleEnd) {
+                    const val = getSlotParam(hierEditorSlot, buildHierarchyParamKey(key));
+                    displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
+                }
                 return { label, value: displayVal, key };
             });
 
@@ -3664,6 +4027,16 @@ function handleJog(delta) {
                 /* Navigate params list */
                 knobParamPickerIndex = Math.max(0, Math.min(knobParamPickerParams.length - 1, knobParamPickerIndex + delta));
             }
+            break;
+        case VIEWS.OVERTAKE_MENU:
+            selectedOvertakeModule += delta;
+            if (selectedOvertakeModule < 0) selectedOvertakeModule = 0;
+            if (selectedOvertakeModule >= overtakeModules.length) {
+                selectedOvertakeModule = Math.max(0, overtakeModules.length - 1);
+            }
+            break;
+        case VIEWS.OVERTAKE_MODULE:
+            /* Overtake module handles its own jog input */
             break;
     }
     needsRedraw = true;
@@ -4083,6 +4456,13 @@ function handleSelect() {
                     hierEditorLevel = selectedParam.level;
                     hierEditorSelectedIdx = 0;
                     hierEditorPresetEditMode = false;
+                    /* Set up child count/label if target level has child_prefix */
+                    const targetLevel = hierEditorHierarchy.levels[selectedParam.level];
+                    if (targetLevel && targetLevel.child_prefix && targetLevel.child_count) {
+                        hierEditorChildIndex = -1;
+                        hierEditorChildCount = targetLevel.child_count;
+                        hierEditorChildLabel = targetLevel.child_label || "Child";
+                    }
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
                     break;
@@ -4204,6 +4584,15 @@ function handleSelect() {
                     applyKnobAssignment(knobParamPickerFolder, selected.key);
                 }
             }
+            break;
+        case VIEWS.OVERTAKE_MENU:
+            /* Select and load the overtake module */
+            if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
+                loadOvertakeModule(overtakeModules[selectedOvertakeModule]);
+            }
+            break;
+        case VIEWS.OVERTAKE_MODULE:
+            /* Overtake module handles its own select input */
             break;
     }
     needsRedraw = true;
@@ -4427,6 +4816,14 @@ function handleBack() {
                 view = VIEWS.KNOB_EDITOR;
                 needsRedraw = true;
             }
+            break;
+        case VIEWS.OVERTAKE_MENU:
+            /* Exit to Move */
+            exitOvertakeMode();
+            break;
+        case VIEWS.OVERTAKE_MODULE:
+            /* Overtake module handles its own back input.
+             * Use Shift+Vol+Jog Click to exit overtake mode. */
             break;
     }
 }
@@ -5481,6 +5878,23 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_MASTER_FX);
             }
         }
+        if (flags & SHADOW_UI_FLAG_JUMP_TO_OVERTAKE) {
+            debugLog("OVERTAKE flag detected, view=" + view);
+            /* Toggle overtake mode */
+            if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
+                /* Already in overtake mode - exit back to Move */
+                debugLog("exiting overtake mode");
+                exitOvertakeMode();
+            } else {
+                /* Enter overtake menu */
+                debugLog("entering overtake menu");
+                enterOvertakeMenu();
+            }
+            /* Clear the flag */
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_OVERTAKE);
+            }
+        }
     }
 
     refreshCounter++;
@@ -5593,6 +6007,51 @@ globalThis.tick = function() {
         case VIEWS.STORE_PICKER_POST_INSTALL:
             drawMessageOverlay('Install Complete', storePostInstallLines);
             break;
+        case VIEWS.OVERTAKE_MENU:
+            drawOvertakeMenu();
+            break;
+        case VIEWS.OVERTAKE_MODULE:
+            /* Handle exit - progressively clear LEDs then return to Move */
+            if (overtakeExitPending) {
+                /* Show exiting screen while clearing LEDs */
+                clear_screen();
+                print(40, 28, "Exiting...", 1);
+
+                /* Clear LEDs in batches */
+                const exitLedsCleared = clearLedBatch();
+
+                /* After LEDs cleared, complete the exit */
+                if (exitLedsCleared) {
+                    ledClearIndex = 0;
+                    completeOvertakeExit();
+                }
+            }
+            /* Handle deferred init - progressively clear LEDs then call module init() */
+            else if (overtakeInitPending) {
+                overtakeInitTicks++;
+                /* Show loading screen while clearing LEDs */
+                clear_screen();
+                print(40, 28, "Loading...", 1);
+
+                /* Clear LEDs in batches (buffer is small) */
+                const ledsCleared = clearLedBatch();
+
+                /* After LEDs cleared and delay passed, call init */
+                if (ledsCleared && overtakeInitTicks >= OVERTAKE_INIT_DELAY_TICKS) {
+                    overtakeInitPending = false;
+                    ledClearIndex = 0;  /* Reset for next time */
+                    debugLog("loadOvertakeModule: init delay complete, calling init()");
+                    if (overtakeModuleCallbacks && overtakeModuleCallbacks.init) {
+                        overtakeModuleCallbacks.init();
+                    }
+                }
+            } else {
+                /* Call the overtake module's tick() function */
+                if (overtakeModuleCallbacks && overtakeModuleCallbacks.tick) {
+                    overtakeModuleCallbacks.tick();
+                }
+            }
+            break;
         default:
             drawSlots();
     }
@@ -5649,6 +6108,41 @@ globalThis.onMidiMessageInternal = function(data) {
         /* Route everything else to the loaded module UI */
         if (loadedModuleUi.onMidiMessageInternal) {
             loadedModuleUi.onMidiMessageInternal(data);
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    /* When in overtake module view, route MIDI to the overtake module */
+    if (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded && overtakeModuleCallbacks) {
+        /* Track shift locally - shim's shift tracking doesn't work in overtake mode */
+        if ((status & 0xF0) === 0xB0 && d1 === 49) {  /* CC 49 = Shift */
+            hostShiftHeld = (d2 > 0);
+        }
+
+        /* Track volume knob touch for Shift+Vol+Jog escape detection */
+        if ((status & 0xF0) === MidiNoteOn) {
+            if (d1 === VOLUME_TOUCH_NOTE) {
+                hostVolumeKnobTouched = (d2 > 0);
+            }
+        }
+
+        /* Debug: log key state */
+        debugLog(`OVERTAKE MIDI: status=${status} d1=${d1} d2=${d2} hostShift=${hostShiftHeld} volTouch=${hostVolumeKnobTouched}`);
+
+        /* HOST-LEVEL ESCAPE: Shift+Vol+Jog Click always exits overtake mode
+         * This runs BEFORE passing MIDI to the module, ensuring escape always works */
+        if ((status & 0xF0) === 0xB0 && d1 === MoveMainButton && d2 > 0) {
+            if (hostShiftHeld && hostVolumeKnobTouched) {
+                debugLog("HOST: Shift+Vol+Jog detected, exiting overtake mode");
+                exitOvertakeMode();
+                return;
+            }
+        }
+
+        /* Route to the overtake module's onMidiMessageInternal if it exists */
+        if (overtakeModuleCallbacks.onMidiMessageInternal) {
+            overtakeModuleCallbacks.onMidiMessageInternal(data);
             needsRedraw = true;
         }
         return;

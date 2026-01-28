@@ -71,7 +71,7 @@ for keys anywhere in `module.json`).
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 | `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
-| `component_type` | `sound_generator` for chainable synths (other values reserved for future use) |
+| `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, or `overtake` |
 
 ### Defaults
 
@@ -1003,6 +1003,120 @@ Shadow slot configuration is stored in `/data/UserData/move-anything/shadow_chai
 ```
 
 The shadow UI updates this file when you select patches for each slot.
+
+## Overtake Modules
+
+Overtake modules take complete control of Move's UI while running in shadow mode. Unlike regular shadow mode (which displays a custom UI alongside Move), overtake modules fully replace Move's display and control all LEDs.
+
+### Configuration
+
+Set `component_type: "overtake"` in module.json:
+
+```json
+{
+    "id": "controller",
+    "name": "MIDI Controller",
+    "version": "1.0.0",
+    "component_type": "overtake",
+    "ui": "ui.js",
+    "api_version": 2
+}
+```
+
+Overtake modules appear in a dedicated section of the shadow UI menu.
+
+### Lifecycle
+
+When an overtake module is loaded:
+
+1. **LED Clearing**: The host progressively clears all LEDs (pads, steps, buttons, knob indicators)
+2. **Loading Screen**: "Loading..." is displayed during LED clearing
+3. **Deferred Init**: After ~500ms delay, the module's `init()` is called
+4. **Module Takes Over**: Module controls display and all LEDs
+
+The progressive LED clearing prevents MIDI buffer overflow (the buffer holds ~64 packets).
+
+### Host-Level Escape
+
+The host provides a built-in escape mechanism that always works, regardless of module implementation:
+
+**Shift + Volume Touch + Jog Click** exits any overtake module
+
+The host tracks shift and volume touch state locally (not relying on the shim's tracking, which doesn't work in overtake mode) to ensure the escape always functions.
+
+### Progressive LED Handling
+
+The MIDI output buffer is limited (~64 packets). Sending all LED commands at once causes buffer overflow. Use progressive LED handling:
+
+**In the host (LED clearing):**
+```javascript
+const LEDS_PER_BATCH = 20;
+let ledClearIndex = 0;
+
+function clearLedBatch() {
+    // Clear 20 LEDs per frame until done
+    // Covers: pads (68-99), steps (16-31), buttons, knob indicators
+}
+```
+
+**In your module (initialization):**
+```javascript
+let ledInitPending = false;
+let ledInitIndex = 0;
+const LEDS_PER_FRAME = 8;
+
+globalThis.init = function() {
+    // Start progressive LED setup
+    ledInitPending = true;
+    ledInitIndex = 0;
+};
+
+globalThis.tick = function() {
+    if (ledInitPending) {
+        setupLedBatch();  // Set 8 LEDs per frame
+    }
+    drawUI();
+};
+```
+
+### LED Addresses
+
+When clearing or setting LEDs, address both note-based and CC-based LEDs:
+
+| Type | Addressing | Values |
+|------|-----------|--------|
+| Pads | Notes | 68-99 |
+| Steps | Notes | 16-31 |
+| Knob touch | Notes | 0-7 |
+| Step icons | CCs | 16-31 |
+| Track buttons | CCs | 40-43 |
+| Shift | CC | 49 |
+| Menu/Back/Capture | CCs | 50-52 |
+| Up/Down | CCs | 54-55 |
+| Undo/Loop/Copy | CCs | 56, 58, 60 |
+| Left/Right | CCs | 62-63 |
+| Knob indicators | CCs | 71-78 |
+| Play/Rec | CCs | 85-86 |
+| Mute | CC | 88 |
+| Record/Delete | CCs | 118-119 |
+
+### MIDI Routing
+
+In overtake mode:
+- All internal MIDI is passed to the module's `onMidiMessageInternal`
+- External MIDI is passed to `onMidiMessageExternal`
+- The host intercepts Shift+Vol+Jog before the module sees it (for escape)
+- Modules can send MIDI out via `move_midi_external_send` and `move_midi_internal_send`
+
+### Example: MIDI Controller
+
+The built-in MIDI Controller module (`src/modules/controller/`) demonstrates overtake patterns:
+
+- 16 banks of pad/knob mappings
+- Step buttons switch banks
+- Jog wheel and Up/Down buttons for octave shift
+- Progressive LED initialization
+- Dynamic C note highlighting based on octave
 
 ## Publishing to Module Store
 

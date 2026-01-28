@@ -25,6 +25,7 @@
 #define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow */
 #define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
 #define SHM_SHADOW_PARAM    "/move-shadow-param"    /* Shadow param requests */
+#define SHM_SHADOW_MIDI_OUT "/move-shadow-midi-out" /* MIDI output from shadow UI */
 
 /* ============================================================================
  * Buffer Sizes
@@ -35,6 +36,7 @@
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
+#define SHADOW_MIDI_OUT_BUFFER_SIZE 256  /* MIDI out buffer from shadow UI */
 
 /* ============================================================================
  * Slot Configuration
@@ -52,6 +54,7 @@
 
 #define SHADOW_UI_FLAG_JUMP_TO_SLOT 0x01      /* Jump to slot settings on open */
 #define SHADOW_UI_FLAG_JUMP_TO_MASTER_FX 0x02 /* Jump to Master FX on open */
+#define SHADOW_UI_FLAG_JUMP_TO_OVERTAKE 0x04  /* Jump to overtake module menu */
 
 /* ============================================================================
  * Special Values
@@ -82,7 +85,8 @@ typedef struct shadow_control_t {
     volatile uint32_t shim_counter;   /* Debug: shim tick counter */
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
     volatile uint8_t shift_held;      /* Is shift button currently held? */
-    volatile uint8_t reserved[42];
+    volatile uint8_t overtake_mode;   /* 1=block all MIDI from reaching Move */
+    volatile uint8_t reserved[41];
 } shadow_control_t;
 
 /*
@@ -112,6 +116,18 @@ typedef struct shadow_param_t {
     char key[SHADOW_PARAM_KEY_LEN];
     char value[SHADOW_PARAM_VALUE_LEN];
 } shadow_param_t;
+
+/*
+ * MIDI output structure for shadow UI to send MIDI to hardware.
+ * Used by overtake modules (M8, MIDI Controller, etc.) to send MIDI
+ * to external USB devices (cable 2) or control Move LEDs (cable 0).
+ */
+typedef struct shadow_midi_out_t {
+    volatile uint8_t write_idx;      /* Shadow UI increments after writing */
+    volatile uint8_t ready;          /* Toggle to signal new data */
+    volatile uint8_t reserved[2];
+    uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
+} shadow_midi_out_t;
 
 /* Compile-time size checks */
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];

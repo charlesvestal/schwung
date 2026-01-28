@@ -46,7 +46,7 @@
       "name": "M8 LPP Emulator",
       "description": "Novation Launchpad Pro emulation for Dirtywave M8",
       "author": "bobbydigitales",
-      "component_type": "utility",
+      "component_type": "overtake",
       "github_repo": "charlesvestal/move-anything-m8",
       "asset_name": "m8-module.tar.gz",
       "min_host_version": "0.3.6"
@@ -117,7 +117,7 @@
       "name": "SID Control",
       "description": "MIDI controller for SIDaster III synthesizer",
       "author": "charlesvestal",
-      "component_type": "utility",
+      "component_type": "overtake",
       "github_repo": "charlesvestal/move-anything-sidcontrol",
       "asset_name": "sidcontrol-module.tar.gz",
       "min_host_version": "0.3.6"

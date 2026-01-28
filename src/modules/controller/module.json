@@ -1,10 +1,10 @@
 {
     "id": "controller",
     "name": "MIDI Controller",
-    "version": "0.2.4",
+    "version": "0.2.5",
     "description": "Custom MIDI controller with 16 banks and configurable pads",
     "author": "chaolue",
     "ui": "ui.js",
     "api_version": 1,
-    "component_type": "utility"
+    "component_type": "overtake"
 }

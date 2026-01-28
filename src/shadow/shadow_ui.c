@@ -29,6 +29,7 @@ static uint8_t *shadow_display_shm = NULL;
 static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
+static shadow_midi_out_t *shadow_midi_out = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -72,6 +73,12 @@ static int open_shadow_shm(void) {
     fd = shm_open(SHM_SHADOW_PARAM, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_param = (shadow_param_t *)mmap(NULL, SHADOW_PARAM_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+    }
+
+    fd = shm_open(SHM_SHADOW_MIDI_OUT, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_midi_out = (shadow_midi_out_t *)mmap(NULL, sizeof(shadow_midi_out_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
     }
 
@@ -273,6 +280,18 @@ static JSValue js_shadow_get_shift_held(JSContext *ctx, JSValueConst this_val, i
     return JS_NewInt32(ctx, shadow_control->shift_held);
 }
 
+/* shadow_set_overtake_mode(mode) -> void
+ * Set overtake mode: 1=block all MIDI from reaching Move, 0=normal.
+ */
+static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t mode = 0;
+    JS_ToInt32(ctx, &mode, argv[0]);
+    shadow_control->overtake_mode = (mode != 0) ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
 /* shadow_request_exit() -> void
  * Request to exit shadow display mode and return to regular Move.
  */
@@ -398,6 +417,68 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     }
 
     return JS_NewString(ctx, shadow_param->value);
+}
+
+/* === MIDI output functions for overtake modules === */
+
+/* Common implementation for sending MIDI via shared memory */
+static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_midi_out) return JS_FALSE;
+    if (argc < 1) return JS_FALSE;
+
+    JSValueConst arr = argv[0];
+    if (!JS_IsArray(ctx, arr)) return JS_FALSE;
+
+    JSValue len_val = JS_GetPropertyStr(ctx, arr, "length");
+    int32_t len = 0;
+    JS_ToInt32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+
+    /* Process 4 bytes at a time (USB-MIDI packet format) */
+    for (int i = 0; i < len; i += 4) {
+        uint8_t packet[4] = {0, 0, 0, 0};
+
+        for (int j = 0; j < 4 && (i + j) < len; j++) {
+            JSValue elem = JS_GetPropertyUint32(ctx, arr, i + j);
+            int32_t val = 0;
+            JS_ToInt32(ctx, &val, elem);
+            JS_FreeValue(ctx, elem);
+            packet[j] = (uint8_t)(val & 0xFF);
+        }
+
+        /* Override cable number in CIN byte */
+        packet[0] = (packet[0] & 0x0F) | (cable << 4);
+
+        /* Find space in buffer and write */
+        int write_offset = shadow_midi_out->write_idx;
+        if (write_offset + 4 <= SHADOW_MIDI_OUT_BUFFER_SIZE) {
+            memcpy(&shadow_midi_out->buffer[write_offset], packet, 4);
+            shadow_midi_out->write_idx = write_offset + 4;
+        }
+    }
+
+    /* Signal shim that data is ready */
+    shadow_midi_out->ready++;
+
+    return JS_TRUE;
+}
+
+/* move_midi_external_send([cin, status, data1, data2, ...]) -> bool
+ * Queues MIDI to be sent to USB-A (cable 2).
+ */
+static JSValue js_move_midi_external_send(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    return js_shadow_midi_send(2, ctx, this_val, argc, argv);
+}
+
+/* move_midi_internal_send([cin, status, data1, data2]) -> bool
+ * Queues MIDI to be sent to Move LEDs (cable 0).
+ */
+static JSValue js_move_midi_internal_send(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    return js_shadow_midi_send(0, ctx, this_val, argc, argv);
 }
 
 /* === Host functions for store operations === */
@@ -838,10 +919,15 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_slot", JS_NewCFunction(ctx, js_shadow_get_ui_slot, "shadow_get_ui_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
+
+    /* Register MIDI output functions for overtake modules */
+    JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
+    JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
 
     /* Register host functions for store operations */
     JS_SetPropertyStr(ctx, global_obj, "host_file_exists", JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1));
@@ -867,7 +953,8 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cin = shadow_ui_midi_shm[i] & 0x0F;
         uint8_t cable = (shadow_ui_midi_shm[i] >> 4) & 0x0F;
-        if (cin < 0x08 || cin > 0x0E) continue;
+        /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc */
+        if (cin < 0x04 || cin > 0x0E) continue;
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
         if (msg[0] + msg[1] + msg[2] == 0) continue;
         handled = 1;
