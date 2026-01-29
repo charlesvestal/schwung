@@ -3451,6 +3451,14 @@ static void shadow_inject_ui_midi_out(void) {
     /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
 
+    /* In overtake mode, clear Move's MIDI_OUT first to ensure our packets get sent.
+     * Move may have filled the buffer with LED commands (cable 0) which would
+     * prevent external MIDI (cable 2) from being injected. */
+    int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
+    if (overtake_mode == 2) {
+        memset(midi_out, 0, MIDI_BUFFER_SIZE);
+    }
+
     /* Find empty slots and copy packets */
     int hw_offset = 0;
     for (int i = 0; i < shadow_midi_out_shm->write_idx && i < SHADOW_MIDI_OUT_BUFFER_SIZE; i += 4) {
