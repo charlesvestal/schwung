@@ -123,9 +123,9 @@ typedef struct shadow_param_t {
  * to external USB devices (cable 2) or control Move LEDs (cable 0).
  */
 typedef struct shadow_midi_out_t {
-    volatile uint8_t write_idx;      /* Shadow UI increments after writing */
+    volatile uint16_t write_idx;     /* Shadow UI increments after writing (byte offset) */
     volatile uint8_t ready;          /* Toggle to signal new data */
-    volatile uint8_t reserved[2];
+    volatile uint8_t reserved;
     uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_out_t;
 
