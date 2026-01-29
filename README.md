@@ -106,6 +106,18 @@ Shadow Mode lets you run custom signal chains **alongside** stock Ableton Move w
 - **Audio**: Shadow synths mix with Move's audio output
 - **MIDI Routing**: Shadow slots receive MIDI on their configured channels (default 1-4)
 
+### External MIDI Controllers
+
+Shadow mode supports external MIDI controllers connected via USB. Notes, CC messages (mod wheel, sustain pedal), pitch bend, and aftertouch are forwarded to shadow synths.
+
+**Important:** For CC, pitch bend, and aftertouch to work correctly, configure your Move track's **input and output to the same MIDI channel** as your external controller. Move echoes notes on the output channel but CC messages arrive on the input channel - if these differ, CC won't reach the correct shadow slot.
+
+Example setup:
+- External controller: Channel 1
+- Move track input: Channel 1
+- Move track output: Channel 1
+- Shadow slot receive channel: Channel 1
+
 ### Shadow Slots
 
 Shadow mode provides 4 independent slots, each with its own chain patch:
