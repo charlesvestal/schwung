@@ -2052,6 +2052,14 @@ static int save_patch(const char *json_data) {
     /* Rescan patches */
     scan_patches(g_module_dir);
 
+    /* Update current patch to the newly saved one */
+    for (int i = 0; i < g_patch_count; i++) {
+        if (strcmp(g_patches[i].name, name) == 0) {
+            g_current_patch = i;
+            break;
+        }
+    }
+
     return 0;
 }
 
@@ -2101,6 +2109,14 @@ static int update_patch(int index, const char *json_data) {
 
     /* Rescan patches to reload the updated data */
     scan_patches(g_module_dir);
+
+    /* Update current patch index (may have shifted due to alphabetical sort) */
+    for (int i = 0; i < g_patch_count; i++) {
+        if (strcmp(g_patches[i].name, name) == 0) {
+            g_current_patch = i;
+            break;
+        }
+    }
 
     return 0;
 }
