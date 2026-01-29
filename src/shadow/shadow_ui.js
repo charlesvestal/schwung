@@ -508,6 +508,7 @@ let hierEditorPresetEditMode = false; // true when editing params within a prese
 /* Dynamic items level state (for items_param type levels) */
 let hierEditorIsDynamicItems = false; // true when current level uses items_param
 let hierEditorSelectParam = "";       // param to set when item selected
+let hierEditorNavigateTo = "";        // level to navigate to after item selection (optional)
 
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
@@ -3023,6 +3024,7 @@ function loadHierarchyLevel() {
         hierEditorIsDynamicItems = true;
         hierEditorPresetEditMode = false;
         hierEditorSelectParam = levelDef.select_param || "";
+        hierEditorNavigateTo = levelDef.navigate_to || "";
         hierEditorKnobs = levelDef.knobs || [];
 
         /* Fetch items list from plugin */
@@ -4497,24 +4499,32 @@ function handleSelect() {
                         const prefix = hierEditorComponent;
                         setSlotParam(hierEditorSlot, `${prefix}:${hierEditorSelectParam}`, String(selectedParam.index));
                     }
-                    /* Go back to previous level */
-                    if (hierEditorPath.length > 0) {
-                        hierEditorPath.pop();
-                    }
-                    /* Find parent level - look for level that navigates here */
-                    const levels = hierEditorHierarchy.levels;
-                    let parentLevel = "root";
-                    for (const [name, def] of Object.entries(levels)) {
-                        if (def.params) {
-                            for (const p of def.params) {
-                                if (p && typeof p === "object" && p.level === hierEditorLevel) {
-                                    parentLevel = name;
-                                    break;
+
+                    /* Check if level specifies where to navigate after selection */
+                    if (hierEditorNavigateTo) {
+                        /* Navigate to specified level, clearing path */
+                        hierEditorPath = [];
+                        hierEditorLevel = hierEditorNavigateTo;
+                    } else {
+                        /* Go back to previous level */
+                        if (hierEditorPath.length > 0) {
+                            hierEditorPath.pop();
+                        }
+                        /* Find parent level - look for level that navigates here */
+                        const levels = hierEditorHierarchy.levels;
+                        let parentLevel = "root";
+                        for (const [name, def] of Object.entries(levels)) {
+                            if (def.params) {
+                                for (const p of def.params) {
+                                    if (p && typeof p === "object" && p.level === hierEditorLevel) {
+                                        parentLevel = name;
+                                        break;
+                                    }
                                 }
                             }
                         }
+                        hierEditorLevel = parentLevel;
                     }
-                    hierEditorLevel = parentLevel;
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
