@@ -36,7 +36,7 @@
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
-#define SHADOW_MIDI_OUT_BUFFER_SIZE 256  /* MIDI out buffer from shadow UI */
+#define SHADOW_MIDI_OUT_BUFFER_SIZE 1024  /* MIDI out buffer from shadow UI (256 packets) */
 
 /* ============================================================================
  * Slot Configuration
