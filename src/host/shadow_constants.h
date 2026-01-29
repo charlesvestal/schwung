@@ -31,12 +31,12 @@
  * Buffer Sizes
  * ============================================================================ */
 
-#define MIDI_BUFFER_SIZE    1024  /* 256 USB-MIDI packets for sysex support */
+#define MIDI_BUFFER_SIZE    256   /* Hardware mailbox MIDI area: 64 USB-MIDI packets */
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
-#define SHADOW_MIDI_OUT_BUFFER_SIZE 1024  /* MIDI out buffer from shadow UI (256 packets) */
+#define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
 
 /* ============================================================================
  * Slot Configuration
