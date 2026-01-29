@@ -5266,15 +5266,20 @@ do_ioctl:
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
-            if (cin < 0x08 || cin > 0x0E) continue;
-            if (cable != 0x00) continue;  /* Only internal cable 0 (Move hardware) */
+            /* In overtake mode, allow sysex (CIN 0x04-0x07) and normal messages (0x08-0x0E) */
+            if (overtake_mode) {
+                if (cin < 0x04 || cin > 0x0E) continue;
+            } else {
+                if (cin < 0x08 || cin > 0x0E) continue;
+                if (cable != 0x00) continue;  /* Only internal cable 0 (Move hardware) */
+            }
 
             uint8_t status = src[j + 1];
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
-            /* In overtake mode, forward ALL events to shadow UI */
+            /* In overtake mode, forward ALL events (all cables) to shadow UI */
             if (overtake_mode && shadow_ui_midi_shm) {
                 for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
                     if (shadow_ui_midi_shm[slot] == 0) {
@@ -5378,6 +5383,32 @@ do_ioctl:
                     }
                 }
                 continue;
+            }
+        }
+
+        /* In overtake mode, also scan MIDI_OUT for external USB MIDI (cable 2) */
+        if (overtake_mode && shadow_ui_midi_shm) {
+            uint8_t *out_src = hardware_mmap_addr + MIDI_OUT_OFFSET;
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t out_cin = out_src[j] & 0x0F;
+                uint8_t out_cable = (out_src[j] >> 4) & 0x0F;
+                /* Allow sysex (0x04-0x07) and normal messages (0x08-0x0E) */
+                if (out_cin < 0x04 || out_cin > 0x0E) continue;
+                /* Skip empty packets */
+                if (out_src[j+1] == 0 && out_src[j+2] == 0 && out_src[j+3] == 0) continue;
+
+                /* Forward to shadow UI with cable + 0x10 to mark as MIDI_OUT source */
+                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                    if (shadow_ui_midi_shm[slot] == 0) {
+                        /* Mark with cable + 0x10 so shadow_ui can distinguish IN vs OUT */
+                        shadow_ui_midi_shm[slot] = (out_src[j] & 0x0F) | ((out_cable + 0x10) << 4);
+                        shadow_ui_midi_shm[slot + 1] = out_src[j + 1];
+                        shadow_ui_midi_shm[slot + 2] = out_src[j + 2];
+                        shadow_ui_midi_shm[slot + 3] = out_src[j + 3];
+                        shadow_control->midi_ready++;
+                        break;
+                    }
+                }
             }
         }
     }

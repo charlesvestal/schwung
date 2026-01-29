@@ -481,6 +481,19 @@ static JSValue js_move_midi_internal_send(JSContext *ctx, JSValueConst this_val,
     return js_shadow_midi_send(0, ctx, this_val, argc, argv);
 }
 
+/* shadow_log(message) - Log to shadow_ui.log from JS */
+static JSValue js_shadow_log(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    const char *msg = JS_ToCString(ctx, argv[0]);
+    if (msg) {
+        shadow_ui_log_line(msg);
+        JS_FreeCString(ctx, msg);
+    }
+    return JS_UNDEFINED;
+}
+
 /* === Host functions for store operations === */
 
 #define BASE_DIR "/data/UserData/move-anything"
@@ -929,6 +942,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
 
+    /* Register logging function for JS modules */
+    JS_SetPropertyStr(ctx, global_obj, "shadow_log", JS_NewCFunction(ctx, js_shadow_log, "shadow_log", 1));
+
     /* Register host functions for store operations */
     JS_SetPropertyStr(ctx, global_obj, "host_file_exists", JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_read_file", JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1));
@@ -953,13 +969,26 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cin = shadow_ui_midi_shm[i] & 0x0F;
         uint8_t cable = (shadow_ui_midi_shm[i] >> 4) & 0x0F;
+
+        /* Decode source: cable >= 0x10 means from MIDI_OUT, else MIDI_IN */
+        uint8_t from_midi_out = (cable >= 0x10);
+        uint8_t real_cable = from_midi_out ? (cable - 0x10) : cable;
+
+        /* Use real cable for routing */
+        cable = real_cable;
+
         /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc */
         if (cin < 0x04 || cin > 0x0E) continue;
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
         if (msg[0] + msg[1] + msg[2] == 0) continue;
         handled = 1;
         if (cable == 2) {
-            callGlobalFunction(ctx, onExternal, msg);
+            /* Re-lookup onMidiMessageExternal each time in case overtake module replaced it */
+            JSValue freshExternal;
+            if (getGlobalFunction(ctx, "onMidiMessageExternal", &freshExternal)) {
+                callGlobalFunction(ctx, &freshExternal, msg);
+                JS_FreeValue(ctx, freshExternal);
+            }
         } else {
             callGlobalFunction(ctx, onInternal, msg);
         }
