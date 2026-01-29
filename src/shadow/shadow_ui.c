@@ -288,7 +288,7 @@ static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val
     if (!shadow_control || argc < 1) return JS_UNDEFINED;
     int32_t mode = 0;
     JS_ToInt32(ctx, &mode, argv[0]);
-    shadow_control->overtake_mode = (mode != 0) ? 1 : 0;
+    shadow_control->overtake_mode = (uint8_t)mode;  /* 0=normal, 1=menu, 2=module */
     /* Reset MIDI sync and clear buffer when enabling overtake mode */
     if (mode != 0) {
         last_midi_ready = shadow_control->midi_ready;

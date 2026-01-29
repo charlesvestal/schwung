@@ -958,10 +958,10 @@ function enterOvertakeMenu() {
     overtakeInitTicks = 0;
     ledClearIndex = 0;
 
-    /* Enable overtake mode to block Move's UI from processing MIDI/LEDs */
+    /* Enable overtake mode 1 (menu) - only UI events forwarded, not all MIDI */
     if (typeof shadow_set_overtake_mode === "function") {
-        shadow_set_overtake_mode(1);
-        debugLog("enterOvertakeMenu: overtake_mode enabled");
+        shadow_set_overtake_mode(1);  /* 1 = menu mode (UI events only) */
+        debugLog("enterOvertakeMenu: overtake_mode=1 (menu)");
     }
 
     overtakeModules = scanForOvertakeModules();
@@ -1013,10 +1013,10 @@ function loadOvertakeModule(moduleInfo) {
     }
 
     try {
-        /* Step 1: Enable overtake mode to block Move's LED updates */
+        /* Step 1: Enable overtake mode 2 (module) - all MIDI forwarded including external */
         if (typeof shadow_set_overtake_mode === "function") {
-            shadow_set_overtake_mode(1);
-            debugLog("loadOvertakeModule: overtake_mode enabled");
+            shadow_set_overtake_mode(2);  /* 2 = module mode (all events) */
+            debugLog("loadOvertakeModule: overtake_mode=2 (module)");
         }
 
         /* Reset escape state variables for clean state */

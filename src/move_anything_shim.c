@@ -5279,14 +5279,18 @@ do_ioctl:
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
-            /* In overtake mode, forward ALL events (all cables) to shadow UI */
+            /* In overtake mode, forward events to shadow UI.
+             * overtake_mode=1 (menu): only forward UI events (jog, click, back)
+             * overtake_mode=2 (module): forward ALL events (all cables) */
             if (overtake_mode && shadow_ui_midi_shm) {
-                /* Debug: Log CC 51 (back) and button presses */
-                if (type == 0xB0 && (d1 == 51 || d1 == 3) && d2 > 0) {
-                    char msg[64];
-                    snprintf(msg, sizeof(msg), "OVERTAKE FWD: CC %d d2=%d", d1, d2);
-                    shadow_log(msg);
+                /* In menu mode (1), only forward essential UI events */
+                if (overtake_mode == 1) {
+                    int is_ui_event = (type == 0xB0 &&
+                                      (d1 == 14 || d1 == 3 || d1 == 51 ||  /* jog, click, back */
+                                       (d1 >= 40 && d1 <= 43)));           /* track buttons */
+                    if (!is_ui_event) continue;  /* Skip non-UI events in menu mode */
                 }
+
                 for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
                     if (shadow_ui_midi_shm[slot] == 0) {
                         shadow_ui_midi_shm[slot] = src[j];

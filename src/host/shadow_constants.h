@@ -85,7 +85,7 @@ typedef struct shadow_control_t {
     volatile uint32_t shim_counter;   /* Debug: shim tick counter */
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
     volatile uint8_t shift_held;      /* Is shift button currently held? */
-    volatile uint8_t overtake_mode;   /* 1=block all MIDI from reaching Move */
+    volatile uint8_t overtake_mode;   /* 0=normal, 1=menu (UI events only), 2=module (all events) */
     volatile uint8_t reserved[41];
 } shadow_control_t;
 
