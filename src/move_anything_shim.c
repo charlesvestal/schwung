@@ -3441,6 +3441,33 @@ static void shadow_mix_audio(void)
     #endif
 }
 
+/* Filter Move's MIDI_OUT in overtake mode - called unconditionally each ioctl.
+ * In overtake mode 2, Move's internal LED commands (cable 0) must be suppressed
+ * to prevent them from overwriting the shadow module's LED state.
+ * External MIDI (cable 2) is preserved in case there are pending messages. */
+static void shadow_filter_overtake_midi_out(void) {
+    int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
+    if (overtake_mode != 2) return;
+
+    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+
+    /* Clear cable 0 packets (Move's internal LEDs), keep cable 2 (external MIDI) */
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t cin_cable = midi_out[i];
+        int cable = (cin_cable >> 4) & 0x0F;
+
+        /* Check if this is an empty slot */
+        if (cin_cable == 0 && midi_out[i+1] == 0 && midi_out[i+2] == 0 && midi_out[i+3] == 0) {
+            continue;  /* Already empty */
+        }
+
+        /* Clear cable 0 packets (Move's internal), keep cable 2 (external) */
+        if (cable == 0) {
+            memset(midi_out + i, 0, 4);
+        }
+    }
+}
+
 /* Inject shadow UI MIDI out into mailbox before ioctl */
 static void shadow_inject_ui_midi_out(void) {
     if (!shadow_midi_out_shm) return;
@@ -3450,14 +3477,6 @@ static void shadow_inject_ui_midi_out(void) {
 
     /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
-
-    /* In overtake mode, clear Move's MIDI_OUT first to ensure our packets get sent.
-     * Move may have filled the buffer with LED commands (cable 0) which would
-     * prevent external MIDI (cable 2) from being injected. */
-    int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
-    if (overtake_mode == 2) {
-        memset(midi_out, 0, MIDI_BUFFER_SIZE);
-    }
 
     /* Find empty slots and copy packets */
     int hw_offset = 0;
@@ -5007,7 +5026,9 @@ do_ioctl:
     if (baseline_mode) clock_gettime(CLOCK_MONOTONIC, &pre_end);
 
     /* === SHADOW UI MIDI OUT (PRE-IOCTL) ===
-     * Inject any MIDI from shadow UI into the mailbox before sync. */
+     * First filter Move's cable 0 packets in overtake mode (unconditionally),
+     * then inject any MIDI from shadow UI into the mailbox before sync. */
+    shadow_filter_overtake_midi_out();
     shadow_inject_ui_midi_out();
 
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
