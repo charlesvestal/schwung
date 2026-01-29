@@ -2840,6 +2840,43 @@ static void shadow_inprocess_handle_param_request(void) {
     shadow_param->request_type = 0;
 }
 
+/* Forward CC, pitch bend, aftertouch from external MIDI (MIDI_IN cable 2) to MIDI_OUT.
+ * Move echoes notes but not these message types, so we inject them into MIDI_OUT
+ * so the DSP routing can pick them up alongside the echoed notes. */
+static void shadow_forward_external_cc_to_out(void) {
+    if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
+    uint8_t *out_dst = global_mmap_addr + MIDI_OUT_OFFSET;
+
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t cin = in_src[i] & 0x0F;
+        uint8_t cable = (in_src[i] >> 4) & 0x0F;
+
+        /* Only process external MIDI (cable 2) */
+        if (cable != 0x02) continue;
+        if (cin < 0x08 || cin > 0x0E) continue;
+
+        uint8_t status = in_src[i + 1];
+        uint8_t type = status & 0xF0;
+
+        /* Only forward CC (0xB0), pitch bend (0xE0), channel aftertouch (0xD0), poly aftertouch (0xA0) */
+        if (type != 0xB0 && type != 0xE0 && type != 0xD0 && type != 0xA0) continue;
+
+        /* Find an empty slot in MIDI_OUT and inject the message */
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            if (out_dst[j] == 0 && out_dst[j+1] == 0 && out_dst[j+2] == 0 && out_dst[j+3] == 0) {
+                /* Copy the packet, keeping cable 2 */
+                out_dst[j] = in_src[i];
+                out_dst[j + 1] = in_src[i + 1];
+                out_dst[j + 2] = in_src[i + 2];
+                out_dst[j + 3] = in_src[i + 3];
+                break;
+            }
+        }
+    }
+}
+
 static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
@@ -2876,7 +2913,7 @@ static void shadow_inprocess_process_midi(void) {
                 for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
                     if (shadow_chain_slots[s].active && shadow_chain_slots[s].instance) {
                         shadow_plugin_v2->on_midi(shadow_chain_slots[s].instance, msg, 1,
-                                                  MOVE_MIDI_SOURCE_INTERNAL);
+                                                  MOVE_MIDI_SOURCE_EXTERNAL);
                     }
                 }
             }
@@ -2946,7 +2983,7 @@ static void shadow_inprocess_process_midi(void) {
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
                 uint8_t msg[3] = { shadow_chain_remap_channel(slot, pkt[1]), pkt[2], pkt[3] };
                 shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
-                                          MOVE_MIDI_SOURCE_INTERNAL);
+                                          MOVE_MIDI_SOURCE_EXTERNAL);
             }
         }
         /* Raw MIDI format fallback removed - was matching garbage/stale data.
@@ -3707,15 +3744,15 @@ static void shadow_filter_move_input(void)
             continue;
         }
 
-        /* Pass through non-cable-0 events (external MIDI) */
-        if (cable != 0x00) {
-            continue;
-        }
-
         uint8_t status = src[i + 1];
         uint8_t type = status & 0xF0;
         uint8_t d1 = src[i + 2];
         uint8_t d2 = src[i + 3];
+
+        /* Pass through non-cable-0 events (external MIDI) */
+        if (cable != 0x00) {
+            continue;
+        }
 
         /* In overtake mode, forward ALL MIDI to shadow UI and block from Move */
         if (overtake_mode) {
@@ -4737,6 +4774,10 @@ int ioctl(int fd, unsigned long request, ...)
     TIME_SECTION_START();
     shadow_inprocess_handle_param_request();
     TIME_SECTION_END(param_req_sum, param_req_max);
+
+    /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT
+     * so DSP routing can pick them up (Move only echoes notes, not these) */
+    shadow_forward_external_cc_to_out();
 
     TIME_SECTION_START();
     shadow_inprocess_process_midi();
