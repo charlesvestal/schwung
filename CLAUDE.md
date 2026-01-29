@@ -381,11 +381,22 @@ Each of the 4 shadow slots has:
 
 ### MIDI Cable Filtering
 
-The shim filters MIDI by USB cable number:
-- Cable 0 out: Move UI events (filtered from shadow processing)
-- Cable 2 out: Track MIDI output (routed to shadow slots)
+The shim filters MIDI by USB cable number in the hardware MIDI buffers:
 
-This prevents Move's UI MIDI from accidentally triggering shadow synths.
+**MIDI_IN buffer (offset 2048):**
+- Cable 0: Internal Move hardware controls (pads, knobs, buttons)
+- Cable 2: External USB MIDI input (devices connected to Move's USB-A port)
+
+**MIDI_OUT buffer (offset 0):**
+- Cable 0: Move's internal MIDI output
+- Cable 2: External USB MIDI output
+
+**Routing rules:**
+- Normal shadow mode: Only cable 0 (internal controls) is processed
+- Overtake mode: All cables are forwarded, including external USB MIDI (cable 2)
+- External MIDI from cable 2 is routed to `onMidiMessageExternal` in overtake modules
+
+**Important:** If Move tracks are configured to listen and output on the same MIDI channel, external MIDI may be echoed back. Configure Move tracks to use different channels than your external device to avoid interference.
 
 ### Master FX Chain
 

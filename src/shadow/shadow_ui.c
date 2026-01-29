@@ -970,13 +970,6 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
         uint8_t cin = shadow_ui_midi_shm[i] & 0x0F;
         uint8_t cable = (shadow_ui_midi_shm[i] >> 4) & 0x0F;
 
-        /* Decode source: cable >= 0x10 means from MIDI_OUT, else MIDI_IN */
-        uint8_t from_midi_out = (cable >= 0x10);
-        uint8_t real_cable = from_midi_out ? (cable - 0x10) : cable;
-
-        /* Use real cable for routing */
-        cable = real_cable;
-
         /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc */
         if (cin < 0x04 || cin > 0x0E) continue;
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
