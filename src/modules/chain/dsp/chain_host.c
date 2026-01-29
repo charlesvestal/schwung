@@ -2465,6 +2465,16 @@ static int load_patch(int index) {
     /* Update record button LED (white when patch loaded) */
     update_record_led();
 
+    /* Reset mod wheel (CC 1) to 0 on all channels after patch load.
+     * This prevents stale mod wheel values from Move's track state
+     * causing unwanted vibrato on startup. */
+    if (synth_loaded()) {
+        for (int ch = 0; ch < 16; ch++) {
+            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};  /* CC 1 = mod wheel */
+            synth_on_midi(mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
+        }
+    }
+
     return 0;
 }
 
@@ -4895,6 +4905,21 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
 
     snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
     v2_chain_log(inst, msg);
+
+    /* Reset mod wheel (CC 1) to 0 on all channels after patch load.
+     * This prevents stale mod wheel values from Move's track state
+     * causing unwanted vibrato on startup. */
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+        for (int ch = 0; ch < 16; ch++) {
+            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};  /* CC 1 = mod wheel */
+            inst->synth_plugin_v2->on_midi(inst->synth_instance, mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
+        }
+    } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+        for (int ch = 0; ch < 16; ch++) {
+            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};  /* CC 1 = mod wheel */
+            inst->synth_plugin->on_midi(mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
+        }
+    }
 
     return 0;
 }

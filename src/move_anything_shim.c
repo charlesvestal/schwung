@@ -747,6 +747,10 @@ static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
 
+/* Startup mod wheel reset countdown - resets mod wheel after Move finishes its startup MIDI burst */
+#define STARTUP_MODWHEEL_RESET_FRAMES 20  /* ~0.6 seconds at 128 frames/block */
+static int shadow_startup_modwheel_countdown = 0;
+
 /* Deferred DSP rendering buffer - rendered post-ioctl, mixed pre-ioctl next frame */
 static int16_t shadow_deferred_dsp_buffer[FRAMES_PER_BLOCK * 2];
 static int shadow_deferred_dsp_valid = 0;
@@ -2222,6 +2226,8 @@ static int shadow_inprocess_load_chain(void) {
 
     shadow_ui_state_refresh();
     shadow_inprocess_ready = 1;
+    /* Start countdown for delayed mod wheel reset after Move's startup MIDI settles */
+    shadow_startup_modwheel_countdown = STARTUP_MODWHEEL_RESET_FRAMES;
     if (shadow_control) {
         /* Allow display hotkey when running in-process DSP. */
         shadow_control->shadow_ready = 1;
@@ -2879,6 +2885,27 @@ static void shadow_forward_external_cc_to_out(void) {
 
 static void shadow_inprocess_process_midi(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    /* Delayed mod wheel reset - fires after Move's startup MIDI burst settles.
+     * This ensures any stale mod wheel values from Move's track state are cleared. */
+    if (shadow_startup_modwheel_countdown > 0) {
+        shadow_startup_modwheel_countdown--;
+        if (shadow_startup_modwheel_countdown == 0) {
+            shadow_log("Sending startup mod wheel reset to all slots");
+            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                    if (shadow_chain_slots[s].active && shadow_chain_slots[s].instance) {
+                        /* Send CC 1 = 0 (mod wheel reset) on all 16 channels */
+                        for (int ch = 0; ch < 16; ch++) {
+                            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};
+                            shadow_plugin_v2->on_midi(shadow_chain_slots[s].instance, mod_reset, 3,
+                                                      MOVE_MIDI_SOURCE_HOST);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /* MIDI_IN (internal controls) is NOT routed to DSP here.
      * - Shadow UI handles knobs via set_param based on ui_hierarchy
