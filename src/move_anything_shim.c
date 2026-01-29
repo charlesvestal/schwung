@@ -5281,6 +5281,12 @@ do_ioctl:
 
             /* In overtake mode, forward ALL events (all cables) to shadow UI */
             if (overtake_mode && shadow_ui_midi_shm) {
+                /* Debug: Log CC 51 (back) and button presses */
+                if (type == 0xB0 && (d1 == 51 || d1 == 3) && d2 > 0) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "OVERTAKE FWD: CC %d d2=%d", d1, d2);
+                    shadow_log(msg);
+                }
                 for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
                     if (shadow_ui_midi_shm[slot] == 0) {
                         shadow_ui_midi_shm[slot] = src[j];

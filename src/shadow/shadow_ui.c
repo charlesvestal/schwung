@@ -289,6 +289,14 @@ static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val
     int32_t mode = 0;
     JS_ToInt32(ctx, &mode, argv[0]);
     shadow_control->overtake_mode = (mode != 0) ? 1 : 0;
+    /* Reset MIDI sync and clear buffer when enabling overtake mode */
+    if (mode != 0) {
+        last_midi_ready = shadow_control->midi_ready;
+        /* Clear MIDI buffer to start fresh */
+        if (shadow_ui_midi_shm) {
+            memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
+        }
+    }
     return JS_UNDEFINED;
 }
 
@@ -1047,11 +1055,15 @@ int main(int argc, char *argv[]) {
 
         if (shadow_control && shadow_control->midi_ready != last_midi_ready) {
             last_midi_ready = shadow_control->midi_ready;
-            int had_event = process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
-            if (had_event && shadow_ui_midi_shm) {
+            process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
+            /* Always clear buffer after processing - even if no events were found,
+             * the buffer may contain data the shim wrote that we couldn't parse.
+             * This prevents the buffer from filling up and blocking new writes. */
+            if (shadow_ui_midi_shm) {
                 memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
             }
         }
+
 
         refresh_counter++;
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {

@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as std from 'std';
 
 /* Debug logging to file - disabled by default, enable for debugging */
-const DEBUG_LOG_ENABLED = true;
+const DEBUG_LOG_ENABLED = false;
 const DEBUG_LOG_FILE = '/tmp/shadow_debug.log';
 function debugLog(msg) {
     if (!DEBUG_LOG_ENABLED) return;
@@ -949,6 +949,21 @@ function scanForOvertakeModules() {
 
 /* Enter the overtake module selection menu */
 function enterOvertakeMenu() {
+    /* Reset all overtake state to ensure clean menu entry */
+    overtakeModuleLoaded = false;
+    overtakeModulePath = "";
+    overtakeModuleCallbacks = null;
+    overtakeExitPending = false;
+    overtakeInitPending = false;
+    overtakeInitTicks = 0;
+    ledClearIndex = 0;
+
+    /* Enable overtake mode to block Move's UI from processing MIDI/LEDs */
+    if (typeof shadow_set_overtake_mode === "function") {
+        shadow_set_overtake_mode(1);
+        debugLog("enterOvertakeMenu: overtake_mode enabled");
+    }
+
     overtakeModules = scanForOvertakeModules();
     selectedOvertakeModule = 0;
     previousView = view;
@@ -1003,6 +1018,11 @@ function loadOvertakeModule(moduleInfo) {
             shadow_set_overtake_mode(1);
             debugLog("loadOvertakeModule: overtake_mode enabled");
         }
+
+        /* Reset escape state variables for clean state */
+        hostShiftHeld = false;
+        hostVolumeKnobTouched = false;
+        debugLog("loadOvertakeModule: escape state reset");
 
         /* Save current globals before loading - module may overwrite them */
         const savedInit = globalThis.init;
@@ -3542,7 +3562,10 @@ function adjustKnobAndShow(knobIndex, delta) {
  * This does the actual get/set/overlay work, throttled to avoid IPC overload
  */
 function processPendingHierKnob() {
-    debugLog(`processPendingHierKnob: index=${pendingHierKnobIndex}, delta=${pendingHierKnobDelta}`);
+    /* Only log when there's actual work to do - reduces spam */
+    if (pendingHierKnobIndex >= 0 && pendingHierKnobDelta !== 0) {
+        debugLog(`processPendingHierKnob: index=${pendingHierKnobIndex}, delta=${pendingHierKnobDelta}`);
+    }
     if (pendingHierKnobIndex < 0 || pendingHierKnobDelta === 0) {
         /* No pending adjustment, but still show overlay if knob active */
         if (pendingHierKnobIndex >= 0) {
@@ -4818,8 +4841,15 @@ function handleBack() {
             }
             break;
         case VIEWS.OVERTAKE_MENU:
-            /* Exit to Move */
-            exitOvertakeMode();
+            /* Exit overtake menu and return to Move */
+            debugLog("OVERTAKE_MENU back: exiting to Move");
+            if (typeof shadow_set_overtake_mode === "function") {
+                shadow_set_overtake_mode(0);
+            }
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+            needsRedraw = true;
             break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own back input.
@@ -6011,45 +6041,68 @@ globalThis.tick = function() {
             drawOvertakeMenu();
             break;
         case VIEWS.OVERTAKE_MODULE:
-            /* Handle exit - progressively clear LEDs then return to Move */
-            if (overtakeExitPending) {
-                /* Show exiting screen while clearing LEDs */
-                clear_screen();
-                print(40, 28, "Exiting...", 1);
+            try {
+                /* Handle exit - progressively clear LEDs then return to Move */
+                if (overtakeExitPending) {
+                    debugLog("OVERTAKE tick: exit phase");
+                    /* Show exiting screen while clearing LEDs */
+                    clear_screen();
+                    print(40, 28, "Exiting...", 1);
 
-                /* Clear LEDs in batches */
-                const exitLedsCleared = clearLedBatch();
+                    /* Clear LEDs in batches */
+                    const exitLedsCleared = clearLedBatch();
 
-                /* After LEDs cleared, complete the exit */
-                if (exitLedsCleared) {
-                    ledClearIndex = 0;
-                    completeOvertakeExit();
-                }
-            }
-            /* Handle deferred init - progressively clear LEDs then call module init() */
-            else if (overtakeInitPending) {
-                overtakeInitTicks++;
-                /* Show loading screen while clearing LEDs */
-                clear_screen();
-                print(40, 28, "Loading...", 1);
-
-                /* Clear LEDs in batches (buffer is small) */
-                const ledsCleared = clearLedBatch();
-
-                /* After LEDs cleared and delay passed, call init */
-                if (ledsCleared && overtakeInitTicks >= OVERTAKE_INIT_DELAY_TICKS) {
-                    overtakeInitPending = false;
-                    ledClearIndex = 0;  /* Reset for next time */
-                    debugLog("loadOvertakeModule: init delay complete, calling init()");
-                    if (overtakeModuleCallbacks && overtakeModuleCallbacks.init) {
-                        overtakeModuleCallbacks.init();
+                    /* After LEDs cleared, complete the exit */
+                    if (exitLedsCleared) {
+                        ledClearIndex = 0;
+                        completeOvertakeExit();
                     }
                 }
-            } else {
-                /* Call the overtake module's tick() function */
-                if (overtakeModuleCallbacks && overtakeModuleCallbacks.tick) {
-                    overtakeModuleCallbacks.tick();
+                /* Handle deferred init - progressively clear LEDs then call module init() */
+                else if (overtakeInitPending) {
+                    overtakeInitTicks++;
+                    /* Log every tick during init phase for debugging */
+                    debugLog("OVERTAKE init phase: tick=" + overtakeInitTicks + " ledIdx=" + ledClearIndex);
+                    /* Show loading screen while clearing LEDs */
+                    clear_screen();
+                    print(40, 28, "Loading...", 1);
+
+                    /* Clear LEDs in batches (buffer is small) */
+                    const ledsCleared = clearLedBatch();
+                    debugLog("OVERTAKE init phase: ledsCleared=" + ledsCleared);
+
+                    /* After LEDs cleared and delay passed, call init */
+                    if (ledsCleared && overtakeInitTicks >= OVERTAKE_INIT_DELAY_TICKS) {
+                        overtakeInitPending = false;
+                        ledClearIndex = 0;  /* Reset for next time */
+                        debugLog("loadOvertakeModule: init delay complete, calling init()");
+                        if (overtakeModuleCallbacks && overtakeModuleCallbacks.init) {
+                            try {
+                                overtakeModuleCallbacks.init();
+                                debugLog("loadOvertakeModule: init() returned successfully");
+                            } catch (e) {
+                                debugLog("loadOvertakeModule: init() threw exception: " + e);
+                                /* Exit overtake on init error */
+                                exitOvertakeMode();
+                            }
+                        }
+                    }
+                } else {
+                    /* Call the overtake module's tick() function */
+                    if (overtakeModuleCallbacks && overtakeModuleCallbacks.tick) {
+                        try {
+                            overtakeModuleCallbacks.tick();
+                        } catch (e) {
+                            debugLog("OVERTAKE tick() exception: " + e);
+                            /* Exit overtake on tick error */
+                            exitOvertakeMode();
+                        }
+                    }
                 }
+            } catch (e) {
+                debugLog("OVERTAKE_MODULE case EXCEPTION: " + e);
+                /* Exit overtake on any exception */
+                exitOvertakeMode();
             }
             break;
         default:
@@ -6076,6 +6129,11 @@ globalThis.onMidiMessageInternal = function(data) {
     const status = data[0];
     const d1 = data[1];
     const d2 = data[2];
+
+    /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
+    if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
+        debugLog(`MIDI_IN: view=${view} status=${status} d1=${d1} d2=${d2} loaded=${overtakeModuleLoaded} callbacks=${!!overtakeModuleCallbacks}`);
+    }
 
     /* Handle text entry MIDI if active */
     if (isTextEntryActive()) {
@@ -6133,6 +6191,7 @@ globalThis.onMidiMessageInternal = function(data) {
         /* HOST-LEVEL ESCAPE: Shift+Vol+Jog Click always exits overtake mode
          * This runs BEFORE passing MIDI to the module, ensuring escape always works */
         if ((status & 0xF0) === 0xB0 && d1 === MoveMainButton && d2 > 0) {
+            debugLog(`JOG CLICK: hostShift=${hostShiftHeld} volTouch=${hostVolumeKnobTouched}`);
             if (hostShiftHeld && hostVolumeKnobTouched) {
                 debugLog("HOST: Shift+Vol+Jog detected, exiting overtake mode");
                 exitOvertakeMode();
@@ -6142,8 +6201,14 @@ globalThis.onMidiMessageInternal = function(data) {
 
         /* Route to the overtake module's onMidiMessageInternal if it exists */
         if (overtakeModuleCallbacks.onMidiMessageInternal) {
-            overtakeModuleCallbacks.onMidiMessageInternal(data);
-            needsRedraw = true;
+            try {
+                overtakeModuleCallbacks.onMidiMessageInternal(data);
+                needsRedraw = true;
+            } catch (e) {
+                debugLog("OVERTAKE onMidiMessageInternal exception: " + e);
+                /* Exit overtake on MIDI handler error */
+                exitOvertakeMode();
+            }
         }
         return;
     }
