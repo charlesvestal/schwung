@@ -440,6 +440,12 @@ globalThis.tick = function() {
 - `src/shadow/shadow_ui.js` - Overtake module loading and lifecycle
 - `src/modules/controller/ui.js` - Example overtake module
 
+**External Device Protocols:**
+If your overtake module communicates with an external USB device that expects an initialization handshake (like the M8's Launchpad Pro protocol), be proactive—don't wait for the device to initiate. The device may have already sent its request before your module loaded due to the ~500ms init delay. Instead:
+- Send your identification/init message in `init()` immediately
+- Optionally retry periodically in `tick()` until connection is confirmed
+- Detect connection from any valid response (not just the specific handshake message)
+
 ## Module Store
 
 The Module Store (`store` module) downloads and installs external modules from GitHub releases. The catalog is fetched from:
