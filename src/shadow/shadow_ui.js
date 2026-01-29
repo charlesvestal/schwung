@@ -3643,6 +3643,12 @@ function processPendingHierKnob() {
 /* Format a value for display in hierarchy editor */
 function formatHierDisplayValue(key, val) {
     const meta = getParamMetadata(key);
+
+    /* For enums, always return the raw string value */
+    if (meta && meta.type === "enum") {
+        return val;
+    }
+
     const num = parseFloat(val);
     if (isNaN(num)) return val;
 

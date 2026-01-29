@@ -2,7 +2,7 @@
   "id": "arp",
   "name": "Arpeggiator",
   "abbrev": "AR",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "builtin": true,
   "capabilities": {
     "chainable": true,
@@ -37,7 +37,7 @@
         "key": "division",
         "name": "Division",
         "type": "enum",
-        "options": ["1/4", "1/8", "1/16"],
+        "options": ["1/4.", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32"],
         "default": "1/16"
       },
       {

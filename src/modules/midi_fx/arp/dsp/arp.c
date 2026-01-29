@@ -14,8 +14,20 @@
 
 #define MAX_ARP_NOTES 16
 #define DEFAULT_BPM 120
-#define DEFAULT_DIVISION 4  /* 1/16 notes */
+#define DEFAULT_DIVISION 4.0f  /* 1/16 notes */
 #define CLOCKS_PER_QUARTER 24  /* MIDI standard: 24 PPQN */
+
+/* Division values (notes per beat) */
+#define DIV_1_4     1.0f      /* Quarter notes */
+#define DIV_1_4D    0.6667f   /* Dotted quarter (1 note per 1.5 beats) */
+#define DIV_1_4T    1.5f      /* Quarter triplet (3 in 2 beats) */
+#define DIV_1_8     2.0f      /* Eighth notes */
+#define DIV_1_8D    1.3333f   /* Dotted eighth */
+#define DIV_1_8T    3.0f      /* Eighth triplet */
+#define DIV_1_16    4.0f      /* Sixteenth notes */
+#define DIV_1_16D   2.6667f   /* Dotted sixteenth */
+#define DIV_1_16T   6.0f      /* Sixteenth triplet */
+#define DIV_1_32    8.0f      /* Thirty-second notes */
 
 /* JSON helpers for state parsing */
 static int json_get_string(const char *json, const char *key, char *out, int out_len) {
@@ -68,7 +80,7 @@ typedef enum {
 typedef struct {
     arp_mode_t mode;
     int bpm;
-    int division;  /* 1=quarter, 2=8th, 4=16th */
+    float division;  /* Notes per beat: 1=quarter, 2=8th, 4=16th, etc. */
     sync_mode_t sync_mode;
 
     /* Held notes (sorted low to high) */
@@ -94,9 +106,9 @@ static const host_api_v1_t *g_host = NULL;
 
 static void arp_calc_samples_per_step(arp_instance_t *inst, int sample_rate) {
     if (inst->bpm <= 0) inst->bpm = DEFAULT_BPM;
-    if (inst->division <= 0) inst->division = DEFAULT_DIVISION;
+    if (inst->division <= 0.0f) inst->division = DEFAULT_DIVISION;
 
-    float notes_per_second = (float)inst->bpm / 60.0f * (float)inst->division;
+    float notes_per_second = (float)inst->bpm / 60.0f * inst->division;
     inst->samples_per_step = (int)((float)sample_rate / notes_per_second);
     if (inst->samples_per_step <= 0) inst->samples_per_step = sample_rate / 8;
 }
@@ -104,8 +116,8 @@ static void arp_calc_samples_per_step(arp_instance_t *inst, int sample_rate) {
 static void arp_calc_clocks_per_step(arp_instance_t *inst) {
     /* MIDI clock: 24 PPQN (pulses per quarter note) */
     /* division=1 (quarter): 24 clocks, division=2 (8th): 12, division=4 (16th): 6 */
-    if (inst->division <= 0) inst->division = DEFAULT_DIVISION;
-    inst->clocks_per_step = CLOCKS_PER_QUARTER / inst->division;
+    if (inst->division <= 0.0f) inst->division = DEFAULT_DIVISION;
+    inst->clocks_per_step = (int)(CLOCKS_PER_QUARTER / inst->division + 0.5f);
     if (inst->clocks_per_step < 1) inst->clocks_per_step = 1;
 }
 
@@ -385,16 +397,25 @@ static void arp_set_param(void *instance, const char *key, const char *val) {
         else if (strcmp(val, "random") == 0) inst->mode = ARP_RANDOM;
     }
     else if (strcmp(key, "bpm") == 0) {
+        /* Ignore BPM changes when synced to external clock */
+        if (inst->sync_mode == SYNC_CLOCK) return;
         inst->bpm = atoi(val);
         if (inst->bpm < 40) inst->bpm = 40;
         if (inst->bpm > 240) inst->bpm = 240;
         inst->samples_per_step = 0;  /* Recalculate on next tick */
     }
     else if (strcmp(key, "division") == 0) {
-        if (strcmp(val, "1/4") == 0) inst->division = 1;
-        else if (strcmp(val, "1/8") == 0) inst->division = 2;
-        else if (strcmp(val, "1/16") == 0) inst->division = 4;
-        else inst->division = atoi(val);
+        if (strcmp(val, "1/4") == 0) inst->division = DIV_1_4;
+        else if (strcmp(val, "1/4.") == 0) inst->division = DIV_1_4D;
+        else if (strcmp(val, "1/4T") == 0) inst->division = DIV_1_4T;
+        else if (strcmp(val, "1/8") == 0) inst->division = DIV_1_8;
+        else if (strcmp(val, "1/8.") == 0) inst->division = DIV_1_8D;
+        else if (strcmp(val, "1/8T") == 0) inst->division = DIV_1_8T;
+        else if (strcmp(val, "1/16") == 0) inst->division = DIV_1_16;
+        else if (strcmp(val, "1/16.") == 0) inst->division = DIV_1_16D;
+        else if (strcmp(val, "1/16T") == 0) inst->division = DIV_1_16T;
+        else if (strcmp(val, "1/32") == 0) inst->division = DIV_1_32;
+        else inst->division = (float)atof(val);
         inst->samples_per_step = 0;  /* Recalculate on next tick */
         arp_calc_clocks_per_step(inst);  /* Also update clock timing */
     }
@@ -430,9 +451,16 @@ static void arp_set_param(void *instance, const char *key, const char *val) {
             inst->samples_per_step = 0;
         }
         if (json_get_string(val, "division", division_str, sizeof(division_str))) {
-            if (strcmp(division_str, "1/4") == 0) inst->division = 1;
-            else if (strcmp(division_str, "1/8") == 0) inst->division = 2;
-            else if (strcmp(division_str, "1/16") == 0) inst->division = 4;
+            if (strcmp(division_str, "1/4") == 0) inst->division = DIV_1_4;
+            else if (strcmp(division_str, "1/4.") == 0) inst->division = DIV_1_4D;
+            else if (strcmp(division_str, "1/4T") == 0) inst->division = DIV_1_4T;
+            else if (strcmp(division_str, "1/8") == 0) inst->division = DIV_1_8;
+            else if (strcmp(division_str, "1/8.") == 0) inst->division = DIV_1_8D;
+            else if (strcmp(division_str, "1/8T") == 0) inst->division = DIV_1_8T;
+            else if (strcmp(division_str, "1/16") == 0) inst->division = DIV_1_16;
+            else if (strcmp(division_str, "1/16.") == 0) inst->division = DIV_1_16D;
+            else if (strcmp(division_str, "1/16T") == 0) inst->division = DIV_1_16T;
+            else if (strcmp(division_str, "1/32") == 0) inst->division = DIV_1_32;
             inst->samples_per_step = 0;
             arp_calc_clocks_per_step(inst);
         }
@@ -464,12 +492,24 @@ static int arp_get_param(void *instance, const char *key, char *buf, int buf_len
         return snprintf(buf, buf_len, "%s", val);
     }
     else if (strcmp(key, "bpm") == 0) {
+        /* When synced to external clock, BPM is not used - show SYNC */
+        if (inst->sync_mode == SYNC_CLOCK) {
+            return snprintf(buf, buf_len, "SYNC");
+        }
         return snprintf(buf, buf_len, "%d", inst->bpm);
     }
     else if (strcmp(key, "division") == 0) {
         const char *val = "1/16";
-        if (inst->division == 1) val = "1/4";
-        else if (inst->division == 2) val = "1/8";
+        if (inst->division <= DIV_1_4D + 0.01f) val = "1/4.";
+        else if (inst->division <= DIV_1_4 + 0.01f) val = "1/4";
+        else if (inst->division <= DIV_1_8D + 0.01f) val = "1/8.";
+        else if (inst->division <= DIV_1_4T + 0.01f) val = "1/4T";
+        else if (inst->division <= DIV_1_8 + 0.01f) val = "1/8";
+        else if (inst->division <= DIV_1_16D + 0.01f) val = "1/16.";
+        else if (inst->division <= DIV_1_8T + 0.01f) val = "1/8T";
+        else if (inst->division <= DIV_1_16 + 0.01f) val = "1/16";
+        else if (inst->division <= DIV_1_16T + 0.01f) val = "1/16T";
+        else if (inst->division <= DIV_1_32 + 0.01f) val = "1/32";
         return snprintf(buf, buf_len, "%s", val);
     }
     else if (strcmp(key, "sync") == 0) {
@@ -485,11 +525,28 @@ static int arp_get_param(void *instance, const char *key, char *buf, int buf_len
             default: break;
         }
         const char *div_str = "1/16";
-        if (inst->division == 1) div_str = "1/4";
-        else if (inst->division == 2) div_str = "1/8";
+        if (inst->division <= DIV_1_4D + 0.01f) div_str = "1/4.";
+        else if (inst->division <= DIV_1_4 + 0.01f) div_str = "1/4";
+        else if (inst->division <= DIV_1_8D + 0.01f) div_str = "1/8.";
+        else if (inst->division <= DIV_1_4T + 0.01f) div_str = "1/4T";
+        else if (inst->division <= DIV_1_8 + 0.01f) div_str = "1/8";
+        else if (inst->division <= DIV_1_16D + 0.01f) div_str = "1/16.";
+        else if (inst->division <= DIV_1_8T + 0.01f) div_str = "1/8T";
+        else if (inst->division <= DIV_1_16 + 0.01f) div_str = "1/16";
+        else if (inst->division <= DIV_1_16T + 0.01f) div_str = "1/16T";
+        else if (inst->division <= DIV_1_32 + 0.01f) div_str = "1/32";
         return snprintf(buf, buf_len, "{\"mode\":\"%s\",\"bpm\":%d,\"division\":\"%s\",\"sync\":\"%s\"}",
                         mode_str, inst->bpm, div_str,
                         inst->sync_mode == SYNC_CLOCK ? "clock" : "internal");
+    }
+    else if (strcmp(key, "chain_params") == 0) {
+        const char *params = "["
+            "{\"key\":\"mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"off\",\"up\",\"down\",\"up_down\",\"random\"]},"
+            "{\"key\":\"bpm\",\"name\":\"BPM\",\"type\":\"int\",\"min\":40,\"max\":240,\"step\":1},"
+            "{\"key\":\"division\",\"name\":\"Division\",\"type\":\"enum\",\"options\":[\"1/4.\",\"1/4\",\"1/4T\",\"1/8.\",\"1/8\",\"1/8T\",\"1/16.\",\"1/16\",\"1/16T\",\"1/32\"]},"
+            "{\"key\":\"sync\",\"name\":\"Sync\",\"type\":\"enum\",\"options\":[\"internal\",\"clock\"]}"
+        "]";
+        return snprintf(buf, buf_len, "%s", params);
     }
 
     return -1;

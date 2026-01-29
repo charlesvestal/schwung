@@ -2,7 +2,7 @@
   "id": "chord",
   "name": "Chord",
   "abbrev": "CH",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "builtin": true,
   "capabilities": {
     "chainable": true,
@@ -11,8 +11,8 @@
       "levels": {
         "root": {
           "name": "Chord",
-          "params": ["type", "strum", "strum_dir"],
-          "knobs": ["type", "strum", "strum_dir"]
+          "params": ["type", "inversion", "voicing", "strum", "strum_dir"],
+          "knobs": ["type", "inversion", "voicing", "strum", "strum_dir"]
         }
       }
     },
@@ -21,8 +21,22 @@
         "key": "type",
         "name": "Chord Type",
         "type": "enum",
-        "options": ["none", "major", "minor", "power", "octave"],
+        "options": ["none", "major", "minor", "dim", "aug", "sus2", "sus4", "maj7", "min7", "dom7", "dim7", "power", "5th", "octave", "add9"],
         "default": "major"
+      },
+      {
+        "key": "inversion",
+        "name": "Inversion",
+        "type": "enum",
+        "options": ["root", "1st", "2nd", "3rd"],
+        "default": "root"
+      },
+      {
+        "key": "voicing",
+        "name": "Voicing",
+        "type": "enum",
+        "options": ["close", "open", "drop2", "drop3"],
+        "default": "close"
       },
       {
         "key": "strum",
@@ -30,7 +44,8 @@
         "type": "int",
         "min": 0,
         "max": 100,
-        "default": 0
+        "default": 0,
+        "step": 1
       },
       {
         "key": "strum_dir",
