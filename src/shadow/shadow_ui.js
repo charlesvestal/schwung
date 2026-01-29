@@ -3621,7 +3621,8 @@ function processPendingHierKnob() {
 
     /* Calculate step and bounds from metadata */
     const isInt = ctx.meta && ctx.meta.type === "int";
-    const baseStep = isInt ? KNOB_BASE_STEP_INT : KNOB_BASE_STEP_FLOAT;
+    const defaultStep = isInt ? KNOB_BASE_STEP_INT : KNOB_BASE_STEP_FLOAT;
+    const baseStep = ctx.meta && ctx.meta.step ? ctx.meta.step : defaultStep;
     const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
     const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
 
