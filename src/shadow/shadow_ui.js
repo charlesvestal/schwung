@@ -66,7 +66,7 @@ import {
     fetchCatalog, getModulesForCategory, getModuleStatus,
     installModule as sharedInstallModule,
     removeModule as sharedRemoveModule,
-    scanInstalledModules, getHostVersion,
+    scanInstalledModules, getHostVersion, isNewerVersion,
     CATEGORIES
 } from '/data/UserData/move-anything/shared/store_utils.mjs';
 
@@ -420,6 +420,24 @@ let storePickerLoadingMessage = '';    // Loading screen message
 let storeFetchPending = false;         // True while catalog fetch in progress
 let storeDetailScrollState = null;     // Scroll state for module detail
 let storePostInstallLines = [];        // Post-install message lines
+let storePickerFromOvertake = false;   // True if entered from overtake menu
+
+/* Check if host update is available and create pseudo-module if so */
+function getHostUpdateModule() {
+    if (!storeCatalog || !storeCatalog.host) return null;
+    const host = storeCatalog.host;
+    if (!host.latest_version || !host.download_url) return null;
+    if (!isNewerVersion(host.latest_version, storeHostVersion)) return null;
+    return {
+        id: "__core_update__",
+        name: "Core Update",
+        description: "Update Move Anything core",
+        latest_version: host.latest_version,
+        download_url: host.download_url,
+        component_type: "core",
+        _isHostUpdate: true
+    };
+}
 
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
@@ -965,6 +983,8 @@ function enterOvertakeMenu() {
     }
 
     overtakeModules = scanForOvertakeModules();
+    /* Add [Get more...] option at the end */
+    overtakeModules.push({ id: "__get_more__", name: "[Get more...]", path: null, uiPath: null });
     selectedOvertakeModule = 0;
     previousView = view;
     view = VIEWS.OVERTAKE_MENU;
@@ -1138,7 +1158,13 @@ function handleOvertakeMenuInput(cc, value) {
     if (cc === MoveMainButton && value > 0) {
         /* Jog click - select module */
         if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
-            loadOvertakeModule(overtakeModules[selectedOvertakeModule]);
+            const selected = overtakeModules[selectedOvertakeModule];
+            if (selected.id === "__get_more__") {
+                /* Open store picker - stay in menu mode so we receive input */
+                enterStorePicker('overtake');
+            } else {
+                loadOvertakeModule(selected);
+            }
         }
         return true;
     }
@@ -2286,6 +2312,7 @@ function componentKeyToCategoryId(componentKey) {
         case 'fx1':
         case 'fx2': return 'audio_fx';
         case 'midiFx': return 'midi_fx';
+        case 'overtake': return 'overtake';
         default: return null;
     }
 }
@@ -2299,6 +2326,7 @@ function enterStorePicker(componentKey) {
     storePickerSelectedIndex = 0;
     storePickerCurrentModule = null;
     storePickerActionIndex = 0;
+    storePickerFromOvertake = (componentKey === 'overtake');
 
     /* Check if we need to fetch catalog */
     if (!storeCatalog) {
@@ -2341,6 +2369,9 @@ function fetchStoreCatalogSync() {
     if (result.success) {
         storeCatalog = result.catalog;
         storePickerModules = getModulesForCategory(storeCatalog, storePickerCategory);
+        /* Note: Core updates are not shown in shadow mode store picker.
+         * Use the standalone Module Store to update the core.
+         * This avoids the complexity of updating while running. */
         view = VIEWS.STORE_PICKER_LIST;
     } else {
         storePickerMessage = result.error || 'Failed to load catalog';
@@ -2380,36 +2411,44 @@ function handleStorePickerListSelect() {
 
 /* Handle selection in store picker detail */
 function handleStorePickerDetailSelect() {
-    debugLog(`handleStorePickerDetailSelect: starting`);
-
     /* Can't click until action is selected */
     if (!storeDetailScrollState || !isActionSelected(storeDetailScrollState)) {
-        debugLog(`handleStorePickerDetailSelect: action not selected`);
         return;
     }
 
     const mod = storePickerCurrentModule;
     if (!mod) {
-        debugLog(`handleStorePickerDetailSelect: no mod`);
         return;
     }
-
-    debugLog(`handleStorePickerDetailSelect: mod=${mod.id}`);
 
     view = VIEWS.STORE_PICKER_LOADING;
     storePickerLoadingTitle = 'Installing';
     storePickerLoadingMessage = mod.name;
 
-    debugLog(`handleStorePickerDetailSelect: before draw`);
     /* Show loading screen before blocking operation */
     drawStorePickerLoading();
-    debugLog(`handleStorePickerDetailSelect: after draw, before flush`);
     host_flush_display();
-    debugLog(`handleStorePickerDetailSelect: after flush`);
 
-    debugLog(`handleStorePickerDetailSelect: calling sharedInstallModule`);
-    const result = sharedInstallModule(mod, storeHostVersion);
-    debugLog(`handleStorePickerDetailSelect: install result=${JSON.stringify(result)}`);
+    let result;
+    /* Note: Core updates are disabled in shadow mode store picker.
+     * Use the standalone Module Store (Shift+Vol+Knob8) for core updates.
+     * This host update code path is kept for future reference. */
+    if (mod._isHostUpdate) {
+        const tarPath = '/data/UserData/move-anything/tmp/move-anything.tar.gz';
+        const downloadOk = globalThis.host_http_download(mod.download_url, tarPath);
+        if (downloadOk) {
+            const extractOk = globalThis.host_extract_tar_strip(tarPath, '/data/UserData/move-anything', 1);
+            if (extractOk) {
+                result = { success: true };
+            } else {
+                result = { success: false, error: 'Extract failed' };
+            }
+        } else {
+            result = { success: false, error: 'Download failed' };
+        }
+    } else {
+        result = sharedInstallModule(mod, storeHostVersion);
+    }
 
     if (result.success) {
         storeInstalledModules = scanInstalledModules();
@@ -2426,7 +2465,6 @@ function handleStorePickerDetailSelect() {
         view = VIEWS.STORE_PICKER_RESULT;
     }
 
-    debugLog(`handleStorePickerDetailSelect: done`);
     needsRedraw = true;
 }
 
@@ -2442,9 +2480,16 @@ function handleStorePickerResultSelect() {
 function handleStorePickerBack() {
     switch (view) {
         case VIEWS.STORE_PICKER_LIST:
-            /* Return to component select, rescan modules */
-            availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
-            view = VIEWS.COMPONENT_SELECT;
+            /* Return to where we came from */
+            if (storePickerFromOvertake) {
+                /* Came from overtake menu - go back there */
+                view = VIEWS.OVERTAKE_MENU;
+                storePickerFromOvertake = false;
+            } else {
+                /* Came from component select - rescan modules and go back */
+                availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
+                view = VIEWS.COMPONENT_SELECT;
+            }
             storePickerCategory = null;
             storePickerModules = [];
             break;
@@ -2465,9 +2510,14 @@ function handleStorePickerBack() {
             view = VIEWS.STORE_PICKER_RESULT;
             break;
         case VIEWS.STORE_PICKER_LOADING:
-            /* Allow cancel during loading - return to component select */
-            availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
-            view = VIEWS.COMPONENT_SELECT;
+            /* Allow cancel during loading - return to where we came from */
+            if (storePickerFromOvertake) {
+                view = VIEWS.OVERTAKE_MENU;
+                storePickerFromOvertake = false;
+            } else {
+                availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
+                view = VIEWS.COMPONENT_SELECT;
+            }
             storePickerCategory = null;
             storePickerModules = [];
             storeFetchPending = false;
@@ -4646,7 +4696,14 @@ function handleSelect() {
         case VIEWS.OVERTAKE_MENU:
             /* Select and load the overtake module */
             if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
-                loadOvertakeModule(overtakeModules[selectedOvertakeModule]);
+                const selected = overtakeModules[selectedOvertakeModule];
+                if (selected.id === "__get_more__") {
+                    /* Open store picker for overtake modules */
+                    /* Stay in overtake menu mode (1) so store picker receives input */
+                    enterStorePicker('overtake');
+                } else {
+                    loadOvertakeModule(selected);
+                }
             }
             break;
         case VIEWS.OVERTAKE_MODULE:
@@ -5295,10 +5352,15 @@ function drawStorePickerList() {
 
     /* Build items for drawMenuList */
     const items = storePickerModules.map(mod => {
-        const status = getModuleStatus(mod, storeInstalledModules);
         let statusIcon = '';
-        if (status.installed) {
-            statusIcon = status.hasUpdate ? '^' : '*';
+        if (mod._isHostUpdate) {
+            /* Core update always shows update available icon */
+            statusIcon = '^';
+        } else {
+            const status = getModuleStatus(mod, storeInstalledModules);
+            if (status.installed) {
+                statusIcon = status.hasUpdate ? '^' : '*';
+            }
         }
         return { ...mod, statusIcon };
     });
@@ -5344,6 +5406,31 @@ function drawStorePickerDetail() {
 
     const mod = storePickerCurrentModule;
     if (!mod) return;
+
+    /* Special handling for core update */
+    if (mod._isHostUpdate) {
+        const title = 'Core Update';
+        const versionStr = `${storeHostVersion}->${mod.latest_version}`;
+        drawHeader(title, versionStr);
+
+        if (!storeDetailScrollState || storeDetailScrollState.moduleId !== mod.id) {
+            const descLines = ['Update Move Anything', 'core framework.', '', 'Restart required', 'after update.'];
+            storeDetailScrollState = createScrollableText({
+                lines: descLines,
+                actionLabel: 'Update',
+                visibleLines: 3
+            });
+            storeDetailScrollState.moduleId = mod.id;
+        }
+
+        drawScrollableText({
+            state: storeDetailScrollState,
+            topY: 16,
+            bottomY: 40,
+            actionY: 52
+        });
+        return;
+    }
 
     const status = getModuleStatus(mod, storeInstalledModules);
 
