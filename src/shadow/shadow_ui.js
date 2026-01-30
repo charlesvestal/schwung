@@ -1735,6 +1735,19 @@ function buildSlotPatchJson(slotIndex, name) {
         });
     }
 
+    /* Include knob mappings */
+    const knobMappingsJson = getSlotParam(slotIndex, "knob_mappings");
+    if (knobMappingsJson) {
+        try {
+            const mappings = JSON.parse(knobMappingsJson);
+            if (mappings && mappings.length > 0) {
+                patch.knob_mappings = mappings;
+            }
+        } catch (e) {
+            /* Ignore parse errors */
+        }
+    }
+
     return JSON.stringify(patch);
 }
 
