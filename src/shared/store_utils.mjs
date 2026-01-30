@@ -22,7 +22,8 @@ export const CATEGORIES = [
     { id: 'audio_fx', name: 'Audio FX' },
     { id: 'midi_fx', name: 'MIDI FX' },
     { id: 'midi_source', name: 'MIDI Sources' },
-    { id: 'utility', name: 'Utilities' }
+    { id: 'utility', name: 'Utilities' },
+    { id: 'overtake', name: 'Overtake Modules' }
 ];
 
 /* Compare semver versions: returns 1 if a > b, -1 if a < b, 0 if equal */
@@ -51,6 +52,7 @@ export function getInstallSubdir(componentType) {
         case 'audio_fx': return 'audio_fx';
         case 'midi_fx': return 'midi_fx';
         case 'utility': return 'utilities';
+        case 'overtake': return 'overtake';
         default: return 'other';
     }
 }
@@ -156,6 +158,16 @@ export function loadCatalogFromCache(onProgress) {
                         mod.download_url = null;
                     }
                 }
+            }
+        }
+
+        /* Also fetch host release.json for core update info */
+        if (catalog.catalog_version >= 2 && catalog.host && catalog.host.github_repo) {
+            if (onProgress) onProgress('Loading Catalog', 'Core');
+            const hostRelease = fetchReleaseJson(catalog.host.github_repo);
+            if (hostRelease) {
+                catalog.host.latest_version = hostRelease.version;
+                catalog.host.download_url = hostRelease.download_url;
             }
         }
 
