@@ -2958,6 +2958,11 @@ static void shadow_inprocess_process_midi(void) {
                 continue;  /* CIN doesn't match status - skip invalid packet */
             }
 
+            /* Validate data bytes (MIDI data bytes must be 0-127, high bit clear) */
+            if ((pkt[2] & 0x80) || (pkt[3] & 0x80)) {
+                continue;  /* Invalid data bytes - skip garbage packet */
+            }
+
             /* Filter cable 0 (Move UI events) - track output is on cable 2 */
             if (cable == 0) {
                 continue;
