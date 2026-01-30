@@ -23,6 +23,7 @@
 
 #include "host/js_display.h"
 #include "host/shadow_constants.h"
+#include "../host/unified_log.h"
 
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
@@ -33,7 +34,6 @@ static shadow_midi_out_t *shadow_midi_out = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
-static FILE *shadow_ui_log = NULL;
 static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.pid";
 
 /* Checksum helper for debug logging - unused in production */
@@ -86,13 +86,8 @@ static int open_shadow_shm(void) {
 }
 
 static void shadow_ui_log_line(const char *msg) {
-    if (!shadow_ui_log) {
-        shadow_ui_log = fopen("/data/UserData/move-anything/shadow_ui.log", "a");
-    }
-    if (shadow_ui_log) {
-        fprintf(shadow_ui_log, "%s\n", msg);
-        fflush(shadow_ui_log);
-    }
+    /* Use unified log instead of separate shadow_ui.log */
+    unified_log("shadow_ui", LOG_LEVEL_DEBUG, "%s", msg);
 }
 
 static void shadow_ui_remove_pid(void) {
@@ -500,6 +495,33 @@ static JSValue js_shadow_log(JSContext *ctx, JSValueConst this_val,
         JS_FreeCString(ctx, msg);
     }
     return JS_UNDEFINED;
+}
+
+/* Unified logging from JS - logs to debug.log */
+static JSValue js_unified_log(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+
+    const char *source = JS_ToCString(ctx, argv[0]);
+    const char *msg = JS_ToCString(ctx, argv[1]);
+
+    if (source && msg) {
+        unified_log(source, LOG_LEVEL_DEBUG, "%s", msg);
+    }
+
+    if (source) JS_FreeCString(ctx, source);
+    if (msg) JS_FreeCString(ctx, msg);
+    return JS_UNDEFINED;
+}
+
+/* Check if unified logging is enabled */
+static JSValue js_unified_log_enabled(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    return JS_NewBool(ctx, unified_log_enabled());
 }
 
 /* === Host functions for store operations === */
@@ -952,6 +974,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register logging function for JS modules */
     JS_SetPropertyStr(ctx, global_obj, "shadow_log", JS_NewCFunction(ctx, js_shadow_log, "shadow_log", 1));
+    JS_SetPropertyStr(ctx, global_obj, "unified_log", JS_NewCFunction(ctx, js_unified_log, "unified_log", 2));
+    JS_SetPropertyStr(ctx, global_obj, "unified_log_enabled", JS_NewCFunction(ctx, js_unified_log_enabled, "unified_log_enabled", 0));
 
     /* Register host functions for store operations */
     JS_SetPropertyStr(ctx, global_obj, "host_file_exists", JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1));
@@ -1007,6 +1031,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "shadow_ui: failed to open shared memory\n");
         return 1;
     }
+    unified_log_init();
     shadow_ui_log_line("shadow_ui: shared memory open");
     shadow_ui_write_pid();
 

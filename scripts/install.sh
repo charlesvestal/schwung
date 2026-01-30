@@ -335,3 +335,8 @@ echo
 echo "Shift+Vol+Track or Shift+Vol+Menu: Access Move Anything's slot configurations"
 echo "Shift+Vol+Knob8: Access Move Anything's standalone mode and module store"
 echo
+echo "Logging commands:"
+echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/move-anything/debug_log_on'"
+echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/move-anything/debug_log_on'"
+echo "  View:    ssh ableton@move.local 'tail -f /data/UserData/move-anything/debug.log'"
+echo

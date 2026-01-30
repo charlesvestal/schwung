@@ -23,6 +23,7 @@
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
+#include "host/unified_log.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
@@ -1782,12 +1783,8 @@ static int shadow_inprocess_log_enabled(void) {
 }
 
 static void shadow_log(const char *msg) {
-    if (!shadow_inprocess_log_enabled()) return;
-    FILE *log = fopen("/data/UserData/move-anything/shadow_inprocess.log", "a");
-    if (log) {
-        fprintf(log, "%s\n", msg ? msg : "(null)");
-        fclose(log);
-    }
+    /* Write to unified log */
+    unified_log("shim", LOG_LEVEL_DEBUG, "%s", msg ? msg : "(null)");
 }
 
 static FILE *shadow_midi_out_log = NULL;
@@ -3195,6 +3192,9 @@ static int shadow_shm_initialized = 0;
 static void init_shadow_shm(void)
 {
     if (shadow_shm_initialized) return;
+
+    /* Initialize unified logging first so we can log during shm init */
+    unified_log_init();
 
     printf("Shadow: Initializing shared memory...\n");
 

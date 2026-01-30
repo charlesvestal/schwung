@@ -1,20 +1,15 @@
 import * as os from 'os';
 import * as std from 'std';
 
-/* Debug logging to file - disabled by default, enable for debugging */
-const DEBUG_LOG_ENABLED = false;
-const DEBUG_LOG_FILE = '/tmp/shadow_debug.log';
+/* Import unified logger */
+import { log as unifiedLog, installConsoleOverride } from '/data/UserData/move-anything/shared/logger.mjs';
+
+/* Install console.log override to route to unified debug.log */
+installConsoleOverride('shadow');
+
+/* Debug logging function - now uses unified logger */
 function debugLog(msg) {
-    if (!DEBUG_LOG_ENABLED) return;
-    try {
-        const f = std.open(DEBUG_LOG_FILE, 'a');
-        if (f) {
-            f.puts(`[${Date.now()}] ${msg}\n`);
-            f.close();
-        }
-    } catch (e) {
-        /* Ignore logging errors */
-    }
+    unifiedLog('shadow', msg);
 }
 
 /* Log at startup */

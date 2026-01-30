@@ -57,6 +57,7 @@ echo "Building host..."
     src/move_anything.c \
     src/host/module_manager.c \
     src/host/settings.c \
+    src/host/unified_log.c \
     -o build/move-anything \
     -Isrc -Isrc/lib \
     -Ilibs/quickjs/quickjs-2025-04-26 \
@@ -68,6 +69,7 @@ echo "Building host..."
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
+    src/host/unified_log.c \
     -I/usr/include/dbus-1.0 \
     -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
     -ldl -lrt -lpthread -ldbus-1 -lm
@@ -88,6 +90,7 @@ echo "Building Shadow UI..."
 "${CROSS_PREFIX}gcc" -g -O3 \
     src/shadow/shadow_ui.c \
     src/host/js_display.c \
+    src/host/unified_log.c \
     -o build/shadow/shadow_ui \
     -Isrc -Isrc/lib \
     -Ilibs/quickjs/quickjs-2025-04-26 \
@@ -100,6 +103,7 @@ echo "Building Signal Chain module..."
 mkdir -p ./build/modules/chain/
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
     src/modules/chain/dsp/chain_host.c \
+    src/host/unified_log.c \
     -o build/modules/chain/dsp.so \
     -Isrc \
     -lm -ldl -lpthread

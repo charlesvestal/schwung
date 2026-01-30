@@ -18,6 +18,7 @@
 #include "host/audio_fx_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"
+#include "../../../host/unified_log.h"
 
 /* Recording constants */
 #define RECORDINGS_DIR "/data/UserData/move-anything/recordings"
@@ -428,12 +429,14 @@ static plugin_api_v1_t g_plugin_api;
 
 /* Logging helper */
 static void chain_log(const char *msg) {
+    /* Use unified log */
+    unified_log("chain", LOG_LEVEL_DEBUG, "%s", msg);
+
+    /* Also call host log if available */
     if (g_host && g_host->log) {
         char buf[256];
         snprintf(buf, sizeof(buf), "[chain] %s", msg);
         g_host->log(buf);
-    } else {
-        printf("[chain] %s\n", msg);
     }
 }
 
