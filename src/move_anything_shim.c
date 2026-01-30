@@ -3153,9 +3153,16 @@ static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static uint8_t last_shadow_midi_out_ready = 0;
 
-/* Local overflow buffer for MIDI_OUT packets that couldn't fit in hardware buffer */
-static uint8_t midi_out_overflow[SHADOW_MIDI_OUT_BUFFER_SIZE];
-static int midi_out_overflow_count = 0;
+/* Pending LED queue for rate-limited output (like standalone mode) */
+#define SHADOW_LED_MAX_UPDATES_PER_TICK 16
+#define SHADOW_LED_QUEUE_SAFE_BYTES 76
+static int shadow_pending_note_color[128];   /* -1 = not pending */
+static uint8_t shadow_pending_note_status[128];
+static uint8_t shadow_pending_note_cin[128];
+static int shadow_pending_cc_color[128];     /* -1 = not pending */
+static uint8_t shadow_pending_cc_status[128];
+static uint8_t shadow_pending_cc_cin[128];
+static int shadow_led_queue_initialized = 0;
 
 /* Shadow shared memory file descriptors */
 static int shm_audio_fd = -1;
@@ -3445,68 +3452,145 @@ static void shadow_mix_audio(void)
     #endif
 }
 
-/* Inject shadow UI MIDI out into mailbox before ioctl. */
-/* Inject shadow UI MIDI out into mailbox before ioctl.
- * Uses local overflow buffer for packets that don't fit in hardware buffer. */
-static void shadow_inject_ui_midi_out(void) {
-    if (!shadow_midi_out_shm) return;
+/* Initialize pending LED queue arrays */
+static void shadow_init_led_queue(void) {
+    if (shadow_led_queue_initialized) return;
+    for (int i = 0; i < 128; i++) {
+        shadow_pending_note_color[i] = -1;
+        shadow_pending_cc_color[i] = -1;
+    }
+    shadow_led_queue_initialized = 1;
+}
+
+/* Queue an LED update for rate-limited sending */
+static void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2) {
+    uint8_t type = status & 0xF0;
+    if (type == 0x90) {
+        /* Note-on: queue by note number */
+        shadow_pending_note_color[data1] = data2;
+        shadow_pending_note_status[data1] = status;
+        shadow_pending_note_cin[data1] = cin;
+    } else if (type == 0xB0) {
+        /* CC: queue by CC number */
+        shadow_pending_cc_color[data1] = data2;
+        shadow_pending_cc_status[data1] = status;
+        shadow_pending_cc_cin[data1] = cin;
+    }
+}
+
+/* Flush pending LED updates to hardware, rate-limited */
+static void shadow_flush_pending_leds(void) {
+    shadow_init_led_queue();
 
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
-    int hw_offset = 0;
-    int overtake = shadow_control ? shadow_control->overtake_mode : 0;
 
-    /* In overtake mode, clear buffer when we have data to send */
-    if (overtake && (midi_out_overflow_count > 0 ||
-                     shadow_midi_out_shm->ready != last_shadow_midi_out_ready)) {
-        memset(midi_out, 0, MIDI_BUFFER_SIZE);
-    }
-
-    /* Step 1: Send cached overflow packets from previous frames */
-    int overflow_sent = 0;
-    while (overflow_sent < midi_out_overflow_count && hw_offset < MIDI_BUFFER_SIZE) {
-        memcpy(&midi_out[hw_offset], &midi_out_overflow[overflow_sent], 4);
-        hw_offset += 4;
-        overflow_sent += 4;
-    }
-
-    /* Shift remaining overflow to front */
-    if (overflow_sent > 0) {
-        int remaining = midi_out_overflow_count - overflow_sent;
-        if (remaining > 0) {
-            memmove(midi_out_overflow, &midi_out_overflow[overflow_sent], remaining);
+    /* Count how many slots are already used */
+    int used = 0;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        if (midi_out[i] != 0 || midi_out[i+1] != 0 ||
+            midi_out[i+2] != 0 || midi_out[i+3] != 0) {
+            used += 4;
         }
-        midi_out_overflow_count = remaining;
     }
 
-    /* Step 2: Check for new packets */
-    if (shadow_midi_out_shm->ready == last_shadow_midi_out_ready) {
-        return;
+    int available = (SHADOW_LED_QUEUE_SAFE_BYTES - used) / 4;
+    int budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
+    if (available <= 0 || budget <= 0) return;
+    if (budget > available) budget = available;
+
+    int sent = 0;
+    int hw_offset = 0;
+
+    /* First flush pending note-on messages */
+    for (int i = 0; i < 128 && sent < budget; i++) {
+        if (shadow_pending_note_color[i] >= 0) {
+            /* Find empty slot */
+            while (hw_offset < MIDI_BUFFER_SIZE) {
+                if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
+                    midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
+                    break;
+                }
+                hw_offset += 4;
+            }
+            if (hw_offset >= MIDI_BUFFER_SIZE) break;
+
+            midi_out[hw_offset] = shadow_pending_note_cin[i];
+            midi_out[hw_offset+1] = shadow_pending_note_status[i];
+            midi_out[hw_offset+2] = (uint8_t)i;
+            midi_out[hw_offset+3] = (uint8_t)shadow_pending_note_color[i];
+            shadow_pending_note_color[i] = -1;
+            hw_offset += 4;
+            sent++;
+        }
     }
+
+    /* Then flush pending CC messages */
+    for (int i = 0; i < 128 && sent < budget; i++) {
+        if (shadow_pending_cc_color[i] >= 0) {
+            /* Find empty slot */
+            while (hw_offset < MIDI_BUFFER_SIZE) {
+                if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
+                    midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
+                    break;
+                }
+                hw_offset += 4;
+            }
+            if (hw_offset >= MIDI_BUFFER_SIZE) break;
+
+            midi_out[hw_offset] = shadow_pending_cc_cin[i];
+            midi_out[hw_offset+1] = shadow_pending_cc_status[i];
+            midi_out[hw_offset+2] = (uint8_t)i;
+            midi_out[hw_offset+3] = (uint8_t)shadow_pending_cc_color[i];
+            shadow_pending_cc_color[i] = -1;
+            hw_offset += 4;
+            sent++;
+        }
+    }
+}
+
+/* Inject shadow UI MIDI out into mailbox before ioctl. */
+static void shadow_inject_ui_midi_out(void) {
+    if (!shadow_midi_out_shm) return;
+    if (shadow_midi_out_shm->ready == last_shadow_midi_out_ready) return;
+
     last_shadow_midi_out_ready = shadow_midi_out_shm->ready;
+    shadow_init_led_queue();
 
-    /* Step 3: Send new packets, cache overflow */
-    int new_bytes = shadow_midi_out_shm->write_idx;
-    if (new_bytes > SHADOW_MIDI_OUT_BUFFER_SIZE) {
-        new_bytes = SHADOW_MIDI_OUT_BUFFER_SIZE;
-    }
+    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
+    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
 
-    int new_sent = 0;
-    while (new_sent < new_bytes && hw_offset < MIDI_BUFFER_SIZE) {
-        memcpy(&midi_out[hw_offset], &shadow_midi_out_shm->buffer[new_sent], 4);
+    int hw_offset = 0;
+    for (int i = 0; i < shadow_midi_out_shm->write_idx && i < SHADOW_MIDI_OUT_BUFFER_SIZE; i += 4) {
+        uint8_t cin = shadow_midi_out_shm->buffer[i];
+        uint8_t cable = (cin >> 4) & 0x0F;
+        uint8_t status = shadow_midi_out_shm->buffer[i + 1];
+        uint8_t data1 = shadow_midi_out_shm->buffer[i + 2];
+        uint8_t data2 = shadow_midi_out_shm->buffer[i + 3];
+        uint8_t type = status & 0xF0;
+
+        /* Queue cable 0 LED messages (note-on, CC) for rate-limited sending */
+        if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+            shadow_queue_led(cin, status, data1, data2);
+            continue;  /* Don't copy directly, will be flushed later */
+        }
+
+        /* All other messages: copy directly to mailbox */
+        while (hw_offset < MIDI_BUFFER_SIZE) {
+            if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
+                midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
+                break;
+            }
+            hw_offset += 4;
+        }
+        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+
+        memcpy(&midi_out[hw_offset], &shadow_midi_out_shm->buffer[i], 4);
         hw_offset += 4;
-        new_sent += 4;
     }
 
-    /* Cache unsent packets */
-    int unsent = new_bytes - new_sent;
-    if (unsent > 0 && (midi_out_overflow_count + unsent) <= (int)sizeof(midi_out_overflow)) {
-        memcpy(&midi_out_overflow[midi_out_overflow_count],
-               &shadow_midi_out_shm->buffer[new_sent], unsent);
-        midi_out_overflow_count += unsent;
-    }
-
-    /* Clear shadow buffer */
+    /* Clear after processing */
     shadow_midi_out_shm->write_idx = 0;
+    memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
 }
 
 static int shadow_has_midi_packets(const uint8_t *src)
@@ -5038,6 +5122,7 @@ do_ioctl:
      * Inject any MIDI from shadow UI into the mailbox before sync.
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
     shadow_inject_ui_midi_out();
+    shadow_flush_pending_leds();  /* Rate-limited LED output */
 
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
      * Copy shadow mailbox to hardware before ioctl.
