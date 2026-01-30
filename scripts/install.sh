@@ -271,6 +271,8 @@ for m in catalog['modules']:
         subdir = 'midi_fx'
     elif ctype == 'utility':
         subdir = 'utilities'
+    elif ctype == 'overtake':
+        subdir = 'overtake'
     else:
         subdir = 'other'
     print(m['id'] + '|' + m['github_repo'] + '|' + m['asset_name'] + '|' + m['name'] + '|' + subdir)
