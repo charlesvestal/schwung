@@ -3164,6 +3164,14 @@ static uint8_t shadow_pending_cc_status[128];
 static uint8_t shadow_pending_cc_cin[128];
 static int shadow_led_queue_initialized = 0;
 
+/* Pending INPUT queue for external MIDI (cable 2) LED commands */
+/* Queues incoming LED commands from external devices (like M8) */
+#define SHADOW_INPUT_LED_MAX_PER_TICK 24
+static int shadow_input_pending_note_color[128];   /* -1 = not pending */
+static uint8_t shadow_input_pending_note_status[128];
+static uint8_t shadow_input_pending_note_cin[128];
+static int shadow_input_queue_initialized = 0;
+
 /* Shadow shared memory file descriptors */
 static int shm_audio_fd = -1;
 static int shm_movein_fd = -1;
@@ -3543,6 +3551,56 @@ static void shadow_flush_pending_leds(void) {
             midi_out[hw_offset+3] = (uint8_t)shadow_pending_cc_color[i];
             shadow_pending_cc_color[i] = -1;
             hw_offset += 4;
+            sent++;
+        }
+    }
+}
+
+/* Initialize pending INPUT LED queue arrays */
+static void shadow_init_input_led_queue(void) {
+    if (shadow_input_queue_initialized) return;
+    for (int i = 0; i < 128; i++) {
+        shadow_input_pending_note_color[i] = -1;
+    }
+    shadow_input_queue_initialized = 1;
+}
+
+/* Queue an incoming LED command (cable 2 note-on) for rate-limited forwarding */
+static void shadow_queue_input_led(uint8_t cin, uint8_t status, uint8_t note, uint8_t velocity) {
+    shadow_init_input_led_queue();
+    uint8_t type = status & 0xF0;
+    if (type == 0x90) {
+        shadow_input_pending_note_color[note] = velocity;
+        shadow_input_pending_note_status[note] = status;
+        shadow_input_pending_note_cin[note] = cin;
+    }
+}
+
+/* Flush pending input LED commands to UI MIDI buffer, rate-limited */
+static void shadow_flush_pending_input_leds(void) {
+    if (!shadow_ui_midi_shm || !shadow_control) return;
+    shadow_init_input_led_queue();
+
+    int budget = SHADOW_INPUT_LED_MAX_PER_TICK;
+    int sent = 0;
+
+    for (int i = 0; i < 128 && sent < budget; i++) {
+        if (shadow_input_pending_note_color[i] >= 0) {
+            /* Find empty slot in UI MIDI buffer */
+            int found = 0;
+            for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                if (shadow_ui_midi_shm[slot] == 0) {
+                    shadow_ui_midi_shm[slot] = shadow_input_pending_note_cin[i];
+                    shadow_ui_midi_shm[slot + 1] = shadow_input_pending_note_status[i];
+                    shadow_ui_midi_shm[slot + 2] = (uint8_t)i;
+                    shadow_ui_midi_shm[slot + 3] = (uint8_t)shadow_input_pending_note_color[i];
+                    shadow_control->midi_ready++;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) break;  /* Buffer full, try again next tick */
+            shadow_input_pending_note_color[i] = -1;
             sent++;
         }
     }
@@ -5481,6 +5539,14 @@ do_ioctl:
                     if (!is_ui_event) continue;  /* Skip non-UI events in menu mode */
                 }
 
+                /* Queue cable 2 note-on messages (external LED commands like M8)
+                 * for rate-limited forwarding to prevent buffer overflow */
+                if (cable == 0x02 && type == 0x90) {
+                    shadow_queue_input_led(src[j], status, d1, d2);
+                    continue;
+                }
+
+                /* All other messages: forward directly */
                 for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
                     if (shadow_ui_midi_shm[slot] == 0) {
                         shadow_ui_midi_shm[slot] = src[j];
@@ -5586,6 +5652,8 @@ do_ioctl:
             }
         }
 
+        /* Flush pending input LED queue (for cable 2 external MIDI in overtake mode) */
+        shadow_flush_pending_input_leds();
     }
 #endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
 
