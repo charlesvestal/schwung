@@ -871,7 +871,11 @@ function scanForAudioFxModules() {
     /* Scan audio_fx directory for all audio effects */
     scanDir(AUDIO_FX_DIR);
 
-    return result;
+    /* Sort modules alphabetically by name, keeping "None" at the top */
+    const noneItem = result[0];
+    const modules = result.slice(1);
+    modules.sort((a, b) => a.name.localeCompare(b.name));
+    return [noneItem, ...modules];
 }
 
 /* Scan modules directory for overtake modules */
@@ -2271,10 +2275,13 @@ function scanModulesForType(componentType) {
         scanDir(dir);
     }
 
-    /* Add option to get more modules from store */
-    result.push({ id: "__get_more__", name: "[Get more...]" });
+    /* Sort modules alphabetically by name, keeping "None" at the top */
+    const noneItem = result[0];
+    const modules = result.slice(1);
+    modules.sort((a, b) => a.name.localeCompare(b.name));
 
-    return result;
+    /* Add option to get more modules from store at the end */
+    return [noneItem, ...modules, { id: "__get_more__", name: "[Get more...]" }];
 }
 
 /* Map component key to catalog category ID */
@@ -6259,6 +6266,9 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Shift+Click in chain edit enters component edit mode */
             if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                 handleShiftSelect();
+            } else if (isShiftHeld() && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+                /* Shift+Click in Master FX view enters module selector for the slot */
+                enterMasterFxModuleSelect(selectedMasterFxComponent);
             } else {
                 handleSelect();
             }
