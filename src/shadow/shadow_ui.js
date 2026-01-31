@@ -2482,7 +2482,8 @@ function handleStorePickerBack() {
         case VIEWS.STORE_PICKER_LIST:
             /* Return to where we came from */
             if (storePickerFromOvertake) {
-                /* Came from overtake menu - go back there */
+                /* Came from overtake menu - rescan and go back there */
+                overtakeModules = scanForOvertakeModules();
                 view = VIEWS.OVERTAKE_MENU;
                 storePickerFromOvertake = false;
             } else {
@@ -2512,6 +2513,7 @@ function handleStorePickerBack() {
         case VIEWS.STORE_PICKER_LOADING:
             /* Allow cancel during loading - return to where we came from */
             if (storePickerFromOvertake) {
+                overtakeModules = scanForOvertakeModules();
                 view = VIEWS.OVERTAKE_MENU;
                 storePickerFromOvertake = false;
             } else {
