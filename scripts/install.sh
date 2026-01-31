@@ -146,7 +146,7 @@ if [ -n "$old_modules" ] || [ "$old_patches" = true ] || [ -n "$old_chain_module
   echo "After migration, reinstall modules via the Module Store."
   echo
   printf "Proceed with migration? [Y/n] "
-  read -r do_migrate
+  read -r do_migrate </dev/tty
 
   if [ "$do_migrate" != "n" ] && [ "$do_migrate" != "N" ]; then
     echo "Migrating..."
@@ -234,7 +234,7 @@ elif [ -n "$deleted_modules" ]; then
     echo "  (n) Install NONE (use Module Store later)"
     echo
     printf "Choice [a/m/N]: "
-    read -r install_choice
+    read -r install_choice </dev/tty
     case "$install_choice" in
         a|A) install_mode="all" ;;
         m|M) install_mode="missing" ;;
@@ -245,7 +245,7 @@ else
     echo "Would you like to install all available modules from the Module Store?"
     echo "(Sound Generators, Audio FX, MIDI FX, and Utilities)"
     printf "Install modules? [y/N] "
-    read -r install_choice
+    read -r install_choice </dev/tty
     if [ "$install_choice" = "y" ] || [ "$install_choice" = "Y" ]; then
         install_mode="all"
     fi
