@@ -2,11 +2,11 @@
 
 An unofficial framework for running custom instruments, effects, and controllers on Ableton Move.
 
-Move Everything adds a Shadow UI that runs alongside stock Move plus a standalone mode for running modules alongside the stock app.
+Move Everything adds a Shadow UI that runs alongside stock Move plus a standalone mode for running modules without the stock app.
 
 ## Important Notice
 
-This project modifies software on your Ableton Move. Back up important sets and samples before installing and familiarize yourself with DFU restore mode. Move still works normally after installation; Move Everything runs alongside it.
+This project modifies software on your Ableton Move. Back up important sets and samples before installing and familiarize yourself with DFU restore mode (on Centercode) in case you need to restore your device. Move still works normally after installation; Move Everything runs alongside it.
 
 ## Installation (Quick)
 
@@ -34,10 +34,9 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 ## Modes (Background)
 
-- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. Use Shift+Vol+Track (and +Menu) to access these signal chain slots.
-- **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps). Use Shift+Vol+Jog click to access overtake modules.
-
-- **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode. (To be deprecated, soon)
+- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects.
+- **Standalone**: Runs Move Everything without the stock app, including the Module Store.
+- **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps).
 
 Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md) (primarily standalone-focused).
 
@@ -52,8 +51,8 @@ Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md)
 
 ## Community
 
-- Discord: https://discord.gg/Zn33eRvTyK
-- Contributors: @talktogreg, @impbox, @deets, @bobbyd, @chaolue, @charlesvestal, and others
+- Discord: [https://discord.gg/Zn33eRvTyK](https://discord.gg/Zn33eRvTyK)
+- Contributors: @talktogreg, @impbox, @deets, @bobbyd, @chaolue, @charlesvestal
 
 ## License
 
