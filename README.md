@@ -1,3 +1,12 @@
+
+## Important Notice
+
+This is an unofficial project that modifies the software on your Ableton Move. Back up any important sets and samples before installing. Familiarize yourself with Move's DFU restore mode (on Centercode) in case you need to restore your device.
+
+Move still works normally after installation - Move Everything runs alongside it.
+
+---
+
 # Move Anything
 
 A framework for writing custom modules for the Ableton Move hardware.
