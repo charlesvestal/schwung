@@ -309,10 +309,10 @@ for m in catalog['modules']:
     echo "Module Installation Complete"
     echo "========================================"
     echo
-    echo "NOTE: Some modules require additional assets:"
-    echo "  - Dexed: Requires .syx patch files"
-    echo "  - Mini-JV: Requires ROM files"
-    echo "  - SF2: Requires SoundFont files (.sf2)"
+    echo "NOTE: Some modules require or benefit from additional assets:"
+    echo "  - Dexed: Optional additional .syx patch banks"
+    echo "  - Mini-JV: REQUIRES ROM files"
+    echo "  - SF2: REQUIRES SoundFont files (.sf2)"
     echo "Modules are also available in the Module Store."
 fi
 
