@@ -8,7 +8,7 @@ Move Everything adds a Shadow UI that runs alongside stock Move, enabling additi
 
 ## Important Notice
 
-This project modifies software on your Ableton Move. Back up important sets and samples before installing and familiarize yourself with DFU restore mode (on Centercode) in case you need to restore your device. Move still works normally after installation; Move Everything runs alongside it.
+This project modifies software on your Ableton Move. Back up important sets and samples before installing and familiarize yourself with DFU restore mode (on [Centercode](https://ableton.centercode.com/project/article/item.html?cap=ecd3942a1fe3405eb27a806608401a0b&arttypeid=%7Be70be312-f44a-418b-bb74-ed1030e3a49a%7D&artid=%7BC0A2D9E2-D52F-4DEB-8BEE-356B65C8942E%7D)) in case you need to restore your device. Move still works normally after installation; Move Everything runs alongside it.
 
 ## Installation (Quick)
 
