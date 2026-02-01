@@ -1,252 +1,30 @@
-# Move Anything
+# Move Everything
 
-A framework for writing custom modules for the Ableton Move hardware.
+An unofficial framework for running custom instruments, effects, and controllers on Ableton Move.
 
-## Features
+Move Everything adds a Shadow UI that runs alongside stock Move plus a standalone mode for running modules alongside the stock app.
 
-- **Pads**: Note, velocity, polyphonic aftertouch
-- **Encoders**: 9 endless knobs with touch sensing
-- **Buttons**: All hardware buttons
-- **LEDs**: Full color control
-- **Display**: 128x64 1-bit framebuffer
-- **Audio**: Line-in, mic, speakers, line-out
-- **MIDI**: USB-A host (supports hubs with multiple devices)
-- **Modular**: Drop-in modules with optional native DSP
-- **Hot-swap**: Add/remove modules without recompiling the host (restart or rescan to pick up changes)
+## Important Notice
 
-## Quick Install
+This project modifies software on your Ableton Move. Back up important sets and samples before installing and familiarize yourself with DFU restore mode. Move still works normally after installation; Move Everything runs alongside it.
 
-1. Enable SSH on your Move: http://move.local/development/ssh
-2. Connect Move to the same network as your computer
-3. Run:
+## Installation (Quick)
 
+Prereqs:
+- Move connected to WiFi
+- A computer on the same network with SSH access enabled
+
+Enable SSH:
+1. Generate an SSH key if you do not have one: `ssh-keygen -t ed25519`
+2. Add your public key at: `http://move.local/development/ssh`
+3. Test: `ssh ableton@move.local`
+
+Install:
 ```bash
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
 ```
 
-## Usage
-
-- **Launch**: Hold Shift + touch Volume knob + Knob 8
-- **Exit**: Hold Shift + click Jog wheel
-- **Back**: Return to the host menu (unless a module sets `raw_ui`)
-- **Settings**: Menu → Settings for velocity/aftertouch; "Return to Move" exits to the stock app
-
-## Built-in Modules
-
-| Module | Description |
-|--------|-------------|
-| **Signal Chain** | Modular signal chain with synths, MIDI FX, and audio FX |
-| **MIDI Controller** | MIDI controller with 16 banks |
-| **Module Store** | Browse, install, and update external modules |
-
-### Signal Chain
-
-The Signal Chain module lets you combine MIDI sources, MIDI effects, sound generators, and audio effects into patches.
-
-#### Quick Start
-
-1. Select **Signal Chain** from the main menu
-2. Use **jog wheel** to browse patches
-3. **Click jog** to load a patch
-4. **Play pads** to hear sound
-5. Press **Menu** to access the synth's UI (if available)
-6. Press **Back** to return to patch list
-7. **Up/Down** to transpose octave while playing
-
-#### Components
-
-**Sound Generators:**
-- Line In (external audio input, built-in)
-- SF2, Dexed, OB-Xd, Mini-JV, CLAP (install via Module Store)
-
-**MIDI Effects:**
-- Chord generator (major, minor, power, octave)
-- Arpeggiator (up, down, up-down, random)
-
-**Audio Effects:**
-- Freeverb (Schroeder-Moorer reverb, built-in)
-- CloudSeed, PSX Verb, TAPESCAM, TapeDelay (install via Module Store)
-
-#### Recording
-
-Signal Chain can record audio output to WAV files:
-
-- **Record Button**: Toggle recording on/off (requires a patch to be loaded)
-- **LED Feedback**: Off (no patch), White (ready), Red (recording)
-- **Output**: `/data/UserData/move-anything/recordings/rec_YYYYMMDD_HHMMSS.wav`
-- **Format**: 44.1kHz, 16-bit stereo WAV
-
-#### Creating Custom Patches
-
-Patches are JSON files in `/data/UserData/move-anything/patches/` on your Move device. Create your own:
-
-```json
-{
-  "name": "My Patch",
-  "version": 1,
-  "chain": {
-    "synth": { "module": "dexed" },
-    "audio_fx": [
-      { "type": "freeverb", "params": { "wet": 0.3 } }
-    ]
-  }
-}
-```
-
-Restart Signal Chain to pick up new patches.
-
-## Shadow Mode
-
-Shadow Mode lets you run custom signal chains **alongside** stock Ableton Move without replacing it. Play pads and hear both Move's sounds and your custom synths mixed together.
-
-### How It Works
-
-- **Toggle**: Shift + touch Volume knob + touch Knob 1 (while Move is running)
-- **Display**: Shadow UI takes over the screen to show slots and patches
-- **Audio**: Shadow synths mix with Move's audio output
-- **MIDI Routing**: Shadow slots receive MIDI on their configured channels (default 1-4)
-
-### External MIDI Controllers
-
-Shadow mode supports external MIDI controllers connected via USB. Notes, CC messages (mod wheel, sustain pedal), pitch bend, and aftertouch are forwarded to shadow synths.
-
-**Important:** For CC, pitch bend, and aftertouch to work correctly, configure your Move track's **input and output to the same MIDI channel** as your external controller. Move echoes notes on the output channel but CC messages arrive on the input channel - if these differ, CC won't reach the correct shadow slot.
-
-Example setup:
-- External controller: Channel 1
-- Move track input: Channel 1
-- Move track output: Channel 1
-- Shadow slot receive channel: Channel 1
-
-### Shadow Slots
-
-Shadow mode provides 4 independent slots, each with its own chain patch:
-
-| Slot | Default Channel | Description |
-|------|-----------------|-------------|
-| Slot A | Ch 1 | First shadow slot |
-| Slot B | Ch 2 | Second shadow slot |
-| Slot C | Ch 3 | Third shadow slot |
-| Slot D | Ch 4 | Fourth shadow slot |
-
-Each slot has configurable settings:
-- **Receive Channel**: Which MIDI channel the slot listens to (1-16)
-- **Forward Channel**: Remap MIDI to a specific channel for synths that require it (Auto = pass through)
-- **Volume**: Per-slot volume control (0-100%)
-
-Slot settings and synth states are automatically saved and restored across restarts.
-
-### Shadow UI Navigation
-
-**Quick Access Shortcuts (work from anywhere):**
-- **Shift+Vol+Track 1-4**: Jump directly to that slot's settings
-- **Shift+Vol+Menu**: Jump directly to Master FX settings
-- **Shift+Vol+Knob1**: Toggle shadow mode on/off
-
-**While in Shadow UI:**
-- **Jog wheel**: Navigate menus and adjust values
-- **Jog click**: Select / confirm
-- **Back**: Exit to Move (from slot or Master FX view)
-- **Track buttons 1-4**: Switch to that slot's settings
-- **Knobs 1-8**: Adjust parameters of current slot/effect
-- **Touch knob**: Peek at current value without changing it
-
-### Master FX
-
-Shadow mode includes a 4-slot Master FX chain that processes the mixed output of all shadow slots. Access via Shift+Vol+Menu or by scrolling past the slots.
-
-### Shift+Knob Control (Move Mode)
-
-While using stock Move (not in Shadow UI), hold Shift to control shadow synth parameters:
-
-- **Shift + turn knob**: Adjust shadow slot parameter with overlay feedback
-- **Shift + touch knob**: Peek at current value
-
-### Shadow UI Store Picker
-
-Install modules directly from Shadow UI without leaving shadow mode:
-
-1. When selecting a synth or effect slot, choose **[Get more...]**
-2. Browse modules by category
-3. Select a module to see details and install/update/remove options
-4. Newly installed modules are immediately available
-
-### Extending Shadow Mode
-
-Shadow mode uses the same chain module and patches as standalone Move Anything. **Any module you install via Module Store is automatically available in shadow mode** - no recompilation required.
-
-To add new synths or effects to shadow mode:
-
-1. Install the module via Module Store or Shadow UI Store Picker
-2. Create a chain patch in `/data/UserData/move-anything/patches/` that references the module
-3. Select the patch in the shadow UI
-
-See [MODULES.md](docs/MODULES.md#shadow-mode-integration) for details on creating shadow-compatible patches.
-
-## Overtake Modules
-
-Overtake modules take **complete control** of Move's UI while running in shadow mode. Unlike regular shadow mode (which overlays a custom UI), overtake modules fully replace Move's display and control all LEDs.
-
-### Available Overtake Modules
-
-| Module | Description |
-|--------|-------------|
-| **MIDI Controller** | 16-bank MIDI controller with configurable pads and knobs (built-in) |
-| **M8 LPP** | Launchpad Pro emulation for Dirtywave M8 (via Module Store) |
-| **SID Control** | MIDI controller for SIDaster III synthesizer (via Module Store) |
-
-### Using Overtake Modules
-
-1. Enter shadow mode: **Shift + Vol + Knob 1**
-2. Navigate to **Overtake Modules** in the menu
-3. Select a module to load it
-4. The module takes full control of the display and LEDs
-5. Exit anytime: **Shift + Vol + Jog Click**
-
-### Creating Overtake Modules
-
-Set `"component_type": "overtake"` in your module.json. See [MODULES.md](docs/MODULES.md#overtake-modules) for full documentation.
-
-## External Modules (via Module Store)
-
-Install these from the Module Store on your device:
-
-**Sound Generators:**
-| Module | Description |
-|--------|-------------|
-| SF2 Synth | SoundFont (.sf2) synthesizer |
-| Dexed | 6-operator FM synth (loads .syx patches) |
-| OB-Xd | Oberheim OB-X synthesizer emulator |
-| Mini-JV | ROM-based PCM rompler (requires ROM files) |
-| CLAP Host | Host for CLAP audio plugins |
-
-**Audio FX:**
-| Module | Description |
-|--------|-------------|
-| CloudSeed | Algorithmic reverb |
-| PSX Verb | PlayStation 1 SPU reverb emulation |
-| TAPESCAM | Tape saturation and degradation |
-| TapeDelay | Tape delay with flutter and tone shaping |
-
-**Utilities:**
-| Module | Description |
-|--------|-------------|
-| M8 LPP | Dirtywave M8 Launchpad Pro emulation |
-| SID Control | MIDI controller for SIDaster III synthesizer |
-
-### Using the Module Store
-
-1. Select **Module Store** from the main menu
-2. Browse by category: Sound Generators, Audio FX, Utilities
-3. Use **jog wheel** to highlight a module
-4. **Click jog** to see module details
-5. Select **Install** to download and install
-
-**Updating modules:** Modules with available updates show a version badge. Select the module and choose **Update**.
-
-**Removing modules:** Select an installed module and choose **Remove**.
-
-Installed modules appear in the main menu immediately after installation.
+For full prerequisites, troubleshooting, and updates, see [MANUAL.md](MANUAL.md).
 
 ## Uninstall
 
@@ -254,36 +32,28 @@ Installed modules appear in the main menu immediately after installation.
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
 ```
 
-## Building
+## Modes (Background)
 
-See [BUILDING.md](BUILDING.md) for build instructions.
+- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. Use Shift+Vol+Track (and +Menu) to access these signal chain slots.
+- **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps). Use Shift+Vol+Jog click to access overtake modules.
+
+- **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode. (To be deprecated, soon)
+
+Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md) (primarily standalone-focused).
 
 ## Documentation
 
-- [How It Works](docs/ARCHITECTURE.md) - System architecture and module loading
-- [Hardware API Reference](docs/API.md) - JavaScript API for modules
-- [Module Development Guide](docs/MODULES.md) - Creating your own modules
-- [Signal Chain Module Notes](src/modules/chain/README.md)
-
-## Project Structure
-
-```
-move-anything/
-  build/          # Build outputs
-  dist/           # Packaged bundle for install
-  src/
-    host/           # Host runtime
-    modules/        # Module source code
-    shared/         # Shared JS utilities
-  scripts/          # Build and install scripts
-  libs/             # Vendored libraries (QuickJS)
-  docs/             # Documentation
-```
+- [MANUAL.md](MANUAL.md) - User guide and shortcuts (standalone-focused)
+- [BUILDING.md](BUILDING.md) - Build instructions
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System and Shadow UI architecture
+- [docs/MODULES.md](docs/MODULES.md) - Module development, Shadow UI integration, overtake modules
+- [docs/API.md](docs/API.md) - JavaScript module API
+- [src/modules/chain/README.md](src/modules/chain/README.md) - Signal Chain module notes
 
 ## Community
 
 - Discord: https://discord.gg/Zn33eRvTyK
-- Contributors: @talktogreg, @impbox, @deets, @bobbyd, @chaolue, @charlesvestal
+- Contributors: @talktogreg, @impbox, @deets, @bobbyd, @chaolue, @charlesvestal, and others
 
 ## License
 

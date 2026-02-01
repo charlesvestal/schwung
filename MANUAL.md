@@ -168,9 +168,8 @@ These modules are included with Move Everything:
 
 ## Module Store
 
-Access via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
+When selection a Module, "[Get more...]" will open the Module Store to download additional Modules of that type. To update Move Anything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
 
-The store lets you download additional modules:
 
 **Sound Generators:**
 - **Dexed** - 6-operator FM synthesizer (DX7 compatible)
