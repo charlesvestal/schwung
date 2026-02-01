@@ -28,6 +28,8 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 For full prerequisites, troubleshooting, and updates, see [MANUAL.md](MANUAL.md).
 
+NOTE: Some plugins require additional assets. Check the individual repositories for more information, and copy using scp or soemthing like [Cyberduck](https://cyberduck.io).
+
 ## Uninstall
 
 ```bash
