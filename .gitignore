@@ -12,3 +12,11 @@ docs/.DS_Store
 
 # Test patches (kept locally, not committed)
 /src/modules/chain/test_patches/
+
+# Local backups
+/backups/
+
+# Compiled shared libraries and test binaries
+*.so
+**/test_seq_plugin
+**/*.dSYM/
