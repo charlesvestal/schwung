@@ -2,7 +2,7 @@
 
 An unofficial framework for running custom instruments, effects, and controllers on Ableton Move.
 
-Move Everything adds a Shadow UI that runs alongside stock Move plus a standalone mode for running modules without the stock app.
+Move Everything adds a Shadow UI that runs alongside stock Move, enabling additional Synths, FX, and other tools to run in parallel to the usual UI. 
 
 ## Important Notice
 
@@ -34,20 +34,36 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 ## Modes (Background)
 
-- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects.
-- **Standalone**: Runs Move Everything without the stock app, including the Module Store.
-- **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps).
+- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. Use Shift+Vol+Track (and +Menu) to access these signal chain slots.
+- **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps). Use Shift+Vol+Jog click to access overtake modules.
+
+- **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode. (To be deprecated, soon)
 
 Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md) (primarily standalone-focused).
 
 ## Documentation
 
-- [MANUAL.md](MANUAL.md) - User guide and shortcuts (standalone-focused)
+- [MANUAL.md](MANUAL.md) - User guide and shortcuts 
 - [BUILDING.md](BUILDING.md) - Build instructions
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System and Shadow UI architecture
 - [docs/MODULES.md](docs/MODULES.md) - Module development, Shadow UI integration, overtake modules
 - [docs/API.md](docs/API.md) - JavaScript module API
 - [src/modules/chain/README.md](src/modules/chain/README.md) - Signal Chain module notes
+
+## Related Repositories
+
+- [move-anything-clap](../move-anything-clap)
+- [move-anything-cloudseed](../move-anything-cloudseed)
+- [move-anything-dx7](../move-anything-dx7)
+- [move-anything-fourtrack](../move-anything-fourtrack)
+- [move-anything-jv880](../move-anything-jv880)
+- [move-anything-m8](../move-anything-m8)
+- [move-anything-obxd](../move-anything-obxd)
+- [move-anything-psxverb](../move-anything-psxverb)
+- [move-anything-sf2](../move-anything-sf2)
+- [move-anything-sidcontrol](../move-anything-sidcontrol)
+- [move-anything-space-delay](../move-anything-space-delay)
+- [move-anything-tapescam](../move-anything-tapescam)
 
 ## Community
 
