@@ -56,18 +56,18 @@ Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md)
 
 ## Related Repositories
 
-- [move-anything-clap](../move-anything-clap)
-- [move-anything-cloudseed](../move-anything-cloudseed)
-- [move-anything-dx7](../move-anything-dx7)
-- [move-anything-fourtrack](../move-anything-fourtrack)
-- [move-anything-jv880](../move-anything-jv880)
-- [move-anything-m8](../move-anything-m8)
-- [move-anything-obxd](../move-anything-obxd)
-- [move-anything-psxverb](../move-anything-psxverb)
-- [move-anything-sf2](../move-anything-sf2)
-- [move-anything-sidcontrol](../move-anything-sidcontrol)
-- [move-anything-space-delay](../move-anything-space-delay)
-- [move-anything-tapescam](../move-anything-tapescam)
+- [move-anything-clap](https://github.com/charlesvestal/move-anything-clap)
+- [move-anything-cloudseed](https://github.com/charlesvestal/move-anything-cloudseed)
+- [move-anything-dx7](https://github.com/charlesvestal/move-anything-dx7)
+- [move-anything-fourtrack](https://github.com/charlesvestal/move-anything-fourtrack)
+- [move-anything-jv880](https://github.com/charlesvestal/move-anything-jv880)
+- [move-anything-m8](https://github.com/charlesvestal/move-anything-m8)
+- [move-anything-obxd](https://github.com/charlesvestal/move-anything-obxd)
+- [move-anything-psxverb](https://github.com/charlesvestal/move-anything-psxverb)
+- [move-anything-sf2](https://github.com/charlesvestal/move-anything-sf2)
+- [move-anything-sidcontrol](https://github.com/charlesvestal/move-anything-sidcontrol)
+- [move-anything-space-delay](https://github.com/charlesvestal/move-anything-space-delay)
+- [move-anything-tapescam](https://github.com/charlesvestal/move-anything-tapescam)
 
 ## Community
 
