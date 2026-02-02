@@ -28,7 +28,7 @@
       "github_repo": "charlesvestal/move-anything-dx7",
       "asset_name": "dexed-module.tar.gz",
       "min_host_version": "0.3.0",
-      "requires": "patches.syx file (place in module's patches/ folder)"
+      "requires": "Optional additional .syx patch banks (place in module's banks/ folder)"
     },
     {
       "id": "sf2",
