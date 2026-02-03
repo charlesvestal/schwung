@@ -186,6 +186,8 @@ typedef struct {
     midi_input_t midi_input;
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
     int knob_mapping_count;
+    int receive_channel;   /* 0=not saved, 1-16=specific channel (from saved preset) */
+    int forward_channel;   /* 0=not saved, -2=passthrough, -1=auto, 1-16=specific (from saved preset) */
 } patch_info_t;
 
 /* ============================================================================
@@ -4710,6 +4712,10 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
         }
     }
 
+    /* Parse receive_channel and forward_channel (top-level in chain content) */
+    json_get_int(json, "receive_channel", &patch->receive_channel);
+    json_get_int(json, "forward_channel", &patch->forward_channel);
+
     free(json);
     return 0;
 }
@@ -5371,6 +5377,18 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
     if (strcmp(key, "current_patch") == 0) {
         return snprintf(buf, buf_len, "%d", inst->current_patch);
+    }
+    if (strcmp(key, "patch:receive_channel") == 0) {
+        if (inst->current_patch >= 0 && inst->current_patch < inst->patch_count) {
+            return snprintf(buf, buf_len, "%d", inst->patches[inst->current_patch].receive_channel);
+        }
+        return snprintf(buf, buf_len, "0");
+    }
+    if (strcmp(key, "patch:forward_channel") == 0) {
+        if (inst->current_patch >= 0 && inst->current_patch < inst->patch_count) {
+            return snprintf(buf, buf_len, "%d", inst->patches[inst->current_patch].forward_channel);
+        }
+        return snprintf(buf, buf_len, "0");
     }
     if (strncmp(key, "patch_name_", 11) == 0) {
         int idx = atoi(key + 11);

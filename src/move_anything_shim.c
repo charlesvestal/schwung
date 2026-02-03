@@ -1022,7 +1022,7 @@ typedef struct shadow_chain_slot_t {
     int patch_index;
     int active;
     float volume;           /* 0.0 to 1.0, applied to audio output */
-    int forward_channel;    /* -1 = none, 0-15 = forward MIDI to this channel */
+    int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
 } shadow_chain_slot_t;;
@@ -1693,20 +1693,29 @@ static void shadow_save_state(void)
     if (master_fx_path[0]) {
         fprintf(f, "  \"master_fx_path\": \"%s\",\n", master_fx_path);
     }
-    fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f]\n",
+    fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f],\n",
             shadow_chain_slots[0].volume,
             shadow_chain_slots[1].volume,
             shadow_chain_slots[2].volume,
             shadow_chain_slots[3].volume);
+    fprintf(f, "  \"slot_forward_channels\": [%d, %d, %d, %d]\n",
+            shadow_chain_slots[0].forward_channel,
+            shadow_chain_slots[1].forward_channel,
+            shadow_chain_slots[2].forward_channel,
+            shadow_chain_slots[3].forward_channel);
     fprintf(f, "}\n");
     fclose(f);
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "Saved slot volumes: [%.2f, %.2f, %.2f, %.2f]",
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Saved slot volumes: [%.2f, %.2f, %.2f, %.2f] fwd: [%d, %d, %d, %d]",
              shadow_chain_slots[0].volume,
              shadow_chain_slots[1].volume,
              shadow_chain_slots[2].volume,
-             shadow_chain_slots[3].volume);
+             shadow_chain_slots[3].volume,
+             shadow_chain_slots[0].forward_channel,
+             shadow_chain_slots[1].forward_channel,
+             shadow_chain_slots[2].forward_channel,
+             shadow_chain_slots[3].forward_channel);
     shadow_log(msg);
 }
 
@@ -1757,6 +1766,27 @@ static void shadow_load_state(void)
         }
     }
 
+    /* Parse slot_forward_channels array */
+    const char *fwd_key = "\"slot_forward_channels\":";
+    char *fwd_pos = strstr(json, fwd_key);
+    if (fwd_pos) {
+        fwd_pos = strchr(fwd_pos, '[');
+        if (fwd_pos) {
+            int f0, f1, f2, f3;
+            if (sscanf(fwd_pos, "[%d, %d, %d, %d]", &f0, &f1, &f2, &f3) == 4) {
+                shadow_chain_slots[0].forward_channel = f0;
+                shadow_chain_slots[1].forward_channel = f1;
+                shadow_chain_slots[2].forward_channel = f2;
+                shadow_chain_slots[3].forward_channel = f3;
+
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Loaded slot fwd channels: [%d, %d, %d, %d]",
+                         f0, f1, f2, f3);
+                shadow_log(msg);
+            }
+        }
+    }
+
     free(json);
 }
 
@@ -1766,7 +1796,11 @@ static void shadow_load_state(void)
  * X position (0-127) maps to volume. */
 
 static int shadow_chain_parse_channel(int ch) {
-    /* Config uses 1-based MIDI channels; convert to 0-based for status nibble. */
+    /* Config uses 1-based MIDI channels; convert to 0-based for status nibble.
+     * 0 = all channels (stored as -1 internally). */
+    if (ch == 0) {
+        return -1;  /* All channels */
+    }
     if (ch >= 1 && ch <= 16) {
         return ch - 1;
     }
@@ -1844,7 +1878,8 @@ static void shadow_chain_defaults(void) {
 static void shadow_ui_state_update_slot(int slot) {
     if (!shadow_ui_state) return;
     if (slot < 0 || slot >= SHADOW_UI_SLOTS) return;
-    shadow_ui_state->slot_channels[slot] = (uint8_t)(shadow_chain_slots[slot].channel + 1);
+    int ch = shadow_chain_slots[slot].channel;
+    shadow_ui_state->slot_channels[slot] = (ch < 0) ? 0 : (uint8_t)(ch + 1);
     shadow_ui_state->slot_volumes[slot] = (uint8_t)(shadow_chain_slots[slot].volume * 100.0f);
     shadow_ui_state->slot_forward_ch[slot] = (int8_t)shadow_chain_slots[slot].forward_channel;
     strncpy(shadow_ui_state->slot_names[slot],
@@ -1916,7 +1951,7 @@ static void shadow_chain_load_config(void) {
             char *chan_colon = strchr(chan_pos, ':');
             if (chan_colon) {
                 int ch = atoi(chan_colon + 1);
-                if (ch >= 1 && ch <= 16) {
+                if (ch >= 0 && ch <= 16) {
                     shadow_chain_slots[i].channel = shadow_chain_parse_channel(ch);
                 }
             }
@@ -1937,14 +1972,14 @@ static void shadow_chain_load_config(void) {
             }
         }
 
-        /* Parse forward_channel (-1 = none, 1-16 = channel) */
+        /* Parse forward_channel (-2 = passthrough, -1 = auto, 1-16 = channel) */
         char *fwd_pos = strstr(name_pos, "\"forward_channel\"");
         if (fwd_pos) {
             char *fwd_colon = strchr(fwd_pos, ':');
             if (fwd_colon) {
                 int ch = atoi(fwd_colon + 1);
-                if (ch >= -1 && ch <= 16) {
-                    shadow_chain_slots[i].forward_channel = (ch > 0) ? ch - 1 : -1;
+                if (ch >= -2 && ch <= 16) {
+                    shadow_chain_slots[i].forward_channel = (ch > 0) ? ch - 1 : ch;
                 }
             }
         }
@@ -2200,8 +2235,9 @@ static int shadow_inprocess_load_chain(void) {
             shadow_chain_slots[i].active = 1;
             /* Load capture rules from the patch file */
             shadow_slot_load_capture(i, idx);
-            /* Query synth's default forward channel after patch load */
-            if (shadow_plugin_v2->get_param) {
+            /* Query synth's default forward channel after patch load.
+             * Only apply if slot is still at Auto (-1); preserve explicit user settings. */
+            if (shadow_chain_slots[i].forward_channel == -1 && shadow_plugin_v2->get_param) {
                 char fwd_buf[16];
                 int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
                     "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
@@ -2210,6 +2246,30 @@ static int shadow_inprocess_load_chain(void) {
                     int default_fwd = atoi(fwd_buf);
                     if (default_fwd >= 0 && default_fwd <= 15) {
                         shadow_chain_slots[i].forward_channel = default_fwd;
+                    }
+                }
+            }
+            /* Apply channel settings saved in the patch preset (overrides config/defaults).
+             * 0 = not saved in preset, keep config values. */
+            if (shadow_plugin_v2->get_param) {
+                char ch_buf[16];
+                int len;
+                len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                    "patch:receive_channel", ch_buf, sizeof(ch_buf));
+                if (len > 0) {
+                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+                    int recv_ch = atoi(ch_buf);
+                    if (recv_ch != 0) {
+                        shadow_chain_slots[i].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
+                    }
+                }
+                len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                    "patch:forward_channel", ch_buf, sizeof(ch_buf));
+                if (len > 0) {
+                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+                    int fwd_ch = atoi(ch_buf);
+                    if (fwd_ch != 0) {
+                        shadow_chain_slots[i].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
                     }
                 }
             }
@@ -2236,7 +2296,7 @@ static int shadow_inprocess_load_chain(void) {
 
 static int shadow_chain_slot_for_channel(int ch) {
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
-        if (shadow_chain_slots[i].channel != ch) continue;
+        if (shadow_chain_slots[i].channel != ch && shadow_chain_slots[i].channel != -1) continue;
         if (shadow_chain_slots[i].active) {
             return i;
         }
@@ -2264,12 +2324,72 @@ static int shadow_chain_slot_for_channel(int ch) {
  * If forward_channel == -1 (auto), use the slot's receive channel. */
 static inline uint8_t shadow_chain_remap_channel(int slot, uint8_t status) {
     int fwd_ch = shadow_chain_slots[slot].forward_channel;
+    if (fwd_ch == -2) {
+        /* Passthrough: preserve original MIDI channel */
+        return status;
+    }
     if (fwd_ch >= 0 && fwd_ch <= 15) {
         /* Specific forward channel */
         return (status & 0xF0) | (uint8_t)fwd_ch;
     }
-    /* Auto: use the receive channel (pass through unchanged) */
+    /* Auto (-1): use the receive channel, but if recv=All (-1), passthrough */
+    if (shadow_chain_slots[slot].channel < 0) {
+        return status;  /* Recv=All + Fwd=Auto → passthrough */
+    }
     return (status & 0xF0) | (uint8_t)shadow_chain_slots[slot].channel;
+}
+
+/* Dispatch MIDI to all matching slots (supports recv=All broadcasting) */
+static void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count) {
+    uint8_t status_usb = pkt[1];
+    uint8_t type = status_usb & 0xF0;
+    uint8_t midi_ch = status_usb & 0x0F;
+    uint8_t note = pkt[2];
+    int dispatched = 0;
+
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        /* Check channel match: slot receives this channel, or slot is set to All (-1) */
+        if (shadow_chain_slots[i].channel != (int)midi_ch && shadow_chain_slots[i].channel != -1)
+            continue;
+
+        /* Lazy activation check */
+        if (!shadow_chain_slots[i].active) {
+            if (shadow_plugin_v2 && shadow_plugin_v2->get_param &&
+                shadow_chain_slots[i].instance) {
+                char buf[64];
+                int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                                                      "synth_module", buf, sizeof(buf));
+                if (len > 0) {
+                    if (len < (int)sizeof(buf)) buf[len] = '\0';
+                    else buf[sizeof(buf) - 1] = '\0';
+                    if (buf[0] != '\0') {
+                        shadow_chain_slots[i].active = 1;
+                        shadow_ui_state_update_slot(i);
+                    }
+                }
+            }
+            if (!shadow_chain_slots[i].active) continue;
+        }
+
+        /* Send MIDI to this slot */
+        if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+            uint8_t msg[3] = { shadow_chain_remap_channel(i, pkt[1]), pkt[2], pkt[3] };
+            shadow_plugin_v2->on_midi(shadow_chain_slots[i].instance, msg, 3,
+                                      MOVE_MIDI_SOURCE_EXTERNAL);
+        }
+        dispatched++;
+    }
+
+    if (log_on && type == 0x90 && pkt[3] > 0 && *midi_log_count < 100) {
+        char dbg[256];
+        snprintf(dbg, sizeof(dbg),
+            "midi_out: note=%u vel=%u ch=%u dispatched=%d",
+            note, pkt[3], midi_ch, dispatched);
+        shadow_log(dbg);
+        shadow_midi_out_logf("midi_out: note=%u vel=%u ch=%u dispatched=%d",
+            note, pkt[3], midi_ch, dispatched);
+        (*midi_log_count)++;
+    }
 }
 
 static int shadow_is_internal_control_note(uint8_t note)
@@ -2455,6 +2575,31 @@ static void shadow_inprocess_handle_ui_request(void) {
     /* Load capture rules from the patch file */
     shadow_slot_load_capture(slot, patch_index);
 
+    /* Apply channel settings saved in the patch preset.
+     * 0 = not saved in preset, keep current values. */
+    if (shadow_plugin_v2->get_param) {
+        char ch_buf[16];
+        int len;
+        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+            "patch:receive_channel", ch_buf, sizeof(ch_buf));
+        if (len > 0) {
+            ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+            int recv_ch = atoi(ch_buf);
+            if (recv_ch != 0) {
+                shadow_chain_slots[slot].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
+            }
+        }
+        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+            "patch:forward_channel", ch_buf, sizeof(ch_buf));
+        if (len > 0) {
+            ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+            int fwd_ch = atoi(ch_buf);
+            if (fwd_ch != 0) {
+                shadow_chain_slots[slot].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
+            }
+        }
+    }
+
     shadow_ui_state_update_slot(slot);
 }
 
@@ -2470,7 +2615,7 @@ static int shadow_handle_slot_param_set(int slot, const char *key, const char *v
     }
     if (strcmp(key, "slot:forward_channel") == 0) {
         int ch = atoi(value);
-        if (ch < -1) ch = -1;
+        if (ch < -2) ch = -2;
         if (ch > 15) ch = 15;
         shadow_chain_slots[slot].forward_channel = ch;
         shadow_ui_state_update_slot(slot);
@@ -2478,7 +2623,10 @@ static int shadow_handle_slot_param_set(int slot, const char *key, const char *v
     }
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = atoi(value);
-        if (ch >= 1 && ch <= 16) {
+        if (ch == 0) {
+            shadow_chain_slots[slot].channel = -1;  /* All channels */
+            shadow_ui_state_update_slot(slot);
+        } else if (ch >= 1 && ch <= 16) {
             shadow_chain_slots[slot].channel = ch - 1;  /* Store 0-based */
             shadow_ui_state_update_slot(slot);
         }
@@ -2496,7 +2644,8 @@ static int shadow_handle_slot_param_get(int slot, const char *key, char *buf, in
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].forward_channel);
     }
     if (strcmp(key, "slot:receive_channel") == 0) {
-        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].channel + 1);  /* Return 1-based */
+        int ch = shadow_chain_slots[slot].channel;
+        return snprintf(buf, buf_len, "%d", (ch < 0) ? 0 : ch + 1);  /* 0=All, 1-16=specific */
     }
     return -1;  /* Not a slot param */
 }
@@ -2746,8 +2895,9 @@ static void shadow_inprocess_handle_param_request(void) {
                 if (value_copy[0] != '\0') {
                     shadow_chain_slots[slot].active = 1;
 
-                    /* Query synth's default forward channel and apply if valid */
-                    if (shadow_plugin_v2->get_param) {
+                    /* Query synth's default forward channel and apply if slot is still at Auto.
+                     * Only apply if slot is still at Auto (-1); preserve explicit user settings. */
+                    if (shadow_chain_slots[slot].forward_channel == -1 && shadow_plugin_v2->get_param) {
                         char fwd_buf[16];
                         int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                             "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
@@ -2778,8 +2928,9 @@ static void shadow_inprocess_handle_param_request(void) {
                     shadow_chain_slots[slot].patch_index = idx;
                     shadow_slot_load_capture(slot, idx);
 
-                    /* Query synth's default forward channel after patch load */
-                    if (shadow_plugin_v2->get_param) {
+                    /* Query synth's default forward channel after patch load.
+                     * Only apply if slot is still at Auto (-1); preserve explicit user settings. */
+                    if (shadow_chain_slots[slot].forward_channel == -1 && shadow_plugin_v2->get_param) {
                         char fwd_buf[16];
                         int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                             "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
@@ -2970,50 +3121,7 @@ static void shadow_inprocess_process_midi(void) {
             if ((type == 0x90 || type == 0x80) && note < 10) {
                 continue;
             }
-            int slot = shadow_chain_slot_for_channel(status_usb & 0x0F);
-            if (log_on && type == 0x90 && pkt[3] > 0) {
-                if (midi_log_count < 100) {
-                    char dbg[256];
-                    if (slot < 0) {
-                        snprintf(dbg, sizeof(dbg),
-                            "midi_out: note=%u vel=%u ch=%u slot=-1 slots=[0:%d/%d 1:%d/%d 2:%d/%d 3:%d/%d]",
-                            note, pkt[3], status_usb & 0x0F,
-                            shadow_chain_slots[0].active, shadow_chain_slots[0].channel,
-                            shadow_chain_slots[1].active, shadow_chain_slots[1].channel,
-                            shadow_chain_slots[2].active, shadow_chain_slots[2].channel,
-                            shadow_chain_slots[3].active, shadow_chain_slots[3].channel);
-                    } else {
-                        snprintf(dbg, sizeof(dbg),
-                            "midi_out: note=%u vel=%u ch=%u slot=%d slot_active=%d slot_ch=%d",
-                            note, pkt[3], status_usb & 0x0F, slot,
-                            shadow_chain_slots[slot].active,
-                            shadow_chain_slots[slot].channel);
-                    }
-                    shadow_log(dbg);
-                    midi_log_count++;
-                }
-                if (slot < 0) {
-                    shadow_midi_out_logf(
-                        "midi_out: note=%u vel=%u ch=%u slot=-1 slots=[0:%d/%d 1:%d/%d 2:%d/%d 3:%d/%d]",
-                        note, pkt[3], status_usb & 0x0F,
-                        shadow_chain_slots[0].active, shadow_chain_slots[0].channel,
-                        shadow_chain_slots[1].active, shadow_chain_slots[1].channel,
-                        shadow_chain_slots[2].active, shadow_chain_slots[2].channel,
-                        shadow_chain_slots[3].active, shadow_chain_slots[3].channel);
-                } else {
-                    shadow_midi_out_logf(
-                        "midi_out: note=%u vel=%u ch=%u slot=%d slot_active=%d slot_ch=%d",
-                        note, pkt[3], status_usb & 0x0F, slot,
-                        shadow_chain_slots[slot].active,
-                        shadow_chain_slots[slot].channel);
-                }
-            }
-            if (slot < 0) continue;
-            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                uint8_t msg[3] = { shadow_chain_remap_channel(slot, pkt[1]), pkt[2], pkt[3] };
-                shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
-                                          MOVE_MIDI_SOURCE_EXTERNAL);
-            }
+            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
         }
         /* Raw MIDI format fallback removed - was matching garbage/stale data.
          * USB MIDI format (with CIN validation) is the proper format for this buffer. */

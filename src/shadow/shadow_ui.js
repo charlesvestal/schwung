@@ -377,8 +377,8 @@ const SLOT_SETTINGS = [
     { key: "patch", label: "Patch", type: "action" },  // Opens patch browser
     { key: "chain", label: "Edit Chain", type: "action" },  // Opens chain editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
-    { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
-    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 15, step: 1 },  // -1 = none, 0-15 = ch 1-16
+    { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
+    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
 ];
 
 /* Cached patch detail info */
@@ -443,8 +443,8 @@ function getHostUpdateModule() {
 const CHAIN_SETTINGS_ITEMS = [
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
-    { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 1, max: 16, step: 1 },
-    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -1, max: 15, step: 1 },  // -1 = none, 0-15 = ch 1-16
+    { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
+    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
     { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
     { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
@@ -1442,9 +1442,10 @@ function loadMasterFxFromConfig() {
 
 function saveSlotsToConfig(nextSlots) {
     const payload = {
-        patches: nextSlots.map((slot) => ({
+        patches: nextSlots.map((slot, idx) => ({
             name: slot.name,
-            channel: slot.channel
+            channel: slot.channel,
+            forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
         })),
         master_fx: currentMasterFxId || ""
     };
@@ -1459,9 +1460,10 @@ function saveConfigMasterFx() {
     /* Save just the master FX setting to config */
     const data = safeLoadJson(CONFIG_PATH);
     const payload = {
-        patches: data && Array.isArray(data.patches) ? data.patches : slots.map((slot) => ({
+        patches: data && Array.isArray(data.patches) ? data.patches : slots.map((slot, idx) => ({
             name: slot.name,
-            channel: slot.channel
+            channel: slot.channel,
+            forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
         })),
         master_fx: currentMasterFxId || "",
         master_fx_path: currentMasterFxPath || ""
@@ -1486,7 +1488,7 @@ function refreshSlots() {
     const configSlots = loadSlotsFromConfig();
     if (Array.isArray(hostSlots) && hostSlots.length) {
         slots = hostSlots.map((slot, idx) => ({
-            channel: slot.channel || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].channel : 1 + idx),
+            channel: (typeof slot.channel === "number") ? slot.channel : (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].channel : 1 + idx),
             /* Prefer config name (set by save), fall back to shim name, then default */
             name: (configSlots[idx] && configSlots[idx].name) || slot.name || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].name : "Unknown Patch")
         }));
@@ -1759,6 +1761,12 @@ function buildSlotPatchJson(slotIndex, name) {
             params: fx2Config
         });
     }
+
+    /* Include slot channel settings */
+    const recvCh = getSlotParam(slotIndex, "slot:receive_channel");
+    const fwdCh = getSlotParam(slotIndex, "slot:forward_channel");
+    if (recvCh !== null) patch.receive_channel = parseInt(recvCh);
+    if (fwdCh !== null) patch.forward_channel = parseInt(fwdCh);
 
     /* Include knob mappings */
     const knobMappingsJson = getSlotParam(slotIndex, "knob_mappings");
@@ -2627,7 +2635,13 @@ function getChainSettingValue(slot, setting) {
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
-        return ch < 0 ? "Off" : `Ch ${ch + 1}`;  // Internal 0-15 → display 1-16
+        if (ch === -2) return "Thru";
+        if (ch === -1) return "Auto";
+        return `Ch ${ch + 1}`;  // Internal 0-15 → display 1-16
+    }
+    if (setting.key === "slot:receive_channel") {
+        const ch = parseInt(val);
+        return ch === 0 ? "All" : `Ch ${val}`;
     }
     return String(val);
 }
@@ -3936,11 +3950,13 @@ function getSlotSettingValue(slot, setting) {
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
-        /* -1 means auto (use track channel), otherwise forward to specific channel */
-        return ch < 0 ? "Auto" : `Ch ${ch + 1}`;
+        if (ch === -2) return "Thru";
+        if (ch === -1) return "Auto";
+        return `Ch ${ch + 1}`;
     }
     if (setting.key === "slot:receive_channel") {
-        return `Ch ${val}`;
+        const ch = parseInt(val);
+        return ch === 0 ? "All" : `Ch ${val}`;
     }
     return val;
 }
@@ -5028,7 +5044,7 @@ function drawSlots() {
     const items = [
         ...slots.map((s, i) => ({
             label: (i === trackSelectedSlot ? "*" : " ") + (s.name || "Unknown Patch"),
-            value: `Ch${s.channel}`,
+            value: s.channel === 0 ? "All" : `Ch${s.channel}`,
             isSlot: true
         })),
         { label: " Master FX", value: getMasterFxDisplayName(), isSlot: false }
@@ -5109,8 +5125,9 @@ function drawSlotSettings() {
 
 function drawPatches() {
     clear_screen();
-    const channel = slots[selectedSlot]?.channel || (DEFAULT_SLOTS[selectedSlot]?.channel ?? 1 + selectedSlot);
-    drawHeader(`Ch${channel} Patch`);
+    const rawCh = slots[selectedSlot]?.channel;
+    const channel = (typeof rawCh === "number") ? rawCh : (DEFAULT_SLOTS[selectedSlot]?.channel ?? 1 + selectedSlot);
+    drawHeader(`${channel === 0 ? "All" : "Ch" + channel} Patch`);
     if (patches.length === 0) {
         print(LIST_LABEL_X, LIST_TOP_Y, "No patches found", 1);
         drawFooter("Back: settings");
