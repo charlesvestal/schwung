@@ -32,6 +32,7 @@ typedef struct module_info {
     int cap_claims_master_knob;  /* If true, module handles volume knob */
     int cap_raw_midi;            /* If true, skip host MIDI transforms */
     int cap_raw_ui;              /* If true, module owns UI input handling */
+    int standalone;              /* If false, hide from standalone host menu */
     char component_type[32];     /* Category: sound_generator, audio_fx, midi_fx, utility, etc. */
 
     /* Defaults JSON string (for passing to plugin) */

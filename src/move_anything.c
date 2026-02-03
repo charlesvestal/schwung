@@ -256,6 +256,37 @@ void fill_rect(int x, int y, int w, int h, int value) {
   }
 }
 
+void draw_line(int x0, int y0, int x1, int y1, int value) {
+  int dx = x1 - x0;
+  int dy = y1 - y0;
+  int sx = dx > 0 ? 1 : -1;
+  int sy = dy > 0 ? 1 : -1;
+  dx = dx < 0 ? -dx : dx;
+  dy = dy < 0 ? -dy : dy;
+
+  if (dx == 0) {
+    int start = y0 < y1 ? y0 : y1;
+    int end = y0 < y1 ? y1 : y0;
+    for (int y = start; y <= end; y++) set_pixel(x0, y, value);
+    return;
+  }
+  if (dy == 0) {
+    int start = x0 < x1 ? x0 : x1;
+    int end = x0 < x1 ? x1 : x0;
+    for (int x = start; x <= end; x++) set_pixel(x, y0, value);
+    return;
+  }
+
+  int err = dx - dy;
+  while (1) {
+    set_pixel(x0, y0, value);
+    if (x0 == x1 && y0 == y1) break;
+    int e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x0 += sx; }
+    if (e2 < dx) { err += dx; y0 += sy; }
+  }
+}
+
 Font* load_font(char* filename, int charSpacing) {
   int width, height, comp;
 
@@ -998,6 +1029,25 @@ static JSValue js_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, 
   return JS_UNDEFINED;
 }
 
+static JSValue js_draw_line(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  if(argc < 4 || argc > 5) {
+    JS_ThrowTypeError(ctx, "draw_line() expects 4 or 5 arguments, got %d", argc);
+    return JS_EXCEPTION;
+  }
+  int x0, y0, x1, y1, color;
+  if(JS_ToInt32(ctx, &x0, argv[0])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &y0, argv[1])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &x1, argv[2])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &y1, argv[3])) return JS_EXCEPTION;
+  if(argc == 5) {
+    if(JS_ToInt32(ctx, &color, argv[4])) return JS_EXCEPTION;
+  } else {
+    color = 1;
+  }
+  draw_line(x0, y0, x1, y1, color);
+  return JS_UNDEFINED;
+}
+
 static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
   if(argc < 3) {
     JS_ThrowTypeError(ctx, "print(x,y,string,color) expects 3,4 arguments, got %d", argc);
@@ -1181,6 +1231,7 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
         JS_SetPropertyStr(ctx, obj, "version", JS_NewString(ctx, info->version));
         JS_SetPropertyStr(ctx, obj, "index", JS_NewInt32(ctx, i));
         JS_SetPropertyStr(ctx, obj, "component_type", JS_NewString(ctx, info->component_type));
+        JS_SetPropertyStr(ctx, obj, "standalone", JS_NewBool(ctx, info->standalone));
         /* Check if ui.js exists for standalone mode */
         int has_ui = (info->ui_script[0] && access(info->ui_script, F_OK) == 0) ? 1 : 0;
         JS_SetPropertyStr(ctx, obj, "has_ui", JS_NewBool(ctx, has_ui));
@@ -1381,7 +1432,7 @@ static JSValue js_host_module_get_param(JSContext *ctx, JSValueConst this_val,
     const char *key = JS_ToCString(ctx, argv[0]);
     if (!key) return JS_UNDEFINED;
 
-    char buf[1024];
+    char buf[16384];
     int len = mm_get_param(&g_module_manager, key, buf, sizeof(buf));
     JS_FreeCString(ctx, key);
 
@@ -2068,6 +2119,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     JSValue print_func = JS_NewCFunction(ctx, js_print, "print", 1);
     JS_SetPropertyStr(ctx, global_obj, "print", print_func);
 
+    JSValue draw_line_func = JS_NewCFunction(ctx, js_draw_line, "draw_line", 5);
+    JS_SetPropertyStr(ctx, global_obj, "draw_line", draw_line_func);
+
     JSValue exit_func = JS_NewCFunction(ctx, js_exit, "exit", 0);
     JS_SetPropertyStr(ctx, global_obj, "exit", exit_func);
 
@@ -2159,6 +2213,22 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_write_file_func = JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2);
     JS_SetPropertyStr(ctx, global_obj, "host_write_file", host_write_file_func);
+
+    /* Create 'display' object so modules can use display.clear(), display.drawText(), etc. */
+    JSValue display_obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, display_obj, "clear",
+        JS_NewCFunction(ctx, js_clear_screen, "clear", 0));
+    JS_SetPropertyStr(ctx, display_obj, "drawText",
+        JS_NewCFunction(ctx, js_print, "drawText", 4));
+    JS_SetPropertyStr(ctx, display_obj, "fillRect",
+        JS_NewCFunction(ctx, js_fill_rect, "fillRect", 5));
+    JS_SetPropertyStr(ctx, display_obj, "drawRect",
+        JS_NewCFunction(ctx, js_draw_rect, "drawRect", 5));
+    JS_SetPropertyStr(ctx, display_obj, "drawLine",
+        JS_NewCFunction(ctx, js_draw_line, "drawLine", 5));
+    JS_SetPropertyStr(ctx, display_obj, "flush",
+        JS_NewCFunction(ctx, js_host_flush_display, "flush", 0));
+    JS_SetPropertyStr(ctx, global_obj, "display", display_obj);
 
     JS_FreeValue(ctx, global_obj);
 

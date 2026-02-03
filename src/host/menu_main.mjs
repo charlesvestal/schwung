@@ -42,6 +42,7 @@ function groupModulesByCategory(modules) {
     byCategory['other'] = [];
 
     for (const mod of modules) {
+        if (mod.standalone === false) continue;
         const category = mod.component_type || 'other';
         if (byCategory[category]) {
             byCategory[category].push(mod);
