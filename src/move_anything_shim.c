@@ -82,6 +82,7 @@ int frame_counter = 0;
 #define CC_KNOB8 78
 #define CC_PLAY 85
 #define CC_REC 86
+#define CC_SAMPLE 87
 #define CC_MUTE 88
 #define CC_MIC_IN_DETECT 114
 #define CC_LINE_OUT_DETECT 115
@@ -1295,6 +1296,77 @@ static int shift_knob_enabled = 1;  /* Default enabled */
 
 #define SHIFT_KNOB_OVERLAY_FRAMES 60  /* ~1 second at 60fps */
 
+/* ==========================================================================
+ * Shadow Sampler - Record final mixed audio output to WAV
+ * ========================================================================== */
+
+/* Sampler state machine */
+typedef enum {
+    SAMPLER_IDLE = 0,
+    SAMPLER_ARMED,
+    SAMPLER_RECORDING
+} sampler_state_t;
+
+static sampler_state_t sampler_state = SAMPLER_IDLE;
+
+/* Duration options (bars); 0 = unlimited (until stopped) */
+static const int sampler_duration_options[] = {0, 1, 2, 4, 8, 16};
+#define SAMPLER_DURATION_COUNT 6
+static int sampler_duration_index = 3;  /* Default: 4 bars */
+
+/* MIDI clock counting */
+static int sampler_clock_count = 0;
+static int sampler_target_pulses = 0;
+static int sampler_bars_completed = 0;
+
+/* Fallback timing (when no MIDI clock) */
+static int sampler_fallback_blocks = 0;
+static int sampler_fallback_target = 0;
+static int sampler_clock_received = 0;
+
+/* Overlay state */
+static int sampler_overlay_active = 0;
+static int sampler_overlay_timeout = 0;
+#define SAMPLER_OVERLAY_DONE_FRAMES 90  /* ~1.5 seconds for "saved" message */
+
+/* WAV file header structure (matches chain_host.c) */
+typedef struct {
+    char riff_id[4];
+    uint32_t file_size;
+    char wave_id[4];
+    char fmt_id[4];
+    uint32_t fmt_size;
+    uint16_t audio_format;
+    uint16_t num_channels;
+    uint32_t sample_rate;
+    uint32_t byte_rate;
+    uint16_t block_align;
+    uint16_t bits_per_sample;
+    char data_id[4];
+    uint32_t data_size;
+} sampler_wav_header_t;
+
+/* Ring buffer for threaded recording */
+#define SAMPLER_SAMPLE_RATE 44100
+#define SAMPLER_NUM_CHANNELS 2
+#define SAMPLER_BITS_PER_SAMPLE 16
+#define SAMPLER_RING_BUFFER_SECONDS 2
+#define SAMPLER_RING_BUFFER_SAMPLES (SAMPLER_SAMPLE_RATE * SAMPLER_RING_BUFFER_SECONDS)
+#define SAMPLER_RING_BUFFER_SIZE (SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
+#define SAMPLER_RECORDINGS_DIR "/data/UserData/UserLibrary/Samples/Move Everything"
+
+static FILE *sampler_wav_file = NULL;
+static uint32_t sampler_samples_written = 0;
+static char sampler_current_recording[256] = "";
+static int16_t *sampler_ring_buffer = NULL;
+static volatile size_t sampler_ring_write_pos = 0;
+static volatile size_t sampler_ring_read_pos = 0;
+static pthread_t sampler_writer_thread;
+static pthread_mutex_t sampler_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sampler_ring_cond = PTHREAD_COND_INITIALIZER;
+static volatile int sampler_writer_running = 0;
+static volatile int sampler_writer_should_exit = 0;
+
 /* Minimal 5x7 font for overlay text (ASCII 32-127) */
 static const uint8_t overlay_font_5x7[96][7] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* 32 space */
@@ -1538,6 +1610,344 @@ static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
         snprintf(shift_knob_overlay_param, sizeof(shift_knob_overlay_param), "Knob %d", knob_num);
         strncpy(shift_knob_overlay_value, "Unmapped", sizeof(shift_knob_overlay_value) - 1);
         shift_knob_overlay_value[sizeof(shift_knob_overlay_value) - 1] = '\0';
+    }
+}
+
+/* ==========================================================================
+ * Shadow Sampler - WAV, ring buffer, recording, audio capture, MIDI clock
+ * ========================================================================== */
+
+static void sampler_write_wav_header(FILE *f, uint32_t data_size) {
+    sampler_wav_header_t header;
+    memcpy(header.riff_id, "RIFF", 4);
+    header.file_size = 36 + data_size;
+    memcpy(header.wave_id, "WAVE", 4);
+    memcpy(header.fmt_id, "fmt ", 4);
+    header.fmt_size = 16;
+    header.audio_format = 1;  /* PCM */
+    header.num_channels = SAMPLER_NUM_CHANNELS;
+    header.sample_rate = SAMPLER_SAMPLE_RATE;
+    header.byte_rate = SAMPLER_SAMPLE_RATE * SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
+    header.block_align = SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
+    header.bits_per_sample = SAMPLER_BITS_PER_SAMPLE;
+    memcpy(header.data_id, "data", 4);
+    header.data_size = data_size;
+    fseek(f, 0, SEEK_SET);
+    fwrite(&header, sizeof(header), 1, f);
+}
+
+static size_t sampler_ring_available_write(void) {
+    size_t write_pos = sampler_ring_write_pos;
+    size_t read_pos = sampler_ring_read_pos;
+    size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
+    if (write_pos >= read_pos)
+        return buffer_samples - (write_pos - read_pos) - 1;
+    else
+        return read_pos - write_pos - 1;
+}
+
+static size_t sampler_ring_available_read(void) {
+    size_t write_pos = sampler_ring_write_pos;
+    size_t read_pos = sampler_ring_read_pos;
+    size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
+    if (write_pos >= read_pos)
+        return write_pos - read_pos;
+    else
+        return buffer_samples - (read_pos - write_pos);
+}
+
+static void *sampler_writer_thread_func(void *arg) {
+    (void)arg;
+    size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t write_chunk = SAMPLER_SAMPLE_RATE * SAMPLER_NUM_CHANNELS / 4;  /* ~250ms */
+
+    while (1) {
+        pthread_mutex_lock(&sampler_ring_mutex);
+        while (sampler_ring_available_read() < write_chunk && !sampler_writer_should_exit) {
+            pthread_cond_wait(&sampler_ring_cond, &sampler_ring_mutex);
+        }
+        int should_exit = sampler_writer_should_exit;
+        pthread_mutex_unlock(&sampler_ring_mutex);
+
+        size_t available = sampler_ring_available_read();
+        while (available > 0 && sampler_wav_file) {
+            size_t read_pos = sampler_ring_read_pos;
+            size_t to_end = buffer_samples - read_pos;
+            size_t to_write = (available < to_end) ? available : to_end;
+            fwrite(&sampler_ring_buffer[read_pos], sizeof(int16_t), to_write, sampler_wav_file);
+            sampler_samples_written += to_write / SAMPLER_NUM_CHANNELS;
+            sampler_ring_read_pos = (read_pos + to_write) % buffer_samples;
+            available = sampler_ring_available_read();
+        }
+
+        if (should_exit) break;
+    }
+    return NULL;
+}
+
+static void sampler_start_recording(void) {
+    if (sampler_writer_running) return;
+
+    /* Create recordings directory */
+    system("mkdir -p '" SAMPLER_RECORDINGS_DIR "'");
+
+    /* Generate filename with timestamp */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    snprintf(sampler_current_recording, sizeof(sampler_current_recording),
+             SAMPLER_RECORDINGS_DIR "/sample_%04d%02d%02d_%02d%02d%02d.wav",
+             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+
+    /* Allocate ring buffer */
+    sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
+    if (!sampler_ring_buffer) {
+        shadow_log("Sampler: failed to allocate ring buffer");
+        return;
+    }
+
+    /* Open file */
+    sampler_wav_file = fopen(sampler_current_recording, "wb");
+    if (!sampler_wav_file) {
+        shadow_log("Sampler: failed to open WAV file");
+        free(sampler_ring_buffer);
+        sampler_ring_buffer = NULL;
+        return;
+    }
+
+    /* Initialize state */
+    sampler_samples_written = 0;
+    sampler_ring_write_pos = 0;
+    sampler_ring_read_pos = 0;
+    sampler_writer_should_exit = 0;
+    sampler_clock_count = 0;
+    sampler_bars_completed = 0;
+    sampler_clock_received = 0;
+    sampler_fallback_blocks = 0;
+
+    /* Calculate target: bars * 4 beats * 24 PPQN (0 = unlimited) */
+    int bars = sampler_duration_options[sampler_duration_index];
+    if (bars > 0) {
+        sampler_target_pulses = bars * 4 * 24;
+        /* Fallback: blocks at 120 BPM if no clock.
+         * 120 BPM = 2 beats/sec, so bars * 4 beats / 2 = bars * 2 seconds
+         * At 44100/128 ~= 344.5 blocks/sec */
+        sampler_fallback_target = (int)(bars * 2.0 * 44100.0 / 128.0);
+    } else {
+        sampler_target_pulses = 0;  /* No auto-stop */
+        sampler_fallback_target = 0;
+    }
+
+    /* Write placeholder header */
+    sampler_write_wav_header(sampler_wav_file, 0);
+
+    /* Start writer thread */
+    if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
+        shadow_log("Sampler: failed to create writer thread");
+        fclose(sampler_wav_file);
+        sampler_wav_file = NULL;
+        free(sampler_ring_buffer);
+        sampler_ring_buffer = NULL;
+        return;
+    }
+
+    sampler_writer_running = 1;
+    sampler_state = SAMPLER_RECORDING;
+    sampler_overlay_active = 1;
+    sampler_overlay_timeout = 0;  /* Stay active while recording */
+
+    char msg[256];
+    if (bars > 0)
+        snprintf(msg, sizeof(msg), "Sampler: recording started (%d bars) -> %s",
+                 bars, sampler_current_recording);
+    else
+        snprintf(msg, sizeof(msg), "Sampler: recording started (until stopped) -> %s",
+                 sampler_current_recording);
+    shadow_log(msg);
+}
+
+static void sampler_stop_recording(void) {
+    if (!sampler_writer_running) return;
+
+    shadow_log("Sampler: stopping recording");
+
+    /* Signal writer thread to exit */
+    pthread_mutex_lock(&sampler_ring_mutex);
+    sampler_writer_should_exit = 1;
+    pthread_cond_signal(&sampler_ring_cond);
+    pthread_mutex_unlock(&sampler_ring_mutex);
+
+    pthread_join(sampler_writer_thread, NULL);
+    sampler_writer_running = 0;
+
+    /* Update WAV header with final size */
+    if (sampler_wav_file) {
+        uint32_t data_size = sampler_samples_written * SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
+        sampler_write_wav_header(sampler_wav_file, data_size);
+        fclose(sampler_wav_file);
+        sampler_wav_file = NULL;
+    }
+
+    /* Free ring buffer */
+    if (sampler_ring_buffer) {
+        free(sampler_ring_buffer);
+        sampler_ring_buffer = NULL;
+    }
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Sampler: saved %s (%u samples, %.1f sec)",
+             sampler_current_recording, sampler_samples_written,
+             (float)sampler_samples_written / SAMPLER_SAMPLE_RATE);
+    shadow_log(msg);
+
+    sampler_current_recording[0] = '\0';
+    sampler_state = SAMPLER_IDLE;
+
+    /* Show "Sample saved!" overlay briefly */
+    sampler_overlay_active = 1;
+    sampler_overlay_timeout = SAMPLER_OVERLAY_DONE_FRAMES;
+}
+
+static void sampler_capture_audio(void) {
+    if (sampler_state != SAMPLER_RECORDING || !sampler_ring_buffer || !global_mmap_addr) return;
+
+    /* Read final mixed audio from mailbox (Move + shadow already mixed) */
+    int16_t *audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    size_t samples_to_write = FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
+    size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
+
+    /* Write to ring buffer if space available (drop if full, never block) */
+    if (sampler_ring_available_write() >= samples_to_write) {
+        size_t write_pos = sampler_ring_write_pos;
+        for (size_t i = 0; i < samples_to_write; i++) {
+            sampler_ring_buffer[write_pos] = audio[i];
+            write_pos = (write_pos + 1) % buffer_samples;
+        }
+        sampler_ring_write_pos = write_pos;
+
+        /* Signal writer thread */
+        pthread_mutex_lock(&sampler_ring_mutex);
+        pthread_cond_signal(&sampler_ring_cond);
+        pthread_mutex_unlock(&sampler_ring_mutex);
+    }
+
+    /* Fallback timeout: count blocks if no MIDI clock received (skip if unlimited) */
+    if (!sampler_clock_received && sampler_fallback_target > 0) {
+        sampler_fallback_blocks++;
+        if (sampler_fallback_blocks >= sampler_fallback_target) {
+            shadow_log("Sampler: fallback timeout reached (no MIDI clock)");
+            sampler_stop_recording();
+        }
+    }
+}
+
+static void sampler_on_clock(uint8_t status) {
+    if (status == 0xF8) {
+        /* MIDI Clock tick */
+        if (sampler_state == SAMPLER_RECORDING) {
+            sampler_clock_received = 1;
+            sampler_clock_count++;
+
+            /* Calculate bars completed (24 PPQN * 4 beats = 96 pulses per bar) */
+            sampler_bars_completed = sampler_clock_count / 96;
+
+            /* Auto-stop when target reached (skip if unlimited mode) */
+            if (sampler_target_pulses > 0 && sampler_clock_count >= sampler_target_pulses) {
+                shadow_log("Sampler: target duration reached via MIDI clock");
+                sampler_stop_recording();
+            }
+        }
+    } else if (status == 0xFA) {
+        /* MIDI Start - trigger recording if armed */
+        if (sampler_state == SAMPLER_ARMED) {
+            shadow_log("Sampler: triggered by MIDI Start");
+            sampler_start_recording();
+        }
+    }
+    else if (status == 0xFC) {
+        /* MIDI Stop - stop recording regardless of mode */
+        if (sampler_state == SAMPLER_RECORDING) {
+            shadow_log("Sampler: stopped by MIDI Stop");
+            sampler_stop_recording();
+        }
+    }
+}
+
+/* Sampler overlay drawing */
+static void overlay_draw_sampler(uint8_t *buf) {
+    if (!sampler_overlay_active) return;
+
+    /* Box dimensions */
+    int box_w = 110;
+    int box_h = 30;
+    int box_x = (128 - box_w) / 2;
+    int box_y = (64 - box_h) / 2;
+
+    /* Draw background and border */
+    overlay_fill_rect(buf, box_x, box_y, box_w, box_h, 0);
+    overlay_fill_rect(buf, box_x, box_y, box_w, 1, 1);
+    overlay_fill_rect(buf, box_x, box_y + box_h - 1, box_w, 1, 1);
+    overlay_fill_rect(buf, box_x, box_y, 1, box_h, 1);
+    overlay_fill_rect(buf, box_x + box_w - 1, box_y, 1, box_h, 1);
+
+    int text_x = box_x + 4;
+    int text_y = box_y + 3;
+
+    if (sampler_state == SAMPLER_ARMED) {
+        overlay_draw_string(buf, text_x, text_y, "SAMPLER ARMED", 1);
+        char dur_str[32];
+        int bars = sampler_duration_options[sampler_duration_index];
+        if (bars == 0)
+            snprintf(dur_str, sizeof(dur_str), "Until stopped");
+        else
+            snprintf(dur_str, sizeof(dur_str), "Duration: %d bar%s", bars, bars > 1 ? "s" : "");
+        overlay_draw_string(buf, text_x, text_y + 9, dur_str, 1);
+        overlay_draw_string(buf, text_x, text_y + 18, "Play to record", 1);
+    } else if (sampler_state == SAMPLER_RECORDING) {
+        overlay_draw_string(buf, text_x, text_y, "** RECORDING **", 1);
+        int bars = sampler_duration_options[sampler_duration_index];
+        char bar_str[32];
+        if (bars == 0) {
+            /* Unlimited mode - show elapsed time */
+            float secs = (float)sampler_samples_written / SAMPLER_SAMPLE_RATE;
+            snprintf(bar_str, sizeof(bar_str), "Shift+Samp to stop");
+            overlay_draw_string(buf, text_x, text_y + 9, bar_str, 1);
+            /* Show elapsed seconds instead of progress bar */
+            char time_str[32];
+            snprintf(time_str, sizeof(time_str), "%.1fs", secs);
+            overlay_draw_string(buf, text_x, text_y + 18, time_str, 1);
+        } else {
+            int current_bar = sampler_bars_completed + 1;
+            if (current_bar > bars) current_bar = bars;
+            snprintf(bar_str, sizeof(bar_str), "Bar %d / %d", current_bar, bars);
+            overlay_draw_string(buf, text_x, text_y + 9, bar_str, 1);
+
+            /* Draw progress bar */
+            int prog_x = box_x + 4;
+            int prog_y = box_y + 22;
+            int prog_w = box_w - 8;
+            int prog_h = 5;
+            /* Border */
+            overlay_fill_rect(buf, prog_x, prog_y, prog_w, 1, 1);
+            overlay_fill_rect(buf, prog_x, prog_y + prog_h - 1, prog_w, 1, 1);
+            overlay_fill_rect(buf, prog_x, prog_y, 1, prog_h, 1);
+            overlay_fill_rect(buf, prog_x + prog_w - 1, prog_y, 1, prog_h, 1);
+            /* Fill based on progress */
+            float progress = 0.0f;
+            if (sampler_clock_received && sampler_target_pulses > 0) {
+                progress = (float)sampler_clock_count / (float)sampler_target_pulses;
+            } else if (sampler_fallback_target > 0) {
+                progress = (float)sampler_fallback_blocks / (float)sampler_fallback_target;
+            }
+            if (progress > 1.0f) progress = 1.0f;
+            int fill_w = (int)((prog_w - 2) * progress);
+            if (fill_w > 0) {
+                overlay_fill_rect(buf, prog_x + 1, prog_y + 1, fill_w, prog_h - 2, 1);
+            }
+        }
+    } else {
+        /* IDLE with overlay still showing = just finished */
+        overlay_draw_string(buf, text_x + 8, text_y + 9, "Sample saved!", 1);
     }
 }
 
@@ -3078,6 +3488,11 @@ static void shadow_inprocess_process_midi(void) {
         /* Handle system realtime messages (CIN=0x0F): clock, start, continue, stop
          * These are 1-byte messages that should be broadcast to ALL active slots */
         if (cin == 0x0F && status_usb >= 0xF8 && status_usb <= 0xFF) {
+            /* Sampler sees clock from cable 0 only (Move internal) to avoid double-counting */
+            if (cable == 0) {
+                sampler_on_clock(status_usb);
+            }
+
             /* Filter cable 0 (Move UI events) - track output is on cable 2 */
             if (cable == 0) {
                 continue;
@@ -5115,6 +5530,9 @@ int ioctl(int fd, unsigned long request, ...)
 
         shadow_inprocess_mix_from_buffer();  /* Fast: just memcpy+mix */
 
+        /* Capture final mixed audio for sampler (after Move + shadow mix) */
+        sampler_capture_audio();
+
         clock_gettime(CLOCK_MONOTONIC, &mix_end);
         uint64_t mix_us = (mix_end.tv_sec - mix_start.tv_sec) * 1000000 +
                           (mix_end.tv_nsec - mix_start.tv_nsec) / 1000;
@@ -5233,9 +5651,12 @@ int ioctl(int fd, unsigned long request, ...)
 
         if (volume_capture_cooldown > 0) volume_capture_cooldown--;
 
-        /* === SHIFT+KNOB OVERLAY COMPOSITING ===
-         * When overlay is active, draw it onto Move's display BEFORE ioctl sends it */
-        if (shift_knob_overlay_active && shift_knob_overlay_timeout > 0 && slice_num >= 1 && slice_num <= 6) {
+        /* === OVERLAY COMPOSITING ===
+         * When any overlay is active, draw it onto Move's display BEFORE ioctl sends it */
+        int shift_knob_overlay_on = (shift_knob_overlay_active && shift_knob_overlay_timeout > 0);
+        int sampler_overlay_on = (sampler_overlay_active &&
+                                  (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
+        if ((shift_knob_overlay_on || sampler_overlay_on) && slice_num >= 1 && slice_num <= 6) {
             static uint8_t overlay_display[1024];
             static int overlay_frame_ready = 0;
 
@@ -5255,15 +5676,30 @@ int ioctl(int fd, unsigned long request, ...)
                         memcpy(overlay_display + offset, captured_slices[s], bytes);
                     }
 
-                    /* Draw overlay onto the display */
-                    overlay_draw_shift_knob(overlay_display);
+                    /* Draw overlays onto the display (sampler takes priority) */
+                    if (sampler_overlay_on)
+                        overlay_draw_sampler(overlay_display);
+                    else if (shift_knob_overlay_on)
+                        overlay_draw_shift_knob(overlay_display);
                     overlay_frame_ready = 1;
                 }
 
-                /* Decrement timeout once per frame (when slice 1 arrives) */
-                shift_knob_overlay_timeout--;
-                if (shift_knob_overlay_timeout <= 0) {
-                    shift_knob_overlay_active = 0;
+                /* Decrement timeouts once per frame (when slice 1 arrives) */
+                if (shift_knob_overlay_on) {
+                    shift_knob_overlay_timeout--;
+                    if (shift_knob_overlay_timeout <= 0) {
+                        shift_knob_overlay_active = 0;
+                    }
+                }
+                if (sampler_overlay_on && sampler_state == SAMPLER_IDLE) {
+                    /* "Sample saved!" overlay timeout */
+                    sampler_overlay_timeout--;
+                    if (sampler_overlay_timeout <= 0) {
+                        sampler_overlay_active = 0;
+                    }
+                }
+
+                if (!shift_knob_overlay_on && !sampler_overlay_on) {
                     overlay_frame_ready = 0;
                 }
             }
@@ -5384,6 +5820,34 @@ do_ioctl:
             memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
         }
 
+        /* === SAMPLER MIDI FILTERING ===
+         * Block events from reaching Move for sampler use.
+         * Always block Shift+Record so the first press doesn't leak through.
+         * Block jog while sampler is armed or recording. */
+        {
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t cin = sh_midi[j] & 0x0F;
+                uint8_t cable = (sh_midi[j] >> 4) & 0x0F;
+                if (cable != 0x00) continue;
+                uint8_t s_type = sh_midi[j + 1] & 0xF0;
+                uint8_t s_d1 = sh_midi[j + 2];
+
+                if (cin == 0x0B && s_type == 0xB0) {
+                    /* Block Record (CC 118) from Move: always when Shift held,
+                     * and also when sampler is non-idle (armed or recording) */
+                    if (s_d1 == CC_RECORD && (shadow_shift_held || sampler_state != SAMPLER_IDLE)) {
+                        sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                    }
+                    /* Block jog wheel and jog click while sampler is armed or recording */
+                    if (sampler_state != SAMPLER_IDLE) {
+                        if (s_d1 == CC_JOG_WHEEL || s_d1 == CC_JOG_CLICK) {
+                            sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                        }
+                    }
+                }
+            }
+        }
+
         /* Memory barrier to ensure all writes are visible */
         __sync_synchronize();
     }
@@ -5412,6 +5876,12 @@ do_ioctl:
 
             /* CC messages (CIN 0x0B) */
             if (cin == 0x0B && type == 0xB0) {
+                /* DEBUG: log CCs while shift held */
+                if (shadow_shift_held && d2 > 0) {
+                    char dbg[64];
+                    snprintf(dbg, sizeof(dbg), "Shift+CC: cc=%d val=%d", d1, d2);
+                    shadow_log(dbg);
+                }
                 /* Track buttons are CCs 40-43 */
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
@@ -5483,6 +5953,46 @@ do_ioctl:
                         src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     }
                 }
+
+                /* Sample/Record button (CC 118) - sampler intercept */
+                if (d1 == CC_RECORD && d2 > 0) {
+                    if (shadow_shift_held) {
+                        /* Shift+Sample: arm/cancel/force-stop */
+                        if (sampler_state == SAMPLER_IDLE) {
+                            sampler_state = SAMPLER_ARMED;
+                            sampler_overlay_active = 1;
+                            sampler_overlay_timeout = 0;
+                            shadow_log("Sampler: ARMED");
+                        } else if (sampler_state == SAMPLER_ARMED) {
+                            sampler_state = SAMPLER_IDLE;
+                            sampler_overlay_active = 0;
+                            shadow_log("Sampler: cancelled");
+                        } else if (sampler_state == SAMPLER_RECORDING) {
+                            shadow_log("Sampler: force stop via Shift+Sample");
+                            sampler_stop_recording();
+                        }
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    } else if (sampler_state == SAMPLER_RECORDING) {
+                        /* Bare Sample while recording: stop */
+                        shadow_log("Sampler: stopped via Sample button");
+                        sampler_stop_recording();
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
+                }
+
+                /* Jog wheel while sampler is armed = adjust duration */
+                if (d1 == CC_JOG_WHEEL && sampler_state == SAMPLER_ARMED) {
+                    /* Decode relative value: 1-63=CW, 65-127=CCW */
+                    if (d2 >= 1 && d2 <= 63) {
+                        if (sampler_duration_index < SAMPLER_DURATION_COUNT - 1)
+                            sampler_duration_index++;
+                    } else if (d2 >= 65 && d2 <= 127) {
+                        if (sampler_duration_index > 0)
+                            sampler_duration_index--;
+                    }
+                    /* Block jog from reaching Move/shadow UI */
+                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                }
             }
 
             /* Note On/Off messages (CIN 0x09/0x08) for knob touches */
@@ -5515,6 +6025,14 @@ do_ioctl:
                     alreadyLaunched = 1;
                     shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
                     launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
+                }
+
+                /* Pad note-on while sampler armed = trigger recording */
+                if (type == 0x90 && d2 > 0 && d1 >= 68 && d1 <= 99 &&
+                    sampler_state == SAMPLER_ARMED) {
+                    shadow_log("Sampler: triggered by pad note-on");
+                    sampler_start_recording();
+                    /* Do NOT block the note - it must play so it gets recorded */
                 }
             }
         }
