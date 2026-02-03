@@ -3656,6 +3656,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
+    /* Capture audio for sampler BEFORE master volume scaling */
+    sampler_capture_audio();
+
     /* Apply master volume */
     float mv = shadow_master_volume;
     if (mv < 1.0f) {
@@ -5529,9 +5532,6 @@ int ioctl(int fd, unsigned long request, ...)
         clock_gettime(CLOCK_MONOTONIC, &mix_start);
 
         shadow_inprocess_mix_from_buffer();  /* Fast: just memcpy+mix */
-
-        /* Capture final mixed audio for sampler (after Move + shadow mix) */
-        sampler_capture_audio();
 
         clock_gettime(CLOCK_MONOTONIC, &mix_end);
         uint64_t mix_us = (mix_end.tv_sec - mix_start.tv_sec) * 1000000 +
