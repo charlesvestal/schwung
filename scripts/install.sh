@@ -199,8 +199,9 @@ $ssh_root "sleep 0.2"
 # Free the SPI device if anything still holds it (prevents \"communication error\")
 $ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
 
-$ssh_root cp -aL /data/UserData/move-anything/move-anything-shim.so /usr/lib/
-$ssh_root chmod u+s /usr/lib/move-anything-shim.so
+# Symlink shim to /usr/lib/ (root partition has no free space for copies)
+$ssh_root "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so"
+$ssh_root chmod u+s /data/UserData/move-anything/move-anything-shim.so
 
 # Ensure the replacement Move script exists and is executable
 $ssh_root chmod +x /data/UserData/move-anything/shim-entrypoint.sh

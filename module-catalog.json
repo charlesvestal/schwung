@@ -121,6 +121,16 @@
       "github_repo": "charlesvestal/move-anything-sidcontrol",
       "asset_name": "sidcontrol-module.tar.gz",
       "min_host_version": "0.3.6"
+    },
+    {
+      "id": "braids",
+      "name": "Braids",
+      "description": "Macro oscillator with 47 synthesis algorithms (Mutable Instruments)",
+      "author": "Emilie Gillet (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-braids",
+      "asset_name": "braids-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }

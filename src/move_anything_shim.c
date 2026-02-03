@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -1074,6 +1075,11 @@ static volatile int shadow_held_track = -1;
 /* Selected slot for Shift+Knob routing: 0-3, persists even when shadow UI is off */
 static volatile int shadow_selected_slot = 0;
 
+/* Set tempo detection (declared here for D-Bus handler access) */
+static float sampler_set_tempo = 0.0f;              /* 0 = not yet detected */
+static char sampler_current_set_name[128] = "";      /* e.g. "Set 3" from D-Bus */
+static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
+
 /* D-Bus connection for monitoring */
 static DBusConnection *shadow_dbus_conn = NULL;
 static pthread_t shadow_dbus_thread;
@@ -1120,6 +1126,20 @@ static void shadow_dbus_handle_text(const char *text)
         shadow_log(msg);
     }
 
+    /* Check if it's a Set name (e.g. "Set 1", "Set 28") - read tempo from Song.abl */
+    if (strncmp(text, "Set ", 4) == 0) {
+        /* Verify the rest is a number (Set names are "Set <N>") */
+        const char *num = text + 4;
+        if (*num >= '0' && *num <= '9') {
+            snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", text);
+            sampler_set_tempo = sampler_read_set_tempo(text);
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Set detected: \"%s\" -> tempo=%.1f",
+                     text, sampler_set_tempo);
+            shadow_log(msg);
+        }
+    }
+
     /* Check if it's a volume message */
     if (strncmp(text, "Track Volume ", 13) == 0) {
         float volume = shadow_parse_volume_db(text);
@@ -1144,6 +1164,46 @@ static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *m
 {
     (void)conn;
     (void)data;
+
+    /* Log ALL D-Bus signals for discovery (temporary) */
+    {
+        const char *iface = dbus_message_get_interface(msg);
+        const char *member = dbus_message_get_member(msg);
+        const char *path = dbus_message_get_path(msg);
+        int msg_type = dbus_message_get_type(msg);
+
+        if (msg_type == DBUS_MESSAGE_TYPE_SIGNAL) {
+            /* Extract first string arg if present */
+            char arg_preview[128] = "";
+            DBusMessageIter iter;
+            if (dbus_message_iter_init(msg, &iter)) {
+                int atype = dbus_message_iter_get_arg_type(&iter);
+                if (atype == DBUS_TYPE_STRING) {
+                    const char *s = NULL;
+                    dbus_message_iter_get_basic(&iter, &s);
+                    if (s) snprintf(arg_preview, sizeof(arg_preview), " arg0=\"%.100s\"", s);
+                } else if (atype == DBUS_TYPE_INT32) {
+                    int32_t v;
+                    dbus_message_iter_get_basic(&iter, &v);
+                    snprintf(arg_preview, sizeof(arg_preview), " arg0=%d", v);
+                } else if (atype == DBUS_TYPE_UINT32) {
+                    uint32_t v;
+                    dbus_message_iter_get_basic(&iter, &v);
+                    snprintf(arg_preview, sizeof(arg_preview), " arg0=%u", v);
+                } else if (atype == DBUS_TYPE_BOOLEAN) {
+                    dbus_bool_t v;
+                    dbus_message_iter_get_basic(&iter, &v);
+                    snprintf(arg_preview, sizeof(arg_preview), " arg0=%s", v ? "true" : "false");
+                }
+            }
+
+            char logbuf[512];
+            snprintf(logbuf, sizeof(logbuf), "D-Bus signal: %s.%s path=%s%s",
+                     iface ? iface : "?", member ? member : "?",
+                     path ? path : "?", arg_preview);
+            shadow_log(logbuf);
+        }
+    }
 
     if (dbus_message_is_signal(msg, "com.ableton.move.ScreenReader", "text")) {
         DBusMessageIter args;
@@ -1181,7 +1241,15 @@ static void *shadow_dbus_thread_func(void *arg)
         return NULL;
     }
 
-    /* Subscribe to screenreader signals */
+    /* Subscribe to ALL signals for discovery, plus screenreader specifically */
+    const char *rule_all = "type='signal'";
+    dbus_bus_add_match(shadow_dbus_conn, rule_all, &err);
+    if (dbus_error_is_set(&err)) {
+        shadow_log("D-Bus: Failed to add catch-all match rule");
+        dbus_error_free(&err);
+        /* Continue anyway - specific rule below may work */
+        dbus_error_init(&err);
+    }
     const char *rule = "type='signal',interface='com.ableton.move.ScreenReader',member='text'";
     dbus_bus_add_match(shadow_dbus_conn, rule, &err);
     dbus_connection_flush(shadow_dbus_conn);
@@ -1323,6 +1391,31 @@ static int sampler_bars_completed = 0;
 static int sampler_fallback_blocks = 0;
 static int sampler_fallback_target = 0;
 static int sampler_clock_received = 0;
+
+/* Tempo detection: MIDI clock BPM measurement */
+static struct timespec sampler_clock_last_beat = {0, 0};
+static int sampler_clock_beat_ticks = 0;     /* ticks since last beat boundary */
+static float sampler_measured_bpm = 0.0f;    /* Current BPM from MIDI clock */
+static float sampler_last_known_bpm = 0.0f;  /* Persists across recordings */
+static int sampler_clock_active = 0;         /* Non-zero if clock ticks seen recently */
+static int sampler_clock_stale_frames = 0;   /* Frames since last tick, for staleness */
+#define SAMPLER_CLOCK_STALE_THRESHOLD 200    /* ~3.5 sec at 57Hz = assume clock stopped */
+
+/* Tempo detection: settings file */
+#define SAMPLER_SETTINGS_PATH "/data/UserData/move-anything/settings.txt"
+static int sampler_settings_tempo = 0;       /* 0 = not yet read */
+
+/* Tempo detection: current Set's Song.abl (declared early for D-Bus handler access) */
+#define SAMPLER_SETS_DIR "/data/UserData/UserLibrary/Sets"
+
+/* Tempo source tracking for display */
+typedef enum {
+    TEMPO_SOURCE_DEFAULT = 0,
+    TEMPO_SOURCE_SETTINGS,
+    TEMPO_SOURCE_SET,
+    TEMPO_SOURCE_LAST_CLOCK,
+    TEMPO_SOURCE_CLOCK
+} tempo_source_t;
 
 /* Overlay state */
 static int sampler_overlay_active = 0;
@@ -1725,6 +1818,130 @@ static void *sampler_writer_thread_func(void *arg) {
     return NULL;
 }
 
+/* Read tempo from the current Set's Song.abl file.
+ * Scans Sets/<uuid>/<SetName>/Song.abl for all UUIDs.
+ * Picks the most recently modified match if there are duplicates.
+ * Does a simple string search for "tempo": in the JSON. */
+static float sampler_read_set_tempo(const char *set_name) {
+    if (!set_name || !set_name[0]) return 0.0f;
+
+    DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
+    if (!sets_dir) return 0.0f;
+
+    char best_path[512] = "";
+    time_t best_mtime = 0;
+    struct dirent *entry;
+
+    while ((entry = readdir(sets_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+
+        /* Build path: Sets/<uuid>/<set_name>/Song.abl */
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s/%s/Song.abl",
+                 SAMPLER_SETS_DIR, entry->d_name, set_name);
+
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            if (st.st_mtime > best_mtime) {
+                best_mtime = st.st_mtime;
+                snprintf(best_path, sizeof(best_path), "%s", path);
+            }
+        }
+    }
+    closedir(sets_dir);
+
+    if (best_path[0] == '\0') return 0.0f;
+
+    /* Read file and search for "tempo": <value> */
+    FILE *f = fopen(best_path, "r");
+    if (!f) return 0.0f;
+
+    float tempo = 0.0f;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char *p = strstr(line, "\"tempo\":");
+        if (p) {
+            p += 8;  /* skip past "tempo": */
+            while (*p == ' ') p++;
+            tempo = strtof(p, NULL);
+            if (tempo >= 20.0f && tempo <= 999.0f) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Set tempo: %.1f BPM from %s", tempo, best_path);
+                shadow_log(msg);
+                break;
+            }
+            tempo = 0.0f;
+        }
+    }
+    fclose(f);
+    return tempo;
+}
+
+/* Read tempo_bpm from Move Anything settings file */
+static int sampler_read_settings_tempo(void) {
+    FILE *f = fopen(SAMPLER_SETTINGS_PATH, "r");
+    if (!f) return 0;
+
+    char line[256];
+    int bpm = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        if (line[0] == '\0' || line[0] == '#') continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        if (strcmp(line, "tempo_bpm") == 0) {
+            bpm = atoi(eq + 1);
+            if (bpm < 20) bpm = 20;
+            if (bpm > 300) bpm = 300;
+            break;
+        }
+    }
+    fclose(f);
+    return bpm;
+}
+
+/* Get best available BPM using fallback chain:
+ * 1. MIDI clock (if actively ticking)
+ * 2. Last measured clock BPM (from previous session)
+ * 3. Current Set's tempo (from Song.abl)
+ * 4. Settings file tempo_bpm
+ * 5. Default 120 BPM */
+static float sampler_get_bpm(tempo_source_t *source) {
+    /* 1. Active MIDI clock */
+    if (sampler_clock_active && sampler_measured_bpm >= 20.0f) {
+        if (source) *source = TEMPO_SOURCE_CLOCK;
+        return sampler_measured_bpm;
+    }
+
+    /* 2. Last measured clock BPM */
+    if (sampler_last_known_bpm >= 20.0f) {
+        if (source) *source = TEMPO_SOURCE_LAST_CLOCK;
+        return sampler_last_known_bpm;
+    }
+
+    /* 3. Current Set's tempo */
+    if (sampler_set_tempo >= 20.0f) {
+        if (source) *source = TEMPO_SOURCE_SET;
+        return sampler_set_tempo;
+    }
+
+    /* 4. Settings file tempo */
+    if (sampler_settings_tempo == 0) {
+        sampler_settings_tempo = sampler_read_settings_tempo();
+        if (sampler_settings_tempo == 0) sampler_settings_tempo = -1;  /* mark as tried */
+    }
+    if (sampler_settings_tempo > 0) {
+        if (source) *source = TEMPO_SOURCE_SETTINGS;
+        return (float)sampler_settings_tempo;
+    }
+
+    /* 5. Default */
+    if (source) *source = TEMPO_SOURCE_DEFAULT;
+    return 120.0f;
+}
+
 static void sampler_start_recording(void) {
     if (sampler_writer_running) return;
 
@@ -1769,10 +1986,20 @@ static void sampler_start_recording(void) {
     int bars = sampler_duration_options[sampler_duration_index];
     if (bars > 0) {
         sampler_target_pulses = bars * 4 * 24;
-        /* Fallback: blocks at 120 BPM if no clock.
-         * 120 BPM = 2 beats/sec, so bars * 4 beats / 2 = bars * 2 seconds
-         * At 44100/128 ~= 344.5 blocks/sec */
-        sampler_fallback_target = (int)(bars * 2.0 * 44100.0 / 128.0);
+        /* Fallback: use best available BPM for timing when no MIDI clock.
+         * seconds = bars * 4 beats / (BPM / 60)
+         * blocks = seconds * 44100 / 128 */
+        tempo_source_t src;
+        float bpm = sampler_get_bpm(&src);
+        float seconds = bars * 4.0f * 60.0f / bpm;
+        sampler_fallback_target = (int)(seconds * 44100.0f / 128.0f);
+        {
+            char msg[128];
+            const char *src_names[] = {"default", "settings", "set", "last clock", "clock"};
+            snprintf(msg, sizeof(msg), "Sampler: using %.1f BPM (%s) for fallback timing",
+                     bpm, src_names[src]);
+            shadow_log(msg);
+        }
     } else {
         sampler_target_pulses = 0;  /* No auto-stop */
         sampler_fallback_target = 0;
@@ -1890,7 +2117,28 @@ static void sampler_capture_audio(void) {
 
 static void sampler_on_clock(uint8_t status) {
     if (status == 0xF8) {
-        /* MIDI Clock tick */
+        /* MIDI Clock tick - always measure BPM regardless of sampler state */
+        sampler_clock_active = 1;
+        sampler_clock_stale_frames = 0;
+        sampler_clock_beat_ticks++;
+
+        /* Measure BPM every 24 ticks (one beat) */
+        if (sampler_clock_beat_ticks >= 24) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (sampler_clock_last_beat.tv_sec > 0) {
+                double elapsed = (now.tv_sec - sampler_clock_last_beat.tv_sec)
+                               + (now.tv_nsec - sampler_clock_last_beat.tv_nsec) / 1e9;
+                if (elapsed > 0.1 && elapsed < 10.0) {  /* Sanity: 6-600 BPM */
+                    sampler_measured_bpm = 60.0f / (float)elapsed;
+                    sampler_last_known_bpm = sampler_measured_bpm;
+                }
+            }
+            sampler_clock_last_beat = now;
+            sampler_clock_beat_ticks = 0;
+        }
+
+        /* Recording-specific: count pulses for auto-stop */
         if (sampler_state == SAMPLER_RECORDING) {
             sampler_clock_received = 1;
             sampler_clock_count++;
@@ -5961,6 +6209,15 @@ int ioctl(int fd, unsigned long request, ...)
 
             /* When slice 1 arrives, build the overlay display */
             if (slice_num == 1) {
+                /* Track MIDI clock staleness (once per frame) */
+                if (sampler_clock_active) {
+                    sampler_clock_stale_frames++;
+                    if (sampler_clock_stale_frames > SAMPLER_CLOCK_STALE_THRESHOLD) {
+                        sampler_clock_active = 0;
+                        sampler_clock_stale_frames = 0;
+                    }
+                }
+
                 if (sampler_fullscreen_on) {
                     /* Full-screen mode: render from scratch, skip slice capture */
                     sampler_update_vu();

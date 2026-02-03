@@ -5563,10 +5563,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     chain_param_info_t *p = &inst->synth_params[i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                     offset += snprintf(buf + offset, buf_len - offset,
-                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g}",
+                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type == KNOB_TYPE_INT ? "int" : "float",
+                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
                         p->min_val, p->max_val);
+                    /* Add options array for enum types */
+                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
+                        for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
+                            if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                            offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
+                        }
+                        offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
                 offset += snprintf(buf + offset, buf_len - offset, "]");
                 return offset;

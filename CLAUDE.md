@@ -350,6 +350,20 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
 - **Shift+Vol+Jog Click**: Exit overtake module (when in overtake mode)
 
+### Quantized Sampler
+
+- Shift+Sample opens the sampler
+- Choose source: resample (including Move Everything synths), or Move Input (whatever is set in the regular sample flow)
+- Choose duration in bars (or until stopped). Uses MIDI clock to determine tempo, falling back to project tempo if not found.
+- Starts on a note event or pressing play
+- Recordings are saved to `Samples/Move Everything/`
+
+Works for resampling your Move, including Move Everything synths, or a line-in source or microphone. You can use Move's built-in count-in for line-in recordings too.
+
+### Skipback
+
+Shift+Capture writes the last 30 seconds of audio to disk. Uses the same source as the quantized sampler (resample or Move Input). Saved to `Samples/Move Everything/Skipback/`.
+
 ### Shadow Architecture
 
 ```
