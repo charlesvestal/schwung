@@ -1329,6 +1329,30 @@ static int sampler_overlay_active = 0;
 static int sampler_overlay_timeout = 0;
 #define SAMPLER_OVERLAY_DONE_FRAMES 90  /* ~1.5 seconds for "saved" message */
 
+/* Source selection */
+typedef enum {
+    SAMPLER_SOURCE_RESAMPLE = 0,
+    SAMPLER_SOURCE_MOVE_INPUT
+} sampler_source_t;
+static sampler_source_t sampler_source = SAMPLER_SOURCE_RESAMPLE;
+
+/* Menu cursor for full-screen UI */
+typedef enum {
+    SAMPLER_MENU_SOURCE = 0,
+    SAMPLER_MENU_DURATION,
+    SAMPLER_MENU_COUNT
+} sampler_menu_item_t;
+static int sampler_menu_cursor = SAMPLER_MENU_SOURCE;
+
+/* VU meter */
+static int16_t sampler_vu_peak = 0;
+static int sampler_vu_hold_frames = 0;
+#define SAMPLER_VU_HOLD_DURATION 8      /* ~140ms hold at 57Hz */
+#define SAMPLER_VU_DECAY_RATE 1500      /* Raw amplitude decay per frame */
+
+/* Full-screen mode flag */
+static int sampler_fullscreen_active = 0;
+
 /* WAV file header structure (matches chain_host.c) */
 typedef struct {
     char riff_id[4];
@@ -1366,6 +1390,22 @@ static pthread_mutex_t sampler_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t sampler_ring_cond = PTHREAD_COND_INITIALIZER;
 static volatile int sampler_writer_running = 0;
 static volatile int sampler_writer_should_exit = 0;
+
+/* ==========================================================================
+ * Skipback Buffer - always-rolling 30-second capture, dump via Shift+Capture
+ * ========================================================================== */
+#define SKIPBACK_SECONDS 30
+#define SKIPBACK_SAMPLES (SAMPLER_SAMPLE_RATE * SKIPBACK_SECONDS)
+#define SKIPBACK_BUFFER_SIZE (SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
+#define SKIPBACK_DIR "/data/UserData/UserLibrary/Samples/Move Everything/Skipback"
+
+static int16_t *skipback_buffer = NULL;
+static volatile size_t skipback_write_pos = 0;  /* In samples (L+R pairs count as 2) */
+static volatile int skipback_buffer_full = 0;   /* Has wrapped at least once */
+static volatile int skipback_saving = 0;        /* Writer thread active */
+static pthread_t skipback_writer_thread;
+static volatile int skipback_overlay_timeout = 0;  /* Frames remaining for "saved" overlay */
+#define SKIPBACK_OVERLAY_FRAMES 114  /* ~2 seconds at 57Hz */
 
 /* Minimal 5x7 font for overlay text (ASCII 32-127) */
 static const uint8_t overlay_font_5x7[96][7] = {
@@ -1803,16 +1843,23 @@ static void sampler_stop_recording(void) {
     sampler_current_recording[0] = '\0';
     sampler_state = SAMPLER_IDLE;
 
-    /* Show "Sample saved!" overlay briefly */
+    /* Keep fullscreen active for "saved" message, then timeout */
     sampler_overlay_active = 1;
     sampler_overlay_timeout = SAMPLER_OVERLAY_DONE_FRAMES;
 }
 
 static void sampler_capture_audio(void) {
-    if (sampler_state != SAMPLER_RECORDING || !sampler_ring_buffer || !global_mmap_addr) return;
+    if (sampler_state != SAMPLER_RECORDING || !sampler_ring_buffer) return;
 
-    /* Read final mixed audio from mailbox (Move + shadow already mixed) */
-    int16_t *audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    /* Select audio source based on sampler_source setting */
+    int16_t *audio = NULL;
+    if (sampler_source == SAMPLER_SOURCE_RESAMPLE && global_mmap_addr) {
+        audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    } else if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT && hardware_mmap_addr) {
+        audio = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
+    }
+    if (!audio) return;
+
     size_t samples_to_write = FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
     size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
 
@@ -1873,13 +1920,178 @@ static void sampler_on_clock(uint8_t status) {
     }
 }
 
-/* Sampler overlay drawing */
-static void overlay_draw_sampler(uint8_t *buf) {
-    if (!sampler_overlay_active) return;
+/* Skipback: allocate buffer on first use */
+static void skipback_init(void) {
+    if (skipback_buffer) return;
+    skipback_buffer = (int16_t *)calloc(SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS, sizeof(int16_t));
+    if (skipback_buffer) {
+        skipback_write_pos = 0;
+        skipback_buffer_full = 0;
+        shadow_log("Skipback: allocated 30s rolling buffer");
+    } else {
+        shadow_log("Skipback: failed to allocate buffer");
+    }
+}
 
-    /* Box dimensions */
+/* Skipback: capture one audio block into rolling buffer */
+static void skipback_capture(int16_t *audio) {
+    if (!skipback_buffer || !audio || skipback_saving) return;
+
+    size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t block_samples = FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
+    size_t wp = skipback_write_pos;
+
+    for (size_t i = 0; i < block_samples; i++) {
+        skipback_buffer[wp] = audio[i];
+        wp = (wp + 1) % total_samples;
+    }
+
+    if (!skipback_buffer_full && wp < skipback_write_pos)
+        skipback_buffer_full = 1;
+    skipback_write_pos = wp;
+}
+
+/* Skipback: writer thread - dumps ring buffer to WAV */
+static void *skipback_writer_func(void *arg) {
+    (void)arg;
+
+    /* Create directory */
+    system("mkdir -p '" SKIPBACK_DIR "'");
+
+    /* Generate filename */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char path[256];
+    snprintf(path, sizeof(path),
+             SKIPBACK_DIR "/skipback_%04d%02d%02d_%02d%02d%02d.wav",
+             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        shadow_log("Skipback: failed to open WAV file");
+        skipback_saving = 0;
+        return NULL;
+    }
+
+    /* Determine how much data to write */
+    size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t wp = skipback_write_pos;
+    size_t data_samples;
+    size_t start_pos;
+
+    if (skipback_buffer_full) {
+        /* Buffer has wrapped: write from wp (oldest) to wp (newest) */
+        data_samples = total_samples;
+        start_pos = wp;
+    } else {
+        /* Buffer hasn't wrapped: write from 0 to wp */
+        data_samples = wp;
+        start_pos = 0;
+    }
+
+    if (data_samples == 0) {
+        shadow_log("Skipback: no audio captured yet");
+        fclose(f);
+        skipback_saving = 0;
+        return NULL;
+    }
+
+    /* Write WAV header */
+    uint32_t data_bytes = (uint32_t)(data_samples * sizeof(int16_t));
+    sampler_wav_header_t hdr;
+    memcpy(hdr.riff_id, "RIFF", 4);
+    hdr.file_size = 36 + data_bytes;
+    memcpy(hdr.wave_id, "WAVE", 4);
+    memcpy(hdr.fmt_id, "fmt ", 4);
+    hdr.fmt_size = 16;
+    hdr.audio_format = 1;
+    hdr.num_channels = SAMPLER_NUM_CHANNELS;
+    hdr.sample_rate = SAMPLER_SAMPLE_RATE;
+    hdr.byte_rate = SAMPLER_SAMPLE_RATE * SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
+    hdr.block_align = SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
+    hdr.bits_per_sample = SAMPLER_BITS_PER_SAMPLE;
+    memcpy(hdr.data_id, "data", 4);
+    hdr.data_size = data_bytes;
+    fwrite(&hdr, sizeof(hdr), 1, f);
+
+    /* Write audio data from ring buffer */
+    size_t pos = start_pos;
+    size_t remaining = data_samples;
+    while (remaining > 0) {
+        size_t chunk = remaining;
+        if (pos + chunk > total_samples)
+            chunk = total_samples - pos;
+        fwrite(skipback_buffer + pos, sizeof(int16_t), chunk, f);
+        pos = (pos + chunk) % total_samples;
+        remaining -= chunk;
+    }
+
+    fclose(f);
+
+    uint32_t frames = (uint32_t)(data_samples / SAMPLER_NUM_CHANNELS);
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Skipback: saved %s (%.1f sec)",
+             path, (float)frames / SAMPLER_SAMPLE_RATE);
+    shadow_log(msg);
+
+    skipback_overlay_timeout = SKIPBACK_OVERLAY_FRAMES;
+    skipback_saving = 0;
+    return NULL;
+}
+
+/* Skipback: trigger save from main thread */
+static void skipback_trigger_save(void) {
+    if (skipback_saving || !skipback_buffer) return;
+    skipback_saving = 1;
+
+    pthread_t t;
+    if (pthread_create(&t, NULL, skipback_writer_func, NULL) != 0) {
+        shadow_log("Skipback: failed to create writer thread");
+        skipback_saving = 0;
+        return;
+    }
+    pthread_detach(t);
+    shadow_log("Skipback: saving last 30 seconds...");
+}
+
+/* VU meter update - reads audio from selected source */
+static void sampler_update_vu(void) {
+    if (!sampler_fullscreen_active) return;
+
+    int16_t *audio = NULL;
+    if (sampler_source == SAMPLER_SOURCE_RESAMPLE && global_mmap_addr) {
+        audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    } else if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT && hardware_mmap_addr) {
+        audio = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
+    }
+
+    if (!audio) return;
+
+    /* Scan 128 stereo frames, find peak absolute value */
+    int16_t frame_peak = 0;
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        int16_t val = audio[i];
+        if (val < 0) val = -val;
+        if (val > frame_peak) frame_peak = val;
+    }
+
+    /* Peak hold and decay */
+    if (frame_peak >= sampler_vu_peak) {
+        sampler_vu_peak = frame_peak;
+        sampler_vu_hold_frames = SAMPLER_VU_HOLD_DURATION;
+    } else if (sampler_vu_hold_frames > 0) {
+        sampler_vu_hold_frames--;
+    } else {
+        int16_t decayed = sampler_vu_peak - SAMPLER_VU_DECAY_RATE;
+        sampler_vu_peak = (decayed < 0) ? 0 : decayed;
+    }
+}
+
+/* Skipback overlay - modal box over Move's display */
+static void overlay_draw_skipback(uint8_t *buf) {
     int box_w = 110;
-    int box_h = 30;
+    int box_h = 20;
     int box_x = (128 - box_w) / 2;
     int box_y = (64 - box_h) / 2;
 
@@ -1890,64 +2102,143 @@ static void overlay_draw_sampler(uint8_t *buf) {
     overlay_fill_rect(buf, box_x, box_y, 1, box_h, 1);
     overlay_fill_rect(buf, box_x + box_w - 1, box_y, 1, box_h, 1);
 
-    int text_x = box_x + 4;
-    int text_y = box_y + 3;
+    overlay_draw_string(buf, box_x + 8, box_y + 7, "Skipback saved!", 1);
+}
+
+/* Sampler overlay drawing */
+static void overlay_draw_sampler(uint8_t *buf) {
+    if (!sampler_fullscreen_active) return;
+
+    /* Clear entire display for full-screen takeover */
+    memset(buf, 0, 1024);
+
+    /* 5x7 font: char width ~6px, row height ~8px, 128x64 display */
+    static int recording_flash_counter = 0;
 
     if (sampler_state == SAMPLER_ARMED) {
-        overlay_draw_string(buf, text_x, text_y, "SAMPLER ARMED", 1);
+        /* Row 0: Title centered */
+        overlay_draw_string(buf, 10, 0, "QUANTIZED SAMPLER", 1);
+
+        /* Row 2: Source with cursor */
+        char src_str[32];
+        snprintf(src_str, sizeof(src_str), "%cSource: %s",
+                 sampler_menu_cursor == SAMPLER_MENU_SOURCE ? '>' : ' ',
+                 sampler_source == SAMPLER_SOURCE_RESAMPLE ? "Resample" : "Move Input");
+        overlay_draw_string(buf, 0, 16, src_str, 1);
+
+        /* Row 3: Duration with cursor */
         char dur_str[32];
         int bars = sampler_duration_options[sampler_duration_index];
         if (bars == 0)
-            snprintf(dur_str, sizeof(dur_str), "Until stopped");
+            snprintf(dur_str, sizeof(dur_str), "%cDur: Until stop",
+                     sampler_menu_cursor == SAMPLER_MENU_DURATION ? '>' : ' ');
         else
-            snprintf(dur_str, sizeof(dur_str), "Duration: %d bar%s", bars, bars > 1 ? "s" : "");
-        overlay_draw_string(buf, text_x, text_y + 9, dur_str, 1);
-        overlay_draw_string(buf, text_x, text_y + 18, "Play to record", 1);
+            snprintf(dur_str, sizeof(dur_str), "%cDur: %d bar%s",
+                     sampler_menu_cursor == SAMPLER_MENU_DURATION ? '>' : ' ',
+                     bars, bars > 1 ? "s" : "");
+        overlay_draw_string(buf, 0, 24, dur_str, 1);
+
+        /* Row 6: VU meter bar (120px wide starting at x=4) */
+        int vu_w = 120;
+        int vu_x = 4;
+        int vu_y = 48;
+        int vu_h = 5;
+        /* Border */
+        overlay_fill_rect(buf, vu_x, vu_y, vu_w, 1, 1);
+        overlay_fill_rect(buf, vu_x, vu_y + vu_h - 1, vu_w, 1, 1);
+        overlay_fill_rect(buf, vu_x, vu_y, 1, vu_h, 1);
+        overlay_fill_rect(buf, vu_x + vu_w - 1, vu_y, 1, vu_h, 1);
+        /* Fill based on VU peak (32767 = full) */
+        /* Log scale: map -48dB..0dB to 0..bar width */
+        float vu_norm = 0.0f;
+        if (sampler_vu_peak > 0) {
+            float db = 20.0f * log10f((float)sampler_vu_peak / 32767.0f);
+            vu_norm = (db + 48.0f) / 48.0f;  /* -48dB=0, 0dB=1 */
+            if (vu_norm < 0.0f) vu_norm = 0.0f;
+            if (vu_norm > 1.0f) vu_norm = 1.0f;
+        }
+        int fill_w = (int)(vu_norm * (vu_w - 2));
+        if (fill_w > vu_w - 2) fill_w = vu_w - 2;
+        if (fill_w > 0)
+            overlay_fill_rect(buf, vu_x + 1, vu_y + 1, fill_w, vu_h - 2, 1);
+
+        /* Row 7: Instructions */
+        overlay_draw_string(buf, 0, 56, "Play/Note to record", 1);
+
     } else if (sampler_state == SAMPLER_RECORDING) {
-        overlay_draw_string(buf, text_x, text_y, "** RECORDING **", 1);
+        /* Row 0: Flashing title (~4Hz at ~57fps = toggle every 14 frames) */
+        recording_flash_counter++;
+        if ((recording_flash_counter / 14) % 2 == 0)
+            overlay_draw_string(buf, 16, 0, "** RECORDING **", 1);
+
+        /* Row 2: Source (locked, no cursor) */
+        char src_str[32];
+        snprintf(src_str, sizeof(src_str), " Source: %s",
+                 sampler_source == SAMPLER_SOURCE_RESAMPLE ? "Resample" : "Move Input");
+        overlay_draw_string(buf, 0, 16, src_str, 1);
+
+        /* Row 3: Progress */
         int bars = sampler_duration_options[sampler_duration_index];
         char bar_str[32];
         if (bars == 0) {
-            /* Unlimited mode - show elapsed time */
             float secs = (float)sampler_samples_written / SAMPLER_SAMPLE_RATE;
-            snprintf(bar_str, sizeof(bar_str), "Shift+Samp to stop");
-            overlay_draw_string(buf, text_x, text_y + 9, bar_str, 1);
-            /* Show elapsed seconds instead of progress bar */
-            char time_str[32];
-            snprintf(time_str, sizeof(time_str), "%.1fs", secs);
-            overlay_draw_string(buf, text_x, text_y + 18, time_str, 1);
+            snprintf(bar_str, sizeof(bar_str), " Elapsed: %.1fs", secs);
         } else {
             int current_bar = sampler_bars_completed + 1;
             if (current_bar > bars) current_bar = bars;
-            snprintf(bar_str, sizeof(bar_str), "Bar %d / %d", current_bar, bars);
-            overlay_draw_string(buf, text_x, text_y + 9, bar_str, 1);
+            snprintf(bar_str, sizeof(bar_str), " Bar %d / %d", current_bar, bars);
+        }
+        overlay_draw_string(buf, 0, 24, bar_str, 1);
 
-            /* Draw progress bar */
-            int prog_x = box_x + 4;
-            int prog_y = box_y + 22;
-            int prog_w = box_w - 8;
+        /* Row 4: Progress bar (fixed duration only) */
+        if (bars > 0) {
+            int prog_x = 4;
+            int prog_y = 32;
+            int prog_w = 120;
             int prog_h = 5;
-            /* Border */
             overlay_fill_rect(buf, prog_x, prog_y, prog_w, 1, 1);
             overlay_fill_rect(buf, prog_x, prog_y + prog_h - 1, prog_w, 1, 1);
             overlay_fill_rect(buf, prog_x, prog_y, 1, prog_h, 1);
             overlay_fill_rect(buf, prog_x + prog_w - 1, prog_y, 1, prog_h, 1);
-            /* Fill based on progress */
             float progress = 0.0f;
-            if (sampler_clock_received && sampler_target_pulses > 0) {
+            if (sampler_clock_received && sampler_target_pulses > 0)
                 progress = (float)sampler_clock_count / (float)sampler_target_pulses;
-            } else if (sampler_fallback_target > 0) {
+            else if (sampler_fallback_target > 0)
                 progress = (float)sampler_fallback_blocks / (float)sampler_fallback_target;
-            }
             if (progress > 1.0f) progress = 1.0f;
             int fill_w = (int)((prog_w - 2) * progress);
-            if (fill_w > 0) {
+            if (fill_w > 0)
                 overlay_fill_rect(buf, prog_x + 1, prog_y + 1, fill_w, prog_h - 2, 1);
-            }
         }
+
+        /* Row 6: VU meter */
+        int vu_w = 120;
+        int vu_x = 4;
+        int vu_y = 48;
+        int vu_h = 5;
+        overlay_fill_rect(buf, vu_x, vu_y, vu_w, 1, 1);
+        overlay_fill_rect(buf, vu_x, vu_y + vu_h - 1, vu_w, 1, 1);
+        overlay_fill_rect(buf, vu_x, vu_y, 1, vu_h, 1);
+        overlay_fill_rect(buf, vu_x + vu_w - 1, vu_y, 1, vu_h, 1);
+        /* Log scale: map -48dB..0dB to 0..bar width */
+        float vu_norm = 0.0f;
+        if (sampler_vu_peak > 0) {
+            float db = 20.0f * log10f((float)sampler_vu_peak / 32767.0f);
+            vu_norm = (db + 48.0f) / 48.0f;  /* -48dB=0, 0dB=1 */
+            if (vu_norm < 0.0f) vu_norm = 0.0f;
+            if (vu_norm > 1.0f) vu_norm = 1.0f;
+        }
+        int fill_w = (int)(vu_norm * (vu_w - 2));
+        if (fill_w > vu_w - 2) fill_w = vu_w - 2;
+        if (fill_w > 0)
+            overlay_fill_rect(buf, vu_x + 1, vu_y + 1, fill_w, vu_h - 2, 1);
+
+        /* Row 7: Instructions */
+        overlay_draw_string(buf, 0, 56, "Sample to stop", 1);
+
     } else {
-        /* IDLE with overlay still showing = just finished */
-        overlay_draw_string(buf, text_x + 8, text_y + 9, "Sample saved!", 1);
+        /* IDLE with fullscreen still showing = just finished */
+        overlay_draw_string(buf, 16, 24, "Sample saved!", 1);
     }
 }
 
@@ -3656,8 +3947,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
-    /* Capture audio for sampler BEFORE master volume scaling */
-    sampler_capture_audio();
+    /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
+    if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
+        sampler_capture_audio();
+        /* Skipback: always capture Resample source into rolling buffer */
+        skipback_init();
+        skipback_capture(mailbox_audio);
+    }
 
     /* Apply master volume */
     float mv = shadow_master_volume;
@@ -5656,32 +5952,42 @@ int ioctl(int fd, unsigned long request, ...)
         int shift_knob_overlay_on = (shift_knob_overlay_active && shift_knob_overlay_timeout > 0);
         int sampler_overlay_on = (sampler_overlay_active &&
                                   (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
-        if ((shift_knob_overlay_on || sampler_overlay_on) && slice_num >= 1 && slice_num <= 6) {
+        int sampler_fullscreen_on = (sampler_fullscreen_active &&
+                                     (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
+        int skipback_overlay_on = (skipback_overlay_timeout > 0);
+        if ((shift_knob_overlay_on || sampler_overlay_on || sampler_fullscreen_on || skipback_overlay_on) && slice_num >= 1 && slice_num <= 6) {
             static uint8_t overlay_display[1024];
             static int overlay_frame_ready = 0;
 
-            /* When slice 1 arrives, build the overlay display from captured slices */
+            /* When slice 1 arrives, build the overlay display */
             if (slice_num == 1) {
-                /* Check if we have all slices from previous frame */
-                int all_present = 1;
-                for (int i = 0; i < 6; i++) {
-                    if (!slice_fresh[i]) all_present = 0;
-                }
-
-                if (all_present) {
-                    /* Reconstruct display from captured slices */
-                    for (int s = 0; s < 6; s++) {
-                        int offset = s * 172;
-                        int bytes = (s == 5) ? 164 : 172;
-                        memcpy(overlay_display + offset, captured_slices[s], bytes);
+                if (sampler_fullscreen_on) {
+                    /* Full-screen mode: render from scratch, skip slice capture */
+                    sampler_update_vu();
+                    overlay_draw_sampler(overlay_display);
+                    overlay_frame_ready = 1;
+                } else {
+                    /* Normal overlay: reconstruct from captured slices */
+                    int all_present = 1;
+                    for (int i = 0; i < 6; i++) {
+                        if (!slice_fresh[i]) all_present = 0;
                     }
 
-                    /* Draw overlays onto the display (sampler takes priority) */
-                    if (sampler_overlay_on)
-                        overlay_draw_sampler(overlay_display);
-                    else if (shift_knob_overlay_on)
-                        overlay_draw_shift_knob(overlay_display);
-                    overlay_frame_ready = 1;
+                    if (all_present) {
+                        for (int s = 0; s < 6; s++) {
+                            int offset = s * 172;
+                            int bytes = (s == 5) ? 164 : 172;
+                            memcpy(overlay_display + offset, captured_slices[s], bytes);
+                        }
+
+                        if (sampler_overlay_on)
+                            overlay_draw_sampler(overlay_display);
+                        else if (skipback_overlay_on)
+                            overlay_draw_skipback(overlay_display);
+                        else if (shift_knob_overlay_on)
+                            overlay_draw_shift_knob(overlay_display);
+                        overlay_frame_ready = 1;
+                    }
                 }
 
                 /* Decrement timeouts once per frame (when slice 1 arrives) */
@@ -5691,15 +5997,19 @@ int ioctl(int fd, unsigned long request, ...)
                         shift_knob_overlay_active = 0;
                     }
                 }
-                if (sampler_overlay_on && sampler_state == SAMPLER_IDLE) {
+                if ((sampler_overlay_on || sampler_fullscreen_on) && sampler_state == SAMPLER_IDLE) {
                     /* "Sample saved!" overlay timeout */
                     sampler_overlay_timeout--;
                     if (sampler_overlay_timeout <= 0) {
                         sampler_overlay_active = 0;
+                        sampler_fullscreen_active = 0;
                     }
                 }
+                if (skipback_overlay_on) {
+                    skipback_overlay_timeout--;
+                }
 
-                if (!shift_knob_overlay_on && !sampler_overlay_on) {
+                if (!shift_knob_overlay_on && !sampler_overlay_on && !sampler_fullscreen_on && !skipback_overlay_on) {
                     overlay_frame_ready = 0;
                 }
             }
@@ -5755,6 +6065,14 @@ do_ioctl:
                MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
         memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
                MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
+
+        /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
+        if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {
+            sampler_capture_audio();
+            /* Skipback: always capture Move Input source into rolling buffer */
+            skipback_init();
+            skipback_capture((int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET));
+        }
 
         /* Copy MIDI_IN with filtering when in shadow display mode */
         uint8_t *hw_midi = hardware_mmap_addr + MIDI_IN_OFFSET;
@@ -5838,9 +6156,13 @@ do_ioctl:
                     if (s_d1 == CC_RECORD && (shadow_shift_held || sampler_state != SAMPLER_IDLE)) {
                         sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
                     }
-                    /* Block jog wheel and jog click while sampler is armed or recording */
+                    /* Block Shift+Capture from reaching Move */
+                    if (s_d1 == CC_CAPTURE && shadow_shift_held) {
+                        sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                    }
+                    /* Block jog, back while sampler is armed or recording */
                     if (sampler_state != SAMPLER_IDLE) {
-                        if (s_d1 == CC_JOG_WHEEL || s_d1 == CC_JOG_CLICK) {
+                        if (s_d1 == CC_JOG_WHEEL || s_d1 == CC_JOG_CLICK || s_d1 == CC_BACK) {
                             sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
                         }
                     }
@@ -5954,18 +6276,27 @@ do_ioctl:
                     }
                 }
 
+                /* Shift+Capture: save skipback buffer */
+                if (d1 == CC_CAPTURE && d2 > 0 && shadow_shift_held) {
+                    skipback_trigger_save();
+                    src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                }
+
                 /* Sample/Record button (CC 118) - sampler intercept */
                 if (d1 == CC_RECORD && d2 > 0) {
                     if (shadow_shift_held) {
                         /* Shift+Sample: arm/cancel/force-stop */
-                        if (sampler_state == SAMPLER_IDLE) {
+                        if (sampler_state == SAMPLER_IDLE && !shadow_display_mode) {
                             sampler_state = SAMPLER_ARMED;
                             sampler_overlay_active = 1;
                             sampler_overlay_timeout = 0;
+                            sampler_fullscreen_active = 1;
+                            sampler_menu_cursor = SAMPLER_MENU_SOURCE;
                             shadow_log("Sampler: ARMED");
                         } else if (sampler_state == SAMPLER_ARMED) {
                             sampler_state = SAMPLER_IDLE;
                             sampler_overlay_active = 0;
+                            sampler_fullscreen_active = 0;
                             shadow_log("Sampler: cancelled");
                         } else if (sampler_state == SAMPLER_RECORDING) {
                             shadow_log("Sampler: force stop via Shift+Sample");
@@ -5980,17 +6311,37 @@ do_ioctl:
                     }
                 }
 
-                /* Jog wheel while sampler is armed = adjust duration */
+                /* Back button while sampler is armed = exit */
+                if (d1 == CC_BACK && d2 > 0 && sampler_state == SAMPLER_ARMED) {
+                    sampler_state = SAMPLER_IDLE;
+                    sampler_overlay_active = 0;
+                    sampler_fullscreen_active = 0;
+                    shadow_log("Sampler: cancelled via Back");
+                    src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                }
+
+                /* Jog wheel while sampler is armed = navigate menu */
                 if (d1 == CC_JOG_WHEEL && sampler_state == SAMPLER_ARMED) {
                     /* Decode relative value: 1-63=CW, 65-127=CCW */
                     if (d2 >= 1 && d2 <= 63) {
-                        if (sampler_duration_index < SAMPLER_DURATION_COUNT - 1)
-                            sampler_duration_index++;
+                        if (sampler_menu_cursor < SAMPLER_MENU_COUNT - 1)
+                            sampler_menu_cursor++;
                     } else if (d2 >= 65 && d2 <= 127) {
-                        if (sampler_duration_index > 0)
-                            sampler_duration_index--;
+                        if (sampler_menu_cursor > 0)
+                            sampler_menu_cursor--;
                     }
                     /* Block jog from reaching Move/shadow UI */
+                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                }
+
+                /* Jog click while sampler is armed = cycle selected menu item */
+                if (d1 == CC_JOG_CLICK && d2 > 0 && sampler_state == SAMPLER_ARMED) {
+                    if (sampler_menu_cursor == SAMPLER_MENU_SOURCE) {
+                        sampler_source = (sampler_source == SAMPLER_SOURCE_RESAMPLE)
+                            ? SAMPLER_SOURCE_MOVE_INPUT : SAMPLER_SOURCE_RESAMPLE;
+                    } else if (sampler_menu_cursor == SAMPLER_MENU_DURATION) {
+                        sampler_duration_index = (sampler_duration_index + 1) % SAMPLER_DURATION_COUNT;
+                    }
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                 }
             }
@@ -6033,6 +6384,24 @@ do_ioctl:
                     shadow_log("Sampler: triggered by pad note-on");
                     sampler_start_recording();
                     /* Do NOT block the note - it must play so it gets recorded */
+                }
+            }
+        }
+
+        /* External MIDI trigger (cable 2): any note-on triggers recording when armed */
+        if (sampler_state == SAMPLER_ARMED) {
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t cable = (src[j] >> 4) & 0x0F;
+                uint8_t cin = src[j] & 0x0F;
+                if (cable != 0x02) continue;
+                if (cin == 0x09) {  /* Note-on */
+                    uint8_t vel = src[j + 3];
+                    if (vel > 0) {
+                        shadow_log("Sampler: triggered by external MIDI (cable 2)");
+                        sampler_start_recording();
+                        /* Do NOT block - let note pass through for playback/recording */
+                        break;
+                    }
                 }
             }
         }
