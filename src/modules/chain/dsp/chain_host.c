@@ -153,6 +153,52 @@ typedef struct {
 /* State storage size for FX plugins */
 #define MAX_FX_STATE_LEN 2048
 
+/*
+ * Format a parameter value for display based on its metadata.
+ * Returns length of formatted string, or -1 on error.
+ */
+static int format_param_value(chain_param_info_t *param, float value, char *buf, int buf_len) {
+    if (!param || !buf || buf_len < 2) return -1;
+
+    if (param->type == KNOB_TYPE_ENUM) {
+        /* Use option label for enums */
+        int idx = (int)value;
+        if (idx >= 0 && idx < param->option_count) {
+            int len = strlen(param->options[idx]);
+            if (len >= buf_len) len = buf_len - 1;
+            memcpy(buf, param->options[idx], len);
+            buf[len] = '\0';
+            return len;
+        }
+        /* Fallback for out-of-range enum */
+        snprintf(buf, buf_len, "%d", idx);
+        return strlen(buf);
+    }
+
+    /* Format numeric value */
+    char val_str[32];
+    if (param->display_format[0]) {
+        /* Use custom format */
+        snprintf(val_str, sizeof(val_str), param->display_format, value);
+    } else {
+        /* Use defaults based on type */
+        if (param->type == KNOB_TYPE_FLOAT) {
+            snprintf(val_str, sizeof(val_str), "%.2f", value);
+        } else {
+            snprintf(val_str, sizeof(val_str), "%d", (int)value);
+        }
+    }
+
+    /* Add unit suffix if present */
+    if (param->unit[0]) {
+        snprintf(buf, buf_len, "%s %s", val_str, param->unit);
+    } else {
+        snprintf(buf, buf_len, "%s", val_str);
+    }
+
+    return strlen(buf);
+}
+
 /* MIDI FX configuration (module + params + state) */
 typedef struct {
     char module[MAX_NAME_LEN];
