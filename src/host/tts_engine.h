@@ -1,0 +1,33 @@
+/*
+ * TTS Engine - espeak-ng wrapper for on-device text-to-speech
+ */
+
+#ifndef TTS_ENGINE_H
+#define TTS_ENGINE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+/* Initialize TTS engine with target sample rate */
+bool tts_init(int sample_rate);
+
+/* Cleanup TTS engine */
+void tts_cleanup(void);
+
+/* Speak text (non-blocking, synthesis happens in callback) */
+bool tts_speak(const char *text);
+
+/* Check if TTS is currently speaking */
+bool tts_is_speaking(void);
+
+/* Get synthesized audio samples for mixing
+ * Returns number of frames read (stereo pairs)
+ * out_buffer: stereo interleaved int16 [L,R,L,R,...]
+ * max_frames: maximum number of stereo frames to read
+ */
+int tts_get_audio(int16_t *out_buffer, int max_frames);
+
+/* Set TTS volume (0-100) */
+void tts_set_volume(int volume);
+
+#endif /* TTS_ENGINE_H */

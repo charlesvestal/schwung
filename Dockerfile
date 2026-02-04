@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
     make \
     file \
     libdbus-1-dev:arm64 \
+    libespeak-ng-dev:arm64 \
+    espeak-ng-data \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

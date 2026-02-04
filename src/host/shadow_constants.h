@@ -26,6 +26,7 @@
 #define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
 #define SHM_SHADOW_PARAM    "/move-shadow-param"    /* Shadow param requests */
 #define SHM_SHADOW_MIDI_OUT "/move-shadow-midi-out" /* MIDI output from shadow UI */
+#define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader messages */
 
 /* ============================================================================
  * Buffer Sizes
@@ -37,6 +38,7 @@
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
+#define SHADOW_SCREENREADER_BUFFER_SIZE 512  /* Screen reader message buffer */
 
 /* ============================================================================
  * Slot Configuration
@@ -47,6 +49,7 @@
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
 #define SHADOW_PARAM_VALUE_LEN 65536  /* 64KB for large ui_hierarchy and state */
+#define SHADOW_SCREENREADER_TEXT_LEN 256  /* Max text length for screen reader messages */
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)
@@ -129,9 +132,20 @@ typedef struct shadow_midi_out_t {
     uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_out_t;
 
+/*
+ * Screen reader message structure for on-device TTS.
+ * Shadow UI writes messages here, shim reads and speaks them.
+ */
+typedef struct shadow_screenreader_t {
+    volatile uint32_t sequence;      /* Incremented for each new message */
+    volatile uint32_t timestamp_ms;  /* Timestamp of message (for rate limiting) */
+    char text[SHADOW_SCREENREADER_TEXT_LEN];
+} shadow_screenreader_t;
+
 /* Compile-time size checks */
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
+typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */

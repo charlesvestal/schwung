@@ -66,13 +66,16 @@ echo "Building host..."
 
 # Build shim (with shared memory support for shadow instrument)
 # D-Bus support requires cross-compiled libdbus headers
+# TTS support requires cross-compiled espeak-ng
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
     src/host/unified_log.c \
+    src/host/tts_engine.c \
+    -Isrc \
     -I/usr/include/dbus-1.0 \
     -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
-    -ldl -lrt -lpthread -ldbus-1 -lm
+    -ldl -lrt -lpthread -ldbus-1 -lespeak-ng -lm
 
 echo "Building Shadow POC..."
 
