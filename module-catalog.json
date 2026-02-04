@@ -114,8 +114,8 @@
     },
     {
       "id": "junologue-chorus",
-      "name": "Juno Chorus",
-      "description": "Juno-60 chorus emulation (I, I+II, II modes)",
+      "name": "Junologue Chorus",
+      "description": "Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes)",
       "author": "Peter Allwin (port: charlesvestal)",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-junologue-chorus",
