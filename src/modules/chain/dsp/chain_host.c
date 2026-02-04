@@ -6055,6 +6055,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         }
                         offset += snprintf(buf + offset, buf_len - offset, "]");
                     }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
+                    }
                     offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
                 offset += snprintf(buf + offset, buf_len - offset, "]");
@@ -6107,6 +6114,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                             offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
                         }
                         offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
@@ -6162,6 +6176,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                             offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
                         }
                         offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
@@ -6219,6 +6240,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         }
                         written += snprintf(buf + written, buf_len - written, "]");
                     }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"display_format\":\"%s\"", p->display_format);
+                    }
                     written += snprintf(buf + written, buf_len - written, "}");
                 }
                 written += snprintf(buf + written, buf_len - written, "]");
@@ -6269,6 +6297,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                             written += snprintf(buf + written, buf_len - written, "\"%s\"", p->options[j]);
                         }
                         written += snprintf(buf + written, buf_len - written, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     written += snprintf(buf + written, buf_len - written, "}");
                 }
