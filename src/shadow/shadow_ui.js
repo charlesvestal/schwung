@@ -421,6 +421,7 @@ let storeFetchPending = false;         // True while catalog fetch in progress
 let storeDetailScrollState = null;     // Scroll state for module detail
 let storePostInstallLines = [];        // Post-install message lines
 let storePickerFromOvertake = false;   // True if entered from overtake menu
+let storePickerFromMasterFx = false;  // True if entered from master FX module select
 
 /* Check if host update is available and create pseudo-module if so */
 function getHostUpdateModule() {
@@ -888,7 +889,8 @@ function scanForAudioFxModules() {
     const noneItem = result[0];
     const modules = result.slice(1);
     modules.sort((a, b) => a.name.localeCompare(b.name));
-    return [noneItem, ...modules];
+    /* Add option to get more modules from store at the end */
+    return [noneItem, ...modules, { id: "__get_more__", name: "[Get more...]" }];
 }
 
 /* Scan modules directory for overtake modules */
@@ -2157,6 +2159,12 @@ function applyMasterFxModuleSelection() {
 
     const selected = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex];
     if (selected) {
+        if (selected.id === "__get_more__") {
+            /* Open store picker for audio FX modules */
+            selectingMasterFxModule = false;
+            enterStorePicker('master_fx');
+            return;
+        }
         /* Load the module into the slot */
         setMasterFxSlotModule(selectedMasterFxComponent, selected.dspPath || "");
         masterFxConfig[comp.key].module = selected.id;
@@ -2318,7 +2326,8 @@ function componentKeyToCategoryId(componentKey) {
     switch (componentKey) {
         case 'synth': return 'sound_generator';
         case 'fx1':
-        case 'fx2': return 'audio_fx';
+        case 'fx2':
+        case 'master_fx': return 'audio_fx';
         case 'midiFx': return 'midi_fx';
         case 'overtake': return 'overtake';
         default: return null;
@@ -2335,6 +2344,7 @@ function enterStorePicker(componentKey) {
     storePickerCurrentModule = null;
     storePickerActionIndex = 0;
     storePickerFromOvertake = (componentKey === 'overtake');
+    storePickerFromMasterFx = (componentKey === 'master_fx');
 
     /* Check if we need to fetch catalog */
     if (!storeCatalog) {
@@ -2494,6 +2504,12 @@ function handleStorePickerBack() {
                 overtakeModules = scanForOvertakeModules();
                 view = VIEWS.OVERTAKE_MENU;
                 storePickerFromOvertake = false;
+            } else if (storePickerFromMasterFx) {
+                /* Came from master FX module select - rescan and go back */
+                MASTER_FX_OPTIONS = scanForAudioFxModules();
+                enterMasterFxModuleSelect(selectedMasterFxComponent);
+                view = VIEWS.MASTER_FX;
+                storePickerFromMasterFx = false;
             } else {
                 /* Came from component select - rescan modules and go back */
                 availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
@@ -2524,6 +2540,11 @@ function handleStorePickerBack() {
                 overtakeModules = scanForOvertakeModules();
                 view = VIEWS.OVERTAKE_MENU;
                 storePickerFromOvertake = false;
+            } else if (storePickerFromMasterFx) {
+                MASTER_FX_OPTIONS = scanForAudioFxModules();
+                enterMasterFxModuleSelect(selectedMasterFxComponent);
+                view = VIEWS.MASTER_FX;
+                storePickerFromMasterFx = false;
             } else {
                 availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
                 view = VIEWS.COMPONENT_SELECT;
@@ -6000,7 +6021,7 @@ function drawMasterFxModuleSelect() {
 }
 
 globalThis.init = function() {
-    debugLog(`Shadow UI init - DEBUG_LOG_ENABLED=${DEBUG_LOG_ENABLED}`);
+    debugLog("Shadow UI init");
     refreshSlots();
     loadPatchList();
     initChainConfigs();
@@ -6313,7 +6334,8 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 
     /* When in overtake module view, route MIDI to the overtake module */
-    if (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded && overtakeModuleCallbacks) {
+    /* Don't forward MIDI until init() has been called (overtakeInitPending = false) */
+    if (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded && overtakeModuleCallbacks && !overtakeInitPending) {
         /* Track shift locally - shim's shift tracking doesn't work in overtake mode */
         if ((status & 0xF0) === 0xB0 && d1 === 49) {  /* CC 49 = Shift */
             hostShiftHeld = (d2 > 0);

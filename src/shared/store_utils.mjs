@@ -57,8 +57,16 @@ export function getInstallSubdir(componentType) {
     }
 }
 
+/* Ensure tmp directory exists for downloads */
+function ensureTmpDir() {
+    if (globalThis.host_ensure_dir) {
+        globalThis.host_ensure_dir(TMP_DIR);
+    }
+}
+
 /* Fetch release info from release.json in repo */
 export function fetchReleaseJson(github_repo) {
+    ensureTmpDir();
     const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
     const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
 
@@ -221,6 +229,7 @@ export function installModule(mod, hostVersion) {
         return { success: false, error: 'No release available' };
     }
 
+    ensureTmpDir();
     const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
 
     /* Download the module tarball */

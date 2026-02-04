@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-LD_PRELOAD=move-anything-shim.so /opt/move/MoveOriginal
+exec env LD_PRELOAD=move-anything-shim.so /opt/move/MoveOriginal
