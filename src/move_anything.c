@@ -23,6 +23,7 @@
 
 #include "host/module_manager.h"
 #include "host/settings.h"
+#include "host/shadow_constants.h"
 
 int global_fd = -1;
 int global_exit_flag = 0;
@@ -1761,12 +1762,22 @@ static JSValue js_host_announce_screenreader(JSContext *ctx, JSValueConst this_v
         return JS_UNDEFINED;
     }
 
-    /* Write to shared memory for shim to send via D-Bus */
-    extern shadow_screenreader_t *shadow_screenreader_shm;
-    if (shadow_screenreader_shm) {
-        strncpy(shadow_screenreader_shm->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
-        shadow_screenreader_shm->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
-        shadow_screenreader_shm->ready = !shadow_screenreader_shm->ready;  /* Toggle */
+    /* Open shared memory (created by shim) */
+    int fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_screenreader_t *shm = (shadow_screenreader_t *)mmap(
+            NULL, sizeof(shadow_screenreader_t),
+            PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+        if (shm != MAP_FAILED) {
+            /* Write text and toggle ready flag */
+            strncpy(shm->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
+            shm->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
+            shm->ready = !shm->ready;  /* Toggle to signal new announcement */
+
+            munmap(shm, sizeof(shadow_screenreader_t));
+        }
+        close(fd);
     }
 
     JS_FreeCString(ctx, text);
