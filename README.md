@@ -60,6 +60,7 @@ Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md)
 
 ## Related Repositories
 
+- [move-anything-braids](https://github.com/charlesvestal/move-anything-braids)
 - [move-anything-clap](https://github.com/charlesvestal/move-anything-clap)
 - [move-anything-cloudseed](https://github.com/charlesvestal/move-anything-cloudseed)
 - [move-anything-dx7](https://github.com/charlesvestal/move-anything-dx7)

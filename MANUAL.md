@@ -172,6 +172,7 @@ When selection a Module, "[Get more...]" will open the Module Store to download 
 
 
 **Sound Generators:**
+- **Braids** - Mutable Instruments macro oscillator (47 algorithms)
 - **Dexed** - 6-operator FM synthesizer (DX7 compatible)
 - **SF2** - SoundFont player
 - **Mini-JV** - Roland JV-880 emulation
