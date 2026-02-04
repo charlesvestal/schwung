@@ -79,14 +79,18 @@ export function drawMenuList({
     indicatorBottomY = LIST_INDICATOR_BOTTOM_Y,
     getLabel,
     getValue,
+    getSubLabel = null,
+    subLabelOffset = 9,
     editMode = false
 }) {
     const totalItems = items.length;
+    const itemHeight = getSubLabel ? (lineHeight + subLabelOffset) : lineHeight;
+    const itemHighlightHeight = getSubLabel ? (lineHeight + subLabelOffset + 2) : highlightHeight;
     const resolvedTopY = listArea?.topY ?? topY;
     const resolvedBottomY = listArea?.bottomY ?? indicatorBottomY;
     const computedMaxVisible = maxVisible > 0
         ? maxVisible
-        : Math.max(1, Math.floor((resolvedBottomY - resolvedTopY) / lineHeight));
+        : Math.max(1, Math.floor((resolvedBottomY - resolvedTopY) / itemHeight));
     const effectiveMaxVisible = computedMaxVisible;
     let startIdx = 0;
 
@@ -104,7 +108,7 @@ export function drawMenuList({
     labelScroller.tick();  /* Auto-tick during draw */
 
     for (let i = startIdx; i < endIdx; i++) {
-        const y = resolvedTopY + (i - startIdx) * lineHeight;
+        const y = resolvedTopY + (i - startIdx) * itemHeight;
         const item = items[i];
         const isSelected = i === selectedIndex;
 
@@ -136,7 +140,7 @@ export function drawMenuList({
         }
 
         if (isSelected) {
-            fill_rect(0, y - highlightOffset, SCREEN_WIDTH, highlightHeight, 1);
+            fill_rect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
             print(labelX, y, `${labelPrefix}${label}`, 0);
             if (value) {
                 /* Show brackets around value when in edit mode */
@@ -151,6 +155,15 @@ export function drawMenuList({
             print(labelX, y, `${labelPrefix}${label}`, 1);
             if (value) {
                 print(resolvedValueX, y, value, 1);
+            }
+        }
+
+        if (getSubLabel) {
+            const subLabel = getSubLabel(item, i);
+            if (subLabel) {
+                const subY = y + subLabelOffset;
+                const subX = labelX + (2 * DEFAULT_CHAR_WIDTH);
+                print(subX, subY, subLabel, isSelected ? 0 : 1);
             }
         }
     }

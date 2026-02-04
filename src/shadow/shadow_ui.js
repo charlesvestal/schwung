@@ -67,7 +67,7 @@ import {
     installModule as sharedInstallModule,
     removeModule as sharedRemoveModule,
     scanInstalledModules, getHostVersion, isNewerVersion,
-    fetchReleaseJsonQuick,
+    fetchReleaseJsonQuick, fetchReleaseNotes,
     CATEGORIES
 } from '/data/UserData/move-anything/shared/store_utils.mjs';
 
@@ -126,6 +126,7 @@ const VIEWS = {
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
     OVERTAKE_MODULE: "overtakemodule", // Running an overtake module
     UPDATE_PROMPT: "updateprompt",    // Startup update prompt (updates available)
+    UPDATE_DETAIL: "updatedetail",    // Detail view for a single update
     UPDATE_RESTART: "updaterestart"   // Restart prompt after core update
 };
 
@@ -190,6 +191,8 @@ let pendingUpdates = [];              // Updates found on startup
 let pendingUpdateIndex = 0;           // Selected update in prompt
 let updateRestartFromVersion = '';    // For restart prompt display
 let updateRestartToVersion = '';
+let updateDetailScrollState = null;   // Scrollable text state for update detail view
+let updateDetailModule = null;        // Module being viewed in update detail
 
 /* Host-side tracking for Shift+Vol+Jog escape (redundant with shim, but ensures escape always works) */
 let hostVolumeKnobTouched = false;
@@ -4411,6 +4414,11 @@ function handleJog(delta) {
             /* +1 for the "Update All" item at the end */
             pendingUpdateIndex = Math.max(0, Math.min(pendingUpdates.length, pendingUpdateIndex + delta));
             break;
+        case VIEWS.UPDATE_DETAIL:
+            if (updateDetailScrollState) {
+                handleScrollableTextJog(updateDetailScrollState, delta);
+            }
+            break;
         case VIEWS.UPDATE_RESTART:
             /* No jog navigation needed */
             break;
@@ -4987,11 +4995,39 @@ function handleSelect() {
             break;
         case VIEWS.UPDATE_PROMPT:
             if (pendingUpdateIndex === pendingUpdates.length) {
-                /* "Update All" selected */
+                /* "Update All" - install directly */
                 processAllUpdates();
             } else if (pendingUpdateIndex >= 0 && pendingUpdateIndex < pendingUpdates.length) {
-                /* Install the selected update */
                 const upd = pendingUpdates[pendingUpdateIndex];
+                updateDetailModule = upd;
+
+                const repo = upd._isHostUpdate ? 'charlesvestal/move-anything' : upd.github_repo;
+                const notes = repo ? fetchReleaseNotes(repo) : null;
+
+                const lines = [];
+                lines.push(upd.name);
+                lines.push(upd.from + ' -> ' + upd.to);
+                lines.push('');
+                if (notes) {
+                    lines.push(...buildReleaseNoteLines(notes));
+                } else {
+                    lines.push('No release notes');
+                    lines.push('available.');
+                }
+
+                updateDetailScrollState = createScrollableText({
+                    lines: lines,
+                    actionLabel: 'Install',
+                    visibleLines: 3
+                });
+
+                view = VIEWS.UPDATE_DETAIL;
+                needsRedraw = true;
+            }
+            break;
+        case VIEWS.UPDATE_DETAIL:
+            if (updateDetailScrollState && isActionSelected(updateDetailScrollState)) {
+                const upd = updateDetailModule;
                 if (upd._isHostUpdate) {
                     const result = performCoreUpdate(upd);
                     if (result.success) {
@@ -5272,6 +5308,12 @@ function handleBack() {
             /* Skip updates - dismiss and return to normal view */
             pendingUpdates = [];
             view = VIEWS.SLOTS;
+            needsRedraw = true;
+            break;
+        case VIEWS.UPDATE_DETAIL:
+            updateDetailScrollState = null;
+            updateDetailModule = null;
+            view = VIEWS.UPDATE_PROMPT;
             needsRedraw = true;
             break;
         case VIEWS.UPDATE_RESTART:
@@ -5749,6 +5791,26 @@ function drawStorePickerResult() {
 }
 
 /* Draw store picker module detail */
+/* Build scrollable lines from release notes text */
+function buildReleaseNoteLines(notesText) {
+    const lines = [];
+    const noteLines = notesText.split('\n');
+    for (const line of noteLines) {
+        if (line.trim() === '') {
+            lines.push('');
+        } else {
+            /* Strip markdown: headers, bold, italic */
+            const cleaned = line.trim()
+                .replace(/^#+\s*/, '')
+                .replace(/\*\*/g, '')
+                .replace(/\*/g, '');
+            const wrapped = wrapText(cleaned, 20);
+            lines.push(...wrapped);
+        }
+    }
+    return lines;
+}
+
 function drawStorePickerDetail() {
     clear_screen();
 
@@ -5762,7 +5824,19 @@ function drawStorePickerDetail() {
         drawHeader(title, versionStr);
 
         if (!storeDetailScrollState || storeDetailScrollState.moduleId !== mod.id) {
-            const descLines = ['Update Move Anything', 'core framework.', '', 'Restart required', 'after update.'];
+            const notes = fetchReleaseNotes('charlesvestal/move-anything');
+            const descLines = [];
+            descLines.push(`${storeHostVersion} -> ${mod.latest_version}`);
+            descLines.push('');
+            if (notes) {
+                descLines.push(...buildReleaseNoteLines(notes));
+            } else {
+                descLines.push('Update Move Anything');
+                descLines.push('core framework.');
+                descLines.push('');
+                descLines.push('Restart required');
+                descLines.push('after update.');
+            }
             storeDetailScrollState = createScrollableText({
                 lines: descLines,
                 actionLabel: 'Update',
@@ -5809,6 +5883,16 @@ function drawStorePickerDetail() {
             descLines.push(...reqLines);
         }
 
+        /* Fetch and append release notes */
+        if (mod.github_repo) {
+            const notes = fetchReleaseNotes(mod.github_repo);
+            if (notes) {
+                descLines.push('');
+                descLines.push('What\'s New:');
+                descLines.push(...buildReleaseNoteLines(notes));
+            }
+        }
+
         /* Determine action label */
         let actionLabel;
         if (status.installed) {
@@ -5834,6 +5918,28 @@ function drawStorePickerDetail() {
     });
 }
 
+/* Draw update detail view (release notes + install action) */
+function drawUpdateDetail() {
+    clear_screen();
+    const title = updateDetailModule ? updateDetailModule.name : 'Update';
+    drawHeader(title);
+
+    if (updateDetailScrollState) {
+        drawScrollableText({
+            state: updateDetailScrollState,
+            topY: 16,
+            bottomY: 40,
+            actionY: 52
+        });
+    }
+
+    /* 1px border */
+    fill_rect(0, 0, 128, 1, 1);
+    fill_rect(0, 63, 128, 1, 1);
+    fill_rect(0, 0, 1, 64, 1);
+    fill_rect(127, 0, 1, 64, 1);
+}
+
 /* Draw update prompt view (shown on startup when updates are available) */
 function drawUpdatePrompt() {
     clear_screen();
@@ -5841,21 +5947,27 @@ function drawUpdatePrompt() {
 
     const items = pendingUpdates.map(upd => ({
         label: upd.name,
-        value: upd.from + '->' + upd.to
+        subLabel: upd.from + ' -> ' + upd.to
     }));
     /* Add "Update All" as the last item */
-    items.push({ label: '[Update All]', value: '' });
+    items.push({ label: '[Update All]', subLabel: '' });
 
     drawMenuList({
         items: items,
         selectedIndex: pendingUpdateIndex,
         getLabel: (item) => item.label,
-        getValue: (item) => item.value,
-        valueAlignRight: true,
+        getSubLabel: (item) => item.subLabel,
+        subLabelOffset: 7,
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
     });
 
-    drawFooter('Click: Install  Back: Skip');
+    drawFooter('Back: cancel');
+
+    /* 1px border around entire screen to distinguish from normal UI */
+    fill_rect(0, 0, 128, 1, 1);
+    fill_rect(0, 63, 128, 1, 1);
+    fill_rect(0, 0, 1, 64, 1);
+    fill_rect(127, 0, 1, 64, 1);
 }
 
 /* Draw restart prompt after core update */
@@ -6579,6 +6691,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.UPDATE_PROMPT:
             drawUpdatePrompt();
+            break;
+        case VIEWS.UPDATE_DETAIL:
+            drawUpdateDetail();
             break;
         case VIEWS.UPDATE_RESTART:
             drawUpdateRestart();
