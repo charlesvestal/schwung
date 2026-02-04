@@ -645,6 +645,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     echo "    jv880_rom2.bin        (must be v1.0.0)"
     echo "    jv880_waverom1.bin"
     echo "    jv880_waverom2.bin"
+    echo "    jv880_nvram.bin"
     echo "    expansions/           (optional SR-JV80 expansion .bin files)"
     echo
     echo "(Press ENTER to skip)"
@@ -657,7 +658,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         if [ -d "$rom_path" ]; then
             rom_count=0
             $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms"
-            for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin; do
+            for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin jv880_nvram.bin; do
                 if [ -f "$rom_path/$rom" ]; then
                     echo "  Copying $rom..."
                     if scp_with_retry "$rom_path/$rom" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/"; then
