@@ -2099,7 +2099,8 @@ function handleMasterFxSettingsAction(key) {
             masterNamePreviewIndex = 1;  /* Default to OK */
             masterOverwriteFromKeyboard = true;
             announce(`Confirm save as: ${masterPendingSaveName}`);
-        needsRedraw = true;
+            needsRedraw = true;
+        }
     } else if (key === "save_as") {
         /* Save As - show name preview with current name */
         masterPendingSaveName = currentMasterPresetName || generateMasterPresetName();
