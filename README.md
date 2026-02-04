@@ -25,7 +25,7 @@ Enable SSH:
 2. Add your public key at: `http://move.local/development/ssh`
 3. Test: `ssh ableton@move.local`
 
-Install:
+Back on your computer (or in a new terminal window), install:
 ```bash
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
 ```
