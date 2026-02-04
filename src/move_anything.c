@@ -1746,6 +1746,33 @@ static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* host_announce_screenreader(text) -> undefined
+ * Send screen reader announcement via D-Bus for accessibility.
+ * Text is sent to stock Move's /screen-reader web interface. */
+static JSValue js_host_announce_screenreader(JSContext *ctx, JSValueConst this_val,
+                                               int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    const char *text = JS_ToCString(ctx, argv[0]);
+    if (!text || !text[0]) {
+        if (text) JS_FreeCString(ctx, text);
+        return JS_UNDEFINED;
+    }
+
+    /* Write to shared memory for shim to send via D-Bus */
+    extern shadow_screenreader_t *shadow_screenreader_shm;
+    if (shadow_screenreader_shm) {
+        strncpy(shadow_screenreader_shm->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
+        shadow_screenreader_shm->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
+        shadow_screenreader_shm->ready = !shadow_screenreader_shm->ready;  /* Toggle */
+    }
+
+    JS_FreeCString(ctx, text);
+    return JS_UNDEFINED;
+}
+
 /* Helper: validate path is within BASE_DIR to prevent directory traversal */
 static int validate_path(const char *path) {
     if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
@@ -2188,6 +2215,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_flush_display_func = JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", host_flush_display_func);
+
+    JSValue host_announce_screenreader_func = JS_NewCFunction(ctx, js_host_announce_screenreader, "host_announce_screenreader", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_announce_screenreader", host_announce_screenreader_func);
 
     /* Store module functions */
     JSValue host_file_exists_func = JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1);

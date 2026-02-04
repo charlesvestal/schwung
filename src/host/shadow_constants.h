@@ -24,8 +24,9 @@
 #define SHM_SHADOW_CONTROL  "/move-shadow-control"  /* Control flags/state */
 #define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow */
 #define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
-#define SHM_SHADOW_PARAM    "/move-shadow-param"    /* Shadow param requests */
-#define SHM_SHADOW_MIDI_OUT "/move-shadow-midi-out" /* MIDI output from shadow UI */
+#define SHM_SHADOW_PARAM      "/move-shadow-param"        /* Shadow param requests */
+#define SHM_SHADOW_MIDI_OUT   "/move-shadow-midi-out"   /* MIDI output from shadow UI */
+#define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader announcements */
 
 /* ============================================================================
  * Buffer Sizes
@@ -47,6 +48,7 @@
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
 #define SHADOW_PARAM_VALUE_LEN 65536  /* 64KB for large ui_hierarchy and state */
+#define SHADOW_SCREENREADER_TEXT_LEN 256
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)
@@ -128,6 +130,16 @@ typedef struct shadow_midi_out_t {
     volatile uint8_t reserved[2];
     uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_out_t;
+
+/*
+ * Screen reader announcement structure.
+ * Host writes text and toggles ready flag, shim emits D-Bus signal.
+ */
+typedef struct shadow_screenreader_t {
+    volatile uint8_t ready;          /* Toggle to signal new announcement */
+    volatile uint8_t reserved[3];
+    char text[SHADOW_SCREENREADER_TEXT_LEN];
+} shadow_screenreader_t;
 
 /* Compile-time size checks */
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];

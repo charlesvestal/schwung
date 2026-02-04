@@ -1159,6 +1159,45 @@ static void shadow_dbus_handle_text(const char *text)
     }
 }
 
+/* Send screen reader announcement via D-Bus signal */
+static void send_screenreader_announcement(const char *text)
+{
+    if (!text || !text[0]) return;
+    if (!shadow_dbus_conn) return;
+
+    /* Create signal message */
+    DBusMessage *msg = dbus_message_new_signal(
+        "/com/ableton/move/screenreader",
+        "com.ableton.move.ScreenReader",
+        "text"
+    );
+
+    if (!msg) {
+        shadow_log("Failed to create D-Bus signal message");
+        return;
+    }
+
+    /* Append the text argument */
+    if (!dbus_message_append_args(msg, DBUS_TYPE_STRING, &text, DBUS_TYPE_INVALID)) {
+        shadow_log("Failed to append D-Bus signal argument");
+        dbus_message_unref(msg);
+        return;
+    }
+
+    /* Send the signal */
+    if (!dbus_connection_send(shadow_dbus_conn, msg, NULL)) {
+        shadow_log("Failed to send D-Bus signal");
+    }
+
+    dbus_message_unref(msg);
+    dbus_connection_flush(shadow_dbus_conn);
+
+    /* Debug log */
+    char logbuf[512];
+    snprintf(logbuf, sizeof(logbuf), "Screen reader: \"%s\"", text);
+    shadow_log(logbuf);
+}
+
 /* D-Bus filter function to receive signals */
 static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *msg, void *data)
 {
@@ -4235,6 +4274,7 @@ static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
+static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Screen reader announcements */
 static uint8_t last_shadow_midi_out_ready = 0;
 
 /* Pending LED queue for rate-limited output (like standalone mode) */
@@ -4266,6 +4306,7 @@ static int shm_control_fd = -1;
 static int shm_ui_fd = -1;
 static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
+static int shm_screenreader_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -4445,6 +4486,23 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create midi_out shm\n");
+    }
+
+    /* Create/open screen reader shared memory (for accessibility announcements) */
+    shm_screenreader_fd = shm_open(SHM_SHADOW_SCREENREADER, O_CREAT | O_RDWR, 0666);
+    if (shm_screenreader_fd >= 0) {
+        ftruncate(shm_screenreader_fd, sizeof(shadow_screenreader_t));
+        shadow_screenreader_shm = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t),
+                                                                 PROT_READ | PROT_WRITE,
+                                                                 MAP_SHARED, shm_screenreader_fd, 0);
+        if (shadow_screenreader_shm == MAP_FAILED) {
+            shadow_screenreader_shm = NULL;
+            printf("Shadow: Failed to mmap screenreader shm\n");
+        } else {
+            memset(shadow_screenreader_shm, 0, sizeof(shadow_screenreader_t));
+        }
+    } else {
+        printf("Shadow: Failed to create screenreader shm\n");
     }
 
     shadow_shm_initialized = 1;
@@ -4736,6 +4794,21 @@ static void shadow_inject_ui_midi_out(void) {
     /* Clear after processing */
     shadow_midi_out_shm->write_idx = 0;
     memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+}
+
+/* Check for and send screen reader announcements via D-Bus */
+static void shadow_check_screenreader_announcements(void) {
+    static uint8_t last_screenreader_ready = 0;
+
+    if (!shadow_screenreader_shm) return;
+    if (shadow_screenreader_shm->ready == last_screenreader_ready) return;
+
+    last_screenreader_ready = shadow_screenreader_shm->ready;
+
+    /* Send announcement via D-Bus */
+    if (shadow_screenreader_shm->text[0]) {
+        send_screenreader_announcement(shadow_screenreader_shm->text);
+    }
 }
 
 static int shadow_has_midi_packets(const uint8_t *src)
@@ -6327,6 +6400,10 @@ do_ioctl:
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
     shadow_inject_ui_midi_out();
     shadow_flush_pending_leds();  /* Rate-limited LED output */
+
+    /* === SCREEN READER ANNOUNCEMENTS ===
+     * Check for and send accessibility announcements via D-Bus. */
+    shadow_check_screenreader_announcements();
 
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
      * Copy shadow mailbox to hardware before ioctl.
