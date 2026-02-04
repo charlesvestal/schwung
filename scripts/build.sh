@@ -124,6 +124,10 @@ cp -L /usr/lib/aarch64-linux-gnu/libflite_cmu_us_kal.so.* ./build/lib/ 2>/dev/nu
 cp -L /usr/lib/aarch64-linux-gnu/libflite_usenglish.so.* ./build/lib/ 2>/dev/null || true
 cp -L /usr/lib/aarch64-linux-gnu/libflite_cmulex.so.* ./build/lib/ 2>/dev/null || true
 
+# Copy Flite copyright notice (required by BSD-style license)
+mkdir -p ./build/licenses/
+cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || echo "Warning: Flite license file not found"
+
 echo "Building Signal Chain module..."
 
 # Build Signal Chain DSP plugin

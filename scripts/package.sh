@@ -24,6 +24,11 @@ if [ -d "./lib" ]; then
     ITEMS="$ITEMS ./lib"
 fi
 
+# Add licenses directory if it exists (third-party license files)
+if [ -d "./licenses" ]; then
+    ITEMS="$ITEMS ./licenses"
+fi
+
 tar -czvf ../move-anything.tar.gz \
     --transform 's,^\.,move-anything,' \
     $ITEMS
