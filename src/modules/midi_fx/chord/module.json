@@ -14,14 +14,14 @@
           "params": [
             {
               "key": "chord_type",
-              "label": "Type",
+              "name": "Type",
               "type": "enum",
               "options": ["Major", "Minor", "Dim", "Aug", "Sus2", "Sus4", "Maj7", "Min7", "Dom7"],
               "default": 0
             },
             {
               "key": "inversion",
-              "label": "Inversion",
+              "name": "Inversion",
               "type": "int",
               "min": 0,
               "max": 3,
@@ -29,14 +29,14 @@
             },
             {
               "key": "voicing",
-              "label": "Voicing",
+              "name": "Voicing",
               "type": "enum",
               "options": ["Close", "Open", "Drop2", "Drop3"],
               "default": 0
             },
             {
               "key": "velocity_scale",
-              "label": "Vel Scale",
+              "name": "Vel Scale",
               "type": "float",
               "min": 0.0,
               "max": 2.0,

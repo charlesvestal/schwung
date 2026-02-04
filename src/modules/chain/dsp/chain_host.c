@@ -1891,6 +1891,14 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
     const char *hierarchy = strstr(json, "\"ui_hierarchy\"");
     if (hierarchy) {
         *count = parse_hierarchy_params(json, params, MAX_CHAIN_PARAMS);
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "Parsed ui_hierarchy params: count=%d", *count);
+        chain_log(log_msg);
+        for (int i = 0; i < *count && i < 10; i++) {
+            snprintf(log_msg, sizeof(log_msg), "  Param[%d]: key=%s, name=%s, type=%d",
+                     i, params[i].key, params[i].name, params[i].type);
+            chain_log(log_msg);
+        }
         free(json);
         return 0;
     }
