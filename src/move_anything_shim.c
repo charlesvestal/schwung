@@ -1134,6 +1134,72 @@ static float shadow_parse_volume_db(const char *text)
     return linear;
 }
 
+/* Inject pending screen reader announcements immediately */
+static void shadow_inject_pending_announcements(void)
+{
+    pthread_mutex_lock(&pending_announcements_mutex);
+    int has_pending = (pending_announcement_count > 0);
+    pthread_mutex_unlock(&pending_announcements_mutex);
+
+    if (!has_pending) return;
+
+    pthread_mutex_lock(&move_dbus_conn_mutex);
+    int fd = move_dbus_socket_fd;
+    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+    if (fd < 0) return;
+
+    pthread_mutex_lock(&pending_announcements_mutex);
+    for (int i = 0; i < pending_announcement_count; i++) {
+        /* Create D-Bus signal message */
+        DBusMessage *msg = dbus_message_new_signal(
+            "/com/ableton/move/screenreader",
+            "com.ableton.move.ScreenReader",
+            "text"
+        );
+
+        if (msg) {
+            const char *announce_text = pending_announcements[i];
+            if (dbus_message_append_args(msg, DBUS_TYPE_STRING, &announce_text, DBUS_TYPE_INVALID)) {
+                /* Get next serial number */
+                pthread_mutex_lock(&move_dbus_serial_mutex);
+                move_dbus_serial++;
+                uint32_t our_serial = move_dbus_serial;
+                pthread_mutex_unlock(&move_dbus_serial_mutex);
+
+                /* Set the serial number */
+                dbus_message_set_serial(msg, our_serial);
+
+                /* Serialize and write directly to Move's FD */
+                char *marshalled = NULL;
+                int msg_len = 0;
+                if (dbus_message_marshal(msg, &marshalled, &msg_len)) {
+                    ssize_t written = write(fd, marshalled, msg_len);
+
+                    if (written > 0) {
+                        char logbuf[512];
+                        snprintf(logbuf, sizeof(logbuf),
+                                "Screen reader: \"%s\" (injected %zd bytes to FD %d, serial=%u)",
+                                announce_text, written, fd, our_serial);
+                        shadow_log(logbuf);
+                    } else {
+                        char logbuf[256];
+                        snprintf(logbuf, sizeof(logbuf),
+                                "Screen reader: Failed to inject \"%s\" (errno=%d)",
+                                announce_text, errno);
+                        shadow_log(logbuf);
+                    }
+
+                    free(marshalled);
+                }
+            }
+            dbus_message_unref(msg);
+        }
+    }
+    pending_announcement_count = 0;  /* Clear after injecting */
+    pthread_mutex_unlock(&pending_announcements_mutex);
+}
+
 /* Handle a screenreader text signal */
 static void shadow_dbus_handle_text(const char *text)
 {
@@ -1179,67 +1245,7 @@ static void shadow_dbus_handle_text(const char *text)
     }
 
     /* After receiving any screen reader message from Move, inject our pending announcements */
-    pthread_mutex_lock(&pending_announcements_mutex);
-    int has_pending = (pending_announcement_count > 0);
-    pthread_mutex_unlock(&pending_announcements_mutex);
-
-    if (has_pending) {
-        pthread_mutex_lock(&move_dbus_conn_mutex);
-        int fd = move_dbus_socket_fd;
-        pthread_mutex_unlock(&move_dbus_conn_mutex);
-
-        if (fd >= 0) {
-            pthread_mutex_lock(&pending_announcements_mutex);
-            for (int i = 0; i < pending_announcement_count; i++) {
-                /* Create D-Bus signal message */
-                DBusMessage *msg = dbus_message_new_signal(
-                    "/com/ableton/move/screenreader",
-                    "com.ableton.move.ScreenReader",
-                    "text"
-                );
-
-                if (msg) {
-                    const char *announce_text = pending_announcements[i];
-                    if (dbus_message_append_args(msg, DBUS_TYPE_STRING, &announce_text, DBUS_TYPE_INVALID)) {
-                        /* Get next serial number */
-                        pthread_mutex_lock(&move_dbus_serial_mutex);
-                        move_dbus_serial++;
-                        uint32_t our_serial = move_dbus_serial;
-                        pthread_mutex_unlock(&move_dbus_serial_mutex);
-
-                        /* Set the serial number */
-                        dbus_message_set_serial(msg, our_serial);
-
-                        /* Serialize and write directly to Move's FD */
-                        char *marshalled = NULL;
-                        int msg_len = 0;
-                        if (dbus_message_marshal(msg, &marshalled, &msg_len)) {
-                            ssize_t written = write(fd, marshalled, msg_len);
-
-                            if (written > 0) {
-                                char logbuf[512];
-                                snprintf(logbuf, sizeof(logbuf),
-                                        "Screen reader: \"%s\" (injected %zd bytes to FD %d, serial=%u)",
-                                        announce_text, written, fd, our_serial);
-                                shadow_log(logbuf);
-                            } else {
-                                char logbuf[256];
-                                snprintf(logbuf, sizeof(logbuf),
-                                        "Screen reader: Failed to inject \"%s\" (errno=%d)",
-                                        announce_text, errno);
-                                shadow_log(logbuf);
-                            }
-
-                            free(marshalled);
-                        }
-                    }
-                    dbus_message_unref(msg);
-                }
-            }
-            pending_announcement_count = 0;  /* Clear after injecting */
-            pthread_mutex_unlock(&pending_announcements_mutex);
-        }
-    }
+    shadow_inject_pending_announcements();
 }
 
 /* Send screen reader announcement via D-Bus signal */
@@ -5152,9 +5158,11 @@ static void shadow_check_screenreader_announcements(void) {
 
     last_screenreader_ready = shadow_screenreader_shm->ready;
 
-    /* Send announcement via D-Bus */
+    /* Queue announcement */
     if (shadow_screenreader_shm->text[0]) {
         send_screenreader_announcement(shadow_screenreader_shm->text);
+        /* Inject immediately - don't wait for Move's next D-Bus activity */
+        shadow_inject_pending_announcements();
     }
 }
 

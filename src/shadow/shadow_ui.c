@@ -31,6 +31,7 @@ static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
+static shadow_screenreader_t *shadow_screenreader_shm = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -79,6 +80,12 @@ static int open_shadow_shm(void) {
     fd = shm_open(SHM_SHADOW_MIDI_OUT, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_midi_out = (shadow_midi_out_t *)mmap(NULL, sizeof(shadow_midi_out_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+    }
+
+    fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_screenreader_shm = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
     }
 
@@ -928,6 +935,25 @@ static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue js_host_send_screenreader(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+
+    const char *text = JS_ToCString(ctx, argv[0]);
+    if (!text) return JS_UNDEFINED;
+
+    /* Write to shared memory - shim will pick it up and announce via D-Bus */
+    if (shadow_screenreader_shm) {
+        strncpy(shadow_screenreader_shm->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
+        shadow_screenreader_shm->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
+        shadow_screenreader_shm->ready = !shadow_screenreader_shm->ready;  /* Toggle to signal */
+    }
+
+    JS_FreeCString(ctx, text);
+    return JS_UNDEFINED;
+}
+
 /* === End host functions === */
 
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -988,6 +1014,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_list_modules", JS_NewCFunction(ctx, js_host_list_modules, "host_list_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_send_screenreader", JS_NewCFunction(ctx, js_host_send_screenreader, "host_send_screenreader", 1));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
