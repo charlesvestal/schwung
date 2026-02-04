@@ -589,9 +589,10 @@ fi
 # Offer to copy assets for modules that need them (skip if --skip-modules was used)
 if [ "$skip_modules" = false ]; then
     echo
-    echo "Some modules require additional assets to function:"
+    echo "Some modules require or benefit from additional assets:"
     echo "  - Mini-JV: ROM files + optional SR-JV80 expansions"
     echo "  - SF2: SoundFont files (.sf2)"
+    echo "  - Dexed: Additional .syx patch banks (optional - defaults included)"
     echo
     printf "Would you like to copy assets to your Move now? (y/N): "
     read -r copy_assets </dev/tty
@@ -688,10 +689,40 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         fi
     fi
 
+    # DX7 patches
+    echo
+    echo "Dexed (DX7): Enter the folder containing your .syx patch banks."
+    echo "(Defaults are included - this adds additional banks. Press ENTER to skip)"
+    printf "Enter or drag folder path: "
+    read -r syx_path </dev/tty
+
+    if [ -n "$syx_path" ]; then
+        # Expand ~ to home directory and handle escaped spaces
+        syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        if [ -d "$syx_path" ]; then
+            syx_count=0
+            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/dexed/banks"
+            for syx in "$syx_path"/*.syx "$syx_path"/*.SYX; do
+                if [ -f "$syx" ]; then
+                    echo "  Copying $(basename "$syx")..."
+                    $scp_ableton "$syx" "$username@$hostname:./move-anything/modules/sound_generators/dexed/banks/"
+                    syx_count=$((syx_count + 1))
+                fi
+            done
+            if [ $syx_count -gt 0 ]; then
+                echo "  Copied $syx_count patch bank(s)"
+            else
+                echo "  No .syx files found in $syx_path"
+            fi
+        else
+            echo "  Directory not found: $syx_path"
+        fi
+    fi
+
     echo
     echo "Asset copy complete."
     if [ -z "$install_mode" ]; then
-        echo "Note: Install Mini-JV and/or SF2 via the Module Store to use these assets."
+        echo "Note: Install the modules via the Module Store to use these assets."
     fi
 fi
 
