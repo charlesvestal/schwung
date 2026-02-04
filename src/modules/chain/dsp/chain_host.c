@@ -5800,6 +5800,42 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     }
 }
 
+/*
+ * Find parameter metadata by target and key.
+ */
+static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target, const char *key) {
+    if (strcmp(target, "synth") == 0) {
+        for (int i = 0; i < inst->synth_param_count; i++) {
+            if (strcmp(inst->synth_params[i].key, key) == 0) {
+                return &inst->synth_params[i];
+            }
+        }
+    } else if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
+            for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
+                if (strcmp(inst->fx_params[fx_slot][i].key, key) == 0) {
+                    return &inst->fx_params[fx_slot][i];
+                }
+            }
+        }
+    } else if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;  /* Default to slot 0 */
+        if (target[7] != '\0') {
+            /* Parse midi_fx1, midi_fx2, etc. */
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
+            for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
+                if (strcmp(inst->midi_fx_params[midi_fx_slot][i].key, key) == 0) {
+                    return &inst->midi_fx_params[midi_fx_slot][i];
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
 /* V2 get_param handler */
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
@@ -5917,13 +5953,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         return snprintf(buf, buf_len, "%s", param);
                     }
                     else if (strcmp(query_param, "value") == 0) {
-                        /* If enum, return option label */
-                        if (pinfo && pinfo->type == KNOB_TYPE_ENUM && pinfo->option_count > 0) {
-                            int idx = (int)(inst->knob_mappings[i].current_value + 0.5f);
-                            if (idx < 0) idx = 0;
-                            if (idx >= pinfo->option_count) idx = pinfo->option_count - 1;
-                            return snprintf(buf, buf_len, "%s", pinfo->options[idx]);
+                        /* Look up param metadata */
+                        chain_param_info_t *param_info = find_param_by_key(inst, target, param);
+                        if (param_info) {
+                            /* Use centralized formatting */
+                            return format_param_value(param_info, inst->knob_mappings[i].current_value, buf, buf_len);
                         }
+                        /* Fallback for params without metadata */
                         if (pinfo && pinfo->type == KNOB_TYPE_INT) {
                             return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].current_value);
                         } else {
