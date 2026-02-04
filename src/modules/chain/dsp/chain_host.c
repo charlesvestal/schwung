@@ -1665,6 +1665,64 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
 }
 
 /*
+ * Parse params array from a single level.
+ * Recursively processes nested levels if needed.
+ */
+static int parse_level_params(const char *level_json, chain_param_info_t *out_params, int *param_count, int max_params) {
+    /* Find params array in this level */
+    const char *params = strstr(level_json, "\"params\"");
+    if (!params) return 0;
+
+    params = strchr(params, '[');
+    if (!params) return 0;
+    params++;
+
+    /* Iterate through params array */
+    const char *param_start = params;
+    while (*param_count < max_params) {
+        /* Skip whitespace */
+        while (*param_start == ' ' || *param_start == '\t' || *param_start == '\n') param_start++;
+
+        /* Check for end of array */
+        if (*param_start == ']') break;
+
+        /* Check if this is an object */
+        if (*param_start == '{') {
+            /* Find end of this object */
+            int brace_depth = 0;
+            const char *param_end = param_start;
+            do {
+                if (*param_end == '{') brace_depth++;
+                if (*param_end == '}') brace_depth--;
+                param_end++;
+            } while (brace_depth > 0 && *param_end);
+
+            /* Check if this is a navigation item (has "level" key) or param definition (has "type" key) */
+            if (json_object_has_key(param_start, "type")) {
+                /* This is a param definition - parse it */
+                if (parse_param_object(param_start, &out_params[*param_count]) == 0) {
+                    (*param_count)++;
+                }
+            }
+            /* Skip navigation items (they don't define params) */
+
+            param_start = param_end;
+        } else if (*param_start == '"') {
+            /* String reference - skip (already defined elsewhere) */
+            param_start = strchr(param_start + 1, '"');
+            if (param_start) param_start++;
+        }
+
+        /* Skip comma */
+        param_start = strchr(param_start, ',');
+        if (!param_start) break;
+        param_start++;
+    }
+
+    return 0;
+}
+
+/*
  * Parse parameters from ui_hierarchy structure.
  * Extracts param definitions from shared_params and all levels.
  */
@@ -1722,7 +1780,38 @@ static int parse_hierarchy_params(const char *json, chain_param_info_t *out_para
         }
     }
 
-    /* TODO: Parse params from levels */
+    /* Parse params from all levels */
+    const char *levels = strstr(hierarchy, "\"levels\"");
+    if (levels) {
+        levels = strchr(levels, '{');
+        if (levels) {
+            levels++;
+
+            /* Iterate through each level object */
+            const char *level_start = levels;
+            while (param_count < max_params) {
+                /* Skip to next level definition */
+                level_start = strchr(level_start, '{');
+                if (!level_start) break;
+
+                /* Find end of this level */
+                int brace_depth = 0;
+                const char *level_end = level_start;
+                do {
+                    if (*level_end == '{') brace_depth++;
+                    if (*level_end == '}') brace_depth--;
+                    level_end++;
+                } while (brace_depth > 0 && *level_end);
+
+                /* Parse params from this level */
+                parse_level_params(level_start, out_params, &param_count, max_params);
+
+                /* Check if we've reached end of levels object */
+                level_start = level_end;
+                if (*level_start == '}') break;
+            }
+        }
+    }
 
     return param_count;
 }
