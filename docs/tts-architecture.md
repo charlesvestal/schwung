@@ -443,3 +443,18 @@ This architecture provides robust, accessible TTS with:
 - **Clean separation** (3 threads: D-Bus, audio, synthesis)
 - **Reliable buffering** (4-second ring buffer)
 - **Production quality** (tested on Move hardware)
+
+## Acknowledgments
+
+This TTS system uses **Flite** (Festival-Lite), a lightweight speech synthesis engine developed by Carnegie Mellon University.
+
+**Flite** is distributed under a BSD-style permissive license:
+- Copyright (c) 1999-2016 Language Technologies Institute, Carnegie Mellon University
+- Website: http://cmuflite.org
+- See [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md) for full license text
+
+Flite was chosen for its:
+- Small footprint (410KB libraries + voice data)
+- Embedded-friendly design
+- Minimal dependencies
+- Reliable performance on ARM platforms

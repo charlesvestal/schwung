@@ -1,6 +1,11 @@
 /*
  * TTS Engine - Flite wrapper for on-device text-to-speech
  * Using Flite instead of espeak-ng for better embedded compatibility
+ *
+ * Uses Flite (Festival-Lite) from Carnegie Mellon University
+ * Copyright (c) 1999-2016 Language Technologies Institute, Carnegie Mellon University
+ * Flite is licensed under a BSD-style permissive license
+ * See THIRD_PARTY_LICENSES.md for details
  */
 
 #include "tts_engine.h"
