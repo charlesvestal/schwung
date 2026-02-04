@@ -1770,10 +1770,17 @@ static JSValue js_host_announce_screenreader(JSContext *ctx, JSValueConst this_v
             PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
         if (shm != MAP_FAILED) {
-            /* Write text and toggle ready flag */
+            /* Write text and update sequence */
             strncpy(shm->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
             shm->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
-            shm->ready = !shm->ready;  /* Toggle to signal new announcement */
+
+            /* Get current time in milliseconds */
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            shm->timestamp_ms = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
+
+            /* Increment sequence to signal new message */
+            shm->sequence++;
 
             munmap(shm, sizeof(shadow_screenreader_t));
         }

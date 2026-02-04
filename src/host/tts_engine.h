@@ -1,5 +1,5 @@
 /*
- * TTS Engine - espeak-ng wrapper for on-device text-to-speech
+ * TTS Engine - Flite wrapper for on-device text-to-speech
  */
 
 #ifndef TTS_ENGINE_H
@@ -35,5 +35,20 @@ void tts_set_speed(float speed);
 
 /* Set TTS pitch in Hz (range: 80-180, typical: 110) */
 void tts_set_pitch(float pitch_hz);
+
+/* Enable or disable TTS */
+void tts_set_enabled(bool enabled);
+
+/* Get TTS enabled state */
+bool tts_get_enabled(void);
+
+/* Get TTS volume */
+int tts_get_volume(void);
+
+/* Get TTS speed */
+float tts_get_speed(void);
+
+/* Get TTS pitch */
+float tts_get_pitch(void);
 
 #endif /* TTS_ENGINE_H */

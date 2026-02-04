@@ -392,6 +392,10 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "voiceover_enabled", label: "VoiceOver", type: "bool" },
+    { key: "voiceover_speed", label: "Voice Speed", type: "float", min: 0.5, max: 2.0, step: 0.1 },
+    { key: "voiceover_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
+    { key: "voiceover_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
     { key: "save", label: "[Save]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -4059,6 +4063,82 @@ function adjustSlotSetting(slot, setting, delta) {
     setSlotParam(slot, setting.key, newVal);
 }
 
+/* Get Master FX setting current value for display */
+function getMasterFxSettingValue(setting) {
+    if (setting.key === "master_volume") {
+        const val = shadow_get_param(0, "master_fx:volume");
+        if (!val) return "100%";
+        const num = parseFloat(val);
+        return isNaN(num) ? val : `${Math.round(num * 100)}%`;
+    }
+    if (setting.key === "voiceover_enabled") {
+        return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
+    }
+    if (setting.key === "voiceover_speed") {
+        if (typeof tts_get_speed === "function") {
+            return tts_get_speed().toFixed(1) + "x";
+        }
+        return "1.0x";
+    }
+    if (setting.key === "voiceover_pitch") {
+        if (typeof tts_get_pitch === "function") {
+            return Math.round(tts_get_pitch()) + " Hz";
+        }
+        return "110 Hz";
+    }
+    if (setting.key === "voiceover_volume") {
+        if (typeof tts_get_volume === "function") {
+            return tts_get_volume() + "%";
+        }
+        return "70%";
+    }
+    return "-";
+}
+
+/* Adjust Master FX setting value by delta */
+function adjustMasterFxSetting(setting, delta) {
+    if (setting.type === "action") return;
+
+    if (setting.key === "master_volume") {
+        let val = parseFloat(shadow_get_param(0, "master_fx:volume") || "1.0");
+        val += delta * setting.step;
+        val = Math.max(setting.min, Math.min(setting.max, val));
+        shadow_set_param(0, "master_fx:volume", val.toFixed(2));
+        return;
+    }
+
+    if (setting.key === "voiceover_enabled" && typeof tts_set_enabled === "function") {
+        /* Toggle boolean */
+        const current = typeof tts_get_enabled === "function" ? tts_get_enabled() : true;
+        tts_set_enabled(!current);
+        return;
+    }
+
+    if (setting.key === "voiceover_speed" && typeof tts_set_speed === "function") {
+        let val = typeof tts_get_speed === "function" ? tts_get_speed() : 1.0;
+        val += delta * setting.step;
+        val = Math.max(setting.min, Math.min(setting.max, val));
+        tts_set_speed(val);
+        return;
+    }
+
+    if (setting.key === "voiceover_pitch" && typeof tts_set_pitch === "function") {
+        let val = typeof tts_get_pitch === "function" ? tts_get_pitch() : 110.0;
+        val += delta * setting.step;
+        val = Math.max(setting.min, Math.min(setting.max, val));
+        tts_set_pitch(val);
+        return;
+    }
+
+    if (setting.key === "voiceover_volume" && typeof tts_set_volume === "function") {
+        let val = typeof tts_get_volume === "function" ? tts_get_volume() : 70;
+        val += delta * setting.step;
+        val = Math.max(setting.min, Math.min(setting.max, val));
+        tts_set_volume(Math.round(val));
+        return;
+    }
+}
+
 /* Update the focused slot in shared memory for knob CC routing */
 function updateFocusedSlot(slot) {
     if (typeof shadow_set_focused_slot === "function") {
@@ -4122,14 +4202,16 @@ function handleJog(delta) {
                 if (editingMasterFxSetting) {
                     /* Adjust value */
                     const item = items[selectedMasterFxSetting];
-                    if (item.type === "float" || item.type === "int") {
-                        /* TODO: adjust master volume */
-                        announceParameter(item.label, item.value || "");
+                    if (item.type === "float" || item.type === "int" || item.type === "bool") {
+                        adjustMasterFxSetting(item, delta);
+                        const newVal = getMasterFxSettingValue(item);
+                        announceParameter(item.label, newVal);
                     }
                 } else {
                     selectedMasterFxSetting = Math.max(0, Math.min(items.length - 1, selectedMasterFxSetting + delta));
                     const item = items[selectedMasterFxSetting];
-                    announceMenuItem(item.label, item.value || "");
+                    const value = getMasterFxSettingValue(item);
+                    announceMenuItem(item.label, value);
                 }
             } else if (selectingMasterFxModule) {
                 /* Navigate module list */
@@ -4390,6 +4472,11 @@ function handleSelect() {
                 const item = items[selectedMasterFxSetting];
                 if (item.type === "action") {
                     handleMasterFxSettingsAction(item.key);
+                } else if (item.type === "bool") {
+                    /* Toggle boolean value immediately */
+                    adjustMasterFxSetting(item, 1);
+                    const newVal = getMasterFxSettingValue(item);
+                    announceParameter(item.label, newVal);
                 } else if (item.type === "float" || item.type === "int") {
                     /* Toggle value editing */
                     editingMasterFxSetting = !editingMasterFxSetting;
@@ -5977,12 +6064,10 @@ function drawMasterFxSettingsMenu() {
     drawMenuList({
         items: items,
         selectedIndex: selectedMasterFxSetting,
-        getLabel: (item) => {
-            if (item.type === "action") {
-                return item.label;
-            }
-            /* For volume, show current value */
-            return item.label;
+        getLabel: (item) => item.label,
+        getValue: (item) => {
+            if (item.type === "action") return "";
+            return getMasterFxSettingValue(item);
         },
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
     });

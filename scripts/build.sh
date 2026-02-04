@@ -93,6 +93,7 @@ mkdir -p ./build/shadow/
 echo "Building Shadow UI..."
 
 # Build Shadow UI host (uses shared display bindings from js_display.c)
+# TTS settings are written to shared memory, actual TTS happens in shim
 "${CROSS_PREFIX}gcc" -g -O3 \
     src/shadow/shadow_ui.c \
     src/host/js_display.c \
@@ -216,15 +217,7 @@ else
     echo "Warning: libs/curl/curl not found - store module will not work without it"
 fi
 
-# Bundle espeak-ng data for self-contained TTS
-if [ -d "/usr/lib/aarch64-linux-gnu/espeak-ng-data" ]; then
-    echo "Bundling espeak-ng voice data..."
-    mkdir -p ./build/espeak-data
-    cp -r /usr/lib/aarch64-linux-gnu/espeak-ng-data/* ./build/espeak-data/
-    echo "espeak-ng-data bundled"
-elif [ ! -d "./build/espeak-data" ]; then
-    echo "Warning: espeak-ng-data not found - TTS will not work"
-fi
+# Flite voice data is built into the Flite libraries - no separate data directory needed
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"

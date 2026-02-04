@@ -103,7 +103,6 @@ static uint8_t shadow_display_mode = 0;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
-
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 
 static void launch_shadow_ui(void);
@@ -1217,9 +1216,12 @@ static void shadow_dbus_handle_text(const char *text)
 
     /* Write screen reader text to shared memory for TTS */
     if (shadow_screenreader_shm) {
-        strncpy(shadow_screenreader_shm->text, text, sizeof(shadow_screenreader_shm->text) - 1);
-        shadow_screenreader_shm->text[sizeof(shadow_screenreader_shm->text) - 1] = '\0';
-        shadow_screenreader_shm->sequence++;  /* Increment to signal new message */
+        /* Only increment sequence if text has actually changed (avoid duplicate increments) */
+        if (strncmp(shadow_screenreader_shm->text, text, sizeof(shadow_screenreader_shm->text) - 1) != 0) {
+            strncpy(shadow_screenreader_shm->text, text, sizeof(shadow_screenreader_shm->text) - 1);
+            shadow_screenreader_shm->text[sizeof(shadow_screenreader_shm->text) - 1] = '\0';
+            shadow_screenreader_shm->sequence++;  /* Increment to signal new message */
+        }
     }
 
     /* Check if it's a Set name (e.g. "Set 1", "Set 28") - read tempo from Song.abl */
@@ -4630,7 +4632,6 @@ static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
-static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Screen reader announcements */
 static uint8_t last_shadow_midi_out_ready = 0;
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -4788,6 +4789,11 @@ static void init_shadow_shm(void)
             shadow_control->ui_flags = 0;
             shadow_control->ui_patch_index = 0;
             shadow_control->ui_request_id = 0;
+            /* Initialize TTS defaults */
+            shadow_control->tts_enabled = 1;    /* VoiceOver on by default */
+            shadow_control->tts_volume = 70;    /* 70% volume */
+            shadow_control->tts_pitch = 110;    /* 110 Hz */
+            shadow_control->tts_speed = 1.0f;   /* Normal speed */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -4951,6 +4957,14 @@ static void shadow_check_screenreader(void)
 
     /* Check if debounce period has elapsed and we have a pending message */
     if (has_pending_message && (now_ms - last_message_time_ms >= TTS_DEBOUNCE_MS)) {
+        /* Apply TTS settings from shared memory before speaking */
+        if (shadow_control) {
+            tts_set_enabled(shadow_control->tts_enabled != 0);
+            tts_set_volume(shadow_control->tts_volume);
+            tts_set_speed(shadow_control->tts_speed);
+            tts_set_pitch((float)shadow_control->tts_pitch);
+        }
+
         /* Speak the buffered message */
         unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Speaking (debounced): '%s'", pending_tts_message);
         if (tts_speak(pending_tts_message)) {
@@ -4979,6 +4993,11 @@ static void shadow_mix_audio(void)
         tts_test_frame_count++;
         if (tts_test_frame_count == 1035) {  /* ~3 seconds at 44.1kHz, 128 frames/block */
             printf("TTS test: Speaking test phrase...\n");
+            /* Apply TTS settings before test phrase */
+            tts_set_enabled(shadow_control->tts_enabled != 0);
+            tts_set_volume(shadow_control->tts_volume);
+            tts_set_speed(shadow_control->tts_speed);
+            tts_set_pitch((float)shadow_control->tts_pitch);
             tts_speak("Text to speech is working");
             tts_test_done = true;
         }
@@ -5233,14 +5252,17 @@ static void shadow_inject_ui_midi_out(void) {
 
 /* Check for and send screen reader announcements via D-Bus */
 static void shadow_check_screenreader_announcements(void) {
-    static uint8_t last_screenreader_ready = 0;
+    static uint32_t last_announcement_sequence = 0;
 
     if (!shadow_screenreader_shm) return;
-    if (shadow_screenreader_shm->ready == last_screenreader_ready) return;
 
-    last_screenreader_ready = shadow_screenreader_shm->ready;
+    /* Check if there's a new message (sequence incremented) */
+    uint32_t current_sequence = shadow_screenreader_shm->sequence;
+    if (current_sequence == last_announcement_sequence) return;
 
-    /* Queue announcement */
+    last_announcement_sequence = current_sequence;
+
+    /* Queue announcement for D-Bus broadcast */
     if (shadow_screenreader_shm->text[0]) {
         send_screenreader_announcement(shadow_screenreader_shm->text);
         /* Inject immediately - don't wait for Move's next D-Bus activity */

@@ -13,6 +13,12 @@
 export function announce(text) {
     if (!text || typeof text !== 'string') return;
 
+    /* Only announce when Shadow UI is actually visible (display_mode == 1) */
+    if (typeof shadow_get_display_mode !== 'undefined') {
+        const display_mode = shadow_get_display_mode();
+        if (display_mode !== 1) return;  /* Shadow UI not visible, suppress announcement */
+    }
+
     /* Call the host's screen reader function if available */
     if (typeof host_send_screenreader !== 'undefined') {
         host_send_screenreader(text);

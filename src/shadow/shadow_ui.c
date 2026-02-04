@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -281,6 +282,15 @@ static JSValue js_shadow_get_shift_held(JSContext *ctx, JSValueConst this_val, i
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
     return JS_NewInt32(ctx, shadow_control->shift_held);
+}
+
+/* shadow_get_display_mode() -> int
+ * Returns 0 if Move's UI is visible, 1 if Shadow UI is visible
+ */
+static JSValue js_shadow_get_display_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->display_mode);
 }
 
 /* shadow_set_overtake_mode(mode) -> void
@@ -964,6 +974,105 @@ static JSValue js_host_send_screenreader(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* tts_set_enabled(enabled) - Write to shared memory */
+static JSValue js_tts_set_enabled(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->tts_enabled = enabled ? 1 : 0;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_enabled() -> bool - Read from shared memory */
+static JSValue js_tts_get_enabled(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, true);
+    return JS_NewBool(ctx, shadow_control->tts_enabled != 0);
+}
+
+/* tts_set_speed(speed) - Write to shared memory */
+static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    double speed = 0;
+    JS_ToFloat64(ctx, &speed, argv[0]);
+
+    /* Clamp to valid range */
+    if (speed < 0.5) speed = 0.5;
+    if (speed > 2.0) speed = 2.0;
+
+    shadow_control->tts_speed = (float)speed;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_speed() -> float - Read from shared memory */
+static JSValue js_tts_get_speed(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewFloat64(ctx, 1.0);
+    return JS_NewFloat64(ctx, (double)shadow_control->tts_speed);
+}
+
+/* tts_set_pitch(pitch_hz) - Write to shared memory */
+static JSValue js_tts_set_pitch(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    double pitch = 0;
+    JS_ToFloat64(ctx, &pitch, argv[0]);
+
+    /* Clamp to valid range */
+    if (pitch < 80.0) pitch = 80.0;
+    if (pitch > 180.0) pitch = 180.0;
+
+    shadow_control->tts_pitch = (uint16_t)pitch;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_pitch() -> float - Read from shared memory */
+static JSValue js_tts_get_pitch(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewFloat64(ctx, 110.0);
+    return JS_NewFloat64(ctx, (double)shadow_control->tts_pitch);
+}
+
+/* tts_set_volume(volume) - Write to shared memory */
+static JSValue js_tts_set_volume(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int volume = 0;
+    JS_ToInt32(ctx, &volume, argv[0]);
+
+    /* Clamp to valid range */
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+
+    shadow_control->tts_volume = (uint8_t)volume;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_volume() -> int - Read from shared memory */
+static JSValue js_tts_get_volume(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 70);
+    return JS_NewInt32(ctx, shadow_control->tts_volume);
+}
+
 /* === End host functions === */
 
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -998,6 +1107,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_slot", JS_NewCFunction(ctx, js_shadow_get_ui_slot, "shadow_get_ui_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
@@ -1025,6 +1135,16 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_send_screenreader", JS_NewCFunction(ctx, js_host_send_screenreader, "host_send_screenreader", 1));
+
+    /* Register TTS control functions */
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_enabled", JS_NewCFunction(ctx, js_tts_set_enabled, "tts_set_enabled", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_enabled", JS_NewCFunction(ctx, js_tts_get_enabled, "tts_get_enabled", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_speed", JS_NewCFunction(ctx, js_tts_set_speed, "tts_set_speed", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_speed", JS_NewCFunction(ctx, js_tts_get_speed, "tts_get_speed", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_pitch", JS_NewCFunction(ctx, js_tts_set_pitch, "tts_set_pitch", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_pitch", JS_NewCFunction(ctx, js_tts_get_pitch, "tts_get_pitch", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_volume", JS_NewCFunction(ctx, js_tts_set_volume, "tts_set_volume", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_volume", JS_NewCFunction(ctx, js_tts_get_volume, "tts_get_volume", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 

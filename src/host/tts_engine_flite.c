@@ -22,6 +22,7 @@ extern cst_voice *register_cmu_us_kal(const char *voxdir);
 /* Forward declarations */
 static void* tts_synthesis_thread(void *arg);
 static void tts_load_config(void);
+static void tts_clear_buffer(void);
 
 /* Ring buffer for synthesized audio */
 #define RING_BUFFER_SIZE (44100 * 8)  /* 4 seconds at 44.1kHz stereo (8 = 4sec * 2ch) */
@@ -31,6 +32,7 @@ static int ring_read_pos = 0;
 static pthread_mutex_t ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool initialized = false;
+static bool tts_enabled = true;  /* VoiceOver on/off toggle */
 static int tts_volume = 70;  /* Default 70% volume */
 static float tts_speed = 1.0f;  /* Default speed (1.0 = normal, >1.0 = slower, <1.0 = faster) */
 static float tts_pitch = 110.0f;  /* Default pitch in Hz (typical range: 80-180) */
@@ -205,7 +207,8 @@ bool tts_init(int sample_rate) {
     }
 
     /* Apply voice parameters */
-    feat_set_float(voice->features, "duration_stretch", tts_speed);
+    /* Invert speed: user expects 2.0x = faster, but Flite duration_stretch 2.0 = slower */
+    feat_set_float(voice->features, "duration_stretch", 1.0f / tts_speed);
     feat_set_float(voice->features, "int_f0_target_mean", tts_pitch);
 
     /* Start background synthesis thread */
@@ -255,6 +258,11 @@ bool tts_speak(const char *text) {
         return false;
     }
 
+    /* Check if TTS is enabled */
+    if (!tts_enabled) {
+        return false;
+    }
+
     /* Lazy initialization - init on first use to avoid early crash */
     if (!initialized) {
         unified_log("tts_engine", LOG_LEVEL_INFO, "Lazy initializing TTS on first speak");
@@ -287,6 +295,11 @@ bool tts_is_speaking(void) {
 
 int tts_get_audio(int16_t *out_buffer, int max_frames) {
     if (!out_buffer || max_frames <= 0) {
+        return 0;
+    }
+
+    /* Don't output audio if TTS is disabled */
+    if (!tts_enabled) {
         return 0;
     }
 
@@ -331,22 +344,74 @@ void tts_set_speed(float speed) {
     /* Clamp to reasonable range: 0.5x to 2.0x */
     if (speed < 0.5f) speed = 0.5f;
     if (speed > 2.0f) speed = 2.0f;
+
+    unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS speed to %.2f (was %.2f)", speed, tts_speed);
     tts_speed = speed;
 
     /* Apply to voice if already initialized */
     if (initialized && voice) {
-        feat_set_float(voice->features, "duration_stretch", tts_speed);
+        /* Invert speed: user expects 2.0x = faster, but Flite duration_stretch 2.0 = slower */
+        feat_set_float(voice->features, "duration_stretch", 1.0f / tts_speed);
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Applied duration_stretch to voice");
+    } else {
+        unified_log("tts_engine", LOG_LEVEL_WARN, "Voice not initialized yet, will apply on init");
     }
+
+    /* Clear buffer so new setting takes effect on next announcement */
+    tts_clear_buffer();
 }
 
 void tts_set_pitch(float pitch_hz) {
     /* Clamp to reasonable range: 80Hz to 180Hz */
     if (pitch_hz < 80.0f) pitch_hz = 80.0f;
     if (pitch_hz > 180.0f) pitch_hz = 180.0f;
+
+    unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS pitch to %.1f Hz (was %.1f Hz)", pitch_hz, tts_pitch);
     tts_pitch = pitch_hz;
 
     /* Apply to voice if already initialized */
     if (initialized && voice) {
         feat_set_float(voice->features, "int_f0_target_mean", tts_pitch);
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Applied pitch to voice");
+    } else {
+        unified_log("tts_engine", LOG_LEVEL_WARN, "Voice not initialized yet, will apply on init");
     }
+
+    /* Clear buffer so new setting takes effect on next announcement */
+    tts_clear_buffer();
+}
+
+/* Clear the ring buffer (stops any ongoing speech immediately) */
+static void tts_clear_buffer(void) {
+    pthread_mutex_lock(&ring_mutex);
+    ring_read_pos = 0;
+    ring_write_pos = 0;
+    pthread_mutex_unlock(&ring_mutex);
+}
+
+void tts_set_enabled(bool enabled) {
+    unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS enabled to %s (was %s)",
+                enabled ? "ON" : "OFF", tts_enabled ? "ON" : "OFF");
+    tts_enabled = enabled;
+    /* Clear buffer when disabling to stop speech immediately */
+    if (!enabled) {
+        tts_clear_buffer();
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Cleared TTS buffer");
+    }
+}
+
+bool tts_get_enabled(void) {
+    return tts_enabled;
+}
+
+int tts_get_volume(void) {
+    return tts_volume;
+}
+
+float tts_get_speed(void) {
+    return tts_speed;
+}
+
+float tts_get_pitch(void) {
+    return tts_pitch;
 }
