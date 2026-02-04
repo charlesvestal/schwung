@@ -616,8 +616,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     echo "    jv880_waverom2.bin"
     echo "    expansions/           (optional SR-JV80 expansion .bin files)"
     echo
-    echo "Press ENTER to skip."
-    printf "ROM folder path: "
+    echo "(Press ENTER to skip)"
+    printf "Enter or drag folder path: "
     read -r rom_path </dev/tty
 
     if [ -n "$rom_path" ]; then
@@ -660,9 +660,9 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
 
     # SoundFonts
     echo
-    echo "SF2 SoundFonts: Enter the folder containing your .sf2 files"
-    echo "Press ENTER to skip."
-    printf "SoundFont folder path: "
+    echo "SF2 SoundFonts: Enter the folder containing your .sf2 files."
+    echo "(Press ENTER to skip)"
+    printf "Enter or drag folder path: "
     read -r sf2_path </dev/tty
 
     if [ -n "$sf2_path" ]; then
