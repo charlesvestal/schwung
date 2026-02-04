@@ -86,7 +86,8 @@ typedef struct shadow_control_t {
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
     volatile uint8_t shift_held;      /* Is shift button currently held? */
     volatile uint8_t overtake_mode;   /* 0=normal, 1=menu (UI events only), 2=module (all events) */
-    volatile uint8_t reserved[41];
+    volatile uint8_t restart_move;    /* Signal shim to restart Move (0=no, 1=restart) */
+    volatile uint8_t reserved[40];
 } shadow_control_t;
 
 /*

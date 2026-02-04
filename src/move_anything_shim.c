@@ -7009,6 +7009,16 @@ do_ioctl:
     }
 #endif
 
+    /* === POST-IOCTL: CHECK FOR RESTART REQUEST === */
+    /* Shadow UI can request a Move restart (e.g. after core update) */
+    if (shadow_control && shadow_control->restart_move) {
+        shadow_control->restart_move = 0;
+        shadow_control->should_exit = 1;  /* Tell shadow_ui to exit */
+        shadow_log("Restart requested by shadow UI — restarting Move");
+        usleep(500000);  /* 500ms for shadow_ui to exit cleanly */
+        launchChildAndKillThisProcess("/opt/move/Move", "Move", "");
+    }
+
 do_timing:
     /* === COMPREHENSIVE IOCTL TIMING CALCULATIONS === */
     clock_gettime(CLOCK_MONOTONIC, &ioctl_end);

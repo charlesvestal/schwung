@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <dirent.h>
 
@@ -305,6 +306,20 @@ static JSValue js_shadow_request_exit(JSContext *ctx, JSValueConst this_val, int
     (void)argv;
     if (shadow_control) {
         shadow_control->display_mode = 0;
+    }
+    return JS_UNDEFINED;
+}
+
+/* shadow_control_restart() -> void
+ * Signal the shim to restart Move (e.g. after a core update) */
+static JSValue js_shadow_control_restart(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)ctx;
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    if (shadow_control) {
+        shadow_control->restart_move = 1;
     }
     return JS_UNDEFINED;
 }
@@ -649,6 +664,99 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
     return (result == 0) ? JS_TRUE : JS_FALSE;
 }
 
+/* host_extract_tar_strip(tar_path, dest_dir, strip_components) -> bool
+ * Like host_extract_tar but with --strip-components for tarballs with a top-level dir */
+static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) {
+        return JS_FALSE;
+    }
+
+    const char *tar_path = JS_ToCString(ctx, argv[0]);
+    const char *dest_dir = JS_ToCString(ctx, argv[1]);
+    int strip = 0;
+    JS_ToInt32(ctx, &strip, argv[2]);
+
+    if (!tar_path || !dest_dir) {
+        if (tar_path) JS_FreeCString(ctx, tar_path);
+        if (dest_dir) JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate paths */
+    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
+        fprintf(stderr, "host_extract_tar_strip: invalid path(s)\n");
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate strip range */
+    if (strip < 0 || strip > 5) {
+        fprintf(stderr, "host_extract_tar_strip: invalid strip value: %d\n", strip);
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Build tar command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" --strip-components=%d 2>&1",
+             tar_path, dest_dir, strip);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, tar_path);
+    JS_FreeCString(ctx, dest_dir);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_system_cmd(cmd) -> int (exit code, -1 on error)
+ * Run a shell command with allowlist validation.
+ * Commands must start with an allowed prefix for safety. */
+static JSValue js_host_system_cmd(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) {
+        return JS_NewInt32(ctx, -1);
+    }
+
+    const char *cmd = JS_ToCString(ctx, argv[0]);
+    if (!cmd) {
+        return JS_NewInt32(ctx, -1);
+    }
+
+    /* Validate command starts with an allowed prefix */
+    static const char *allowed_prefixes[] = {
+        "tar ", "cp ", "mv ", "mkdir ", "rm ", "ls ", "test ", "chmod ", "sh ",
+        NULL
+    };
+
+    int allowed = 0;
+    for (int i = 0; allowed_prefixes[i]; i++) {
+        if (strncmp(cmd, allowed_prefixes[i], strlen(allowed_prefixes[i])) == 0) {
+            allowed = 1;
+            break;
+        }
+    }
+
+    if (!allowed) {
+        fprintf(stderr, "host_system_cmd: command not allowed: %.40s...\n", cmd);
+        JS_FreeCString(ctx, cmd);
+        return JS_NewInt32(ctx, -1);
+    }
+
+    int result = system(cmd);
+    JS_FreeCString(ctx, cmd);
+
+    if (result == -1) {
+        return JS_NewInt32(ctx, -1);
+    }
+    return JS_NewInt32(ctx, WEXITSTATUS(result));
+}
+
 /* host_remove_dir(path) -> bool */
 static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -669,9 +777,12 @@ static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Additional safety: must be within modules directory */
-    if (strncmp(path, MODULES_DIR, strlen(MODULES_DIR)) != 0) {
-        fprintf(stderr, "host_remove_dir: path must be within modules dir: %s\n", path);
+    /* Additional safety: must be within base directory (modules, staging, backup, tmp) */
+    if (strncmp(path, MODULES_DIR, strlen(MODULES_DIR)) != 0 &&
+        strncmp(path, BASE_DIR "/update-staging", strlen(BASE_DIR "/update-staging")) != 0 &&
+        strncmp(path, BASE_DIR "/update-backup", strlen(BASE_DIR "/update-backup")) != 0 &&
+        strncmp(path, BASE_DIR "/tmp", strlen(BASE_DIR "/tmp")) != 0) {
+        fprintf(stderr, "host_remove_dir: path not allowed: %s\n", path);
         JS_FreeCString(ctx, path);
         return JS_FALSE;
     }
@@ -964,6 +1075,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_control_restart", JS_NewCFunction(ctx, js_shadow_control_restart, "shadow_control_restart", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
@@ -983,6 +1095,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_write_file", JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_http_download", JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3));
+    JS_SetPropertyStr(ctx, global_obj, "host_system_cmd", JS_NewCFunction(ctx, js_host_system_cmd, "host_system_cmd", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ensure_dir", JS_NewCFunction(ctx, js_host_ensure_dir, "host_ensure_dir", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_list_modules", JS_NewCFunction(ctx, js_host_list_modules, "host_list_modules", 0));

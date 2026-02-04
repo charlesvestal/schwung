@@ -67,6 +67,7 @@ import {
     installModule as sharedInstallModule,
     removeModule as sharedRemoveModule,
     scanInstalledModules, getHostVersion, isNewerVersion,
+    fetchReleaseJsonQuick,
     CATEGORIES
 } from '/data/UserData/move-anything/shared/store_utils.mjs';
 
@@ -123,7 +124,9 @@ const VIEWS = {
     STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
     STORE_PICKER_POST_INSTALL: "storepickerpostinstall",  // Store: post-install message
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
-    OVERTAKE_MODULE: "overtakemodule" // Running an overtake module
+    OVERTAKE_MODULE: "overtakemodule", // Running an overtake module
+    UPDATE_PROMPT: "updateprompt",    // Startup update prompt (updates available)
+    UPDATE_RESTART: "updaterestart"   // Restart prompt after core update
 };
 
 /* Special action key for swap module option */
@@ -178,6 +181,15 @@ let overtakeModuleLoaded = false; // True if an overtake module is running
 let overtakeModulePath = "";      // Path to loaded overtake module
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
 let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
+
+/* Auto-update state */
+let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
+let startupUpdateCheckPending = false;
+let startupUpdateCheckTick = 0;
+let pendingUpdates = [];              // Updates found on startup
+let pendingUpdateIndex = 0;           // Selected update in prompt
+let updateRestartFromVersion = '';    // For restart prompt display
+let updateRestartToVersion = '';
 
 /* Host-side tracking for Shift+Vol+Jog escape (redundant with shim, but ensures escape always works) */
 let hostVolumeKnobTouched = false;
@@ -350,6 +362,7 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "auto_update_check", label: "Auto-Update", type: "bool" },
     { key: "save", label: "[Save]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -437,6 +450,203 @@ function getHostUpdateModule() {
         component_type: "core",
         _isHostUpdate: true
     };
+}
+
+/* Perform a staged core update with verification and backup.
+ * Returns { success: bool, error: string? } */
+function performCoreUpdate(mod) {
+    const BASE = '/data/UserData/move-anything';
+    const TMP = BASE + '/tmp';
+    const STAGING = BASE + '/update-staging';
+    const BACKUP = BASE + '/update-backup';
+    const tarPath = TMP + '/move-anything.tar.gz';
+
+    /* Required files that must exist after extraction */
+    const REQUIRED_FILES = [
+        'move-anything',
+        'move-anything-shim.so',
+        'host/version.txt',
+        'shadow/shadow_ui.js'
+    ];
+
+    /* Helper to show status on display */
+    function setStatus(msg) {
+        clear_screen();
+        drawStatusOverlay('Core Update', msg);
+        host_flush_display();
+    }
+
+    /* --- Phase 1: Download --- */
+    setStatus('Downloading...');
+
+    host_ensure_dir(TMP);
+    const downloadOk = host_http_download(mod.download_url, tarPath);
+    if (!downloadOk) {
+        host_system_cmd('rm -f "' + tarPath + '"');
+        return { success: false, error: 'Download failed' };
+    }
+
+    /* --- Phase 2: Verify tarball --- */
+    setStatus('Verifying...');
+
+    const listOk = host_system_cmd('tar -tzf "' + tarPath + '" > /dev/null 2>&1');
+    if (listOk !== 0) {
+        host_system_cmd('rm -f "' + tarPath + '"');
+        return { success: false, error: 'Bad archive' };
+    }
+
+    /* --- Phase 3: Extract to staging --- */
+    setStatus('Extracting...');
+
+    host_remove_dir(STAGING);
+    host_ensure_dir(STAGING);
+
+    const extractOk = host_extract_tar_strip(tarPath, STAGING, 1);
+    if (!extractOk) {
+        host_remove_dir(STAGING);
+        host_system_cmd('rm -f "' + tarPath + '"');
+        return { success: false, error: 'Extract failed' };
+    }
+
+    /* --- Phase 4: Verify staging --- */
+    let allPresent = true;
+    for (const f of REQUIRED_FILES) {
+        if (!host_file_exists(STAGING + '/' + f)) {
+            allPresent = false;
+            break;
+        }
+    }
+    if (!allPresent) {
+        host_remove_dir(STAGING);
+        host_system_cmd('rm -f "' + tarPath + '"');
+        return { success: false, error: 'Incomplete update' };
+    }
+
+    /* --- Phase 5: Backup current files --- */
+    setStatus('Backing up...');
+
+    host_remove_dir(BACKUP);
+    host_ensure_dir(BACKUP);
+    host_system_cmd('cp "' + BASE + '/move-anything" "' + BACKUP + '/"');
+    host_system_cmd('cp "' + BASE + '/move-anything-shim.so" "' + BACKUP + '/"');
+    host_system_cmd('cp -r "' + BASE + '/shadow" "' + BACKUP + '/"');
+    host_system_cmd('cp -r "' + BASE + '/host" "' + BACKUP + '/"');
+
+    /* Write restore script */
+    const restoreScript = '#!/bin/sh\n'
+        + 'cd "' + BASE + '"\n'
+        + 'cp "' + BACKUP + '/move-anything" .\n'
+        + 'cp "' + BACKUP + '/move-anything-shim.so" .\n'
+        + 'cp -r "' + BACKUP + '/shadow" .\n'
+        + 'cp -r "' + BACKUP + '/host" .\n'
+        + 'echo "Restored. Restart Move to apply."\n';
+    host_write_file(BASE + '/restore-update.sh', restoreScript);
+    host_system_cmd('chmod +x "' + BASE + '/restore-update.sh"');
+
+    /* --- Phase 6: Apply staged files --- */
+    setStatus('Installing...');
+
+    const applyOk = host_system_cmd('cp -r "' + STAGING + '/"* "' + BASE + '/"');
+    if (applyOk !== 0) {
+        /* Attempt restore from backup */
+        host_system_cmd('sh "' + BASE + '/restore-update.sh"');
+        host_remove_dir(STAGING);
+        return { success: false, error: 'Install failed (restored)' };
+    }
+
+    /* --- Phase 7: Cleanup --- */
+    host_remove_dir(STAGING);
+    host_system_cmd('rm -f "' + tarPath + '"');
+
+    return { success: true };
+}
+
+/* Check for core and module updates (called on startup if auto-update enabled) */
+function checkForUpdatesInBackground() {
+    const updates = [];
+
+    /* Check core update */
+    storeHostVersion = getHostVersion();
+    const coreRelease = fetchReleaseJsonQuick('charlesvestal/move-anything');
+    if (coreRelease && isNewerVersion(coreRelease.version, storeHostVersion)) {
+        updates.push({
+            id: '__core_update__',
+            name: 'Core',
+            from: storeHostVersion,
+            to: coreRelease.version,
+            _isHostUpdate: true,
+            download_url: coreRelease.download_url,
+            latest_version: coreRelease.version
+        });
+    }
+
+    /* Check module updates */
+    const installed = scanInstalledModules();
+    const catalogResult = fetchCatalog(() => {});
+    if (catalogResult.success) {
+        for (const mod of catalogResult.catalog.modules || []) {
+            const status = getModuleStatus(mod, installed);
+            if (status.installed && status.hasUpdate) {
+                updates.push({
+                    name: mod.name,
+                    from: status.installedVersion,
+                    to: mod.latest_version,
+                    ...mod
+                });
+            }
+        }
+    }
+
+    if (updates.length > 0) {
+        pendingUpdates = updates;
+        pendingUpdateIndex = 0;
+        view = VIEWS.UPDATE_PROMPT;
+        needsRedraw = true;
+    }
+}
+
+/* Process all pending updates (Update All action) */
+function processAllUpdates() {
+    let coreUpdated = false;
+    let coreFrom = '';
+    let coreTo = '';
+    let moduleCount = 0;
+
+    for (const upd of pendingUpdates) {
+        if (upd._isHostUpdate) {
+            const result = performCoreUpdate(upd);
+            if (result.success) {
+                coreUpdated = true;
+                coreFrom = upd.from;
+                coreTo = upd.to;
+            } else {
+                /* Show error and stop */
+                storePickerMessage = result.error || 'Core update failed';
+                view = VIEWS.STORE_PICKER_RESULT;
+                needsRedraw = true;
+                return;
+            }
+        } else {
+            const result = sharedInstallModule(upd, storeHostVersion);
+            if (result.success) {
+                moduleCount++;
+            }
+        }
+    }
+
+    pendingUpdates = [];
+
+    if (coreUpdated) {
+        updateRestartFromVersion = coreFrom;
+        updateRestartToVersion = coreTo;
+        view = VIEWS.UPDATE_RESTART;
+        needsRedraw = true;
+    } else if (moduleCount > 0) {
+        storeInstalledModules = scanInstalledModules();
+        storePickerMessage = 'Updated ' + moduleCount + ' module' + (moduleCount > 1 ? 's' : '');
+        view = VIEWS.STORE_PICKER_RESULT;
+        needsRedraw = true;
+    }
 }
 
 /* Chain settings (shown when Settings component is selected) */
@@ -2202,6 +2412,37 @@ function saveMasterFxChainConfig() {
     }
 }
 
+/* Save auto-update setting to shadow config */
+function saveAutoUpdateConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+        config.auto_update_check = autoUpdateCheckEnabled;
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {
+        /* Ignore errors */
+    }
+}
+
+/* Load auto-update setting from config */
+function loadAutoUpdateConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+        const config = JSON.parse(content);
+        if (config.auto_update_check !== undefined) {
+            autoUpdateCheckEnabled = config.auto_update_check;
+        }
+    } catch (e) {
+        /* Ignore errors - default to enabled */
+    }
+}
+
 /* Load master FX chain from config at startup */
 function loadMasterFxChainFromConfig() {
     try {
@@ -2377,9 +2618,12 @@ function fetchStoreCatalogSync() {
     if (result.success) {
         storeCatalog = result.catalog;
         storePickerModules = getModulesForCategory(storeCatalog, storePickerCategory);
-        /* Note: Core updates are not shown in shadow mode store picker.
-         * Use the standalone Module Store to update the core.
-         * This avoids the complexity of updating while running. */
+        /* Prepend core update if available */
+        storeHostVersion = getHostVersion();
+        const hostUpdate = getHostUpdateModule();
+        if (hostUpdate) {
+            storePickerModules = [hostUpdate, ...storePickerModules];
+        }
         view = VIEWS.STORE_PICKER_LIST;
     } else {
         storePickerMessage = result.error || 'Failed to load catalog';
@@ -2438,30 +2682,22 @@ function handleStorePickerDetailSelect() {
     host_flush_display();
 
     let result;
-    /* Note: Core updates are disabled in shadow mode store picker.
-     * Use the standalone Module Store (Shift+Vol+Knob8) for core updates.
-     * This host update code path is kept for future reference. */
     if (mod._isHostUpdate) {
-        const tarPath = '/data/UserData/move-anything/tmp/move-anything.tar.gz';
-        const downloadOk = globalThis.host_http_download(mod.download_url, tarPath);
-        if (downloadOk) {
-            const extractOk = globalThis.host_extract_tar_strip(tarPath, '/data/UserData/move-anything', 1);
-            if (extractOk) {
-                result = { success: true };
-            } else {
-                result = { success: false, error: 'Extract failed' };
-            }
-        } else {
-            result = { success: false, error: 'Download failed' };
-        }
+        /* Staged core update with verification and backup */
+        result = performCoreUpdate(mod);
     } else {
         result = sharedInstallModule(mod, storeHostVersion);
     }
 
     if (result.success) {
         storeInstalledModules = scanInstalledModules();
-        /* Check for post_install message */
-        if (mod.post_install) {
+        if (mod._isHostUpdate) {
+            /* Core update succeeded - show restart prompt */
+            updateRestartFromVersion = storeHostVersion;
+            updateRestartToVersion = mod.latest_version;
+            view = VIEWS.UPDATE_RESTART;
+        } else if (mod.post_install) {
+            /* Check for post_install message */
             storePostInstallLines = wrapText(mod.post_install, 18);
             view = VIEWS.STORE_PICKER_POST_INSTALL;
         } else {
@@ -4146,6 +4382,12 @@ function handleJog(delta) {
                 knobParamPickerIndex = Math.max(0, Math.min(knobParamPickerParams.length - 1, knobParamPickerIndex + delta));
             }
             break;
+        case VIEWS.UPDATE_PROMPT:
+            pendingUpdateIndex = Math.max(0, Math.min(pendingUpdates.length - 1, pendingUpdateIndex + delta));
+            break;
+        case VIEWS.UPDATE_RESTART:
+            /* No jog navigation needed */
+            break;
         case VIEWS.OVERTAKE_MENU:
             selectedOvertakeModule += delta;
             if (selectedOvertakeModule < 0) selectedOvertakeModule = 0;
@@ -4257,6 +4499,12 @@ function handleSelect() {
                 const item = items[selectedMasterFxSetting];
                 if (item.type === "action") {
                     handleMasterFxSettingsAction(item.key);
+                } else if (item.type === "bool") {
+                    /* Toggle boolean setting */
+                    if (item.key === "auto_update_check") {
+                        autoUpdateCheckEnabled = !autoUpdateCheckEnabled;
+                        saveAutoUpdateConfig();
+                    }
                 } else if (item.type === "float" || item.type === "int") {
                     /* Toggle value editing */
                     editingMasterFxSetting = !editingMasterFxSetting;
@@ -4711,6 +4959,16 @@ function handleSelect() {
                 }
             }
             break;
+        case VIEWS.UPDATE_PROMPT:
+            /* Update All */
+            processAllUpdates();
+            break;
+        case VIEWS.UPDATE_RESTART:
+            /* Restart now */
+            if (typeof shadow_control_restart === "function") {
+                shadow_control_restart();
+            }
+            break;
         case VIEWS.OVERTAKE_MENU:
             /* Select and load the overtake module */
             if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
@@ -4949,6 +5207,17 @@ function handleBack() {
                 view = VIEWS.KNOB_EDITOR;
                 needsRedraw = true;
             }
+            break;
+        case VIEWS.UPDATE_PROMPT:
+            /* Skip updates - dismiss and return to normal view */
+            pendingUpdates = [];
+            view = VIEWS.SLOTS;
+            needsRedraw = true;
+            break;
+        case VIEWS.UPDATE_RESTART:
+            /* Restart later - return to normal view */
+            view = VIEWS.SLOTS;
+            needsRedraw = true;
             break;
         case VIEWS.OVERTAKE_MENU:
             /* Exit overtake menu and return to Move */
@@ -5505,6 +5774,39 @@ function drawStorePickerDetail() {
     });
 }
 
+/* Draw update prompt view (shown on startup when updates are available) */
+function drawUpdatePrompt() {
+    clear_screen();
+    drawHeader('Updates Available');
+
+    const items = pendingUpdates.map(upd => ({
+        label: upd.name,
+        value: upd.from + '->' + upd.to
+    }));
+
+    drawMenuList({
+        items: items,
+        selectedIndex: pendingUpdateIndex,
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value,
+        valueAlignRight: true,
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
+    });
+
+    drawFooter('Jog: Update All  Back: Skip');
+}
+
+/* Draw restart prompt after core update */
+function drawUpdateRestart() {
+    clear_screen();
+    drawHeader('Core Updated!');
+
+    const versionStr = updateRestartFromVersion + ' -> ' + updateRestartToVersion;
+    print(2, 20, versionStr, 1);
+    print(2, 36, 'Jog: Restart now', 1);
+    print(2, 48, 'Back: Restart later', 1);
+}
+
 /* Draw component edit view (presets, params) */
 function drawComponentEdit() {
     clear_screen();
@@ -5844,6 +6146,11 @@ function drawMasterFxSettingsMenu() {
             if (item.type === "action") {
                 return item.label;
             }
+            if (item.type === "bool") {
+                let val = false;
+                if (item.key === "auto_update_check") val = autoUpdateCheckEnabled;
+                return item.label + ': ' + (val ? 'On' : 'Off');
+            }
             /* For volume, show current value */
             return item.label;
         },
@@ -6013,6 +6320,9 @@ globalThis.init = function() {
     /* Load and apply master FX chain from config */
     loadMasterFxChainFromConfig();
 
+    /* Load auto-update preference */
+    loadAutoUpdateConfig();
+
     /* Legacy: migrate old single master_fx config to slot 1 */
     const savedMasterFx = loadMasterFxFromConfig();
     if (savedMasterFx.path && !masterFxConfig.fx1.module) {
@@ -6020,6 +6330,12 @@ globalThis.init = function() {
         masterFxConfig.fx1.module = savedMasterFx.id;
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
+
+    /* Schedule startup update check if enabled */
+    if (autoUpdateCheckEnabled) {
+        startupUpdateCheckPending = true;
+        startupUpdateCheckTick = 0;
+    }
 };
 
 globalThis.tick = function() {
@@ -6065,6 +6381,15 @@ globalThis.tick = function() {
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_OVERTAKE);
             }
+        }
+    }
+
+    /* Deferred startup update check (~500ms after startup) */
+    if (startupUpdateCheckPending) {
+        startupUpdateCheckTick++;
+        if (startupUpdateCheckTick === 30) {
+            startupUpdateCheckPending = false;
+            checkForUpdatesInBackground();
         }
     }
 
@@ -6177,6 +6502,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.STORE_PICKER_POST_INSTALL:
             drawMessageOverlay('Install Complete', storePostInstallLines);
+            break;
+        case VIEWS.UPDATE_PROMPT:
+            drawUpdatePrompt();
+            break;
+        case VIEWS.UPDATE_RESTART:
+            drawUpdateRestart();
             break;
         case VIEWS.OVERTAKE_MENU:
             drawOvertakeMenu();

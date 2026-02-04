@@ -96,6 +96,26 @@ export function fetchReleaseJson(github_repo) {
     }
 }
 
+/* Quick fetch of release.json for core version check.
+ * Returns { version, download_url } or null on failure. */
+export function fetchReleaseJsonQuick(github_repo) {
+    const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release_quick.json`;
+    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
+
+    const success = globalThis.host_http_download(releaseUrl, cacheFile);
+    if (!success) return null;
+
+    try {
+        const jsonStr = std.loadFile(cacheFile);
+        if (!jsonStr) return null;
+        const release = JSON.parse(jsonStr);
+        if (!release.version || !release.download_url) return null;
+        return { version: release.version, download_url: release.download_url };
+    } catch (e) {
+        return null;
+    }
+}
+
 /* Fetch catalog from network, returns { success, catalog, error } */
 export function fetchCatalog(onProgress) {
     if (onProgress) onProgress('Loading Catalog', 'Fetching...');
