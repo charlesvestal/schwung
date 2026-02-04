@@ -7015,8 +7015,11 @@ do_ioctl:
         shadow_control->restart_move = 0;
         shadow_control->should_exit = 1;  /* Tell shadow_ui to exit */
         shadow_log("Restart requested by shadow UI — restarting Move");
-        usleep(500000);  /* 500ms for shadow_ui to exit cleanly */
-        launchChildAndKillThisProcess("/opt/move/Move", "Move", "");
+        /* Use restart script for clean restart (kill as root, start fresh).
+         * launchChildAndKillThisProcess won't work because MoveOriginal has
+         * file capabilities that trigger AT_SECURE, blocking LD_PRELOAD
+         * when forked from a non-root process. */
+        system("/data/UserData/move-anything/restart-move.sh");
     }
 
 do_timing:

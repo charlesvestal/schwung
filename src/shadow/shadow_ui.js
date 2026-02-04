@@ -538,6 +538,7 @@ function performCoreUpdate(mod) {
         + 'cd "' + BASE + '"\n'
         + 'cp "' + BACKUP + '/move-anything" .\n'
         + 'cp "' + BACKUP + '/move-anything-shim.so" .\n'
+        + 'chmod u+s move-anything-shim.so\n'
         + 'cp -r "' + BACKUP + '/shadow" .\n'
         + 'cp -r "' + BACKUP + '/host" .\n'
         + 'echo "Restored. Restart Move to apply."\n';
@@ -554,6 +555,11 @@ function performCoreUpdate(mod) {
         host_remove_dir(STAGING);
         return { success: false, error: 'Install failed (restored)' };
     }
+
+    /* Restore setuid bit on shim — required for LD_PRELOAD under AT_SECURE
+     * (MoveOriginal has file capabilities that trigger secure-exec mode;
+     *  without u+s the linker refuses to load the shim via symlink) */
+    host_system_cmd('chmod u+s "' + BASE + '/move-anything-shim.so"');
 
     /* --- Phase 7: Cleanup --- */
     host_remove_dir(STAGING);

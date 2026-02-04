@@ -157,6 +157,7 @@ cp ./src/shadow/shadow_ui.js ./build/shadow/
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
+cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
 
