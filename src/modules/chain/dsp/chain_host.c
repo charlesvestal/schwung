@@ -5124,6 +5124,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
         if (strcmp(subkey, "module") == 0) {
+            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_synth_panic(inst);
             v2_unload_synth(inst);
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
@@ -5142,6 +5143,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 4;
         /* Intercept module change to swap FX1 dynamically */
         if (strcmp(subkey, "module") == 0) {
+            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 0, val);
         } else if (inst->fx_count > 0) {
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
@@ -5155,6 +5157,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 4;
         /* Intercept module change to swap FX2 dynamically */
         if (strcmp(subkey, "module") == 0) {
+            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 1, val);
         } else if (inst->fx_count > 1) {
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
