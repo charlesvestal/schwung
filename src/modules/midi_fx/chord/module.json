@@ -7,44 +7,43 @@
   "capabilities": {
     "chainable": true,
     "component_type": "midi_fx",
-    "parameters": [
-      {
-        "key": "chord_type",
-        "label": "Type",
-        "type": "enum",
-        "options": ["Major", "Minor", "Dim", "Aug", "Sus2", "Sus4", "Maj7", "Min7", "Dom7"],
-        "default": 0
-      },
-      {
-        "key": "inversion",
-        "label": "Inversion",
-        "type": "int",
-        "min": 0,
-        "max": 3,
-        "default": 0
-      },
-      {
-        "key": "voicing",
-        "label": "Voicing",
-        "type": "enum",
-        "options": ["Close", "Open", "Drop2", "Drop3"],
-        "default": 0
-      },
-      {
-        "key": "velocity_scale",
-        "label": "Vel Scale",
-        "type": "float",
-        "min": 0.0,
-        "max": 2.0,
-        "default": 1.0,
-        "display_format": "%.2f"
-      }
-    ],
     "ui_hierarchy": {
       "levels": {
         "root": {
           "name": "Chord",
-          "params": ["chord_type", "inversion", "voicing", "velocity_scale"],
+          "params": [
+            {
+              "key": "chord_type",
+              "label": "Type",
+              "type": "enum",
+              "options": ["Major", "Minor", "Dim", "Aug", "Sus2", "Sus4", "Maj7", "Min7", "Dom7"],
+              "default": 0
+            },
+            {
+              "key": "inversion",
+              "label": "Inversion",
+              "type": "int",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "key": "voicing",
+              "label": "Voicing",
+              "type": "enum",
+              "options": ["Close", "Open", "Drop2", "Drop3"],
+              "default": 0
+            },
+            {
+              "key": "velocity_scale",
+              "label": "Vel Scale",
+              "type": "float",
+              "min": 0.0,
+              "max": 2.0,
+              "default": 1.0,
+              "display_format": "%.2f"
+            }
+          ],
           "knobs": ["chord_type", "inversion", "voicing", "velocity_scale"]
         }
       }
