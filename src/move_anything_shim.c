@@ -3704,7 +3704,19 @@ static void shadow_inprocess_handle_param_request(void) {
                 shadow_param->error = 0;
                 shadow_param->result_len = 2;
             } else if (strcmp(param_key, "ui_hierarchy") == 0) {
-                /* Read ui_hierarchy from module.json */
+                /* Try module's get_param first (for dynamic hierarchies like CLAP FX) */
+                if (mfx->api && mfx->instance && mfx->api->get_param) {
+                    int len = mfx->api->get_param(mfx->instance, "ui_hierarchy",
+                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                    if (len > 2) {
+                        shadow_param->error = 0;
+                        shadow_param->result_len = len;
+                        shadow_param->response_ready = 1;
+                        shadow_param->request_type = 0;
+                        return;
+                    }
+                }
+                /* Fall back to reading ui_hierarchy from module.json */
                 char module_dir[256];
                 strncpy(module_dir, mfx->module_path, sizeof(module_dir) - 1);
                 module_dir[sizeof(module_dir) - 1] = '\0';
@@ -6125,7 +6137,7 @@ int ioctl(int fd, unsigned long request, ...)
             slice_fresh[idx] = 1;
         }
 
-        /* When volume knob touched, start capturing */
+        /* When volume knob touched (and no track held), start capturing */
         if (shadow_volume_knob_touched && shadow_held_track < 0) {
             if (!volume_capture_active) {
                 volume_capture_active = 1;
@@ -6154,9 +6166,19 @@ int ioctl(int fd, unsigned long request, ...)
                     memcpy(full_display + offset, captured_slices[s], bytes);
                 }
 
-                /* Check a single row in the bar area (row 30) using COLUMN-MAJOR format
-                 * Display format: 8 pages of 128 bytes, each byte = 1 column, 8 vertical bits
-                 * The volume bar is a vertical line; we just need to find which column is lit */
+                /* Detect waveform/pad-edit screen by checking row 29 (0dB reference line).
+                 * The waveform view draws a dithered horizontal line across the full width
+                 * on row 29 (~60 lit pixels). The volume overlay has at most 1-2 pixels there. */
+                int ref_row = 29;
+                int ref_page = ref_row / 8;  /* page 3 */
+                int ref_bit = ref_row % 8;   /* bit 5 */
+                int ref_lit = 0;
+                for (int col = 0; col < 128; col++) {
+                    int byte_idx = ref_page * 128 + col;
+                    if (full_display[byte_idx] & (1 << ref_bit)) ref_lit++;
+                }
+
+                /* Check row 30 for the volume bar position */
                 int bar_row = 30;
                 int page = bar_row / 8;  /* page 3 */
                 int bit = bar_row % 8;   /* bit 6 */
@@ -6170,7 +6192,15 @@ int ioctl(int fd, unsigned long request, ...)
                     }
                 }
 
-                if (bar_col >= 0) {
+                /* Log analysis for debugging */
+                {
+                    char msg[128];
+                    snprintf(msg, sizeof(msg), "Row29: ref_lit=%d  Row30: bar_col=%d", ref_lit, bar_col);
+                    shadow_log(msg);
+                }
+
+                /* Skip if row 29 has many lit pixels (waveform 0dB line, not volume overlay) */
+                if (bar_col >= 0 && ref_lit < 50) {
                     /* Map column range 4-122 to volume 0.0-1.0 */
                     float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
                     if (normalized < 0.0f) normalized = 0.0f;
