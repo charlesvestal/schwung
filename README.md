@@ -14,25 +14,26 @@ This is, in the truest sense of the word, a hack. It is not stable, or generally
 
 Also: this code is heavily written by coding agents, with human supervision. If that makes you nervous or you disagree with the approach, totally fine! Thanks for checking it out.
 
-## Installation (Quick)
+## Installation
 
-Prereqs:
+**Prerequisites:**
 - Move connected to WiFi
-- A computer on the same network with SSH access enabled
+- A computer on the same network
+- **Mac/Linux:** Terminal
+- **Windows:** [Git Bash](https://git-scm.com/downloads) (comes with Git for Windows)
 
-Enable SSH:
-1. Generate an SSH key if you do not have one: `ssh-keygen -t ed25519`
-2. Add your public key at: `http://move.local/development/ssh`
-3. Test: `ssh ableton@move.local`
-
-Back on your computer (or in a new terminal window), install:
+**Install:**
 ```bash
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
 ```
 
-For full prerequisites, troubleshooting, and updates, see [MANUAL.md](MANUAL.md).
+The installer will:
+1. **Guide you through SSH setup** if needed (generates key, shows how to add it to Move)
+2. **Download and install** the Move Everything framework
+3. **Offer to install modules** (synths, effects) from the Module Store
+4. **Copy assets** for modules that need them (ROMs, SoundFonts, etc.)
 
-NOTE: Some plugins require additional assets. Check the individual repositories for more information, and copy using scp or soemthing like [Cyberduck](https://cyberduck.io).
+For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).
 
 ## Uninstall
 
