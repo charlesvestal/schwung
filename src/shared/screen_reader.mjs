@@ -2,7 +2,8 @@
  * Screen Reader Utilities
  *
  * Simple API for announcing UI changes to screen readers.
- * Calls are queued and sent via the shim's D-Bus injection.
+ * Supports both D-Bus external screen readers and on-device TTS (Flite).
+ * Messages are spoken through the Move's audio output.
  */
 
 /**
@@ -12,7 +13,7 @@
 export function announce(text) {
     if (!text || typeof text !== 'string') return;
 
-    /* Call the shim's screen reader function if available */
+    /* Call the host's screen reader function if available */
     if (typeof host_send_screenreader !== 'undefined') {
         host_send_screenreader(text);
     }

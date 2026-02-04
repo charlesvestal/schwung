@@ -31,7 +31,7 @@ static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
-static shadow_screenreader_t *shadow_screenreader_shm = NULL;
+static shadow_screenreader_t *shadow_screenreader = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -85,8 +85,9 @@ static int open_shadow_shm(void) {
 
     fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
     if (fd >= 0) {
-        shadow_screenreader_shm = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        shadow_screenreader = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
+        unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow screen reader shm mapped: %p", shadow_screenreader);
     }
 
     return 0;
@@ -938,17 +939,26 @@ static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
 static JSValue js_host_send_screenreader(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
     (void)this_val;
-    if (argc < 1) return JS_UNDEFINED;
+    if (argc < 1 || !shadow_screenreader) {
+        return JS_UNDEFINED;
+    }
 
     const char *text = JS_ToCString(ctx, argv[0]);
-    if (!text) return JS_UNDEFINED;
-
-    /* Write to shared memory - shim will pick it up and announce via D-Bus */
-    if (shadow_screenreader_shm) {
-        strncpy(shadow_screenreader_shm->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
-        shadow_screenreader_shm->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
-        shadow_screenreader_shm->ready = !shadow_screenreader_shm->ready;  /* Toggle to signal */
+    if (!text) {
+        return JS_UNDEFINED;
     }
+
+    /* Write message to shared memory */
+    strncpy(shadow_screenreader->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
+    shadow_screenreader->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
+
+    /* Get current time in milliseconds */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    shadow_screenreader->timestamp_ms = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
+
+    /* Increment sequence to signal new message */
+    shadow_screenreader->sequence++;
 
     JS_FreeCString(ctx, text);
     return JS_UNDEFINED;

@@ -66,13 +66,19 @@ echo "Building host..."
 
 # Build shim (with shared memory support for shadow instrument)
 # D-Bus support requires cross-compiled libdbus and libsystemd headers
+# TTS support with Flite (lightweight TTS for embedded systems) - using dynamic linking
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
     src/host/unified_log.c \
+    src/host/tts_engine_flite.c \
+    -Isrc \
+    -I/usr/include \
     -I/usr/include/dbus-1.0 \
     -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
-    -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm
+    -L/usr/lib/aarch64-linux-gnu \
+    -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm \
+    -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex
 
 echo "Building Shadow POC..."
 
@@ -96,6 +102,27 @@ echo "Building Shadow UI..."
     -Ilibs/quickjs/quickjs-2025-04-26 \
     -Llibs/quickjs/quickjs-2025-04-26 \
     -lquickjs -lm -ldl -lrt
+
+echo "Building TTS test program..."
+
+# Build Flite test program for testing TTS - using dynamic linking
+mkdir -p ./build/test/
+"${CROSS_PREFIX}gcc" -g -O3 \
+    test/test_flite.c \
+    -o build/test/test_flite \
+    -I/usr/include \
+    -L/usr/lib/aarch64-linux-gnu \
+    -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex \
+    -lm -lpthread || echo "Warning: TTS test build failed"
+
+echo "Copying Flite libraries for deployment..."
+
+# Copy Flite .so files to build/lib/ for deployment to Move
+mkdir -p ./build/lib/
+cp -L /usr/lib/aarch64-linux-gnu/libflite.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_cmu_us_kal.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_usenglish.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_cmulex.so.* ./build/lib/ 2>/dev/null || true
 
 echo "Building Signal Chain module..."
 
@@ -183,6 +210,16 @@ if [ -f "./libs/curl/curl" ]; then
     echo "Bundled curl binary"
 else
     echo "Warning: libs/curl/curl not found - store module will not work without it"
+fi
+
+# Bundle espeak-ng data for self-contained TTS
+if [ -d "/usr/lib/aarch64-linux-gnu/espeak-ng-data" ]; then
+    echo "Bundling espeak-ng voice data..."
+    mkdir -p ./build/espeak-data
+    cp -r /usr/lib/aarch64-linux-gnu/espeak-ng-data/* ./build/espeak-data/
+    echo "espeak-ng-data bundled"
+elif [ ! -d "./build/espeak-data" ]; then
+    echo "Warning: espeak-ng-data not found - TTS will not work"
 fi
 
 echo "Build complete!"

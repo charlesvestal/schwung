@@ -28,6 +28,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/unified_log.h"
+#include "host/tts_engine.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
@@ -102,6 +103,8 @@ static uint8_t shadow_display_mode = 0;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
+
+static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 
 static void launch_shadow_ui(void);
 
@@ -1210,6 +1213,13 @@ static void shadow_dbus_handle_text(const char *text)
         char msg[256];
         snprintf(msg, sizeof(msg), "D-Bus text: \"%s\" (held_track=%d)", text, shadow_held_track);
         shadow_log(msg);
+    }
+
+    /* Write screen reader text to shared memory for TTS */
+    if (shadow_screenreader_shm) {
+        strncpy(shadow_screenreader_shm->text, text, sizeof(shadow_screenreader_shm->text) - 1);
+        shadow_screenreader_shm->text[sizeof(shadow_screenreader_shm->text) - 1] = '\0';
+        shadow_screenreader_shm->sequence++;  /* Increment to signal new message */
     }
 
     /* Check if it's a Set name (e.g. "Set 1", "Set 28") - read tempo from Song.abl */
@@ -4622,6 +4632,8 @@ static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Screen reader announcements */
 static uint8_t last_shadow_midi_out_ready = 0;
+static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
+static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 
 /* Pending LED queue for rate-limited output (like standalone mode) */
 #define SHADOW_LED_MAX_UPDATES_PER_TICK 16
@@ -4834,7 +4846,7 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create midi_out shm\n");
     }
 
-    /* Create/open screen reader shared memory (for accessibility announcements) */
+    /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
     shm_screenreader_fd = shm_open(SHM_SHADOW_SCREENREADER, O_CREAT | O_RDWR, 0666);
     if (shm_screenreader_fd >= 0) {
         ftruncate(shm_screenreader_fd, sizeof(shadow_screenreader_t));
@@ -4851,17 +4863,14 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create screenreader shm\n");
     }
 
+    /* TTS engine uses lazy initialization - will init on first speak */
+    tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
+    printf("Shadow: TTS engine configured (will init on first use)\n");
+
     shadow_shm_initialized = 1;
     printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, screenreader=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
            shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_screenreader_shm);
-
-    /* Test announcement disabled - causes Move to crash
-     * Same issue: writing to shared D-Bus socket breaks protocol */
-    // if (shadow_screenreader_shm) {
-    //     strcpy(shadow_screenreader_shm->text, "Move Anything Screen Reader Test");
-    //     shadow_screenreader_shm->ready = 1;
-    // }
 }
 
 #if SHADOW_DEBUG
@@ -4910,6 +4919,48 @@ static void debug_audio_offset(void) {
 }
 #endif /* SHADOW_DEBUG */
 
+/* Monitor screen reader messages and speak them with TTS (debounced) */
+#define TTS_DEBOUNCE_MS 300  /* Wait 300ms of silence before speaking */
+static char pending_tts_message[256] = {0};
+static uint64_t last_message_time_ms = 0;
+static bool has_pending_message = false;
+
+static void shadow_check_screenreader(void)
+{
+    if (!shadow_screenreader_shm) return;
+
+    /* Get current time in milliseconds */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+
+    /* Check if there's a new message (sequence incremented) */
+    uint32_t current_sequence = shadow_screenreader_shm->sequence;
+    if (current_sequence != last_screenreader_sequence) {
+        /* New message arrived - buffer it and reset debounce timer */
+        if (shadow_screenreader_shm->text[0] != '\0') {
+            strncpy(pending_tts_message, shadow_screenreader_shm->text, sizeof(pending_tts_message) - 1);
+            pending_tts_message[sizeof(pending_tts_message) - 1] = '\0';
+            last_message_time_ms = now_ms;
+            has_pending_message = true;
+            unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Buffered: '%s'", pending_tts_message);
+        }
+        last_screenreader_sequence = current_sequence;
+        return;
+    }
+
+    /* Check if debounce period has elapsed and we have a pending message */
+    if (has_pending_message && (now_ms - last_message_time_ms >= TTS_DEBOUNCE_MS)) {
+        /* Speak the buffered message */
+        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Speaking (debounced): '%s'", pending_tts_message);
+        if (tts_speak(pending_tts_message)) {
+            last_speech_time_ms = now_ms;
+        }
+        has_pending_message = false;
+        pending_tts_message[0] = '\0';
+    }
+}
+
 /* Mix shadow audio into mailbox audio buffer - TRIPLE BUFFERED */
 static void shadow_mix_audio(void)
 {
@@ -4917,6 +4968,21 @@ static void shadow_mix_audio(void)
     if (!shadow_control || !shadow_control->shadow_ready) return;
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+
+    /* Check for new screen reader messages and speak them */
+    shadow_check_screenreader();
+
+    /* TTS test: speak once after 3 seconds to verify audio works */
+    static int tts_test_frame_count = 0;
+    static bool tts_test_done = false;
+    if (!tts_test_done && shadow_control->shadow_ready) {
+        tts_test_frame_count++;
+        if (tts_test_frame_count == 1035) {  /* ~3 seconds at 44.1kHz, 128 frames/block */
+            printf("TTS test: Speaking test phrase...\n");
+            tts_speak("Text to speech is working");
+            tts_test_done = true;
+        }
+    }
 
     /* Increment shim counter for shadow's drift correction */
     shadow_control->shim_counter++;
@@ -4956,6 +5022,22 @@ static void shadow_mix_audio(void)
         mailbox_audio[i] = (int16_t)mixed;
     }
     #endif
+
+    /* Mix TTS audio on top */
+    if (tts_is_speaking()) {
+        static int16_t tts_buffer[FRAMES_PER_BLOCK * 2];  /* Stereo interleaved */
+        int frames_read = tts_get_audio(tts_buffer, FRAMES_PER_BLOCK);
+
+        if (frames_read > 0) {
+            for (int i = 0; i < frames_read * 2; i++) {
+                int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)tts_buffer[i];
+                /* Clip to int16 range */
+                if (mixed > 32767) mixed = 32767;
+                if (mixed < -32768) mixed = -32768;
+                mailbox_audio[i] = (int16_t)mixed;
+            }
+        }
+    }
 }
 
 /* Initialize pending LED queue arrays */
