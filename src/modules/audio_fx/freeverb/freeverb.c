@@ -311,20 +311,6 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return len;
         }
         return -1;
-    } else if (strcmp(key, "chain_params") == 0) {
-        const char *params = "["
-            "{\"key\":\"room_size\",\"name\":\"Room Size\",\"type\":\"float\",\"min\":0,\"max\":1},"
-            "{\"key\":\"damping\",\"name\":\"Damping\",\"type\":\"float\",\"min\":0,\"max\":1},"
-            "{\"key\":\"wet\",\"name\":\"Wet\",\"type\":\"float\",\"min\":0,\"max\":1},"
-            "{\"key\":\"dry\",\"name\":\"Dry\",\"type\":\"float\",\"min\":0,\"max\":1},"
-            "{\"key\":\"width\",\"name\":\"Width\",\"type\":\"float\",\"min\":0,\"max\":1}"
-        "]";
-        int len = strlen(params);
-        if (len < buf_len) {
-            strcpy(buf, params);
-            return len;
-        }
-        return -1;
     }
     return -1;
 }
