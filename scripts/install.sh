@@ -670,10 +670,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
+            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts"
             for sf2 in "$sf2_path"/*.sf2 "$sf2_path"/*.SF2; do
                 if [ -f "$sf2" ]; then
                     echo "  Copying $(basename "$sf2")..."
-                    $scp_ableton "$sf2" "$username@$hostname:./move-anything/modules/sound_generators/sf2/"
+                    $scp_ableton "$sf2" "$username@$hostname:./move-anything/modules/sound_generators/sf2/soundfonts/"
                     sf2_count=$((sf2_count + 1))
                 fi
             done
