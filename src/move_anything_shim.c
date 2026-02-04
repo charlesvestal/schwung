@@ -19,7 +19,10 @@
 #include <math.h>
 #include <linux/spi/spidev.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <dbus/dbus.h>
+#include <systemd/sd-bus.h>
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
@@ -1085,6 +1088,12 @@ static DBusConnection *shadow_dbus_conn = NULL;
 static pthread_t shadow_dbus_thread;
 static volatile int shadow_dbus_running = 0;
 
+/* Move's D-Bus socket FD (captured via connect() hook) */
+static int move_dbus_socket_fd = -1;
+static sd_bus *move_sdbus_conn = NULL;
+static DBusConnection *shadow_dbus_conn_old = NULL; /* Old libdbus listener (keep for compatibility) */
+static pthread_mutex_t move_dbus_conn_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* Parse dB value from "Track Volume X dB" string and convert to linear */
 static float shadow_parse_volume_db(const char *text)
 {
@@ -1160,42 +1169,157 @@ static void shadow_dbus_handle_text(const char *text)
 }
 
 /* Send screen reader announcement via D-Bus signal */
+/* Hook dbus_connection_send to capture Move's connection when it sends screen reader signals */
+/* Hook sd-bus functions to capture Move's connection */
+
+/* Hook sdbus-cpp factory function by mangled name */
+/* _ZN5sdbus25createSystemBusConnectionEv = sdbus::createSystemBusConnection() */
+
+typedef void* (*sdbus_create_fn)(void);
+
+/* Hook connect() to capture Move's D-Bus socket FD */
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    static int (*real_connect)(int, const struct sockaddr *, socklen_t) = NULL;
+    if (!real_connect) {
+        real_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
+        shadow_log("D-Bus: connect() hook initialized");
+    }
+    
+    int result = real_connect(sockfd, addr, addrlen);
+    
+    if (result == 0 && addr && addr->sa_family == AF_UNIX) {
+        struct sockaddr_un *un_addr = (struct sockaddr_un *)addr;
+        
+        /* Check if this is the D-Bus system bus socket */
+        if (strstr(un_addr->sun_path, "dbus") && strstr(un_addr->sun_path, "system")) {
+            pthread_mutex_lock(&move_dbus_conn_mutex);
+            if (move_dbus_socket_fd == -1) {
+                move_dbus_socket_fd = sockfd;
+                char logbuf[256];
+                snprintf(logbuf, sizeof(logbuf),
+                        "D-Bus: *** CAPTURED Move's socket FD %d via connect() to %s ***",
+                        sockfd, un_addr->sun_path);
+                shadow_log(logbuf);
+            }
+            pthread_mutex_unlock(&move_dbus_conn_mutex);
+        }
+    }
+    
+    return result;
+}
+
+int sd_bus_default_system(sd_bus **ret)
+{
+    static int (*real_default)(sd_bus**) = NULL;
+    if (!real_default) {
+        real_default = (int (*)(sd_bus**))dlsym(RTLD_NEXT, "sd_bus_default_system");
+    }
+    
+    int result = real_default(ret);
+    
+    if (result >= 0 && ret && *ret) {
+        pthread_mutex_lock(&move_dbus_conn_mutex);
+        if (!move_sdbus_conn) {
+            move_sdbus_conn = sd_bus_ref(*ret);
+            const char *unique_name = NULL;
+            sd_bus_get_unique_name(*ret, &unique_name);
+            char logbuf[256];
+            snprintf(logbuf, sizeof(logbuf), 
+                    "D-Bus: *** CAPTURED sd-bus connection via sd_bus_default_system (sender=%s) ***",
+                    unique_name ? unique_name : "?");
+            shadow_log(logbuf);
+        }
+        pthread_mutex_unlock(&move_dbus_conn_mutex);
+    }
+    
+    return result;
+}
+
+int sd_bus_start(sd_bus *bus)
+{
+    static int (*real_start)(sd_bus*) = NULL;
+    if (!real_start) {
+        real_start = (int (*)(sd_bus*))dlsym(RTLD_NEXT, "sd_bus_start");
+    }
+    
+    int result = real_start(bus);
+    
+    if (result >= 0 && bus) {
+        pthread_mutex_lock(&move_dbus_conn_mutex);
+        if (!move_sdbus_conn) {
+            move_sdbus_conn = sd_bus_ref(bus);
+            const char *unique_name = NULL;
+            sd_bus_get_unique_name(bus, &unique_name);
+            char logbuf[256];
+            snprintf(logbuf, sizeof(logbuf), 
+                    "D-Bus: *** CAPTURED sd-bus connection via sd_bus_start (sender=%s) ***",
+                    unique_name ? unique_name : "?");
+            shadow_log(logbuf);
+        }
+        pthread_mutex_unlock(&move_dbus_conn_mutex);
+    }
+    
+    return result;
+}
+
+/* Hook sendmsg to capture Move's D-Bus socket FD at the lowest level */
+/* Removed - sd-bus hooks are used instead */
+
 static void send_screenreader_announcement(const char *text)
 {
     if (!text || !text[0]) return;
-    if (!shadow_dbus_conn) return;
 
-    /* Create signal message */
+    pthread_mutex_lock(&move_dbus_conn_mutex);
+    int sock_fd = move_dbus_socket_fd;
+    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+    if (sock_fd < 0) {
+        /* Haven't captured Move's FD yet */
+        return;
+    }
+
+    /* Create message using libdbus for proper formatting */
     DBusMessage *msg = dbus_message_new_signal(
         "/com/ableton/move/screenreader",
         "com.ableton.move.ScreenReader",
         "text"
     );
 
-    if (!msg) {
-        shadow_log("Failed to create D-Bus signal message");
-        return;
-    }
+    if (!msg) return;
 
     /* Append the text argument */
     if (!dbus_message_append_args(msg, DBUS_TYPE_STRING, &text, DBUS_TYPE_INVALID)) {
-        shadow_log("Failed to append D-Bus signal argument");
         dbus_message_unref(msg);
         return;
     }
 
-    /* Send the signal */
-    if (!dbus_connection_send(shadow_dbus_conn, msg, NULL)) {
-        shadow_log("Failed to send D-Bus signal");
+    /* Serialize the message to bytes */
+    char *marshalled = NULL;
+    int len = 0;
+    if (dbus_message_marshal(msg, &marshalled, &len)) {
+        /* Write directly to Move's socket FD */
+        ssize_t written = write(sock_fd, marshalled, len);
+        
+        if (written > 0) {
+            char logbuf[512];
+            snprintf(logbuf, sizeof(logbuf), 
+                    "Screen reader: \"%s\" (wrote %zd/%d bytes to Move's FD %d)", 
+                    text, written, len, sock_fd);
+            shadow_log(logbuf);
+        } else {
+            char logbuf[256];
+            snprintf(logbuf, sizeof(logbuf),
+                    "Screen reader: write failed (%s)", strerror(errno));
+            shadow_log(logbuf);
+        }
+        
+        free(marshalled);
+    } else {
+        shadow_log("Screen reader: Failed to marshal D-Bus message");
     }
 
     dbus_message_unref(msg);
-    dbus_connection_flush(shadow_dbus_conn);
-
-    /* Debug log */
-    char logbuf[512];
-    snprintf(logbuf, sizeof(logbuf), "Screen reader: \"%s\"", text);
-    shadow_log(logbuf);
 }
 
 /* D-Bus filter function to receive signals */
@@ -1209,6 +1333,7 @@ static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *m
         const char *iface = dbus_message_get_interface(msg);
         const char *member = dbus_message_get_member(msg);
         const char *path = dbus_message_get_path(msg);
+        const char *sender = dbus_message_get_sender(msg);
         int msg_type = dbus_message_get_type(msg);
 
         if (msg_type == DBUS_MESSAGE_TYPE_SIGNAL) {
@@ -1237,9 +1362,9 @@ static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *m
             }
 
             char logbuf[512];
-            snprintf(logbuf, sizeof(logbuf), "D-Bus signal: %s.%s path=%s%s",
+            snprintf(logbuf, sizeof(logbuf), "D-Bus signal: %s.%s path=%s sender=%s%s",
                      iface ? iface : "?", member ? member : "?",
-                     path ? path : "?", arg_preview);
+                     path ? path : "?", sender ? sender : "?", arg_preview);
             shadow_log(logbuf);
         }
     }
@@ -1280,17 +1405,66 @@ static void *shadow_dbus_thread_func(void *arg)
         return NULL;
     }
 
-    /* Subscribe to ALL signals for discovery, plus screenreader specifically */
+    /* Scan existing FDs to find Move's D-Bus socket */
+    shadow_log("D-Bus: Scanning file descriptors for Move's D-Bus socket...");
+    for (int fd = 3; fd < 256; fd++) {
+        struct sockaddr_un addr;
+        socklen_t addr_len = sizeof(addr);
+
+        if (getpeername(fd, (struct sockaddr*)&addr, &addr_len) == 0) {
+            if (addr.sun_family == AF_UNIX &&
+                strstr(addr.sun_path, "dbus") &&
+                strstr(addr.sun_path, "system")) {
+
+                /* Get our own FD for comparison */
+                int our_fd = -1;
+                dbus_connection_get_unix_fd(shadow_dbus_conn, &our_fd);
+
+                if (fd != our_fd) {
+                    /* This is Move's FD! */
+                    pthread_mutex_lock(&move_dbus_conn_mutex);
+                    move_dbus_socket_fd = fd;
+                    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+                    char logbuf[256];
+                    snprintf(logbuf, sizeof(logbuf),
+                            "D-Bus: *** FOUND Move's D-Bus socket FD %d (path=%s) ***",
+                            fd, addr.sun_path);
+                    shadow_log(logbuf);
+
+                    /* Duplicate Move's FD so we have our own copy (don't interfere with Move) */
+                    int dup_fd = dup(fd);
+                    if (dup_fd < 0) {
+                        shadow_log("D-Bus: ERROR - Failed to dup Move's FD");
+                        break;
+                    }
+
+                    snprintf(logbuf, sizeof(logbuf),
+                            "D-Bus: Duplicated FD %d -> %d", fd, dup_fd);
+                    shadow_log(logbuf);
+
+                    /* DON'T use sd-bus on Move's FD - it will conflict!
+                     * Just store the duplicated FD for later raw writes */
+                    pthread_mutex_lock(&move_dbus_conn_mutex);
+                    move_dbus_socket_fd = dup_fd;
+                    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+                    snprintf(logbuf, sizeof(logbuf),
+                            "D-Bus: Will send raw messages to duplicated FD %d", dup_fd);
+                    shadow_log(logbuf);
+
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Subscribe to ALL signals for discovery (tempo detection, etc.)
+     * NOTE: We explicitly DON'T subscribe to com.ableton.move.ScreenReader
+     * because stock Move's web server treats that as a competing client
+     * and shows "single window" error. We only SEND to that interface. */
     const char *rule_all = "type='signal'";
     dbus_bus_add_match(shadow_dbus_conn, rule_all, &err);
-    if (dbus_error_is_set(&err)) {
-        shadow_log("D-Bus: Failed to add catch-all match rule");
-        dbus_error_free(&err);
-        /* Continue anyway - specific rule below may work */
-        dbus_error_init(&err);
-    }
-    const char *rule = "type='signal',interface='com.ableton.move.ScreenReader',member='text'";
-    dbus_bus_add_match(shadow_dbus_conn, rule, &err);
     dbus_connection_flush(shadow_dbus_conn);
 
     if (dbus_error_is_set(&err)) {
@@ -1307,10 +1481,12 @@ static void *shadow_dbus_thread_func(void *arg)
 
     shadow_log("D-Bus: Connected and listening for screenreader signals");
 
-    /* Send test announcement to verify D-Bus is working */
-    send_screenreader_announcement("Move Anything D-Bus Test");
-    sleep(1);
-    send_screenreader_announcement("Screen Reader Active");
+    /* Test announcements disabled - writing to dup'd FD crashes Move
+     * The issue: D-Bus protocol requires coordinated serial numbers
+     * Two writers on same socket violate protocol even with dup() */
+    // send_screenreader_announcement("Move Anything D-Bus Test");
+    // sleep(1);
+    // send_screenreader_announcement("Screen Reader Active");
 
     /* Main loop - process D-Bus messages */
     while (shadow_dbus_running) {
@@ -4515,11 +4691,12 @@ static void init_shadow_shm(void)
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
            shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_screenreader_shm);
 
-    /* Send test announcement on startup */
-    if (shadow_screenreader_shm) {
-        strcpy(shadow_screenreader_shm->text, "Move Anything Screen Reader Test");
-        shadow_screenreader_shm->ready = 1;
-    }
+    /* Test announcement disabled - causes Move to crash
+     * Same issue: writing to shared D-Bus socket breaks protocol */
+    // if (shadow_screenreader_shm) {
+    //     strcpy(shadow_screenreader_shm->text, "Move Anything Screen Reader Test");
+    //     shadow_screenreader_shm->ready = 1;
+    // }
 }
 
 #if SHADOW_DEBUG

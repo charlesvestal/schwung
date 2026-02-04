@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     make \
     file \
     libdbus-1-dev:arm64 \
+    libsystemd-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
