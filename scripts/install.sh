@@ -327,7 +327,7 @@ $ssh_ableton "sleep 1"
 $ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
 $ssh_ableton "nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &"
 $ssh_ableton "sleep 1"
-$ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" || exit 1; tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" || fail "Move started without shim (LD_PRELOAD missing)"
+$ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" || exit 1; tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD.*move-anything-shim.so'" || fail "Move started without shim (LD_PRELOAD missing)"
 
 echo
 echo "Done!"

@@ -4402,7 +4402,8 @@ function handleJog(delta) {
             }
             break;
         case VIEWS.UPDATE_PROMPT:
-            pendingUpdateIndex = Math.max(0, Math.min(pendingUpdates.length - 1, pendingUpdateIndex + delta));
+            /* +1 for the "Update All" item at the end */
+            pendingUpdateIndex = Math.max(0, Math.min(pendingUpdates.length, pendingUpdateIndex + delta));
             break;
         case VIEWS.UPDATE_RESTART:
             /* No jog navigation needed */
@@ -4979,8 +4980,42 @@ function handleSelect() {
             }
             break;
         case VIEWS.UPDATE_PROMPT:
-            /* Update All */
-            processAllUpdates();
+            if (pendingUpdateIndex === pendingUpdates.length) {
+                /* "Update All" selected */
+                processAllUpdates();
+            } else if (pendingUpdateIndex >= 0 && pendingUpdateIndex < pendingUpdates.length) {
+                /* Install the selected update */
+                const upd = pendingUpdates[pendingUpdateIndex];
+                if (upd._isHostUpdate) {
+                    const result = performCoreUpdate(upd);
+                    if (result.success) {
+                        pendingUpdates.splice(pendingUpdateIndex, 1);
+                        if (pendingUpdateIndex >= pendingUpdates.length) {
+                            pendingUpdateIndex = Math.max(0, pendingUpdates.length - 1);
+                        }
+                        updateRestartFromVersion = upd.from;
+                        updateRestartToVersion = upd.to;
+                        view = VIEWS.UPDATE_RESTART;
+                    } else {
+                        storePickerMessage = result.error || 'Core update failed';
+                        view = VIEWS.STORE_PICKER_RESULT;
+                    }
+                } else {
+                    const result = sharedInstallModule(upd, storeHostVersion);
+                    pendingUpdates.splice(pendingUpdateIndex, 1);
+                    if (pendingUpdateIndex >= pendingUpdates.length) {
+                        pendingUpdateIndex = Math.max(0, pendingUpdates.length - 1);
+                    }
+                    storeInstalledModules = scanInstalledModules();
+                    if (result.success) {
+                        storePickerMessage = 'Updated ' + upd.name;
+                    } else {
+                        storePickerMessage = result.error || 'Update failed';
+                    }
+                    view = VIEWS.STORE_PICKER_RESULT;
+                }
+                needsRedraw = true;
+            }
             break;
         case VIEWS.UPDATE_RESTART:
             /* Restart now */
@@ -5802,6 +5837,8 @@ function drawUpdatePrompt() {
         label: upd.name,
         value: upd.from + '->' + upd.to
     }));
+    /* Add "Update All" as the last item */
+    items.push({ label: '[Update All]', value: '' });
 
     drawMenuList({
         items: items,
@@ -5812,7 +5849,7 @@ function drawUpdatePrompt() {
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
     });
 
-    drawFooter('Jog: Update All  Back: Skip');
+    drawFooter('Click: Install  Back: Skip');
 }
 
 /* Draw restart prompt after core update */
