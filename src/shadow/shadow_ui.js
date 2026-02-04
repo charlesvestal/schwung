@@ -363,6 +363,7 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "auto_update_check", label: "Auto-Update", type: "bool" },
+    { key: "check_updates", label: "[Check Updates]", type: "action" },
     { key: "save", label: "[Save]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -563,12 +564,16 @@ function performCoreUpdate(mod) {
 
 /* Check for core and module updates (called on startup if auto-update enabled) */
 function checkForUpdatesInBackground() {
+    debugLog("checkForUpdatesInBackground: starting");
     const updates = [];
 
     /* Check core update */
     storeHostVersion = getHostVersion();
+    debugLog("checkForUpdatesInBackground: hostVersion=" + storeHostVersion);
     const coreRelease = fetchReleaseJsonQuick('charlesvestal/move-anything');
+    debugLog("checkForUpdatesInBackground: coreRelease=" + JSON.stringify(coreRelease));
     if (coreRelease && isNewerVersion(coreRelease.version, storeHostVersion)) {
+        debugLog("checkForUpdatesInBackground: core update available " + storeHostVersion + " -> " + coreRelease.version);
         updates.push({
             id: '__core_update__',
             name: 'Core',
@@ -580,9 +585,11 @@ function checkForUpdatesInBackground() {
         });
     }
 
-    /* Check module updates */
+    /* Check module updates - skip for now to keep startup fast */
+    debugLog("checkForUpdatesInBackground: checking modules");
     const installed = scanInstalledModules();
     const catalogResult = fetchCatalog(() => {});
+    debugLog("checkForUpdatesInBackground: catalog success=" + catalogResult.success);
     if (catalogResult.success) {
         for (const mod of catalogResult.catalog.modules || []) {
             const status = getModuleStatus(mod, installed);
@@ -597,11 +604,13 @@ function checkForUpdatesInBackground() {
         }
     }
 
+    debugLog("checkForUpdatesInBackground: found " + updates.length + " updates");
     if (updates.length > 0) {
         pendingUpdates = updates;
         pendingUpdateIndex = 0;
         view = VIEWS.UPDATE_PROMPT;
         needsRedraw = true;
+        debugLog("checkForUpdatesInBackground: set view to UPDATE_PROMPT");
     }
 }
 
@@ -2269,6 +2278,16 @@ function handleMasterFxSettingsAction(key) {
         masterOverwriteFromKeyboard = true;
         masterOverwriteTargetIndex = -1;  /* Force create new */
         needsRedraw = true;
+    } else if (key === "check_updates") {
+        /* Check for updates now */
+        checkForUpdatesInBackground();
+        if (pendingUpdates.length === 0) {
+            /* No updates found — show a brief message via store result view */
+            storePickerMessage = 'Everything is up to date';
+            view = VIEWS.STORE_PICKER_RESULT;
+            needsRedraw = true;
+        }
+        /* If updates found, checkForUpdatesInBackground already set view to UPDATE_PROMPT */
     } else if (key === "delete") {
         /* Delete - confirm */
         masterConfirmingDelete = true;
@@ -6307,7 +6326,7 @@ function drawMasterFxModuleSelect() {
 }
 
 globalThis.init = function() {
-    debugLog(`Shadow UI init - DEBUG_LOG_ENABLED=${DEBUG_LOG_ENABLED}`);
+    debugLog("Shadow UI init");
     refreshSlots();
     loadPatchList();
     initChainConfigs();
@@ -6343,43 +6362,51 @@ globalThis.tick = function() {
     if (typeof shadow_get_ui_flags === "function") {
         const flags = shadow_get_ui_flags();
         globalThis._debugFlags = flags;  /* Debug: store for display */
-        if (flags & SHADOW_UI_FLAG_JUMP_TO_SLOT) {
-            /* Get the slot to jump to (from ui_slot, set by shim) */
-            if (typeof shadow_get_ui_slot === "function") {
-                const jumpSlot = shadow_get_ui_slot();
-                if (jumpSlot >= 0 && jumpSlot < SHADOW_UI_SLOTS) {
-                    selectedSlot = jumpSlot;
-                    enterChainEdit(jumpSlot);
+
+        /* If showing update prompt/restart, clear flags but don't act on them */
+        if (view === VIEWS.UPDATE_PROMPT || view === VIEWS.UPDATE_RESTART) {
+            if (flags && typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(flags);
+            }
+        } else {
+            if (flags & SHADOW_UI_FLAG_JUMP_TO_SLOT) {
+                /* Get the slot to jump to (from ui_slot, set by shim) */
+                if (typeof shadow_get_ui_slot === "function") {
+                    const jumpSlot = shadow_get_ui_slot();
+                    if (jumpSlot >= 0 && jumpSlot < SHADOW_UI_SLOTS) {
+                        selectedSlot = jumpSlot;
+                        enterChainEdit(jumpSlot);
+                    }
+                }
+                /* Clear the flag */
+                if (typeof shadow_clear_ui_flags === "function") {
+                    shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SLOT);
                 }
             }
-            /* Clear the flag */
-            if (typeof shadow_clear_ui_flags === "function") {
-                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SLOT);
+            if (flags & SHADOW_UI_FLAG_JUMP_TO_MASTER_FX) {
+                /* Always jump to Master FX view */
+                enterMasterFxSettings();
+                /* Clear the flag */
+                if (typeof shadow_clear_ui_flags === "function") {
+                    shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_MASTER_FX);
+                }
             }
-        }
-        if (flags & SHADOW_UI_FLAG_JUMP_TO_MASTER_FX) {
-            /* Always jump to Master FX view */
-            enterMasterFxSettings();
-            /* Clear the flag */
-            if (typeof shadow_clear_ui_flags === "function") {
-                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_MASTER_FX);
-            }
-        }
-        if (flags & SHADOW_UI_FLAG_JUMP_TO_OVERTAKE) {
-            debugLog("OVERTAKE flag detected, view=" + view);
-            /* Toggle overtake mode */
-            if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
-                /* Already in overtake mode - exit back to Move */
-                debugLog("exiting overtake mode");
-                exitOvertakeMode();
-            } else {
-                /* Enter overtake menu */
-                debugLog("entering overtake menu");
-                enterOvertakeMenu();
-            }
-            /* Clear the flag */
-            if (typeof shadow_clear_ui_flags === "function") {
-                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_OVERTAKE);
+            if (flags & SHADOW_UI_FLAG_JUMP_TO_OVERTAKE) {
+                debugLog("OVERTAKE flag detected, view=" + view);
+                /* Toggle overtake mode */
+                if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
+                    /* Already in overtake mode - exit back to Move */
+                    debugLog("exiting overtake mode");
+                    exitOvertakeMode();
+                } else {
+                    /* Enter overtake menu */
+                    debugLog("entering overtake menu");
+                    enterOvertakeMenu();
+                }
+                /* Clear the flag */
+                if (typeof shadow_clear_ui_flags === "function") {
+                    shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_OVERTAKE);
+                }
             }
         }
     }
@@ -6387,7 +6414,11 @@ globalThis.tick = function() {
     /* Deferred startup update check (~500ms after startup) */
     if (startupUpdateCheckPending) {
         startupUpdateCheckTick++;
+        if (startupUpdateCheckTick === 1) {
+            debugLog("startup update check: pending, tick=" + startupUpdateCheckTick);
+        }
         if (startupUpdateCheckTick === 30) {
+            debugLog("startup update check: executing now");
             startupUpdateCheckPending = false;
             checkForUpdatesInBackground();
         }
