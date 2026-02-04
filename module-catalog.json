@@ -151,6 +151,16 @@
       "github_repo": "charlesvestal/move-anything-hera",
       "asset_name": "hera-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "surge",
+      "name": "Surge XT",
+      "description": "Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets",
+      "author": "Surge Synth Team (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-surge",
+      "asset_name": "surge-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
