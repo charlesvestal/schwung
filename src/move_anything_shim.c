@@ -1088,11 +1088,22 @@ static DBusConnection *shadow_dbus_conn = NULL;
 static pthread_t shadow_dbus_thread;
 static volatile int shadow_dbus_running = 0;
 
-/* Move's D-Bus socket FD (captured via connect() hook) */
+/* Move's D-Bus socket FD (ORIGINAL, for send() hook to recognize) */
 static int move_dbus_socket_fd = -1;
 static sd_bus *move_sdbus_conn = NULL;
 static DBusConnection *shadow_dbus_conn_old = NULL; /* Old libdbus listener (keep for compatibility) */
 static pthread_mutex_t move_dbus_conn_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Shadow buffer for pending screen reader announcements */
+#define MAX_PENDING_ANNOUNCEMENTS 16
+#define MAX_ANNOUNCEMENT_LEN 256
+static char pending_announcements[MAX_PENDING_ANNOUNCEMENTS][MAX_ANNOUNCEMENT_LEN];
+static int pending_announcement_count = 0;
+static pthread_mutex_t pending_announcements_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Track Move's D-Bus serial number for coordinated message injection */
+static uint32_t move_dbus_serial = 0;
+static pthread_mutex_t move_dbus_serial_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Parse dB value from "Track Volume X dB" string and convert to linear */
 static float shadow_parse_volume_db(const char *text)
@@ -1195,10 +1206,11 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
         if (strstr(un_addr->sun_path, "dbus") && strstr(un_addr->sun_path, "system")) {
             pthread_mutex_lock(&move_dbus_conn_mutex);
             if (move_dbus_socket_fd == -1) {
+                /* This is Move's D-Bus FD - we'll intercept writes to it */
                 move_dbus_socket_fd = sockfd;
                 char logbuf[256];
                 snprintf(logbuf, sizeof(logbuf),
-                        "D-Bus: *** CAPTURED Move's socket FD %d via connect() to %s ***",
+                        "D-Bus: *** INTERCEPTING Move's socket FD %d (path=%s) ***",
                         sockfd, un_addr->sun_path);
                 shadow_log(logbuf);
             }
@@ -1207,6 +1219,116 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
     }
     
     return result;
+}
+
+/* Parse D-Bus message serial number from raw bytes (little-endian) */
+static uint32_t parse_dbus_serial(const uint8_t *buf, size_t len)
+{
+    /* D-Bus native wire format:
+     * [0] = endianness ('l' for little-endian)
+     * [1] = message type
+     * [2] = flags
+     * [3] = protocol version (usually 1)
+     * [4-7] = body length (uint32)
+     * [8-11] = serial number (uint32) */
+
+    if (len < 12) return 0;
+    if (buf[0] != 'l') return 0;  /* Only handle little-endian for now */
+
+    uint32_t serial = *(uint32_t*)(buf + 8);
+    return serial;
+}
+
+/* Hook send() to intercept Move's D-Bus messages and inject ours */
+ssize_t send(int sockfd, const void *buf, size_t len, int flags)
+{
+    static ssize_t (*real_send)(int, const void *, size_t, int) = NULL;
+    if (!real_send) {
+        real_send = (ssize_t (*)(int, const void *, size_t, int))dlsym(RTLD_NEXT, "send");
+    }
+
+    /* Check if this is a send to Move's D-Bus socket */
+    pthread_mutex_lock(&move_dbus_conn_mutex);
+    int is_move_dbus = (sockfd == move_dbus_socket_fd && move_dbus_socket_fd >= 0);
+    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+    if (is_move_dbus) {
+        /* Parse and track Move's serial number */
+        uint32_t serial = parse_dbus_serial((const uint8_t*)buf, len);
+        if (serial > 0) {
+            pthread_mutex_lock(&move_dbus_serial_mutex);
+            if (serial > move_dbus_serial) {
+                move_dbus_serial = serial;
+            }
+            pthread_mutex_unlock(&move_dbus_serial_mutex);
+        }
+
+        /* Forward Move's message first */
+        ssize_t result = real_send(sockfd, buf, len, flags);
+
+        /* Check if we have pending announcements to inject */
+        pthread_mutex_lock(&pending_announcements_mutex);
+        int has_pending = (pending_announcement_count > 0);
+        pthread_mutex_unlock(&pending_announcements_mutex);
+
+        if (has_pending && result > 0) {
+            /* Inject our screen reader messages with coordinated serials */
+            pthread_mutex_lock(&pending_announcements_mutex);
+            for (int i = 0; i < pending_announcement_count; i++) {
+                /* Create D-Bus signal message */
+                DBusMessage *msg = dbus_message_new_signal(
+                    "/com/ableton/move/screenreader",
+                    "com.ableton.move.ScreenReader",
+                    "text"
+                );
+
+                if (msg) {
+                    const char *text = pending_announcements[i];
+                    if (dbus_message_append_args(msg, DBUS_TYPE_STRING, &text, DBUS_TYPE_INVALID)) {
+                        /* Get next serial number */
+                        pthread_mutex_lock(&move_dbus_serial_mutex);
+                        move_dbus_serial++;
+                        uint32_t our_serial = move_dbus_serial;
+                        pthread_mutex_unlock(&move_dbus_serial_mutex);
+
+                        /* Set the serial number */
+                        dbus_message_set_serial(msg, our_serial);
+
+                        /* Serialize and send */
+                        char *marshalled = NULL;
+                        int msg_len = 0;
+                        if (dbus_message_marshal(msg, &marshalled, &msg_len)) {
+                            ssize_t written = real_send(sockfd, marshalled, msg_len, flags);
+
+                            if (written > 0) {
+                                char logbuf[512];
+                                snprintf(logbuf, sizeof(logbuf),
+                                        "Screen reader: \"%s\" (injected %zd bytes, serial=%u)",
+                                        text, written, our_serial);
+                                shadow_log(logbuf);
+                            } else {
+                                char logbuf[256];
+                                snprintf(logbuf, sizeof(logbuf),
+                                        "Screen reader: Failed to inject \"%s\" (errno=%d)",
+                                        text, errno);
+                                shadow_log(logbuf);
+                            }
+
+                            free(marshalled);
+                        }
+                    }
+                    dbus_message_unref(msg);
+                }
+            }
+            pending_announcement_count = 0;  /* Clear after injecting */
+            pthread_mutex_unlock(&pending_announcements_mutex);
+        }
+
+        return result;
+    }
+
+    /* Not Move's D-Bus socket, pass through */
+    return real_send(sockfd, buf, len, flags);
 }
 
 int sd_bus_default_system(sd_bus **ret)
@@ -1266,6 +1388,7 @@ int sd_bus_start(sd_bus *bus)
 /* Hook sendmsg to capture Move's D-Bus socket FD at the lowest level */
 /* Removed - sd-bus hooks are used instead */
 
+/* Queue a screen reader announcement to be injected via send() hook */
 static void send_screenreader_announcement(const char *text)
 {
     if (!text || !text[0]) return;
@@ -1279,47 +1402,26 @@ static void send_screenreader_announcement(const char *text)
         return;
     }
 
-    /* Create message using libdbus for proper formatting */
-    DBusMessage *msg = dbus_message_new_signal(
-        "/com/ableton/move/screenreader",
-        "com.ableton.move.ScreenReader",
-        "text"
-    );
-
-    if (!msg) return;
-
-    /* Append the text argument */
-    if (!dbus_message_append_args(msg, DBUS_TYPE_STRING, &text, DBUS_TYPE_INVALID)) {
-        dbus_message_unref(msg);
-        return;
-    }
-
-    /* Serialize the message to bytes */
-    char *marshalled = NULL;
-    int len = 0;
-    if (dbus_message_marshal(msg, &marshalled, &len)) {
-        /* Write directly to Move's socket FD */
-        ssize_t written = write(sock_fd, marshalled, len);
-        
-        if (written > 0) {
-            char logbuf[512];
-            snprintf(logbuf, sizeof(logbuf), 
-                    "Screen reader: \"%s\" (wrote %zd/%d bytes to Move's FD %d)", 
-                    text, written, len, sock_fd);
-            shadow_log(logbuf);
-        } else {
-            char logbuf[256];
-            snprintf(logbuf, sizeof(logbuf),
-                    "Screen reader: write failed (%s)", strerror(errno));
-            shadow_log(logbuf);
+    /* Add to pending queue */
+    pthread_mutex_lock(&pending_announcements_mutex);
+    if (pending_announcement_count < MAX_PENDING_ANNOUNCEMENTS) {
+        size_t text_len = strlen(text);
+        if (text_len >= MAX_ANNOUNCEMENT_LEN) {
+            text_len = MAX_ANNOUNCEMENT_LEN - 1;
         }
-        
-        free(marshalled);
-    } else {
-        shadow_log("Screen reader: Failed to marshal D-Bus message");
-    }
+        memcpy(pending_announcements[pending_announcement_count], text, text_len);
+        pending_announcements[pending_announcement_count][text_len] = '\0';
+        pending_announcement_count++;
 
-    dbus_message_unref(msg);
+        char logbuf[512];
+        snprintf(logbuf, sizeof(logbuf),
+                "Screen reader: Queued \"%s\" (pending=%d)",
+                text, pending_announcement_count);
+        shadow_log(logbuf);
+    } else {
+        shadow_log("Screen reader: Queue full, dropping announcement");
+    }
+    pthread_mutex_unlock(&pending_announcements_mutex);
 }
 
 /* D-Bus filter function to receive signals */
@@ -1421,7 +1523,7 @@ static void *shadow_dbus_thread_func(void *arg)
                 dbus_connection_get_unix_fd(shadow_dbus_conn, &our_fd);
 
                 if (fd != our_fd) {
-                    /* This is Move's FD! */
+                    /* This is Move's FD! Store ORIGINAL for send() hook to recognize */
                     pthread_mutex_lock(&move_dbus_conn_mutex);
                     move_dbus_socket_fd = fd;
                     pthread_mutex_unlock(&move_dbus_conn_mutex);
@@ -1432,25 +1534,8 @@ static void *shadow_dbus_thread_func(void *arg)
                             fd, addr.sun_path);
                     shadow_log(logbuf);
 
-                    /* Duplicate Move's FD so we have our own copy (don't interfere with Move) */
-                    int dup_fd = dup(fd);
-                    if (dup_fd < 0) {
-                        shadow_log("D-Bus: ERROR - Failed to dup Move's FD");
-                        break;
-                    }
-
                     snprintf(logbuf, sizeof(logbuf),
-                            "D-Bus: Duplicated FD %d -> %d", fd, dup_fd);
-                    shadow_log(logbuf);
-
-                    /* DON'T use sd-bus on Move's FD - it will conflict!
-                     * Just store the duplicated FD for later raw writes */
-                    pthread_mutex_lock(&move_dbus_conn_mutex);
-                    move_dbus_socket_fd = dup_fd;
-                    pthread_mutex_unlock(&move_dbus_conn_mutex);
-
-                    snprintf(logbuf, sizeof(logbuf),
-                            "D-Bus: Will send raw messages to duplicated FD %d", dup_fd);
+                            "D-Bus: Will intercept writes to FD %d via send() hook", fd);
                     shadow_log(logbuf);
 
                     break;
@@ -1481,12 +1566,11 @@ static void *shadow_dbus_thread_func(void *arg)
 
     shadow_log("D-Bus: Connected and listening for screenreader signals");
 
-    /* Test announcements disabled - writing to dup'd FD crashes Move
-     * The issue: D-Bus protocol requires coordinated serial numbers
-     * Two writers on same socket violate protocol even with dup() */
-    // send_screenreader_announcement("Move Anything D-Bus Test");
-    // sleep(1);
-    // send_screenreader_announcement("Screen Reader Active");
+    /* Send test announcements via the new shadow buffer architecture.
+     * These are queued and injected via send() hook with coordinated serial numbers. */
+    send_screenreader_announcement("Move Anything Screen Reader Test");
+    sleep(1);
+    send_screenreader_announcement("Screen Reader Active");
 
     /* Main loop - process D-Bus messages */
     while (shadow_dbus_running) {
@@ -5831,17 +5915,8 @@ int close(int fd)
     return real_close ? real_close(fd) : -1;
 }
 
-ssize_t write(int fd, const void *buf, size_t count)
-{
-    if (!real_write) {
-        real_write = dlsym(RTLD_NEXT, "write");
-    }
-    const char *path = tracked_path_for_fd(fd);
-    if (path && buf && count > 0) {
-        log_fd_bytes("WRITE", fd, path, (const unsigned char *)buf, count);
-    }
-    return real_write ? real_write(fd, buf, count) : -1;
-}
+/* write() hook removed - conflicts with system headers
+ * Using send() hook instead for D-Bus interception */
 
 ssize_t read(int fd, void *buf, size_t count)
 {
