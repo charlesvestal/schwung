@@ -108,7 +108,8 @@ typedef enum {
 /* Knob mapping types */
 typedef enum {
     KNOB_TYPE_FLOAT = 0,
-    KNOB_TYPE_INT = 1
+    KNOB_TYPE_INT = 1,
+    KNOB_TYPE_ENUM = 2
 } knob_type_t;
 
 /* Knob mapping structure */
@@ -127,14 +128,16 @@ typedef struct {
 #define MAX_ENUM_OPTIONS 16
 typedef struct {
     char key[32];           /* Parameter key (e.g., "preset", "decay") */
-    char name[32];          /* Display name */
-    knob_type_t type;       /* float or int (for numeric types) */
-    char type_str[16];      /* Type as string ("float", "int", "enum") */
+    char name[64];          /* Display name */
+    knob_type_t type;       /* Parameter type: FLOAT, INT, or ENUM */
     float min_val;          /* Minimum value */
     float max_val;          /* Maximum value (or -1 if dynamic via max_param) */
     float default_val;      /* Default value */
     char max_param[32];     /* Dynamic max param key (e.g., "preset_count") */
-    char options[MAX_ENUM_OPTIONS][32];  /* Enum options (if type is "enum") */
+    char unit[16];          /* Unit suffix (e.g., "Hz", "dB", "%") */
+    char display_format[16]; /* Display format hint (e.g., "%.2f", "%d") */
+    float step;             /* Step size for UI increments */
+    char options[MAX_ENUM_OPTIONS][32];  /* Enum options (if type is ENUM) */
     int option_count;       /* Number of enum options */
 } chain_param_info_t;
 
@@ -1463,7 +1466,6 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
         chain_param_info_t *p = &params[*count];
         memset(p, 0, sizeof(*p));
         p->type = KNOB_TYPE_FLOAT;  /* Default */
-        strcpy(p->type_str, "float");  /* Default type string */
         p->min_val = 0.0f;
         p->max_val = 1.0f;
 
@@ -1503,18 +1505,11 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
             const char *q1 = strchr(type_pos + 7, '"');
             if (q1 && q1 < obj_end) {
                 q1++;
-                const char *q2 = strchr(q1, '"');
-                if (q2 && q2 < obj_end) {
-                    int len = (int)(q2 - q1);
-                    if (len > 15) len = 15;
-                    strncpy(p->type_str, q1, len);
-                    p->type_str[len] = '\0';
-                }
                 if (strncmp(q1, "int", 3) == 0) {
                     p->type = KNOB_TYPE_INT;
                     p->max_val = 9999.0f;  /* Default for int */
                 } else if (strncmp(q1, "enum", 4) == 0) {
-                    p->type = KNOB_TYPE_INT;  /* Enums treated as int indices */
+                    p->type = KNOB_TYPE_ENUM;
                 }
             }
         }
@@ -5483,7 +5478,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                             pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
                         }
                         /* If enum, return option label */
-                        if (pinfo && strcmp(pinfo->type_str, "enum") == 0 && pinfo->option_count > 0) {
+                        if (pinfo && pinfo->type == KNOB_TYPE_ENUM && pinfo->option_count > 0) {
                             int idx = (int)(inst->knob_mappings[i].current_value + 0.5f);
                             if (idx < 0) idx = 0;
                             if (idx >= pinfo->option_count) idx = pinfo->option_count - 1;
@@ -5513,8 +5508,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
                             pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
                         }
-                        if (pinfo && pinfo->type_str[0]) {
-                            return snprintf(buf, buf_len, "%s", pinfo->type_str);
+                        if (pinfo) {
+                            const char *type_str = (pinfo->type == KNOB_TYPE_INT) ? "int" :
+                                                   (pinfo->type == KNOB_TYPE_ENUM) ? "enum" : "float";
+                            return snprintf(buf, buf_len, "%s", type_str);
                         }
                         return snprintf(buf, buf_len, "%s",
                                         inst->knob_mappings[i].type == KNOB_TYPE_INT ? "int" : "float");
@@ -5562,13 +5559,15 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->synth_param_count && offset < buf_len - 100; i++) {
                     chain_param_info_t *p = &inst->synth_params[i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     offset += snprintf(buf + offset, buf_len - offset,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
+                        type_str,
                         p->min_val, p->max_val);
                     /* Add options array for enum types */
-                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
                         for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
                             if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
@@ -5613,13 +5612,15 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->fx_param_counts[0] && offset < buf_len - 100; i++) {
                     chain_param_info_t *p = &inst->fx_params[0][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     offset += snprintf(buf + offset, buf_len - offset,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
+                        type_str,
                         p->min_val, p->max_val);
                     /* Add options array for enum types */
-                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
                         for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
                             if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
@@ -5666,13 +5667,15 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->fx_param_counts[1] && offset < buf_len - 100; i++) {
                     chain_param_info_t *p = &inst->fx_params[1][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     offset += snprintf(buf + offset, buf_len - offset,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
+                        type_str,
                         p->min_val, p->max_val);
                     /* Add options array for enum types */
-                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
                         for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
                             if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
@@ -5719,14 +5722,16 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->midi_fx_param_counts[0] && written < buf_len - 10; i++) {
                     chain_param_info_t *p = &inst->midi_fx_params[0][i];
                     if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     written += snprintf(buf + written, buf_len - written,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
-                        p->key, p->name, p->type_str);
-                    if (strcmp(p->type_str, "float") == 0 || strcmp(p->type_str, "int") == 0) {
+                        p->key, p->name, type_str);
+                    if (p->type == KNOB_TYPE_FLOAT || p->type == KNOB_TYPE_INT) {
                         written += snprintf(buf + written, buf_len - written,
                             ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
                             p->min_val, p->max_val, p->default_val);
-                    } else if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    } else if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         written += snprintf(buf + written, buf_len - written, ",\"options\":[");
                         for (int j = 0; j < p->option_count; j++) {
                             if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
@@ -5768,14 +5773,16 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->midi_fx_param_counts[1] && written < buf_len - 10; i++) {
                     chain_param_info_t *p = &inst->midi_fx_params[1][i];
                     if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     written += snprintf(buf + written, buf_len - written,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
-                        p->key, p->name, p->type_str);
-                    if (strcmp(p->type_str, "float") == 0 || strcmp(p->type_str, "int") == 0) {
+                        p->key, p->name, type_str);
+                    if (p->type == KNOB_TYPE_FLOAT || p->type == KNOB_TYPE_INT) {
                         written += snprintf(buf + written, buf_len - written,
                             ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
                             p->min_val, p->max_val, p->default_val);
-                    } else if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    } else if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         written += snprintf(buf + written, buf_len - written, ",\"options\":[");
                         for (int j = 0; j < p->option_count; j++) {
                             if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
