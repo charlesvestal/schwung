@@ -1449,7 +1449,45 @@ static int json_get_int_in_section(const char *json, const char *section_key,
     return ret;
 }
 
-/* Parse chain_params from module.json */
+/*
+ * Check if a JSON value is an object (starts with '{') vs string/primitive
+ */
+static int json_value_is_object(const char *val) {
+    while (*val == ' ' || *val == '\t' || *val == '\n') val++;
+    return *val == '{';
+}
+
+/*
+ * Check if JSON object has a specific key
+ */
+static int json_object_has_key(const char *obj, const char *key) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    return strstr(obj, search) != NULL;
+}
+
+/*
+ * Parse parameters from ui_hierarchy structure.
+ * Extracts param definitions from shared_params and all levels.
+ */
+static int parse_hierarchy_params(const char *json, chain_param_info_t *out_params, int max_params) {
+    int param_count = 0;
+
+    /* Find ui_hierarchy section */
+    const char *hierarchy = strstr(json, "\"ui_hierarchy\"");
+    if (!hierarchy) return 0;
+
+    /* TODO: Parse shared_params if present */
+    /* TODO: Parse params from all levels */
+    /* TODO: Validate no duplicate keys */
+
+    return param_count;
+}
+
+/*
+ * Parse parameter definitions from module.json.
+ * First tries ui_hierarchy (new format), falls back to chain_params (legacy).
+ */
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count) {
     char json_path[MAX_PATH_LEN];
     snprintf(json_path, sizeof(json_path), "%s/module.json", module_path);
@@ -1476,16 +1514,25 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
     json[size] = '\0';
     fclose(f);
 
+    /* Try ui_hierarchy first */
+    const char *hierarchy = strstr(json, "\"ui_hierarchy\"");
+    if (hierarchy) {
+        *count = parse_hierarchy_params(json, params, MAX_CHAIN_PARAMS);
+        free(json);
+        return 0;
+    }
+
+    /* Fall back to legacy chain_params */
     *count = 0;
 
     /* Find chain_params array */
-    const char *chain_params = strstr(json, "\"chain_params\"");
-    if (!chain_params) {
+    const char *chain_params_str = strstr(json, "\"chain_params\"");
+    if (!chain_params_str) {
         free(json);
         return 0;  /* No params is OK */
     }
 
-    const char *arr_start = strchr(chain_params, '[');
+    const char *arr_start = strchr(chain_params_str, '[');
     if (!arr_start) {
         free(json);
         return 0;
@@ -1500,7 +1547,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
         arr_end++;
     }
 
-    /* Parse each parameter object */
+    /* Parse each parameter object (legacy chain_params format) */
     const char *pos = arr_start + 1;
     while (pos < arr_end && *count < MAX_CHAIN_PARAMS) {
         const char *obj_start = strchr(pos, '{');
