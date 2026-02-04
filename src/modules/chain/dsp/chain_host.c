@@ -1663,6 +1663,11 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
                 }
             }
         }
+
+        /* Set max_val for enums to option_count - 1 */
+        if (param->option_count > 0) {
+            param->max_val = (float)(param->option_count - 1);
+        }
     }
 
     /* Extract max_param (dynamic max reference) */
@@ -2984,9 +2989,9 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
 
                     /* Calculate acceleration multiplier based on turn speed */
                     int accel = calc_knob_accel(i);
-                    int is_int = (pinfo->type == KNOB_TYPE_INT);
+                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
 
-                    /* Cap acceleration for ints to avoid jumping too far */
+                    /* Cap acceleration for ints/enums to avoid jumping too far */
                     if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                         accel = KNOB_ACCEL_MAX_MULT_INT;
                     }
