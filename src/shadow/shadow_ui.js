@@ -78,6 +78,13 @@ import {
     tickTextEntry
 } from '/data/UserData/move-anything/shared/text_entry.mjs';
 
+import {
+    announce,
+    announceMenuItem,
+    announceParameter,
+    announceView
+} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
 const TRACK_CC_END = MoveRow1;    // CC 43
@@ -165,9 +172,44 @@ let selectedPatch = 0;
 let selectedDetailItem = 0;    // For patch detail view (0=synth, 1=fx1, 2=fx2, 3=load)
 let selectedSetting = 0;       // For slot settings view
 let editingSettingValue = false;
-let view = VIEWS.SLOTS;
+let setView(VIEWS.SLOTS);
 let needsRedraw = true;
 let refreshCounter = 0;
+
+/* View names for screen reader announcements */
+const VIEW_NAMES = {
+    [VIEWS.SLOTS]: "Slots Menu",
+    [VIEWS.SLOT_SETTINGS]: "Slot Settings",
+    [VIEWS.CHAIN_EDIT]: "Chain Edit",
+    [VIEWS.CHAIN_SETTINGS]: "Chain Settings",
+    [VIEWS.PATCHES]: "Patch Browser",
+    [VIEWS.PATCH_DETAIL]: "Patch Detail",
+    [VIEWS.COMPONENT_PARAMS]: "Component Parameters",
+    [VIEWS.COMPONENT_SELECT]: "Module Browser",
+    [VIEWS.COMPONENT_EDIT]: "Preset Picker",
+    [VIEWS.MASTER_FX]: "Master FX",
+    [VIEWS.HIERARCHY_EDITOR]: "Hierarchy Editor",
+    [VIEWS.KNOB_EDITOR]: "Knob Editor",
+    [VIEWS.KNOB_PARAM_PICKER]: "Parameter Picker",
+    [VIEWS.STORE_PICKER_LIST]: "Module Store",
+    [VIEWS.STORE_PICKER_DETAIL]: "Module Details",
+    [VIEWS.STORE_PICKER_LOADING]: "Loading",
+    [VIEWS.STORE_PICKER_RESULT]: "Operation Complete",
+    [VIEWS.STORE_PICKER_POST_INSTALL]: "Installation Complete",
+    [VIEWS.OVERTAKE_MENU]: "Overtake Menu",
+    [VIEWS.OVERTAKE_MODULE]: "Overtake Module"
+};
+
+/* Helper to change view and announce it */
+function setView(newView, customLabel) {
+    if (view === newView) return;  /* No change */
+    view = newView;
+    needsRedraw = true;
+
+    /* Announce the view change */
+    const label = customLabel || VIEW_NAMES[newView] || newView;
+    announceView(label);
+}
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
 
@@ -720,6 +762,8 @@ function checkAndShowSynthError(slotIndex) {
         assetWarningTitle = `${synthName} Warning`;
         assetWarningLines = wrapText(synthError, 18);
         assetWarningActive = true;
+        /* Announce the error */
+        announce(`${assetWarningTitle}: ${synthError}`);
         needsRedraw = true;
         return true;
     }
@@ -736,6 +780,8 @@ function checkAndShowMasterFxError(fxSlot) {
         assetWarningTitle = `${fxName} Warning`;
         assetWarningLines = wrapText(fxError, 18);
         assetWarningActive = true;
+        /* Announce the error */
+        announce(`${assetWarningTitle}: ${fxError}`);
         needsRedraw = true;
         return true;
     }
@@ -989,7 +1035,7 @@ function enterOvertakeMenu() {
     overtakeModules.push({ id: "__get_more__", name: "[Get more...]", path: null, uiPath: null });
     selectedOvertakeModule = 0;
     previousView = view;
-    view = VIEWS.OVERTAKE_MENU;
+    setView(VIEWS.OVERTAKE_MENU);
     needsRedraw = true;
 }
 
@@ -1018,7 +1064,7 @@ function completeOvertakeExit() {
     }
 
     /* Return to slots view */
-    view = VIEWS.SLOTS;
+    setView(VIEWS.SLOTS);
     needsRedraw = true;
     /* Request exit from shadow UI to return to Move */
     if (typeof shadow_request_exit === "function") {
@@ -1052,7 +1098,7 @@ function loadOvertakeModule(moduleInfo) {
         const savedMidi = globalThis.onMidiMessageInternal;
 
         overtakeModulePath = moduleInfo.uiPath;
-        view = VIEWS.OVERTAKE_MODULE;
+        setView(VIEWS.OVERTAKE_MODULE);
         needsRedraw = true;
 
         /* Load the module's UI script */
@@ -1374,7 +1420,7 @@ function enterComponentParams(slot, component) {
     componentParams = fetchComponentParams(slot, component);
     selectedParam = 0;
     editingValue = false;
-    view = VIEWS.COMPONENT_PARAMS;
+    setView(VIEWS.COMPONENT_PARAMS);
     needsRedraw = true;
 }
 
@@ -1566,7 +1612,7 @@ function enterPatchBrowser(slotIndex) {
     } else {
         selectedPatch = findPatchIndexByName(slots[slotIndex]?.name);
     }
-    view = VIEWS.PATCHES;
+    setView(VIEWS.PATCHES);
     needsRedraw = true;
 }
 
@@ -1576,7 +1622,7 @@ function enterPatchDetail(slotIndex, patchIndex) {
     selectedPatch = patchIndex;
     selectedDetailItem = 0;
     fetchPatchDetail(slotIndex);
-    view = VIEWS.PATCH_DETAIL;
+    setView(VIEWS.PATCH_DETAIL);
     needsRedraw = true;
 }
 
@@ -1604,7 +1650,7 @@ function applyPatchSelection() {
     fetchPatchDetail(selectedSlot);
     fetchKnobMappings(selectedSlot);
     invalidateKnobContextCache();  /* Clear stale knob contexts after patch change */
-    view = VIEWS.SLOTS;
+    setView(VIEWS.SLOTS);
     needsRedraw = true;
 }
 
@@ -1843,7 +1889,7 @@ function doDeletePreset(slotIndex) {
 
     confirmingDelete = false;
     loadPatchList();
-    view = VIEWS.CHAIN_EDIT;
+    setView(VIEWS.CHAIN_EDIT);
     /* Delete complete */
     needsRedraw = true;
 }
@@ -1854,7 +1900,7 @@ function enterSlotSettings(slotIndex) {
     updateFocusedSlot(slotIndex);
     selectedSetting = 0;
     editingSettingValue = false;
-    view = VIEWS.SLOT_SETTINGS;
+    setView(VIEWS.SLOT_SETTINGS);
     needsRedraw = true;
 }
 
@@ -2045,13 +2091,14 @@ function handleMasterFxSettingsAction(key) {
             masterConfirmingOverwrite = true;
             masterConfirmIndex = 0;
             masterOverwriteFromKeyboard = false;
+            announce(`Overwrite ${currentMasterPresetName}?`);
         } else {
             /* New preset - show name preview */
             masterPendingSaveName = generateMasterPresetName();
             masterShowingNamePreview = true;
             masterNamePreviewIndex = 1;  /* Default to OK */
             masterOverwriteFromKeyboard = true;
-        }
+            announce(`Confirm save as: ${masterPendingSaveName}`);
         needsRedraw = true;
     } else if (key === "save_as") {
         /* Save As - show name preview with current name */
@@ -2060,11 +2107,13 @@ function handleMasterFxSettingsAction(key) {
         masterNamePreviewIndex = 1;
         masterOverwriteFromKeyboard = true;
         masterOverwriteTargetIndex = -1;  /* Force create new */
+        announce(`Confirm save as: ${masterPendingSaveName}`);
         needsRedraw = true;
     } else if (key === "delete") {
         /* Delete - confirm */
         masterConfirmingDelete = true;
         masterConfirmIndex = 0;
+        announce(`Delete ${currentMasterPresetName}?`);
         needsRedraw = true;
     }
 }
@@ -2094,7 +2143,7 @@ function enterMasterFxSettings() {
     loadMasterFxChainConfig();
     selectedMasterFxComponent = 0;  // Start at FX 1
     selectingMasterFxModule = false;
-    view = VIEWS.MASTER_FX;
+    setView(VIEWS.MASTER_FX);
     needsRedraw = true;
 }
 
@@ -2246,7 +2295,7 @@ function enterChainEdit(slotIndex) {
     selectedChainComponent = 0;  // Start at MIDI FX (scroll left for Chain/patch)
     /* Load current chain config from DSP */
     loadChainConfigFromSlot(slotIndex);
-    view = VIEWS.CHAIN_EDIT;
+    setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 }
 
@@ -2348,7 +2397,7 @@ function enterStorePicker(componentKey) {
 
     /* Check if we need to fetch catalog */
     if (!storeCatalog) {
-        view = VIEWS.STORE_PICKER_LOADING;
+        setView(VIEWS.STORE_PICKER_LOADING);
         storePickerLoadingTitle = 'Module Store';
         storePickerLoadingMessage = 'Loading catalog...';
         needsRedraw = true;
@@ -2360,7 +2409,7 @@ function enterStorePicker(componentKey) {
     } else {
         /* Catalog already loaded, go to list */
         storePickerModules = getModulesForCategory(storeCatalog, categoryId);
-        view = VIEWS.STORE_PICKER_LIST;
+        setView(VIEWS.STORE_PICKER_LIST);
         needsRedraw = true;
     }
 }
@@ -2390,10 +2439,10 @@ function fetchStoreCatalogSync() {
         /* Note: Core updates are not shown in shadow mode store picker.
          * Use the standalone Module Store to update the core.
          * This avoids the complexity of updating while running. */
-        view = VIEWS.STORE_PICKER_LIST;
+        setView(VIEWS.STORE_PICKER_LIST);
     } else {
         storePickerMessage = result.error || 'Failed to load catalog';
-        view = VIEWS.STORE_PICKER_RESULT;
+        setView(VIEWS.STORE_PICKER_RESULT);
     }
     needsRedraw = true;
 }
@@ -2423,7 +2472,7 @@ function handleStorePickerListSelect() {
 
     storePickerCurrentModule = storePickerModules[storePickerSelectedIndex];
     storePickerActionIndex = 0;
-    view = VIEWS.STORE_PICKER_DETAIL;
+    setView(VIEWS.STORE_PICKER_DETAIL);
     needsRedraw = true;
 }
 
@@ -2439,7 +2488,7 @@ function handleStorePickerDetailSelect() {
         return;
     }
 
-    view = VIEWS.STORE_PICKER_LOADING;
+    setView(VIEWS.STORE_PICKER_LOADING);
     storePickerLoadingTitle = 'Installing';
     storePickerLoadingMessage = mod.name;
 
@@ -2473,14 +2522,14 @@ function handleStorePickerDetailSelect() {
         /* Check for post_install message */
         if (mod.post_install) {
             storePostInstallLines = wrapText(mod.post_install, 18);
-            view = VIEWS.STORE_PICKER_POST_INSTALL;
+            setView(VIEWS.STORE_PICKER_POST_INSTALL);
         } else {
             storePickerMessage = `Installed ${mod.name}`;
-            view = VIEWS.STORE_PICKER_RESULT;
+            setView(VIEWS.STORE_PICKER_RESULT);
         }
     } else {
         storePickerMessage = result.error || 'Install failed';
-        view = VIEWS.STORE_PICKER_RESULT;
+        setView(VIEWS.STORE_PICKER_RESULT);
     }
 
     needsRedraw = true;
@@ -2489,7 +2538,7 @@ function handleStorePickerDetailSelect() {
 /* Handle selection in store picker result */
 function handleStorePickerResultSelect() {
     /* Return to list */
-    view = VIEWS.STORE_PICKER_LIST;
+    setView(VIEWS.STORE_PICKER_LIST);
     storePickerCurrentModule = null;
     needsRedraw = true;
 }
@@ -2502,52 +2551,52 @@ function handleStorePickerBack() {
             if (storePickerFromOvertake) {
                 /* Came from overtake menu - rescan and go back there */
                 overtakeModules = scanForOvertakeModules();
-                view = VIEWS.OVERTAKE_MENU;
+                setView(VIEWS.OVERTAKE_MENU);
                 storePickerFromOvertake = false;
             } else if (storePickerFromMasterFx) {
                 /* Came from master FX module select - rescan and go back */
                 MASTER_FX_OPTIONS = scanForAudioFxModules();
                 enterMasterFxModuleSelect(selectedMasterFxComponent);
-                view = VIEWS.MASTER_FX;
+                setView(VIEWS.MASTER_FX);
                 storePickerFromMasterFx = false;
             } else {
                 /* Came from component select - rescan modules and go back */
                 availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
-                view = VIEWS.COMPONENT_SELECT;
+                setView(VIEWS.COMPONENT_SELECT);
             }
             storePickerCategory = null;
             storePickerModules = [];
             break;
         case VIEWS.STORE_PICKER_DETAIL:
             /* Return to list */
-            view = VIEWS.STORE_PICKER_LIST;
+            setView(VIEWS.STORE_PICKER_LIST);
             storePickerCurrentModule = null;
             storeDetailScrollState = null;
             break;
         case VIEWS.STORE_PICKER_RESULT:
             /* Return to list */
-            view = VIEWS.STORE_PICKER_LIST;
+            setView(VIEWS.STORE_PICKER_LIST);
             storePickerCurrentModule = null;
             break;
         case VIEWS.STORE_PICKER_POST_INSTALL:
             /* Dismiss post-install, go to result */
             storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
-            view = VIEWS.STORE_PICKER_RESULT;
+            setView(VIEWS.STORE_PICKER_RESULT);
             break;
         case VIEWS.STORE_PICKER_LOADING:
             /* Allow cancel during loading - return to where we came from */
             if (storePickerFromOvertake) {
                 overtakeModules = scanForOvertakeModules();
-                view = VIEWS.OVERTAKE_MENU;
+                setView(VIEWS.OVERTAKE_MENU);
                 storePickerFromOvertake = false;
             } else if (storePickerFromMasterFx) {
                 MASTER_FX_OPTIONS = scanForAudioFxModules();
                 enterMasterFxModuleSelect(selectedMasterFxComponent);
-                view = VIEWS.MASTER_FX;
+                setView(VIEWS.MASTER_FX);
                 storePickerFromMasterFx = false;
             } else {
                 availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
-                view = VIEWS.COMPONENT_SELECT;
+                setView(VIEWS.COMPONENT_SELECT);
             }
             storePickerCategory = null;
             storePickerModules = [];
@@ -2577,7 +2626,7 @@ function enterComponentSelect(slotIndex, componentIndex) {
         if (idx >= 0) selectedModuleIndex = idx;
     }
 
-    view = VIEWS.COMPONENT_SELECT;
+    setView(VIEWS.COMPONENT_SELECT);
     needsRedraw = true;
 }
 
@@ -2587,7 +2636,7 @@ function applyComponentSelection() {
     const selected = availableModules[selectedModuleIndex];
 
     if (!comp || comp.key === "settings") {
-        view = VIEWS.CHAIN_EDIT;
+        setView(VIEWS.CHAIN_EDIT);
         return;
     }
 
@@ -2632,7 +2681,7 @@ function applyComponentSelection() {
     }
 
     invalidateKnobContextCache();  /* Clear stale knob contexts after module change */
-    view = VIEWS.CHAIN_EDIT;
+    setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 }
 
@@ -2641,7 +2690,7 @@ function enterChainSettings(slotIndex) {
     selectedSlot = slotIndex;
     selectedChainSetting = 0;
     editingChainSettingValue = false;
-    view = VIEWS.CHAIN_SETTINGS;
+    setView(VIEWS.CHAIN_SETTINGS);
     needsRedraw = true;
 }
 
@@ -2698,7 +2747,7 @@ function enterKnobEditor(slot) {
     knobEditorSlot = slot;
     knobEditorIndex = 0;
     loadKnobAssignments(slot);
-    view = VIEWS.KNOB_EDITOR;
+    setView(VIEWS.KNOB_EDITOR);
     needsRedraw = true;
 }
 
@@ -2820,7 +2869,7 @@ function enterKnobParamPicker() {
     knobParamPickerHierarchy = null;
     knobParamPickerLevel = null;
     knobParamPickerPath = [];
-    view = VIEWS.KNOB_PARAM_PICKER;
+    setView(VIEWS.KNOB_PARAM_PICKER);
     needsRedraw = true;
 }
 
@@ -2901,7 +2950,7 @@ function applyKnobAssignment(target, param) {
     invalidateKnobContextCache();
 
     /* Return to knob editor */
-    view = VIEWS.KNOB_EDITOR;
+    setView(VIEWS.KNOB_EDITOR);
     needsRedraw = true;
 }
 
@@ -2949,7 +2998,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     /* Try to load the module's UI */
     if (moduleId && loadModuleUi(slotIndex, componentKey, moduleId)) {
         /* Module UI loaded successfully */
-        view = VIEWS.COMPONENT_EDIT;
+        setView(VIEWS.COMPONENT_EDIT);
         needsRedraw = true;
         return;
     }
@@ -2967,7 +3016,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     /* Fetch preset name */
     editComponentPresetName = getSlotParam(slotIndex, `${prefix}:preset_name`) || "";
 
-    view = VIEWS.COMPONENT_EDIT;
+    setView(VIEWS.COMPONENT_EDIT);
     needsRedraw = true;
 }
 
@@ -3016,7 +3065,7 @@ function enterHierarchyEditor(slotIndex, componentKey) {
         checkAndShowSynthError(slotIndex);
     }
 
-    view = VIEWS.HIERARCHY_EDITOR;
+    setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
 }
 
@@ -3061,7 +3110,7 @@ function enterMasterFxHierarchyEditor(fxSlot) {
     /* Load current level's params and knobs */
     loadHierarchyLevel();
 
-    view = VIEWS.HIERARCHY_EDITOR;
+    setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
 }
 
@@ -3185,6 +3234,10 @@ function changeHierPreset(delta) {
     /* Fetch new preset name */
     const nameParam = levelDef.name_param || "preset_name";
     hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
+
+    /* Announce preset change */
+    const presetLabel = `Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`;
+    announceMenuItem(presetLabel, hierEditorPresetName);
 
     /* Re-fetch chain_params for new preset/plugin and invalidate knob cache */
     if (hierEditorIsMasterFx) {
@@ -4051,13 +4104,17 @@ function handleJog(delta) {
             if (masterShowingNamePreview) {
                 /* Navigate Edit/OK */
                 masterNamePreviewIndex = masterNamePreviewIndex === 0 ? 1 : 0;
+                announce(masterNamePreviewIndex === 0 ? "Edit" : "OK");
             } else if (masterConfirmingOverwrite || masterConfirmingDelete) {
                 /* Navigate No/Yes */
                 masterConfirmIndex = masterConfirmIndex === 0 ? 1 : 0;
+                announce(masterConfirmIndex === 0 ? "No" : "Yes");
             } else if (inMasterPresetPicker) {
                 /* Navigate preset picker */
                 const totalItems = 1 + masterPresets.length;  /* [New] + presets */
                 selectedMasterPresetIndex = Math.max(0, Math.min(totalItems - 1, selectedMasterPresetIndex + delta));
+                const presetName = selectedMasterPresetIndex === 0 ? "[New]" : masterPresets[selectedMasterPresetIndex - 1];
+                announceMenuItem("Preset", presetName);
             } else if (inMasterFxSettingsMenu) {
                 /* Navigate settings menu */
                 const items = getMasterFxSettingsItems();
@@ -4066,17 +4123,30 @@ function handleJog(delta) {
                     const item = items[selectedMasterFxSetting];
                     if (item.type === "float" || item.type === "int") {
                         /* TODO: adjust master volume */
+                        announceParameter(item.label, item.value || "");
                     }
                 } else {
                     selectedMasterFxSetting = Math.max(0, Math.min(items.length - 1, selectedMasterFxSetting + delta));
+                    const item = items[selectedMasterFxSetting];
+                    announceMenuItem(item.label, item.value || "");
                 }
             } else if (selectingMasterFxModule) {
                 /* Navigate module list */
                 selectedMasterFxModuleIndex = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFxModuleIndex + delta));
+                const module = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex];
+                announceMenuItem("Module", module.name);
             } else {
                 /* Navigate chain components (-1 = preset selection, like instrument slots)
                  * Preset picker is only accessible via click, not scroll */
                 selectedMasterFxComponent = Math.max(-1, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
+                if (selectedMasterFxComponent === -1) {
+                    announce("Preset Selection");
+                } else {
+                    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+                    const compKey = comp.key;
+                    const moduleName = masterFxChainConfig?.[compKey]?.module || "Empty";
+                    announceMenuItem(comp.label, moduleName);
+                }
             }
             break;
         case VIEWS.SLOT_SETTINGS:
@@ -4084,9 +4154,16 @@ function handleJog(delta) {
                 /* Adjust the setting value */
                 const setting = SLOT_SETTINGS[selectedSetting];
                 adjustSlotSetting(selectedSlot, setting, delta);
+                /* Announce new value */
+                const newVal = getSlotSettingValue(selectedSlot, setting);
+                announceParameter(setting.label, newVal);
             } else {
                 /* Navigate settings list */
                 selectedSetting = Math.max(0, Math.min(SLOT_SETTINGS.length - 1, selectedSetting + delta));
+                /* Announce selected setting */
+                const setting = SLOT_SETTINGS[selectedSetting];
+                const val = getSlotSettingValue(selectedSlot, setting);
+                announceMenuItem(setting.label, val);
             }
             break;
         case VIEWS.PATCHES:
@@ -4112,6 +4189,15 @@ function handleJog(delta) {
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
             selectedChainComponent = Math.max(-1, Math.min(CHAIN_COMPONENTS.length - 1, selectedChainComponent + delta));
+            /* Announce component */
+            if (selectedChainComponent === -1) {
+                announce("Patch Selection");
+            } else {
+                const comp = CHAIN_COMPONENTS[selectedChainComponent];
+                const compKey = comp.key;
+                const moduleName = chainConfigs[selectedSlot]?.[compKey]?.module || "Empty";
+                announceMenuItem(comp.label, moduleName);
+            }
             break;
         case VIEWS.COMPONENT_SELECT:
             /* Navigate available modules list */
@@ -4126,15 +4212,24 @@ function handleJog(delta) {
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
+                announce(namePreviewIndex === 0 ? "Edit" : "OK");
             } else if (confirmingOverwrite || confirmingDelete) {
                 confirmIndex = confirmIndex === 0 ? 1 : 0;
+                announce(confirmIndex === 0 ? "No" : "Yes");
             } else if (editingChainSettingValue) {
                 const items = getChainSettingsItems(selectedSlot);
                 const setting = items[selectedChainSetting];
                 adjustChainSetting(selectedSlot, setting, delta);
+                /* Announce new value */
+                const newVal = getChainSettingValue(selectedSlot, setting);
+                announceParameter(setting.label, newVal);
             } else {
                 const items = getChainSettingsItems(selectedSlot);
                 selectedChainSetting = Math.max(0, Math.min(items.length - 1, selectedChainSetting + delta));
+                /* Announce selected setting */
+                const setting = items[selectedChainSetting];
+                const val = getChainSettingValue(selectedSlot, setting);
+                announceMenuItem(setting.label, val);
             }
             break;
         case VIEWS.COMPONENT_EDIT:
@@ -4145,17 +4240,33 @@ function handleJog(delta) {
             if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
                 /* Browse presets */
                 changeHierPreset(delta);
+                /* Announcement happens in changeHierPreset */
             } else if (hierEditorEditMode) {
                 /* Adjust selected param value */
                 adjustHierSelectedParam(delta);
+                /* Get current param and announce value */
+                if (hierEditorParams.length > 0 && hierEditorSelectedIdx >= 0 && hierEditorSelectedIdx < hierEditorParams.length) {
+                    const param = hierEditorParams[hierEditorSelectedIdx];
+                    announceParameter(param.label || param.key, param.value || "");
+                }
             } else {
                 /* Scroll param list (includes preset edit mode) */
                 hierEditorSelectedIdx = Math.max(0, Math.min(hierEditorParams.length - 1, hierEditorSelectedIdx + delta));
+                /* Announce selected parameter */
+                if (hierEditorParams.length > 0 && hierEditorSelectedIdx >= 0 && hierEditorSelectedIdx < hierEditorParams.length) {
+                    const param = hierEditorParams[hierEditorSelectedIdx];
+                    announceMenuItem(param.label || param.key, param.value || "");
+                }
             }
             break;
         case VIEWS.KNOB_EDITOR:
             /* Navigate knob list (8 knobs) */
             knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS - 1, knobEditorIndex + delta));
+            /* Announce knob and current assignment */
+            const knobNum = knobEditorIndex + 1;
+            const assignment = knobEditorAssignments[knobEditorIndex];
+            const assignLabel = assignment ? `${assignment.target}: ${assignment.label}` : "Unassigned";
+            announceMenuItem(`Knob ${knobNum}`, assignLabel);
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder === null) {
@@ -4337,7 +4448,7 @@ function handleSelect() {
                 applyPatchSelection();
                 /* Refresh chain config to show newly loaded synth/FX */
                 loadChainConfigFromSlot(selectedSlot);
-                view = VIEWS.CHAIN_EDIT;
+                setView(VIEWS.CHAIN_EDIT);
                 needsRedraw = true;
             }
             break;
@@ -4352,7 +4463,7 @@ function handleSelect() {
                 applyPatchSelection();
                 /* Refresh chain config to show newly loaded synth/FX */
                 loadChainConfigFromSlot(selectedSlot);
-                view = VIEWS.CHAIN_EDIT;
+                setView(VIEWS.CHAIN_EDIT);
                 needsRedraw = true;
             }
             break;
@@ -4404,7 +4515,7 @@ function handleSelect() {
         case VIEWS.STORE_PICKER_POST_INSTALL:
             /* Dismiss post-install, go to result */
             storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
-            view = VIEWS.STORE_PICKER_RESULT;
+            setView(VIEWS.STORE_PICKER_RESULT);
             needsRedraw = true;
             break;
         case VIEWS.CHAIN_SETTINGS:
@@ -4422,6 +4533,7 @@ function handleSelect() {
                                 /* Return to name preview with edited name */
                                 showingNamePreview = true;
                                 namePreviewIndex = 1;  /* Default to OK */
+                                announce(`Confirm save as: ${pendingSaveName}`);
                                 needsRedraw = true;
                             },
                             onCancel: () => {
@@ -4440,6 +4552,7 @@ function handleSelect() {
                             overwriteTargetIndex = existingIdx;
                             confirmingOverwrite = true;
                             confirmIndex = 0;
+                            announce(`Overwrite ${pendingSaveName}?`);
                         } else {
                             /* No conflict - save directly */
                             doSavePreset(selectedSlot, pendingSaveName);
@@ -4517,6 +4630,8 @@ function handleSelect() {
                         if (isExistingPreset(selectedSlot)) {
                             confirmingDelete = true;
                             confirmIndex = 0;
+                            const patchName = slots[selectedSlot]?.name || "patch";
+                            announce(`Delete ${patchName}?`);
                             needsRedraw = true;
                         }
                     }
@@ -4768,17 +4883,17 @@ function handleBack() {
                 needsRedraw = true;
             } else {
                 /* Return to slots list */
-                view = VIEWS.SLOTS;
+                setView(VIEWS.SLOTS);
                 needsRedraw = true;
             }
             break;
         case VIEWS.PATCHES:
             /* Return to chain editor */
-            view = VIEWS.CHAIN_EDIT;
+            setView(VIEWS.CHAIN_EDIT);
             needsRedraw = true;
             break;
         case VIEWS.PATCH_DETAIL:
-            view = VIEWS.PATCHES;
+            setView(VIEWS.PATCHES);
             needsRedraw = true;
             break;
         case VIEWS.COMPONENT_PARAMS:
@@ -4789,7 +4904,7 @@ function handleBack() {
             } else {
                 /* Return to patch detail, refresh info */
                 fetchPatchDetail(selectedSlot);
-                view = VIEWS.PATCH_DETAIL;
+                setView(VIEWS.PATCH_DETAIL);
                 needsRedraw = true;
             }
             break;
@@ -4833,7 +4948,7 @@ function handleBack() {
             break;
         case VIEWS.COMPONENT_SELECT:
             /* Return to chain edit */
-            view = VIEWS.CHAIN_EDIT;
+            setView(VIEWS.CHAIN_EDIT);
             needsRedraw = true;
             break;
         case VIEWS.STORE_PICKER_LIST:
@@ -4859,14 +4974,14 @@ function handleBack() {
                 editingChainSettingValue = false;
                 needsRedraw = true;
             } else {
-                view = VIEWS.CHAIN_EDIT;
+                setView(VIEWS.CHAIN_EDIT);
                 needsRedraw = true;
             }
             break;
         case VIEWS.COMPONENT_EDIT:
             /* Unload module UI and return to chain edit */
             unloadModuleUi();
-            view = VIEWS.CHAIN_EDIT;
+            setView(VIEWS.CHAIN_EDIT);
             needsRedraw = true;
             break;
         case VIEWS.HIERARCHY_EDITOR:
@@ -4944,7 +5059,7 @@ function handleBack() {
             break;
         case VIEWS.KNOB_EDITOR:
             /* Return to chain settings */
-            view = VIEWS.CHAIN_SETTINGS;
+            setView(VIEWS.CHAIN_SETTINGS);
             needsRedraw = true;
             break;
         case VIEWS.KNOB_PARAM_PICKER:
@@ -4967,7 +5082,7 @@ function handleBack() {
                 }
             } else {
                 /* Return to knob editor */
-                view = VIEWS.KNOB_EDITOR;
+                setView(VIEWS.KNOB_EDITOR);
                 needsRedraw = true;
             }
             break;
