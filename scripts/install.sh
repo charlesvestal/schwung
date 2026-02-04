@@ -188,6 +188,20 @@ else
   echo "No migration needed."
 fi
 
+# Safety: check root partition has enough free space (< 10MB free = danger zone)
+root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || echo "0")
+if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
+  echo
+  echo "Warning: Root partition has less than 10MB free (${root_avail}KB available)"
+  echo "Cleaning up any stale backup files..."
+  $ssh_root "rm -f /opt/move/Move.bak /opt/move/Move.shim /opt/move/Move.orig 2>/dev/null || true"
+  root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || echo "0")
+  if [ "$root_avail" -lt 5120 ] 2>/dev/null; then
+    fail "Root partition critically low (${root_avail}KB free). Cannot safely proceed."
+  fi
+  echo "Root partition now has ${root_avail}KB free"
+fi
+
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
 $ssh_root "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi"
 
@@ -207,6 +221,8 @@ $ssh_root chmod u+s /data/UserData/move-anything/move-anything-shim.so
 $ssh_root chmod +x /data/UserData/move-anything/shim-entrypoint.sh
 
 # Backup original only once, and only if current Move exists
+# IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
+# Never create extra copies of large files under /opt/move/ or anywhere on /.
 if $ssh_root "test ! -f /opt/move/MoveOriginal"; then
   $ssh_root "test -f /opt/move/Move" || fail "Missing /opt/move/Move; refusing to proceed"
   $ssh_root mv /opt/move/Move /opt/move/MoveOriginal
@@ -216,9 +232,6 @@ fi
 # Install the shimmed Move entrypoint
 $ssh_root cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move
 
-$ssh_root md5sum /opt/move/Move
-$ssh_root md5sum /opt/move/MoveOriginal
-$ssh_root md5sum /usr/lib/move-anything-shim.so
 
 # Optional: Install modules from the Module Store (before restart so they're available immediately)
 echo
@@ -320,14 +333,30 @@ fi
 echo
 echo "Restarting Move binary with shim installed..."
 
-# Kill any running Move processes to ensure fresh load of updated modules
-$ssh_root "for name in MoveOriginal Move shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
-$ssh_ableton "sleep 1"
+# Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
+$ssh_root "/etc/init.d/move stop >/dev/null 2>&1 || true"
+$ssh_root "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
+# Clean up stale shared memory so it's recreated with correct permissions
+$ssh_root "rm -f /dev/shm/move-shadow-*"
+# Free the SPI device if anything still holds it (prevents "communication error" on restart)
+$ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
+$ssh_ableton "sleep 2"
 
 $ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
-$ssh_ableton "nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &"
-$ssh_ableton "sleep 1"
-$ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" || exit 1; tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" || fail "Move started without shim (LD_PRELOAD missing)"
+
+# Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
+$ssh_root "/etc/init.d/move start >/dev/null 2>&1"
+
+# Wait for MoveOriginal to appear with shim loaded (retry up to 15 seconds)
+shim_ok=false
+for i in $(seq 1 15); do
+    $ssh_ableton "sleep 1"
+    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" 2>/dev/null; then
+        shim_ok=true
+        break
+    fi
+done
+$shim_ok || fail "Move started without shim (LD_PRELOAD missing)"
 
 echo
 echo "Done!"
