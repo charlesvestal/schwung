@@ -889,7 +889,16 @@ static int load_synth(const char *module_path, const char *config_json) {
     chain_log("Synth loaded with V2 API");
 
     /* Parse chain_params from module.json */
-    parse_chain_params(module_path, g_synth_params, &g_synth_param_count);
+    if (parse_chain_params(module_path, g_synth_params, &g_synth_param_count) < 0) {
+        chain_log("ERROR: Failed to parse synth parameters");
+        g_synth_plugin_v2->destroy_instance(g_synth_instance);
+        dlclose(g_synth_handle);
+        g_synth_handle = NULL;
+        g_synth_plugin_v2 = NULL;
+        g_synth_instance = NULL;
+        g_synth_is_v2 = 0;
+        return -1;
+    }
     snprintf(msg, sizeof(msg), "Synth loaded successfully (%d params)", g_synth_param_count);
     chain_log(msg);
     return 0;
@@ -1068,7 +1077,16 @@ static int load_audio_fx(const char *fx_name) {
     g_fx_instances[slot] = instance;
     g_fx_is_v2[slot] = 1;
 
-    parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]) < 0) {
+        chain_log("ERROR: Failed to parse audio FX parameters");
+        fx_v2->destroy_instance(instance);
+        dlclose(handle);
+        g_fx_handles[slot] = NULL;
+        g_fx_plugins_v2[slot] = NULL;
+        g_fx_instances[slot] = NULL;
+        g_fx_is_v2[slot] = 0;
+        return -1;
+    }
     g_fx_count++;
 
     snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)",
@@ -1168,7 +1186,16 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
     inst->current_midi_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(fx_dir, inst->midi_fx_params[slot], &inst->midi_fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, inst->midi_fx_params[slot], &inst->midi_fx_param_counts[slot]) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse MIDI FX parameters");
+        api->destroy_instance(instance);
+        dlclose(handle);
+        inst->midi_fx_handles[slot] = NULL;
+        inst->midi_fx_plugins[slot] = NULL;
+        inst->midi_fx_instances[slot] = NULL;
+        inst->current_midi_fx_modules[slot][0] = '\0';
+        return -1;
+    }
 
     /* Parse ui_hierarchy from module.json */
     {
@@ -1809,6 +1836,18 @@ static int parse_hierarchy_params(const char *json, chain_param_info_t *out_para
                 /* Check if we've reached end of levels object */
                 level_start = level_end;
                 if (*level_start == '}') break;
+            }
+        }
+    }
+
+    /* Validate no duplicate keys */
+    for (int i = 0; i < param_count; i++) {
+        for (int j = i + 1; j < param_count; j++) {
+            if (strcmp(out_params[i].key, out_params[j].key) == 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "ERROR: Duplicate parameter key '%s' in ui_hierarchy", out_params[i].key);
+                chain_log(msg);
+                return -1; /* Signal error */
             }
         }
     }
@@ -3842,7 +3881,17 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
     inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse audio FX parameters");
+        api->destroy_instance(fx_inst);
+        dlclose(handle);
+        inst->fx_handles[slot] = NULL;
+        inst->fx_plugins_v2[slot] = NULL;
+        inst->fx_instances[slot] = NULL;
+        inst->fx_is_v2[slot] = 0;
+        inst->current_fx_modules[slot][0] = '\0';
+        return -1;
+    }
 
     /* Update fx_count to include this slot */
     if (slot >= inst->fx_count) {
@@ -3940,7 +3989,16 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
+    if (parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse synth parameters");
+        api->destroy_instance(synth_inst);
+        dlclose(handle);
+        inst->synth_handle = NULL;
+        inst->synth_plugin_v2 = NULL;
+        inst->synth_instance = NULL;
+        inst->current_synth_module[0] = '\0';
+        return -1;
+    }
 
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
@@ -4035,7 +4093,17 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
     inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse audio FX parameters");
+        api->destroy_instance(fx_inst);
+        dlclose(handle);
+        inst->fx_handles[slot] = NULL;
+        inst->fx_plugins_v2[slot] = NULL;
+        inst->fx_instances[slot] = NULL;
+        inst->fx_is_v2[slot] = 0;
+        inst->current_fx_modules[slot][0] = '\0';
+        return -1;
+    }
 
     inst->fx_count++;
 
