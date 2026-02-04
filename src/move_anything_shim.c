@@ -1307,6 +1307,11 @@ static void *shadow_dbus_thread_func(void *arg)
 
     shadow_log("D-Bus: Connected and listening for screenreader signals");
 
+    /* Send test announcement to verify D-Bus is working */
+    send_screenreader_announcement("Move Anything D-Bus Test");
+    sleep(1);
+    send_screenreader_announcement("Screen Reader Active");
+
     /* Main loop - process D-Bus messages */
     while (shadow_dbus_running) {
         /* Non-blocking read with timeout */
@@ -4506,9 +4511,15 @@ static void init_shadow_shm(void)
     }
 
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, screenreader=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_screenreader_shm);
+
+    /* Send test announcement on startup */
+    if (shadow_screenreader_shm) {
+        strcpy(shadow_screenreader_shm->text, "Move Anything Screen Reader Test");
+        shadow_screenreader_shm->ready = 1;
+    }
 }
 
 #if SHADOW_DEBUG
