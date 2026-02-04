@@ -53,7 +53,7 @@ bool tts_init(int sample_rate) {
     /* Initialize espeak-ng with bundled data path */
     const char *data_path = "/data/UserData/move-anything/espeak-data";
     int result = espeak_Initialize(
-        AUDIO_OUTPUT_SYNCHRONOUS,  /* Use callback mode */
+        AUDIO_OUTPUT_RETRIEVAL,    /* Use retrieval mode (no audio output needed) */
         0,                          /* Buffer length (0 = default) */
         data_path,                  /* Path to bundled espeak-ng-data */
         0                           /* Options */
@@ -98,8 +98,16 @@ void tts_cleanup(void) {
 }
 
 bool tts_speak(const char *text) {
-    if (!initialized || !text || strlen(text) == 0) {
+    if (!text || strlen(text) == 0) {
         return false;
+    }
+
+    /* Lazy initialization - init on first use to avoid early crash */
+    if (!initialized) {
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Lazy initializing TTS on first speak");
+        if (!tts_init(44100)) {
+            return false;
+        }
     }
 
     /* Clear existing buffer for new message */
