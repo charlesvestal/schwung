@@ -4548,7 +4548,7 @@ static void shadow_check_screenreader(void)
 
     /* Rate limit: skip if too soon since last speech */
     if (now_ms - last_speech_time_ms < TTS_RATE_LIMIT_MS) {
-        unified_log(LOG_DEBUG, "tts_monitor", "Skipping message (rate limit): '%s'",
+        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Skipping message (rate limit): '%s'",
                     shadow_screenreader_shm->text);
         last_screenreader_sequence = current_sequence;  /* Mark as processed */
         return;
@@ -4556,7 +4556,7 @@ static void shadow_check_screenreader(void)
 
     /* Speak the message */
     if (shadow_screenreader_shm->text[0] != '\0') {
-        unified_log(LOG_DEBUG, "tts_monitor", "Speaking: '%s'", shadow_screenreader_shm->text);
+        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Speaking: '%s'", shadow_screenreader_shm->text);
         if (tts_speak(shadow_screenreader_shm->text)) {
             last_speech_time_ms = now_ms;
             last_screenreader_sequence = current_sequence;
