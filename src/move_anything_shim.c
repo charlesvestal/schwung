@@ -4469,13 +4469,16 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create screenreader shm\n");
     }
 
-    /* Initialize TTS engine */
+    /* Initialize TTS engine - TEMPORARILY DISABLED FOR DEBUG */
+    printf("Shadow: TTS initialization skipped (debugging)\n");
+    /* TODO: Re-enable after verifying shim loads
     if (tts_init(44100)) {
         printf("Shadow: TTS engine initialized\n");
-        tts_set_volume(70);  /* Default 70% volume */
+        tts_set_volume(70);
     } else {
         printf("Shadow: Failed to initialize TTS engine\n");
     }
+    */
 
     shadow_shm_initialized = 1;
     printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, screenreader=%p)\n",
