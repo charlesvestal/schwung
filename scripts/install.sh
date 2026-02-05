@@ -590,7 +590,7 @@ fi
 if [ "$skip_modules" = false ]; then
     echo
     echo "Some modules require additional assets to function:"
-    echo "  - Mini-JV: ROM files (jv880_rom1.bin, jv880_rom2.bin, jv880_waverom1.bin, jv880_waverom2.bin)"
+    echo "  - Mini-JV: ROM files + optional SR-JV80 expansions"
     echo "  - SF2: SoundFont files (.sf2)"
     echo
     printf "Would you like to copy assets to your Move now? (y/N): "
@@ -607,8 +607,15 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
 
     # JV880 ROMs
     echo
-    echo "Mini-JV ROMs: Enter the folder containing your JV880 ROM files"
-    echo "(jv880_rom1.bin, jv880_rom2.bin, jv880_waverom1.bin, jv880_waverom2.bin)"
+    echo "Mini-JV ROMs: Enter the folder containing your JV880 ROM files."
+    echo "Expected structure:"
+    echo "  your_folder/"
+    echo "    jv880_rom1.bin"
+    echo "    jv880_rom2.bin        (must be v1.0.0)"
+    echo "    jv880_waverom1.bin"
+    echo "    jv880_waverom2.bin"
+    echo "    expansions/           (optional SR-JV80 expansion .bin files)"
+    echo
     echo "Press ENTER to skip."
     printf "ROM folder path: "
     read -r rom_path </dev/tty
@@ -618,16 +625,31 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|")
         if [ -d "$rom_path" ]; then
             rom_count=0
+            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms"
             for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin; do
                 if [ -f "$rom_path/$rom" ]; then
                     echo "  Copying $rom..."
-                    $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms"
                     $scp_ableton "$rom_path/$rom" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/"
                     rom_count=$((rom_count + 1))
                 fi
             done
+            # Copy expansion ROMs if present
+            if [ -d "$rom_path/expansions" ]; then
+                exp_count=0
+                $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms/expansions"
+                for exp in "$rom_path/expansions"/*.bin "$rom_path/expansions"/*.BIN; do
+                    if [ -f "$exp" ]; then
+                        echo "  Copying expansion: $(basename "$exp")..."
+                        $scp_ableton "$exp" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/expansions/"
+                        exp_count=$((exp_count + 1))
+                    fi
+                done
+                if [ $exp_count -gt 0 ]; then
+                    echo "  Copied $exp_count expansion ROM(s)"
+                fi
+            fi
             if [ $rom_count -gt 0 ]; then
-                echo "  Copied $rom_count ROM file(s)"
+                echo "  Copied $rom_count base ROM file(s)"
             else
                 echo "  No ROM files found in $rom_path"
             fi
