@@ -14,6 +14,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "unified_log.h"
 
 /* Voice registration function (not in public headers) */
@@ -23,16 +24,18 @@ extern cst_voice *register_cmu_us_kal(const char *voxdir);
 static void* tts_synthesis_thread(void *arg);
 static void tts_load_config(void);
 static void tts_clear_buffer(void);
+static void tts_load_state(void);
+static void tts_save_state(void);
 
 /* Ring buffer for synthesized audio */
-#define RING_BUFFER_SIZE (44100 * 8)  /* 4 seconds at 44.1kHz stereo (8 = 4sec * 2ch) */
+#define RING_BUFFER_SIZE (44100 * 24)  /* 12 seconds at 44.1kHz stereo (24 = 12sec * 2ch) */
 static int16_t ring_buffer[RING_BUFFER_SIZE];
 static int ring_write_pos = 0;
 static int ring_read_pos = 0;
 static pthread_mutex_t ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool initialized = false;
-static bool tts_enabled = true;  /* VoiceOver on/off toggle */
+static bool tts_enabled = false;  /* Screen Reader on/off toggle - default OFF */
 static int tts_volume = 70;  /* Default 70% volume */
 static float tts_speed = 1.0f;  /* Default speed (1.0 = normal, >1.0 = slower, <1.0 = faster) */
 static float tts_pitch = 110.0f;  /* Default pitch in Hz (typical range: 80-180) */
@@ -133,6 +136,42 @@ static void* tts_synthesis_thread(void *arg) {
     return NULL;
 }
 
+/* Load screen reader enabled/disabled state (persists through reboots) */
+static void tts_load_state(void) {
+    const char *state_path = "/data/UserData/move-anything/config/screen_reader_state.txt";
+    FILE *f = fopen(state_path, "r");
+    if (!f) {
+        /* No state file - use default (OFF) */
+        return;
+    }
+
+    char state_buf[8];
+    if (fgets(state_buf, sizeof(state_buf), f)) {
+        if (state_buf[0] == '1') {
+            tts_enabled = true;
+            unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state loaded: ON");
+        } else {
+            tts_enabled = false;
+            unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state loaded: OFF");
+        }
+    }
+    fclose(f);
+}
+
+/* Save screen reader enabled/disabled state (persists through reboots) */
+static void tts_save_state(void) {
+    const char *state_path = "/data/UserData/move-anything/config/screen_reader_state.txt";
+    FILE *f = fopen(state_path, "w");
+    if (!f) {
+        unified_log("tts_engine", LOG_LEVEL_ERROR, "Failed to save screen reader state");
+        return;
+    }
+
+    fprintf(f, "%d\n", tts_enabled ? 1 : 0);
+    fclose(f);
+    unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state saved: %s", tts_enabled ? "ON" : "OFF");
+}
+
 /* Load TTS configuration from file */
 static void tts_load_config(void) {
     const char *config_path = "/data/UserData/move-anything/config/tts.json";
@@ -195,6 +234,9 @@ bool tts_init(int sample_rate) {
 
     /* Initialize Flite */
     flite_init();
+
+    /* Load saved state (enabled/disabled) */
+    tts_load_state();
 
     /* Load config file (if it exists) */
     tts_load_config();
@@ -390,10 +432,36 @@ static void tts_clear_buffer(void) {
 }
 
 void tts_set_enabled(bool enabled) {
+    /* No change needed */
+    if (enabled == tts_enabled) {
+        return;
+    }
+
     unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS enabled to %s (was %s)",
                 enabled ? "ON" : "OFF", tts_enabled ? "ON" : "OFF");
+
+    /* Announce before disabling so user hears confirmation */
+    if (!enabled && tts_enabled) {
+        tts_speak("screen reader off");
+
+        /* Brief sleep to let synthesis queue */
+        usleep(100000);  /* 100ms */
+
+        /* Wait for speech to finish (with timeout) */
+        for (int i = 0; i < 50; i++) {  /* Max 5 seconds */
+            if (!tts_is_speaking()) {
+                break;
+            }
+            usleep(100000);  /* 100ms */
+        }
+    }
+
     tts_enabled = enabled;
-    /* Clear buffer when disabling to stop speech immediately */
+
+    /* Save state so it persists through reboots */
+    tts_save_state();
+
+    /* Clear buffer when disabling */
     if (!enabled) {
         tts_clear_buffer();
         unified_log("tts_engine", LOG_LEVEL_INFO, "Cleared TTS buffer");

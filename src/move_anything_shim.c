@@ -105,7 +105,12 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 
+/* Feature flags from config/features.json */
+static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
+static bool standalone_enabled = true;     /* Standalone mode enabled by default */
+
 static void launch_shadow_ui(void);
+static void load_feature_config(void);
 
 static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
 {
@@ -2885,6 +2890,64 @@ static void overlay_draw_sampler(uint8_t *buf) {
         /* IDLE with fullscreen still showing = just finished */
         overlay_draw_string(buf, 16, 24, "Sample saved!", 1);
     }
+}
+
+/* Load feature configuration from config/features.json */
+static void load_feature_config(void)
+{
+    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    FILE *f = fopen(config_path, "r");
+    if (!f) {
+        /* No config file - use defaults (all enabled) */
+        shadow_ui_enabled = true;
+        standalone_enabled = true;
+        shadow_log("Features: No config file, using defaults (all enabled)");
+        return;
+    }
+
+    /* Read file */
+    char config_buf[512];
+    size_t len = fread(config_buf, 1, sizeof(config_buf) - 1, f);
+    fclose(f);
+    config_buf[len] = '\0';
+
+    /* Parse shadow_ui_enabled */
+    const char *shadow_ui_key = strstr(config_buf, "\"shadow_ui_enabled\"");
+    if (shadow_ui_key) {
+        const char *colon = strchr(shadow_ui_key, ':');
+        if (colon) {
+            /* Skip whitespace */
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "false", 5) == 0) {
+                shadow_ui_enabled = false;
+            } else {
+                shadow_ui_enabled = true;
+            }
+        }
+    }
+
+    /* Parse standalone_enabled */
+    const char *standalone_key = strstr(config_buf, "\"standalone_enabled\"");
+    if (standalone_key) {
+        const char *colon = strchr(standalone_key, ':');
+        if (colon) {
+            /* Skip whitespace */
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "false", 5) == 0) {
+                standalone_enabled = false;
+            } else {
+                standalone_enabled = true;
+            }
+        }
+    }
+
+    char log_msg[128];
+    snprintf(log_msg, sizeof(log_msg), "Features: shadow_ui=%s, standalone=%s",
+             shadow_ui_enabled ? "enabled" : "disabled",
+             standalone_enabled ? "enabled" : "disabled");
+    shadow_log(log_msg);
 }
 
 /* Read initial volume from Move's Settings.json */
@@ -5934,6 +5997,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
+        load_feature_config();  /* Load feature flags from config */
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
         shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
@@ -7039,8 +7103,8 @@ do_ioctl:
                             shadow_log(msg);
                         }
 
-                        /* Shift + Volume + Track = jump to that slot's edit screen */
-                        if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
+                        /* Shift + Volume + Track = jump to that slot's edit screen (if shadow UI enabled) */
+                        if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                             shadow_control->ui_slot = new_slot;
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
                             if (!shadow_display_mode) {
@@ -7054,27 +7118,38 @@ do_ioctl:
                     }
                 }
 
-                /* Shift + Volume + Menu = jump to Master FX view */
+                /* Shift + Volume + Menu = jump to Master FX view (or toggle screen reader if shadow UI disabled) */
                 if (d1 == CC_MENU && d2 > 0) {
                     if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
-                        if (!shadow_display_mode) {
-                            /* From Move mode: launch shadow UI and jump to Master FX */
-                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                            shadow_display_mode = 1;
-                            shadow_control->display_mode = 1;
-                            launch_shadow_ui();
+                        if (shadow_ui_enabled) {
+                            /* Shadow UI enabled: launch/navigate to Master FX */
+                            if (!shadow_display_mode) {
+                                /* From Move mode: launch shadow UI and jump to Master FX */
+                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                                shadow_display_mode = 1;
+                                shadow_control->display_mode = 1;
+                                launch_shadow_ui();
+                            } else {
+                                /* Already in shadow mode: set flag */
+                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                            }
                         } else {
-                            /* Already in shadow mode: set flag */
-                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                            /* Shadow UI disabled: toggle screen reader */
+                            bool current_state = tts_get_enabled();
+                            tts_set_enabled(!current_state);
+                            if (!current_state) {
+                                /* Just enabled - announce it */
+                                tts_speak("screen reader on");
+                            }
                         }
                         /* Block Menu CC from reaching Move */
                         src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     }
                 }
 
-                /* Shift + Volume + Jog Click = toggle overtake module menu */
+                /* Shift + Volume + Jog Click = toggle overtake module menu (if shadow UI enabled) */
                 if (d1 == CC_JOG_CLICK && d2 > 0) {
-                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                         if (!shadow_display_mode) {
                             /* From Move mode: launch shadow UI and show overtake menu */
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
@@ -7185,8 +7260,8 @@ do_ioctl:
                     }
                 }
 
-                /* Shift + Volume + Knob8 = launch standalone Move Anything */
-                if (shadow_shift_held && shadow_volume_knob_touched && knob8touched && !alreadyLaunched) {
+                /* Shift + Volume + Knob8 = launch standalone Move Anything (if enabled) */
+                if (shadow_shift_held && shadow_volume_knob_touched && knob8touched && !alreadyLaunched && standalone_enabled) {
                     alreadyLaunched = 1;
                     shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
                     launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");

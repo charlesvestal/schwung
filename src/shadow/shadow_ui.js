@@ -206,9 +206,7 @@ function setView(newView, customLabel) {
     view = newView;
     needsRedraw = true;
 
-    /* Announce the view change */
-    const label = customLabel || VIEW_NAMES[newView] || newView;
-    announceView(label);
+    /* Note: View announcements now happen in enter*() functions with full context */
 }
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick

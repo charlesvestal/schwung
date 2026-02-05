@@ -322,10 +322,34 @@ ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=acc
 # Parse arguments
 use_local=false
 skip_modules=false
+enable_screen_reader=false
+disable_shadow_ui=false
+disable_standalone=false
 for arg in "$@"; do
   case "$arg" in
     local) use_local=true ;;
     -skip-modules|--skip-modules) skip_modules=true ;;
+    --enable-screen-reader) enable_screen_reader=true ;;
+    --disable-shadow-ui) disable_shadow_ui=true ;;
+    --disable-standalone) disable_standalone=true ;;
+    -h|--help)
+      echo "Usage: install.sh [options]"
+      echo ""
+      echo "Options:"
+      echo "  local                    Use local build instead of GitHub release"
+      echo "  --skip-modules           Skip module installation prompt"
+      echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
+      echo "  --disable-shadow-ui      Disable shadow UI (slot configuration interface)"
+      echo "  --disable-standalone     Disable standalone mode (shift+vol+knob8)"
+      echo ""
+      echo "Examples:"
+      echo "  install.sh                                    # Install from GitHub, all features enabled"
+      echo "  install.sh local --enable-screen-reader       # Install local build with screen reader on"
+      echo "  install.sh --disable-shadow-ui --disable-standalone --enable-screen-reader"
+      echo "                                                # Screen reader only, no UI"
+      echo ""
+      exit 0
+      ;;
   esac
 done
 
@@ -570,13 +594,44 @@ fi
 ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
 
+# Create feature configuration file
+echo
+echo "Configuring features..."
+ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
+
+# Build features.json content
+features_json="{
+  \"shadow_ui_enabled\": $([ "$disable_shadow_ui" = false ] && echo "true" || echo "false"),
+  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false")
+}"
+
+# Write features.json
+ssh_ableton_with_retry "cat > /data/UserData/move-anything/config/features.json << 'EOF'
+$features_json
+EOF" || echo "Warning: Failed to create features.json"
+
+# Create screen reader state file if --enable-screen-reader was passed
+if [ "$enable_screen_reader" = true ]; then
+    echo "Enabling screen reader..."
+    ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
+fi
+
+echo "Features configured:"
+echo "  Shadow UI: $([ "$disable_shadow_ui" = false ] && echo "enabled" || echo "disabled")"
+echo "  Standalone: $([ "$disable_standalone" = false ] && echo "enabled" || echo "disabled")"
+echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
+
 # Optional: Install modules from the Module Store (before restart so they're available immediately)
+# Skip if both shadow UI and standalone are disabled (no way to use modules)
 echo
 install_mode=""
 deleted_modules=$(echo "$deleted_modules" | xargs)  # trim whitespace
 
-if [ "$skip_modules" = true ]; then
-    echo "Skipping module installation (-skip-modules)"
+if [ "$disable_shadow_ui" = true ] && [ "$disable_standalone" = true ]; then
+    echo "Skipping module installation (shadow UI and standalone both disabled)"
+    skip_modules=true
+elif [ "$skip_modules" = true ]; then
+    echo "Skipping module installation (--skip-modules)"
 elif [ -n "$deleted_modules" ]; then
     # Migration happened - offer three choices
     echo "Module installation options:"
@@ -862,9 +917,30 @@ echo
 echo "Move Anything is now installed with the modular plugin system."
 echo "Modules are located in: /data/UserData/move-anything/modules/"
 echo
-echo "Shift+Vol+Track or Shift+Vol+Menu: Access Move Anything's slot configurations"
-echo "Shift+Vol+Knob8: Access Move Anything's standalone mode and module store"
-echo
+
+# Show active features
+if [ "$disable_shadow_ui" = false ] || [ "$disable_standalone" = false ]; then
+    echo "Active features:"
+    if [ "$disable_shadow_ui" = false ]; then
+        echo "  Shift+Vol+Track or Shift+Vol+Menu: Access slot configurations and Master FX"
+    fi
+    if [ "$disable_standalone" = false ]; then
+        echo "  Shift+Vol+Knob8: Access standalone mode and module store"
+    fi
+    echo
+fi
+
+# Show screen reader shortcut based on shadow UI state
+if [ "$disable_shadow_ui" = true ]; then
+    echo "Screen Reader:"
+    echo "  Shift+Vol+Menu: Toggle screen reader on/off"
+    echo
+else
+    echo "Screen Reader:"
+    echo "  Toggle via Shadow UI settings menu"
+    echo
+fi
+
 echo "Logging commands:"
 echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/move-anything/debug_log_on'"
 echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/move-anything/debug_log_on'"
