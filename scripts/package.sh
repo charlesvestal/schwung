@@ -12,16 +12,16 @@ cd "$REPO_ROOT"
 cd ./build
 
 # Build list of items to package
-ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches"
+ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./test"
 
 # Add bin directory if it exists (contains curl for store module)
 if [ -d "./bin" ]; then
     ITEMS="$ITEMS ./bin"
 fi
 
-# Add espeak-data if it exists (for self-contained TTS)
-if [ -d "./espeak-data" ]; then
-    ITEMS="$ITEMS ./espeak-data"
+# Add lib directory if it exists (contains Flite .so files for TTS)
+if [ -d "./lib" ]; then
+    ITEMS="$ITEMS ./lib"
 fi
 
 tar -czvf ../move-anything.tar.gz \

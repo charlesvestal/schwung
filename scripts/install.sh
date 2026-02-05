@@ -547,6 +547,13 @@ ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n 
 ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
 
+# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink
+# Root partition is nearly full, so symlink instead of copying
+if ssh_ableton_with_retry "test -d /data/UserData/move-anything/lib"; then
+  echo "Deploying Flite libraries..."
+  ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in libflite*.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+fi
+
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
 

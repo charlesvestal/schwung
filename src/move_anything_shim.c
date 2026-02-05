@@ -101,6 +101,8 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
 
+static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
+
 static void launch_shadow_ui(void);
 
 static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
@@ -1125,6 +1127,13 @@ static void shadow_dbus_handle_text(const char *text)
         char msg[256];
         snprintf(msg, sizeof(msg), "D-Bus text: \"%s\" (held_track=%d)", text, shadow_held_track);
         shadow_log(msg);
+    }
+
+    /* Write screen reader text to shared memory for TTS */
+    if (shadow_screenreader_shm) {
+        strncpy(shadow_screenreader_shm->text, text, sizeof(shadow_screenreader_shm->text) - 1);
+        shadow_screenreader_shm->text[sizeof(shadow_screenreader_shm->text) - 1] = '\0';
+        shadow_screenreader_shm->sequence++;  /* Increment to signal new message */
     }
 
     /* Check if it's a Set name (e.g. "Set 1", "Set 28") - read tempo from Song.abl */
@@ -4237,7 +4246,6 @@ static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static uint8_t last_shadow_midi_out_ready = 0;
-static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Screen reader messages for TTS */
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 
@@ -4469,16 +4477,9 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create screenreader shm\n");
     }
 
-    /* Initialize TTS engine - TEMPORARILY DISABLED FOR DEBUG */
-    printf("Shadow: TTS initialization skipped (debugging)\n");
-    /* TODO: Re-enable after verifying shim loads
-    if (tts_init(44100)) {
-        printf("Shadow: TTS engine initialized\n");
-        tts_set_volume(70);
-    } else {
-        printf("Shadow: Failed to initialize TTS engine\n");
-    }
-    */
+    /* TTS engine uses lazy initialization - will init on first speak */
+    tts_set_volume(70);  /* Set volume early (safe, doesn't require espeak init) */
+    printf("Shadow: TTS engine configured (will init on first use)\n");
 
     shadow_shm_initialized = 1;
     printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, screenreader=%p)\n",
@@ -4580,6 +4581,18 @@ static void shadow_mix_audio(void)
 
     /* Check for new screen reader messages and speak them */
     shadow_check_screenreader();
+
+    /* TTS test: speak once after 3 seconds to verify audio works */
+    static int tts_test_frame_count = 0;
+    static bool tts_test_done = false;
+    if (!tts_test_done && shadow_control->shadow_ready) {
+        tts_test_frame_count++;
+        if (tts_test_frame_count == 1035) {  /* ~3 seconds at 44.1kHz, 128 frames/block */
+            printf("TTS test: Speaking test phrase...\n");
+            tts_speak("Text to speech is working");
+            tts_test_done = true;
+        }
+    }
 
     /* Increment shim counter for shadow's drift correction */
     shadow_control->shim_counter++;
