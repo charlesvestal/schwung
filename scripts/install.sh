@@ -621,8 +621,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r rom_path </dev/tty
 
     if [ -n "$rom_path" ]; then
-        # Expand ~ to home directory
-        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|")
+        # Expand ~ to home directory and handle escaped spaces
+        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rom_path" ]; then
             rom_count=0
             $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms"
@@ -666,8 +666,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r sf2_path </dev/tty
 
     if [ -n "$sf2_path" ]; then
-        # Expand ~ to home directory
-        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|")
+        # Expand ~ to home directory and handle escaped spaces
+        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
             for sf2 in "$sf2_path"/*.sf2 "$sf2_path"/*.SF2; do
