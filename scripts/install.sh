@@ -690,6 +690,9 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
 
     echo
     echo "Asset copy complete."
+    if [ -z "$install_mode" ]; then
+        echo "Note: Install Mini-JV and/or SF2 via the Module Store to use these assets."
+    fi
 fi
 
 echo
