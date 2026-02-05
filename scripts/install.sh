@@ -303,7 +303,11 @@ else
   curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
   local_file="$remote_filename"
 fi
-echo "Build MD5: $(md5sum "$local_file")"
+if command -v md5sum >/dev/null 2>&1; then
+  echo "Build MD5: $(md5sum "$local_file")"
+elif command -v md5 >/dev/null 2>&1; then
+  echo "Build MD5: $(md5 -q "$local_file")"
+fi
 
 # Check SSH connection, run setup wizard if needed
 echo "Checking SSH connection to $hostname..."
