@@ -4533,41 +4533,45 @@ static void debug_audio_offset(void) {
 }
 #endif /* SHADOW_DEBUG */
 
-/* Monitor screen reader messages and speak them with TTS (rate limited) */
-#define TTS_RATE_LIMIT_MS 500  /* Minimum 500ms between announcements */
+/* Monitor screen reader messages and speak them with TTS (debounced) */
+#define TTS_DEBOUNCE_MS 300  /* Wait 300ms of silence before speaking */
+static char pending_tts_message[256] = {0};
+static uint64_t last_message_time_ms = 0;
+static bool has_pending_message = false;
+
 static void shadow_check_screenreader(void)
 {
     if (!shadow_screenreader_shm) return;
-
-    /* Check if there's a new message (sequence incremented) */
-    uint32_t current_sequence = shadow_screenreader_shm->sequence;
-    if (current_sequence == last_screenreader_sequence) {
-        return;  /* No new message */
-    }
 
     /* Get current time in milliseconds */
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
 
-    /* Rate limit: skip if too soon since last speech */
-    if (now_ms - last_speech_time_ms < TTS_RATE_LIMIT_MS) {
-        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Skipping message (rate limit): '%s'",
-                    shadow_screenreader_shm->text);
-        last_screenreader_sequence = current_sequence;  /* Mark as processed */
+    /* Check if there's a new message (sequence incremented) */
+    uint32_t current_sequence = shadow_screenreader_shm->sequence;
+    if (current_sequence != last_screenreader_sequence) {
+        /* New message arrived - buffer it and reset debounce timer */
+        if (shadow_screenreader_shm->text[0] != '\0') {
+            strncpy(pending_tts_message, shadow_screenreader_shm->text, sizeof(pending_tts_message) - 1);
+            pending_tts_message[sizeof(pending_tts_message) - 1] = '\0';
+            last_message_time_ms = now_ms;
+            has_pending_message = true;
+            unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Buffered: '%s'", pending_tts_message);
+        }
+        last_screenreader_sequence = current_sequence;
         return;
     }
 
-    /* Speak the message */
-    if (shadow_screenreader_shm->text[0] != '\0') {
-        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Speaking: '%s'", shadow_screenreader_shm->text);
-        if (tts_speak(shadow_screenreader_shm->text)) {
+    /* Check if debounce period has elapsed and we have a pending message */
+    if (has_pending_message && (now_ms - last_message_time_ms >= TTS_DEBOUNCE_MS)) {
+        /* Speak the buffered message */
+        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Speaking (debounced): '%s'", pending_tts_message);
+        if (tts_speak(pending_tts_message)) {
             last_speech_time_ms = now_ms;
-            last_screenreader_sequence = current_sequence;
         }
-    } else {
-        /* Empty message, just mark as processed */
-        last_screenreader_sequence = current_sequence;
+        has_pending_message = false;
+        pending_tts_message[0] = '\0';
     }
 }
 

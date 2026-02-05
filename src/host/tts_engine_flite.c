@@ -14,7 +14,7 @@
 extern cst_voice *register_cmu_us_kal(const char *voxdir);
 
 /* Ring buffer for synthesized audio */
-#define RING_BUFFER_SIZE (44100 * 4)  /* 4 seconds at 44.1kHz stereo */
+#define RING_BUFFER_SIZE (44100 * 8)  /* 4 seconds at 44.1kHz stereo (8 = 4sec * 2ch) */
 static int16_t ring_buffer[RING_BUFFER_SIZE];
 static int ring_write_pos = 0;
 static int ring_read_pos = 0;
@@ -97,7 +97,17 @@ bool tts_speak(const char *text) {
     int flite_rate = wav->sample_rate;
     float upsample_ratio = 44100.0f / (float)flite_rate;
 
-    /* Linear interpolation upsampling */
+    /* Calculate total samples needed (for overflow check) */
+    int total_output_samples = (int)(flite_samples * upsample_ratio * 2);  /* stereo */
+    if (total_output_samples > RING_BUFFER_SIZE) {
+        unified_log("tts_engine", LOG_LEVEL_ERROR, "TTS audio too long (%d samples, buffer=%d)",
+                    total_output_samples, RING_BUFFER_SIZE);
+        pthread_mutex_unlock(&ring_mutex);
+        delete_wave(wav);
+        return false;
+    }
+
+    /* Linear interpolation upsampling - write all samples without collision check */
     for (int i = 0; i < flite_samples - 1; i++) {
         int16_t sample_curr = flite_data[i];
         int16_t sample_next = flite_data[i + 1];
@@ -108,18 +118,9 @@ bool tts_speak(const char *text) {
             float alpha = (float)r / (float)repeats;
             int16_t sample = (int16_t)(sample_curr * (1.0f - alpha) + sample_next * alpha);
 
-            /* Write stereo (duplicate mono) */
-            ring_buffer[ring_write_pos] = sample;  /* Left */
-            ring_write_pos = (ring_write_pos + 1) % RING_BUFFER_SIZE;
-            if (ring_write_pos == ring_read_pos) {
-                ring_read_pos = (ring_read_pos + 1) % RING_BUFFER_SIZE;
-            }
-
-            ring_buffer[ring_write_pos] = sample;  /* Right */
-            ring_write_pos = (ring_write_pos + 1) % RING_BUFFER_SIZE;
-            if (ring_write_pos == ring_read_pos) {
-                ring_read_pos = (ring_read_pos + 1) % RING_BUFFER_SIZE;
-            }
+            /* Write stereo (duplicate mono) - no collision check during bulk write */
+            ring_buffer[ring_write_pos++] = sample;  /* Left */
+            ring_buffer[ring_write_pos++] = sample;  /* Right */
         }
     }
 
@@ -127,17 +128,11 @@ bool tts_speak(const char *text) {
     int16_t last_sample = flite_data[flite_samples - 1];
     int repeats = (int)(upsample_ratio + 0.5f);
     for (int r = 0; r < repeats; r++) {
-        ring_buffer[ring_write_pos] = last_sample;
-        ring_write_pos = (ring_write_pos + 1) % RING_BUFFER_SIZE;
-        if (ring_write_pos == ring_read_pos) {
-            ring_read_pos = (ring_read_pos + 1) % RING_BUFFER_SIZE;
-        }
-        ring_buffer[ring_write_pos] = last_sample;
-        ring_write_pos = (ring_write_pos + 1) % RING_BUFFER_SIZE;
-        if (ring_write_pos == ring_read_pos) {
-            ring_read_pos = (ring_read_pos + 1) % RING_BUFFER_SIZE;
-        }
+        ring_buffer[ring_write_pos++] = last_sample;
+        ring_buffer[ring_write_pos++] = last_sample;
     }
+
+    /* Note: write_pos may exceed RING_BUFFER_SIZE, but we checked above that it fits */
 
     pthread_mutex_unlock(&ring_mutex);
 
