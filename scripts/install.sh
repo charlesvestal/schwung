@@ -396,8 +396,13 @@ if [ "$use_local" = true ]; then
   fi
 else
   url=https://github.com/charlesvestal/move-anything/releases/latest/download/
-  echo "Downloading latest release from $url$remote_filename"
-  curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+  qecho "Downloading latest release from $url$remote_filename"
+  # Use silent curl in quiet mode (screen reader friendly)
+  if [ "$quiet_mode" = true ]; then
+    curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+  else
+    curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+  fi
   local_file="$remote_filename"
 fi
 if [ "$quiet_mode" = false ]; then
