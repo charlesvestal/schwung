@@ -33,6 +33,8 @@ The installer will:
 3. **Offer to install modules** (synths, effects) from the Module Store
 4. **Copy assets** for modules that need them (ROMs, SoundFonts, etc.)
 
+For managing files on your Move, you can also use [Cyberduck](https://cyberduck.io) (SFTP to `move.local`, select your SSH private key).
+
 For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).
 
 ## Uninstall
