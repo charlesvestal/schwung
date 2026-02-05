@@ -452,7 +452,12 @@ fi
 
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
 scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
-ssh_ableton_with_retry "tar -xzvf ./$remote_filename" || fail "Failed to extract tarball"
+# Use verbose tar only in non-quiet mode (screen reader friendly)
+if [ "$quiet_mode" = true ]; then
+    ssh_ableton_with_retry "tar -xzf ./$remote_filename" || fail "Failed to extract tarball"
+else
+    ssh_ableton_with_retry "tar -xzvf ./$remote_filename" || fail "Failed to extract tarball"
+fi
 
 # Verify expected payload exists before making system changes
 ssh_ableton_with_retry "test -f /data/UserData/move-anything/move-anything-shim.so" || fail "Payload missing: move-anything-shim.so"
@@ -460,8 +465,10 @@ ssh_ableton_with_retry "test -f /data/UserData/move-anything/shim-entrypoint.sh"
 
 # Verify modules directory exists
 if ssh_ableton_with_retry "test -d /data/UserData/move-anything/modules"; then
-  echo "Modules directory found"
-  ssh_ableton_with_retry "ls /data/UserData/move-anything/modules/" || true
+  qecho "Modules directory found"
+  if [ "$quiet_mode" = false ]; then
+    ssh_ableton_with_retry "ls /data/UserData/move-anything/modules/" || true
+  fi
 else
   echo "Warning: No modules directory found"
 fi
