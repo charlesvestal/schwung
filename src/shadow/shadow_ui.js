@@ -390,10 +390,10 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
-    { key: "voiceover_enabled", label: "VoiceOver", type: "bool" },
-    { key: "voiceover_speed", label: "Voice Speed", type: "float", min: 0.5, max: 2.0, step: 0.1 },
-    { key: "voiceover_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
-    { key: "voiceover_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
+    { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
+    { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 2.0, step: 0.1 },
+    { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
+    { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
     { key: "save", label: "[Save]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -4196,22 +4196,22 @@ function getMasterFxSettingValue(setting) {
         const num = parseFloat(val);
         return isNaN(num) ? val : `${Math.round(num * 100)}%`;
     }
-    if (setting.key === "voiceover_enabled") {
+    if (setting.key === "screen_reader_enabled") {
         return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
     }
-    if (setting.key === "voiceover_speed") {
+    if (setting.key === "screen_reader_speed") {
         if (typeof tts_get_speed === "function") {
             return tts_get_speed().toFixed(1) + "x";
         }
         return "1.0x";
     }
-    if (setting.key === "voiceover_pitch") {
+    if (setting.key === "screen_reader_pitch") {
         if (typeof tts_get_pitch === "function") {
             return Math.round(tts_get_pitch()) + " Hz";
         }
         return "110 Hz";
     }
-    if (setting.key === "voiceover_volume") {
+    if (setting.key === "screen_reader_volume") {
         if (typeof tts_get_volume === "function") {
             return tts_get_volume() + "%";
         }
@@ -4232,14 +4232,14 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
 
-    if (setting.key === "voiceover_enabled" && typeof tts_set_enabled === "function") {
+    if (setting.key === "screen_reader_enabled" && typeof tts_set_enabled === "function") {
         /* Toggle boolean */
         const current = typeof tts_get_enabled === "function" ? tts_get_enabled() : true;
         tts_set_enabled(!current);
         return;
     }
 
-    if (setting.key === "voiceover_speed" && typeof tts_set_speed === "function") {
+    if (setting.key === "screen_reader_speed" && typeof tts_set_speed === "function") {
         let val = typeof tts_get_speed === "function" ? tts_get_speed() : 1.0;
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));
@@ -4247,7 +4247,7 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
 
-    if (setting.key === "voiceover_pitch" && typeof tts_set_pitch === "function") {
+    if (setting.key === "screen_reader_pitch" && typeof tts_set_pitch === "function") {
         let val = typeof tts_get_pitch === "function" ? tts_get_pitch() : 110.0;
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));
@@ -4255,7 +4255,7 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
 
-    if (setting.key === "voiceover_volume" && typeof tts_set_volume === "function") {
+    if (setting.key === "screen_reader_volume" && typeof tts_set_volume === "function") {
         let val = typeof tts_get_volume === "function" ? tts_get_volume() : 70;
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));

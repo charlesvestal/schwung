@@ -4878,7 +4878,7 @@ static void init_shadow_shm(void)
             shadow_control->ui_patch_index = 0;
             shadow_control->ui_request_id = 0;
             /* Initialize TTS defaults */
-            shadow_control->tts_enabled = 1;    /* VoiceOver on by default */
+            shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
             shadow_control->tts_volume = 70;    /* 70% volume */
             shadow_control->tts_pitch = 110;    /* 110 Hz */
             shadow_control->tts_speed = 1.0f;   /* Normal speed */
@@ -6028,6 +6028,14 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
         shadow_read_initial_volume();  /* Read initial master volume from settings */
         shadow_load_state();  /* Load saved slot volumes */
+
+        /* Initialize TTS and sync loaded state to shared memory */
+        tts_init(44100);
+        if (shadow_control) {
+            shadow_control->tts_enabled = tts_get_enabled() ? 1 : 0;
+            unified_log("shim", LOG_LEVEL_INFO, "TTS initialized, synced to shared memory: %s",
+                       shadow_control->tts_enabled ? "ON" : "OFF");
+        }
 #endif
 
         /* Return shadow buffer to Move instead of hardware address */
@@ -7065,14 +7073,20 @@ do_ioctl:
 
                         if (shadow_ui_enabled) {
                             /* Shadow UI enabled: launch/navigate to Master FX */
+                            snprintf(log_msg, sizeof(log_msg), "Shadow UI enabled path: shadow_display_mode=%d", shadow_display_mode);
+                            shadow_log(log_msg);
                             if (!shadow_display_mode) {
                                 /* From Move mode: launch shadow UI and jump to Master FX */
+                                shadow_log("Setting jump flag and launching shadow UI");
                                 shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                                 shadow_display_mode = 1;
                                 shadow_control->display_mode = 1;
+                                shadow_log("Calling launch_shadow_ui()...");
                                 launch_shadow_ui();
+                                shadow_log("launch_shadow_ui() returned");
                             } else {
                                 /* Already in shadow mode: set flag */
+                                shadow_log("Already in shadow mode, setting jump flag");
                                 shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                             }
                         } else {
@@ -7368,7 +7382,7 @@ do_ioctl:
      * intercept knob CCs (71-78) and route to shadow chain DSP.
      * Also block knob touch notes (0-7) to prevent them reaching Move.
      * This allows adjusting shadow synth parameters while playing Move's sequencer. */
-    if (!shadow_display_mode && shiftHeld && shift_knob_enabled &&
+    if (!shadow_display_mode && shiftHeld && shift_knob_enabled && shadow_ui_enabled &&
         shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {

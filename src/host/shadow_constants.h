@@ -89,7 +89,7 @@ typedef struct shadow_control_t {
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
     volatile uint8_t shift_held;      /* Is shift button currently held? */
     volatile uint8_t overtake_mode;   /* 0=normal, 1=menu (UI events only), 2=module (all events) */
-    volatile uint8_t tts_enabled;     /* VoiceOver on/off (1=on, 0=off) */
+    volatile uint8_t tts_enabled;     /* Screen Reader on/off (1=on, 0=off) */
     volatile uint8_t tts_volume;      /* TTS volume (0-100) */
     volatile uint16_t tts_pitch;      /* TTS pitch in Hz (80-180) */
     volatile float tts_speed;         /* TTS speed multiplier (0.5-2.0) */
