@@ -922,7 +922,7 @@ echo
 if [ "$disable_shadow_ui" = false ] || [ "$disable_standalone" = false ]; then
     echo "Active features:"
     if [ "$disable_shadow_ui" = false ]; then
-        echo "  Shift+Vol+Track or Shift+Vol+Menu: Access slot configurations and Master FX"
+        echo "  Shift+Vol+Track or Shift+Menu: Access slot configurations and Master FX"
     fi
     if [ "$disable_standalone" = false ]; then
         echo "  Shift+Vol+Knob8: Access standalone mode and module store"
@@ -933,7 +933,7 @@ fi
 # Show screen reader shortcut based on shadow UI state
 if [ "$disable_shadow_ui" = true ]; then
     echo "Screen Reader:"
-    echo "  Shift+Vol+Menu: Toggle screen reader on/off"
+    echo "  Shift+Menu: Toggle screen reader on/off"
     echo
 else
     echo "Screen Reader:"

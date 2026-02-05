@@ -1112,6 +1112,11 @@ static pthread_mutex_t pending_announcements_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t move_dbus_serial = 0;
 static pthread_mutex_t move_dbus_serial_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Priority announcement flag - blocks D-Bus messages while toggle announcement plays */
+static bool tts_priority_announcement_active = false;
+static uint64_t tts_priority_announcement_time_ms = 0;
+#define TTS_PRIORITY_BLOCK_MS 1000  /* Block D-Bus for 1 second after priority announcement */
+
 /* Parse dB value from "Track Volume X dB" string and convert to linear */
 static float shadow_parse_volume_db(const char *text)
 {
@@ -1217,6 +1222,23 @@ static void shadow_dbus_handle_text(const char *text)
         char msg[256];
         snprintf(msg, sizeof(msg), "D-Bus text: \"%s\" (held_track=%d)", text, shadow_held_track);
         shadow_log(msg);
+    }
+
+    /* Block D-Bus messages while priority announcement is playing */
+    if (tts_priority_announcement_active) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t now_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+
+        if (now_ms - tts_priority_announcement_time_ms < TTS_PRIORITY_BLOCK_MS) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "D-Bus text BLOCKED (priority announcement): \"%s\"", text);
+            shadow_log(msg);
+            return;  /* Ignore D-Bus message during priority announcement */
+        } else {
+            /* Blocking period expired */
+            tts_priority_announcement_active = false;
+        }
     }
 
     /* Write screen reader text to shared memory for TTS */
@@ -3698,7 +3720,10 @@ static int shadow_inprocess_load_chain(void) {
         /* Allow display hotkey when running in-process DSP. */
         shadow_control->shadow_ready = 1;
     }
-    launch_shadow_ui();
+    /* Launch shadow UI only if enabled */
+    if (shadow_ui_enabled) {
+        launch_shadow_ui();
+    }
     shadow_log("Shadow inprocess: chain loaded");
     return 0;
 }
@@ -6502,7 +6527,8 @@ void midi_monitor()
             }
         }
 
-        if (shiftHeld && volumeTouched && knob8touched && !alreadyLaunched)
+        /* OLD standalone launch code - check feature flag */
+        if (shiftHeld && volumeTouched && knob8touched && !alreadyLaunched && standalone_enabled)
         {
             alreadyLaunched = 1;
             printf("Launching Move Anything!\n");
@@ -7016,6 +7042,76 @@ do_ioctl:
             memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
         }
 
+        /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
+         * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
+         * This works regardless of shadow_display_mode. */
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t cin = hw_midi[j] & 0x0F;
+            uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+            if (cable != 0x00) continue;  /* Only internal cable */
+            if (cin == 0x0B) {  /* Control Change */
+                uint8_t d1 = hw_midi[j + 2];
+                uint8_t d2 = hw_midi[j + 3];
+
+                /* Shift + Menu = jump to Master FX view (or toggle screen reader if shadow UI disabled) */
+                /* Block Menu CC entirely when Shift is held (both press and release) */
+                if (d1 == CC_MENU && shadow_shift_held) {
+                    /* Only process action on button press (d2 > 0), but block both press and release */
+                    if (d2 > 0 && shadow_control) {
+                        char log_msg[128];
+                        snprintf(log_msg, sizeof(log_msg), "Shift+Menu detected (POST-IOCTL), shadow_ui_enabled=%s",
+                                 shadow_ui_enabled ? "true" : "false");
+                        shadow_log(log_msg);
+
+                        if (shadow_ui_enabled) {
+                            /* Shadow UI enabled: launch/navigate to Master FX */
+                            if (!shadow_display_mode) {
+                                /* From Move mode: launch shadow UI and jump to Master FX */
+                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                                shadow_display_mode = 1;
+                                shadow_control->display_mode = 1;
+                                launch_shadow_ui();
+                            } else {
+                                /* Already in shadow mode: set flag */
+                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                            }
+                        } else {
+                            /* Shadow UI disabled: toggle screen reader */
+                            bool current_state = tts_get_enabled();
+                            snprintf(log_msg, sizeof(log_msg), "Toggling screen reader: %s -> %s",
+                                     current_state ? "ON" : "OFF",
+                                     !current_state ? "ON" : "OFF");
+                            shadow_log(log_msg);
+
+                            /* Set priority flag to block D-Bus messages during toggle announcement */
+                            struct timespec ts;
+                            clock_gettime(CLOCK_MONOTONIC, &ts);
+                            tts_priority_announcement_time_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+                            tts_priority_announcement_active = true;
+
+                            tts_set_enabled(!current_state);
+                            /* Update shared memory so D-Bus handler doesn't re-sync stale value */
+                            if (shadow_control) {
+                                shadow_control->tts_enabled = !current_state ? 1 : 0;
+                            }
+                            if (!current_state) {
+                                /* Just enabled - announce it */
+                                tts_speak("screen reader on");
+                            }
+                        }
+                    }
+                    /* Block Menu CC from reaching Move by zeroing in shadow buffer */
+                    char block_msg[128];
+                    snprintf(block_msg, sizeof(block_msg), "Blocking Menu CC (POST-IOCTL d2=%d)", d2);
+                    shadow_log(block_msg);
+                    sh_midi[j] = 0;
+                    sh_midi[j + 1] = 0;
+                    sh_midi[j + 2] = 0;
+                    sh_midi[j + 3] = 0;
+                }
+            }
+        }
+
         /* === SAMPLER MIDI FILTERING ===
          * Block events from reaching Move for sampler use.
          * Always block Shift+Record so the first press doesn't leak through.
@@ -7115,35 +7211,6 @@ do_ioctl:
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
                         }
-                    }
-                }
-
-                /* Shift + Volume + Menu = jump to Master FX view (or toggle screen reader if shadow UI disabled) */
-                if (d1 == CC_MENU && d2 > 0) {
-                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
-                        if (shadow_ui_enabled) {
-                            /* Shadow UI enabled: launch/navigate to Master FX */
-                            if (!shadow_display_mode) {
-                                /* From Move mode: launch shadow UI and jump to Master FX */
-                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                                shadow_display_mode = 1;
-                                shadow_control->display_mode = 1;
-                                launch_shadow_ui();
-                            } else {
-                                /* Already in shadow mode: set flag */
-                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                            }
-                        } else {
-                            /* Shadow UI disabled: toggle screen reader */
-                            bool current_state = tts_get_enabled();
-                            tts_set_enabled(!current_state);
-                            if (!current_state) {
-                                /* Just enabled - announce it */
-                                tts_speak("screen reader on");
-                            }
-                        }
-                        /* Block Menu CC from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                     }
                 }
 

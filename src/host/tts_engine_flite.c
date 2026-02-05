@@ -36,6 +36,8 @@ static pthread_mutex_t ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool initialized = false;
 static bool tts_enabled = false;  /* Screen Reader on/off toggle - default OFF */
+static bool tts_disabling = false;  /* True when playing final announcement before disable */
+static bool tts_disabling_had_audio = false;  /* Track if we've played any audio during disable */
 static int tts_volume = 70;  /* Default 70% volume */
 static float tts_speed = 1.0f;  /* Default speed (1.0 = normal, >1.0 = slower, <1.0 = faster) */
 static float tts_pitch = 110.0f;  /* Default pitch in Hz (typical range: 80-180) */
@@ -300,8 +302,8 @@ bool tts_speak(const char *text) {
         return false;
     }
 
-    /* Check if TTS is enabled */
-    if (!tts_enabled) {
+    /* Check if TTS is enabled or disabling (block new speech when disabling) */
+    if (!tts_enabled || tts_disabling) {
         return false;
     }
 
@@ -332,7 +334,8 @@ bool tts_is_speaking(void) {
     pthread_mutex_lock(&ring_mutex);
     bool has_audio = (ring_read_pos != ring_write_pos);
     pthread_mutex_unlock(&ring_mutex);
-    return has_audio;
+    /* Keep returning true while disabling so tts_get_audio() gets called to complete the disable */
+    return has_audio || tts_disabling;
 }
 
 int tts_get_audio(int16_t *out_buffer, int max_frames) {
@@ -340,12 +343,29 @@ int tts_get_audio(int16_t *out_buffer, int max_frames) {
         return 0;
     }
 
-    /* Don't output audio if TTS is disabled */
-    if (!tts_enabled) {
+    /* Don't output audio if TTS is disabled (unless we're disabling and playing final announcement) */
+    if (!tts_enabled && !tts_disabling) {
         return 0;
     }
 
     pthread_mutex_lock(&ring_mutex);
+
+    /* Track if we've had audio during disable (to avoid completing before synthesis) */
+    if (tts_disabling && ring_read_pos != ring_write_pos) {
+        tts_disabling_had_audio = true;
+    }
+
+    /* Complete disable only after we've played the announcement and buffer is now empty */
+    if (tts_disabling && tts_disabling_had_audio && ring_read_pos == ring_write_pos) {
+        pthread_mutex_unlock(&ring_mutex);
+        tts_enabled = false;
+        tts_disabling = false;
+        tts_disabling_had_audio = false;  /* Reset for next disable cycle */
+        tts_save_state();
+        tts_clear_buffer();
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader disable complete");
+        return 0;
+    }
 
     int frames_available = 0;
     if (ring_write_pos >= ring_read_pos) {
@@ -433,38 +453,38 @@ static void tts_clear_buffer(void) {
 
 void tts_set_enabled(bool enabled) {
     /* No change needed */
-    if (enabled == tts_enabled) {
+    if (enabled == tts_enabled && !tts_disabling) {
         return;
     }
 
-    unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS enabled to %s (was %s)",
-                enabled ? "ON" : "OFF", tts_enabled ? "ON" : "OFF");
-
-    /* Announce before disabling so user hears confirmation */
-    if (!enabled && tts_enabled) {
-        tts_speak("screen reader off");
-
-        /* Brief sleep to let synthesis queue */
-        usleep(100000);  /* 100ms */
-
-        /* Wait for speech to finish (with timeout) */
-        for (int i = 0; i < 50; i++) {  /* Max 5 seconds */
-            if (!tts_is_speaking()) {
-                break;
-            }
-            usleep(100000);  /* 100ms */
-        }
+    /* Enabling */
+    if (enabled && !tts_enabled) {
+        tts_enabled = true;
+        tts_disabling = false;
+        tts_save_state();
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader enabled");
+        return;
     }
 
-    tts_enabled = enabled;
+    /* Disabling - non-blocking with final announcement */
+    if (!enabled && tts_enabled && !tts_disabling) {
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader disabling (waiting for final announcement)");
 
-    /* Save state so it persists through reboots */
-    tts_save_state();
+        /* Reset the playback tracking flag for this new disable cycle */
+        tts_disabling_had_audio = false;
 
-    /* Clear buffer when disabling */
-    if (!enabled) {
-        tts_clear_buffer();
-        unified_log("tts_engine", LOG_LEVEL_INFO, "Cleared TTS buffer");
+        /* Speak final announcement (non-blocking) */
+        tts_disabling = true;  /* Set flag BEFORE speaking so synthesis thread can queue it */
+
+        /* Temporarily allow this final speech */
+        bool was_disabling = tts_disabling;
+        tts_disabling = false;
+        tts_speak("screen reader off");
+        tts_disabling = was_disabling;
+
+        /* Actual disable will complete in tts_get_audio() when buffer empties */
+        /* This is non-blocking - MIDI processing continues normally */
+        return;
     }
 }
 

@@ -42,7 +42,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
      ```
 
 **Test 1.2: Shadow UI Access**
-1. Press Shift+Vol+Menu on Move
+1. Press Shift+Menu on Move
    - Expected: Shadow UI launches, opens Master FX view
    - Expected: No screen reader announcement (SR is OFF)
 
@@ -81,7 +81,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 
 8. Wait for Move to restart (~30 seconds)
 
-9. Press Shift+Vol+Menu to open shadow UI
+9. Press Shift+Menu to open shadow UI
    - Expected: Screen reader still ON, hear announcements
 
 **Test 1.4: Standalone Mode Access**
@@ -111,7 +111,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 
 **Test 2.1: Initial State After Install**
 1. Wait for Move to restart after install
-2. Press Shift+Vol+Menu
+2. Press Shift+Menu
    - Expected: Hear "Master FX, FX 1 Freeverb" announcement immediately
    - Expected: Shadow UI opens to Master FX
 
@@ -127,7 +127,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
    ssh root@move.local reboot
    ```
 
-2. After restart, press Shift+Vol+Menu
+2. After restart, press Shift+Menu
    - Expected: Screen reader still ON, hear announcements
 
 ---
@@ -158,16 +158,16 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
   Skipping module installation (shadow UI and standalone both disabled)
 
   Screen Reader:
-    Shift+Vol+Menu: Toggle screen reader on/off
+    Shift+Menu: Toggle screen reader on/off
   ```
 
-**Test 3.2: Shift+Vol+Menu Toggles Screen Reader**
-1. From Move mode, press Shift+Vol+Menu
+**Test 3.2: Shift+Menu Toggles Screen Reader**
+1. From Move mode, press Shift+Menu
    - Expected: Hear "screen reader off" (it was ON from --enable-screen-reader)
    - Expected: Shadow UI does NOT launch
    - Expected: Move remains active
 
-2. Press Shift+Vol+Menu again
+2. Press Shift+Menu again
    - Expected: Hear "screen reader on"
    - Expected: Shadow UI still does NOT launch
 
@@ -185,18 +185,18 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
    - Expected: Move receives the button press normally
 
 **Test 3.5: Screen Reader Announces Move Actions**
-1. Enable screen reader (Shift+Vol+Menu if disabled)
+1. Enable screen reader (Shift+Menu if disabled)
 2. Navigate Move's UI (change sets, patterns, etc.)
    - Expected: Should hear announcements from Move's accessibility D-Bus messages
    - Note: This depends on Move's accessibility implementation
 
 **Test 3.6: State Persistence**
-1. Turn screen reader OFF (Shift+Vol+Menu)
+1. Turn screen reader OFF (Shift+Menu)
 2. Reboot Move:
    ```bash
    ssh root@move.local reboot
    ```
-3. After restart, verify screen reader is still OFF (press Shift+Vol+Menu, should hear "screen reader on")
+3. After restart, verify screen reader is still OFF (press Shift+Menu, should hear "screen reader on")
 
 ---
 
@@ -215,7 +215,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 - Screen Reader: disabled (default)
 
 **Test 4.1: Shadow UI Works**
-1. Press Shift+Vol+Menu
+1. Press Shift+Menu
    - Expected: Shadow UI launches to Master FX
    - Expected: No announcements (SR is OFF)
 
@@ -270,7 +270,7 @@ Examples:
    rm -f /data/UserData/move-anything/config/features.json
    ```
 3. Reboot Move
-4. Press Shift+Vol+Menu
+4. Press Shift+Menu
    - Expected: Shadow UI launches (defaults to enabled)
    - Expected: No announcements (defaults to OFF)
 
@@ -291,7 +291,7 @@ Examples:
 
 Test matrix:
 
-| Shadow UI | Standalone | Screen Reader | Shift+Vol+Menu | Shift+Vol+Knob8 |
+| Shadow UI | Standalone | Screen Reader | Shift+Menu | Shift+Vol+Knob8 |
 |-----------|------------|---------------|----------------|-----------------|
 | ON        | ON         | ON            | Opens Master FX | Opens standalone |
 | ON        | ON         | OFF           | Opens Master FX | Opens standalone |
