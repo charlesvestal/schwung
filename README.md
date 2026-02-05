@@ -27,6 +27,11 @@ Also: this code is heavily written by coding agents, with human supervision. If 
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
 ```
 
+**Screen reader only (accessible install):**
+```bash
+curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui --disable-standalone
+```
+
 The installer will:
 1. **Guide you through SSH setup** if needed (generates key, shows how to add it to Move)
 2. **Download and install** the Move Everything framework
