@@ -45,6 +45,7 @@ The installer will:
 ./scripts/install.sh --skip-modules
 ```
 
+
 For managing files on your Move, you can also use [Cyberduck](https://cyberduck.io) (SFTP to `move.local`, select your SSH private key).
 
 For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).
