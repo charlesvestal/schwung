@@ -1,5 +1,23 @@
 #!/usr/bin/env sh
-cat << 'EOM'
+
+# Detect quiet mode early (for screen reader users)
+quiet_mode=false
+for arg in "$@"; do
+  case "$arg" in
+    --enable-screen-reader) enable_screen_reader_arg=true ;;
+    --disable-shadow-ui) disable_shadow_ui_arg=true ;;
+    --disable-standalone) disable_standalone_arg=true ;;
+  esac
+done
+if [ "${enable_screen_reader_arg:-false}" = true ] && \
+   [ "${disable_shadow_ui_arg:-false}" = true ] && \
+   [ "${disable_standalone_arg:-false}" = true ]; then
+  quiet_mode=true
+fi
+
+# Skip ASCII art in quiet mode (screen reader friendly)
+if [ "$quiet_mode" = false ]; then
+  cat << 'EOM'
  __  __                      _                _   _     _
 |  \/  | _____   _____      / \   _ __  _   _| |_| |__ (_)_ __   __ _
 | |\/| |/ _ \ \ / / _ \    / _ \ | '_ \| | | | __| '_ \| | '_ \ / _` |
@@ -7,6 +25,9 @@ cat << 'EOM'
 |_|  |_|\___/ \_/ \___|  /_/   \_\_| |_|\__, |\__|_| |_|_|_| |_|\__, |
                                         |___/                   |___/
 EOM
+else
+  echo "Move Anything installer (screen reader mode)"
+fi
 
 # uncomment to debug
 # set -x
@@ -17,6 +38,18 @@ fail() {
   echo
   echo "Error: $*"
   exit 1
+}
+
+# Echo only if not in quiet mode (for screen reader friendly output)
+qecho() {
+  if [ "$quiet_mode" = false ]; then
+    echo "$@"
+  fi
+}
+
+# Echo always (for important messages even in quiet mode)
+iecho() {
+  echo "$@"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -367,14 +400,16 @@ else
   curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
   local_file="$remote_filename"
 fi
-if command -v md5sum >/dev/null 2>&1; then
-  echo "Build MD5: $(md5sum "$local_file")"
-elif command -v md5 >/dev/null 2>&1; then
-  echo "Build MD5: $(md5 -q "$local_file")"
+if [ "$quiet_mode" = false ]; then
+  if command -v md5sum >/dev/null 2>&1; then
+    echo "Build MD5: $(md5sum "$local_file")"
+  elif command -v md5 >/dev/null 2>&1; then
+    echo "Build MD5: $(md5 -q "$local_file")"
+  fi
 fi
 
 # Check SSH connection, run setup wizard if needed
-echo "Checking SSH connection to $hostname..."
+qecho "Checking SSH connection to $hostname..."
 ssh_result=$(ssh_test_ableton) || true
 
 if [ -n "$ssh_result" ]; then
@@ -403,15 +438,16 @@ if [ -n "$ssh_result" ]; then
       fail "Could not establish SSH connection to Move"
     fi
   else
-    echo
-    echo "To set up SSH manually:"
-    echo "  1. Generate a key: ssh-keygen -t ed25519"
-    echo "  2. Add your public key at: http://move.local/development/ssh"
-    echo "  3. Run this install script again"
+    iecho ""
+    iecho "To set up SSH manually:"
+    iecho "  1. Generate a key: ssh-keygen -t ed25519"
+    iecho "  2. Add your public key at: http://move.local/development/ssh"
+    iecho "  3. Run this install script again"
     fail "SSH connection required for installation"
   fi
 else
-  echo "✓ SSH connection OK"
+  qecho "✓ SSH connection OK"
+  iecho "Installing Move Anything..."
 fi
 
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
@@ -574,7 +610,7 @@ ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.s
 # Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink
 # Root partition is nearly full, so symlink instead of copying
 if ssh_ableton_with_retry "test -d /data/UserData/move-anything/lib"; then
-  echo "Deploying Flite libraries..."
+  qecho "Deploying Flite libraries..."
   ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in libflite*.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
 fi
 
@@ -595,8 +631,8 @@ ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/mov
 
 
 # Create feature configuration file
-echo
-echo "Configuring features..."
+qecho ""
+qecho "Configuring features..."
 ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
 
 # Build features.json content
@@ -612,14 +648,16 @@ EOF" || echo "Warning: Failed to create features.json"
 
 # Create screen reader state file if --enable-screen-reader was passed
 if [ "$enable_screen_reader" = true ]; then
-    echo "Enabling screen reader..."
+    qecho "Enabling screen reader..."
     ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
 fi
 
-echo "Features configured:"
-echo "  Shadow UI: $([ "$disable_shadow_ui" = false ] && echo "enabled" || echo "disabled")"
-echo "  Standalone: $([ "$disable_standalone" = false ] && echo "enabled" || echo "disabled")"
-echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
+if [ "$quiet_mode" = false ]; then
+    echo "Features configured:"
+    echo "  Shadow UI: $([ "$disable_shadow_ui" = false ] && echo "enabled" || echo "disabled")"
+    echo "  Standalone: $([ "$disable_standalone" = false ] && echo "enabled" || echo "disabled")"
+    echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
+fi
 
 # Optional: Install modules from the Module Store (before restart so they're available immediately)
 # Skip if both shadow UI and standalone are disabled (no way to use modules)
@@ -881,8 +919,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     fi
 fi
 
-echo
-echo "Restarting Move binary with shim installed..."
+qecho ""
+iecho "Restarting Move..."
 
 # Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
 # Use retry wrappers because Windows mDNS resolution can be flaky.
@@ -911,38 +949,47 @@ for i in $(seq 1 15); do
 done
 $shim_ok || fail "Move started without shim (LD_PRELOAD missing)"
 
-echo
-echo "Done!"
-echo
-echo "Move Anything is now installed with the modular plugin system."
-echo "Modules are located in: /data/UserData/move-anything/modules/"
-echo
+iecho ""
+iecho "Installation complete!"
 
-# Show active features
-if [ "$disable_shadow_ui" = false ] || [ "$disable_standalone" = false ]; then
-    echo "Active features:"
-    if [ "$disable_shadow_ui" = false ]; then
-        echo "  Shift+Vol+Track or Shift+Menu: Access slot configurations and Master FX"
-    fi
-    if [ "$disable_standalone" = false ]; then
-        echo "  Shift+Vol+Knob8: Access standalone mode and module store"
-    fi
-    echo
-fi
-
-# Show screen reader shortcut based on shadow UI state
-if [ "$disable_shadow_ui" = true ]; then
-    echo "Screen Reader:"
-    echo "  Shift+Menu: Toggle screen reader on/off"
-    echo
+# Concise output in quiet mode (screen reader friendly)
+if [ "$quiet_mode" = true ]; then
+    iecho ""
+    iecho "Screen reader enabled. Press Shift+Menu on Move to toggle on/off."
+    iecho "Visit http://move.local for web interface."
 else
-    echo "Screen Reader:"
-    echo "  Toggle via Shadow UI settings menu"
+    # Verbose output for visual users
+    echo
+    echo "Move Anything is now installed with the modular plugin system."
+    echo "Modules are located in: /data/UserData/move-anything/modules/"
+    echo
+
+    # Show active features
+    if [ "$disable_shadow_ui" = false ] || [ "$disable_standalone" = false ]; then
+        echo "Active features:"
+        if [ "$disable_shadow_ui" = false ]; then
+            echo "  Shift+Vol+Track or Shift+Menu: Access slot configurations and Master FX"
+        fi
+        if [ "$disable_standalone" = false ]; then
+            echo "  Shift+Vol+Knob8: Access standalone mode and module store"
+        fi
+        echo
+    fi
+
+    # Show screen reader shortcut based on shadow UI state
+    if [ "$disable_shadow_ui" = true ]; then
+        echo "Screen Reader:"
+        echo "  Shift+Menu: Toggle screen reader on/off"
+        echo
+    else
+        echo "Screen Reader:"
+        echo "  Toggle via Shadow UI settings menu"
+        echo
+    fi
+
+    echo "Logging commands:"
+    echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/move-anything/debug_log_on'"
+    echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/move-anything/debug_log_on'"
+    echo "  View:    ssh ableton@move.local 'tail -f /data/UserData/move-anything/debug.log'"
     echo
 fi
-
-echo "Logging commands:"
-echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/move-anything/debug_log_on'"
-echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/move-anything/debug_log_on'"
-echo "  View:    ssh ableton@move.local 'tail -f /data/UserData/move-anything/debug.log'"
-echo
