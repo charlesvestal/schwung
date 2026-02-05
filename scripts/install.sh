@@ -67,11 +67,11 @@ scp_with_retry() {
     fi
     retry=$((retry + 1))
     if [ $retry -lt $max_retries ]; then
-      echo "    Retry $retry/$max_retries..."
+      qecho "    Retry $retry/$max_retries..."
       sleep 2
     fi
   done
-  echo "    Failed to copy after $max_retries attempts"
+  qecho "    Failed to copy after $max_retries attempts"
   return 1
 }
 
@@ -89,11 +89,11 @@ ssh_root_with_retry() {
     fi
     retry=$((retry + 1))
     if [ $retry -lt $max_retries ]; then
-      echo "  Connection retry $retry/$max_retries..."
+      qecho "  Connection retry $retry/$max_retries..."
       sleep 2
     fi
   done
-  echo "  SSH command failed after $max_retries attempts"
+  qecho "  SSH command failed after $max_retries attempts"
   return 1
 }
 
@@ -107,11 +107,11 @@ ssh_ableton_with_retry() {
     fi
     retry=$((retry + 1))
     if [ $retry -lt $max_retries ]; then
-      echo "  Connection retry $retry/$max_retries..."
+      qecho "  Connection retry $retry/$max_retries..."
       sleep 2
     fi
   done
-  echo "  SSH command failed after $max_retries attempts"
+  qecho "  SSH command failed after $max_retries attempts"
   return 1
 }
 
@@ -603,8 +603,8 @@ fi
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
 ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
-echo
-echo "Stopping Move to install shim (your Move screen will go dark briefly)..."
+qecho ""
+iecho "Stopping Move to install shim (your Move screen will go dark briefly)..."
 
 # Use root to stop running Move processes cleanly, then force if needed.
 # Use retry wrappers because Windows mDNS resolution can be flaky.

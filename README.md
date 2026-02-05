@@ -29,8 +29,9 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 **Screen reader only (accessible install):**
 ```bash
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui --disable-standalone
+curl -sL https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui --disable-standalone
 ```
+_Note: Uses `-sL` (silent) for minimal output, suitable for screen readers._
 
 The installer will:
 1. **Guide you through SSH setup** if needed (generates key, shows how to add it to Move)
