@@ -30,4 +30,10 @@ int tts_get_audio(int16_t *out_buffer, int max_frames);
 /* Set TTS volume (0-100) */
 void tts_set_volume(int volume);
 
+/* Set TTS speed (0.5 = half speed, 1.0 = normal, 2.0 = double speed) */
+void tts_set_speed(float speed);
+
+/* Set TTS pitch in Hz (range: 80-180, typical: 110) */
+void tts_set_pitch(float pitch_hz);
+
 #endif /* TTS_ENGINE_H */

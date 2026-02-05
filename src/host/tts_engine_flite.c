@@ -8,13 +8,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdio.h>
 #include "unified_log.h"
 
 /* Voice registration function (not in public headers) */
 extern cst_voice *register_cmu_us_kal(const char *voxdir);
 
-/* Forward declaration */
+/* Forward declarations */
 static void* tts_synthesis_thread(void *arg);
+static void tts_load_config(void);
 
 /* Ring buffer for synthesized audio */
 #define RING_BUFFER_SIZE (44100 * 8)  /* 4 seconds at 44.1kHz stereo (8 = 4sec * 2ch) */
@@ -25,6 +27,8 @@ static pthread_mutex_t ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool initialized = false;
 static int tts_volume = 70;  /* Default 70% volume */
+static float tts_speed = 1.0f;  /* Default speed (1.0 = normal, >1.0 = slower, <1.0 = faster) */
+static float tts_pitch = 110.0f;  /* Default pitch in Hz (typical range: 80-180) */
 static cst_voice *voice = NULL;
 
 /* Background synthesis thread */
@@ -122,6 +126,61 @@ static void* tts_synthesis_thread(void *arg) {
     return NULL;
 }
 
+/* Load TTS configuration from file */
+static void tts_load_config(void) {
+    const char *config_path = "/data/UserData/move-anything/config/tts.json";
+    FILE *f = fopen(config_path, "r");
+    if (!f) {
+        unified_log("tts_engine", LOG_LEVEL_DEBUG, "No TTS config file found, using defaults");
+        return;
+    }
+
+    /* Read file */
+    char config_buf[512];
+    size_t len = fread(config_buf, 1, sizeof(config_buf) - 1, f);
+    fclose(f);
+    config_buf[len] = '\0';
+
+    /* Parse speed */
+    const char *speed_key = strstr(config_buf, "\"speed\"");
+    if (speed_key) {
+        const char *colon = strchr(speed_key, ':');
+        if (colon) {
+            float speed = strtof(colon + 1, NULL);
+            if (speed >= 0.5f && speed <= 2.0f) {
+                tts_speed = speed;
+                unified_log("tts_engine", LOG_LEVEL_INFO, "Loaded TTS speed: %.2f", speed);
+            }
+        }
+    }
+
+    /* Parse pitch */
+    const char *pitch_key = strstr(config_buf, "\"pitch\"");
+    if (pitch_key) {
+        const char *colon = strchr(pitch_key, ':');
+        if (colon) {
+            float pitch = strtof(colon + 1, NULL);
+            if (pitch >= 80.0f && pitch <= 180.0f) {
+                tts_pitch = pitch;
+                unified_log("tts_engine", LOG_LEVEL_INFO, "Loaded TTS pitch: %.1f Hz", pitch);
+            }
+        }
+    }
+
+    /* Parse volume */
+    const char *volume_key = strstr(config_buf, "\"volume\"");
+    if (volume_key) {
+        const char *colon = strchr(volume_key, ':');
+        if (colon) {
+            int volume = atoi(colon + 1);
+            if (volume >= 0 && volume <= 100) {
+                tts_volume = volume;
+                unified_log("tts_engine", LOG_LEVEL_INFO, "Loaded TTS volume: %d", volume);
+            }
+        }
+    }
+}
+
 bool tts_init(int sample_rate) {
     if (initialized) {
         return true;
@@ -130,12 +189,19 @@ bool tts_init(int sample_rate) {
     /* Initialize Flite */
     flite_init();
 
+    /* Load config file (if it exists) */
+    tts_load_config();
+
     /* Register US English voice (built-in) */
     voice = register_cmu_us_kal(NULL);
     if (!voice) {
         unified_log("tts_engine", LOG_LEVEL_ERROR, "Failed to register Flite voice");
         return false;
     }
+
+    /* Apply voice parameters */
+    feat_set_float(voice->features, "duration_stretch", tts_speed);
+    feat_set_float(voice->features, "int_f0_target_mean", tts_pitch);
 
     /* Start background synthesis thread */
     synth_thread_running = true;
@@ -254,4 +320,28 @@ void tts_set_volume(int volume) {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
     tts_volume = volume;
+}
+
+void tts_set_speed(float speed) {
+    /* Clamp to reasonable range: 0.5x to 2.0x */
+    if (speed < 0.5f) speed = 0.5f;
+    if (speed > 2.0f) speed = 2.0f;
+    tts_speed = speed;
+
+    /* Apply to voice if already initialized */
+    if (initialized && voice) {
+        feat_set_float(voice->features, "duration_stretch", tts_speed);
+    }
+}
+
+void tts_set_pitch(float pitch_hz) {
+    /* Clamp to reasonable range: 80Hz to 180Hz */
+    if (pitch_hz < 80.0f) pitch_hz = 80.0f;
+    if (pitch_hz > 180.0f) pitch_hz = 180.0f;
+    tts_pitch = pitch_hz;
+
+    /* Apply to voice if already initialized */
+    if (initialized && voice) {
+        feat_set_float(voice->features, "int_f0_target_mean", tts_pitch);
+    }
 }
