@@ -584,12 +584,89 @@ BEGIN { id=""; name=""; repo=""; asset=""; ctype="" }
     echo "========================================"
     echo "Module Installation Complete"
     echo "========================================"
+fi
+
+# Offer to copy assets for modules that need them (skip if --skip-modules was used)
+if [ "$skip_modules" = false ]; then
     echo
-    echo "NOTE: Some modules require or benefit from additional assets:"
-    echo "  - Dexed: Optional additional .syx patch banks"
-    echo "  - Mini-JV: REQUIRES ROM files"
-    echo "  - SF2: REQUIRES SoundFont files (.sf2)"
-    echo "Modules are also available in the Module Store."
+    echo "Some modules require additional assets to function:"
+    echo "  - Mini-JV: ROM files (jv880_rom1.bin, jv880_rom2.bin, jv880_waverom1.bin, jv880_waverom2.bin)"
+    echo "  - SF2: SoundFont files (.sf2)"
+    echo
+    printf "Would you like to copy assets to your Move now? (y/N): "
+    read -r copy_assets </dev/tty
+else
+    copy_assets="n"
+fi
+
+if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
+    echo
+    echo "═══════════════════════════════════════════════════════════════════════════════"
+    echo "  Asset Copy"
+    echo "═══════════════════════════════════════════════════════════════════════════════"
+
+    # JV880 ROMs
+    echo
+    echo "Mini-JV ROMs: Enter the folder containing your JV880 ROM files"
+    echo "(jv880_rom1.bin, jv880_rom2.bin, jv880_waverom1.bin, jv880_waverom2.bin)"
+    echo "Press ENTER to skip."
+    printf "ROM folder path: "
+    read -r rom_path </dev/tty
+
+    if [ -n "$rom_path" ]; then
+        # Expand ~ to home directory
+        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|")
+        if [ -d "$rom_path" ]; then
+            rom_count=0
+            for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin; do
+                if [ -f "$rom_path/$rom" ]; then
+                    echo "  Copying $rom..."
+                    $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms"
+                    $scp_ableton "$rom_path/$rom" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/"
+                    rom_count=$((rom_count + 1))
+                fi
+            done
+            if [ $rom_count -gt 0 ]; then
+                echo "  Copied $rom_count ROM file(s)"
+            else
+                echo "  No ROM files found in $rom_path"
+            fi
+        else
+            echo "  Directory not found: $rom_path"
+        fi
+    fi
+
+    # SoundFonts
+    echo
+    echo "SF2 SoundFonts: Enter the folder containing your .sf2 files"
+    echo "Press ENTER to skip."
+    printf "SoundFont folder path: "
+    read -r sf2_path </dev/tty
+
+    if [ -n "$sf2_path" ]; then
+        # Expand ~ to home directory
+        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|")
+        if [ -d "$sf2_path" ]; then
+            sf2_count=0
+            for sf2 in "$sf2_path"/*.sf2 "$sf2_path"/*.SF2; do
+                if [ -f "$sf2" ]; then
+                    echo "  Copying $(basename "$sf2")..."
+                    $scp_ableton "$sf2" "$username@$hostname:./move-anything/modules/sound_generators/sf2/"
+                    sf2_count=$((sf2_count + 1))
+                fi
+            done
+            if [ $sf2_count -gt 0 ]; then
+                echo "  Copied $sf2_count SoundFont file(s)"
+            else
+                echo "  No .sf2 files found in $sf2_path"
+            fi
+        else
+            echo "  Directory not found: $sf2_path"
+        fi
+    fi
+
+    echo
+    echo "Asset copy complete."
 fi
 
 echo
