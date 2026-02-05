@@ -6033,8 +6033,13 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         tts_init(44100);
         if (shadow_control) {
             shadow_control->tts_enabled = tts_get_enabled() ? 1 : 0;
-            unified_log("shim", LOG_LEVEL_INFO, "TTS initialized, synced to shared memory: %s",
-                       shadow_control->tts_enabled ? "ON" : "OFF");
+            shadow_control->tts_volume = tts_get_volume();
+            shadow_control->tts_speed = tts_get_speed();
+            shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
+            unified_log("shim", LOG_LEVEL_INFO,
+                       "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
+                       shadow_control->tts_enabled ? "ON" : "OFF",
+                       shadow_control->tts_speed, (float)shadow_control->tts_pitch, shadow_control->tts_volume);
         }
 #endif
 

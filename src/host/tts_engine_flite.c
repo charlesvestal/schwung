@@ -174,6 +174,27 @@ static void tts_save_state(void) {
     unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state saved: %s", tts_enabled ? "ON" : "OFF");
 }
 
+/* Save TTS configuration (speed, pitch, volume) to disk */
+static void tts_save_config(void) {
+    const char *config_path = "/data/UserData/move-anything/config/tts.json";
+    FILE *f = fopen(config_path, "w");
+    if (!f) {
+        unified_log("tts_engine", LOG_LEVEL_ERROR, "Failed to save TTS config");
+        return;
+    }
+
+    fprintf(f, "{\n");
+    fprintf(f, "  \"speed\": %.2f,\n", tts_speed);
+    fprintf(f, "  \"pitch\": %.1f,\n", tts_pitch);
+    fprintf(f, "  \"volume\": %d\n", tts_volume);
+    fprintf(f, "}\n");
+    fclose(f);
+
+    unified_log("tts_engine", LOG_LEVEL_INFO,
+               "TTS config saved: speed=%.2f, pitch=%.1f, volume=%d",
+               tts_speed, tts_pitch, tts_volume);
+}
+
 /* Load TTS configuration from file */
 static void tts_load_config(void) {
     const char *config_path = "/data/UserData/move-anything/config/tts.json";
@@ -399,13 +420,21 @@ int tts_get_audio(int16_t *out_buffer, int max_frames) {
 void tts_set_volume(int volume) {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
-    tts_volume = volume;
+
+    /* Save config only if value changed */
+    if (tts_volume != volume) {
+        tts_volume = volume;
+        tts_save_config();
+    }
 }
 
 void tts_set_speed(float speed) {
     /* Clamp to reasonable range: 0.5x to 2.0x */
     if (speed < 0.5f) speed = 0.5f;
     if (speed > 2.0f) speed = 2.0f;
+
+    /* Save config only if value changed */
+    bool changed = (tts_speed != speed);
 
     unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS speed to %.2f (was %.2f)", speed, tts_speed);
     tts_speed = speed;
@@ -421,12 +450,20 @@ void tts_set_speed(float speed) {
 
     /* Clear buffer so new setting takes effect on next announcement */
     tts_clear_buffer();
+
+    /* Persist to disk if changed */
+    if (changed) {
+        tts_save_config();
+    }
 }
 
 void tts_set_pitch(float pitch_hz) {
     /* Clamp to reasonable range: 80Hz to 180Hz */
     if (pitch_hz < 80.0f) pitch_hz = 80.0f;
     if (pitch_hz > 180.0f) pitch_hz = 180.0f;
+
+    /* Save config only if value changed */
+    bool changed = (tts_pitch != pitch_hz);
 
     unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS pitch to %.1f Hz (was %.1f Hz)", pitch_hz, tts_pitch);
     tts_pitch = pitch_hz;
@@ -441,6 +478,11 @@ void tts_set_pitch(float pitch_hz) {
 
     /* Clear buffer so new setting takes effect on next announcement */
     tts_clear_buffer();
+
+    /* Persist to disk if changed */
+    if (changed) {
+        tts_save_config();
+    }
 }
 
 /* Clear the ring buffer (stops any ongoing speech immediately) */
