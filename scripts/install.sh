@@ -31,11 +31,31 @@ ssh_test_root() {
   ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n root@move.local true 2>&1
 }
 
+ssh_get_configured_key() {
+  # Check if SSH config specifies an IdentityFile for move.local
+  if [ -f "$HOME/.ssh/config" ]; then
+    # Extract IdentityFile from move.local config block
+    awk 'BEGIN{found=0} /^Host move\.local/{found=1; next} found && /^Host /{found=0} found && /IdentityFile/{gsub(/.*IdentityFile[ \t]+/,""); gsub(/[ \t]*$/,""); print; exit}' "$HOME/.ssh/config" | sed "s|~|$HOME|g"
+  fi
+}
+
 ssh_find_public_key() {
-  # Check for existing keys in order of preference
-  for keyfile in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_ecdsa.pub"; do
-    if [ -f "$keyfile" ]; then
-      echo "$keyfile"
+  # First check if SSH config specifies a key for move.local
+  configured_key=$(ssh_get_configured_key)
+  if [ -n "$configured_key" ]; then
+    # Check that BOTH private and public key exist
+    if [ -f "$configured_key" ] && [ -f "${configured_key}.pub" ]; then
+      echo "${configured_key}.pub"
+      return 0
+    fi
+    # Config specifies a key but it doesn't exist - return empty to trigger generation
+    return 1
+  fi
+
+  # No config entry - check for default keys (check private key exists too)
+  for keyfile in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_ecdsa"; do
+    if [ -f "$keyfile" ] && [ -f "${keyfile}.pub" ]; then
+      echo "${keyfile}.pub"
       return 0
     fi
   done
@@ -43,9 +63,17 @@ ssh_find_public_key() {
 }
 
 ssh_generate_key() {
-  echo "No SSH key found. Generating one now..."
+  # Check if SSH config specifies a key path for move.local
+  configured_key=$(ssh_get_configured_key)
+  if [ -n "$configured_key" ]; then
+    keypath="$configured_key"
+    echo "Generating SSH key at configured path: $keypath"
+  else
+    keypath="$HOME/.ssh/id_ed25519"
+    echo "No SSH key found. Generating one now..."
+  fi
   echo
-  ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "$(whoami)@$(hostname)"
+  ssh-keygen -t ed25519 -N "" -f "$keypath" -C "$(whoami)@$(hostname)"
   echo
   echo "SSH key generated successfully."
 }
@@ -107,7 +135,13 @@ ssh_wizard() {
     echo "Using your existing SSH key."
   else
     ssh_generate_key
-    pubkey="$HOME/.ssh/id_ed25519.pub"
+    # Use configured key path if set, otherwise default
+    configured_key=$(ssh_get_configured_key)
+    if [ -n "$configured_key" ]; then
+      pubkey="${configured_key}.pub"
+    else
+      pubkey="$HOME/.ssh/id_ed25519.pub"
+    fi
   fi
   echo
 
@@ -428,6 +462,9 @@ fi
 
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
 $ssh_root "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi"
+
+echo
+echo "Stopping Move to install shim (your Move screen will go dark briefly)..."
 
 # Use root to stop running Move processes cleanly, then force if needed.
 $ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill \$pids || true; fi; done"
