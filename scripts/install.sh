@@ -43,6 +43,46 @@ scp_with_retry() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Retry wrapper for SSH commands (Windows mDNS can be flaky)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ssh_root_with_retry() {
+  local cmd="$1"
+  local max_retries=3
+  local retry=0
+  while [ $retry -lt $max_retries ]; do
+    if $ssh_root "$cmd" 2>/dev/null; then
+      return 0
+    fi
+    retry=$((retry + 1))
+    if [ $retry -lt $max_retries ]; then
+      echo "  Connection retry $retry/$max_retries..."
+      sleep 2
+    fi
+  done
+  echo "  SSH command failed after $max_retries attempts"
+  return 1
+}
+
+ssh_ableton_with_retry() {
+  local cmd="$1"
+  local max_retries=3
+  local retry=0
+  while [ $retry -lt $max_retries ]; do
+    if $ssh_ableton "$cmd" 2>/dev/null; then
+      return 0
+    fi
+    retry=$((retry + 1))
+    if [ $retry -lt $max_retries ]; then
+      echo "  Connection retry $retry/$max_retries..."
+      sleep 2
+    fi
+  done
+  echo "  SSH command failed after $max_retries attempts"
+  return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SSH Setup Wizard
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -275,9 +315,9 @@ ssh_ensure_connection() {
 remote_filename=move-anything.tar.gz
 hostname=move.local
 username=ableton
-ssh_ableton="ssh -o LogLevel=QUIET -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+ssh_ableton="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
 scp_ableton="scp -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-ssh_root="ssh -o LogLevel=QUIET -o StrictHostKeyChecking=accept-new -n root@$hostname"
+ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n root@$hostname"
 
 # Parse arguments
 use_local=false
@@ -350,17 +390,18 @@ else
   echo "✓ SSH connection OK"
 fi
 
-$scp_ableton "$local_file" "$username@$hostname:./$remote_filename"
-$ssh_ableton "tar -xzvf ./$remote_filename"
+# Copy and extract main tarball with retry (Windows mDNS can be flaky)
+scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
+ssh_ableton_with_retry "tar -xzvf ./$remote_filename" || fail "Failed to extract tarball"
 
 # Verify expected payload exists before making system changes
-$ssh_ableton "test -f /data/UserData/move-anything/move-anything-shim.so" || fail "Payload missing: move-anything-shim.so"
-$ssh_ableton "test -f /data/UserData/move-anything/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
+ssh_ableton_with_retry "test -f /data/UserData/move-anything/move-anything-shim.so" || fail "Payload missing: move-anything-shim.so"
+ssh_ableton_with_retry "test -f /data/UserData/move-anything/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
 
 # Verify modules directory exists
-if $ssh_ableton "test -d /data/UserData/move-anything/modules"; then
+if ssh_ableton_with_retry "test -d /data/UserData/move-anything/modules"; then
   echo "Modules directory found"
-  $ssh_ableton "ls /data/UserData/move-anything/modules/"
+  ssh_ableton_with_retry "ls /data/UserData/move-anything/modules/" || true
 else
   echo "Warning: No modules directory found"
 fi
@@ -488,37 +529,38 @@ if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
 fi
 
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
-$ssh_root "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi"
+ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
 echo
 echo "Stopping Move to install shim (your Move screen will go dark briefly)..."
 
 # Use root to stop running Move processes cleanly, then force if needed.
-$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill \$pids || true; fi; done"
-$ssh_root "sleep 0.5"
-$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi; done"
-$ssh_root "sleep 0.2"
+# Use retry wrappers because Windows mDNS resolution can be flaky.
+ssh_root_with_retry "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill \$pids || true; fi; done" || true
+ssh_root_with_retry "sleep 0.5" || true
+ssh_root_with_retry "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi; done" || true
+ssh_root_with_retry "sleep 0.2" || true
 # Free the SPI device if anything still holds it (prevents \"communication error\")
-$ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
+ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
 
 # Symlink shim to /usr/lib/ (root partition has no free space for copies)
-$ssh_root "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so"
-$ssh_root chmod u+s /data/UserData/move-anything/move-anything-shim.so
+ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
+ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
 
 # Ensure the replacement Move script exists and is executable
-$ssh_root chmod +x /data/UserData/move-anything/shim-entrypoint.sh
+ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
 
 # Backup original only once, and only if current Move exists
 # IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
 # Never create extra copies of large files under /opt/move/ or anywhere on /.
-if $ssh_root "test ! -f /opt/move/MoveOriginal"; then
-  $ssh_root "test -f /opt/move/Move" || fail "Missing /opt/move/Move; refusing to proceed"
-  $ssh_root mv /opt/move/Move /opt/move/MoveOriginal
-  $ssh_ableton "cp /opt/move/MoveOriginal ~/"
+if ssh_root_with_retry "test ! -f /opt/move/MoveOriginal"; then
+  ssh_root_with_retry "test -f /opt/move/Move" || fail "Missing /opt/move/Move; refusing to proceed"
+  ssh_root_with_retry "mv /opt/move/Move /opt/move/MoveOriginal" || fail "Failed to backup original Move"
+  ssh_ableton_with_retry "cp /opt/move/MoveOriginal ~/" || true
 fi
 
 # Install the shimmed Move entrypoint
-$ssh_root cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move
+ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
 
 # Optional: Install modules from the Module Store (before restart so they're available immediately)
@@ -598,8 +640,12 @@ BEGIN { id=""; name=""; repo=""; asset=""; ctype="" }
         fi
         url="https://github.com/${repo}/releases/latest/download/${asset}"
         if curl -fsSLO "$url"; then
-            $scp_ableton "$asset" "$username@$hostname:./move-anything/" && \
-            $ssh_ableton "cd move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset"
+            # Use retry for scp/ssh because Windows mDNS can be flaky
+            if scp_with_retry "$asset" "$username@$hostname:./move-anything/"; then
+                ssh_ableton_with_retry "cd move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset" || echo "  Warning: Failed to extract $name"
+            else
+                echo "  Warning: Failed to copy $name to device"
+            fi
             rm -f "$asset"
             echo "  Installed: $name"
         else
@@ -656,7 +702,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rom_path" ]; then
             rom_count=0
-            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms"
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms" || true
             for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin; do
                 if [ -f "$rom_path/$rom" ]; then
                     echo "  Copying $rom..."
@@ -670,7 +716,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             # Copy expansion ROMs if present
             if [ -d "$rom_path/expansions" ]; then
                 exp_count=0
-                $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms/expansions"
+                ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms/expansions" || true
                 for exp in "$rom_path/expansions"/*.bin "$rom_path/expansions"/*.BIN; do
                     if [ -f "$exp" ]; then
                         echo "  Copying expansion: $(basename "$exp")..."
@@ -707,7 +753,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
-            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts"
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts" || true
             for sf2 in "$sf2_path"/*.sf2 "$sf2_path"/*.SF2; do
                 if [ -f "$sf2" ]; then
                     echo "  Copying $(basename "$sf2")..."
@@ -740,7 +786,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$syx_path" ]; then
             syx_count=0
-            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/dexed/banks"
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/dexed/banks" || true
             for syx in "$syx_path"/*.syx "$syx_path"/*.SYX; do
                 if [ -f "$syx" ]; then
                     echo "  Copying $(basename "$syx")..."
@@ -776,23 +822,25 @@ echo
 echo "Restarting Move binary with shim installed..."
 
 # Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
-$ssh_root "/etc/init.d/move stop >/dev/null 2>&1 || true"
-$ssh_root "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
+# Use retry wrappers because Windows mDNS resolution can be flaky.
+ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
+ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
 # Clean up stale shared memory so it's recreated with correct permissions
-$ssh_root "rm -f /dev/shm/move-shadow-*"
+ssh_root_with_retry "rm -f /dev/shm/move-shadow-*" || true
 # Free the SPI device if anything still holds it (prevents "communication error" on restart)
-$ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
-$ssh_ableton "sleep 2"
+ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
+ssh_ableton_with_retry "sleep 2" || true
 
-$ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
+ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
 
 # Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
-$ssh_root "/etc/init.d/move start >/dev/null 2>&1"
+ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to restart Move service"
 
 # Wait for MoveOriginal to appear with shim loaded (retry up to 15 seconds)
 shim_ok=false
 for i in $(seq 1 15); do
-    $ssh_ableton "sleep 1"
+    ssh_ableton_with_retry "sleep 1" || true
+    # Use direct ssh here since we're in a verification loop and need different retry semantics
     if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" 2>/dev/null; then
         shim_ok=true
         break
