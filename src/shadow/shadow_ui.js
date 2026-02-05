@@ -1041,6 +1041,10 @@ function enterOvertakeMenu() {
     previousView = view;
     setView(VIEWS.OVERTAKE_MENU);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const moduleName = overtakeModules[0]?.name || "None";
+    announce(`Overtake Menu, ${moduleName}`);
 }
 
 /* Overtake exit state - clear LEDs before returning to Move */
@@ -1426,6 +1430,16 @@ function enterComponentParams(slot, component) {
     editingValue = false;
     setView(VIEWS.COMPONENT_PARAMS);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    if (componentParams.length > 0) {
+        const param = componentParams[0];
+        const label = param.label || param.key;
+        const value = formatParamValue(param);
+        announce(`Component Parameters, ${label}: ${value}`);
+    } else {
+        announce("Component Parameters, No parameters");
+    }
 }
 
 /* Format a parameter value for display */
@@ -1618,6 +1632,14 @@ function enterPatchBrowser(slotIndex) {
     }
     setView(VIEWS.PATCHES);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    if (patches.length === 0) {
+        announce("Patch Browser, No patches found");
+    } else {
+        const patchName = patches[selectedPatch]?.name || "Unknown";
+        announce(`Patch Browser, ${patchName}`);
+    }
 }
 
 function enterPatchDetail(slotIndex, patchIndex) {
@@ -1628,6 +1650,15 @@ function enterPatchDetail(slotIndex, patchIndex) {
     fetchPatchDetail(slotIndex);
     setView(VIEWS.PATCH_DETAIL);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const patchName = patches[patchIndex]?.name || "Unknown";
+    const items = getDetailItems();
+    if (items.length > 0) {
+        const item = items[0];
+        const value = item.value || "Empty";
+        announce(`${patchName}, ${item.label}: ${value}`);
+    }
 }
 
 /* Special patch index value meaning clear the slot - must match shim */
@@ -1906,6 +1937,11 @@ function enterSlotSettings(slotIndex) {
     editingSettingValue = false;
     setView(VIEWS.SLOT_SETTINGS);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const setting = SLOT_SETTINGS[0];
+    const val = getSlotSettingValue(slotIndex, setting);
+    announceMenuItem(`Slot Settings, ${setting.label}`, val);
 }
 
 /* ========== Master Preset Picker Functions ========== */
@@ -1933,6 +1969,9 @@ function enterMasterPresetPicker() {
     inMasterPresetPicker = true;
     selectedMasterPresetIndex = 0;  /* Start at [New] */
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    announce("Master Presets, [New]");
 }
 
 function exitMasterPresetPicker() {
@@ -2150,6 +2189,11 @@ function enterMasterFxSettings() {
     selectingMasterFxModule = false;
     setView(VIEWS.MASTER_FX);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const comp = MASTER_FX_CHAIN_COMPONENTS[0];
+    const moduleName = getMasterFxSlotModule(0) || "Empty";
+    announce(`Master FX, ${comp.label} ${moduleName}`);
 }
 
 /* Load master FX chain configuration from DSP */
@@ -2204,6 +2248,10 @@ function enterMasterFxModuleSelect(componentIndex) {
 
     selectingMasterFxModule = true;
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const moduleName = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex]?.name || "None";
+    announce(`Select ${comp.label}, ${moduleName}`);
 }
 
 /* Apply module selection for Master FX slot */
@@ -2302,6 +2350,21 @@ function enterChainEdit(slotIndex) {
     loadChainConfigFromSlot(slotIndex);
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const slotName = slots[selectedSlot]?.name || "Unknown";
+    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    const cfg = chainConfigs[selectedSlot];
+    const moduleData = cfg && cfg[comp.key];
+
+    let info = "(empty)";
+    if (moduleData && moduleData.module) {
+        const prefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
+        const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
+        info = displayName;
+    }
+
+    announce(`S${slotIndex + 1} ${slotName}, ${comp.label} ${info}`);
 }
 
 /* Scan modules directory for modules of a specific component type */
@@ -2416,6 +2479,13 @@ function enterStorePicker(componentKey) {
         storePickerModules = getModulesForCategory(storeCatalog, categoryId);
         setView(VIEWS.STORE_PICKER_LIST);
         needsRedraw = true;
+        /* Announce menu title + initial selection */
+        if (storePickerModules.length > 0) {
+            const module = storePickerModules[0];
+            announce(`Module Store, ${module.name}`);
+        } else {
+            announce("Module Store, No modules available");
+        }
     }
 }
 
@@ -2445,6 +2515,13 @@ function fetchStoreCatalogSync() {
          * Use the standalone Module Store to update the core.
          * This avoids the complexity of updating while running. */
         setView(VIEWS.STORE_PICKER_LIST);
+        /* Announce menu title + initial selection */
+        if (storePickerModules.length > 0) {
+            const module = storePickerModules[0];
+            announce(`Module Store, ${module.name}`);
+        } else {
+            announce("Module Store, No modules available");
+        }
     } else {
         storePickerMessage = result.error || 'Failed to load catalog';
         setView(VIEWS.STORE_PICKER_RESULT);
@@ -2479,6 +2556,9 @@ function handleStorePickerListSelect() {
     storePickerActionIndex = 0;
     setView(VIEWS.STORE_PICKER_DETAIL);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection (first action) */
+    announce(`${storePickerCurrentModule.name}, Install`);
 }
 
 /* Handle selection in store picker detail */
@@ -2633,6 +2713,10 @@ function enterComponentSelect(slotIndex, componentIndex) {
 
     setView(VIEWS.COMPONENT_SELECT);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const moduleName = availableModules[selectedModuleIndex]?.name || "None";
+    announce(`Select ${comp.label}, ${moduleName}`);
 }
 
 /* Apply the selected module to the component - updates DSP in realtime */
@@ -2697,6 +2781,11 @@ function enterChainSettings(slotIndex) {
     editingChainSettingValue = false;
     setView(VIEWS.CHAIN_SETTINGS);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const setting = SLOT_SETTINGS[0];
+    const val = getSlotSettingValue(slotIndex, setting);
+    announce(`Chain Settings, ${setting.label}: ${val}`);
 }
 
 /* Get current value for a chain setting */
@@ -2754,6 +2843,10 @@ function enterKnobEditor(slot) {
     loadKnobAssignments(slot);
     setView(VIEWS.KNOB_EDITOR);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const assignLabel = getKnobAssignmentLabel(knobEditorAssignments[0]);
+    announce(`Knob Editor, Knob 1: ${assignLabel}`);
 }
 
 /* Load current knob assignments from DSP */
@@ -2876,6 +2969,11 @@ function enterKnobParamPicker() {
     knobParamPickerPath = [];
     setView(VIEWS.KNOB_PARAM_PICKER);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const targets = getKnobTargets(knobEditorSlot);
+    const targetName = targets[0]?.name || "None";
+    announce(`Knob ${knobEditorIndex + 1} Target, ${targetName}`);
 }
 
 /* Get items for current level in knob param picker hierarchy */
@@ -3023,6 +3121,11 @@ function enterComponentEditFallback(slotIndex, componentKey) {
 
     setView(VIEWS.COMPONENT_EDIT);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const moduleName = getSlotParam(slotIndex, `${prefix}:name`) || componentKey;
+    const presetName = editComponentPresetName || `Preset ${editComponentPreset + 1}`;
+    announce(`${moduleName}, ${presetName}`);
 }
 
 /* ============================================================
@@ -3072,6 +3175,19 @@ function enterHierarchyEditor(slotIndex, componentKey) {
 
     setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const prefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
+    const moduleName = getSlotParam(slotIndex, `${prefix}:name`) || componentKey;
+
+    if (hierEditorParams.length > 0) {
+        const param = hierEditorParams[0];
+        const label = param.label || param.key;
+        const value = param.value || "";
+        announce(`${moduleName}, ${label}: ${value}`);
+    } else {
+        announce(`${moduleName}, No parameters`);
+    }
 }
 
 /* Enter hierarchy-based parameter editor for a Master FX slot */
@@ -3117,6 +3233,17 @@ function enterMasterFxHierarchyEditor(fxSlot) {
 
     setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
+
+    /* Announce menu title + initial selection */
+    const moduleName = getSlotParam(0, `master_fx:${fxKey}:name`) || `FX ${fxSlot + 1}`;
+    if (hierEditorParams.length > 0) {
+        const param = hierEditorParams[0];
+        const label = param.label || param.key;
+        const value = param.value || "";
+        announce(`${moduleName}, ${label}: ${value}`);
+    } else {
+        announce(`${moduleName}, No parameters`);
+    }
 }
 
 /* Load params and knobs for current hierarchy level */
@@ -4496,6 +4623,13 @@ function handleSelect() {
                     selectedMasterFxSetting = 0;
                     editingMasterFxSetting = false;
                     needsRedraw = true;
+                    /* Announce menu title + initial selection */
+                    const items = getMasterFxSettingsItems();
+                    if (items.length > 0) {
+                        const item = items[0];
+                        const value = getMasterFxSettingValue(item);
+                        announce(`Master FX Settings, ${item.label}: ${value}`);
+                    }
                 } else {
                     /* FX slot - check if module is loaded with hierarchy */
                     const moduleData = masterFxConfig[selectedComp.key];
@@ -6242,6 +6376,10 @@ globalThis.init = function() {
         masterFxConfig.fx1.module = savedMasterFx.id;
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
+
+    /* Announce initial view + selection */
+    const slotName = slots[selectedSlot]?.name || "Unknown";
+    announce(`Slots Menu, S${selectedSlot + 1} ${slotName}`);
 };
 
 globalThis.tick = function() {
