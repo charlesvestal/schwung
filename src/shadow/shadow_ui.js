@@ -6201,7 +6201,8 @@ function drawMasterFxSettingsMenu() {
             if (item.type === "action") return "";
             return getMasterFxSettingValue(item);
         },
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true
     });
 
     drawFooter("Back: FX chain");
