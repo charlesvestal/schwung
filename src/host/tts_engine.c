@@ -59,7 +59,7 @@ bool tts_init(int sample_rate) {
     );
 
     if (result < 0) {
-        unified_log(LOG_ERROR, "tts_engine", "Failed to initialize espeak-ng: %d", result);
+        unified_log("tts_engine", LOG_LEVEL_ERROR, "Failed to initialize espeak-ng: %d", result);
         return false;
     }
 
@@ -76,7 +76,7 @@ bool tts_init(int sample_rate) {
     espeak_SetParameter(espeakPITCH, 50, 0);     /* Pitch (default 50) */
 
     initialized = true;
-    unified_log(LOG_INFO, "tts_engine", "TTS engine initialized at %d Hz", sample_rate);
+    unified_log("tts_engine", LOG_LEVEL_INFO, "TTS engine initialized at %d Hz", sample_rate);
     return true;
 }
 
@@ -122,7 +122,7 @@ bool tts_speak(const char *text) {
     );
 
     if (err != EE_OK) {
-        unified_log(LOG_ERROR, "tts_engine", "espeak_Synth failed: %d", err);
+        unified_log("tts_engine", LOG_LEVEL_ERROR, "espeak_Synth failed: %d", err);
         speaking = false;
         return false;
     }

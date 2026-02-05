@@ -73,8 +73,10 @@ echo "Building host..."
     src/host/unified_log.c \
     src/host/tts_engine.c \
     -Isrc \
+    -I/usr/include \
     -I/usr/include/dbus-1.0 \
     -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
+    -L/usr/lib/aarch64-linux-gnu \
     -ldl -lrt -lpthread -ldbus-1 -lespeak-ng -lm
 
 echo "Building Shadow POC..."
