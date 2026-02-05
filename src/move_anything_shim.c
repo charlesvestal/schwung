@@ -1896,12 +1896,27 @@ typedef struct {
 #define SAMPLER_RING_BUFFER_SIZE (SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
 #define SAMPLER_RECORDINGS_DIR "/data/UserData/UserLibrary/Samples/Move Everything"
 
+/* Execute a command safely using fork/execvp instead of system() */
+static int shim_run_command(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return -1;
+}
+
 static FILE *sampler_wav_file = NULL;
 static uint32_t sampler_samples_written = 0;
 static char sampler_current_recording[256] = "";
 static int16_t *sampler_ring_buffer = NULL;
-static volatile size_t sampler_ring_write_pos = 0;
-static volatile size_t sampler_ring_read_pos = 0;
+static size_t sampler_ring_write_pos = 0;
+static size_t sampler_ring_read_pos = 0;
 static pthread_t sampler_writer_thread;
 static pthread_mutex_t sampler_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t sampler_ring_cond = PTHREAD_COND_INITIALIZER;
@@ -1919,7 +1934,7 @@ static volatile int sampler_writer_should_exit = 0;
 static int16_t *skipback_buffer = NULL;
 static volatile size_t skipback_write_pos = 0;  /* In samples (L+R pairs count as 2) */
 static volatile int skipback_buffer_full = 0;   /* Has wrapped at least once */
-static volatile int skipback_saving = 0;        /* Writer thread active */
+static int skipback_saving = 0;                  /* Writer thread active (accessed atomically) */
 static pthread_t skipback_writer_thread;
 static volatile int skipback_overlay_timeout = 0;  /* Frames remaining for "saved" overlay */
 #define SKIPBACK_OVERLAY_FRAMES 114  /* ~2 seconds at 57Hz */
@@ -2194,8 +2209,8 @@ static void sampler_write_wav_header(FILE *f, uint32_t data_size) {
 }
 
 static size_t sampler_ring_available_write(void) {
-    size_t write_pos = sampler_ring_write_pos;
-    size_t read_pos = sampler_ring_read_pos;
+    size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
+    size_t read_pos = __atomic_load_n(&sampler_ring_read_pos, __ATOMIC_ACQUIRE);
     size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
     if (write_pos >= read_pos)
         return buffer_samples - (write_pos - read_pos) - 1;
@@ -2204,8 +2219,8 @@ static size_t sampler_ring_available_write(void) {
 }
 
 static size_t sampler_ring_available_read(void) {
-    size_t write_pos = sampler_ring_write_pos;
-    size_t read_pos = sampler_ring_read_pos;
+    size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
+    size_t read_pos = __atomic_load_n(&sampler_ring_read_pos, __ATOMIC_ACQUIRE);
     size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
     if (write_pos >= read_pos)
         return write_pos - read_pos;
@@ -2228,12 +2243,12 @@ static void *sampler_writer_thread_func(void *arg) {
 
         size_t available = sampler_ring_available_read();
         while (available > 0 && sampler_wav_file) {
-            size_t read_pos = sampler_ring_read_pos;
+            size_t read_pos = __atomic_load_n(&sampler_ring_read_pos, __ATOMIC_ACQUIRE);
             size_t to_end = buffer_samples - read_pos;
             size_t to_write = (available < to_end) ? available : to_end;
             fwrite(&sampler_ring_buffer[read_pos], sizeof(int16_t), to_write, sampler_wav_file);
             sampler_samples_written += to_write / SAMPLER_NUM_CHANNELS;
-            sampler_ring_read_pos = (read_pos + to_write) % buffer_samples;
+            __atomic_store_n(&sampler_ring_read_pos, (read_pos + to_write) % buffer_samples, __ATOMIC_RELEASE);
             available = sampler_ring_available_read();
         }
 
@@ -2370,7 +2385,10 @@ static void sampler_start_recording(void) {
     if (sampler_writer_running) return;
 
     /* Create recordings directory */
-    system("mkdir -p '" SAMPLER_RECORDINGS_DIR "'");
+    {
+        const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
+        shim_run_command(mkdir_argv);
+    }
 
     /* Generate filename with timestamp */
     time_t now = time(NULL);
@@ -2398,8 +2416,8 @@ static void sampler_start_recording(void) {
 
     /* Initialize state */
     sampler_samples_written = 0;
-    sampler_ring_write_pos = 0;
-    sampler_ring_read_pos = 0;
+    __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
     sampler_writer_should_exit = 0;
     sampler_clock_count = 0;
     sampler_bars_completed = 0;
@@ -2516,12 +2534,12 @@ static void sampler_capture_audio(void) {
 
     /* Write to ring buffer if space available (drop if full, never block) */
     if (sampler_ring_available_write() >= samples_to_write) {
-        size_t write_pos = sampler_ring_write_pos;
+        size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
         for (size_t i = 0; i < samples_to_write; i++) {
             sampler_ring_buffer[write_pos] = audio[i];
             write_pos = (write_pos + 1) % buffer_samples;
         }
-        sampler_ring_write_pos = write_pos;
+        __atomic_store_n(&sampler_ring_write_pos, write_pos, __ATOMIC_RELEASE);
 
         /* Signal writer thread */
         pthread_mutex_lock(&sampler_ring_mutex);
@@ -2607,7 +2625,7 @@ static void skipback_init(void) {
 
 /* Skipback: capture one audio block into rolling buffer */
 static void skipback_capture(int16_t *audio) {
-    if (!skipback_buffer || !audio || skipback_saving) return;
+    if (!skipback_buffer || !audio || __atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE)) return;
 
     size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
     size_t block_samples = FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
@@ -2628,7 +2646,10 @@ static void *skipback_writer_func(void *arg) {
     (void)arg;
 
     /* Create directory */
-    system("mkdir -p '" SKIPBACK_DIR "'");
+    {
+        const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
+        shim_run_command(mkdir_argv);
+    }
 
     /* Generate filename */
     time_t now = time(NULL);
@@ -2642,7 +2663,7 @@ static void *skipback_writer_func(void *arg) {
     FILE *f = fopen(path, "wb");
     if (!f) {
         shadow_log("Skipback: failed to open WAV file");
-        skipback_saving = 0;
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return NULL;
     }
 
@@ -2665,7 +2686,7 @@ static void *skipback_writer_func(void *arg) {
     if (data_samples == 0) {
         shadow_log("Skipback: no audio captured yet");
         fclose(f);
-        skipback_saving = 0;
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return NULL;
     }
 
@@ -2708,19 +2729,20 @@ static void *skipback_writer_func(void *arg) {
     shadow_log(msg);
 
     skipback_overlay_timeout = SKIPBACK_OVERLAY_FRAMES;
-    skipback_saving = 0;
+    __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
     return NULL;
 }
 
 /* Skipback: trigger save from main thread */
 static void skipback_trigger_save(void) {
-    if (skipback_saving || !skipback_buffer) return;
-    skipback_saving = 1;
+    if (__atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE) || !skipback_buffer) return;
+    __atomic_store_n(&skipback_saving, 1, __ATOMIC_RELEASE);
+    __sync_synchronize();
 
     pthread_t t;
     if (pthread_create(&t, NULL, skipback_writer_func, NULL) != 0) {
         shadow_log("Skipback: failed to create writer thread");
-        skipback_saving = 0;
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return;
     }
     pthread_detach(t);
@@ -4323,9 +4345,11 @@ static void shadow_inprocess_handle_param_request(void) {
 
     if (req_type == 1) {  /* SET param */
         if (shadow_plugin_v2->set_param) {
-            /* Make local copies - shared memory may be modified during set_param */
+            /* Make local copies - shared memory may be modified during set_param.
+             * value_copy is static because SHADOW_PARAM_VALUE_LEN (64KB) is too large
+             * for the stack. Safe because this runs in single-threaded ioctl context. */
             char key_copy[SHADOW_PARAM_KEY_LEN];
-            char value_copy[SHADOW_PARAM_VALUE_LEN];  /* Full size for patch JSON with state */
+            static char value_copy[SHADOW_PARAM_VALUE_LEN];
             strncpy(key_copy, shadow_param->key, sizeof(key_copy) - 1);
             key_copy[sizeof(key_copy) - 1] = '\0';
             strncpy(value_copy, shadow_param->value, sizeof(value_copy) - 1);

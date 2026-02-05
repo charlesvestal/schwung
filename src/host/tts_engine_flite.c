@@ -112,6 +112,7 @@ static void* tts_synthesis_thread(void *arg) {
 
             int repeats = (int)(upsample_ratio + 0.5f);
             for (int r = 0; r < repeats; r++) {
+                if (ring_write_pos + 1 >= RING_BUFFER_SIZE) goto done;
                 float alpha = (float)r / (float)repeats;
                 int16_t sample = (int16_t)(sample_curr * (1.0f - alpha) + sample_next * alpha);
 
@@ -121,13 +122,17 @@ static void* tts_synthesis_thread(void *arg) {
         }
 
         /* Handle last sample */
-        int16_t last_sample = flite_data[flite_samples - 1];
-        int repeats = (int)(upsample_ratio + 0.5f);
-        for (int r = 0; r < repeats; r++) {
-            ring_buffer[ring_write_pos++] = last_sample;
-            ring_buffer[ring_write_pos++] = last_sample;
+        {
+            int16_t last_sample = flite_data[flite_samples - 1];
+            int repeats = (int)(upsample_ratio + 0.5f);
+            for (int r = 0; r < repeats; r++) {
+                if (ring_write_pos + 1 >= RING_BUFFER_SIZE) break;
+                ring_buffer[ring_write_pos++] = last_sample;
+                ring_buffer[ring_write_pos++] = last_sample;
+            }
         }
 
+done:
         pthread_mutex_unlock(&ring_mutex);
         delete_wave(wav);
 

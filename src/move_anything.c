@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <limits.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <stdint.h>
@@ -1792,10 +1794,42 @@ static JSValue js_host_announce_screenreader(JSContext *ctx, JSValueConst this_v
 }
 
 /* Helper: validate path is within BASE_DIR to prevent directory traversal */
+/* Execute a command safely using fork/execvp instead of system() */
+static int run_command(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
+    if (pid == 0) {
+        /* Child: redirect stderr to stdout, exec the command */
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127); /* exec failed */
+    }
+    /* Parent: wait for child */
+    int status;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return -1;
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
+}
+
 static int validate_path(const char *path) {
     if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
     if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
     if (strstr(path, "..") != NULL) return 0;
+
+    // Resolve symlinks and re-check the resolved path
+    char resolved[PATH_MAX];
+    if (realpath(path, resolved) != NULL) {
+        if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
+    }
+    // If realpath fails (e.g. file doesn't exist yet), the basic checks above suffice
     return 1;
 }
 
@@ -1808,6 +1842,11 @@ static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
 
     const char *path = JS_ToCString(ctx, argv[0]);
     if (!path) {
+        return JS_FALSE;
+    }
+
+    if (!validate_path(path)) {
+        JS_FreeCString(ctx, path);
         return JS_FALSE;
     }
 
@@ -1842,12 +1881,11 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build curl command - use -k to skip SSL verification, timeouts to prevent hangs */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "%s -fsSLk --connect-timeout 10 --max-time 120 -o \"%s\" \"%s\" 2>&1",
-             CURL_PATH, dest_path, url);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        CURL_PATH, "-fsSLk", "--connect-timeout", "10", "--max-time", "120",
+        "-o", dest_path, url, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, url);
     JS_FreeCString(ctx, dest_path);
@@ -1879,12 +1917,10 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build tar command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>&1",
-             tar_path, dest_dir);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        "tar", "-xzf", tar_path, "-C", dest_dir, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
@@ -1926,12 +1962,13 @@ static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build tar command with --strip-components */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" --strip-components=%d 2>&1",
-             tar_path, dest_dir, strip);
+    char strip_arg[32];
+    snprintf(strip_arg, sizeof(strip_arg), "--strip-components=%d", strip);
 
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        "tar", "-xzf", tar_path, "-C", dest_dir, strip_arg, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
@@ -1958,11 +1995,8 @@ static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build mkdir command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "mkdir", "-p", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 
@@ -1995,11 +2029,8 @@ static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build rm command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "rm", "-rf", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 
@@ -2309,11 +2340,13 @@ int getGlobalFunction(JSContext **pctx, const char *func_name, JSValue *retFunc)
     {
         fprintf(stderr, "Error: '%s' is not a function or not found.\n", func_name);
         JS_FreeValue(ctx, func); // Free the non-function value
+        JS_FreeValue(ctx, global_obj);
         return 0;
     }
 
     *retFunc = func;
 
+    JS_FreeValue(ctx, global_obj);
     return 1;
 }
 
@@ -2322,6 +2355,7 @@ int callGlobalFunction(JSContext **pctx, JSValue *pfunc, unsigned char *data)
     JSContext *ctx = *pctx;
 
     JSValue ret;
+    int is_exception;
 
     if (data != 0)
     {
@@ -2345,13 +2379,16 @@ int callGlobalFunction(JSContext **pctx, JSValue *pfunc, unsigned char *data)
         args[0] = newArray;
 
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 1, args);
+        JS_FreeValue(ctx, newArray);
     }
     else
     {
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 0, 0);
     }
 
-    if (JS_IsException(ret))
+    is_exception = JS_IsException(ret);
+
+    if (is_exception)
     {
         printf("JS function failed\n");
         js_std_dump_error(ctx);
@@ -2359,7 +2396,7 @@ int callGlobalFunction(JSContext **pctx, JSValue *pfunc, unsigned char *data)
 
     JS_FreeValue(ctx, ret);
 
-    return JS_IsException(ret);
+    return is_exception;
 }
 
 void deinit_javascript(JSRuntime **prt, JSContext **pctx)
