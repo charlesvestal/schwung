@@ -50,11 +50,12 @@ bool tts_init(int sample_rate) {
         return true;
     }
 
-    /* Initialize espeak-ng */
+    /* Initialize espeak-ng with bundled data path */
+    const char *data_path = "/data/UserData/move-anything/espeak-data";
     int result = espeak_Initialize(
         AUDIO_OUTPUT_SYNCHRONOUS,  /* Use callback mode */
         0,                          /* Buffer length (0 = default) */
-        NULL,                       /* Path to espeak-ng-data (NULL = default) */
+        data_path,                  /* Path to bundled espeak-ng-data */
         0                           /* Options */
     );
 

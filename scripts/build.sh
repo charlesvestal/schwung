@@ -66,7 +66,7 @@ echo "Building host..."
 
 # Build shim (with shared memory support for shadow instrument)
 # D-Bus support requires cross-compiled libdbus headers
-# TTS support requires cross-compiled espeak-ng
+# TTS support requires statically linked espeak-ng
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
@@ -77,7 +77,8 @@ echo "Building host..."
     -I/usr/include/dbus-1.0 \
     -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
     -L/usr/lib/aarch64-linux-gnu \
-    -ldl -lrt -lpthread -ldbus-1 -lespeak-ng -lm
+    /usr/lib/aarch64-linux-gnu/libespeak-ng.a \
+    -ldl -lrt -lpthread -ldbus-1 -lm
 
 echo "Building Shadow POC..."
 
@@ -188,6 +189,16 @@ if [ -f "./libs/curl/curl" ]; then
     echo "Bundled curl binary"
 else
     echo "Warning: libs/curl/curl not found - store module will not work without it"
+fi
+
+# Bundle espeak-ng data for self-contained TTS
+if [ -d "/usr/lib/aarch64-linux-gnu/espeak-ng-data" ]; then
+    echo "Bundling espeak-ng voice data..."
+    mkdir -p ./build/espeak-data
+    cp -r /usr/lib/aarch64-linux-gnu/espeak-ng-data/* ./build/espeak-data/
+    echo "espeak-ng-data bundled"
+elif [ ! -d "./build/espeak-data" ]; then
+    echo "Warning: espeak-ng-data not found - TTS will not work"
 fi
 
 echo "Build complete!"

@@ -19,6 +19,11 @@ if [ -d "./bin" ]; then
     ITEMS="$ITEMS ./bin"
 fi
 
+# Add espeak-data if it exists (for self-contained TTS)
+if [ -d "./espeak-data" ]; then
+    ITEMS="$ITEMS ./espeak-data"
+fi
+
 tar -czvf ../move-anything.tar.gz \
     --transform 's,^\.,move-anything,' \
     $ITEMS
