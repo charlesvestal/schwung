@@ -6334,7 +6334,8 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 
     /* When in overtake module view, route MIDI to the overtake module */
-    if (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded && overtakeModuleCallbacks) {
+    /* Don't forward MIDI until init() has been called (overtakeInitPending = false) */
+    if (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded && overtakeModuleCallbacks && !overtakeInitPending) {
         /* Track shift locally - shim's shift tracking doesn't work in overtake mode */
         if ((status & 0xF0) === 0xB0 && d1 === 49) {  /* CC 49 = Shift */
             hostShiftHeld = (d2 > 0);
