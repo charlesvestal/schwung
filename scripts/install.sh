@@ -20,6 +20,29 @@ fail() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Retry wrapper for scp (network operations can be flaky)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+scp_with_retry() {
+  local src="$1"
+  local dest="$2"
+  local max_retries=3
+  local retry=0
+  while [ $retry -lt $max_retries ]; do
+    if $scp_ableton "$src" "$dest" 2>/dev/null; then
+      return 0
+    fi
+    retry=$((retry + 1))
+    if [ $retry -lt $max_retries ]; then
+      echo "    Retry $retry/$max_retries..."
+      sleep 2
+    fi
+  done
+  echo "    Failed to copy after $max_retries attempts"
+  return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SSH Setup Wizard
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -606,6 +629,9 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     echo "  Asset Copy"
     echo "═══════════════════════════════════════════════════════════════════════════════"
 
+    # Track if any copy failed
+    asset_copy_failed=false
+
     # JV880 ROMs
     echo
     echo "Mini-JV ROMs: Enter the folder containing your JV880 ROM files."
@@ -630,8 +656,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin; do
                 if [ -f "$rom_path/$rom" ]; then
                     echo "  Copying $rom..."
-                    $scp_ableton "$rom_path/$rom" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/"
-                    rom_count=$((rom_count + 1))
+                    if scp_with_retry "$rom_path/$rom" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/"; then
+                        rom_count=$((rom_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
                 fi
             done
             # Copy expansion ROMs if present
@@ -641,8 +670,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
                 for exp in "$rom_path/expansions"/*.bin "$rom_path/expansions"/*.BIN; do
                     if [ -f "$exp" ]; then
                         echo "  Copying expansion: $(basename "$exp")..."
-                        $scp_ableton "$exp" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/expansions/"
-                        exp_count=$((exp_count + 1))
+                        if scp_with_retry "$exp" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/expansions/"; then
+                            exp_count=$((exp_count + 1))
+                        else
+                            asset_copy_failed=true
+                        fi
                     fi
                 done
                 if [ $exp_count -gt 0 ]; then
@@ -675,8 +707,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             for sf2 in "$sf2_path"/*.sf2 "$sf2_path"/*.SF2; do
                 if [ -f "$sf2" ]; then
                     echo "  Copying $(basename "$sf2")..."
-                    $scp_ableton "$sf2" "$username@$hostname:./move-anything/modules/sound_generators/sf2/soundfonts/"
-                    sf2_count=$((sf2_count + 1))
+                    if scp_with_retry "$sf2" "$username@$hostname:./move-anything/modules/sound_generators/sf2/soundfonts/"; then
+                        sf2_count=$((sf2_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
                 fi
             done
             if [ $sf2_count -gt 0 ]; then
@@ -705,8 +740,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             for syx in "$syx_path"/*.syx "$syx_path"/*.SYX; do
                 if [ -f "$syx" ]; then
                     echo "  Copying $(basename "$syx")..."
-                    $scp_ableton "$syx" "$username@$hostname:./move-anything/modules/sound_generators/dexed/banks/"
-                    syx_count=$((syx_count + 1))
+                    if scp_with_retry "$syx" "$username@$hostname:./move-anything/modules/sound_generators/dexed/banks/"; then
+                        syx_count=$((syx_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
                 fi
             done
             if [ $syx_count -gt 0 ]; then
@@ -720,7 +758,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     fi
 
     echo
-    echo "Asset copy complete."
+    if [ "$asset_copy_failed" = true ]; then
+        echo "Asset copy completed with some errors. You may need to copy failed files manually."
+    else
+        echo "Asset copy complete."
+    fi
     if [ -z "$install_mode" ]; then
         echo "Note: Install the modules via the Module Store to use these assets."
     fi
