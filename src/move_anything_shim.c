@@ -6414,7 +6414,7 @@ void midi_monitor()
         return;
     }
 
-    uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    uint8_t *src = (hardware_mmap_addr ? hardware_mmap_addr : global_mmap_addr) + MIDI_IN_OFFSET;
 
     /* NOTE: Shadow mode MIDI filtering now happens AFTER ioctl in the ioctl() function.
      * This function only handles hotkey detection for shadow mode toggle. */
@@ -7057,7 +7057,9 @@ do_ioctl:
 
         /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
          * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
-         * This works regardless of shadow_display_mode. */
+         * This works regardless of shadow_display_mode.
+         * Skip entirely in overtake mode - overtake module owns all input. */
+        if (overtake_mode) goto skip_shift_menu;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = hw_midi[j] & 0x0F;
             uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
@@ -7130,6 +7132,7 @@ do_ioctl:
                 }
             }
         }
+        skip_shift_menu:
 
         /* === SAMPLER MIDI FILTERING ===
          * Block events from reaching Move for sampler use.
@@ -7179,6 +7182,7 @@ do_ioctl:
      * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow_mailbox is already filtered. */
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
+        int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
@@ -7191,6 +7195,10 @@ do_ioctl:
 
             /* CC messages (CIN 0x0B) */
             if (cin == 0x0B && type == 0xB0) {
+                /* In overtake mode, skip all shortcuts except Shift+Vol+Jog Click (exit) */
+                if (overtake_active && !(d1 == CC_JOG_CLICK && shadow_shift_held && shadow_volume_knob_touched)) {
+                    continue;
+                }
                 /* DEBUG: log CCs while shift held */
                 if (shadow_shift_held && d2 > 0) {
                     char dbg[64];
