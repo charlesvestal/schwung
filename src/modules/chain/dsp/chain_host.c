@@ -121,8 +121,8 @@ typedef struct {
 } knob_mapping_t;
 
 /* Chain parameter info from module.json */
-#define MAX_CHAIN_PARAMS 16
-#define MAX_ENUM_OPTIONS 16
+#define MAX_CHAIN_PARAMS 32
+#define MAX_ENUM_OPTIONS 64
 typedef struct {
     char key[32];           /* Parameter key (e.g., "preset", "decay") */
     char name[64];          /* Display name */
@@ -1507,11 +1507,26 @@ static int json_object_has_key(const char *obj, const char *key) {
  * Parse a single parameter definition object into chain_param_info_t.
  * Returns 0 on success, -1 on error.
  */
+/* Helper: bounded strstr - search for needle within [start, end) */
+static const char *bounded_strstr(const char *start, const char *end, const char *needle) {
+    const char *result = strstr(start, needle);
+    return (result && result < end) ? result : NULL;
+}
+
 static int parse_param_object(const char *param_json, chain_param_info_t *param) {
     memset(param, 0, sizeof(chain_param_info_t));
 
+    /* Find end of this JSON object (brace-depth tracking) */
+    int brace_depth = 0;
+    const char *param_obj_end = param_json;
+    do {
+        if (*param_obj_end == '{') brace_depth++;
+        if (*param_obj_end == '}') brace_depth--;
+        param_obj_end++;
+    } while (brace_depth > 0 && *param_obj_end);
+
     /* Extract key (required) */
-    const char *key_start = strstr(param_json, "\"key\"");
+    const char *key_start = bounded_strstr(param_json, param_obj_end, "\"key\"");
     if (!key_start) return -1;
     key_start = strchr(key_start, ':');
     if (!key_start) return -1;
@@ -1526,8 +1541,8 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     param->key[key_len] = '\0';
 
     /* Extract label/name (required) */
-    const char *label_start = strstr(param_json, "\"label\"");
-    if (!label_start) label_start = strstr(param_json, "\"name\"");
+    const char *label_start = bounded_strstr(param_json, param_obj_end, "\"label\"");
+    if (!label_start) label_start = bounded_strstr(param_json, param_obj_end, "\"name\"");
     if (label_start) {
         label_start = strchr(label_start, ':');
         if (label_start) {
@@ -1546,7 +1561,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract type (required) */
-    const char *type_start = strstr(param_json, "\"type\"");
+    const char *type_start = bounded_strstr(param_json, param_obj_end, "\"type\"");
     if (!type_start) return -1;
     type_start = strchr(type_start, ':');
     if (!type_start) return -1;
@@ -1565,7 +1580,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract min (optional for enum) */
-    const char *min_start = strstr(param_json, "\"min\"");
+    const char *min_start = bounded_strstr(param_json, param_obj_end, "\"min\"");
     if (min_start) {
         min_start = strchr(min_start, ':');
         if (min_start) {
@@ -1574,7 +1589,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract max (optional for enum) */
-    const char *max_start = strstr(param_json, "\"max\"");
+    const char *max_start = bounded_strstr(param_json, param_obj_end, "\"max\"");
     if (max_start) {
         max_start = strchr(max_start, ':');
         if (max_start) {
@@ -1583,7 +1598,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract default (optional) */
-    const char *default_start = strstr(param_json, "\"default\"");
+    const char *default_start = bounded_strstr(param_json, param_obj_end, "\"default\"");
     if (default_start) {
         default_start = strchr(default_start, ':');
         if (default_start) {
@@ -1595,7 +1610,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract step (optional) */
-    const char *step_start = strstr(param_json, "\"step\"");
+    const char *step_start = bounded_strstr(param_json, param_obj_end, "\"step\"");
     if (step_start) {
         step_start = strchr(step_start, ':');
         if (step_start) {
@@ -1611,7 +1626,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract unit (optional) */
-    const char *unit_start = strstr(param_json, "\"unit\"");
+    const char *unit_start = bounded_strstr(param_json, param_obj_end, "\"unit\"");
     if (unit_start) {
         unit_start = strchr(unit_start, ':');
         if (unit_start) {
@@ -1630,7 +1645,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract display_format (optional) */
-    const char *format_start = strstr(param_json, "\"display_format\"");
+    const char *format_start = bounded_strstr(param_json, param_obj_end, "\"display_format\"");
     if (format_start) {
         format_start = strchr(format_start, ':');
         if (format_start) {
@@ -1650,7 +1665,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
 
     /* Extract options array (for enums) */
     if (param->type == KNOB_TYPE_ENUM) {
-        const char *options_start = strstr(param_json, "\"options\"");
+        const char *options_start = bounded_strstr(param_json, param_obj_end, "\"options\"");
         if (options_start) {
             options_start = strchr(options_start, '[');
             if (options_start) {
@@ -1684,7 +1699,7 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     }
 
     /* Extract max_param (dynamic max reference) */
-    const char *max_param_start = strstr(param_json, "\"max_param\"");
+    const char *max_param_start = bounded_strstr(param_json, param_obj_end, "\"max_param\"");
     if (max_param_start) {
         max_param_start = strchr(max_param_start, ':');
         if (max_param_start) {
