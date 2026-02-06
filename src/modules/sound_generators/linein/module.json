@@ -1,11 +1,16 @@
 {
   "id": "linein",
   "name": "Line In",
+  "abbrev": "LI",
+  "version": "0.1.0",
   "description": "Pass through audio from line input",
+  "dsp": "dsp.so",
   "api_version": 1,
   "capabilities": {
     "audio_in": true,
     "audio_out": true,
+    "midi_in": false,
+    "midi_out": false,
     "chainable": true,
     "component_type": "sound_generator",
     "ui_hierarchy": {

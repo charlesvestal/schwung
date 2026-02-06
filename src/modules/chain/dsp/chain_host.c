@@ -3028,8 +3028,9 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
                     }
 
                     /* Relative encoder: 1 = increment, 127 = decrement */
-                    /* Apply acceleration to base step size */
-                    float base_step = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
+                    /* Use step from param metadata (defaults: 0.0015 float, 1 int) */
+                    float base_step = (pinfo->step > 0) ? pinfo->step
+                        : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
                     float delta = 0.0f;
                     if (msg[2] == 1) {
                         delta = base_step * accel;
@@ -3351,11 +3352,26 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             }
             strcat(fx_json, "]");
 
-            /* Build knob_mappings JSON array with type/min/max */
+            /* Build knob_mappings JSON array - look up type/min/max from param info */
             char knob_json[2048] = "[";
             int knob_off = 1;
             for (int i = 0; i < p->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
-                const char *type_str = (p->knob_mappings[i].type == KNOB_TYPE_INT) ? "int" : "float";
+                /* Look up param metadata from V1 globals */
+                const char *km_target = p->knob_mappings[i].target;
+                const char *km_param = p->knob_mappings[i].param;
+                chain_param_info_t *ki = NULL;
+                if (strcmp(km_target, "synth") == 0) {
+                    ki = find_param_info(g_synth_params, g_synth_param_count, km_param);
+                } else if (strcmp(km_target, "fx1") == 0) {
+                    ki = find_param_info(g_fx_params[0], g_fx_param_counts[0], km_param);
+                } else if (strcmp(km_target, "fx2") == 0) {
+                    ki = find_param_info(g_fx_params[1], g_fx_param_counts[1], km_param);
+                } else if (strcmp(km_target, "fx3") == 0) {
+                    ki = find_param_info(g_fx_params[2], g_fx_param_counts[2], km_param);
+                }
+                const char *type_str = (ki && (ki->type == KNOB_TYPE_INT || ki->type == KNOB_TYPE_ENUM)) ? "int" : "float";
+                float min_v = ki ? ki->min_val : 0.0f;
+                float max_v = ki ? ki->max_val : 1.0f;
                 int written = snprintf(knob_json + knob_off, sizeof(knob_json) - knob_off,
                     "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"type\":\"%s\",\"min\":%.3f,\"max\":%.3f}",
                     (i > 0) ? "," : "",
@@ -3363,8 +3379,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
                     p->knob_mappings[i].target,
                     p->knob_mappings[i].param,
                     type_str,
-                    p->knob_mappings[i].min_val,
-                    p->knob_mappings[i].max_val);
+                    min_v, max_v);
                 if (written > 0 && knob_off + written < (int)sizeof(knob_json) - 1) {
                     knob_off += written;
                 } else {
@@ -5388,6 +5403,10 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
             pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
         } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
             pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+            pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+            pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
         }
 
         if (pinfo) {
@@ -5475,6 +5494,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                         pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
                     } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
                         pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
                     }
 
                     if (!pinfo) continue;  /* Skip if param not found */
@@ -5498,8 +5521,9 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                     }
 
                     /* Relative encoder: apply acceleration to base step */
-                    int is_int = (pinfo->type == KNOB_TYPE_INT);
-                    float base_step = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
+                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
+                    float base_step = (pinfo->step > 0) ? pinfo->step
+                        : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
                     float delta = 0.0f;
                     if (msg[2] == 1) {
                         delta = base_step * accel;
@@ -5752,16 +5776,11 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 
                     /* Set mapping */
                     if (found >= 0) {
-                        /* Update existing - also update type/range from param info */
+                        /* Update existing (type/min/max looked up dynamically from pinfo) */
                         strncpy(inst->knob_mappings[found].target, target, sizeof(inst->knob_mappings[found].target) - 1);
                         inst->knob_mappings[found].target[sizeof(inst->knob_mappings[found].target) - 1] = '\0';
                         strncpy(inst->knob_mappings[found].param, param, sizeof(inst->knob_mappings[found].param) - 1);
                         inst->knob_mappings[found].param[sizeof(inst->knob_mappings[found].param) - 1] = '\0';
-                        if (pinfo) {
-                            inst->knob_mappings[found].type = pinfo->type;
-                            inst->knob_mappings[found].min_val = pinfo->min_val;
-                            inst->knob_mappings[found].max_val = pinfo->max_val;
-                        }
                     } else if (inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
                         /* Add new */
                         int i = inst->knob_mapping_count++;
@@ -5812,6 +5831,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                             pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
                         } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
                             pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+                        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+                            pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+                        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+                            pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
                         }
 
                         if (!pinfo) continue;  /* Skip if param not found */
@@ -5829,13 +5852,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         }
 
                         /* Calculate step based on type, with acceleration */
-                        int is_int = (pinfo->type == KNOB_TYPE_INT);
+                        int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
                         /* Cap acceleration for ints to avoid jumping too far */
                         if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                             accel = KNOB_ACCEL_MAX_MULT_INT;
                         }
-                        /* Use larger step for adjust (0.01 = 1% per click) vs tiny KNOB_STEP_FLOAT */
-                        float base_step = is_int ? (float)KNOB_STEP_INT : 0.01f;
+                        /* Use step from param metadata, or 0.01 default for shadow adjust */
+                        float base_step = (pinfo->step > 0) ? pinfo->step
+                            : (is_int ? (float)KNOB_STEP_INT : 0.01f);
                         float delta = base_step * accel * (delta_int > 0 ? 1 : -1);
 
                         /* Apply delta with clamping */
@@ -6027,6 +6051,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
                     } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
                         pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
                     }
 
                     if (strcmp(query_param, "name") == 0) {
