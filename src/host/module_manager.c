@@ -265,6 +265,9 @@ int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
     snprintf(subdir, sizeof(subdir), "%s/other", modules_dir);
     scan_directory(mm, subdir);
 
+    snprintf(subdir, sizeof(subdir), "%s/overtake", modules_dir);
+    scan_directory(mm, subdir);
+
     printf("mm: found %d modules\n", mm->module_count);
     return mm->module_count;
 }
