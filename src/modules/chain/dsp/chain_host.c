@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <time.h>
@@ -191,6 +192,111 @@ typedef struct {
 } patch_info_t;
 
 /* ============================================================================
+ * Parameter Smoothing (to avoid zipper noise on knob changes)
+ * ============================================================================ */
+
+#define MAX_SMOOTH_PARAMS 16
+#define SMOOTH_COEFF 0.15f  /* Smoothing coefficient per block (~5ms at 128 frames/44100Hz) */
+
+typedef struct {
+    char key[MAX_NAME_LEN];
+    float target;
+    float current;
+    int active;
+} smooth_param_t;
+
+typedef struct {
+    smooth_param_t params[MAX_SMOOTH_PARAMS];
+    int count;
+} param_smoother_t;
+
+/* Find or create a smoothed parameter slot */
+static smooth_param_t* smoother_get_param(param_smoother_t *smoother, const char *key) {
+    /* Look for existing */
+    for (int i = 0; i < smoother->count; i++) {
+        if (strcmp(smoother->params[i].key, key) == 0) {
+            return &smoother->params[i];
+        }
+    }
+    /* Create new if space */
+    if (smoother->count < MAX_SMOOTH_PARAMS) {
+        smooth_param_t *p = &smoother->params[smoother->count++];
+        strncpy(p->key, key, MAX_NAME_LEN - 1);
+        p->key[MAX_NAME_LEN - 1] = '\0';
+        p->target = 0.0f;
+        p->current = 0.0f;
+        p->active = 0;
+        return p;
+    }
+    return NULL;
+}
+
+/* Set a parameter target value for smoothing */
+static void smoother_set_target(param_smoother_t *smoother, const char *key, float value) {
+    smooth_param_t *p = smoother_get_param(smoother, key);
+    if (p) {
+        if (!p->active) {
+            /* First time setting - initialize current to target (no smoothing on first set) */
+            p->current = value;
+        }
+        p->target = value;
+        p->active = 1;
+    }
+}
+
+/* Update all smoothed parameters toward their targets, returns 1 if any changed */
+static int smoother_update(param_smoother_t *smoother) {
+    int changed = 0;
+    for (int i = 0; i < smoother->count; i++) {
+        smooth_param_t *p = &smoother->params[i];
+        if (p->active) {
+            float diff = p->target - p->current;
+            if (fabsf(diff) > 0.0001f) {
+                p->current += diff * SMOOTH_COEFF;
+                changed = 1;
+            } else {
+                p->current = p->target;
+            }
+        }
+    }
+    return changed;
+}
+
+/* Reset smoother state */
+static void smoother_reset(param_smoother_t *smoother) {
+    smoother->count = 0;
+    memset(smoother->params, 0, sizeof(smoother->params));
+}
+
+/* Check if a string looks like a float value (for smoothing eligibility) */
+static int is_smoothable_float(const char *val, float *out_value) {
+    if (!val || !val[0]) return 0;
+
+    /* Skip if it's clearly not a number */
+    char c = val[0];
+    if (c != '-' && c != '.' && (c < '0' || c > '9')) return 0;
+
+    char *endptr;
+    float f = strtof(val, &endptr);
+
+    /* Must have parsed something and no trailing garbage (except whitespace) */
+    if (endptr == val) return 0;
+    while (*endptr == ' ' || *endptr == '\t') endptr++;
+    if (*endptr != '\0') return 0;
+
+    /* Don't smooth integer-like values (presets, indices) */
+    if (f == (int)f && f >= 0 && f < 1000) {
+        /* Could be an index - only smooth if it's in 0-1 range or has decimal */
+        if (strchr(val, '.') == NULL && (f < 0.0f || f > 1.0f)) {
+            return 0;  /* Likely an integer index, don't smooth */
+        }
+    }
+
+    if (out_value) *out_value = f;
+    return 1;
+}
+
+/* ============================================================================
  * V2 Instance-Based API
  * ============================================================================ */
 
@@ -282,6 +388,10 @@ typedef struct chain_instance {
 
     /* Reference to host API (shared) */
     const host_api_v1_t *host;
+
+    /* Parameter smoothing for synth and FX */
+    param_smoother_t synth_smoother;
+    param_smoother_t fx_smoothers[MAX_AUDIO_FX];
 } chain_instance_t;
 
 /* ============================================================================
@@ -5185,16 +5295,26 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_synth_panic(inst);
             v2_unload_synth(inst);
+            smoother_reset(&inst->synth_smoother);  /* Reset smoother on module change */
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_synth(inst, val);
             } else {
                 /* Clearing synth - also clear knob mappings */
                 inst->knob_mapping_count = 0;
             }
-        } else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
-            inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
-        } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
-            inst->synth_plugin->set_param(subkey, val);
+        } else {
+            /* Check if this is a smoothable float param */
+            float fval;
+            if (is_smoothable_float(val, &fval)) {
+                /* Store target for smoothing - will be applied in render_block */
+                smoother_set_target(&inst->synth_smoother, subkey, fval);
+            }
+            /* Always forward immediately (smoother will override with interpolated values) */
+            if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+                inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
+            } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+                inst->synth_plugin->set_param(subkey, val);
+            }
         }
     }
     else if (strncmp(key, "fx1:", 4) == 0) {
@@ -5203,7 +5323,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (strcmp(subkey, "module") == 0) {
             inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 0, val);
+            smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
         } else if (inst->fx_count > 0) {
+            float fval;
+            if (is_smoothable_float(val, &fval)) {
+                smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+            }
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
                 inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
             } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
@@ -5217,7 +5342,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (strcmp(subkey, "module") == 0) {
             inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 1, val);
+            smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
         } else if (inst->fx_count > 1) {
+            float fval;
+            if (is_smoothable_float(val, &fval)) {
+                smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+            }
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
@@ -5884,6 +6014,43 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         inst->mute_countdown--;
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         return;
+    }
+
+    /* Update smoothed parameters and send interpolated values to sub-plugins */
+    {
+        /* Synth smoother */
+        if (smoother_update(&inst->synth_smoother)) {
+            for (int i = 0; i < inst->synth_smoother.count; i++) {
+                smooth_param_t *p = &inst->synth_smoother.params[i];
+                if (p->active) {
+                    char val_str[32];
+                    snprintf(val_str, sizeof(val_str), "%.6f", p->current);
+                    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+                        inst->synth_plugin_v2->set_param(inst->synth_instance, p->key, val_str);
+                    } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+                        inst->synth_plugin->set_param(p->key, val_str);
+                    }
+                }
+            }
+        }
+
+        /* FX smoothers */
+        for (int fx = 0; fx < inst->fx_count && fx < MAX_AUDIO_FX; fx++) {
+            if (smoother_update(&inst->fx_smoothers[fx])) {
+                for (int i = 0; i < inst->fx_smoothers[fx].count; i++) {
+                    smooth_param_t *p = &inst->fx_smoothers[fx].params[i];
+                    if (p->active) {
+                        char val_str[32];
+                        snprintf(val_str, sizeof(val_str), "%.6f", p->current);
+                        if (inst->fx_is_v2[fx] && inst->fx_plugins_v2[fx] && inst->fx_instances[fx]) {
+                            inst->fx_plugins_v2[fx]->set_param(inst->fx_instances[fx], p->key, val_str);
+                        } else if (inst->fx_plugins[fx] && inst->fx_plugins[fx]->set_param) {
+                            inst->fx_plugins[fx]->set_param(p->key, val_str);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /* Process MIDI FX tick (for arpeggiator timing) */

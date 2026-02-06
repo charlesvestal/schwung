@@ -4804,12 +4804,52 @@ static int shm_screenreader_fd = -1;
 static int shadow_shm_initialized = 0;
 
 /* Initialize shadow shared memory segments */
+
+/* Signal handler for crash diagnostics - async-signal-safe */
+static void crash_signal_handler(int sig)
+{
+    const char *name;
+    switch (sig) {
+        case SIGSEGV: name = "SIGSEGV"; break;
+        case SIGBUS:  name = "SIGBUS";  break;
+        case SIGABRT: name = "SIGABRT"; break;
+        case SIGTERM: name = "SIGTERM"; break;
+        case SIGINT:  name = "SIGINT";  break;
+        default:      name = "UNKNOWN"; break;
+    }
+    /* Build message: "Caught <signal> - terminating (pid=<pid>)" */
+    char msg[128];
+    int pos = 0;
+    const char prefix[] = "Caught ";
+    for (int i = 0; prefix[i]; i++) msg[pos++] = prefix[i];
+    for (int i = 0; name[i]; i++) msg[pos++] = name[i];
+    const char suffix[] = " - terminating";
+    for (int i = 0; suffix[i]; i++) msg[pos++] = suffix[i];
+    msg[pos] = '\0';
+
+    unified_log_crash(msg);
+    _exit(128 + sig);
+}
+
 static void init_shadow_shm(void)
 {
     if (shadow_shm_initialized) return;
 
     /* Initialize unified logging first so we can log during shm init */
     unified_log_init();
+
+    /* Install crash signal handlers */
+    signal(SIGSEGV, crash_signal_handler);
+    signal(SIGBUS,  crash_signal_handler);
+    signal(SIGABRT, crash_signal_handler);
+    signal(SIGTERM, crash_signal_handler);
+
+    /* Log startup identity (always-on, no flag needed) */
+    {
+        char init_msg[64];
+        snprintf(init_msg, sizeof(init_msg), "Shim init: pid=%d ppid=%d", getpid(), getppid());
+        unified_log_crash(init_msg);
+    }
 
     printf("Shadow: Initializing shared memory...\n");
 
@@ -6666,6 +6706,48 @@ int ioctl(int fd, unsigned long request, ...)
     }
 
     clock_gettime(CLOCK_MONOTONIC, &ioctl_start);
+
+    /* === IOCTL GAP DETECTION (always-on, no flag needed) === */
+    {
+        static struct timespec last_ioctl_time = {0, 0};
+        if (last_ioctl_time.tv_sec > 0) {
+            uint64_t gap_ms = (ioctl_start.tv_sec - last_ioctl_time.tv_sec) * 1000 +
+                              (ioctl_start.tv_nsec - last_ioctl_time.tv_nsec) / 1000000;
+            if (gap_ms > 1000) {
+                char gap_msg[64];
+                snprintf(gap_msg, sizeof(gap_msg), "Ioctl gap: %lu ms", (unsigned long)gap_ms);
+                unified_log_crash(gap_msg);
+            }
+        }
+        last_ioctl_time = ioctl_start;
+    }
+
+    /* === HEARTBEAT (every ~5700 frames / ~100s) === */
+    {
+        static uint32_t heartbeat_counter = 0;
+        heartbeat_counter++;
+        if (heartbeat_counter >= 5700) {
+            heartbeat_counter = 0;
+            if (unified_log_enabled()) {
+                /* Read VmRSS from /proc/self/statm */
+                long rss_pages = 0;
+                FILE *statm = fopen("/proc/self/statm", "r");
+                if (statm) {
+                    long size;
+                    if (fscanf(statm, "%ld %ld", &size, &rss_pages) != 2)
+                        rss_pages = 0;
+                    fclose(statm);
+                }
+                long rss_kb = rss_pages * 4;  /* 4KB pages on ARM */
+
+                int ui_alive = shadow_ui_pid_alive(shadow_ui_pid);
+                unified_log("shim", LOG_LEVEL_DEBUG,
+                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d",
+                    getpid(), rss_kb, consecutive_overruns,
+                    (int)shadow_ui_pid, ui_alive, shadow_display_mode);
+            }
+        }
+    }
 
     /* Check if previous frame overran - if so, consider skipping expensive work */
     if (last_frame_total_us > OVERRUN_THRESHOLD_US) {
