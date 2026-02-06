@@ -171,26 +171,6 @@
       "github_repo": "charlesvestal/move-anything-moog",
       "asset_name": "moog-module.tar.gz",
       "min_host_version": "0.3.0"
-    },
-    {
-      "id": "bristol-mini",
-      "name": "Bristol Mini",
-      "description": "Minimoog emulation with 3 oscillators, Moog ladder filter, and dual ADSR",
-      "author": "Bristol Synthesizer (Nick Copeland), ported by Move Anything",
-      "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-anything-bristol",
-      "asset_name": "bristol-mini-module.tar.gz",
-      "min_host_version": "0.3.0"
-    },
-    {
-      "id": "bristol-juno",
-      "name": "Bristol Juno",
-      "description": "Juno-style DCO synth with BBD chorus, inspired by Roland Juno-60/106",
-      "author": "Bristol Synthesizer (Nick Copeland), ported by Move Anything",
-      "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-anything-bristol",
-      "asset_name": "bristol-juno-module.tar.gz",
-      "min_host_version": "0.3.0"
     }
   ]
 }
