@@ -41,12 +41,15 @@ void unified_log_shutdown(void) {
 }
 
 int unified_log_enabled(void) {
+    pthread_mutex_lock(&log_mutex);
     /* Periodically recheck flag file */
     if (++check_counter >= CHECK_INTERVAL) {
         check_counter = 0;
         log_enabled_cache = (access(UNIFIED_LOG_FLAG, F_OK) == 0) ? 1 : 0;
     }
-    return log_enabled_cache;
+    int enabled = log_enabled_cache;
+    pthread_mutex_unlock(&log_mutex);
+    return enabled;
 }
 
 static const char *level_str(int level) {

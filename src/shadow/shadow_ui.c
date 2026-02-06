@@ -16,6 +16,8 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <limits.h>
 #include <time.h>
 #include <dirent.h>
 
@@ -55,40 +57,50 @@ static int open_shadow_shm(void) {
     if (fd < 0) return -1;
     shadow_display_shm = (uint8_t *)mmap(NULL, DISPLAY_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
+    if (shadow_display_shm == MAP_FAILED) { shadow_display_shm = NULL; return -1; }
 
     fd = shm_open(SHM_SHADOW_UI_MIDI, O_RDWR, 0666);
     if (fd < 0) return -1;
     shadow_ui_midi_shm = (uint8_t *)mmap(NULL, MIDI_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
+    if (shadow_ui_midi_shm == MAP_FAILED) { shadow_ui_midi_shm = NULL; return -1; }
 
     fd = shm_open(SHM_SHADOW_CONTROL, O_RDWR, 0666);
     if (fd < 0) return -1;
     shadow_control = (shadow_control_t *)mmap(NULL, CONTROL_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
+    if (shadow_control == MAP_FAILED) { shadow_control = NULL; return -1; }
 
     fd = shm_open(SHM_SHADOW_UI, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_ui_state = (shadow_ui_state_t *)mmap(NULL, SHADOW_UI_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
+        if (shadow_ui_state == MAP_FAILED) shadow_ui_state = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_PARAM, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_param = (shadow_param_t *)mmap(NULL, SHADOW_PARAM_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
+        if (shadow_param == MAP_FAILED) shadow_param = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_MIDI_OUT, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_midi_out = (shadow_midi_out_t *)mmap(NULL, sizeof(shadow_midi_out_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
+        if (shadow_midi_out == MAP_FAILED) shadow_midi_out = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_screenreader = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
-        unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow screen reader shm mapped: %p", shadow_screenreader);
+        if (shadow_screenreader == MAP_FAILED) {
+            shadow_screenreader = NULL;
+        } else {
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow screen reader shm mapped: %p", shadow_screenreader);
+        }
     }
 
     return 0;
@@ -167,14 +179,17 @@ static int getGlobalFunction(JSContext *ctx, const char *func_name, JSValue *ret
     JSValue func = JS_GetPropertyStr(ctx, global_obj, func_name);
     if (!JS_IsFunction(ctx, func)) {
         JS_FreeValue(ctx, func);
+        JS_FreeValue(ctx, global_obj);
         return 0;
     }
     *retFunc = func;
+    JS_FreeValue(ctx, global_obj);
     return 1;
 }
 
 static int callGlobalFunction(JSContext *ctx, JSValue *pfunc, unsigned char *data) {
     JSValue ret;
+    int is_exception;
     if (data) {
         JSValue arr = JS_NewArray(ctx);
         for (int i = 0; i < 3; i++) {
@@ -182,14 +197,16 @@ static int callGlobalFunction(JSContext *ctx, JSValue *pfunc, unsigned char *dat
         }
         JSValue args[1] = { arr };
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 1, args);
+        JS_FreeValue(ctx, arr);
     } else {
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 0, 0);
     }
-    if (JS_IsException(ret)) {
+    is_exception = JS_IsException(ret);
+    if (is_exception) {
         js_std_dump_error(ctx);
     }
     JS_FreeValue(ctx, ret);
-    return JS_IsException(ret);
+    return is_exception;
 }
 
 static JSValue js_shadow_get_slots(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -549,10 +566,39 @@ static JSValue js_unified_log_enabled(JSContext *ctx, JSValueConst this_val,
 #define CURL_PATH "/data/UserData/move-anything/bin/curl"
 
 /* Helper: validate path is within BASE_DIR to prevent directory traversal */
+/* Execute a command safely using fork/execvp instead of system() */
+static int run_command(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
+    if (pid == 0) {
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return -1;
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
+}
+
 static int validate_path(const char *path) {
     if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
     if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
     if (strstr(path, "..") != NULL) return 0;
+
+    /* Resolve symlinks and re-check the resolved path */
+    char resolved[PATH_MAX];
+    if (realpath(path, resolved) != NULL) {
+        if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
+    }
     return 1;
 }
 
@@ -566,6 +612,11 @@ static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
 
     const char *path = JS_ToCString(ctx, argv[0]);
     if (!path) {
+        return JS_FALSE;
+    }
+
+    if (!validate_path(path)) {
+        JS_FreeCString(ctx, path);
         return JS_FALSE;
     }
 
@@ -611,15 +662,11 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
 
     shadow_ui_log_line("host_http_download: path validated, running curl");
 
-    /* Build curl command - use -k to skip SSL verification, timeouts to prevent hangs */
-    /* Short timeout (15s) is fine for catalog/release.json; module tarballs are small enough too */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "%s -fsSLk --connect-timeout 5 --max-time 15 -o \"%s\" \"%s\" 2>&1",
-             CURL_PATH, dest_path, url);
-
-    shadow_ui_log_line(cmd);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "15",
+        "-o", dest_path, url, NULL
+    };
+    int result = run_command(argv_cmd);
 
     shadow_ui_log_line("host_http_download: curl returned");
 
@@ -654,12 +701,10 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build tar command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>&1",
-             tar_path, dest_dir);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        "tar", "-xzf", tar_path, "-C", dest_dir, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
@@ -694,11 +739,8 @@ static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build rm command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "rm", "-rf", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 
@@ -827,11 +869,8 @@ static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build mkdir command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "mkdir", "-p", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 

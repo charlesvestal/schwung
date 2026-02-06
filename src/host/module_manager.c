@@ -112,6 +112,12 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    if (len < 0) {
+        printf("mm: ftell failed for %s\n", json_path);
+        fclose(f);
+        return -1;
+    }
+
     if (len > 8192) {
         printf("mm: module.json too large: %s\n", json_path);
         fclose(f);
@@ -124,8 +130,8 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
         return -1;
     }
 
-    fread(json, 1, len, f);
-    json[len] = '\0';
+    size_t read_len = fread(json, 1, len, f);
+    json[read_len] = '\0';
     fclose(f);
 
     memset(info, 0, sizeof(*info));
