@@ -28,12 +28,13 @@ export function isCapacitiveTouchMessage(data) {
 /* Messages to filter out (noise from hardware) */
 export function isNoiseMessage(data) {
     const status = data[0];
+    const statusType = status & 0xF0;
     return (
         status === MidiClock ||           // 0xF8 - MIDI clock
         status === MidiSysexStart ||      // 0xF0 - Sysex start
         status === MidiSysexEnd ||        // 0xF7 - Sysex end
-        status === MidiChAftertouch ||    // 0xD0 - Channel aftertouch
-        status === MidiPolyAftertouch     // 0xA0 - Poly aftertouch
+        statusType === MidiChAftertouch ||    // 0xD0 - Channel aftertouch (any channel)
+        statusType === MidiPolyAftertouch     // 0xA0 - Poly aftertouch (any channel)
     );
 }
 
@@ -77,7 +78,7 @@ export function clearAllLEDs() {
         ledCache[i] = -1;
         buttonCache[i] = -1;
     }
-    for (let i = 0; i < 127; i++) {
+    for (let i = 0; i < 128; i++) {
         setLED(i, 0, true);
         setButtonLED(i, 0, true);
     }

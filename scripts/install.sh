@@ -1,5 +1,23 @@
-#!/usr/bin/env sh
-cat << 'EOM'
+#!/usr/bin/env bash
+
+# Detect quiet mode early (for screen reader users)
+quiet_mode=false
+for arg in "$@"; do
+  case "$arg" in
+    --enable-screen-reader) enable_screen_reader_arg=true ;;
+    --disable-shadow-ui) disable_shadow_ui_arg=true ;;
+    --disable-standalone) disable_standalone_arg=true ;;
+  esac
+done
+if [ "${enable_screen_reader_arg:-false}" = true ] && \
+   [ "${disable_shadow_ui_arg:-false}" = true ] && \
+   [ "${disable_standalone_arg:-false}" = true ]; then
+  quiet_mode=true
+fi
+
+# Skip ASCII art in quiet mode (screen reader friendly)
+if [ "$quiet_mode" = false ]; then
+  cat << 'EOM'
  __  __                      _                _   _     _
 |  \/  | _____   _____      / \   _ __  _   _| |_| |__ (_)_ __   __ _
 | |\/| |/ _ \ \ / / _ \    / _ \ | '_ \| | | | __| '_ \| | '_ \ / _` |
@@ -7,6 +25,9 @@ cat << 'EOM'
 |_|  |_|\___/ \_/ \___|  /_/   \_\_| |_|\__, |\__|_| |_|_|_| |_|\__, |
                                         |___/                   |___/
 EOM
+else
+  echo "Move Anything installer (screen reader mode)"
+fi
 
 # uncomment to debug
 # set -x
@@ -17,6 +38,18 @@ fail() {
   echo
   echo "Error: $*"
   exit 1
+}
+
+# Echo only if not in quiet mode (for screen reader friendly output)
+qecho() {
+  if [ "$quiet_mode" = false ]; then
+    echo "$@"
+  fi
+}
+
+# Echo always (for important messages even in quiet mode)
+iecho() {
+  echo "$@"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -34,11 +67,51 @@ scp_with_retry() {
     fi
     retry=$((retry + 1))
     if [ $retry -lt $max_retries ]; then
-      echo "    Retry $retry/$max_retries..."
+      qecho "    Retry $retry/$max_retries..."
       sleep 2
     fi
   done
-  echo "    Failed to copy after $max_retries attempts"
+  qecho "    Failed to copy after $max_retries attempts"
+  return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Retry wrapper for SSH commands (Windows mDNS can be flaky)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ssh_root_with_retry() {
+  local cmd="$1"
+  local max_retries=3
+  local retry=0
+  while [ $retry -lt $max_retries ]; do
+    if $ssh_root "$cmd" 2>/dev/null; then
+      return 0
+    fi
+    retry=$((retry + 1))
+    if [ $retry -lt $max_retries ]; then
+      qecho "  Connection retry $retry/$max_retries..."
+      sleep 2
+    fi
+  done
+  qecho "  SSH command failed after $max_retries attempts"
+  return 1
+}
+
+ssh_ableton_with_retry() {
+  local cmd="$1"
+  local max_retries=3
+  local retry=0
+  while [ $retry -lt $max_retries ]; do
+    if $ssh_ableton "$cmd" 2>/dev/null; then
+      return 0
+    fi
+    retry=$((retry + 1))
+    if [ $retry -lt $max_retries ]; then
+      qecho "  Connection retry $retry/$max_retries..."
+      sleep 2
+    fi
+  done
+  qecho "  SSH command failed after $max_retries attempts"
   return 1
 }
 
@@ -275,17 +348,41 @@ ssh_ensure_connection() {
 remote_filename=move-anything.tar.gz
 hostname=move.local
 username=ableton
-ssh_ableton="ssh -o LogLevel=QUIET -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+ssh_ableton="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
 scp_ableton="scp -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-ssh_root="ssh -o LogLevel=QUIET -o StrictHostKeyChecking=accept-new -n root@$hostname"
+ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n root@$hostname"
 
 # Parse arguments
 use_local=false
 skip_modules=false
+enable_screen_reader=false
+disable_shadow_ui=false
+disable_standalone=false
 for arg in "$@"; do
   case "$arg" in
     local) use_local=true ;;
     -skip-modules|--skip-modules) skip_modules=true ;;
+    --enable-screen-reader) enable_screen_reader=true ;;
+    --disable-shadow-ui) disable_shadow_ui=true ;;
+    --disable-standalone) disable_standalone=true ;;
+    -h|--help)
+      echo "Usage: install.sh [options]"
+      echo ""
+      echo "Options:"
+      echo "  local                    Use local build instead of GitHub release"
+      echo "  --skip-modules           Skip module installation prompt"
+      echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
+      echo "  --disable-shadow-ui      Disable shadow UI (slot configuration interface)"
+      echo "  --disable-standalone     Disable standalone mode (shift+vol+knob8)"
+      echo ""
+      echo "Examples:"
+      echo "  install.sh                                    # Install from GitHub, all features enabled"
+      echo "  install.sh local --enable-screen-reader       # Install local build with screen reader on"
+      echo "  install.sh --disable-shadow-ui --disable-standalone --enable-screen-reader"
+      echo "                                                # Screen reader only, no UI"
+      echo ""
+      exit 0
+      ;;
   esac
 done
 
@@ -299,18 +396,25 @@ if [ "$use_local" = true ]; then
   fi
 else
   url=https://github.com/charlesvestal/move-anything/releases/latest/download/
-  echo "Downloading latest release from $url$remote_filename"
-  curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+  qecho "Downloading latest release from $url$remote_filename"
+  # Use silent curl in quiet mode (screen reader friendly)
+  if [ "$quiet_mode" = true ]; then
+    curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+  else
+    curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+  fi
   local_file="$remote_filename"
 fi
-if command -v md5sum >/dev/null 2>&1; then
-  echo "Build MD5: $(md5sum "$local_file")"
-elif command -v md5 >/dev/null 2>&1; then
-  echo "Build MD5: $(md5 -q "$local_file")"
+if [ "$quiet_mode" = false ]; then
+  if command -v md5sum >/dev/null 2>&1; then
+    echo "Build MD5: $(md5sum "$local_file")"
+  elif command -v md5 >/dev/null 2>&1; then
+    echo "Build MD5: $(md5 -q "$local_file")"
+  fi
 fi
 
 # Check SSH connection, run setup wizard if needed
-echo "Checking SSH connection to $hostname..."
+qecho "Checking SSH connection to $hostname..."
 ssh_result=$(ssh_test_ableton) || true
 
 if [ -n "$ssh_result" ]; then
@@ -339,28 +443,37 @@ if [ -n "$ssh_result" ]; then
       fail "Could not establish SSH connection to Move"
     fi
   else
-    echo
-    echo "To set up SSH manually:"
-    echo "  1. Generate a key: ssh-keygen -t ed25519"
-    echo "  2. Add your public key at: http://move.local/development/ssh"
-    echo "  3. Run this install script again"
+    iecho ""
+    iecho "To set up SSH manually:"
+    iecho "  1. Generate a key: ssh-keygen -t ed25519"
+    iecho "  2. Add your public key at: http://move.local/development/ssh"
+    iecho "  3. Run this install script again"
     fail "SSH connection required for installation"
   fi
 else
-  echo "✓ SSH connection OK"
+  qecho "✓ SSH connection OK"
+  iecho "Installing Move Anything..."
 fi
 
-$scp_ableton "$local_file" "$username@$hostname:./$remote_filename"
-$ssh_ableton "tar -xzvf ./$remote_filename"
+# Copy and extract main tarball with retry (Windows mDNS can be flaky)
+scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
+# Use verbose tar only in non-quiet mode (screen reader friendly)
+if [ "$quiet_mode" = true ]; then
+    ssh_ableton_with_retry "tar -xzf ./$remote_filename" || fail "Failed to extract tarball"
+else
+    ssh_ableton_with_retry "tar -xzvf ./$remote_filename" || fail "Failed to extract tarball"
+fi
 
 # Verify expected payload exists before making system changes
-$ssh_ableton "test -f /data/UserData/move-anything/move-anything-shim.so" || fail "Payload missing: move-anything-shim.so"
-$ssh_ableton "test -f /data/UserData/move-anything/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
+ssh_ableton_with_retry "test -f /data/UserData/move-anything/move-anything-shim.so" || fail "Payload missing: move-anything-shim.so"
+ssh_ableton_with_retry "test -f /data/UserData/move-anything/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
 
 # Verify modules directory exists
-if $ssh_ableton "test -d /data/UserData/move-anything/modules"; then
-  echo "Modules directory found"
-  $ssh_ableton "ls /data/UserData/move-anything/modules/"
+if ssh_ableton_with_retry "test -d /data/UserData/move-anything/modules"; then
+  qecho "Modules directory found"
+  if [ "$quiet_mode" = false ]; then
+    ssh_ableton_with_retry "ls /data/UserData/move-anything/modules/" || true
+  fi
 else
   echo "Warning: No modules directory found"
 fi
@@ -488,46 +601,75 @@ if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
 fi
 
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
-$ssh_root "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi"
-
-echo
-echo "Stopping Move to install shim (your Move screen will go dark briefly)..."
-
-# Use root to stop running Move processes cleanly, then force if needed.
-$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill \$pids || true; fi; done"
-$ssh_root "sleep 0.5"
-$ssh_root "for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi; done"
-$ssh_root "sleep 0.2"
-# Free the SPI device if anything still holds it (prevents \"communication error\")
-$ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
+ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
 # Symlink shim to /usr/lib/ (root partition has no free space for copies)
-$ssh_root "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so"
-$ssh_root chmod u+s /data/UserData/move-anything/move-anything-shim.so
+ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
+ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
+
+# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink
+# Root partition is nearly full, so symlink instead of copying
+if ssh_ableton_with_retry "test -d /data/UserData/move-anything/lib"; then
+  qecho "Deploying Flite libraries..."
+  ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in libflite*.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+fi
 
 # Ensure the replacement Move script exists and is executable
-$ssh_root chmod +x /data/UserData/move-anything/shim-entrypoint.sh
+ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
 
 # Backup original only once, and only if current Move exists
 # IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
 # Never create extra copies of large files under /opt/move/ or anywhere on /.
-if $ssh_root "test ! -f /opt/move/MoveOriginal"; then
-  $ssh_root "test -f /opt/move/Move" || fail "Missing /opt/move/Move; refusing to proceed"
-  $ssh_root mv /opt/move/Move /opt/move/MoveOriginal
-  $ssh_ableton "cp /opt/move/MoveOriginal ~/"
+if ssh_root_with_retry "test ! -f /opt/move/MoveOriginal"; then
+  ssh_root_with_retry "test -f /opt/move/Move" || fail "Missing /opt/move/Move; refusing to proceed"
+  ssh_root_with_retry "mv /opt/move/Move /opt/move/MoveOriginal" || fail "Failed to backup original Move"
+  ssh_ableton_with_retry "cp /opt/move/MoveOriginal ~/" || true
 fi
 
 # Install the shimmed Move entrypoint
-$ssh_root cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move
+ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
+
+# Create feature configuration file
+qecho ""
+qecho "Configuring features..."
+ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
+
+# Build features.json content
+features_json="{
+  \"shadow_ui_enabled\": $([ "$disable_shadow_ui" = false ] && echo "true" || echo "false"),
+  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false")
+}"
+
+# Write features.json
+ssh_ableton_with_retry "cat > /data/UserData/move-anything/config/features.json << 'EOF'
+$features_json
+EOF" || echo "Warning: Failed to create features.json"
+
+# Create screen reader state file if --enable-screen-reader was passed
+if [ "$enable_screen_reader" = true ]; then
+    qecho "Enabling screen reader..."
+    ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
+fi
+
+if [ "$quiet_mode" = false ]; then
+    echo "Features configured:"
+    echo "  Shadow UI: $([ "$disable_shadow_ui" = false ] && echo "enabled" || echo "disabled")"
+    echo "  Standalone: $([ "$disable_standalone" = false ] && echo "enabled" || echo "disabled")"
+    echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
+fi
 
 # Optional: Install modules from the Module Store (before restart so they're available immediately)
+# Skip if both shadow UI and standalone are disabled (no way to use modules)
 echo
 install_mode=""
 deleted_modules=$(echo "$deleted_modules" | xargs)  # trim whitespace
 
-if [ "$skip_modules" = true ]; then
-    echo "Skipping module installation (-skip-modules)"
+if [ "$disable_shadow_ui" = true ] && [ "$disable_standalone" = true ]; then
+    echo "Skipping module installation (shadow UI and standalone both disabled)"
+    skip_modules=true
+elif [ "$skip_modules" = true ]; then
+    echo "Skipping module installation (--skip-modules)"
 elif [ -n "$deleted_modules" ]; then
     # Migration happened - offer three choices
     echo "Module installation options:"
@@ -598,8 +740,12 @@ BEGIN { id=""; name=""; repo=""; asset=""; ctype="" }
         fi
         url="https://github.com/${repo}/releases/latest/download/${asset}"
         if curl -fsSLO "$url"; then
-            $scp_ableton "$asset" "$username@$hostname:./move-anything/" && \
-            $ssh_ableton "cd move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset"
+            # Use retry for scp/ssh because Windows mDNS can be flaky
+            if scp_with_retry "$asset" "$username@$hostname:./move-anything/"; then
+                ssh_ableton_with_retry "cd move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset" || echo "  Warning: Failed to extract $name"
+            else
+                echo "  Warning: Failed to copy $name to device"
+            fi
             rm -f "$asset"
             echo "  Installed: $name"
         else
@@ -645,6 +791,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     echo "    jv880_rom2.bin        (must be v1.0.0)"
     echo "    jv880_waverom1.bin"
     echo "    jv880_waverom2.bin"
+    echo "    jv880_nvram.bin"
     echo "    expansions/           (optional SR-JV80 expansion .bin files)"
     echo
     echo "(Press ENTER to skip)"
@@ -656,8 +803,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rom_path" ]; then
             rom_count=0
-            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms"
-            for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin; do
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms" || true
+            for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin jv880_nvram.bin; do
                 if [ -f "$rom_path/$rom" ]; then
                     echo "  Copying $rom..."
                     if scp_with_retry "$rom_path/$rom" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/"; then
@@ -670,7 +817,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             # Copy expansion ROMs if present
             if [ -d "$rom_path/expansions" ]; then
                 exp_count=0
-                $ssh_ableton "mkdir -p move-anything/modules/sound_generators/minijv/roms/expansions"
+                ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms/expansions" || true
                 for exp in "$rom_path/expansions"/*.bin "$rom_path/expansions"/*.BIN; do
                     if [ -f "$exp" ]; then
                         echo "  Copying expansion: $(basename "$exp")..."
@@ -707,7 +854,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
-            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts"
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts" || true
             for sf2 in "$sf2_path"/*.sf2 "$sf2_path"/*.SF2; do
                 if [ -f "$sf2" ]; then
                     echo "  Copying $(basename "$sf2")..."
@@ -740,7 +887,7 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$syx_path" ]; then
             syx_count=0
-            $ssh_ableton "mkdir -p move-anything/modules/sound_generators/dexed/banks"
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/dexed/banks" || true
             for syx in "$syx_path"/*.syx "$syx_path"/*.SYX; do
                 if [ -f "$syx" ]; then
                     echo "  Copying $(basename "$syx")..."
@@ -772,27 +919,29 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     fi
 fi
 
-echo
-echo "Restarting Move binary with shim installed..."
+qecho ""
+iecho "Restarting Move..."
 
 # Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
-$ssh_root "/etc/init.d/move stop >/dev/null 2>&1 || true"
-$ssh_root "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
+# Use retry wrappers because Windows mDNS resolution can be flaky.
+ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
+ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
 # Clean up stale shared memory so it's recreated with correct permissions
-$ssh_root "rm -f /dev/shm/move-shadow-*"
+ssh_root_with_retry "rm -f /dev/shm/move-shadow-*" || true
 # Free the SPI device if anything still holds it (prevents "communication error" on restart)
-$ssh_root "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi"
-$ssh_ableton "sleep 2"
+ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
+ssh_ableton_with_retry "sleep 2" || true
 
-$ssh_ableton "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
+ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
 
 # Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
-$ssh_root "/etc/init.d/move start >/dev/null 2>&1"
+ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to restart Move service"
 
 # Wait for MoveOriginal to appear with shim loaded (retry up to 15 seconds)
 shim_ok=false
 for i in $(seq 1 15); do
-    $ssh_ableton "sleep 1"
+    ssh_ableton_with_retry "sleep 1" || true
+    # Use direct ssh here since we're in a verification loop and need different retry semantics
     if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" 2>/dev/null; then
         shim_ok=true
         break
@@ -800,17 +949,47 @@ for i in $(seq 1 15); do
 done
 $shim_ok || fail "Move started without shim (LD_PRELOAD missing)"
 
-echo
-echo "Done!"
-echo
-echo "Move Anything is now installed with the modular plugin system."
-echo "Modules are located in: /data/UserData/move-anything/modules/"
-echo
-echo "Shift+Vol+Track or Shift+Vol+Menu: Access Move Anything's slot configurations"
-echo "Shift+Vol+Knob8: Access Move Anything's standalone mode and module store"
-echo
-echo "Logging commands:"
-echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/move-anything/debug_log_on'"
-echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/move-anything/debug_log_on'"
-echo "  View:    ssh ableton@move.local 'tail -f /data/UserData/move-anything/debug.log'"
-echo
+iecho ""
+iecho "Installation complete!"
+
+# Concise output in quiet mode (screen reader friendly)
+if [ "$quiet_mode" = true ]; then
+    iecho ""
+    iecho "Screen reader enabled. Press Shift+Menu on Move to toggle on/off."
+    iecho "Visit http://move.local for web interface."
+else
+    # Verbose output for visual users
+    echo
+    echo "Move Anything is now installed with the modular plugin system."
+    echo "Modules are located in: /data/UserData/move-anything/modules/"
+    echo
+
+    # Show active features
+    if [ "$disable_shadow_ui" = false ] || [ "$disable_standalone" = false ]; then
+        echo "Active features:"
+        if [ "$disable_shadow_ui" = false ]; then
+            echo "  Shift+Vol+Track or Shift+Menu: Access slot configurations and Master FX"
+        fi
+        if [ "$disable_standalone" = false ]; then
+            echo "  Shift+Vol+Knob8: Access standalone mode and module store"
+        fi
+        echo
+    fi
+
+    # Show screen reader shortcut based on shadow UI state
+    if [ "$disable_shadow_ui" = true ]; then
+        echo "Screen Reader:"
+        echo "  Shift+Menu: Toggle screen reader on/off"
+        echo
+    else
+        echo "Screen Reader:"
+        echo "  Toggle via Shadow UI settings menu"
+        echo
+    fi
+
+    echo "Logging commands:"
+    echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/move-anything/debug_log_on'"
+    echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/move-anything/debug_log_on'"
+    echo "  View:    ssh ableton@move.local 'tail -f /data/UserData/move-anything/debug.log'"
+    echo
+fi

@@ -151,20 +151,23 @@ export function formatItemValue(item, editing = false, editValue = null) {
     const value = editing ? editValue : (item.get ? item.get() : null);
 
     switch (item.type) {
-        case MenuItemType.VALUE:
+        case MenuItemType.VALUE: {
             if (value === null || value === undefined) return '';
             const formatted = item.format ? item.format(value) : String(value);
             return editing ? `[${formatted}]` : formatted;
+        }
 
-        case MenuItemType.ENUM:
+        case MenuItemType.ENUM: {
             if (value === null || value === undefined) return '';
             const enumFormatted = item.format ? item.format(value) : capitalize(String(value));
             return editing ? `[${enumFormatted}]` : enumFormatted;
+        }
 
-        case MenuItemType.TOGGLE:
+        case MenuItemType.TOGGLE: {
             const boolVal = editing ? editValue : (item.get ? item.get() : false);
             const toggleText = boolVal ? (item.onLabel || 'On') : (item.offLabel || 'Off');
             return editing ? `[${toggleText}]` : toggleText;
+        }
 
         case MenuItemType.SUBMENU:
             return '>';

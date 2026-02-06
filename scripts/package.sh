@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -eo pipefail
 set -x
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,11 +13,21 @@ cd "$REPO_ROOT"
 cd ./build
 
 # Build list of items to package
-ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches"
+ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./test"
 
 # Add bin directory if it exists (contains curl for store module)
 if [ -d "./bin" ]; then
     ITEMS="$ITEMS ./bin"
+fi
+
+# Add lib directory if it exists (contains Flite .so files for TTS)
+if [ -d "./lib" ]; then
+    ITEMS="$ITEMS ./lib"
+fi
+
+# Add licenses directory if it exists (third-party license files)
+if [ -d "./licenses" ]; then
+    ITEMS="$ITEMS ./licenses"
 fi
 
 tar -czvf ../move-anything.tar.gz \

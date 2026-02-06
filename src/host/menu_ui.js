@@ -153,6 +153,7 @@ function returnToMenu() {
     selectedIndex = 0;
     refreshModules();
     showStatus("Module unloaded");
+    host_announce_screenreader("Main Menu");
 }
 
 /* Handle MIDI CC */
@@ -217,12 +218,26 @@ function handleCC(cc, value) {
         selectedIndex,
         totalItems
     });
+
+    /* Announce navigation changes for screen reader */
+    if (result.nextIndex !== selectedIndex) {
+        const item = getSelectedItem(result.nextIndex);
+        if (item) {
+            let announcement = item.name || item.label || 'Unknown';
+            if (item.type === 'category') {
+                announcement = `Category: ${announcement}`;
+            }
+            host_announce_screenreader(announcement);
+        }
+    }
+
     selectedIndex = result.nextIndex;
 
     /* Handle back button */
     if (result.didBack && isInCategory()) {
         exitCategory();
         selectedIndex = 0;
+        host_announce_screenreader("Main Menu");
         return;
     }
 
@@ -233,12 +248,16 @@ function handleCC(cc, value) {
         if (item.type === 'settings') {
             settingsVisible = true;
             initSettings();
+            host_announce_screenreader("Settings");
         } else if (item.type === 'exit') {
+            host_announce_screenreader("Exiting");
             exit();
         } else if (item.type === 'category') {
             enterCategory(item.categoryId);
             selectedIndex = 0;
+            host_announce_screenreader(`Entering ${item.name || item.label}`);
         } else if (item.type === 'module') {
+            host_announce_screenreader(`Loading ${item.module.name}`);
             loadModule(item.module);
         }
     }
@@ -294,7 +313,6 @@ globalThis.onMidiMessageInternal = function(data) {
     if (isCapacitiveTouchMessage(data)) return;
 
     const status = data[0] & 0xF0;
-    const isNote = status === 0x90 || status === 0x80;
 
     if (status === 0xB0) {
         /* Control Change */

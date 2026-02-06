@@ -65,14 +65,20 @@ echo "Building host..."
     -lquickjs -lm -ldl
 
 # Build shim (with shared memory support for shadow instrument)
-# D-Bus support requires cross-compiled libdbus headers
+# D-Bus support requires cross-compiled libdbus and libsystemd headers
+# TTS support with Flite (lightweight TTS for embedded systems) - using dynamic linking
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
     src/host/unified_log.c \
+    src/host/tts_engine_flite.c \
+    -Isrc \
+    -I/usr/include \
     -I/usr/include/dbus-1.0 \
     -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
-    -ldl -lrt -lpthread -ldbus-1 -lm
+    -L/usr/lib/aarch64-linux-gnu \
+    -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm \
+    -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex
 
 echo "Building Shadow POC..."
 
@@ -87,6 +93,7 @@ mkdir -p ./build/shadow/
 echo "Building Shadow UI..."
 
 # Build Shadow UI host (uses shared display bindings from js_display.c)
+# TTS settings are written to shared memory, actual TTS happens in shim
 "${CROSS_PREFIX}gcc" -g -O3 \
     src/shadow/shadow_ui.c \
     src/host/js_display.c \
@@ -96,6 +103,31 @@ echo "Building Shadow UI..."
     -Ilibs/quickjs/quickjs-2025-04-26 \
     -Llibs/quickjs/quickjs-2025-04-26 \
     -lquickjs -lm -ldl -lrt
+
+echo "Building TTS test program..."
+
+# Build Flite test program for testing TTS - using dynamic linking
+mkdir -p ./build/test/
+"${CROSS_PREFIX}gcc" -g -O3 \
+    test/test_flite.c \
+    -o build/test/test_flite \
+    -I/usr/include \
+    -L/usr/lib/aarch64-linux-gnu \
+    -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex \
+    -lm -lpthread || echo "Warning: TTS test build failed"
+
+echo "Copying Flite libraries for deployment..."
+
+# Copy Flite .so files to build/lib/ for deployment to Move
+mkdir -p ./build/lib/
+cp -L /usr/lib/aarch64-linux-gnu/libflite.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_cmu_us_kal.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_usenglish.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_cmulex.so.* ./build/lib/ 2>/dev/null || true
+
+# Copy Flite copyright notice (required by BSD-style license)
+mkdir -p ./build/licenses/
+cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || echo "Warning: Flite license file not found"
 
 echo "Building Signal Chain module..."
 
@@ -163,7 +195,7 @@ cp ./src/stop.sh ./build/ 2>/dev/null || true
 # Copy all module files (js, mjs, json) - preserves directory structure
 # Compiled .so files are built separately above
 echo "Copying module files..."
-find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while read src; do
+find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while IFS= read -r src; do
     dest="./build/${src#./src/}"
     mkdir -p "$(dirname "$dest")"
     cp "$src" "$dest"
@@ -184,6 +216,8 @@ if [ -f "./libs/curl/curl" ]; then
 else
     echo "Warning: libs/curl/curl not found - store module will not work without it"
 fi
+
+# Flite voice data is built into the Flite libraries - no separate data directory needed
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"

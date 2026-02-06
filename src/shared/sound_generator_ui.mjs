@@ -135,7 +135,8 @@ export function createSoundGeneratorUI(config) {
 
         const bankIdx = host_module_get_param(bankParamName);
         if (bankIdx) {
-            const b = parseInt(bankIdx) || 0;
+            const b = parseInt(bankIdx, 10);
+            if (isNaN(b)) return;
             if (b !== state.bankIndex) {
                 state.bankIndex = b;
                 state.needsRedraw = true;

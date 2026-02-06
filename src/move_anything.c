@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <limits.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <stdint.h>
@@ -23,6 +25,7 @@
 
 #include "host/module_manager.h"
 #include "host/settings.h"
+#include "host/shadow_constants.h"
 
 int global_fd = -1;
 int global_exit_flag = 0;
@@ -225,7 +228,10 @@ void set_pixel(int x, int y, int value) {
 }
 
 int get_pixel(int x, int y) {
-  return screen_buffer[y*128+x] > 0 ? 1 : 0;
+  if(x >= 0 && x < 128 && y >= 0 && y < 64) {
+    return screen_buffer[y*128+x] > 0 ? 1 : 0;
+  }
+  return 0;
 }
 
 void draw_rect(int x, int y, int w, int h, int value) {
@@ -291,7 +297,7 @@ Font* load_font(char* filename, int charSpacing) {
   int width, height, comp;
 
   char charListFilename[100];
-  sprintf(charListFilename, "%s.dat", filename);
+  snprintf(charListFilename, sizeof(charListFilename), "%s.dat", filename);
 
   FILE* charListFP = fopen(charListFilename, "r");
   if(charListFP == NULL) {
@@ -311,7 +317,7 @@ Font* load_font(char* filename, int charSpacing) {
     return NULL;
   }
 
-  Font* font = malloc(sizeof(Font));
+  Font* font = calloc(1, sizeof(Font));
 
   font->charSpacing = charSpacing;
 
@@ -336,8 +342,12 @@ Font* load_font(char* filename, int charSpacing) {
     fc.width = 0;
     fc.height = 0;
 
-    while(data[x] == borderColor) {
+    while(x < width && data[x] == borderColor) {
       x++;
+    }
+
+    if(x >= width) {
+      break;
     }
 
     int bx = x;
@@ -383,13 +393,15 @@ Font* load_font(char* filename, int charSpacing) {
       }
     }
 
-    font->charData[(int)charList[i]] = fc;
+    font->charData[(unsigned char)charList[i]] = fc;
 
     x += fc.width+1;
     if(x >= width) {
       break;
     }
   }
+
+  stbi_image_free(data);
 
   printf("Loaded bitmap font: %s (%d chars)\n", filename, numChars);
   return font;
@@ -404,6 +416,11 @@ Font* load_ttf_font(const char* filename, int pixel_height) {
 
   fseek(fp, 0, SEEK_END);
   long size = ftell(fp);
+  if (size <= 0) {
+    fclose(fp);
+    printf("ERROR: TTF font file empty or error: %s\n", filename);
+    return NULL;
+  }
   fseek(fp, 0, SEEK_SET);
 
   unsigned char* buffer = malloc(size);
@@ -411,11 +428,15 @@ Font* load_ttf_font(const char* filename, int pixel_height) {
     fclose(fp);
     return NULL;
   }
-  fread(buffer, 1, size, fp);
+  if (fread(buffer, 1, size, fp) != (size_t)size) {
+    printf("ERROR: short read on TTF font: %s\n", filename);
+    free(buffer);
+    fclose(fp);
+    return NULL;
+  }
   fclose(fp);
 
-  Font* font = malloc(sizeof(Font));
-  memset(font, 0, sizeof(Font));
+  Font* font = calloc(1, sizeof(Font));
   font->is_ttf = 1;
   font->ttf_buffer = buffer;
   font->charSpacing = 1;
@@ -473,7 +494,7 @@ int glyph_ttf(Font* font, char c, int sx, int sy, int color) {
 }
 
 int glyph(Font* font, char c, int sx, int sy, int color) {
-  FontChar fc = font->charData[(int)c];
+  FontChar fc = font->charData[(unsigned char)c];
   if(fc.data == NULL) {
     return sx + font->charSpacing;
   }
@@ -750,22 +771,8 @@ void onInternalMidiMessage(unsigned char midi_message[4])
     // js_on_internal_midi_message()
 }
 
-void onMidiMessage(unsigned char midi_message[4])
-{
-
-    int cable;
-    int code_index_number;
-
-    if (cable == 0)
-    {
-        onInternalMidiMessage(midi_message);
-    }
-
-    if (cable == 2)
-    {
-        onExternalMidiMessage(midi_message);
-    }
-}
+/* onMidiMessage removed - was dead code with uninitialized 'cable' variable.
+   Actual MIDI routing happens in main() loop via onInternalMidiMessage/onExternalMidiMessage. */
 
 void clearPads(unsigned char *mapped_memory, int fd)
 {
@@ -1069,9 +1076,13 @@ static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 
   color = 1;
 
-  if(JS_ToInt32(ctx, &color, argv[3])) {
-    JS_ThrowTypeError(ctx, "print: invalid arg for `color`");
-    return JS_EXCEPTION;
+  if(argc >= 4) {
+    if(JS_ToInt32(ctx, &color, argv[3])) {
+      JS_ThrowTypeError(ctx, "print: invalid arg for `color`");
+      JS_FreeValue(ctx, string_val);
+      JS_FreeCString(ctx, string);
+      return JS_EXCEPTION;
+    }
   }
 
   print(x, y, string, color);
@@ -1608,7 +1619,8 @@ static JSValue js_host_get_setting(JSContext *ctx, JSValueConst this_val,
         result = JS_NewString(ctx, settings_pad_layout_name(g_settings.pad_layout));
     } else if (strcmp(key, "clock_mode") == 0) {
         const char *mode_names[] = {"off", "internal", "external"};
-        result = JS_NewString(ctx, mode_names[g_settings.clock_mode]);
+        int mode_idx = (g_settings.clock_mode >= 0 && g_settings.clock_mode < 3) ? g_settings.clock_mode : 0;
+        result = JS_NewString(ctx, mode_names[mode_idx]);
     } else if (strcmp(key, "tempo_bpm") == 0) {
         result = JS_NewInt32(ctx, g_settings.tempo_bpm);
     }
@@ -1746,11 +1758,87 @@ static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* host_announce_screenreader(text) -> undefined
+ * Send screen reader announcement via D-Bus for accessibility.
+ * Text is sent to stock Move's /screen-reader web interface. */
+static JSValue js_host_announce_screenreader(JSContext *ctx, JSValueConst this_val,
+                                               int argc, JSValueConst *argv) {
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    const char *text = JS_ToCString(ctx, argv[0]);
+    if (!text || !text[0]) {
+        if (text) JS_FreeCString(ctx, text);
+        return JS_UNDEFINED;
+    }
+
+    /* Open shared memory (created by shim) */
+    int fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_screenreader_t *shm = (shadow_screenreader_t *)mmap(
+            NULL, sizeof(shadow_screenreader_t),
+            PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+        if (shm != MAP_FAILED) {
+            /* Write text and update sequence */
+            strncpy(shm->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
+            shm->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
+
+            /* Get current time in milliseconds */
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            shm->timestamp_ms = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
+
+            /* Increment sequence to signal new message */
+            shm->sequence++;
+
+            munmap(shm, sizeof(shadow_screenreader_t));
+        }
+        close(fd);
+    }
+
+    JS_FreeCString(ctx, text);
+    return JS_UNDEFINED;
+}
+
 /* Helper: validate path is within BASE_DIR to prevent directory traversal */
+/* Execute a command safely using fork/execvp instead of system() */
+static int run_command(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
+    if (pid == 0) {
+        /* Child: redirect stderr to stdout, exec the command */
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127); /* exec failed */
+    }
+    /* Parent: wait for child */
+    int status;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return -1;
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
+}
+
 static int validate_path(const char *path) {
     if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
     if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
     if (strstr(path, "..") != NULL) return 0;
+
+    // Resolve symlinks and re-check the resolved path
+    char resolved[PATH_MAX];
+    if (realpath(path, resolved) != NULL) {
+        if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
+    }
+    // If realpath fails (e.g. file doesn't exist yet), the basic checks above suffice
     return 1;
 }
 
@@ -1763,6 +1851,11 @@ static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
 
     const char *path = JS_ToCString(ctx, argv[0]);
     if (!path) {
+        return JS_FALSE;
+    }
+
+    if (!validate_path(path)) {
+        JS_FreeCString(ctx, path);
         return JS_FALSE;
     }
 
@@ -1789,6 +1882,14 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
+    /* Validate URL scheme - only allow https:// and http:// */
+    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+        fprintf(stderr, "host_http_download: invalid URL scheme: %s\n", url);
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
     /* Validate destination path */
     if (!validate_path(dest_path)) {
         fprintf(stderr, "host_http_download: invalid dest path: %s\n", dest_path);
@@ -1797,12 +1898,11 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build curl command - use -k to skip SSL verification, timeouts to prevent hangs */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "%s -fsSLk --connect-timeout 10 --max-time 120 -o \"%s\" \"%s\" 2>&1",
-             CURL_PATH, dest_path, url);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        CURL_PATH, "-fsSLk", "--connect-timeout", "10", "--max-time", "120",
+        "-o", dest_path, url, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, url);
     JS_FreeCString(ctx, dest_path);
@@ -1834,12 +1934,10 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build tar command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>&1",
-             tar_path, dest_dir);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        "tar", "-xzf", tar_path, "-C", dest_dir, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
@@ -1881,12 +1979,13 @@ static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build tar command with --strip-components */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" --strip-components=%d 2>&1",
-             tar_path, dest_dir, strip);
+    char strip_arg[32];
+    snprintf(strip_arg, sizeof(strip_arg), "--strip-components=%d", strip);
 
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        "tar", "-xzf", tar_path, "-C", dest_dir, strip_arg, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
@@ -1913,11 +2012,8 @@ static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build mkdir command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "mkdir", "-p", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 
@@ -1950,11 +2046,8 @@ static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build rm command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "rm", "-rf", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 
@@ -2189,6 +2282,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     JSValue host_flush_display_func = JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", host_flush_display_func);
 
+    JSValue host_announce_screenreader_func = JS_NewCFunction(ctx, js_host_announce_screenreader, "host_announce_screenreader", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_announce_screenreader", host_announce_screenreader_func);
+
     /* Store module functions */
     JSValue host_file_exists_func = JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_file_exists", host_file_exists_func);
@@ -2261,11 +2357,13 @@ int getGlobalFunction(JSContext **pctx, const char *func_name, JSValue *retFunc)
     {
         fprintf(stderr, "Error: '%s' is not a function or not found.\n", func_name);
         JS_FreeValue(ctx, func); // Free the non-function value
+        JS_FreeValue(ctx, global_obj);
         return 0;
     }
 
     *retFunc = func;
 
+    JS_FreeValue(ctx, global_obj);
     return 1;
 }
 
@@ -2274,6 +2372,7 @@ int callGlobalFunction(JSContext **pctx, JSValue *pfunc, unsigned char *data)
     JSContext *ctx = *pctx;
 
     JSValue ret;
+    int is_exception;
 
     if (data != 0)
     {
@@ -2297,13 +2396,16 @@ int callGlobalFunction(JSContext **pctx, JSValue *pfunc, unsigned char *data)
         args[0] = newArray;
 
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 1, args);
+        JS_FreeValue(ctx, newArray);
     }
     else
     {
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 0, 0);
     }
 
-    if (JS_IsException(ret))
+    is_exception = JS_IsException(ret);
+
+    if (is_exception)
     {
         printf("JS function failed\n");
         js_std_dump_error(ctx);
@@ -2311,7 +2413,7 @@ int callGlobalFunction(JSContext **pctx, JSValue *pfunc, unsigned char *data)
 
     JS_FreeValue(ctx, ret);
 
-    return JS_IsException(ret);
+    return is_exception;
 }
 
 void deinit_javascript(JSRuntime **prt, JSContext **pctx)

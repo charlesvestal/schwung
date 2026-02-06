@@ -12,19 +12,22 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
-#include <unistd.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <math.h>
 #include <linux/spi/spidev.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <dbus/dbus.h>
+#include <systemd/sd-bus.h>
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/unified_log.h"
+#include "host/tts_engine.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
@@ -99,8 +102,14 @@ static uint8_t shadow_display_mode = 0;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
+static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
+
+/* Feature flags from config/features.json */
+static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
+static bool standalone_enabled = true;     /* Standalone mode enabled by default */
 
 static void launch_shadow_ui(void);
+static void load_feature_config(void);
 
 static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
 {
@@ -1027,7 +1036,7 @@ typedef struct shadow_chain_slot_t {
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
-} shadow_chain_slot_t;;
+} shadow_chain_slot_t;
 
 static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 
@@ -1085,6 +1094,28 @@ static DBusConnection *shadow_dbus_conn = NULL;
 static pthread_t shadow_dbus_thread;
 static volatile int shadow_dbus_running = 0;
 
+/* Move's D-Bus socket FD (ORIGINAL, for send() hook to recognize) */
+static int move_dbus_socket_fd = -1;
+static sd_bus *move_sdbus_conn = NULL;
+static DBusConnection *shadow_dbus_conn_old = NULL; /* Old libdbus listener (keep for compatibility) */
+static pthread_mutex_t move_dbus_conn_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Shadow buffer for pending screen reader announcements */
+#define MAX_PENDING_ANNOUNCEMENTS 16
+#define MAX_ANNOUNCEMENT_LEN 256
+static char pending_announcements[MAX_PENDING_ANNOUNCEMENTS][MAX_ANNOUNCEMENT_LEN];
+static int pending_announcement_count = 0;
+static pthread_mutex_t pending_announcements_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Track Move's D-Bus serial number for coordinated message injection */
+static uint32_t move_dbus_serial = 0;
+static pthread_mutex_t move_dbus_serial_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Priority announcement flag - blocks D-Bus messages while toggle announcement plays */
+static bool tts_priority_announcement_active = false;
+static uint64_t tts_priority_announcement_time_ms = 0;
+#define TTS_PRIORITY_BLOCK_MS 1000  /* Block D-Bus for 1 second after priority announcement */
+
 /* Parse dB value from "Track Volume X dB" string and convert to linear */
 static float shadow_parse_volume_db(const char *text)
 {
@@ -1114,6 +1145,72 @@ static float shadow_parse_volume_db(const char *text)
     return linear;
 }
 
+/* Inject pending screen reader announcements immediately */
+static void shadow_inject_pending_announcements(void)
+{
+    pthread_mutex_lock(&pending_announcements_mutex);
+    int has_pending = (pending_announcement_count > 0);
+    pthread_mutex_unlock(&pending_announcements_mutex);
+
+    if (!has_pending) return;
+
+    pthread_mutex_lock(&move_dbus_conn_mutex);
+    int fd = move_dbus_socket_fd;
+    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+    if (fd < 0) return;
+
+    pthread_mutex_lock(&pending_announcements_mutex);
+    for (int i = 0; i < pending_announcement_count; i++) {
+        /* Create D-Bus signal message */
+        DBusMessage *msg = dbus_message_new_signal(
+            "/com/ableton/move/screenreader",
+            "com.ableton.move.ScreenReader",
+            "text"
+        );
+
+        if (msg) {
+            const char *announce_text = pending_announcements[i];
+            if (dbus_message_append_args(msg, DBUS_TYPE_STRING, &announce_text, DBUS_TYPE_INVALID)) {
+                /* Get next serial number */
+                pthread_mutex_lock(&move_dbus_serial_mutex);
+                move_dbus_serial++;
+                uint32_t our_serial = move_dbus_serial;
+                pthread_mutex_unlock(&move_dbus_serial_mutex);
+
+                /* Set the serial number */
+                dbus_message_set_serial(msg, our_serial);
+
+                /* Serialize and write directly to Move's FD */
+                char *marshalled = NULL;
+                int msg_len = 0;
+                if (dbus_message_marshal(msg, &marshalled, &msg_len)) {
+                    ssize_t written = write(fd, marshalled, msg_len);
+
+                    if (written > 0) {
+                        char logbuf[512];
+                        snprintf(logbuf, sizeof(logbuf),
+                                "Screen reader: \"%s\" (injected %zd bytes to FD %d, serial=%u)",
+                                announce_text, written, fd, our_serial);
+                        shadow_log(logbuf);
+                    } else {
+                        char logbuf[256];
+                        snprintf(logbuf, sizeof(logbuf),
+                                "Screen reader: Failed to inject \"%s\" (errno=%d)",
+                                announce_text, errno);
+                        shadow_log(logbuf);
+                    }
+
+                    free(marshalled);
+                }
+            }
+            dbus_message_unref(msg);
+        }
+    }
+    pending_announcement_count = 0;  /* Clear after injecting */
+    pthread_mutex_unlock(&pending_announcements_mutex);
+}
+
 /* Handle a screenreader text signal */
 static void shadow_dbus_handle_text(const char *text)
 {
@@ -1124,6 +1221,33 @@ static void shadow_dbus_handle_text(const char *text)
         char msg[256];
         snprintf(msg, sizeof(msg), "D-Bus text: \"%s\" (held_track=%d)", text, shadow_held_track);
         shadow_log(msg);
+    }
+
+    /* Block D-Bus messages while priority announcement is playing */
+    if (tts_priority_announcement_active) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t now_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+
+        if (now_ms - tts_priority_announcement_time_ms < TTS_PRIORITY_BLOCK_MS) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "D-Bus text BLOCKED (priority announcement): \"%s\"", text);
+            shadow_log(msg);
+            return;  /* Ignore D-Bus message during priority announcement */
+        } else {
+            /* Blocking period expired */
+            tts_priority_announcement_active = false;
+        }
+    }
+
+    /* Write screen reader text to shared memory for TTS */
+    if (shadow_screenreader_shm) {
+        /* Only increment sequence if text has actually changed (avoid duplicate increments) */
+        if (strncmp(shadow_screenreader_shm->text, text, sizeof(shadow_screenreader_shm->text) - 1) != 0) {
+            strncpy(shadow_screenreader_shm->text, text, sizeof(shadow_screenreader_shm->text) - 1);
+            shadow_screenreader_shm->text[sizeof(shadow_screenreader_shm->text) - 1] = '\0';
+            shadow_screenreader_shm->sequence++;  /* Increment to signal new message */
+        }
     }
 
     /* Check if it's a Set name (e.g. "Set 1", "Set 28") - read tempo from Song.abl */
@@ -1157,6 +1281,255 @@ static void shadow_dbus_handle_text(const char *text)
             shadow_save_state();
         }
     }
+
+    /* After receiving any screen reader message from Move, inject our pending announcements */
+    shadow_inject_pending_announcements();
+}
+
+/* Send screen reader announcement via D-Bus signal */
+/* Hook dbus_connection_send to capture Move's connection when it sends screen reader signals */
+/* Hook sd-bus functions to capture Move's connection */
+
+/* Hook sdbus-cpp factory function by mangled name */
+/* _ZN5sdbus25createSystemBusConnectionEv = sdbus::createSystemBusConnection() */
+
+typedef void* (*sdbus_create_fn)(void);
+
+/* Hook connect() to capture Move's D-Bus socket FD */
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    static int (*real_connect)(int, const struct sockaddr *, socklen_t) = NULL;
+    if (!real_connect) {
+        real_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
+        shadow_log("D-Bus: connect() hook initialized");
+    }
+    
+    int result = real_connect(sockfd, addr, addrlen);
+    
+    if (result == 0 && addr && addr->sa_family == AF_UNIX) {
+        struct sockaddr_un *un_addr = (struct sockaddr_un *)addr;
+        
+        /* Check if this is the D-Bus system bus socket */
+        if (strstr(un_addr->sun_path, "dbus") && strstr(un_addr->sun_path, "system")) {
+            pthread_mutex_lock(&move_dbus_conn_mutex);
+            if (move_dbus_socket_fd == -1) {
+                /* This is Move's D-Bus FD - we'll intercept writes to it */
+                move_dbus_socket_fd = sockfd;
+                char logbuf[256];
+                snprintf(logbuf, sizeof(logbuf),
+                        "D-Bus: *** INTERCEPTING Move's socket FD %d (path=%s) ***",
+                        sockfd, un_addr->sun_path);
+                shadow_log(logbuf);
+            }
+            pthread_mutex_unlock(&move_dbus_conn_mutex);
+        }
+    }
+    
+    return result;
+}
+
+/* Parse D-Bus message serial number from raw bytes (little-endian) */
+static uint32_t parse_dbus_serial(const uint8_t *buf, size_t len)
+{
+    /* D-Bus native wire format:
+     * [0] = endianness ('l' for little-endian)
+     * [1] = message type
+     * [2] = flags
+     * [3] = protocol version (usually 1)
+     * [4-7] = body length (uint32)
+     * [8-11] = serial number (uint32) */
+
+    if (len < 12) return 0;
+    if (buf[0] != 'l') return 0;  /* Only handle little-endian for now */
+
+    uint32_t serial;
+    memcpy(&serial, buf + 8, sizeof(serial));
+    return serial;
+}
+
+/* Hook send() to intercept Move's D-Bus messages and inject ours */
+ssize_t send(int sockfd, const void *buf, size_t len, int flags)
+{
+    static ssize_t (*real_send)(int, const void *, size_t, int) = NULL;
+    if (!real_send) {
+        real_send = (ssize_t (*)(int, const void *, size_t, int))dlsym(RTLD_NEXT, "send");
+    }
+
+    /* Check if this is a send to Move's D-Bus socket */
+    pthread_mutex_lock(&move_dbus_conn_mutex);
+    int is_move_dbus = (sockfd == move_dbus_socket_fd && move_dbus_socket_fd >= 0);
+    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+    if (is_move_dbus) {
+        /* Parse and track Move's serial number */
+        uint32_t serial = parse_dbus_serial((const uint8_t*)buf, len);
+        if (serial > 0) {
+            pthread_mutex_lock(&move_dbus_serial_mutex);
+            if (serial > move_dbus_serial) {
+                move_dbus_serial = serial;
+            }
+            pthread_mutex_unlock(&move_dbus_serial_mutex);
+        }
+
+        /* Forward Move's message first */
+        ssize_t result = real_send(sockfd, buf, len, flags);
+
+        /* Check if we have pending announcements to inject */
+        pthread_mutex_lock(&pending_announcements_mutex);
+        int has_pending = (pending_announcement_count > 0);
+        pthread_mutex_unlock(&pending_announcements_mutex);
+
+        if (has_pending && result > 0) {
+            /* Inject our screen reader messages with coordinated serials */
+            pthread_mutex_lock(&pending_announcements_mutex);
+            for (int i = 0; i < pending_announcement_count; i++) {
+                /* Create D-Bus signal message */
+                DBusMessage *msg = dbus_message_new_signal(
+                    "/com/ableton/move/screenreader",
+                    "com.ableton.move.ScreenReader",
+                    "text"
+                );
+
+                if (msg) {
+                    const char *text = pending_announcements[i];
+                    if (dbus_message_append_args(msg, DBUS_TYPE_STRING, &text, DBUS_TYPE_INVALID)) {
+                        /* Get next serial number */
+                        pthread_mutex_lock(&move_dbus_serial_mutex);
+                        move_dbus_serial++;
+                        uint32_t our_serial = move_dbus_serial;
+                        pthread_mutex_unlock(&move_dbus_serial_mutex);
+
+                        /* Set the serial number */
+                        dbus_message_set_serial(msg, our_serial);
+
+                        /* Serialize and send */
+                        char *marshalled = NULL;
+                        int msg_len = 0;
+                        if (dbus_message_marshal(msg, &marshalled, &msg_len)) {
+                            ssize_t written = real_send(sockfd, marshalled, msg_len, flags);
+
+                            if (written > 0) {
+                                char logbuf[512];
+                                snprintf(logbuf, sizeof(logbuf),
+                                        "Screen reader: \"%s\" (injected %zd bytes, serial=%u)",
+                                        text, written, our_serial);
+                                shadow_log(logbuf);
+                            } else {
+                                char logbuf[256];
+                                snprintf(logbuf, sizeof(logbuf),
+                                        "Screen reader: Failed to inject \"%s\" (errno=%d)",
+                                        text, errno);
+                                shadow_log(logbuf);
+                            }
+
+                            free(marshalled);
+                        }
+                    }
+                    dbus_message_unref(msg);
+                }
+            }
+            pending_announcement_count = 0;  /* Clear after injecting */
+            pthread_mutex_unlock(&pending_announcements_mutex);
+        }
+
+        return result;
+    }
+
+    /* Not Move's D-Bus socket, pass through */
+    return real_send(sockfd, buf, len, flags);
+}
+
+int sd_bus_default_system(sd_bus **ret)
+{
+    static int (*real_default)(sd_bus**) = NULL;
+    if (!real_default) {
+        real_default = (int (*)(sd_bus**))dlsym(RTLD_NEXT, "sd_bus_default_system");
+    }
+    
+    int result = real_default(ret);
+    
+    if (result >= 0 && ret && *ret) {
+        pthread_mutex_lock(&move_dbus_conn_mutex);
+        if (!move_sdbus_conn) {
+            move_sdbus_conn = sd_bus_ref(*ret);
+            const char *unique_name = NULL;
+            sd_bus_get_unique_name(*ret, &unique_name);
+            char logbuf[256];
+            snprintf(logbuf, sizeof(logbuf), 
+                    "D-Bus: *** CAPTURED sd-bus connection via sd_bus_default_system (sender=%s) ***",
+                    unique_name ? unique_name : "?");
+            shadow_log(logbuf);
+        }
+        pthread_mutex_unlock(&move_dbus_conn_mutex);
+    }
+    
+    return result;
+}
+
+int sd_bus_start(sd_bus *bus)
+{
+    static int (*real_start)(sd_bus*) = NULL;
+    if (!real_start) {
+        real_start = (int (*)(sd_bus*))dlsym(RTLD_NEXT, "sd_bus_start");
+    }
+    
+    int result = real_start(bus);
+    
+    if (result >= 0 && bus) {
+        pthread_mutex_lock(&move_dbus_conn_mutex);
+        if (!move_sdbus_conn) {
+            move_sdbus_conn = sd_bus_ref(bus);
+            const char *unique_name = NULL;
+            sd_bus_get_unique_name(bus, &unique_name);
+            char logbuf[256];
+            snprintf(logbuf, sizeof(logbuf), 
+                    "D-Bus: *** CAPTURED sd-bus connection via sd_bus_start (sender=%s) ***",
+                    unique_name ? unique_name : "?");
+            shadow_log(logbuf);
+        }
+        pthread_mutex_unlock(&move_dbus_conn_mutex);
+    }
+    
+    return result;
+}
+
+/* Hook sendmsg to capture Move's D-Bus socket FD at the lowest level */
+/* Removed - sd-bus hooks are used instead */
+
+/* Queue a screen reader announcement to be injected via send() hook */
+static void send_screenreader_announcement(const char *text)
+{
+    if (!text || !text[0]) return;
+
+    pthread_mutex_lock(&move_dbus_conn_mutex);
+    int sock_fd = move_dbus_socket_fd;
+    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+    if (sock_fd < 0) {
+        /* Haven't captured Move's FD yet */
+        return;
+    }
+
+    /* Add to pending queue */
+    pthread_mutex_lock(&pending_announcements_mutex);
+    if (pending_announcement_count < MAX_PENDING_ANNOUNCEMENTS) {
+        size_t text_len = strlen(text);
+        if (text_len >= MAX_ANNOUNCEMENT_LEN) {
+            text_len = MAX_ANNOUNCEMENT_LEN - 1;
+        }
+        memcpy(pending_announcements[pending_announcement_count], text, text_len);
+        pending_announcements[pending_announcement_count][text_len] = '\0';
+        pending_announcement_count++;
+
+        char logbuf[512];
+        snprintf(logbuf, sizeof(logbuf),
+                "Screen reader: Queued \"%s\" (pending=%d)",
+                text, pending_announcement_count);
+        shadow_log(logbuf);
+    } else {
+        shadow_log("Screen reader: Queue full, dropping announcement");
+    }
+    pthread_mutex_unlock(&pending_announcements_mutex);
 }
 
 /* D-Bus filter function to receive signals */
@@ -1170,6 +1543,7 @@ static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *m
         const char *iface = dbus_message_get_interface(msg);
         const char *member = dbus_message_get_member(msg);
         const char *path = dbus_message_get_path(msg);
+        const char *sender = dbus_message_get_sender(msg);
         int msg_type = dbus_message_get_type(msg);
 
         if (msg_type == DBUS_MESSAGE_TYPE_SIGNAL) {
@@ -1198,10 +1572,22 @@ static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *m
             }
 
             char logbuf[512];
-            snprintf(logbuf, sizeof(logbuf), "D-Bus signal: %s.%s path=%s%s",
+            snprintf(logbuf, sizeof(logbuf), "D-Bus signal: %s.%s path=%s sender=%s%s",
                      iface ? iface : "?", member ? member : "?",
-                     path ? path : "?", arg_preview);
+                     path ? path : "?", sender ? sender : "?", arg_preview);
             shadow_log(logbuf);
+
+            /* Track serial numbers from Move's messages */
+            if (sender && strstr(sender, ":1.")) {
+                uint32_t serial = dbus_message_get_serial(msg);
+                if (serial > 0) {
+                    pthread_mutex_lock(&move_dbus_serial_mutex);
+                    if (serial > move_dbus_serial) {
+                        move_dbus_serial = serial;
+                    }
+                    pthread_mutex_unlock(&move_dbus_serial_mutex);
+                }
+            }
         }
     }
 
@@ -1241,17 +1627,49 @@ static void *shadow_dbus_thread_func(void *arg)
         return NULL;
     }
 
-    /* Subscribe to ALL signals for discovery, plus screenreader specifically */
+    /* Scan existing FDs to find Move's D-Bus socket */
+    shadow_log("D-Bus: Scanning file descriptors for Move's D-Bus socket...");
+    for (int fd = 3; fd < 256; fd++) {
+        struct sockaddr_un addr;
+        socklen_t addr_len = sizeof(addr);
+
+        if (getpeername(fd, (struct sockaddr*)&addr, &addr_len) == 0) {
+            if (addr.sun_family == AF_UNIX &&
+                strstr(addr.sun_path, "dbus") &&
+                strstr(addr.sun_path, "system")) {
+
+                /* Get our own FD for comparison */
+                int our_fd = -1;
+                dbus_connection_get_unix_fd(shadow_dbus_conn, &our_fd);
+
+                if (fd != our_fd) {
+                    /* This is Move's FD! Store ORIGINAL for send() hook to recognize */
+                    pthread_mutex_lock(&move_dbus_conn_mutex);
+                    move_dbus_socket_fd = fd;
+                    pthread_mutex_unlock(&move_dbus_conn_mutex);
+
+                    char logbuf[256];
+                    snprintf(logbuf, sizeof(logbuf),
+                            "D-Bus: *** FOUND Move's D-Bus socket FD %d (path=%s) ***",
+                            fd, addr.sun_path);
+                    shadow_log(logbuf);
+
+                    snprintf(logbuf, sizeof(logbuf),
+                            "D-Bus: Will intercept writes to FD %d via send() hook", fd);
+                    shadow_log(logbuf);
+
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Subscribe to ALL signals for discovery (tempo detection, etc.)
+     * NOTE: We explicitly DON'T subscribe to com.ableton.move.ScreenReader
+     * because stock Move's web server treats that as a competing client
+     * and shows "single window" error. We only SEND to that interface. */
     const char *rule_all = "type='signal'";
     dbus_bus_add_match(shadow_dbus_conn, rule_all, &err);
-    if (dbus_error_is_set(&err)) {
-        shadow_log("D-Bus: Failed to add catch-all match rule");
-        dbus_error_free(&err);
-        /* Continue anyway - specific rule below may work */
-        dbus_error_init(&err);
-    }
-    const char *rule = "type='signal',interface='com.ableton.move.ScreenReader',member='text'";
-    dbus_bus_add_match(shadow_dbus_conn, rule, &err);
     dbus_connection_flush(shadow_dbus_conn);
 
     if (dbus_error_is_set(&err)) {
@@ -1267,6 +1685,12 @@ static void *shadow_dbus_thread_func(void *arg)
     }
 
     shadow_log("D-Bus: Connected and listening for screenreader signals");
+
+    /* Send test announcements via the new shadow buffer architecture.
+     * These are queued and injected via send() hook with coordinated serial numbers. */
+    send_screenreader_announcement("Move Anything Screen Reader Test");
+    sleep(1);
+    send_screenreader_announcement("Screen Reader Active");
 
     /* Main loop - process D-Bus messages */
     while (shadow_dbus_running) {
@@ -1472,12 +1896,27 @@ typedef struct {
 #define SAMPLER_RING_BUFFER_SIZE (SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
 #define SAMPLER_RECORDINGS_DIR "/data/UserData/UserLibrary/Samples/Move Everything"
 
+/* Execute a command safely using fork/execvp instead of system() */
+static int shim_run_command(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return -1;
+}
+
 static FILE *sampler_wav_file = NULL;
 static uint32_t sampler_samples_written = 0;
 static char sampler_current_recording[256] = "";
 static int16_t *sampler_ring_buffer = NULL;
-static volatile size_t sampler_ring_write_pos = 0;
-static volatile size_t sampler_ring_read_pos = 0;
+static size_t sampler_ring_write_pos = 0;
+static size_t sampler_ring_read_pos = 0;
 static pthread_t sampler_writer_thread;
 static pthread_mutex_t sampler_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t sampler_ring_cond = PTHREAD_COND_INITIALIZER;
@@ -1495,7 +1934,7 @@ static volatile int sampler_writer_should_exit = 0;
 static int16_t *skipback_buffer = NULL;
 static volatile size_t skipback_write_pos = 0;  /* In samples (L+R pairs count as 2) */
 static volatile int skipback_buffer_full = 0;   /* Has wrapped at least once */
-static volatile int skipback_saving = 0;        /* Writer thread active */
+static int skipback_saving = 0;                  /* Writer thread active (accessed atomically) */
 static pthread_t skipback_writer_thread;
 static volatile int skipback_overlay_timeout = 0;  /* Frames remaining for "saved" overlay */
 #define SKIPBACK_OVERLAY_FRAMES 114  /* ~2 seconds at 57Hz */
@@ -1770,8 +2209,8 @@ static void sampler_write_wav_header(FILE *f, uint32_t data_size) {
 }
 
 static size_t sampler_ring_available_write(void) {
-    size_t write_pos = sampler_ring_write_pos;
-    size_t read_pos = sampler_ring_read_pos;
+    size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
+    size_t read_pos = __atomic_load_n(&sampler_ring_read_pos, __ATOMIC_ACQUIRE);
     size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
     if (write_pos >= read_pos)
         return buffer_samples - (write_pos - read_pos) - 1;
@@ -1780,8 +2219,8 @@ static size_t sampler_ring_available_write(void) {
 }
 
 static size_t sampler_ring_available_read(void) {
-    size_t write_pos = sampler_ring_write_pos;
-    size_t read_pos = sampler_ring_read_pos;
+    size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
+    size_t read_pos = __atomic_load_n(&sampler_ring_read_pos, __ATOMIC_ACQUIRE);
     size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
     if (write_pos >= read_pos)
         return write_pos - read_pos;
@@ -1804,12 +2243,12 @@ static void *sampler_writer_thread_func(void *arg) {
 
         size_t available = sampler_ring_available_read();
         while (available > 0 && sampler_wav_file) {
-            size_t read_pos = sampler_ring_read_pos;
+            size_t read_pos = __atomic_load_n(&sampler_ring_read_pos, __ATOMIC_ACQUIRE);
             size_t to_end = buffer_samples - read_pos;
             size_t to_write = (available < to_end) ? available : to_end;
             fwrite(&sampler_ring_buffer[read_pos], sizeof(int16_t), to_write, sampler_wav_file);
             sampler_samples_written += to_write / SAMPLER_NUM_CHANNELS;
-            sampler_ring_read_pos = (read_pos + to_write) % buffer_samples;
+            __atomic_store_n(&sampler_ring_read_pos, (read_pos + to_write) % buffer_samples, __ATOMIC_RELEASE);
             available = sampler_ring_available_read();
         }
 
@@ -1945,12 +2384,19 @@ static float sampler_get_bpm(tempo_source_t *source) {
 static void sampler_start_recording(void) {
     if (sampler_writer_running) return;
 
-    /* Create recordings directory */
-    system("mkdir -p '" SAMPLER_RECORDINGS_DIR "'");
+    /* Create recordings directory (skip fork if it already exists to avoid audio glitch) */
+    {
+        struct stat st;
+        if (stat(SAMPLER_RECORDINGS_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+    }
 
     /* Generate filename with timestamp */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
     snprintf(sampler_current_recording, sizeof(sampler_current_recording),
              SAMPLER_RECORDINGS_DIR "/sample_%04d%02d%02d_%02d%02d%02d.wav",
              tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
@@ -1974,8 +2420,8 @@ static void sampler_start_recording(void) {
 
     /* Initialize state */
     sampler_samples_written = 0;
-    sampler_ring_write_pos = 0;
-    sampler_ring_read_pos = 0;
+    __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
     sampler_writer_should_exit = 0;
     sampler_clock_count = 0;
     sampler_bars_completed = 0;
@@ -2092,12 +2538,12 @@ static void sampler_capture_audio(void) {
 
     /* Write to ring buffer if space available (drop if full, never block) */
     if (sampler_ring_available_write() >= samples_to_write) {
-        size_t write_pos = sampler_ring_write_pos;
+        size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
         for (size_t i = 0; i < samples_to_write; i++) {
             sampler_ring_buffer[write_pos] = audio[i];
             write_pos = (write_pos + 1) % buffer_samples;
         }
-        sampler_ring_write_pos = write_pos;
+        __atomic_store_n(&sampler_ring_write_pos, write_pos, __ATOMIC_RELEASE);
 
         /* Signal writer thread */
         pthread_mutex_lock(&sampler_ring_mutex);
@@ -2183,7 +2629,7 @@ static void skipback_init(void) {
 
 /* Skipback: capture one audio block into rolling buffer */
 static void skipback_capture(int16_t *audio) {
-    if (!skipback_buffer || !audio || skipback_saving) return;
+    if (!skipback_buffer || !audio || __atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE)) return;
 
     size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
     size_t block_samples = FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
@@ -2203,12 +2649,19 @@ static void skipback_capture(int16_t *audio) {
 static void *skipback_writer_func(void *arg) {
     (void)arg;
 
-    /* Create directory */
-    system("mkdir -p '" SKIPBACK_DIR "'");
+    /* Create directory (skip fork if it already exists to avoid audio glitch) */
+    {
+        struct stat st;
+        if (stat(SKIPBACK_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+    }
 
     /* Generate filename */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
     char path[256];
     snprintf(path, sizeof(path),
              SKIPBACK_DIR "/skipback_%04d%02d%02d_%02d%02d%02d.wav",
@@ -2218,7 +2671,7 @@ static void *skipback_writer_func(void *arg) {
     FILE *f = fopen(path, "wb");
     if (!f) {
         shadow_log("Skipback: failed to open WAV file");
-        skipback_saving = 0;
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return NULL;
     }
 
@@ -2241,7 +2694,7 @@ static void *skipback_writer_func(void *arg) {
     if (data_samples == 0) {
         shadow_log("Skipback: no audio captured yet");
         fclose(f);
-        skipback_saving = 0;
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return NULL;
     }
 
@@ -2284,19 +2737,20 @@ static void *skipback_writer_func(void *arg) {
     shadow_log(msg);
 
     skipback_overlay_timeout = SKIPBACK_OVERLAY_FRAMES;
-    skipback_saving = 0;
+    __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
     return NULL;
 }
 
 /* Skipback: trigger save from main thread */
 static void skipback_trigger_save(void) {
-    if (skipback_saving || !skipback_buffer) return;
-    skipback_saving = 1;
+    if (__atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE) || !skipback_buffer) return;
+    __atomic_store_n(&skipback_saving, 1, __ATOMIC_RELEASE);
+    __sync_synchronize();
 
     pthread_t t;
     if (pthread_create(&t, NULL, skipback_writer_func, NULL) != 0) {
         shadow_log("Skipback: failed to create writer thread");
-        skipback_saving = 0;
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return;
     }
     pthread_detach(t);
@@ -2415,8 +2869,8 @@ static void overlay_draw_sampler(uint8_t *buf) {
 
     } else if (sampler_state == SAMPLER_RECORDING) {
         /* Row 0: Flashing title (~4Hz at ~57fps = toggle every 14 frames) */
-        recording_flash_counter++;
-        if ((recording_flash_counter / 14) % 2 == 0)
+        recording_flash_counter = (recording_flash_counter + 1) % 28;
+        if ((recording_flash_counter / 14) == 0)
             overlay_draw_string(buf, 16, 0, "** RECORDING **", 1);
 
         /* Row 2: Source (locked, no cursor) */
@@ -2490,6 +2944,64 @@ static void overlay_draw_sampler(uint8_t *buf) {
     }
 }
 
+/* Load feature configuration from config/features.json */
+static void load_feature_config(void)
+{
+    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    FILE *f = fopen(config_path, "r");
+    if (!f) {
+        /* No config file - use defaults (all enabled) */
+        shadow_ui_enabled = true;
+        standalone_enabled = true;
+        shadow_log("Features: No config file, using defaults (all enabled)");
+        return;
+    }
+
+    /* Read file */
+    char config_buf[512];
+    size_t len = fread(config_buf, 1, sizeof(config_buf) - 1, f);
+    fclose(f);
+    config_buf[len] = '\0';
+
+    /* Parse shadow_ui_enabled */
+    const char *shadow_ui_key = strstr(config_buf, "\"shadow_ui_enabled\"");
+    if (shadow_ui_key) {
+        const char *colon = strchr(shadow_ui_key, ':');
+        if (colon) {
+            /* Skip whitespace */
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "false", 5) == 0) {
+                shadow_ui_enabled = false;
+            } else {
+                shadow_ui_enabled = true;
+            }
+        }
+    }
+
+    /* Parse standalone_enabled */
+    const char *standalone_key = strstr(config_buf, "\"standalone_enabled\"");
+    if (standalone_key) {
+        const char *colon = strchr(standalone_key, ':');
+        if (colon) {
+            /* Skip whitespace */
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "false", 5) == 0) {
+                standalone_enabled = false;
+            } else {
+                standalone_enabled = true;
+            }
+        }
+    }
+
+    char log_msg[128];
+    snprintf(log_msg, sizeof(log_msg), "Features: shadow_ui=%s, standalone=%s",
+             shadow_ui_enabled ? "enabled" : "disabled",
+             standalone_enabled ? "enabled" : "disabled");
+    shadow_log(log_msg);
+}
+
 /* Read initial volume from Move's Settings.json */
 static void shadow_read_initial_volume(void)
 {
@@ -2515,8 +3027,8 @@ static void shadow_read_initial_volume(void)
         return;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
 
     /* Find "globalVolume": X.X */
@@ -2564,8 +3076,8 @@ static void shadow_save_state(void)
         if (size > 0 && size < 8192) {
             char *json = malloc(size + 1);
             if (json) {
-                fread(json, 1, size, f);
-                json[size] = '\0';
+                size_t nread = fread(json, 1, size, f);
+                json[nread] = '\0';
 
                 /* Extract patches array (preserve as-is) */
                 char *patches_start = strstr(json, "\"patches\":");
@@ -2690,8 +3202,8 @@ static void shadow_load_state(void)
         return;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
 
     /* Parse slot_volumes array */
@@ -2871,8 +3383,8 @@ static void shadow_chain_load_config(void) {
         return;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
 
     char *cursor = json;
@@ -3074,8 +3586,8 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
         if (size > 0 && size < 16384) {
             char *json = malloc(size + 1);
             if (json) {
-                fread(json, 1, size, f);
-                json[size] = '\0';
+                size_t nread = fread(json, 1, size, f);
+                json[nread] = '\0';
                 const char *caps = strstr(json, "\"capabilities\"");
                 if (caps) {
                     capture_parse_json(&s->capture, caps);
@@ -3231,6 +3743,20 @@ static int shadow_inprocess_load_chain(void) {
     }
 
     shadow_ui_state_refresh();
+
+    /* Pre-create recording directories so mkdir fork() doesn't glitch audio later */
+    {
+        struct stat st;
+        if (stat(SAMPLER_RECORDINGS_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+        if (stat(SKIPBACK_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+    }
+
     shadow_inprocess_ready = 1;
     /* Start countdown for delayed mod wheel reset after Move's startup MIDI settles */
     shadow_startup_modwheel_countdown = STARTUP_MODWHEEL_RESET_FRAMES;
@@ -3238,7 +3764,10 @@ static int shadow_inprocess_load_chain(void) {
         /* Allow display hotkey when running in-process DSP. */
         shadow_control->shadow_ready = 1;
     }
-    launch_shadow_ui();
+    /* Launch shadow UI only if enabled */
+    if (shadow_ui_enabled) {
+        launch_shadow_ui();
+    }
     shadow_log("Shadow inprocess: chain loaded");
     return 0;
 }
@@ -3417,10 +3946,10 @@ static void shadow_slot_load_capture(int slot, int patch_index)
         return;
     }
     
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
-    
+
     /* Parse capture rules from JSON */
     capture_parse_json(&shadow_chain_slots[slot].capture, json);
     free(json);
@@ -3437,7 +3966,6 @@ static void shadow_slot_load_capture(int slot, int patch_index)
     snprintf(dbg, sizeof(dbg), "  -> note 16 captured: %d", capture_has_note(&shadow_chain_slots[slot].capture, 16));
     capture_debug_log(dbg);
     if (has_notes || has_ccs) {
-        char dbg[128];
         snprintf(dbg, sizeof(dbg), "Slot %d capture loaded: notes=%d ccs=%d",
                  slot, has_notes, has_ccs);
         shadow_log(dbg);
@@ -3735,8 +4263,8 @@ static void shadow_inprocess_handle_param_request(void) {
                     if (size > 0 && size < 32768) {
                         char *json = malloc(size + 1);
                         if (json) {
-                            fread(json, 1, size, f);
-                            json[size] = '\0';
+                            size_t nread = fread(json, 1, size, f);
+                            json[nread] = '\0';
 
                             /* Find ui_hierarchy in capabilities */
                             const char *ui_hier = strstr(json, "\"ui_hierarchy\"");
@@ -3838,9 +4366,11 @@ static void shadow_inprocess_handle_param_request(void) {
 
     if (req_type == 1) {  /* SET param */
         if (shadow_plugin_v2->set_param) {
-            /* Make local copies - shared memory may be modified during set_param */
+            /* Make local copies - shared memory may be modified during set_param.
+             * value_copy is static because SHADOW_PARAM_VALUE_LEN (64KB) is too large
+             * for the stack. Safe because this runs in single-threaded ioctl context. */
             char key_copy[SHADOW_PARAM_KEY_LEN];
-            char value_copy[SHADOW_PARAM_VALUE_LEN];  /* Full size for patch JSON with state */
+            static char value_copy[SHADOW_PARAM_VALUE_LEN];
             strncpy(key_copy, shadow_param->key, sizeof(key_copy) - 1);
             key_copy[sizeof(key_copy) - 1] = '\0';
             strncpy(value_copy, shadow_param->value, sizeof(value_copy) - 1);
@@ -4236,6 +4766,8 @@ static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static uint8_t last_shadow_midi_out_ready = 0;
+static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
+static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 
 /* Pending LED queue for rate-limited output (like standalone mode) */
 #define SHADOW_LED_MAX_UPDATES_PER_TICK 16
@@ -4266,6 +4798,7 @@ static int shm_control_fd = -1;
 static int shm_ui_fd = -1;
 static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
+static int shm_screenreader_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -4389,6 +4922,11 @@ static void init_shadow_shm(void)
             shadow_control->ui_flags = 0;
             shadow_control->ui_patch_index = 0;
             shadow_control->ui_request_id = 0;
+            /* Initialize TTS defaults */
+            shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
+            shadow_control->tts_volume = 70;    /* 70% volume */
+            shadow_control->tts_pitch = 110;    /* 110 Hz */
+            shadow_control->tts_speed = 1.0f;   /* Normal speed */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -4447,10 +4985,31 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create midi_out shm\n");
     }
 
+    /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
+    shm_screenreader_fd = shm_open(SHM_SHADOW_SCREENREADER, O_CREAT | O_RDWR, 0666);
+    if (shm_screenreader_fd >= 0) {
+        ftruncate(shm_screenreader_fd, sizeof(shadow_screenreader_t));
+        shadow_screenreader_shm = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t),
+                                                                 PROT_READ | PROT_WRITE,
+                                                                 MAP_SHARED, shm_screenreader_fd, 0);
+        if (shadow_screenreader_shm == MAP_FAILED) {
+            shadow_screenreader_shm = NULL;
+            printf("Shadow: Failed to mmap screenreader shm\n");
+        } else {
+            memset(shadow_screenreader_shm, 0, sizeof(shadow_screenreader_t));
+        }
+    } else {
+        printf("Shadow: Failed to create screenreader shm\n");
+    }
+
+    /* TTS engine uses lazy initialization - will init on first speak */
+    tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
+    printf("Shadow: TTS engine configured (will init on first use)\n");
+
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, screenreader=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_screenreader_shm);
 }
 
 #if SHADOW_DEBUG
@@ -4499,6 +5058,56 @@ static void debug_audio_offset(void) {
 }
 #endif /* SHADOW_DEBUG */
 
+/* Monitor screen reader messages and speak them with TTS (debounced) */
+#define TTS_DEBOUNCE_MS 300  /* Wait 300ms of silence before speaking */
+static char pending_tts_message[256] = {0};
+static uint64_t last_message_time_ms = 0;
+static bool has_pending_message = false;
+
+static void shadow_check_screenreader(void)
+{
+    if (!shadow_screenreader_shm) return;
+
+    /* Get current time in milliseconds */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+
+    /* Check if there's a new message (sequence incremented) */
+    uint32_t current_sequence = shadow_screenreader_shm->sequence;
+    if (current_sequence != last_screenreader_sequence) {
+        /* New message arrived - buffer it and reset debounce timer */
+        if (shadow_screenreader_shm->text[0] != '\0') {
+            strncpy(pending_tts_message, shadow_screenreader_shm->text, sizeof(pending_tts_message) - 1);
+            pending_tts_message[sizeof(pending_tts_message) - 1] = '\0';
+            last_message_time_ms = now_ms;
+            has_pending_message = true;
+            unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Buffered: '%s'", pending_tts_message);
+        }
+        last_screenreader_sequence = current_sequence;
+        return;
+    }
+
+    /* Check if debounce period has elapsed and we have a pending message */
+    if (has_pending_message && (now_ms - last_message_time_ms >= TTS_DEBOUNCE_MS)) {
+        /* Apply TTS settings from shared memory before speaking */
+        if (shadow_control) {
+            tts_set_enabled(shadow_control->tts_enabled != 0);
+            tts_set_volume(shadow_control->tts_volume);
+            tts_set_speed(shadow_control->tts_speed);
+            tts_set_pitch((float)shadow_control->tts_pitch);
+        }
+
+        /* Speak the buffered message */
+        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Speaking (debounced): '%s'", pending_tts_message);
+        if (tts_speak(pending_tts_message)) {
+            last_speech_time_ms = now_ms;
+        }
+        has_pending_message = false;
+        pending_tts_message[0] = '\0';
+    }
+}
+
 /* Mix shadow audio into mailbox audio buffer - TRIPLE BUFFERED */
 static void shadow_mix_audio(void)
 {
@@ -4506,6 +5115,26 @@ static void shadow_mix_audio(void)
     if (!shadow_control || !shadow_control->shadow_ready) return;
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+
+    /* Check for new screen reader messages and speak them */
+    shadow_check_screenreader();
+
+    /* TTS test: speak once after 3 seconds to verify audio works */
+    static int tts_test_frame_count = 0;
+    static bool tts_test_done = false;
+    if (!tts_test_done && shadow_control->shadow_ready) {
+        tts_test_frame_count++;
+        if (tts_test_frame_count == 1035) {  /* ~3 seconds at 44.1kHz, 128 frames/block */
+            printf("TTS test: Speaking test phrase...\n");
+            /* Apply TTS settings before test phrase */
+            tts_set_enabled(shadow_control->tts_enabled != 0);
+            tts_set_volume(shadow_control->tts_volume);
+            tts_set_speed(shadow_control->tts_speed);
+            tts_set_pitch((float)shadow_control->tts_pitch);
+            tts_speak("Text to speech is working");
+            tts_test_done = true;
+        }
+    }
 
     /* Increment shim counter for shadow's drift correction */
     shadow_control->shim_counter++;
@@ -4545,6 +5174,22 @@ static void shadow_mix_audio(void)
         mailbox_audio[i] = (int16_t)mixed;
     }
     #endif
+
+    /* Mix TTS audio on top */
+    if (tts_is_speaking()) {
+        static int16_t tts_buffer[FRAMES_PER_BLOCK * 2];  /* Stereo interleaved */
+        int frames_read = tts_get_audio(tts_buffer, FRAMES_PER_BLOCK);
+
+        if (frames_read > 0) {
+            for (int i = 0; i < frames_read * 2; i++) {
+                int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)tts_buffer[i];
+                /* Clip to int16 range */
+                if (mixed > 32767) mixed = 32767;
+                if (mixed < -32768) mixed = -32768;
+                mailbox_audio[i] = (int16_t)mixed;
+            }
+        }
+    }
 }
 
 /* Initialize pending LED queue arrays */
@@ -4736,6 +5381,26 @@ static void shadow_inject_ui_midi_out(void) {
     /* Clear after processing */
     shadow_midi_out_shm->write_idx = 0;
     memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+}
+
+/* Check for and send screen reader announcements via D-Bus */
+static void shadow_check_screenreader_announcements(void) {
+    static uint32_t last_announcement_sequence = 0;
+
+    if (!shadow_screenreader_shm) return;
+
+    /* Check if there's a new message (sequence incremented) */
+    uint32_t current_sequence = shadow_screenreader_shm->sequence;
+    if (current_sequence == last_announcement_sequence) return;
+
+    last_announcement_sequence = current_sequence;
+
+    /* Queue announcement for D-Bus broadcast */
+    if (shadow_screenreader_shm->text[0]) {
+        send_screenreader_announcement(shadow_screenreader_shm->text);
+        /* Inject immediately - don't wait for Move's next D-Bus activity */
+        shadow_inject_pending_announcements();
+    }
 }
 
 static int shadow_has_midi_packets(const uint8_t *src)
@@ -5402,11 +6067,25 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
+        load_feature_config();  /* Load feature flags from config */
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
         shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
         shadow_read_initial_volume();  /* Read initial master volume from settings */
         shadow_load_state();  /* Load saved slot volumes */
+
+        /* Initialize TTS and sync loaded state to shared memory */
+        tts_init(44100);
+        if (shadow_control) {
+            shadow_control->tts_enabled = tts_get_enabled() ? 1 : 0;
+            shadow_control->tts_volume = tts_get_volume();
+            shadow_control->tts_speed = tts_get_speed();
+            shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
+            unified_log("shim", LOG_LEVEL_INFO,
+                       "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
+                       shadow_control->tts_enabled ? "ON" : "OFF",
+                       shadow_control->tts_speed, (float)shadow_control->tts_pitch, shadow_control->tts_volume);
+        }
 #endif
 
         /* Return shadow buffer to Move instead of hardware address */
@@ -5570,17 +6249,8 @@ int close(int fd)
     return real_close ? real_close(fd) : -1;
 }
 
-ssize_t write(int fd, const void *buf, size_t count)
-{
-    if (!real_write) {
-        real_write = dlsym(RTLD_NEXT, "write");
-    }
-    const char *path = tracked_path_for_fd(fd);
-    if (path && buf && count > 0) {
-        log_fd_bytes("WRITE", fd, path, (const unsigned char *)buf, count);
-    }
-    return real_write ? real_write(fd, buf, count) : -1;
-}
+/* write() hook removed - conflicts with system headers
+ * Using send() hook instead for D-Bus interception */
 
 ssize_t read(int fd, void *buf, size_t count)
 {
@@ -5623,7 +6293,10 @@ void launchChildAndKillThisProcess(char *pBinPath, char*pBinName, char* pArgs)
         }
 
         // Let's a go!
-        int ret = execl(pBinPath, pBinName, pArgs, (char *)0);
+        execl(pBinPath, pBinName, pArgs, (char *)0);
+        /* execl only returns on error */
+        perror("execl failed");
+        _exit(1);
     }
     else
     {
@@ -5789,7 +6462,7 @@ void midi_monitor()
         return;
     }
 
-    uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+    uint8_t *src = (hardware_mmap_addr ? hardware_mmap_addr : global_mmap_addr) + MIDI_IN_OFFSET;
 
     /* NOTE: Shadow mode MIDI filtering now happens AFTER ioctl in the ioctl() function.
      * This function only handles hotkey detection for shadow mode toggle. */
@@ -5915,7 +6588,8 @@ void midi_monitor()
             }
         }
 
-        if (shiftHeld && volumeTouched && knob8touched && !alreadyLaunched)
+        /* OLD standalone launch code - check feature flag */
+        if (shiftHeld && volumeTouched && knob8touched && !alreadyLaunched && standalone_enabled)
         {
             alreadyLaunched = 1;
             printf("Launching Move Anything!\n");
@@ -6328,6 +7002,10 @@ do_ioctl:
     shadow_inject_ui_midi_out();
     shadow_flush_pending_leds();  /* Rate-limited LED output */
 
+    /* === SCREEN READER ANNOUNCEMENTS ===
+     * Check for and send accessibility announcements via D-Bus. */
+    shadow_check_screenreader_announcements();
+
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
      * Copy shadow mailbox to hardware before ioctl.
      * Move has been writing to shadow_mailbox; now we send that to hardware. */
@@ -6425,6 +7103,85 @@ do_ioctl:
             memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
         }
 
+        /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
+         * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
+         * This works regardless of shadow_display_mode.
+         * Skip entirely in overtake mode - overtake module owns all input. */
+        if (overtake_mode) goto skip_shift_menu;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t cin = hw_midi[j] & 0x0F;
+            uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+            if (cable != 0x00) continue;  /* Only internal cable */
+            if (cin == 0x0B) {  /* Control Change */
+                uint8_t d1 = hw_midi[j + 2];
+                uint8_t d2 = hw_midi[j + 3];
+
+                /* Shift + Menu = jump to Master FX view (or toggle screen reader if shadow UI disabled) */
+                /* Block Menu CC entirely when Shift is held (both press and release) */
+                if (d1 == CC_MENU && shadow_shift_held) {
+                    /* Only process action on button press (d2 > 0), but block both press and release */
+                    if (d2 > 0 && shadow_control) {
+                        char log_msg[128];
+                        snprintf(log_msg, sizeof(log_msg), "Shift+Menu detected (POST-IOCTL), shadow_ui_enabled=%s",
+                                 shadow_ui_enabled ? "true" : "false");
+                        shadow_log(log_msg);
+
+                        if (shadow_ui_enabled) {
+                            /* Shadow UI enabled: launch/navigate to Master FX */
+                            snprintf(log_msg, sizeof(log_msg), "Shadow UI enabled path: shadow_display_mode=%d", shadow_display_mode);
+                            shadow_log(log_msg);
+                            if (!shadow_display_mode) {
+                                /* From Move mode: launch shadow UI and jump to Master FX */
+                                shadow_log("Setting jump flag and launching shadow UI");
+                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                                shadow_display_mode = 1;
+                                shadow_control->display_mode = 1;
+                                shadow_log("Calling launch_shadow_ui()...");
+                                launch_shadow_ui();
+                                shadow_log("launch_shadow_ui() returned");
+                            } else {
+                                /* Already in shadow mode: set flag */
+                                shadow_log("Already in shadow mode, setting jump flag");
+                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                            }
+                        } else {
+                            /* Shadow UI disabled: toggle screen reader */
+                            bool current_state = tts_get_enabled();
+                            snprintf(log_msg, sizeof(log_msg), "Toggling screen reader: %s -> %s",
+                                     current_state ? "ON" : "OFF",
+                                     !current_state ? "ON" : "OFF");
+                            shadow_log(log_msg);
+
+                            /* Set priority flag to block D-Bus messages during toggle announcement */
+                            struct timespec ts;
+                            clock_gettime(CLOCK_MONOTONIC, &ts);
+                            tts_priority_announcement_time_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+                            tts_priority_announcement_active = true;
+
+                            tts_set_enabled(!current_state);
+                            /* Update shared memory so D-Bus handler doesn't re-sync stale value */
+                            if (shadow_control) {
+                                shadow_control->tts_enabled = !current_state ? 1 : 0;
+                            }
+                            if (!current_state) {
+                                /* Just enabled - announce it */
+                                tts_speak("screen reader on");
+                            }
+                        }
+                    }
+                    /* Block Menu CC from reaching Move by zeroing in shadow buffer */
+                    char block_msg[128];
+                    snprintf(block_msg, sizeof(block_msg), "Blocking Menu CC (POST-IOCTL d2=%d)", d2);
+                    shadow_log(block_msg);
+                    sh_midi[j] = 0;
+                    sh_midi[j + 1] = 0;
+                    sh_midi[j + 2] = 0;
+                    sh_midi[j + 3] = 0;
+                }
+            }
+        }
+        skip_shift_menu:
+
         /* === SAMPLER MIDI FILTERING ===
          * Block events from reaching Move for sampler use.
          * Always block Shift+Record so the first press doesn't leak through.
@@ -6473,6 +7230,7 @@ do_ioctl:
      * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow_mailbox is already filtered. */
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
+        int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
@@ -6485,6 +7243,10 @@ do_ioctl:
 
             /* CC messages (CIN 0x0B) */
             if (cin == 0x0B && type == 0xB0) {
+                /* In overtake mode, skip all shortcuts except Shift+Vol+Jog Click (exit) */
+                if (overtake_active && !(d1 == CC_JOG_CLICK && shadow_shift_held && shadow_volume_knob_touched)) {
+                    continue;
+                }
                 /* DEBUG: log CCs while shift held */
                 if (shadow_shift_held && d2 > 0) {
                     char dbg[64];
@@ -6512,8 +7274,8 @@ do_ioctl:
                             shadow_log(msg);
                         }
 
-                        /* Shift + Volume + Track = jump to that slot's edit screen */
-                        if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
+                        /* Shift + Volume + Track = jump to that slot's edit screen (if shadow UI enabled) */
+                        if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                             shadow_control->ui_slot = new_slot;
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
                             if (!shadow_display_mode) {
@@ -6527,27 +7289,9 @@ do_ioctl:
                     }
                 }
 
-                /* Shift + Volume + Menu = jump to Master FX view */
-                if (d1 == CC_MENU && d2 > 0) {
-                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
-                        if (!shadow_display_mode) {
-                            /* From Move mode: launch shadow UI and jump to Master FX */
-                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                            shadow_display_mode = 1;
-                            shadow_control->display_mode = 1;
-                            launch_shadow_ui();
-                        } else {
-                            /* Already in shadow mode: set flag */
-                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                        }
-                        /* Block Menu CC from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
-                    }
-                }
-
-                /* Shift + Volume + Jog Click = toggle overtake module menu */
+                /* Shift + Volume + Jog Click = toggle overtake module menu (if shadow UI enabled) */
                 if (d1 == CC_JOG_CLICK && d2 > 0) {
-                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                         if (!shadow_display_mode) {
                             /* From Move mode: launch shadow UI and show overtake menu */
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
@@ -6658,8 +7402,8 @@ do_ioctl:
                     }
                 }
 
-                /* Shift + Volume + Knob8 = launch standalone Move Anything */
-                if (shadow_shift_held && shadow_volume_knob_touched && knob8touched && !alreadyLaunched) {
+                /* Shift + Volume + Knob8 = launch standalone Move Anything (if enabled) */
+                if (shadow_shift_held && shadow_volume_knob_touched && knob8touched && !alreadyLaunched && standalone_enabled) {
                     alreadyLaunched = 1;
                     shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
                     launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
@@ -6699,7 +7443,7 @@ do_ioctl:
      * intercept knob CCs (71-78) and route to shadow chain DSP.
      * Also block knob touch notes (0-7) to prevent them reaching Move.
      * This allows adjusting shadow synth parameters while playing Move's sequencer. */
-    if (!shadow_display_mode && shiftHeld && shift_knob_enabled &&
+    if (!shadow_display_mode && shiftHeld && shift_knob_enabled && shadow_ui_enabled &&
         shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {

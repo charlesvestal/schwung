@@ -27,11 +27,30 @@ Also: this code is heavily written by coding agents, with human supervision. If 
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
 ```
 
+**Screen reader only (accessible install):**
+```bash
+curl -sL https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui --disable-standalone
+```
+_Note: Uses `-sL` (silent) for minimal output, suitable for screen readers._
+
 The installer will:
 1. **Guide you through SSH setup** if needed (generates key, shows how to add it to Move)
 2. **Download and install** the Move Everything framework
 3. **Offer to install modules** (synths, effects) from the Module Store
 4. **Copy assets** for modules that need them (ROMs, SoundFonts, etc.)
+
+**Installation options:**
+```bash
+# Enable screen reader (TTS announcements) by default
+./scripts/install.sh local --enable-screen-reader
+
+# Install only screen reader, without UI features
+./scripts/install.sh --enable-screen-reader --disable-shadow-ui --disable-standalone
+
+# Skip module installation prompt
+./scripts/install.sh --skip-modules
+```
+
 
 For managing files on your Move, you can also use [Cyberduck](https://cyberduck.io) (SFTP to `move.local`, select your SSH private key).
 
@@ -47,7 +66,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 - **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. Use Shift+Vol+Track (and +Menu) to access these signal chain slots.
 - **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps). Use Shift+Vol+Jog click to access overtake modules.
-
+- **Screen Reader**: Optional TTS announcements for accessibility. Toggle via Shadow UI settings, or Shift+Menu when Shadow UI is disabled.
 - **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode. (To be deprecated, soon)
 
 Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md) (primarily standalone-focused).
