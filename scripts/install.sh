@@ -605,7 +605,7 @@ ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim
 
 # Symlink shim to /usr/lib/ (root partition has no free space for copies)
 ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
-ssh_root_with_retry "chmod 755 /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
+ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
 
 # Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink
 # Root partition is nearly full, so symlink instead of copying
