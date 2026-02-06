@@ -1,7 +1,0 @@
-{
-    "id": "test-safety",
-    "name": "Safety Tests",
-    "version": "0.1.0",
-    "description": "Automated safety fix verification tests",
-    "component_type": "utility"
-}
