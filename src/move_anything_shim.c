@@ -2384,10 +2384,13 @@ static float sampler_get_bpm(tempo_source_t *source) {
 static void sampler_start_recording(void) {
     if (sampler_writer_running) return;
 
-    /* Create recordings directory */
+    /* Create recordings directory (skip fork if it already exists to avoid audio glitch) */
     {
-        const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
-        shim_run_command(mkdir_argv);
+        struct stat st;
+        if (stat(SAMPLER_RECORDINGS_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
     }
 
     /* Generate filename with timestamp */
@@ -2645,10 +2648,13 @@ static void skipback_capture(int16_t *audio) {
 static void *skipback_writer_func(void *arg) {
     (void)arg;
 
-    /* Create directory */
+    /* Create directory (skip fork if it already exists to avoid audio glitch) */
     {
-        const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
-        shim_run_command(mkdir_argv);
+        struct stat st;
+        if (stat(SKIPBACK_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
     }
 
     /* Generate filename */
@@ -3735,6 +3741,20 @@ static int shadow_inprocess_load_chain(void) {
     }
 
     shadow_ui_state_refresh();
+
+    /* Pre-create recording directories so mkdir fork() doesn't glitch audio later */
+    {
+        struct stat st;
+        if (stat(SAMPLER_RECORDINGS_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+        if (stat(SKIPBACK_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+    }
+
     shadow_inprocess_ready = 1;
     /* Start countdown for delayed mod wheel reset after Move's startup MIDI settles */
     shadow_startup_modwheel_countdown = STARTUP_MODWHEEL_RESET_FRAMES;
