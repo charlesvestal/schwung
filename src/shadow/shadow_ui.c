@@ -34,6 +34,7 @@ static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
+static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 
 static int global_exit_flag = 0;
@@ -90,6 +91,13 @@ static int open_shadow_shm(void) {
         shadow_midi_out = (shadow_midi_out_t *)mmap(NULL, sizeof(shadow_midi_out_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
         if (shadow_midi_out == MAP_FAILED) shadow_midi_out = NULL;
+    }
+
+    fd = shm_open(SHM_SHADOW_MIDI_DSP, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_midi_dsp = (shadow_midi_dsp_t *)mmap(NULL, sizeof(shadow_midi_dsp_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_midi_dsp == MAP_FAILED) shadow_midi_dsp = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
@@ -517,6 +525,51 @@ static JSValue js_move_midi_external_send(JSContext *ctx, JSValueConst this_val,
 static JSValue js_move_midi_internal_send(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
     return js_shadow_midi_send(0, ctx, this_val, argc, argv);
+}
+
+/* shadow_send_midi_to_dsp([status, d1, d2]) -> bool
+ * Routes raw 3-byte MIDI to shadow chain DSP slots via shared memory.
+ * Channel in status byte determines which slot(s) receive the message.
+ */
+static JSValue js_shadow_send_midi_to_dsp(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_midi_dsp) return JS_FALSE;
+    if (argc < 1) return JS_FALSE;
+
+    JSValueConst arr = argv[0];
+    if (!JS_IsArray(ctx, arr)) return JS_FALSE;
+
+    JSValue len_val = JS_GetPropertyStr(ctx, arr, "length");
+    int32_t len = 0;
+    JS_ToInt32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+
+    if (len < 3) return JS_FALSE;
+
+    uint8_t msg[3];
+    for (int j = 0; j < 3; j++) {
+        JSValue elem = JS_GetPropertyUint32(ctx, arr, j);
+        int32_t val = 0;
+        JS_ToInt32(ctx, &val, elem);
+        JS_FreeValue(ctx, elem);
+        msg[j] = (uint8_t)(val & 0xFF);
+    }
+
+    /* Write 4-byte aligned: [status, d1, d2, 0] */
+    int write_offset = shadow_midi_dsp->write_idx;
+    if (write_offset + 4 <= SHADOW_MIDI_DSP_BUFFER_SIZE) {
+        shadow_midi_dsp->buffer[write_offset] = msg[0];
+        shadow_midi_dsp->buffer[write_offset + 1] = msg[1];
+        shadow_midi_dsp->buffer[write_offset + 2] = msg[2];
+        shadow_midi_dsp->buffer[write_offset + 3] = 0;
+        shadow_midi_dsp->write_idx = write_offset + 4;
+    }
+
+    /* Signal shim that data is ready */
+    shadow_midi_dsp->ready++;
+
+    return JS_TRUE;
 }
 
 /* shadow_log(message) - Log to shadow_ui.log from JS */
@@ -1165,6 +1218,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register MIDI output functions for overtake modules */
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_send_midi_to_dsp", JS_NewCFunction(ctx, js_shadow_send_midi_to_dsp, "shadow_send_midi_to_dsp", 1));
 
     /* Register logging function for JS modules */
     JS_SetPropertyStr(ctx, global_obj, "shadow_log", JS_NewCFunction(ctx, js_shadow_log, "shadow_log", 1));

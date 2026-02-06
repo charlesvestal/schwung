@@ -4766,6 +4766,8 @@ static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static uint8_t last_shadow_midi_out_ready = 0;
+static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
+static uint8_t last_shadow_midi_dsp_ready = 0;
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 
@@ -4798,6 +4800,7 @@ static int shm_control_fd = -1;
 static int shm_ui_fd = -1;
 static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
+static int shm_midi_dsp_fd = -1;
 static int shm_screenreader_fd = -1;
 
 /* Shadow initialization state */
@@ -5025,6 +5028,23 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create midi_out shm\n");
     }
 
+    /* Create/open MIDI-to-DSP shared memory (for shadow UI to route MIDI to chain slots) */
+    shm_midi_dsp_fd = shm_open(SHM_SHADOW_MIDI_DSP, O_CREAT | O_RDWR, 0666);
+    if (shm_midi_dsp_fd >= 0) {
+        ftruncate(shm_midi_dsp_fd, sizeof(shadow_midi_dsp_t));
+        shadow_midi_dsp_shm = (shadow_midi_dsp_t *)mmap(NULL, sizeof(shadow_midi_dsp_t),
+                                                         PROT_READ | PROT_WRITE,
+                                                         MAP_SHARED, shm_midi_dsp_fd, 0);
+        if (shadow_midi_dsp_shm == MAP_FAILED) {
+            shadow_midi_dsp_shm = NULL;
+            printf("Shadow: Failed to mmap midi_dsp shm\n");
+        } else {
+            memset(shadow_midi_dsp_shm, 0, sizeof(shadow_midi_dsp_t));
+        }
+    } else {
+        printf("Shadow: Failed to create midi_dsp shm\n");
+    }
+
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
     shm_screenreader_fd = shm_open(SHM_SHADOW_SCREENREADER, O_CREAT | O_RDWR, 0666);
     if (shm_screenreader_fd >= 0) {
@@ -5047,9 +5067,9 @@ static void init_shadow_shm(void)
     printf("Shadow: TTS engine configured (will init on first use)\n");
 
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, screenreader=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_screenreader_shm);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_midi_dsp_shm, shadow_screenreader_shm);
 }
 
 #if SHADOW_DEBUG
@@ -5421,6 +5441,36 @@ static void shadow_inject_ui_midi_out(void) {
     /* Clear after processing */
     shadow_midi_out_shm->write_idx = 0;
     memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+}
+
+/* Drain MIDI-to-DSP buffer from shadow UI and dispatch to chain slots. */
+static void shadow_drain_ui_midi_dsp(void) {
+    if (!shadow_midi_dsp_shm) return;
+    if (shadow_midi_dsp_shm->ready == last_shadow_midi_dsp_ready) return;
+
+    last_shadow_midi_dsp_ready = shadow_midi_dsp_shm->ready;
+
+    static int midi_log_count = 0;
+    int log_on = shadow_midi_out_log_enabled();
+
+    for (int i = 0; i < shadow_midi_dsp_shm->write_idx && i < SHADOW_MIDI_DSP_BUFFER_SIZE; i += 4) {
+        uint8_t status = shadow_midi_dsp_shm->buffer[i];
+        uint8_t d1 = shadow_midi_dsp_shm->buffer[i + 1];
+        uint8_t d2 = shadow_midi_dsp_shm->buffer[i + 2];
+
+        /* Validate status byte has high bit set */
+        if (!(status & 0x80)) continue;
+
+        /* Construct USB-MIDI packet for dispatch: [CIN, status, d1, d2] */
+        uint8_t cin = (status >> 4) & 0x0F;
+        uint8_t pkt[4] = { cin, status, d1, d2 };
+
+        shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
+    }
+
+    /* Clear after processing */
+    shadow_midi_dsp_shm->write_idx = 0;
+    memset(shadow_midi_dsp_shm->buffer, 0, SHADOW_MIDI_DSP_BUFFER_SIZE);
 }
 
 /* Check for and send screen reader announcements via D-Bus */
@@ -6830,6 +6880,9 @@ int ioctl(int fd, unsigned long request, ...)
     TIME_SECTION_START();
     shadow_inprocess_process_midi();
     TIME_SECTION_END(proc_midi_sum, proc_midi_max);
+
+    /* Drain MIDI-to-DSP from shadow UI (overtake modules sending to chain slots) */
+    shadow_drain_ui_midi_dsp();
 
     /* Pre-ioctl: Mix from pre-rendered buffer (FAST, ~5µs)
      * DSP was rendered post-ioctl in the previous frame.
