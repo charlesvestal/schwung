@@ -313,7 +313,6 @@ globalThis.onMidiMessageInternal = function(data) {
     if (isCapacitiveTouchMessage(data)) return;
 
     const status = data[0] & 0xF0;
-    const isNote = status === 0x90 || status === 0x80;
 
     if (status === 0xB0) {
         /* Control Change */

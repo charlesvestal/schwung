@@ -12,7 +12,6 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
-#include <unistd.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -1037,7 +1036,7 @@ typedef struct shadow_chain_slot_t {
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
-} shadow_chain_slot_t;;
+} shadow_chain_slot_t;
 
 static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 
@@ -1343,7 +1342,8 @@ static uint32_t parse_dbus_serial(const uint8_t *buf, size_t len)
     if (len < 12) return 0;
     if (buf[0] != 'l') return 0;  /* Only handle little-endian for now */
 
-    uint32_t serial = *(uint32_t*)(buf + 8);
+    uint32_t serial;
+    memcpy(&serial, buf + 8, sizeof(serial));
     return serial;
 }
 
@@ -2395,7 +2395,8 @@ static void sampler_start_recording(void) {
 
     /* Generate filename with timestamp */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
     snprintf(sampler_current_recording, sizeof(sampler_current_recording),
              SAMPLER_RECORDINGS_DIR "/sample_%04d%02d%02d_%02d%02d%02d.wav",
              tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
@@ -2659,7 +2660,8 @@ static void *skipback_writer_func(void *arg) {
 
     /* Generate filename */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
     char path[256];
     snprintf(path, sizeof(path),
              SKIPBACK_DIR "/skipback_%04d%02d%02d_%02d%02d%02d.wav",
@@ -2867,8 +2869,8 @@ static void overlay_draw_sampler(uint8_t *buf) {
 
     } else if (sampler_state == SAMPLER_RECORDING) {
         /* Row 0: Flashing title (~4Hz at ~57fps = toggle every 14 frames) */
-        recording_flash_counter++;
-        if ((recording_flash_counter / 14) % 2 == 0)
+        recording_flash_counter = (recording_flash_counter + 1) % 28;
+        if ((recording_flash_counter / 14) == 0)
             overlay_draw_string(buf, 16, 0, "** RECORDING **", 1);
 
         /* Row 2: Source (locked, no cursor) */
@@ -3025,8 +3027,8 @@ static void shadow_read_initial_volume(void)
         return;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
 
     /* Find "globalVolume": X.X */
@@ -3074,8 +3076,8 @@ static void shadow_save_state(void)
         if (size > 0 && size < 8192) {
             char *json = malloc(size + 1);
             if (json) {
-                fread(json, 1, size, f);
-                json[size] = '\0';
+                size_t nread = fread(json, 1, size, f);
+                json[nread] = '\0';
 
                 /* Extract patches array (preserve as-is) */
                 char *patches_start = strstr(json, "\"patches\":");
@@ -3200,8 +3202,8 @@ static void shadow_load_state(void)
         return;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
 
     /* Parse slot_volumes array */
@@ -3381,8 +3383,8 @@ static void shadow_chain_load_config(void) {
         return;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
 
     char *cursor = json;
@@ -3584,8 +3586,8 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
         if (size > 0 && size < 16384) {
             char *json = malloc(size + 1);
             if (json) {
-                fread(json, 1, size, f);
-                json[size] = '\0';
+                size_t nread = fread(json, 1, size, f);
+                json[nread] = '\0';
                 const char *caps = strstr(json, "\"capabilities\"");
                 if (caps) {
                     capture_parse_json(&s->capture, caps);
@@ -3944,10 +3946,10 @@ static void shadow_slot_load_capture(int slot, int patch_index)
         return;
     }
     
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
     fclose(f);
-    
+
     /* Parse capture rules from JSON */
     capture_parse_json(&shadow_chain_slots[slot].capture, json);
     free(json);
@@ -3964,7 +3966,6 @@ static void shadow_slot_load_capture(int slot, int patch_index)
     snprintf(dbg, sizeof(dbg), "  -> note 16 captured: %d", capture_has_note(&shadow_chain_slots[slot].capture, 16));
     capture_debug_log(dbg);
     if (has_notes || has_ccs) {
-        char dbg[128];
         snprintf(dbg, sizeof(dbg), "Slot %d capture loaded: notes=%d ccs=%d",
                  slot, has_notes, has_ccs);
         shadow_log(dbg);
@@ -4262,8 +4263,8 @@ static void shadow_inprocess_handle_param_request(void) {
                     if (size > 0 && size < 32768) {
                         char *json = malloc(size + 1);
                         if (json) {
-                            fread(json, 1, size, f);
-                            json[size] = '\0';
+                            size_t nread = fread(json, 1, size, f);
+                            json[nread] = '\0';
 
                             /* Find ui_hierarchy in capabilities */
                             const char *ui_hier = strstr(json, "\"ui_hierarchy\"");
@@ -6292,7 +6293,10 @@ void launchChildAndKillThisProcess(char *pBinPath, char*pBinName, char* pArgs)
         }
 
         // Let's a go!
-        int ret = execl(pBinPath, pBinName, pArgs, (char *)0);
+        execl(pBinPath, pBinName, pArgs, (char *)0);
+        /* execl only returns on error */
+        perror("execl failed");
+        _exit(1);
     }
     else
     {

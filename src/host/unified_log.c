@@ -63,9 +63,19 @@ static const char *level_str(int level) {
 }
 
 void unified_log_v(const char *source, int level, const char *fmt, va_list args) {
-    if (!unified_log_enabled()) return;
-
+    /* Single lock acquisition -- check enabled + write in one critical section */
     pthread_mutex_lock(&log_mutex);
+
+    /* Periodically recheck flag file */
+    if (++check_counter >= CHECK_INTERVAL) {
+        check_counter = 0;
+        log_enabled_cache = (access(UNIFIED_LOG_FLAG, F_OK) == 0) ? 1 : 0;
+    }
+    if (!log_enabled_cache) {
+        pthread_mutex_unlock(&log_mutex);
+        return;
+    }
+
     if (!log_file) {
         log_file = fopen(UNIFIED_LOG_PATH, "a");
     }
@@ -73,7 +83,8 @@ void unified_log_v(const char *source, int level, const char *fmt, va_list args)
         /* Timestamp with milliseconds */
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        struct tm *tm_info = localtime(&tv.tv_sec);
+        struct tm tm_buf;
+        struct tm *tm_info = localtime_r(&tv.tv_sec, &tm_buf);
 
         fprintf(log_file, "%02d:%02d:%02d.%03d [%s] [%s] ",
                 tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,

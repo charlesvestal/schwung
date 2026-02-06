@@ -228,7 +228,10 @@ void set_pixel(int x, int y, int value) {
 }
 
 int get_pixel(int x, int y) {
-  return screen_buffer[y*128+x] > 0 ? 1 : 0;
+  if(x >= 0 && x < 128 && y >= 0 && y < 64) {
+    return screen_buffer[y*128+x] > 0 ? 1 : 0;
+  }
+  return 0;
 }
 
 void draw_rect(int x, int y, int w, int h, int value) {
@@ -294,7 +297,7 @@ Font* load_font(char* filename, int charSpacing) {
   int width, height, comp;
 
   char charListFilename[100];
-  sprintf(charListFilename, "%s.dat", filename);
+  snprintf(charListFilename, sizeof(charListFilename), "%s.dat", filename);
 
   FILE* charListFP = fopen(charListFilename, "r");
   if(charListFP == NULL) {
@@ -314,7 +317,7 @@ Font* load_font(char* filename, int charSpacing) {
     return NULL;
   }
 
-  Font* font = malloc(sizeof(Font));
+  Font* font = calloc(1, sizeof(Font));
 
   font->charSpacing = charSpacing;
 
@@ -339,8 +342,12 @@ Font* load_font(char* filename, int charSpacing) {
     fc.width = 0;
     fc.height = 0;
 
-    while(data[x] == borderColor) {
+    while(x < width && data[x] == borderColor) {
       x++;
+    }
+
+    if(x >= width) {
+      break;
     }
 
     int bx = x;
@@ -386,13 +393,15 @@ Font* load_font(char* filename, int charSpacing) {
       }
     }
 
-    font->charData[(int)charList[i]] = fc;
+    font->charData[(unsigned char)charList[i]] = fc;
 
     x += fc.width+1;
     if(x >= width) {
       break;
     }
   }
+
+  stbi_image_free(data);
 
   printf("Loaded bitmap font: %s (%d chars)\n", filename, numChars);
   return font;
@@ -407,6 +416,11 @@ Font* load_ttf_font(const char* filename, int pixel_height) {
 
   fseek(fp, 0, SEEK_END);
   long size = ftell(fp);
+  if (size <= 0) {
+    fclose(fp);
+    printf("ERROR: TTF font file empty or error: %s\n", filename);
+    return NULL;
+  }
   fseek(fp, 0, SEEK_SET);
 
   unsigned char* buffer = malloc(size);
@@ -414,11 +428,15 @@ Font* load_ttf_font(const char* filename, int pixel_height) {
     fclose(fp);
     return NULL;
   }
-  fread(buffer, 1, size, fp);
+  if (fread(buffer, 1, size, fp) != (size_t)size) {
+    printf("ERROR: short read on TTF font: %s\n", filename);
+    free(buffer);
+    fclose(fp);
+    return NULL;
+  }
   fclose(fp);
 
-  Font* font = malloc(sizeof(Font));
-  memset(font, 0, sizeof(Font));
+  Font* font = calloc(1, sizeof(Font));
   font->is_ttf = 1;
   font->ttf_buffer = buffer;
   font->charSpacing = 1;
@@ -476,7 +494,7 @@ int glyph_ttf(Font* font, char c, int sx, int sy, int color) {
 }
 
 int glyph(Font* font, char c, int sx, int sy, int color) {
-  FontChar fc = font->charData[(int)c];
+  FontChar fc = font->charData[(unsigned char)c];
   if(fc.data == NULL) {
     return sx + font->charSpacing;
   }
@@ -753,22 +771,8 @@ void onInternalMidiMessage(unsigned char midi_message[4])
     // js_on_internal_midi_message()
 }
 
-void onMidiMessage(unsigned char midi_message[4])
-{
-
-    int cable;
-    int code_index_number;
-
-    if (cable == 0)
-    {
-        onInternalMidiMessage(midi_message);
-    }
-
-    if (cable == 2)
-    {
-        onExternalMidiMessage(midi_message);
-    }
-}
+/* onMidiMessage removed - was dead code with uninitialized 'cable' variable.
+   Actual MIDI routing happens in main() loop via onInternalMidiMessage/onExternalMidiMessage. */
 
 void clearPads(unsigned char *mapped_memory, int fd)
 {
@@ -1072,9 +1076,13 @@ static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 
   color = 1;
 
-  if(JS_ToInt32(ctx, &color, argv[3])) {
-    JS_ThrowTypeError(ctx, "print: invalid arg for `color`");
-    return JS_EXCEPTION;
+  if(argc >= 4) {
+    if(JS_ToInt32(ctx, &color, argv[3])) {
+      JS_ThrowTypeError(ctx, "print: invalid arg for `color`");
+      JS_FreeValue(ctx, string_val);
+      JS_FreeCString(ctx, string);
+      return JS_EXCEPTION;
+    }
   }
 
   print(x, y, string, color);
@@ -1611,7 +1619,8 @@ static JSValue js_host_get_setting(JSContext *ctx, JSValueConst this_val,
         result = JS_NewString(ctx, settings_pad_layout_name(g_settings.pad_layout));
     } else if (strcmp(key, "clock_mode") == 0) {
         const char *mode_names[] = {"off", "internal", "external"};
-        result = JS_NewString(ctx, mode_names[g_settings.clock_mode]);
+        int mode_idx = (g_settings.clock_mode >= 0 && g_settings.clock_mode < 3) ? g_settings.clock_mode : 0;
+        result = JS_NewString(ctx, mode_names[mode_idx]);
     } else if (strcmp(key, "tempo_bpm") == 0) {
         result = JS_NewInt32(ctx, g_settings.tempo_bpm);
     }
@@ -1870,6 +1879,14 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     if (!url || !dest_path) {
         if (url) JS_FreeCString(ctx, url);
         if (dest_path) JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
+    /* Validate URL scheme - only allow https:// and http:// */
+    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+        fprintf(stderr, "host_http_download: invalid URL scheme: %s\n", url);
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
         return JS_FALSE;
     }
 

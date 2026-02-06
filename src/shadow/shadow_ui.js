@@ -2207,6 +2207,16 @@ function loadMasterFxChainConfig() {
     }
 }
 
+/* Get a parameter from a master FX slot (0-3) */
+function getMasterFxParam(slotIndex, key) {
+    if (typeof shadow_get_param !== "function") return "";
+    try {
+        return shadow_get_param(0, `master_fx:fx${slotIndex + 1}:${key}`) || "";
+    } catch (e) {
+        return "";
+    }
+}
+
 /* Get module ID loaded in a master FX slot (0-3) */
 function getMasterFxSlotModule(slotIndex) {
     if (typeof shadow_get_param !== "function") return "";
@@ -2583,7 +2593,7 @@ function handleStorePickerDetailSelect() {
         const tarPath = '/data/UserData/move-anything/tmp/move-anything.tar.gz';
         const downloadOk = globalThis.host_http_download(mod.download_url, tarPath);
         if (downloadOk) {
-            const extractOk = globalThis.host_extract_tar_strip(tarPath, '/data/UserData/move-anything', 1);
+            const extractOk = globalThis.host_extract_tar(tarPath, '/data/UserData/move-anything');
             if (extractOk) {
                 result = { success: true };
             } else {
@@ -4348,7 +4358,7 @@ function handleJog(delta) {
                 } else {
                     const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
                     const compKey = comp.key;
-                    const moduleName = masterFxChainConfig?.[compKey]?.module || "Empty";
+                    const moduleName = masterFxConfig?.[compKey]?.module || "Empty";
                     announceMenuItem(comp.label, moduleName);
                 }
             }

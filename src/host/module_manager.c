@@ -223,6 +223,9 @@ static int scan_directory(module_manager_t *mm, const char *dir_path) {
     while ((entry = readdir(dir)) != NULL && mm->module_count < MAX_MODULES) {
         if (entry->d_name[0] == '.') continue;
 
+        /* Reject names containing path traversal sequences */
+        if (strstr(entry->d_name, "..") != NULL || strchr(entry->d_name, '/') != NULL) continue;
+
         char module_path[MAX_PATH_LEN];
         snprintf(module_path, sizeof(module_path), "%s/%s", dir_path, entry->d_name);
 

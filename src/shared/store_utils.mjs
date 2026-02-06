@@ -215,8 +215,18 @@ export function getHostVersion() {
     return '1.0.0';
 }
 
+/* Validate a module ID contains no path traversal */
+function isValidModuleId(id) {
+    if (!id || typeof id !== 'string') return false;
+    if (id.includes('..') || id.includes('/') || id.includes('\\')) return false;
+    return true;
+}
+
 /* Install a module, returns { success, error } */
 export function installModule(mod, hostVersion) {
+    if (!isValidModuleId(mod.id)) {
+        return { success: false, error: 'Invalid module ID' };
+    }
     console.log(`Installing module: ${mod.id}`);
 
     /* Check host version compatibility */
@@ -262,6 +272,9 @@ export function installModule(mod, hostVersion) {
 
 /* Remove a module, returns { success, error } */
 export function removeModule(mod) {
+    if (!isValidModuleId(mod.id)) {
+        return { success: false, error: 'Invalid module ID' };
+    }
     /* Determine module path based on component_type */
     const subdir = getInstallSubdir(mod.component_type);
     const modulePath = subdir

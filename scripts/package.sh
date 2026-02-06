@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -eo pipefail
 set -x
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

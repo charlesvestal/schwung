@@ -195,7 +195,7 @@ cp ./src/stop.sh ./build/ 2>/dev/null || true
 # Copy all module files (js, mjs, json) - preserves directory structure
 # Compiled .so files are built separately above
 echo "Copying module files..."
-find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while read src; do
+find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while IFS= read -r src; do
     dest="./build/${src#./src/}"
     mkdir -p "$(dirname "$dest")"
     cp "$src" "$dest"

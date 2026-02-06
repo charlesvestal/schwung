@@ -35,9 +35,9 @@ static int ring_read_pos = 0;
 static pthread_mutex_t ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool initialized = false;
-static bool tts_enabled = false;  /* Screen Reader on/off toggle - default OFF */
-static bool tts_disabling = false;  /* True when playing final announcement before disable */
-static bool tts_disabling_had_audio = false;  /* Track if we've played any audio during disable */
+static volatile bool tts_enabled = false;  /* Screen Reader on/off toggle - default OFF */
+static volatile bool tts_disabling = false;  /* True when playing final announcement before disable */
+static volatile bool tts_disabling_had_audio = false;  /* Track if we've played any audio during disable */
 static int tts_volume = 70;  /* Default 70% volume */
 static float tts_speed = 1.0f;  /* Default speed (1.0 = normal, >1.0 = slower, <1.0 = faster) */
 static float tts_pitch = 110.0f;  /* Default pitch in Hz (typical range: 80-180) */
@@ -49,7 +49,7 @@ static pthread_mutex_t synth_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t synth_cond = PTHREAD_COND_INITIALIZER;
 static char synth_text[256] = {0};
 static bool synth_requested = false;
-static bool synth_thread_running = false;
+static volatile bool synth_thread_running = false;
 
 /* Background synthesis thread - runs continuously, waits for text to synthesize */
 static void* tts_synthesis_thread(void *arg) {
@@ -98,7 +98,7 @@ static void* tts_synthesis_thread(void *arg) {
             continue;
         }
 
-        /* Write to ring buffer */
+        /* Write to linear audio buffer (reset both positions on each new synthesis) */
         pthread_mutex_lock(&ring_mutex);
         ring_write_pos = 0;
         ring_read_pos = 0;
@@ -393,12 +393,8 @@ int tts_get_audio(int16_t *out_buffer, int max_frames) {
         return 0;
     }
 
-    int frames_available = 0;
-    if (ring_write_pos >= ring_read_pos) {
-        frames_available = (ring_write_pos - ring_read_pos) / 2;  /* Stereo */
-    } else {
-        frames_available = ((RING_BUFFER_SIZE - ring_read_pos) + ring_write_pos) / 2;
-    }
+    /* Linear buffer: write always resets to 0, so write_pos >= read_pos is invariant */
+    int frames_available = (ring_write_pos - ring_read_pos) / 2;  /* Stereo */
 
     int frames_to_read = (frames_available < max_frames) ? frames_available : max_frames;
     int samples_to_read = frames_to_read * 2;  /* Stereo */
@@ -415,7 +411,7 @@ int tts_get_audio(int16_t *out_buffer, int max_frames) {
         if (sample < -32768) sample = -32768;
 
         out_buffer[i] = (int16_t)sample;
-        ring_read_pos = (ring_read_pos + 1) % RING_BUFFER_SIZE;
+        ring_read_pos++;
     }
 
     pthread_mutex_unlock(&ring_mutex);

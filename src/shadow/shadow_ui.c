@@ -651,6 +651,15 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     shadow_ui_log_line(url);
     shadow_ui_log_line(dest_path);
 
+    /* Validate URL scheme - only allow https:// and http:// */
+    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+        shadow_ui_log_line("host_http_download: invalid URL scheme");
+        fprintf(stderr, "host_http_download: invalid URL scheme: %s\n", url);
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
     /* Validate destination path */
     if (!validate_path(dest_path)) {
         shadow_ui_log_line("host_http_download: invalid dest path");
@@ -1187,6 +1196,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
+    JS_FreeValue(ctx, global_obj);
+
     *prt = rt;
     *pctx = ctx;
 }
@@ -1242,10 +1253,10 @@ int main(int argc, char *argv[]) {
     }
     shadow_ui_log_line("shadow_ui: script loaded");
 
-    JSValue JSonMidiMessageInternal;
-    JSValue JSonMidiMessageExternal;
-    JSValue JSinit;
-    JSValue JSTick;
+    JSValue JSonMidiMessageInternal = JS_UNDEFINED;
+    JSValue JSonMidiMessageExternal = JS_UNDEFINED;
+    JSValue JSinit = JS_UNDEFINED;
+    JSValue JSTick = JS_UNDEFINED;
 
     if (!getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal)) {
         shadow_ui_log_line("shadow_ui: onMidiMessageInternal missing");
@@ -1253,7 +1264,8 @@ int main(int argc, char *argv[]) {
     if (!getGlobalFunction(ctx, "onMidiMessageExternal", &JSonMidiMessageExternal)) {
         shadow_ui_log_line("shadow_ui: onMidiMessageExternal missing");
     }
-    if (!getGlobalFunction(ctx, "init", &JSinit)) {
+    int jsInitIsDefined = getGlobalFunction(ctx, "init", &JSinit);
+    if (!jsInitIsDefined) {
         shadow_ui_log_line("shadow_ui: init missing");
     }
     int jsTickIsDefined = getGlobalFunction(ctx, "tick", &JSTick);
@@ -1261,7 +1273,7 @@ int main(int argc, char *argv[]) {
         shadow_ui_log_line("shadow_ui: tick missing");
     }
 
-    callGlobalFunction(ctx, &JSinit, 0);
+    if (jsInitIsDefined) callGlobalFunction(ctx, &JSinit, 0);
     shadow_ui_log_line("shadow_ui: init called");
 
     int refresh_counter = 0;
