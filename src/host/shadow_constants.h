@@ -93,7 +93,8 @@ typedef struct shadow_control_t {
     volatile uint8_t tts_volume;      /* TTS volume (0-100) */
     volatile uint16_t tts_pitch;      /* TTS pitch in Hz (80-180) */
     volatile float tts_speed;         /* TTS speed multiplier (0.5-2.0) */
-    volatile uint8_t reserved[32];
+    volatile uint8_t overlay_knobs_mode; /* 0=shift, 1=jog_touch, 2=off */
+    volatile uint8_t reserved[31];
 } shadow_control_t;
 
 /*

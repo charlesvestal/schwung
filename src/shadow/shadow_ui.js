@@ -390,6 +390,8 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
+      options: ["+Shift", "+Jog Touch", "Off"], values: [0, 1, 2] },
     { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
     { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 2.0, step: 0.1 },
     { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
@@ -2310,6 +2312,11 @@ function saveMasterFxChainConfig() {
             }
         }
 
+        /* Save overlay knobs mode */
+        if (typeof overlay_knobs_get_mode === "function") {
+            config.overlay_knobs_mode = overlay_knobs_get_mode();
+        }
+
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
         /* Ignore errors */
@@ -2324,6 +2331,12 @@ function loadMasterFxChainFromConfig() {
         if (!content) return;
 
         const config = JSON.parse(content);
+
+        /* Restore overlay knobs mode */
+        if (typeof config.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
+            overlay_knobs_set_mode(config.overlay_knobs_mode);
+        }
+
         if (!config.master_fx_chain) return;
 
         /* Restore loaded preset name */
@@ -4202,6 +4215,10 @@ function getMasterFxSettingValue(setting) {
         const num = parseFloat(val);
         return isNaN(num) ? val : `${Math.round(num * 100)}%`;
     }
+    if (setting.key === "overlay_knobs") {
+        const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
+        return ["+Shift", "+Jog Touch", "Off"][mode] || "+Shift";
+    }
     if (setting.key === "screen_reader_enabled") {
         return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
     }
@@ -4235,6 +4252,15 @@ function adjustMasterFxSetting(setting, delta) {
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));
         shadow_set_param(0, "master_fx:volume", val.toFixed(2));
+        return;
+    }
+
+    if (setting.key === "overlay_knobs" && typeof overlay_knobs_set_mode === "function") {
+        const current = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
+        const count = setting.values.length;
+        const next = ((current + (delta > 0 ? 1 : count - 1)) % count);
+        overlay_knobs_set_mode(next);
+        saveMasterFxChainConfig();
         return;
     }
 
@@ -4333,7 +4359,7 @@ function handleJog(delta) {
                 if (editingMasterFxSetting) {
                     /* Adjust value */
                     const item = items[selectedMasterFxSetting];
-                    if (item.type === "float" || item.type === "int" || item.type === "bool") {
+                    if (item.type === "float" || item.type === "int" || item.type === "bool" || item.type === "enum") {
                         adjustMasterFxSetting(item, delta);
                         const newVal = getMasterFxSettingValue(item);
                         announceParameter(item.label, newVal);
@@ -4603,8 +4629,8 @@ function handleSelect() {
                 const item = items[selectedMasterFxSetting];
                 if (item.type === "action") {
                     handleMasterFxSettingsAction(item.key);
-                } else if (item.type === "bool") {
-                    /* Toggle boolean value immediately */
+                } else if (item.type === "bool" || item.type === "enum") {
+                    /* Toggle/cycle value immediately */
                     adjustMasterFxSetting(item, 1);
                     const newVal = getMasterFxSettingValue(item);
                     announceParameter(item.label, newVal);

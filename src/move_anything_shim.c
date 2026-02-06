@@ -1767,6 +1767,8 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 static volatile float shadow_master_volume = 1.0f;
 /* Is volume knob currently being touched? (note 8) */
 static volatile int shadow_volume_knob_touched = 0;
+/* Is jog encoder currently being touched? (note 9) */
+static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
 
@@ -1783,8 +1785,10 @@ static char shift_knob_overlay_patch[64] = "";   /* Patch name */
 static char shift_knob_overlay_param[64] = "";   /* Parameter name */
 static char shift_knob_overlay_value[32] = "";   /* Parameter value */
 
-/* Config: enable Shift+Knob in Move mode */
-static int shift_knob_enabled = 1;  /* Default enabled */
+/* Overlay knobs activation mode (from shadow_control->overlay_knobs_mode) */
+#define OVERLAY_KNOBS_SHIFT     0
+#define OVERLAY_KNOBS_JOG_TOUCH 1
+#define OVERLAY_KNOBS_OFF       2
 
 #define SHIFT_KNOB_OVERLAY_FRAMES 60  /* ~1 second at 60fps */
 
@@ -2130,7 +2134,8 @@ static void overlay_draw_shift_knob(uint8_t *buf)
 static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
 {
     (void)cc_value;  /* No longer used - we show "Unmapped" instead */
-    if (!shift_knob_enabled) return;
+    uint8_t okm = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_SHIFT;
+    if (okm == OVERLAY_KNOBS_OFF) return;
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
 
     shift_knob_overlay_slot = slot;
@@ -5824,7 +5829,8 @@ static void shadow_filter_move_input(void)
         if (type == 0x90 || type == 0x80) {
             /* Knob touch notes 0-7 pass through to Move for touch-to-peek in Chain UI.
              * Only block note 9 (jog wheel touch - not needed). */
-            if (d1 == 9) {  /* Jog wheel touch - not needed */
+            if (d1 == 9) {  /* Jog wheel touch - track state, block from Move */
+                shadow_jog_touched = (type == 0x90 && d2 > 0) ? 1 : 0;
                 src[i] = 0;
                 src[i + 1] = 0;
                 src[i + 2] = 0;
@@ -7474,6 +7480,11 @@ do_ioctl:
                     }
                 }
 
+                /* Jog encoder touch (note 9) */
+                if (d1 == 9) {
+                    shadow_jog_touched = touched;
+                }
+
                 /* Knob 8 touch (note 7) */
                 if (d1 == 7) {
                     if (touched != knob8touched) {
@@ -7520,12 +7531,17 @@ do_ioctl:
         }
     }
 
-    /* === POST-IOCTL: SHIFT+KNOB INTERCEPTION (MOVE MODE) ===
-     * When in Move mode (not shadow mode) but Shift is held,
+    /* === POST-IOCTL: OVERLAY KNOB INTERCEPTION (MOVE MODE) ===
+     * When in Move mode (not shadow mode) and the overlay activation condition is met,
      * intercept knob CCs (71-78) and route to shadow chain DSP.
      * Also block knob touch notes (0-7) to prevent them reaching Move.
-     * This allows adjusting shadow synth parameters while playing Move's sequencer. */
-    if (!shadow_display_mode && shiftHeld && shift_knob_enabled && shadow_ui_enabled &&
+     * Activation depends on overlay_knobs_mode: Shift (0), Jog Touch (1), or Off (2). */
+    uint8_t overlay_knobs_mode = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_SHIFT;
+    int overlay_active = 0;
+    if (overlay_knobs_mode == OVERLAY_KNOBS_SHIFT) overlay_active = shiftHeld;
+    else if (overlay_knobs_mode == OVERLAY_KNOBS_JOG_TOUCH) overlay_active = shadow_jog_touched;
+
+    if (!shadow_display_mode && overlay_active && shadow_ui_enabled &&
         shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
