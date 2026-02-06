@@ -1163,23 +1163,19 @@ function loadOvertakeModule(moduleInfo) {
 
 /* Draw the overtake module selection menu */
 function drawOvertakeMenu() {
-    debugLog("drawOvertakeMenu called, overtakeModules.length=" + overtakeModules.length);
     clear_screen();
 
     drawHeader("Overtake Modules");
 
     if (overtakeModules.length === 0) {
-        debugLog("drawing 'no modules found' message");
         print(4, LIST_TOP_Y + 10, "No overtake modules found", 1);
         print(4, LIST_TOP_Y + 26, "Install modules with", 1);
         print(4, LIST_TOP_Y + 42, "component_type: \"overtake\"", 1);
     } else {
-        debugLog("drawing menu list with " + overtakeModules.length + " items");
         const items = overtakeModules.map(m => ({
             label: m.name,
             value: ""
         }));
-        debugLog("items: " + JSON.stringify(items));
         drawMenuList({
             items,
             selectedIndex: selectedOvertakeModule,
