@@ -311,7 +311,7 @@ const KNOB_ACCEL_SLOW_MS = 150;    // Slower than this = min multiplier
 const KNOB_ACCEL_FAST_MS = 25;     // Faster than this = max multiplier
 const KNOB_BASE_STEP_FLOAT = 0.005; // Base step for floats (acceleration multiplies this)
 const KNOB_BASE_STEP_INT = 1;       // Base step for ints
-const TRIGGER_ENUM_TURN_THRESHOLD = 4;  // Positive detents required before firing trigger action
+const TRIGGER_ENUM_TURN_THRESHOLD = 1;  // Positive detents required before firing trigger action
 const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new trigger gesture
 
 /* Time tracking for knob acceleration */
