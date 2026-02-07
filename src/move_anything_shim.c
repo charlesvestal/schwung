@@ -103,6 +103,7 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
+static volatile float shadow_master_volume;  /* Defined later */
 
 /* Feature flags from config/features.json */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
@@ -1164,9 +1165,20 @@ typedef enum {
 } native_resample_bridge_mode_t;
 static volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
 
-/* Snapshot of final mixed output (AUDIO_OUT) for optional native resample bridge */
+/* Snapshot of final mixed output (AUDIO_OUT) at pre-master tap for native resample bridge. */
 static int16_t native_total_mix_snapshot[FRAMES_PER_BLOCK * 2];
 static volatile int native_total_mix_snapshot_valid = 0;
+
+static int shadow_read_global_volume_from_settings(float *linear_out, float *db_out);
+
+typedef struct {
+    float rms_l;
+    float rms_r;
+    float rms_mid;
+    float rms_side;
+    float rms_low_l;
+    float rms_low_r;
+} native_audio_metrics_t;
 
 static const char *native_sampler_source_name(native_sampler_source_t src)
 {
@@ -1190,6 +1202,67 @@ static const char *native_resample_bridge_mode_name(native_resample_bridge_mode_
     }
 }
 
+static int native_resample_diag_is_enabled(void)
+{
+    static int cached = 0;
+    static int check_counter = 0;
+    static int last_logged = -1;
+
+    if (check_counter++ % 200 == 0) {
+        cached = (access("/data/UserData/move-anything/native_resample_diag_on", F_OK) == 0);
+        if (cached != last_logged) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Native bridge diag: %s",
+                     cached ? "enabled" : "disabled");
+            shadow_log(msg);
+            last_logged = cached;
+        }
+    }
+    return cached;
+}
+
+static void native_compute_audio_metrics(const int16_t *buf, native_audio_metrics_t *m)
+{
+    if (!m) return;
+    memset(m, 0, sizeof(*m));
+    if (!buf) return;
+
+    double sum_l = 0.0;
+    double sum_r = 0.0;
+    double sum_mid = 0.0;
+    double sum_side = 0.0;
+    double sum_low_l = 0.0;
+    double sum_low_r = 0.0;
+    float lp_l = 0.0f;
+    float lp_r = 0.0f;
+    const float alpha = 0.028f;  /* ~200 Hz one-pole lowpass at 44.1 kHz */
+
+    for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
+        float l = (float)buf[i * 2] / 32768.0f;
+        float r = (float)buf[i * 2 + 1] / 32768.0f;
+        float mid = 0.5f * (l + r);
+        float side = 0.5f * (l - r);
+
+        sum_l += (double)l * (double)l;
+        sum_r += (double)r * (double)r;
+        sum_mid += (double)mid * (double)mid;
+        sum_side += (double)side * (double)side;
+
+        lp_l += alpha * (l - lp_l);
+        lp_r += alpha * (r - lp_r);
+        sum_low_l += (double)lp_l * (double)lp_l;
+        sum_low_r += (double)lp_r * (double)lp_r;
+    }
+
+    const float inv_n = 1.0f / (float)FRAMES_PER_BLOCK;
+    m->rms_l = sqrtf((float)sum_l * inv_n);
+    m->rms_r = sqrtf((float)sum_r * inv_n);
+    m->rms_mid = sqrtf((float)sum_mid * inv_n);
+    m->rms_side = sqrtf((float)sum_side * inv_n);
+    m->rms_low_l = sqrtf((float)sum_low_l * inv_n);
+    m->rms_low_r = sqrtf((float)sum_low_r * inv_n);
+}
+
 static native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *text)
 {
     if (!text || !text[0]) return NATIVE_RESAMPLE_BRIDGE_OFF;
@@ -1210,6 +1283,68 @@ static native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const
     }
 
     return NATIVE_RESAMPLE_BRIDGE_OFF;
+}
+
+static void native_resample_bridge_load_mode_from_shadow_config(void)
+{
+    const char *config_path = "/data/UserData/move-anything/shadow_config.json";
+    FILE *f = fopen(config_path, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 8192) {
+        fclose(f);
+        return;
+    }
+
+    char *json = malloc((size_t)size + 1);
+    if (!json) {
+        fclose(f);
+        return;
+    }
+
+    size_t nread = fread(json, 1, (size_t)size, f);
+    fclose(f);
+    json[nread] = '\0';
+
+    char *mode_key = strstr(json, "\"resample_bridge_mode\"");
+    if (!mode_key) {
+        free(json);
+        return;
+    }
+
+    char *colon = strchr(mode_key, ':');
+    if (!colon) {
+        free(json);
+        return;
+    }
+    colon++;
+    while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
+
+    char token[32];
+    size_t idx = 0;
+    while (*colon && idx + 1 < sizeof(token)) {
+        char c = *colon;
+        if (c == '"' || c == ',' || c == '}' || c == '\n' || c == '\r' || c == ' ' || c == '\t') {
+            break;
+        }
+        token[idx++] = c;
+        colon++;
+    }
+    token[idx] = '\0';
+    free(json);
+
+    if (!token[0]) return;
+
+    native_resample_bridge_mode_t new_mode = native_resample_bridge_mode_from_text(token);
+    native_resample_bridge_mode = new_mode;
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Native resample bridge mode: %s (from config)",
+             native_resample_bridge_mode_name(new_mode));
+    shadow_log(msg);
 }
 
 static native_sampler_source_t native_sampler_source_from_text(const char *text)
@@ -1256,28 +1391,80 @@ static void native_capture_total_mix_snapshot_from_buffer(const int16_t *src)
 {
     if (!src) return;
     memcpy(native_total_mix_snapshot, src, AUDIO_BUFFER_SIZE);
+
     __sync_synchronize();
     native_total_mix_snapshot_valid = 1;
 }
 
 /* Source gating policy for native bridge.
- * - Allow: Resampling and Line In
- * - Block: Mic In and USB-C In
- * - Sticky fallback: use last known source if current is UNKNOWN
- * - If no known source exists yet, fail-open to keep behavior stable. */
-static int native_resample_bridge_source_allows_apply(void)
+ * - Replace mode: always allow. User explicitly chose full input replacement.
+ * - Mix mode: block explicit Mic In / USB-C In announcements to reduce feedback risk.
+ * - Unknown source fails open to avoid getting stuck when announcements are missing. */
+static int native_resample_bridge_source_allows_apply(native_resample_bridge_mode_t mode)
 {
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) return 1;
+
     native_sampler_source_t src = native_sampler_source;
-    if (src == NATIVE_SAMPLER_SOURCE_UNKNOWN) {
-        src = native_sampler_source_last_known;
-    }
 
     if (src == NATIVE_SAMPLER_SOURCE_MIC_IN) return 0;
     if (src == NATIVE_SAMPLER_SOURCE_USB_C_IN) return 0;
-    if (src == NATIVE_SAMPLER_SOURCE_LINE_IN) return 1;
-    if (src == NATIVE_SAMPLER_SOURCE_RESAMPLING) return 1;
-    if (src == NATIVE_SAMPLER_SOURCE_UNKNOWN) return 1;
     return 1;
+}
+
+static void native_resample_diag_log_skip(native_resample_bridge_mode_t mode, const char *reason)
+{
+    static int skip_counter = 0;
+    if (!native_resample_diag_is_enabled()) return;
+    if (skip_counter++ % 200 != 0) return;
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Native bridge diag: skip reason=%s mode=%s src=%s last=%s",
+             reason ? reason : "unknown",
+             native_resample_bridge_mode_name(mode),
+             native_sampler_source_name(native_sampler_source),
+             native_sampler_source_name(native_sampler_source_last_known));
+    shadow_log(msg);
+}
+
+static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
+                                           const int16_t *src,
+                                           const int16_t *dst)
+{
+    static int apply_counter = 0;
+    if (!native_resample_diag_is_enabled()) return;
+    if (apply_counter++ % 200 != 0) return;
+
+    native_audio_metrics_t src_m;
+    native_audio_metrics_t dst_m;
+    native_compute_audio_metrics(src, &src_m);
+    native_compute_audio_metrics(dst, &dst_m);
+
+    int overwrite_diff = -1;
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE && src && dst) {
+        overwrite_diff = 0;
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            if (src[i] != dst[i]) overwrite_diff++;
+        }
+    }
+
+    float src_side_ratio = src_m.rms_side / (src_m.rms_mid + 1e-9f);
+    float dst_side_ratio = dst_m.rms_side / (dst_m.rms_mid + 1e-9f);
+
+    char msg[512];
+    snprintf(msg, sizeof(msg),
+             "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f tap=pre-master src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
+             native_resample_bridge_mode_name(mode),
+             native_sampler_source_name(native_sampler_source),
+             native_sampler_source_name(native_sampler_source_last_known),
+             shadow_master_volume,
+             src_m.rms_l, src_m.rms_r,
+             dst_m.rms_l, dst_m.rms_r,
+             src_m.rms_low_l, src_m.rms_low_r,
+             dst_m.rms_low_l, dst_m.rms_low_r,
+             src_side_ratio, dst_side_ratio,
+             overwrite_diff);
+    shadow_log(msg);
 }
 
 static void native_resample_bridge_apply(void)
@@ -1285,13 +1472,20 @@ static void native_resample_bridge_apply(void)
     if (!global_mmap_addr || !native_total_mix_snapshot_valid) return;
 
     native_resample_bridge_mode_t mode = native_resample_bridge_mode;
-    if (mode == NATIVE_RESAMPLE_BRIDGE_OFF) return;
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OFF) {
+        native_resample_diag_log_skip(mode, "mode_off");
+        return;
+    }
 
-    if (!native_resample_bridge_source_allows_apply()) return;
+    if (!native_resample_bridge_source_allows_apply(mode)) {
+        native_resample_diag_log_skip(mode, "source_blocked");
+        return;
+    }
 
     int16_t *dst = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
     if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) {
         memcpy(dst, native_total_mix_snapshot, AUDIO_BUFFER_SIZE);
+        native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
         return;
     }
 
@@ -1299,6 +1493,7 @@ static void native_resample_bridge_apply(void)
         int32_t mixed = (int32_t)dst[i] + (int32_t)native_total_mix_snapshot[i];
         dst[i] = clamp_i16(mixed);
     }
+    native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
 }
 
 /* Inject pending screen reader announcements immediately */
@@ -1423,7 +1618,7 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Check if it's a volume message */
+    /* Check if it's a track volume message */
     if (strncmp(text, "Track Volume ", 13) == 0) {
         float volume = shadow_parse_volume_db(text);
         if (volume >= 0.0f && shadow_held_track >= 0 && shadow_held_track < SHADOW_CHAIN_INSTANCES) {
@@ -3166,14 +3361,10 @@ static void load_feature_config(void)
     shadow_log(log_msg);
 }
 
-/* Read initial volume from Move's Settings.json */
-static void shadow_read_initial_volume(void)
+static int shadow_read_global_volume_from_settings(float *linear_out, float *db_out)
 {
     FILE *f = fopen("/data/UserData/settings/Settings.json", "r");
-    if (!f) {
-        shadow_log("Master volume: Settings.json not found, defaulting to 1.0");
-        return;
-    }
+    if (!f) return 0;
 
     /* Read file */
     fseek(f, 0, SEEK_END);
@@ -3182,13 +3373,13 @@ static void shadow_read_initial_volume(void)
 
     if (size <= 0 || size > 8192) {
         fclose(f);
-        return;
+        return 0;
     }
 
     char *json = malloc(size + 1);
     if (!json) {
         fclose(f);
-        return;
+        return 0;
     }
 
     size_t nread = fread(json, 1, size, f);
@@ -3198,24 +3389,41 @@ static void shadow_read_initial_volume(void)
     /* Find "globalVolume": X.X */
     const char *key = "\"globalVolume\":";
     char *pos = strstr(json, key);
-    if (pos) {
-        pos += strlen(key);
-        while (*pos == ' ') pos++;
-        float db = strtof(pos, NULL);
-        /* globalVolume is in dB, convert to linear */
-        /* 0 dB = 1.0, -inf = 0.0 */
-        if (db <= -60.0f) {
-            shadow_master_volume = 0.0f;
-        } else {
-            shadow_master_volume = powf(10.0f, db / 20.0f);
-            if (shadow_master_volume > 1.0f) shadow_master_volume = 1.0f;
-        }
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Master volume: read %.1f dB -> %.3f linear", db, shadow_master_volume);
-        shadow_log(msg);
+    if (!pos) {
+        free(json);
+        return 0;
     }
 
+    pos += strlen(key);
+    while (*pos == ' ') pos++;
+
+    float db = strtof(pos, NULL);
+    float linear = (db <= -60.0f) ? 0.0f : powf(10.0f, db / 20.0f);
+    if (linear < 0.0f) linear = 0.0f;
+    if (linear > 1.0f) linear = 1.0f;
+
+    if (linear_out) *linear_out = linear;
+    if (db_out) *db_out = db;
+
     free(json);
+    return 1;
+}
+
+/* Read initial volume from Move's Settings.json */
+static void shadow_read_initial_volume(void)
+{
+    float linear = 1.0f;
+    float db = 0.0f;
+    if (!shadow_read_global_volume_from_settings(&linear, &db)) {
+        shadow_log("Master volume: Settings.json not found, defaulting to 1.0");
+        return;
+    }
+
+    shadow_master_volume = linear;
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Master volume: read %.1f dB -> %.3f linear", db, shadow_master_volume);
+    shadow_log(msg);
 }
 
 /* ==========================================================================
@@ -6297,6 +6505,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
         load_feature_config();  /* Load feature flags from config */
+        native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
         shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
@@ -7146,7 +7355,6 @@ int ioctl(int fd, unsigned long request, ...)
 
                 /* Skip if row 29 has many lit pixels (waveform 0dB line, not volume overlay) */
                 if (bar_col >= 0 && ref_lit < 50) {
-                    /* Map column range 4-122 to volume 0.0-1.0 */
                     float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
                     if (normalized < 0.0f) normalized = 0.0f;
                     if (normalized > 1.0f) normalized = 1.0f;
@@ -7154,8 +7362,7 @@ int ioctl(int fd, unsigned long request, ...)
                     if (fabsf(normalized - shadow_master_volume) > 0.01f) {
                         shadow_master_volume = normalized;
                         char msg[64];
-                        snprintf(msg, sizeof(msg), "Master volume: x=%d -> %.3f",
-                                 bar_col, shadow_master_volume);
+                        snprintf(msg, sizeof(msg), "Master volume: x=%d -> %.3f", bar_col, normalized);
                         shadow_log(msg);
                     }
                 }
