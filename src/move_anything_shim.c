@@ -1071,6 +1071,16 @@ static master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 #define shadow_master_fx_module (shadow_master_fx_slots[0].module_path)
 #define shadow_master_fx_capture (shadow_master_fx_slots[0].capture)
 
+static int shadow_master_fx_chain_active(void) {
+    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+        master_fx_slot_t *s = &shadow_master_fx_slots[fx];
+        if (s->instance && s->api && s->api->process_block) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ==========================================================================
  * D-Bus Volume Sync - Monitor Move's track volume via accessibility D-Bus
  * ========================================================================== */
@@ -5018,6 +5028,8 @@ static void shadow_inprocess_mix_audio(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    int16_t move_pre_mix[FRAMES_PER_BLOCK * 2];
+    memcpy(move_pre_mix, mailbox_audio, sizeof(move_pre_mix));
     int32_t mix[FRAMES_PER_BLOCK * 2];
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         mix[i] = mailbox_audio[i];
@@ -5057,11 +5069,23 @@ static void shadow_inprocess_mix_audio(void) {
     /* Capture combined audio AFTER master FX, BEFORE master volume. */
     native_capture_total_mix_snapshot_from_buffer(output_buffer);
 
-    /* Apply master volume to shadow output */
+    /* Apply master volume.
+     * Keep Move audio untouched when master FX is inactive:
+     *   out = move + (me * mv)
+     * where me is inferred as delta from Move's pre-mix buffer. */
     float mv = shadow_master_volume;
     if (mv < 1.0f) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            output_buffer[i] = (int16_t)(output_buffer[i] * mv);
+        if (!shadow_master_fx_chain_active()) {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int32_t me_contrib = (int32_t)output_buffer[i] - (int32_t)move_pre_mix[i];
+                int32_t scaled_me = (int32_t)lroundf((float)me_contrib * mv);
+                int32_t out = (int32_t)move_pre_mix[i] + scaled_me;
+                output_buffer[i] = clamp_i16(out);
+            }
+        } else {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                output_buffer[i] = (int16_t)(output_buffer[i] * mv);
+            }
         }
     }
 
@@ -5113,6 +5137,8 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    int16_t move_pre_mix[FRAMES_PER_BLOCK * 2];
+    memcpy(move_pre_mix, mailbox_audio, sizeof(move_pre_mix));
 
     /* Mix deferred buffer into mailbox audio */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -5141,11 +5167,23 @@ static void shadow_inprocess_mix_from_buffer(void) {
         skipback_capture(mailbox_audio);
     }
 
-    /* Apply master volume */
+    /* Apply master volume.
+     * Keep Move audio untouched when master FX is inactive:
+     *   out = move + (me * mv)
+     * where me is inferred as delta from Move's pre-mix buffer. */
     float mv = shadow_master_volume;
     if (mv < 1.0f) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            mailbox_audio[i] = (int16_t)(mailbox_audio[i] * mv);
+        if (!shadow_master_fx_chain_active()) {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int32_t me_contrib = (int32_t)mailbox_audio[i] - (int32_t)move_pre_mix[i];
+                int32_t scaled_me = (int32_t)lroundf((float)me_contrib * mv);
+                int32_t out = (int32_t)move_pre_mix[i] + scaled_me;
+                mailbox_audio[i] = clamp_i16(out);
+            }
+        } else {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                mailbox_audio[i] = (int16_t)(mailbox_audio[i] * mv);
+            }
         }
     }
 }
