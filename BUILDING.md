@@ -17,7 +17,8 @@ Requirements: Docker Desktop (macOS/Windows) or Docker Engine (Linux)
 ### Ubuntu/Debian
 
 ```bash
-sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu make
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu make \
+  libdbus-1-dev:arm64 libsystemd-dev:arm64 libflite1:arm64 flite1-dev:arm64
 
 # Build QuickJS
 cd libs/quickjs/quickjs-2025-04-26
@@ -106,6 +107,15 @@ mod = module_from_spec(spec)
 spec.loader.exec_module(mod)
 Path("build/font.png.dat").write_text(mod.CHARS + "\n")
 PY
+```
+
+**Flite bundle verification failed**
+```bash
+# Recommended: use Docker build (auto-installs arm64 dependencies)
+./scripts/build.sh
+
+# If building manually, install required ARM64 Flite/libs:
+sudo apt install libdbus-1-dev:arm64 libsystemd-dev:arm64 libflite1:arm64 flite1-dev:arm64
 ```
 
 **Verify binary architecture**

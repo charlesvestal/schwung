@@ -607,12 +607,12 @@ ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim
 ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
 
-# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink
-# Root partition is nearly full, so symlink instead of copying
-if ssh_ableton_with_retry "test -d /data/UserData/move-anything/lib"; then
-  qecho "Deploying Flite libraries..."
-  ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in libflite*.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
-fi
+# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink.
+# Root partition is nearly full, so symlink instead of copying.
+ssh_ableton_with_retry "test -d /data/UserData/move-anything/lib" || fail "Payload missing: /data/UserData/move-anything/lib"
+ssh_ableton_with_retry "for lib in libflite.so.1 libflite_cmu_us_kal.so.1 libflite_usenglish.so.1 libflite_cmulex.so.1; do test -e /data/UserData/move-anything/lib/\$lib || exit 1; done" || fail "Payload missing required Flite libraries (screen reader dependency)"
+qecho "Deploying Flite libraries..."
+ssh_root_with_retry "cd /data/UserData/move-anything/lib && set -- libflite*.so.* && [ \"\$1\" != 'libflite*.so.*' ] || exit 1; for lib in \"\$@\"; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
 
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
