@@ -1397,6 +1397,30 @@ static int16_t clamp_i16(int32_t v)
     return (int16_t)v;
 }
 
+/* Compensate pre-master snapshot by inverse master volume so native playback
+ * through Move volume + shim master volume lands at the same perceived level.
+ * Only used for native bridge overwrite path when Master FX chain is active. */
+static void native_resample_bridge_apply_master_volume_compensation(const int16_t *src,
+                                                                    int16_t *dst,
+                                                                    size_t samples)
+{
+    if (!src || !dst || samples == 0) return;
+
+    float mv = shadow_master_volume;
+    if (mv >= 0.9995f || mv <= 0.0005f) {
+        memcpy(dst, src, samples * sizeof(int16_t));
+        return;
+    }
+
+    float inv_mv = 1.0f / mv;
+    for (size_t i = 0; i < samples; i++) {
+        float s = (float)src[i] * inv_mv;
+        if (s > 32767.0f) s = 32767.0f;
+        if (s < -32768.0f) s = -32768.0f;
+        dst[i] = (int16_t)lroundf(s);
+    }
+}
+
 static void native_capture_total_mix_snapshot_from_buffer(const int16_t *src)
 {
     if (!src) return;
@@ -1494,8 +1518,20 @@ static void native_resample_bridge_apply(void)
 
     int16_t *dst = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
     if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) {
-        memcpy(dst, native_total_mix_snapshot, AUDIO_BUFFER_SIZE);
-        native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
+        const int16_t *bridge_src = native_total_mix_snapshot;
+        int16_t compensated_snapshot[FRAMES_PER_BLOCK * 2];
+
+        if (shadow_master_fx_chain_active()) {
+            native_resample_bridge_apply_master_volume_compensation(
+                native_total_mix_snapshot,
+                compensated_snapshot,
+                FRAMES_PER_BLOCK * 2
+            );
+            bridge_src = compensated_snapshot;
+        }
+
+        memcpy(dst, bridge_src, AUDIO_BUFFER_SIZE);
+        native_resample_diag_log_apply(mode, bridge_src, dst);
         return;
     }
 

@@ -47,6 +47,17 @@ if ! echo "${bridge_ctx}" | rg -q "native_resample_bridge_mode"; then
   exit 1
 fi
 
+# 3a) Overwrite path should compensate snapshot by inverse master volume
+#     when Master FX chain is active to preserve live/playback parity.
+if ! rg -q "native_resample_bridge_apply_master_volume_compensation\\(" "$file"; then
+  echo "FAIL: Missing bridge master-volume compensation helper" >&2
+  exit 1
+fi
+if ! echo "${bridge_ctx}" | rg -q "native_resample_bridge_apply_master_volume_compensation\\("; then
+  echo "FAIL: Overwrite bridge path does not apply master-volume compensation" >&2
+  exit 1
+fi
+
 # 3b) Source allow helper should enforce:
 #     - overwrite mode always allowed
 #     - explicit mic/usb-c blocked
