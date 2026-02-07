@@ -7360,29 +7360,19 @@ int ioctl(int fd, unsigned long request, ...)
                     if (normalized > 1.0f) normalized = 1.0f;
 
                     /* Map pixel bar position to amplitude matching Move's volume curve.
-                     * Piecewise linear interpolation between measured points from
-                     * Move's Settings.json globalVolume:
-                     *   pos 0.00 → -70.0 dB   pos 0.25 → -33.2 dB
-                     *   pos 0.50 → -19.9 dB   pos 0.75 → -10.4 dB
-                     *   pos 1.00 →   0.0 dB */
+                     * sqrt model: dB = -70 * (1 - sqrt(pos))
+                     * Measured from Move's Settings.json globalVolume:
+                     *   pos 0.25 → -33.2 dB (model: -35.0)
+                     *   pos 0.50 → -19.9 dB (model: -20.5)
+                     *   pos 0.75 → -10.4 dB (model:  -9.4)
+                     *   pos 1.00 →   0.0 dB (model:   0.0) */
                     float amplitude;
                     if (normalized <= 0.0f) {
                         amplitude = 0.0f;
+                    } else if (normalized >= 1.0f) {
+                        amplitude = 1.0f;
                     } else {
-                        /* Piecewise linear in dB between measured points */
-                        static const float pos_pts[] = { 0.0f, 0.25f, 0.50f, 0.75f, 1.0f };
-                        static const float db_pts[]  = { -70.0f, -33.2f, -19.9f, -10.4f, 0.0f };
-                        float db;
-                        if (normalized >= 1.0f) {
-                            db = 0.0f;
-                        } else {
-                            int seg = 0;
-                            if (normalized >= 0.75f) seg = 3;
-                            else if (normalized >= 0.50f) seg = 2;
-                            else if (normalized >= 0.25f) seg = 1;
-                            float t = (normalized - pos_pts[seg]) / (pos_pts[seg+1] - pos_pts[seg]);
-                            db = db_pts[seg] + t * (db_pts[seg+1] - db_pts[seg]);
-                        }
+                        float db = -70.0f * (1.0f - sqrtf(normalized));
                         amplitude = powf(10.0f, db / 20.0f);
                     }
 
