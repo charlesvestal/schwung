@@ -130,6 +130,23 @@ The last position in each slot contains settings:
 
 Access via **Shift+Vol + Menu**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
+### Native Sampler Bridge (Resample Src)
+
+In **Master FX > Settings**, `Resample Src` controls how Move Everything audio is exposed to native Move sampling:
+
+| Option | Behavior |
+|--------|----------|
+| **Off** | Disabled (default) |
+| **Mix** | Adds Move Everything master output into native sampler input |
+| **Replace** | Replaces native sampler input with Move Everything master output |
+
+Recommended setup to avoid feedback:
+1. Set `Resample Src` to **Replace**
+2. In native Move Sampler, set source to **Line In**
+3. Set monitoring to **Off**
+
+If monitoring is enabled, feedback may occur.
+
 ---
 
 ## Connecting to Move Tracks

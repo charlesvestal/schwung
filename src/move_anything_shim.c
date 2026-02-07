@@ -1145,6 +1145,139 @@ static float shadow_parse_volume_db(const char *text)
     return linear;
 }
 
+/* Native Move sampler source tracking (from stock D-Bus announcements) */
+typedef enum {
+    NATIVE_SAMPLER_SOURCE_UNKNOWN = 0,
+    NATIVE_SAMPLER_SOURCE_RESAMPLING,
+    NATIVE_SAMPLER_SOURCE_LINE_IN,
+    NATIVE_SAMPLER_SOURCE_MIC_IN,
+    NATIVE_SAMPLER_SOURCE_USB_C_IN
+} native_sampler_source_t;
+static volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
+
+typedef enum {
+    NATIVE_RESAMPLE_BRIDGE_OFF = 0,
+    NATIVE_RESAMPLE_BRIDGE_MIX,
+    NATIVE_RESAMPLE_BRIDGE_OVERWRITE
+} native_resample_bridge_mode_t;
+static volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
+
+/* Snapshot of final mixed output (AUDIO_OUT) for optional native resample bridge */
+static int16_t native_total_mix_snapshot[FRAMES_PER_BLOCK * 2];
+static volatile int native_total_mix_snapshot_valid = 0;
+
+static const char *native_sampler_source_name(native_sampler_source_t src)
+{
+    switch (src) {
+        case NATIVE_SAMPLER_SOURCE_RESAMPLING: return "resampling";
+        case NATIVE_SAMPLER_SOURCE_LINE_IN: return "line-in";
+        case NATIVE_SAMPLER_SOURCE_MIC_IN: return "mic-in";
+        case NATIVE_SAMPLER_SOURCE_USB_C_IN: return "usb-c-in";
+        case NATIVE_SAMPLER_SOURCE_UNKNOWN:
+        default: return "unknown";
+    }
+}
+
+static const char *native_resample_bridge_mode_name(native_resample_bridge_mode_t mode)
+{
+    switch (mode) {
+        case NATIVE_RESAMPLE_BRIDGE_OFF: return "off";
+        case NATIVE_RESAMPLE_BRIDGE_OVERWRITE: return "overwrite";
+        case NATIVE_RESAMPLE_BRIDGE_MIX:
+        default: return "mix";
+    }
+}
+
+static native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *text)
+{
+    if (!text || !text[0]) return NATIVE_RESAMPLE_BRIDGE_OFF;
+
+    char lower[64];
+    str_to_lower(lower, sizeof(lower), text);
+
+    if (strcmp(lower, "0") == 0 || strcmp(lower, "off") == 0) {
+        return NATIVE_RESAMPLE_BRIDGE_OFF;
+    }
+    if (strcmp(lower, "2") == 0 ||
+        strcmp(lower, "overwrite") == 0 ||
+        strcmp(lower, "replace") == 0) {
+        return NATIVE_RESAMPLE_BRIDGE_OVERWRITE;
+    }
+    if (strcmp(lower, "1") == 0 || strcmp(lower, "mix") == 0) {
+        return NATIVE_RESAMPLE_BRIDGE_MIX;
+    }
+
+    return NATIVE_RESAMPLE_BRIDGE_OFF;
+}
+
+static native_sampler_source_t native_sampler_source_from_text(const char *text)
+{
+    if (!text || !text[0]) return NATIVE_SAMPLER_SOURCE_UNKNOWN;
+
+    char lower[256];
+    str_to_lower(lower, sizeof(lower), text);
+
+    if (strstr(lower, "resampl")) return NATIVE_SAMPLER_SOURCE_RESAMPLING;
+    if (strstr(lower, "line in") || strstr(lower, "line-in") || strstr(lower, "linein"))
+        return NATIVE_SAMPLER_SOURCE_LINE_IN;
+    if (strstr(lower, "usb-c") || strstr(lower, "usb c") || strstr(lower, "usbc"))
+        return NATIVE_SAMPLER_SOURCE_USB_C_IN;
+    if (strstr(lower, "mic") || strstr(lower, "microphone"))
+        return NATIVE_SAMPLER_SOURCE_MIC_IN;
+
+    return NATIVE_SAMPLER_SOURCE_UNKNOWN;
+}
+
+static void native_sampler_update_from_dbus_text(const char *text)
+{
+    native_sampler_source_t parsed = native_sampler_source_from_text(text);
+    if (parsed == NATIVE_SAMPLER_SOURCE_UNKNOWN) return;
+
+    if (parsed != native_sampler_source) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Native sampler source: %s (from \"%s\")",
+                 native_sampler_source_name(parsed), text);
+        shadow_log(msg);
+        native_sampler_source = parsed;
+    }
+}
+
+static int16_t clamp_i16(int32_t v)
+{
+    if (v > 32767) return 32767;
+    if (v < -32768) return -32768;
+    return (int16_t)v;
+}
+
+static void native_capture_total_mix_snapshot(void)
+{
+    if (!global_mmap_addr) return;
+    memcpy(native_total_mix_snapshot, global_mmap_addr + AUDIO_OUT_OFFSET, AUDIO_BUFFER_SIZE);
+    __sync_synchronize();
+    native_total_mix_snapshot_valid = 1;
+}
+
+static void native_resample_bridge_apply(void)
+{
+    if (!global_mmap_addr || !native_total_mix_snapshot_valid) return;
+
+    native_resample_bridge_mode_t mode = native_resample_bridge_mode;
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OFF) return;
+
+    if (native_sampler_source != NATIVE_SAMPLER_SOURCE_RESAMPLING) return;
+
+    int16_t *dst = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) {
+        memcpy(dst, native_total_mix_snapshot, AUDIO_BUFFER_SIZE);
+        return;
+    }
+
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        int32_t mixed = (int32_t)dst[i] + (int32_t)native_total_mix_snapshot[i];
+        dst[i] = clamp_i16(mixed);
+    }
+}
+
 /* Inject pending screen reader announcements immediately */
 static void shadow_inject_pending_announcements(void)
 {
@@ -1222,6 +1355,9 @@ static void shadow_dbus_handle_text(const char *text)
         snprintf(msg, sizeof(msg), "D-Bus text: \"%s\" (held_track=%d)", text, shadow_held_track);
         shadow_log(msg);
     }
+
+    /* Track native Move sampler source from stock announcements. */
+    native_sampler_update_from_dbus_text(text);
 
     /* Block D-Bus messages while priority announcement is playing */
     if (tts_priority_announcement_active) {
@@ -4142,19 +4278,32 @@ static void shadow_inprocess_handle_param_request(void) {
     if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
         const char *fx_key = shadow_param->key + 10;
         int mfx_slot = -1;  /* -1 = legacy (slot 0), 0-3 = specific slot */
+        int has_slot_prefix = 0;
         const char *param_key = fx_key;
 
         /* Parse slot: fx1:, fx2:, fx3:, fx4: */
-        if (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; }
+        if (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; has_slot_prefix = 1; }
+        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; has_slot_prefix = 1; }
+        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; has_slot_prefix = 1; }
+        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; has_slot_prefix = 1; }
         else { mfx_slot = 0; param_key = fx_key; }  /* Legacy: default to slot 0 */
 
         master_fx_slot_t *mfx = &shadow_master_fx_slots[mfx_slot];
 
         if (req_type == 1) {  /* SET */
-            if (strcmp(param_key, "module") == 0) {
+            if (!has_slot_prefix && strcmp(param_key, "resample_bridge") == 0) {
+                native_resample_bridge_mode_t new_mode =
+                    native_resample_bridge_mode_from_text(shadow_param->value);
+                if (new_mode != native_resample_bridge_mode) {
+                    char msg[128];
+                    snprintf(msg, sizeof(msg), "Native resample bridge mode: %s",
+                             native_resample_bridge_mode_name(new_mode));
+                    shadow_log(msg);
+                }
+                native_resample_bridge_mode = new_mode;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (strcmp(param_key, "module") == 0) {
                 /* Load or unload master FX slot */
                 int result = shadow_master_fx_slot_load(mfx_slot, shadow_param->value);
                 shadow_param->error = (result == 0) ? 0 : 7;
@@ -4181,7 +4330,12 @@ static void shadow_inprocess_handle_param_request(void) {
                 shadow_param->result_len = -1;
             }
         } else if (req_type == 2) {  /* GET */
-            if (strcmp(param_key, "module") == 0) {
+            if (!has_slot_prefix && strcmp(param_key, "resample_bridge") == 0) {
+                int mode = (int)native_resample_bridge_mode;
+                if (mode < 0 || mode > 2) mode = 0;
+                shadow_param->result_len = snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d", mode);
+                shadow_param->error = 0;
+            } else if (strcmp(param_key, "module") == 0) {
                 strncpy(shadow_param->value, mfx->module_path, SHADOW_PARAM_VALUE_LEN - 1);
                 shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
                 shadow_param->error = 0;
@@ -7097,6 +7251,7 @@ do_ioctl:
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
      * Copy shadow mailbox to hardware before ioctl.
      * Move has been writing to shadow_mailbox; now we send that to hardware. */
+    native_capture_total_mix_snapshot();
     if (hardware_mmap_addr) {
         memcpy(hardware_mmap_addr, shadow_mailbox, MAILBOX_SIZE);
     }
@@ -7118,6 +7273,9 @@ do_ioctl:
                MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
         memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
                MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
+
+        /* Bridge Move Everything's total mix into native resampling path when selected. */
+        native_resample_bridge_apply();
 
         /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
         if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {

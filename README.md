@@ -71,6 +71,21 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md) (primarily standalone-focused).
 
+## Native Sampler Bridge
+
+In **Master FX > Settings**, `Resample Src` controls whether Move Everything audio is fed into native Move sampling workflows:
+
+- `Off`: Disabled (default)
+- `Mix`: Adds Move Everything output to the native sampler input
+- `Replace`: Replaces native sampler input with Move Everything master output
+
+For the most reliable native sampling behavior with this feature:
+- Set `Resample Src` to **Replace**
+- In Move's sampler, set sample source to **Line In**
+- Set monitoring to **Off**
+
+If monitoring is on (or source/routing is configured differently), audio feedback may occur.
+
 ## Documentation
 
 - [MANUAL.md](MANUAL.md) - User guide and shortcuts 

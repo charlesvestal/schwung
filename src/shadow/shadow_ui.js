@@ -464,12 +464,12 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
 const RESAMPLE_BRIDGE_LABELS = ["Off", "Mix", "Replace"];
 
 function parseResampleBridgeMode(raw) {
-    if (raw === null || raw === undefined) return 1;
+    if (raw === null || raw === undefined) return 0;
     const text = String(raw).trim().toLowerCase();
     if (text === "0" || text === "off") return 0;
     if (text === "2" || text === "overwrite" || text === "replace") return 2;
     if (text === "1" || text === "mix") return 1;
-    return 1;
+    return 0;
 }
 
 /* Get dynamic settings items based on whether preset is loaded */
@@ -4336,7 +4336,7 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "resample_bridge") {
         const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
         const mode = parseResampleBridgeMode(modeRaw);
-        return RESAMPLE_BRIDGE_LABELS[mode] || "Mix";
+        return RESAMPLE_BRIDGE_LABELS[mode] || "Off";
     }
     if (setting.key === "overlay_knobs") {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;

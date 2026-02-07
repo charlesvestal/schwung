@@ -205,6 +205,12 @@ int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
 
 **Format:** Stereo interleaved int16 (little-endian), range -32768 to +32767.
 
+### Native Sampler Bridge (Shim)
+
+The shim can bridge Move Everything's mixed output into Move's native sampler input path when native sampling is in use. This is controlled by the Master FX setting `Resample Src` (`Off`, `Mix`, `Replace`), and only applies while native source detection indicates resampling.
+
+For practical use, `Replace` with sampler source set to `Line In` and monitoring set to `Off` is recommended. Other routing/monitoring combinations can cause feedback loops.
+
 ### MIDI
 
 **Incoming MIDI** (from pads, knobs, buttons) arrives at offset 0x800 (2048) as USB-MIDI packets:
