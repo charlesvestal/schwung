@@ -210,7 +210,8 @@ int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
 The shim can bridge Move Everything's mixed output into Move's native sampler input path when native sampling is in use. This is controlled by the Master FX setting `Resample Src` (`Off`, `Replace`).
 
 In `Replace` mode, the bridge writes a snapshot of the combined Move + Move Everything mix into native `AUDIO_IN`. The snapshot tap point is:
-- after slot mix and master FX
+- after slot mix
+- before master FX
 - before master-volume attenuation
 
 This keeps native resample capture aligned with the pre-master mix and avoids coupling capture level to transient master-volume reads.

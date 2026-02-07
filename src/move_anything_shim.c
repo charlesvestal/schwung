@@ -1463,7 +1463,7 @@ static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
 
     char msg[512];
     snprintf(msg, sizeof(msg),
-             "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f tap=pre-master src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
+             "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f tap=pre-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
              native_resample_bridge_mode_name(mode),
              native_sampler_source_name(native_sampler_source),
              native_sampler_source_name(native_sampler_source_last_known),
@@ -5058,6 +5058,11 @@ static void shadow_inprocess_mix_audio(void) {
         output_buffer[i] = (int16_t)mix[i];
     }
 
+    /* Capture native bridge source BEFORE master FX and BEFORE master volume.
+     * This avoids printing master FX into captured audio, which would otherwise
+     * be processed a second time during pad playback. */
+    native_capture_total_mix_snapshot_from_buffer(output_buffer);
+
     /* Apply master FX chain - process through all 4 slots in series */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
@@ -5065,9 +5070,6 @@ static void shadow_inprocess_mix_audio(void) {
             s->api->process_block(s->instance, output_buffer, FRAMES_PER_BLOCK);
         }
     }
-
-    /* Capture combined audio AFTER master FX, BEFORE master volume. */
-    native_capture_total_mix_snapshot_from_buffer(output_buffer);
 
     /* Apply master volume.
      * Keep Move audio untouched when master FX is inactive:
@@ -5148,6 +5150,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
         mailbox_audio[i] = (int16_t)mixed;
     }
 
+    /* Capture native bridge source BEFORE master FX and BEFORE master volume.
+     * This avoids printing master FX into captured audio, which would otherwise
+     * be processed a second time during pad playback. */
+    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
+
     /* Apply master FX chain to combined audio - process through all 4 slots in series */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
@@ -5155,9 +5162,6 @@ static void shadow_inprocess_mix_from_buffer(void) {
             s->api->process_block(s->instance, mailbox_audio, FRAMES_PER_BLOCK);
         }
     }
-
-    /* Capture combined audio AFTER master FX, BEFORE master volume. */
-    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
 
     /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {

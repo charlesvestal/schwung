@@ -84,9 +84,14 @@ if [ -z "${mix_fn_start}" ]; then
 fi
 mix_ctx=$(sed -n "${mix_fn_start},$((mix_fn_start + 90))p" "$file")
 capture_line_rel=$(echo "${mix_ctx}" | rg -n "native_capture_total_mix_snapshot_from_buffer\\(" | head -n 1 | cut -d: -f1 || true)
+fx_line_rel=$(echo "${mix_ctx}" | rg -n "Apply master FX chain|process through all 4 slots in series" | head -n 1 | cut -d: -f1 || true)
 volume_line_rel=$(echo "${mix_ctx}" | rg -n "Apply master volume|float mv = shadow_master_volume" | head -n 1 | cut -d: -f1 || true)
-if [ -z "${capture_line_rel}" ] || [ -z "${volume_line_rel}" ]; then
-  echo "FAIL: Could not locate capture call and master volume section in mix path" >&2
+if [ -z "${capture_line_rel}" ] || [ -z "${fx_line_rel}" ] || [ -z "${volume_line_rel}" ]; then
+  echo "FAIL: Could not locate capture call, master FX, and master volume sections in mix path" >&2
+  exit 1
+fi
+if [ "${capture_line_rel}" -ge "${fx_line_rel}" ]; then
+  echo "FAIL: Native snapshot capture must happen before master FX processing" >&2
   exit 1
 fi
 if [ "${capture_line_rel}" -ge "${volume_line_rel}" ]; then
