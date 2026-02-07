@@ -1,402 +1,312 @@
 # Gain Staging Analysis: Live vs Resampled Audio
 
-## Complete Signal Flow Diagram
+## Status: UNSOLVED
 
-### Per-Frame Timeline (ioctl cycle = ~2.9ms at 44.1kHz/128 frames)
+The volume curve has been fixed (sqrt model matches Move within ~1.8dB).
+But resampled audio still plays back **quieter** than the live signal.
+Root cause is not yet confirmed.
 
-```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  FRAME N                                                                    ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  PRE-IOCTL (shim intercepts before hardware transaction)                     ║
-║  ─────────────────────────────────────────────────────────────────────       ║
-║                                                                              ║
-║  1. shadow_mix_audio()          [SHM path - reads zeros when inprocess]      ║
-║     │  mailbox AUDIO_OUT already contains Move's rendered audio               ║
-║     │  (Move applied its own internal volume to its own synths)               ║
-║     └→ Adds SHM buffer (zeros in inprocess mode) + TTS                       ║
-║                                                                              ║
-║  2. shadow_inprocess_mix_from_buffer()  [MAIN AUDIO PATH]                    ║
-║     │                                                                        ║
-║     │  ┌─────────────────────────────────────────────────────────────┐       ║
-║     │  │ AUDIO_OUT buffer at this point:                             │       ║
-║     │  │   Move's own rendered audio (already Move-vol-scaled)       │       ║
-║     │  └─────────────────────────────────────────────────────────────┘       ║
-║     │                                                                        ║
-║     ├─ STEP A: Mix ME deferred buffer into AUDIO_OUT                         ║
-║     │    mailbox[i] += shadow_deferred_dsp_buffer[i]                         ║
-║     │    (deferred buffer = slot renders from PREVIOUS frame, post-ioctl)    ║
-║     │    (each slot already has slot.volume applied - dB-scaled)             ║
-║     │                                                                        ║
-║     ├─ STEP B: Apply Master FX chain (4 slots, in series)                    ║
-║     │    Combined Move+ME audio → reverb/delay/etc                           ║
-║     │                                                                        ║
-║     ├─ STEP C: *** SNAPSHOT TAP ***  ←←← RESAMPLE BRIDGE SOURCE             ║
-║     │    native_capture_total_mix_snapshot_from_buffer(mailbox_audio)         ║
-║     │    Copies AUDIO_OUT verbatim into native_total_mix_snapshot[]           ║
-║     │    Signal level: FULL GAIN (no master volume applied yet)              ║
-║     │                                                                        ║
-║     ├─ STEP D: *** ME SAMPLER TAP ***  ←←← QUANTIZED SAMPLER SOURCE         ║
-║     │    sampler_capture_audio() reads from AUDIO_OUT                        ║
-║     │    Signal level: FULL GAIN (same as snapshot - pre master volume)      ║
-║     │                                                                        ║
-║     └─ STEP E: Apply shadow_master_volume                                    ║
-║          mailbox[i] *= shadow_master_volume                                  ║
-║          ┌────────────────────────────────────────────────────────┐          ║
-║          │ THIS IS THE PROBLEM:                                   │          ║
-║          │ shadow_master_volume = pixel_position / 118            │          ║
-║          │ This is LINEAR (0.0 - 1.0)                            │          ║
-║          │ But Move's own audio was attenuated with a dB curve   │          ║
-║          └────────────────────────────────────────────────────────┘          ║
-║                                                                              ║
-║  3. Copy shadow_mailbox → hardware_mmap_addr (memcpy entire mailbox)         ║
-║                                                                              ║
-║  ═══════════════════════════════════════════════════════════════════          ║
-║  4. real_ioctl()  ←── HARDWARE TRANSACTION (audio goes to DAC)               ║
-║  ═══════════════════════════════════════════════════════════════════          ║
-║                                                                              ║
-║  POST-IOCTL                                                                  ║
-║  ─────────────────────────────────────────────────────────────────────       ║
-║                                                                              ║
-║  5. Copy hardware_mmap_addr → shadow_mailbox                                 ║
-║     (AUDIO_IN now has fresh mic/line-in data from hardware)                  ║
-║                                                                              ║
-║  6. native_resample_bridge_apply()                                           ║
-║     │  When mode=OVERWRITE:                                                  ║
-║     │    memcpy(AUDIO_IN, native_total_mix_snapshot)                         ║
-║     │    Overwrites mic/line-in with our snapshot                            ║
-║     │    Signal level: FULL GAIN (from Step C)                               ║
-║     │                                                                        ║
-║     │  When mode=OFF:                                                        ║
-║     └    No-op (AUDIO_IN keeps hardware mic/line data)                       ║
-║                                                                              ║
-║  7. shadow_inprocess_render_to_buffer()  [DSP for NEXT frame]                ║
-║     For each active slot:                                                    ║
-║       render_block() → render_buffer                                         ║
-║       render_buffer[i] *= slot.volume   (dB-scaled, from D-Bus)             ║
-║       Accumulate into shadow_deferred_dsp_buffer (clamped int16)            ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-```
+## Measured Volume Curve
 
-## Attenuation at Each Stage
+From Move's Settings.json `globalVolume` at known knob positions:
 
-### Move's Native Audio (its own synths/pads)
+| Knob Position | Measured dB | Our Model: dB = -70(1-sqrt(pos)) | Error |
+|---------------|-------------|----------------------------------|-------|
+| 100% (1.00)   | 0.0         | 0.0                              | 0.0   |
+| 75% (0.75)    | -10.4       | -9.4                             | +1.0  |
+| 50% (0.50)    | -19.9       | -20.5                            | -0.6  |
+| 25% (0.25)    | -33.2       | -35.0                            | -1.8  |
+| 0% (0.00)     | -70.0       | -70.0                            | 0.0   |
+
+Current implementation: `dB = -70 * (1 - sqrt(pos))`, then `amplitude = pow(10, dB/20)`
+
+## Per-Frame Audio Pipeline
+
+Each ioctl cycle is ~2.9ms (128 frames at 44.1kHz).
+
+### Pre-ioctl (before hardware transaction)
+
+At this point, AUDIO_OUT already contains Move's own rendered audio
+(pads, synths, drums). Move has already applied its own internal volume
+scaling to this audio — we don't control that.
 
 ```
-Move Synth Render ──→ Move Internal Mixer ──→ AUDIO_OUT
-                         │
-                         └─ Move applies its own dB-scaled volume curve
-                            (we don't control this, it's inside MoveOriginal)
-
-Volume curve: dB-based (logarithmic)
-  Knob 100%  →  0 dB    →  amplitude 1.000
-  Knob  75%  →  ~-15 dB →  amplitude ~0.178
-  Knob  50%  →  ~-30 dB →  amplitude ~0.032
-  Knob  25%  →  ~-45 dB →  amplitude ~0.006
-  Knob   0%  →  -inf dB →  amplitude 0.000
+AUDIO_OUT = [Move's audio, already volume-scaled by Move internally]
 ```
 
-### Move Everything Audio (shadow slots)
+#### Step 1: shadow_inprocess_mix_from_buffer()
 
 ```
-Slot DSP render_block()
-    │
-    ├─ Slot volume (dB-scaled, from D-Bus "Track Volume X dB")
-    │   Applied correctly: powf(10.0f, db / 20.0f)
-    │
-    ├─ Mixed into AUDIO_OUT (added to Move's audio)
-    │
-    ├─ Master FX (gain-neutral, typically)
-    │
-    └─ shadow_master_volume ←── THE PROBLEM
-        Applied as LINEAR multiplier from pixel bar position
+A. Mix ME deferred buffer into AUDIO_OUT
+   ─────────────────────────────────────
+   for each sample i:
+     AUDIO_OUT[i] += shadow_deferred_dsp_buffer[i]
 
-Volume curve: LINEAR (current broken behavior)
-  Knob 100%  →  shadow_master_volume = 1.000  →  0 dB
-  Knob  75%  →  shadow_master_volume = 0.750  →  -2.5 dB     ← should be ~-15 dB
-  Knob  50%  →  shadow_master_volume = 0.500  →  -6.0 dB     ← should be ~-30 dB
-  Knob  25%  →  shadow_master_volume = 0.250  →  -12.0 dB    ← should be ~-45 dB
-  Knob   0%  →  shadow_master_volume = 0.000  →  -inf dB
+   The deferred buffer contains renders from ALL active shadow slots,
+   accumulated from the PREVIOUS frame's post-ioctl render pass.
+   Each slot's audio already has per-slot volume applied (dB-scaled,
+   from D-Bus "Track Volume X dB" → powf(10, dB/20)).
+
+   AUDIO_OUT is now: Move_audio + ME_audio (full gain)
+
+B. Apply Master FX chain (4 slots, in series)
+   ────────────────────────────────────────────
+   Reverb, delay, etc. Applied to combined Move+ME audio.
+
+C. *** SNAPSHOT TAP *** (resample bridge source)
+   ──────────────────────────────────────────────
+   native_capture_total_mix_snapshot_from_buffer(mailbox_audio)
+   Copies AUDIO_OUT verbatim into native_total_mix_snapshot[]
+
+   Signal level: Move_audio + ME_audio + MasterFX
+                 NO shadow_master_volume applied
+
+D. *** ME SAMPLER TAP *** (quantized sampler source)
+   ──────────────────────────────────────────────────
+   sampler_capture_audio() reads from AUDIO_OUT
+   Same signal level as snapshot
+
+E. Apply shadow_master_volume to ENTIRE AUDIO_OUT
+   ─────────────────────────────────────────────────
+   for each sample i:
+     AUDIO_OUT[i] *= shadow_master_volume
+
+   shadow_master_volume = pow(10, (-70 * (1 - sqrt(pos))) / 20)
+   where pos = normalized pixel bar position (0.0 to 1.0)
+
+   ┌─────────────────────────────────────────────────────────┐
+   │ KEY ISSUE: This scales EVERYTHING in AUDIO_OUT:         │
+   │   - Move's own audio (already volume-scaled by Move)    │
+   │   - ME's audio (already slot-volume-scaled)             │
+   │                                                         │
+   │ Move's audio gets attenuated TWICE:                     │
+   │   1. By Move internally                                 │
+   │   2. By shadow_master_volume here                       │
+   │                                                         │
+   │ ME's audio gets attenuated ONCE:                        │
+   │   1. By shadow_master_volume here (correct)             │
+   └─────────────────────────────────────────────────────────┘
 ```
 
-### Volume Curve Comparison (the core mismatch)
+#### Step 2: ioctl (hardware transaction)
+
+Audio goes to DAC → speakers/headphones.
+
+### Post-ioctl (after hardware transaction)
 
 ```
-Amplitude
-1.0 ─┐══════════════════════*─── Both start at 1.0 (0 dB)
-     │                    ╱ *
-     │                  ╱    *
-0.75 ─┤               ╱       *───── LINEAR (current ME behavior)
-     │             ╱           *
-     │           ╱              *
-0.5  ─┤        ╱                 *
-     │      ╱                    *
-     │    ╱                       *
-0.25 ─┤  ╱                         *
-     │╱                              *
-     *                                 *
-0.0  ─*═══════════════════════════════════*
-     0%   25%   50%   75%   100%
-              Knob Position
+F. Copy hardware mailbox back (AUDIO_IN now has fresh mic/line data)
 
-Amplitude
-1.0 ─┐                              *─── Both start at 1.0 (0 dB)
-     │                            ╱
-     │                          ╱
-     │                        ╱
-     │                      ╱
-0.1  ─┤                   *─────────── dB CURVE (Move's native / desired)
-     │                 ╱
-     │              ╱
-0.01 ─┤          *
-     │        ╱
-     │     ╱
-     │  ╱
-0.0  ─*════════════════════════════════
-     0%   25%   50%   75%   100%
-              Knob Position
+G. native_resample_bridge_apply()
+   ─────────────────────────────────
+   When mode=OVERWRITE:
+     memcpy(AUDIO_IN, native_total_mix_snapshot)
+     Overwrites mic/line-in with our snapshot from Step C
+     Signal level: FULL GAIN (no shadow_master_volume)
 
-Gap between curves at 50% knob:
-  LINEAR:  0.500  = -6 dB
-  dB:     ~0.032  = -30 dB
-  ─────────────────────────
-  Difference:  ~24 dB  ← ME audio is 24 dB too loud at half volume!
+   When mode=OFF:
+     No-op (AUDIO_IN keeps hardware mic/line data)
+
+H. shadow_inprocess_render_to_buffer() (DSP for NEXT frame)
+   ──────────────────────────────────────────────────────────
+   For each active shadow slot:
+     render_block() → render_buffer (raw DSP output)
+     render_buffer[i] *= slot.volume  (dB-scaled per-slot volume)
+     Accumulate into shadow_deferred_dsp_buffer[] (clamped int16)
 ```
 
-## Resample / Playback Signal Chains
-
-### Chain A: Live Listening (what you hear from speakers)
+## Signal Flow: Live Listening (what you hear)
 
 ```
-                    ┌─────────────────┐
-                    │   Move Synths   │──→ Move internal dB volume ──┐
-                    └─────────────────┘                              │
-                                                                     ▼
-                    ┌─────────────────┐                         ┌─────────┐
-                    │  ME Slot (YT)   │──→ slot vol (dB) ──────→│  MIX    │
-                    └─────────────────┘                         │ (sum)   │
-                    ┌─────────────────┐                         │         │
-                    │  ME Slot 2..4   │──→ slot vol (dB) ──────→│         │
-                    └─────────────────┘                         └────┬────┘
-                                                                     │
-                                                                     ▼
-                                                              ┌─────────────┐
-                                                              │  Master FX  │
-                                                              └──────┬──────┘
-                                                                     │
-                                                    ┌────────────────┤
-                                                    │ SNAPSHOT TAP   │
-                                                    │ (full gain)    │
-                                                    ▼                │
-                                           ┌──────────────┐         │
-                                           │  snapshot[]   │         ▼
-                                           └──────────────┘  ┌──────────────┐
-                                                             │ shadow_master│
-                                                             │ _volume      │
-                                                             │ (LINEAR!)    │
-                                                             └──────┬───────┘
-                                                                    │
-                                                                    ▼
-                                                              ┌──────────┐
-                                                              │  AUDIO   │
-                                                              │  _OUT    │──→ DAC → Speakers
-                                                              └──────────┘
+┌──────────────┐
+│ Move Synths  │──→ Move internal volume (dB curve) ──┐
+│ Pads, Drums  │                                       │
+└──────────────┘                                       │
+                                                       ▼
+┌──────────────┐                                 ┌──────────┐
+│ ME Slot 1    │──→ slot vol (dB) ──────────────→│          │
+│ (e.g. YT)   │                                  │   SUM    │
+├──────────────┤                                  │ (int16   │
+│ ME Slot 2-4  │──→ slot vol (dB) ──────────────→│  clamp)  │
+└──────────────┘                                  └────┬─────┘
+                                                       │
+                                                       ▼
+                                                 ┌──────────┐
+                                                 │ Master   │
+                                                 │ FX Chain │
+                                                 └────┬─────┘
+                                                       │
+                                          ┌────────────┤
+                                          │            │
+                                     SNAPSHOT TAP      │
+                                     (full gain)       ▼
+                                          │      ┌───────────────┐
+                                          ▼      │ shadow_master │
+                                    ┌──────────┐ │ _volume       │
+                                    │ snapshot │ │ (sqrt curve)  │
+                                    │ buffer   │ └───────┬───────┘
+                                    └──────────┘         │
+                                                         ▼
+                                                   ┌──────────┐
+                                                   │ AUDIO_OUT│──→ DAC → Speakers
+                                                   └──────────┘
+
+Signal at speakers = (Move_audio + ME_audio) × MasterFX × shadow_master_volume
 ```
 
-**Signal at speakers** = `(Move_audio_dB_scaled + ME_audio_slot_dB_scaled) × MasterFX × shadow_vol_LINEAR`
+**Note:** Move_audio was already volume-scaled inside Move before reaching AUDIO_OUT.
+So Move's audio effectively gets: `Move_render × Move_vol × shadow_vol` (double-attenuated).
+ME's audio gets: `ME_render × slot_vol × shadow_vol` (single-attenuated, correct).
 
-### Chain B: Bridge Resample Capture
-
-```
-                    snapshot[] (from Chain A, Step C)
-                    Signal level: Move_audio + ME_audio + MasterFX
-                    NO volume applied (full gain)
-                            │
-                            ▼
-                    ┌──────────────────┐
-                    │  OVERWRITE mode: │
-                    │  memcpy to       │
-                    │  AUDIO_IN        │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  Move's native   │
-                    │  sampler reads   │
-                    │  AUDIO_IN        │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  Saved to pad    │
-                    │  as WAV sample   │
-                    └──────────────────┘
-```
-
-**Signal captured** = `(Move_audio_dB_scaled + ME_audio_slot_dB_scaled) × MasterFX`
-(No shadow_master_volume, no Move master volume)
-
-### Chain C: Pad Playback (resampled audio)
+## Signal Flow: Resample Bridge Capture
 
 ```
-                    ┌──────────────────┐
-                    │  Pad WAV sample  │
-                    │  (full gain)     │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  Move's internal │
-                    │  sample playback │
-                    │  engine          │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  Move's dB-based │
-                    │  master volume   │
-                    │  curve           │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  AUDIO_OUT → DAC │
-                    │  → Speakers      │
-                    └──────────────────┘
+snapshot buffer (from SNAPSHOT TAP above)
+  = (Move_audio + ME_audio) × MasterFX
+  = FULL GAIN, no shadow_master_volume
+         │
+         ▼
+┌──────────────────┐
+│ Bridge: OVERWRITE│
+│ memcpy to        │
+│ AUDIO_IN         │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Move's native    │
+│ sampler reads    │
+│ AUDIO_IN         │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Saved to pad     │
+│ as WAV sample    │
+└──────────────────┘
+
+Signal captured = (Move_audio + ME_audio) × MasterFX
+                  (no volume applied — full gain)
 ```
 
-**Signal at speakers** = `captured_audio × Move_master_vol_dB_curve`
-
-### Why Live Sounds Louder Than Resampled
+## Signal Flow: Pad Playback (resampled audio)
 
 ```
-Compare at 50% master knob:
+┌──────────────────┐
+│ Pad WAV sample   │
+│ (full gain)      │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Move's playback  │
+│ engine           │
+│ × pad gain (dB)  │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Move's internal  │  ← Move applies its own master volume here
+│ master volume    │
+│ (dB curve)       │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ AUDIO_OUT        │──→ (then shadow_master_volume applied AGAIN by Step E)
+└──────────────────┘
 
-Live (Chain A):
-  ME_audio × shadow_master_vol(0.50) = ME_audio × 0.500 = ME_audio at -6 dB
-
-Pad (Chain C):
-  ME_audio × Move_master_vol(50%)    = ME_audio × ~0.032 = ME_audio at -30 dB
-
-Difference: ~24 dB — live ME audio is perceived as dramatically louder
+Signal at speakers = captured_audio × pad_gain × Move_vol × shadow_vol
 ```
 
-## The Two Problems
+## The Unsolved Problem
 
-### Problem 1: Volume Curve Shape (primary)
+### What we measured
 
-`shadow_master_volume` uses a linear mapping from pixel bar position.
-Move uses a dB/logarithmic curve for its own audio.
-At any volume setting below 100%, ME audio is louder than it should be.
+USB-C recording at ~50% volume (globalVolume = -20.5 dB):
 
-This explains "barely reduces volume until near 0 on the curve."
+| Source | RMS Level |
+|--------|-----------|
+| Live YT slot | ~-35.5 dB |
+| Resampled pad playback | ~-58.0 dB |
+| **Gap** | **~22.5 dB** |
 
-### Problem 2: Capture Tap Point (secondary, depends on Problem 1 fix)
+Our volume curve computed -20.4 dB for the same knob position (matches Move's -20.5 dB).
 
-The resample snapshot is captured BEFORE shadow_master_volume is applied.
-This means the captured signal is at full gain, regardless of volume knob.
+### Why the gap exists
 
-When played back through Move's proper dB curve, the pad plays at the
-"correct" volume for the knob position — but this is quieter than the
-live signal which was only lightly attenuated by the linear curve.
+The ~22.5 dB gap is consistent with **double attenuation** during pad playback:
 
-**If we fix Problem 1 (make shadow volume match Move's curve), then:**
-- Live at 50%: ME_audio × ~0.032  (-30 dB)
-- Pad at 50%:  ME_audio × ~0.032  (-30 dB)
+```
+Live listening path:
+  ME_audio × slot_vol × shadow_vol
+  = ME_audio × 1.0 × shadow_vol(-20.5 dB)
+  = ME_audio at -20.5 dB
 
-**They would match!** Because both would use equivalent dB curves.
+Pad playback path:
+  captured_audio × pad_gain × Move_vol × shadow_vol
+  = ME_audio × 1.0 × Move_vol(-20.5 dB) × shadow_vol(-20.5 dB)
+  = ME_audio at -41.0 dB
 
-However, "what you hear" would still differ from "what's captured" by
-the volume attenuation amount. If you want capture = heard, the tap
-must move to after volume application. See Recommendations below.
+Gap = 41.0 - 20.5 = 20.5 dB (close to measured 22.5 dB)
+```
 
-## Recommendations
+The pad's audio, when played back by Move, goes into AUDIO_OUT where it has
+already been attenuated by Move's own volume. Then our Step E applies
+`shadow_master_volume` on top of that — double attenuation.
 
-### Fix 1: Apply a power curve to pixel-bar volume (REQUIRED)
+### What we've tried (and failed)
 
-Replace the linear mapping with a power curve that approximates dB behavior.
+1. **me_active conditional** — only apply shadow_vol when ME slots are active.
+   Failed because ME slots are always active in shadow mode (they stay loaded).
+   Also would cause weird volume discontinuities.
 
-Current code (line ~7358):
+2. **Pre-mix volume scaling** — apply shadow_vol to ME deferred buffer before
+   mixing into AUDIO_OUT, skip post-mix volume entirely. Didn't help (still
+   quieter). Trade-off: bridge snapshot loses Master FX.
+
+### Ideas not yet tried
+
+- **Separate ME-only from Move audio**: We can't easily distinguish Move's
+  audio from ME's audio once they're summed in AUDIO_OUT. We'd need to track
+  what we added vs what was already there.
+
+- **Don't apply shadow_vol to AUDIO_OUT at all**: Let the volume bar be
+  cosmetic only, and rely on per-slot volume for ME level control. Problem:
+  the volume knob would stop working for ME audio.
+
+- **Apply shadow_vol only to the deferred buffer during render**: Scale each
+  slot's render output by shadow_vol in `shadow_inprocess_render_to_buffer()`.
+  The mixed AUDIO_OUT would then have Move_audio (untouched) + ME_audio×shadow_vol.
+  Snapshot would capture Move_audio + ME_audio×shadow_vol (which includes our
+  volume). On playback, pad = snapshot × Move_vol × shadow_vol — still double
+  for the ME portion. Snapshot would need to capture ME at full gain separately.
+
+- **Route through Move's volume**: Instead of tracking the pixel bar, find a
+  way to hook into Move's actual volume control. Unknown if possible.
+
+## Per-Slot Volume (working correctly)
+
+Per-slot volume is received via D-Bus as "Track Volume X dB" and converted:
+
 ```c
-float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
-shadow_master_volume = normalized;  // LINEAR - wrong!
+float vol = powf(10.0f, dB_value / 20.0f);
+shadow_chain_slots[slot].volume = vol;
 ```
 
-Proposed fix:
+Applied during render in `shadow_inprocess_render_to_buffer()`:
+
 ```c
-float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
-if (normalized < 0.0f) normalized = 0.0f;
-if (normalized > 1.0f) normalized = 1.0f;
-
-// Power curve: n^3 approximates perceptual dB scaling
-// n=1.0 → 1.0 (0dB), n=0.5 → 0.125 (-18dB), n=0.25 → 0.016 (-36dB)
-shadow_master_volume = normalized * normalized * normalized;
+for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+    int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
+    ...
+}
 ```
 
-Comparison of curve options:
+This is correct — dB from D-Bus, converted to linear amplitude, applied per-slot.
 
-| Knob pos | Linear (now) | n^2    | n^3    | n^4    | Move approx |
-|----------|-------------|--------|--------|--------|-------------|
-| 100%     | 1.000       | 1.000  | 1.000  | 1.000  | 1.000       |
-| 75%      | 0.750       | 0.563  | 0.422  | 0.316  | ~0.178      |
-| 50%      | 0.500       | 0.250  | 0.125  | 0.063  | ~0.032      |
-| 25%      | 0.250       | 0.063  | 0.016  | 0.004  | ~0.006      |
-| 10%      | 0.100       | 0.010  | 0.001  | 0.0001 | ~0.001      |
+## Files
 
-n^3 is the best starting point. It may need tuning to match Move's
-exact curve, but it will be dramatically better than linear.
-
-### The snapshot tap point is CORRECT (pre-volume)
-
-The snapshot captures at full gain, before shadow_master_volume. This
-is the right design because:
-
-```
-Live at 50% knob:
-  Snapshot  = ME_audio (full gain)
-  Speakers  = ME_audio × our_curve(50%)
-
-Pad playback at 50% knob:
-  Pad sample = ME_audio (full gain, captured pre-volume)
-  Speakers   = ME_audio × Move_curve(50%)
-```
-
-Both paths apply exactly ONE volume stage. If our curve matches Move's
-curve (Fix 1), they produce the same loudness at the same knob position.
-
-If we captured POST-volume, pad playback would be:
-  `ME_audio × our_curve × Move_curve` = DOUBLE attenuation (wrong!)
-
-**The pre-volume tap is what makes resampling work correctly.**
-The only fix needed is making the curves match (Fix 1).
-
-### Fix 3: Clean up YT module.json (minor)
-
-Remove duplicate `gain` entries (3 copies, only 1 needed).
-
-## Why Pre-Volume Tap + Matched Curves = Correct Resampling
-
-```
-The key insight:
-
-  Live heard    = signal × our_volume(knob_pos)
-  Pad playback  = signal × Move_volume(knob_pos)
-
-  If our_volume(x) ≈ Move_volume(x) for all x:
-    Live heard ≈ Pad playback  ✓
-
-  Capture is pre-volume (full gain), so each path applies
-  exactly one volume stage. No double-attenuation.
-```
-
-## Startup Volume Consistency
-
-At startup, `shadow_read_initial_volume()` correctly reads dB from
-Settings.json and converts with `powf(10, dB/20)`. The first volume
-knob touch will overwrite this with the pixel-bar value.
-
-After Fix 1, the power-curved pixel value should produce a similar
-amplitude to the dB-converted startup value, keeping volume consistent
-across the transition from startup → first knob touch.
+- `src/move_anything_shim.c` — all audio mixing, volume, snapshot, bridge logic
+- `src/host/shadow_constants.h` — shared memory layout
+- `docs/GAIN_STAGING_ANALYSIS.md` — this file
