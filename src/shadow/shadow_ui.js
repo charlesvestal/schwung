@@ -311,9 +311,14 @@ const KNOB_ACCEL_SLOW_MS = 150;    // Slower than this = min multiplier
 const KNOB_ACCEL_FAST_MS = 25;     // Faster than this = max multiplier
 const KNOB_BASE_STEP_FLOAT = 0.005; // Base step for floats (acceleration multiplies this)
 const KNOB_BASE_STEP_INT = 1;       // Base step for ints
+const TRIGGER_ENUM_TURN_THRESHOLD = 4;  // Positive detents required before firing trigger action
+const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new trigger gesture
 
 /* Time tracking for knob acceleration */
 let knobLastTimeMs = [0, 0, 0, 0, 0, 0, 0, 0];  // Last event time per knob
+let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
+let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
+let triggerEnumLatched = [false, false, false, false, false, false, false, false];
 
 /* Calculate knob acceleration multiplier based on time between events */
 function calcKnobAccel(knobIndex, isInt) {
@@ -340,6 +345,59 @@ function calcKnobAccel(knobIndex, isInt) {
     }
 
     return accel;
+}
+
+function isTriggerEnumMeta(meta) {
+    return !!(meta &&
+              meta.type === "enum" &&
+              Array.isArray(meta.options) &&
+              meta.options.length === 2 &&
+              meta.options[0] === "idle" &&
+              meta.options[1] === "trigger");
+}
+
+function updateTriggerEnumAccum(knobIndex, delta) {
+    const now = Date.now();
+    const last = triggerEnumLastMs[knobIndex] || 0;
+    let accum = triggerEnumAccum[knobIndex] || 0;
+    let latched = !!triggerEnumLatched[knobIndex];
+
+    if (last === 0 || (now - last) > TRIGGER_ENUM_WINDOW_MS) {
+        accum = 0;
+        latched = false;
+    }
+
+    triggerEnumLastMs[knobIndex] = now;
+
+    if (latched) {
+        triggerEnumAccum[knobIndex] = TRIGGER_ENUM_TURN_THRESHOLD;
+        triggerEnumLatched[knobIndex] = true;
+        return false;
+    }
+
+    if (delta > 0) {
+        accum += delta;
+    } else if (delta < 0) {
+        accum = Math.max(0, accum + delta);
+    }
+
+    triggerEnumAccum[knobIndex] = accum;
+
+    if (accum >= TRIGGER_ENUM_TURN_THRESHOLD) {
+        triggerEnumAccum[knobIndex] = TRIGGER_ENUM_TURN_THRESHOLD;
+        triggerEnumLatched[knobIndex] = true;
+        return true;
+    }
+
+    return false;
+}
+
+function getTriggerEnumOverlayValue(knobIndex) {
+    const latched = !!triggerEnumLatched[knobIndex];
+    const progress = triggerEnumAccum[knobIndex] || 0;
+    if (latched) return "Triggered";
+    if (progress > 0) return `Turn? ${progress}/${TRIGGER_ENUM_TURN_THRESHOLD}`;
+    return "Turn?";
 }
 
 /* Cached knob contexts - avoid IPC calls on every CC message */
@@ -390,6 +448,8 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "resample_bridge", label: "Resample Src", type: "enum",
+      options: ["Off", "Mix", "Replace"], values: [0, 1, 2] },
     { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
       options: ["+Shift", "+Jog Touch", "Off"], values: [0, 1, 2] },
     { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
@@ -400,6 +460,17 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
 ];
+
+const RESAMPLE_BRIDGE_LABELS = ["Off", "Mix", "Replace"];
+
+function parseResampleBridgeMode(raw) {
+    if (raw === null || raw === undefined) return 1;
+    const text = String(raw).trim().toLowerCase();
+    if (text === "0" || text === "off") return 0;
+    if (text === "2" || text === "overwrite" || text === "replace") return 2;
+    if (text === "1" || text === "mix") return 1;
+    return 1;
+}
 
 /* Get dynamic settings items based on whether preset is loaded */
 function getMasterFxSettingsItems() {
@@ -610,7 +681,7 @@ function getModuleUiPath(moduleId) {
         /* Check if ui_chain.js exists */
         try {
             const stat = os.stat(uiPath);
-            if (stat && stat[0] === 0) {
+            if (stat && stat[1] === 0) {
                 return uiPath;
             }
         } catch (e) {
@@ -621,7 +692,7 @@ function getModuleUiPath(moduleId) {
         uiPath = `${moduleDir}/ui.js`;
         try {
             const stat = os.stat(uiPath);
-            if (stat && stat[0] === 0) {
+            if (stat && stat[1] === 0) {
                 return uiPath;
             }
         } catch (e) {
@@ -2316,6 +2387,10 @@ function saveMasterFxChainConfig() {
         if (typeof overlay_knobs_get_mode === "function") {
             config.overlay_knobs_mode = overlay_knobs_get_mode();
         }
+        if (typeof shadow_get_param === "function") {
+            const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
+            config.resample_bridge_mode = parseResampleBridgeMode(modeRaw);
+        }
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -2335,6 +2410,10 @@ function loadMasterFxChainFromConfig() {
         /* Restore overlay knobs mode */
         if (typeof config.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
             overlay_knobs_set_mode(config.overlay_knobs_mode);
+        }
+        if (config.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
+            const mode = parseResampleBridgeMode(config.resample_bridge_mode);
+            shadow_set_param(0, "master_fx:resample_bridge", String(mode));
         }
 
         if (!config.master_fx_chain) return;
@@ -2948,6 +3027,26 @@ function getKnobParamsForTarget(slot, target) {
             }
         } catch (e) {
             /* Parse error, fall back to known params */
+        }
+    }
+
+    /* Fall back to chain_params metadata before using hardcoded defaults */
+    if (params.length === 0) {
+        const chainParamsJson = getSlotParam(slot, `${target}:chain_params`);
+        if (chainParamsJson) {
+            try {
+                const chainParams = JSON.parse(chainParamsJson);
+                if (Array.isArray(chainParams)) {
+                    for (const p of chainParams) {
+                        if (!p || !p.key) continue;
+                        if (!params.find(pp => pp.key === p.key)) {
+                            params.push({ key: p.key, label: p.name || p.label || p.key });
+                        }
+                    }
+                }
+            } catch (e) {
+                /* Parse error, continue to legacy hardcoded fallback */
+            }
         }
     }
 
@@ -3810,7 +3909,11 @@ function showKnobOverlay(knobIndex, value) {
                 const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
                 /* For enums, show string directly; for numbers, parse and format */
                 if (isEnum) {
-                    displayVal = currentVal || "-";
+                    if (isTriggerEnumMeta(ctx.meta)) {
+                        displayVal = getTriggerEnumOverlayValue(knobIndex);
+                    } else {
+                        displayVal = currentVal || "-";
+                    }
                 } else {
                     const num = parseFloat(currentVal);
                     displayVal = !isNaN(num) ? formatParamForOverlay(num, ctx.meta) : (currentVal || "-");
@@ -3884,7 +3987,11 @@ function processPendingHierKnob() {
                 if (currentVal !== null) {
                     /* For enums, pass string directly; for numbers, parse */
                     if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
-                        showOverlay(ctx.title, currentVal);
+                        if (isTriggerEnumMeta(ctx.meta)) {
+                            showOverlay(ctx.title, getTriggerEnumOverlayValue(pendingHierKnobIndex));
+                        } else {
+                            showOverlay(ctx.title, currentVal);
+                        }
                     } else {
                         showKnobOverlay(pendingHierKnobIndex, parseFloat(currentVal));
                     }
@@ -3909,6 +4016,17 @@ function processPendingHierKnob() {
 
     /* Handle enum type - cycle through options (clamp at ends, don't wrap) */
     if (ctx.meta && ctx.meta.type === "enum" && ctx.meta.options && ctx.meta.options.length > 0) {
+        if (isTriggerEnumMeta(ctx.meta)) {
+            const shouldFire = updateTriggerEnumAccum(knobIndex, delta);
+            if (shouldFire) {
+                setSlotParam(ctx.slot, ctx.fullKey, "trigger");
+                showOverlay(ctx.title, "Triggered");
+            } else {
+                showOverlay(ctx.title, getTriggerEnumOverlayValue(knobIndex));
+            }
+            return;
+        }
+
         const currentIndex = ctx.meta.options.indexOf(currentVal);
         let newIndex = currentIndex + (delta > 0 ? 1 : -1);
         /* Clamp at ends instead of wrapping */
@@ -4215,6 +4333,11 @@ function getMasterFxSettingValue(setting) {
         const num = parseFloat(val);
         return isNaN(num) ? val : `${Math.round(num * 100)}%`;
     }
+    if (setting.key === "resample_bridge") {
+        const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
+        const mode = parseResampleBridgeMode(modeRaw);
+        return RESAMPLE_BRIDGE_LABELS[mode] || "Mix";
+    }
     if (setting.key === "overlay_knobs") {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
         return ["+Shift", "+Jog Touch", "Off"][mode] || "+Shift";
@@ -4252,6 +4375,15 @@ function adjustMasterFxSetting(setting, delta) {
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));
         shadow_set_param(0, "master_fx:volume", val.toFixed(2));
+        return;
+    }
+
+    if (setting.key === "resample_bridge") {
+        const current = parseResampleBridgeMode(shadow_get_param(0, "master_fx:resample_bridge"));
+        const count = Array.isArray(setting.values) ? setting.values.length : 3;
+        const next = (current + (delta > 0 ? 1 : count - 1)) % count;
+        shadow_set_param(0, "master_fx:resample_bridge", String(next));
+        saveMasterFxChainConfig();
         return;
     }
 

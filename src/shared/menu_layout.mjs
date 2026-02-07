@@ -213,12 +213,15 @@ let overlayTimeout = 0;
  * @param {string} value - Value to display (e.g., "50%" or "3")
  */
 export function showOverlay(name, value) {
+    const sameContent = overlayActive && overlayName === name && overlayValue === value;
     overlayActive = true;
     overlayName = name;
     overlayValue = value;
     overlayTimeout = OVERLAY_DURATION_TICKS;
-    /* Announce parameter change to screen reader */
-    announceParameter(name, value);
+    /* Announce only when content changes to avoid per-frame D-Bus spam. */
+    if (!sameContent) {
+        announceParameter(name, value);
+    }
 }
 
 /**
