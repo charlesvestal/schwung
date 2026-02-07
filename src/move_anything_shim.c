@@ -1154,6 +1154,8 @@ typedef enum {
     NATIVE_SAMPLER_SOURCE_USB_C_IN
 } native_sampler_source_t;
 static volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
+/* Sticky source fallback for transient UNKNOWN states (e.g. route/re-init changes). */
+static volatile native_sampler_source_t native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 
 typedef enum {
     NATIVE_RESAMPLE_BRIDGE_OFF = 0,
@@ -1239,6 +1241,7 @@ static void native_sampler_update_from_dbus_text(const char *text)
                  native_sampler_source_name(parsed), text);
         shadow_log(msg);
         native_sampler_source = parsed;
+        native_sampler_source_last_known = parsed;
     }
 }
 
@@ -1249,12 +1252,32 @@ static int16_t clamp_i16(int32_t v)
     return (int16_t)v;
 }
 
-static void native_capture_total_mix_snapshot(void)
+static void native_capture_total_mix_snapshot_from_buffer(const int16_t *src)
 {
-    if (!global_mmap_addr) return;
-    memcpy(native_total_mix_snapshot, global_mmap_addr + AUDIO_OUT_OFFSET, AUDIO_BUFFER_SIZE);
+    if (!src) return;
+    memcpy(native_total_mix_snapshot, src, AUDIO_BUFFER_SIZE);
     __sync_synchronize();
     native_total_mix_snapshot_valid = 1;
+}
+
+/* Source gating policy for native bridge.
+ * - Allow: Resampling and Line In
+ * - Block: Mic In and USB-C In
+ * - Sticky fallback: use last known source if current is UNKNOWN
+ * - If no known source exists yet, fail-open to keep behavior stable. */
+static int native_resample_bridge_source_allows_apply(void)
+{
+    native_sampler_source_t src = native_sampler_source;
+    if (src == NATIVE_SAMPLER_SOURCE_UNKNOWN) {
+        src = native_sampler_source_last_known;
+    }
+
+    if (src == NATIVE_SAMPLER_SOURCE_MIC_IN) return 0;
+    if (src == NATIVE_SAMPLER_SOURCE_USB_C_IN) return 0;
+    if (src == NATIVE_SAMPLER_SOURCE_LINE_IN) return 1;
+    if (src == NATIVE_SAMPLER_SOURCE_RESAMPLING) return 1;
+    if (src == NATIVE_SAMPLER_SOURCE_UNKNOWN) return 1;
+    return 1;
 }
 
 static void native_resample_bridge_apply(void)
@@ -1264,7 +1287,7 @@ static void native_resample_bridge_apply(void)
     native_resample_bridge_mode_t mode = native_resample_bridge_mode;
     if (mode == NATIVE_RESAMPLE_BRIDGE_OFF) return;
 
-    if (native_sampler_source != NATIVE_SAMPLER_SOURCE_RESAMPLING) return;
+    if (!native_resample_bridge_source_allows_apply()) return;
 
     int16_t *dst = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
     if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) {
@@ -4823,6 +4846,9 @@ static void shadow_inprocess_mix_audio(void) {
         }
     }
 
+    /* Capture combined audio AFTER master FX, BEFORE master volume. */
+    native_capture_total_mix_snapshot_from_buffer(output_buffer);
+
     /* Apply master volume to shadow output */
     float mv = shadow_master_volume;
     if (mv < 1.0f) {
@@ -4895,6 +4921,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
             s->api->process_block(s->instance, mailbox_audio, FRAMES_PER_BLOCK);
         }
     }
+
+    /* Capture combined audio AFTER master FX, BEFORE master volume. */
+    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
 
     /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
@@ -7251,7 +7280,6 @@ do_ioctl:
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
      * Copy shadow mailbox to hardware before ioctl.
      * Move has been writing to shadow_mailbox; now we send that to hardware. */
-    native_capture_total_mix_snapshot();
     if (hardware_mmap_addr) {
         memcpy(hardware_mmap_addr, shadow_mailbox, MAILBOX_SIZE);
     }

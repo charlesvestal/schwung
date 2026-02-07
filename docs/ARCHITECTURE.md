@@ -207,7 +207,9 @@ int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
 
 ### Native Sampler Bridge (Shim)
 
-The shim can bridge Move Everything's mixed output into Move's native sampler input path when native sampling is in use. This is controlled by the Master FX setting `Resample Src` (`Off`, `Mix`, `Replace`), and only applies while native source detection indicates resampling.
+The shim can bridge Move Everything's mixed output into Move's native sampler input path when native sampling is in use. This is controlled by the Master FX setting `Resample Src` (`Off`, `Mix`, `Replace`).
+
+Bridge application uses native source detection with sticky fallback to survive transient route resets. It applies for `Resampling` and `Line In`, blocks for `Mic In` and `USB-C In`, and keeps last-known behavior through temporary unknown states.
 
 For practical use, `Replace` with sampler source set to `Line In` and monitoring set to `Off` is recommended. Other routing/monitoring combinations can cause feedback loops.
 
