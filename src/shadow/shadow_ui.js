@@ -449,7 +449,7 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "resample_bridge", label: "Resample Src", type: "enum",
-      options: ["Off", "Mix", "Replace"], values: [0, 1, 2] },
+      options: ["Off", "Replace"], values: [0, 2] },
     { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
       options: ["+Shift", "+Jog Touch", "Off"], values: [0, 1, 2] },
     { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
@@ -461,14 +461,15 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
-const RESAMPLE_BRIDGE_LABELS = ["Off", "Mix", "Replace"];
+const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Off", 2: "Replace" };
+const RESAMPLE_BRIDGE_VALUES = [0, 2];
 
 function parseResampleBridgeMode(raw) {
     if (raw === null || raw === undefined) return 0;
     const text = String(raw).trim().toLowerCase();
     if (text === "0" || text === "off") return 0;
     if (text === "2" || text === "overwrite" || text === "replace") return 2;
-    if (text === "1" || text === "mix") return 1;
+    if (text === "1" || text === "mix") return 2;  // Backward compatibility
     return 0;
 }
 
@@ -4336,7 +4337,7 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "resample_bridge") {
         const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
         const mode = parseResampleBridgeMode(modeRaw);
-        return RESAMPLE_BRIDGE_LABELS[mode] || "Off";
+        return RESAMPLE_BRIDGE_LABEL_BY_MODE[mode] || "Off";
     }
     if (setting.key === "overlay_knobs") {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
@@ -4380,9 +4381,13 @@ function adjustMasterFxSetting(setting, delta) {
 
     if (setting.key === "resample_bridge") {
         const current = parseResampleBridgeMode(shadow_get_param(0, "master_fx:resample_bridge"));
-        const count = Array.isArray(setting.values) ? setting.values.length : 3;
-        const next = (current + (delta > 0 ? 1 : count - 1)) % count;
-        shadow_set_param(0, "master_fx:resample_bridge", String(next));
+        const values = (Array.isArray(setting.values) && setting.values.length > 0)
+            ? setting.values
+            : RESAMPLE_BRIDGE_VALUES;
+        let idx = values.indexOf(current);
+        if (idx < 0) idx = 0;
+        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
+        shadow_set_param(0, "master_fx:resample_bridge", String(values[nextIdx]));
         saveMasterFxChainConfig();
         return;
     }

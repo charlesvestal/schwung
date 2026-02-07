@@ -47,13 +47,22 @@ if ! echo "${bridge_ctx}" | rg -q "native_resample_bridge_mode"; then
   exit 1
 fi
 
-# 3b) Source allow helper should be sticky: allow unknown/line-in/resampling, reject mic/usb-c.
+# 3b) Source allow helper should enforce:
+#     - overwrite mode always allowed
+#     - explicit mic/usb-c blocked
 allow_fn_start=$(rg -n "static int native_resample_bridge_source_allows_apply\\(void\\)" "$file" | head -n 1 | cut -d: -f1 || true)
 if [ -z "${allow_fn_start}" ]; then
-  echo "FAIL: Missing native_resample_bridge_source_allows_apply()" >&2
+  allow_fn_start=$(rg -n "static int native_resample_bridge_source_allows_apply\\(native_resample_bridge_mode_t mode\\)" "$file" | head -n 1 | cut -d: -f1 || true)
+fi
+if [ -z "${allow_fn_start}" ]; then
+  echo "FAIL: Missing native_resample_bridge_source_allows_apply(mode)" >&2
   exit 1
 fi
 allow_ctx=$(sed -n "${allow_fn_start},$((allow_fn_start + 60))p" "$file")
+if ! echo "${allow_ctx}" | rg -q "NATIVE_RESAMPLE_BRIDGE_OVERWRITE"; then
+  echo "FAIL: Source allow helper must explicitly allow overwrite mode" >&2
+  exit 1
+fi
 if ! echo "${allow_ctx}" | rg -q "NATIVE_SAMPLER_SOURCE_MIC_IN"; then
   echo "FAIL: Source allow helper must explicitly handle MIC_IN" >&2
   exit 1
@@ -62,12 +71,8 @@ if ! echo "${allow_ctx}" | rg -q "NATIVE_SAMPLER_SOURCE_USB_C_IN"; then
   echo "FAIL: Source allow helper must explicitly handle USB_C_IN" >&2
   exit 1
 fi
-if ! echo "${allow_ctx}" | rg -q "NATIVE_SAMPLER_SOURCE_LINE_IN"; then
-  echo "FAIL: Source allow helper should explicitly allow LINE_IN" >&2
-  exit 1
-fi
-if ! echo "${allow_ctx}" | rg -q "NATIVE_SAMPLER_SOURCE_UNKNOWN"; then
-  echo "FAIL: Source allow helper should include UNKNOWN fallback" >&2
+if ! echo "${allow_ctx}" | rg -q "return 1;"; then
+  echo "FAIL: Source allow helper should fail open for unknown/non-blocked sources" >&2
   exit 1
 fi
 

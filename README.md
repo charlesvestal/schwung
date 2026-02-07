@@ -76,8 +76,9 @@ Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md)
 In **Master FX > Settings**, `Resample Src` controls whether Move Everything audio is fed into native Move sampling workflows:
 
 - `Off`: Disabled (default)
-- `Mix`: Adds Move Everything output to the native sampler input
 - `Replace`: Replaces native sampler input with Move Everything master output
+
+`Mix` is retained only as a legacy config value and is treated as `Replace`.
 
 For the most reliable native sampling behavior with this feature:
 - Set `Resample Src` to **Replace**
