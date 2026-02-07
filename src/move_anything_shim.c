@@ -1178,6 +1178,17 @@ static volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATI
 /* Snapshot of final mixed output (AUDIO_OUT) at pre-master tap for native resample bridge. */
 static int16_t native_total_mix_snapshot[FRAMES_PER_BLOCK * 2];
 static volatile int native_total_mix_snapshot_valid = 0;
+/* Split component buffers for bridge compensation (no-MFX case).
+ * move_component: Move's audio from AUDIO_OUT before ME mixing.
+ * me_component: ME's deferred buffer at full gain (slot-vol only, no master-vol). */
+static int16_t native_bridge_move_component[FRAMES_PER_BLOCK * 2];
+static int16_t native_bridge_me_component[FRAMES_PER_BLOCK * 2];
+static float native_bridge_capture_mv = 1.0f;
+static volatile int native_bridge_split_valid = 0;
+/* Overwrite makeup diagnostics (helps trace master-volume compensation behavior). */
+static volatile float native_bridge_makeup_desired_gain = 1.0f;
+static volatile float native_bridge_makeup_applied_gain = 1.0f;
+static volatile int native_bridge_makeup_limited = 0;
 
 static int shadow_read_global_volume_from_settings(float *linear_out, float *db_out);
 
@@ -1397,27 +1408,97 @@ static int16_t clamp_i16(int32_t v)
     return (int16_t)v;
 }
 
-/* Compensate pre-master snapshot by inverse master volume so native playback
- * through Move volume + shim master volume lands at the same perceived level.
- * Only used for native bridge overwrite path when Master FX chain is active. */
-static void native_resample_bridge_apply_master_volume_compensation(const int16_t *src,
-                                                                    int16_t *dst,
-                                                                    size_t samples)
+/* Overwrite path with component-based compensation.
+ *
+ * When Master FX is OFF and split buffers are valid, we can compensate for
+ * Move's internal master-volume attenuation on the native audio component.
+ *
+ * Problem: Move's audio in AUDIO_OUT is already attenuated by Move's master
+ * volume. When captured and played back as a pad, Move attenuates it AGAIN.
+ * Result: pad = captured × Move_vol = Move_audio × Move_vol² (double atten).
+ *
+ * Fix: undo Move's volume on the native component before writing to bridge:
+ *   dst = clamp(move_component / mv + me_component)
+ * On playback Move applies its vol once: (move/mv + me) × Move_vol
+ *   ≈ move + me × Move_vol ≈ move + me × mv = live output.
+ *
+ * When Master FX is ON, the signals are nonlinearly mixed and can't be
+ * decomposed — fall back to unity copy from the post-FX snapshot. */
+static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
+                                                          int16_t *dst,
+                                                          size_t samples)
 {
     if (!src || !dst || samples == 0) return;
 
-    float mv = shadow_master_volume;
-    if (mv >= 0.9995f || mv <= 0.0005f) {
+    float mv = native_bridge_capture_mv;
+    if (mv < 0.001f) {
+        /* Volume essentially muted — can't compensate meaningfully */
         memcpy(dst, src, samples * sizeof(int16_t));
+        native_bridge_makeup_desired_gain = 0.0f;
+        native_bridge_makeup_applied_gain = 1.0f;
+        native_bridge_makeup_limited = 0;
         return;
     }
 
     float inv_mv = 1.0f / mv;
-    for (size_t i = 0; i < samples; i++) {
-        float s = (float)src[i] * inv_mv;
-        if (s > 32767.0f) s = 32767.0f;
-        if (s < -32768.0f) s = -32768.0f;
-        dst[i] = (int16_t)lroundf(s);
+    /* Cap makeup gain to prevent extreme boosting at very low volumes.
+     * 20× = +26dB. */
+    float max_makeup = 20.0f;
+
+    if (!shadow_master_fx_chain_active() && native_bridge_split_valid) {
+        /* Component compensation for no-MFX case */
+        float native_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
+        int limiter_hit = 0;
+
+        for (size_t i = 0; i < samples; i++) {
+            float move_scaled = (float)native_bridge_move_component[i] * native_gain;
+            float me = (float)native_bridge_me_component[i];
+            float sum = move_scaled + me;
+            if (sum > 32767.0f) { sum = 32767.0f; limiter_hit = 1; }
+            if (sum < -32768.0f) { sum = -32768.0f; limiter_hit = 1; }
+            dst[i] = (int16_t)lroundf(sum);
+        }
+
+        native_bridge_makeup_desired_gain = inv_mv;
+        native_bridge_makeup_applied_gain = native_gain;
+        native_bridge_makeup_limited = limiter_hit;
+    } else if (shadow_master_fx_chain_active()) {
+        /* MFX-active case: snapshot is already post-FX.
+         * Compensate by inverse master volume so playback through Move's
+         * master volume lands at live level, then cap by available headroom
+         * to avoid hard clipping. */
+        float applied_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
+        float peak = 0.0f;
+        for (size_t i = 0; i < samples; i++) {
+            float a = fabsf((float)src[i]);
+            if (a > peak) peak = a;
+        }
+
+        int limiter_hit = 0;
+        if (peak > 1.0f) {
+            float safe_gain = 32760.0f / peak;
+            if (applied_gain > safe_gain) {
+                applied_gain = safe_gain;
+                limiter_hit = 1;
+            }
+        }
+
+        for (size_t i = 0; i < samples; i++) {
+            float scaled = (float)src[i] * applied_gain;
+            if (scaled > 32767.0f) scaled = 32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            dst[i] = (int16_t)lroundf(scaled);
+        }
+
+        native_bridge_makeup_desired_gain = inv_mv;
+        native_bridge_makeup_applied_gain = applied_gain;
+        native_bridge_makeup_limited = limiter_hit;
+    } else {
+        /* Split not valid and no MFX path available — unity copy */
+        memcpy(dst, src, samples * sizeof(int16_t));
+        native_bridge_makeup_desired_gain = 1.0f;
+        native_bridge_makeup_applied_gain = 1.0f;
+        native_bridge_makeup_limited = 0;
     }
 }
 
@@ -1487,11 +1568,16 @@ static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
 
     char msg[512];
     snprintf(msg, sizeof(msg),
-             "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f tap=pre-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
+             "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f split=%d mfx=%d makeup=(%.2fx->%.2fx lim=%d) tap=post-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
              native_resample_bridge_mode_name(mode),
              native_sampler_source_name(native_sampler_source),
              native_sampler_source_name(native_sampler_source_last_known),
              shadow_master_volume,
+             native_bridge_split_valid,
+             shadow_master_fx_chain_active(),
+             native_bridge_makeup_desired_gain,
+             native_bridge_makeup_applied_gain,
+             native_bridge_makeup_limited,
              src_m.rms_l, src_m.rms_r,
              dst_m.rms_l, dst_m.rms_r,
              src_m.rms_low_l, src_m.rms_low_r,
@@ -1518,20 +1604,14 @@ static void native_resample_bridge_apply(void)
 
     int16_t *dst = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
     if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) {
-        const int16_t *bridge_src = native_total_mix_snapshot;
         int16_t compensated_snapshot[FRAMES_PER_BLOCK * 2];
-
-        if (shadow_master_fx_chain_active()) {
-            native_resample_bridge_apply_master_volume_compensation(
-                native_total_mix_snapshot,
-                compensated_snapshot,
-                FRAMES_PER_BLOCK * 2
-            );
-            bridge_src = compensated_snapshot;
-        }
-
-        memcpy(dst, bridge_src, AUDIO_BUFFER_SIZE);
-        native_resample_diag_log_apply(mode, bridge_src, dst);
+        native_resample_bridge_apply_overwrite_makeup(
+            native_total_mix_snapshot,
+            compensated_snapshot,
+            FRAMES_PER_BLOCK * 2
+        );
+        memcpy(dst, compensated_snapshot, AUDIO_BUFFER_SIZE);
+        native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
         return;
     }
 
@@ -5064,11 +5144,18 @@ static void shadow_inprocess_mix_audio(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
-    int16_t move_pre_mix[FRAMES_PER_BLOCK * 2];
-    memcpy(move_pre_mix, mailbox_audio, sizeof(move_pre_mix));
+    float mv = shadow_master_volume;
+    /* Use one gain topology for all cases: pre-scale ME input by current master factor. */
+    float me_input_scale = (mv < 1.0f) ? mv : 1.0f;
+
+    /* Save Move's audio for bridge split component (before mixing ME). */
+    memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
+
     int32_t mix[FRAMES_PER_BLOCK * 2];
+    int32_t me_full[FRAMES_PER_BLOCK * 2];  /* ME at full gain for bridge */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         mix[i] = mailbox_audio[i];
+        me_full[i] = 0;
     }
 
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
@@ -5080,11 +5167,22 @@ static void shadow_inprocess_mix_audio(void) {
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
             float vol = shadow_chain_slots[s].volume;
+            float gain = vol * me_input_scale;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                mix[i] += (int32_t)(render_buffer[i] * vol);
+                mix[i] += (int32_t)lroundf((float)render_buffer[i] * gain);
+                me_full[i] += (int32_t)lroundf((float)render_buffer[i] * vol);
             }
         }
     }
+
+    /* Save ME full-gain component for bridge split */
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        if (me_full[i] > 32767) me_full[i] = 32767;
+        if (me_full[i] < -32768) me_full[i] = -32768;
+        native_bridge_me_component[i] = (int16_t)me_full[i];
+    }
+    native_bridge_capture_mv = mv;
+    native_bridge_split_valid = 1;
 
     /* Clamp and write to output buffer */
     int16_t output_buffer[FRAMES_PER_BLOCK * 2];
@@ -5094,11 +5192,6 @@ static void shadow_inprocess_mix_audio(void) {
         output_buffer[i] = (int16_t)mix[i];
     }
 
-    /* Capture native bridge source BEFORE master FX and BEFORE master volume.
-     * This avoids printing master FX into captured audio, which would otherwise
-     * be processed a second time during pad playback. */
-    native_capture_total_mix_snapshot_from_buffer(output_buffer);
-
     /* Apply master FX chain - process through all 4 slots in series */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
@@ -5107,25 +5200,10 @@ static void shadow_inprocess_mix_audio(void) {
         }
     }
 
-    /* Apply master volume.
-     * Keep Move audio untouched when master FX is inactive:
-     *   out = move + (me * mv)
-     * where me is inferred as delta from Move's pre-mix buffer. */
-    float mv = shadow_master_volume;
-    if (mv < 1.0f) {
-        if (!shadow_master_fx_chain_active()) {
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                int32_t me_contrib = (int32_t)output_buffer[i] - (int32_t)move_pre_mix[i];
-                int32_t scaled_me = (int32_t)lroundf((float)me_contrib * mv);
-                int32_t out = (int32_t)move_pre_mix[i] + scaled_me;
-                output_buffer[i] = clamp_i16(out);
-            }
-        } else {
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                output_buffer[i] = (int16_t)(output_buffer[i] * mv);
-            }
-        }
-    }
+    /* Capture native bridge source AFTER master FX, BEFORE master volume.
+     * This bakes master FX into native bridge resampling while keeping
+     * capture independent of master-volume attenuation. */
+    native_capture_total_mix_snapshot_from_buffer(output_buffer);
 
     /* Write final output to mailbox */
     memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
@@ -5175,21 +5253,29 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
-    int16_t move_pre_mix[FRAMES_PER_BLOCK * 2];
-    memcpy(move_pre_mix, mailbox_audio, sizeof(move_pre_mix));
+    float mv = shadow_master_volume;
+    /* Use one gain topology for all cases: pre-scale ME input by current master factor. */
+    float me_input_scale = (mv < 1.0f) ? mv : 1.0f;
+
+    /* Save split components for bridge compensation (before mixing).
+     * move_component = Move's audio (already Move-vol-scaled internally).
+     * me_component = ME deferred buffer at full gain (slot-vol only). */
+    memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
+    memcpy(native_bridge_me_component, shadow_deferred_dsp_buffer, sizeof(native_bridge_me_component));
+    native_bridge_capture_mv = mv;
+    native_bridge_split_valid = 1;
 
     /* Mix deferred buffer into mailbox audio */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t mixed = mailbox_audio[i] + shadow_deferred_dsp_buffer[i];
+        int32_t me_sample = (int32_t)shadow_deferred_dsp_buffer[i];
+        if (me_input_scale < 0.9999f) {
+            me_sample = (int32_t)lroundf((float)me_sample * me_input_scale);
+        }
+        int32_t mixed = (int32_t)mailbox_audio[i] + me_sample;
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
     }
-
-    /* Capture native bridge source BEFORE master FX and BEFORE master volume.
-     * This avoids printing master FX into captured audio, which would otherwise
-     * be processed a second time during pad playback. */
-    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
 
     /* Apply master FX chain to combined audio - process through all 4 slots in series */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
@@ -5199,6 +5285,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
+    /* Capture native bridge source AFTER master FX, BEFORE master volume.
+     * This bakes master FX into native bridge resampling while keeping
+     * capture independent of master-volume attenuation. */
+    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
+
     /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
         sampler_capture_audio();
@@ -5207,25 +5298,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
         skipback_capture(mailbox_audio);
     }
 
-    /* Apply master volume.
-     * Keep Move audio untouched when master FX is inactive:
-     *   out = move + (me * mv)
-     * where me is inferred as delta from Move's pre-mix buffer. */
-    float mv = shadow_master_volume;
-    if (mv < 1.0f) {
-        if (!shadow_master_fx_chain_active()) {
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                int32_t me_contrib = (int32_t)mailbox_audio[i] - (int32_t)move_pre_mix[i];
-                int32_t scaled_me = (int32_t)lroundf((float)me_contrib * mv);
-                int32_t out = (int32_t)move_pre_mix[i] + scaled_me;
-                mailbox_audio[i] = clamp_i16(out);
-            }
-        } else {
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                mailbox_audio[i] = (int16_t)(mailbox_audio[i] * mv);
-            }
-        }
-    }
+    /* No extra post-scale here: live path and bridge tap must share the same gain topology. */
 }
 
 /* Shared memory segment names from shadow_constants.h */
@@ -7315,7 +7388,10 @@ int ioctl(int fd, unsigned long request, ...)
     static int mix_time_count = 0;
     static uint64_t mix_time_max = 0;
 
-    if (!skip_dsp_this_frame) {
+    /* Always run pre-ioctl mix/capture path.
+     * This path is lightweight and feeds native bridge state; skipping it causes
+     * stale/invalid bridge snapshots and inconsistent resample behavior. */
+    {
         struct timespec mix_start, mix_end;
         clock_gettime(CLOCK_MONOTONIC, &mix_start);
 

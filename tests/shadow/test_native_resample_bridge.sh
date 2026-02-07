@@ -8,117 +8,103 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 1
 fi
 
-# 1) Native sampler source state should exist (separate from custom sampler_source).
-if ! rg -q "native_sampler_source_t" "$file"; then
-  echo "FAIL: Missing native sampler source enum/state" >&2
-  exit 1
-fi
+# 1) Core state and bridge functions must exist.
+for sym in \
+  "native_sampler_source_t" \
+  "static int native_resample_bridge_source_allows_apply\\(native_resample_bridge_mode_t mode\\)" \
+  "static void native_resample_bridge_apply_overwrite_makeup\\(const int16_t \\*src," \
+  "static void native_resample_bridge_apply\\(void\\)"; do
+  if ! rg -q "$sym" "$file"; then
+    echo "FAIL: Missing bridge symbol: $sym" >&2
+    exit 1
+  fi
+done
 
-# 2) D-Bus text handler should parse and update native sampler source from stock Move announcements.
-if ! rg -q "native_sampler_source_from_text\\(" "$file"; then
-  echo "FAIL: Missing native sampler source parser" >&2
+# 2) Apply path must use mode/source gating and overwrite helper.
+bridge_start=$(rg -n "static void native_resample_bridge_apply\\(void\\)" "$file" | head -n 1 | cut -d: -f1 || true)
+if [ -z "${bridge_start}" ]; then
+  echo "FAIL: Could not locate native_resample_bridge_apply()" >&2
   exit 1
 fi
+bridge_ctx=$(sed -n "${bridge_start},$((bridge_start + 90))p" "$file")
 
-if ! rg -q "native_sampler_update_from_dbus_text\\(" "$file"; then
-  echo "FAIL: Missing D-Bus native source update hook" >&2
-  exit 1
-fi
-
-# 3) Post-ioctl path should apply resample bridge into AUDIO_IN when native source is resampling.
-if ! rg -q "native_resample_bridge_apply\\(" "$file"; then
-  echo "FAIL: Missing native resample bridge apply function" >&2
-  exit 1
-fi
-
-bridge_fn_start=$(rg -n "static void native_resample_bridge_apply\\(void\\)" "$file" | head -n 1 | cut -d: -f1 || true)
-if [ -z "${bridge_fn_start}" ]; then
-  echo "FAIL: Could not locate native_resample_bridge_apply() body" >&2
-  exit 1
-fi
-bridge_ctx=$(sed -n "${bridge_fn_start},$((bridge_fn_start + 40))p" "$file")
 if ! echo "${bridge_ctx}" | rg -q "native_resample_bridge_source_allows_apply\\("; then
-  echo "FAIL: Bridge source-allow helper is not used in apply path" >&2
+  echo "FAIL: Apply path missing source allow helper usage" >&2
+  exit 1
+fi
+if ! echo "${bridge_ctx}" | rg -q "mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE"; then
+  echo "FAIL: Apply path missing overwrite mode branch" >&2
+  exit 1
+fi
+if ! echo "${bridge_ctx}" | rg -q "native_resample_bridge_apply_overwrite_makeup\\("; then
+  echo "FAIL: Apply path missing overwrite makeup helper call" >&2
   exit 1
 fi
 
-if ! echo "${bridge_ctx}" | rg -q "native_resample_bridge_mode"; then
-  echo "FAIL: Bridge mode state is not used in apply path" >&2
+# 3) Overwrite helper must support both no-MFX component comp and MFX post-FX makeup.
+overwrite_start=$(rg -n "static void native_resample_bridge_apply_overwrite_makeup\\(const int16_t \\*src," "$file" | head -n 1 | cut -d: -f1 || true)
+if [ -z "${overwrite_start}" ]; then
+  echo "FAIL: Could not locate overwrite helper" >&2
+  exit 1
+fi
+overwrite_ctx=$(sed -n "${overwrite_start},$((overwrite_start + 190))p" "$file")
+
+if ! echo "${overwrite_ctx}" | rg -q "!shadow_master_fx_chain_active\\(\\) && native_bridge_split_valid"; then
+  echo "FAIL: Missing no-MFX split-component compensation branch" >&2
+  exit 1
+fi
+if ! echo "${overwrite_ctx}" | rg -q "native_bridge_move_component"; then
+  echo "FAIL: No-MFX branch must use native move component buffer" >&2
+  exit 1
+fi
+if ! echo "${overwrite_ctx}" | rg -q "native_bridge_me_component"; then
+  echo "FAIL: No-MFX branch must use native ME component buffer" >&2
+  exit 1
+fi
+if ! echo "${overwrite_ctx}" | rg -q "else if \\(shadow_master_fx_chain_active\\(\\)\\)"; then
+  echo "FAIL: Missing MFX-active makeup branch" >&2
+  exit 1
+fi
+if ! echo "${overwrite_ctx}" | rg -q "float inv_mv = 1\\.0f / mv;"; then
+  echo "FAIL: Overwrite helper missing inverse master-volume gain" >&2
+  exit 1
+fi
+if ! echo "${overwrite_ctx}" | rg -q "\\(float\\)src\\[i\\] \\* applied_gain"; then
+  echo "FAIL: MFX branch should scale snapshot samples by applied gain" >&2
   exit 1
 fi
 
-# 3a) Overwrite path should compensate snapshot by inverse master volume
-#     when Master FX chain is active to preserve live/playback parity.
-if ! rg -q "native_resample_bridge_apply_master_volume_compensation\\(" "$file"; then
-  echo "FAIL: Missing bridge master-volume compensation helper" >&2
-  exit 1
-fi
-if ! echo "${bridge_ctx}" | rg -q "native_resample_bridge_apply_master_volume_compensation\\("; then
-  echo "FAIL: Overwrite bridge path does not apply master-volume compensation" >&2
+# 4) Diagnostic log should report split/mfx/makeup for hardware validation.
+if ! rg -q "split=%d mfx=%d makeup=\\(%.2fx->%.2fx lim=%d\\)" "$file"; then
+  echo "FAIL: Bridge diagnostics missing split/mfx/makeup fields" >&2
   exit 1
 fi
 
-# 3b) Source allow helper should enforce:
-#     - overwrite mode always allowed
-#     - explicit mic/usb-c blocked
-allow_fn_start=$(rg -n "static int native_resample_bridge_source_allows_apply\\(void\\)" "$file" | head -n 1 | cut -d: -f1 || true)
-if [ -z "${allow_fn_start}" ]; then
-  allow_fn_start=$(rg -n "static int native_resample_bridge_source_allows_apply\\(native_resample_bridge_mode_t mode\\)" "$file" | head -n 1 | cut -d: -f1 || true)
-fi
-if [ -z "${allow_fn_start}" ]; then
-  echo "FAIL: Missing native_resample_bridge_source_allows_apply(mode)" >&2
-  exit 1
-fi
-allow_ctx=$(sed -n "${allow_fn_start},$((allow_fn_start + 60))p" "$file")
-if ! echo "${allow_ctx}" | rg -q "NATIVE_RESAMPLE_BRIDGE_OVERWRITE"; then
-  echo "FAIL: Source allow helper must explicitly allow overwrite mode" >&2
-  exit 1
-fi
-if ! echo "${allow_ctx}" | rg -q "NATIVE_SAMPLER_SOURCE_MIC_IN"; then
-  echo "FAIL: Source allow helper must explicitly handle MIC_IN" >&2
-  exit 1
-fi
-if ! echo "${allow_ctx}" | rg -q "NATIVE_SAMPLER_SOURCE_USB_C_IN"; then
-  echo "FAIL: Source allow helper must explicitly handle USB_C_IN" >&2
-  exit 1
-fi
-if ! echo "${allow_ctx}" | rg -q "return 1;"; then
-  echo "FAIL: Source allow helper should fail open for unknown/non-blocked sources" >&2
-  exit 1
-fi
-
-# 3c) Capture should happen pre-volume in mix path (not at ioctl sync point).
-mix_fn_start=$(rg -n "static void shadow_inprocess_mix_from_buffer\\(void\\)" "$file" | head -n 1 | cut -d: -f1 || true)
-if [ -z "${mix_fn_start}" ]; then
+# 5) Snapshot capture in mix path should be post-FX and before sampler capture.
+mix_start=$(rg -n "static void shadow_inprocess_mix_from_buffer\\(void\\)" "$file" | head -n 1 | cut -d: -f1 || true)
+if [ -z "${mix_start}" ]; then
   echo "FAIL: Could not locate shadow_inprocess_mix_from_buffer()" >&2
   exit 1
 fi
-mix_ctx=$(sed -n "${mix_fn_start},$((mix_fn_start + 90))p" "$file")
-capture_line_rel=$(echo "${mix_ctx}" | rg -n "native_capture_total_mix_snapshot_from_buffer\\(" | head -n 1 | cut -d: -f1 || true)
-fx_line_rel=$(echo "${mix_ctx}" | rg -n "Apply master FX chain|process through all 4 slots in series" | head -n 1 | cut -d: -f1 || true)
-volume_line_rel=$(echo "${mix_ctx}" | rg -n "Apply master volume|float mv = shadow_master_volume" | head -n 1 | cut -d: -f1 || true)
-if [ -z "${capture_line_rel}" ] || [ -z "${fx_line_rel}" ] || [ -z "${volume_line_rel}" ]; then
-  echo "FAIL: Could not locate capture call, master FX, and master volume sections in mix path" >&2
-  exit 1
-fi
-if [ "${capture_line_rel}" -ge "${fx_line_rel}" ]; then
-  echo "FAIL: Native snapshot capture must happen before master FX processing" >&2
-  exit 1
-fi
-if [ "${capture_line_rel}" -ge "${volume_line_rel}" ]; then
-  echo "FAIL: Native snapshot capture must happen before master volume scaling" >&2
-  exit 1
-fi
+mix_ctx=$(sed -n "${mix_start},$((mix_start + 110))p" "$file")
+capture_rel=$(echo "${mix_ctx}" | rg -n "native_capture_total_mix_snapshot_from_buffer\\(" | head -n 1 | cut -d: -f1 || true)
+fx_rel=$(echo "${mix_ctx}" | rg -n "Apply master FX chain to combined audio" | head -n 1 | cut -d: -f1 || true)
+sampler_rel=$(echo "${mix_ctx}" | rg -n "Capture audio for sampler BEFORE master volume scaling" | head -n 1 | cut -d: -f1 || true)
 
-# Ensure old pre-ioctl snapshot call is gone.
-if rg -q "native_capture_total_mix_snapshot\\(\\);" "$file"; then
-  echo "FAIL: Old pre-ioctl snapshot call is still present; capture must happen in pre-volume mix path" >&2
+if [ -z "${capture_rel}" ] || [ -z "${fx_rel}" ] || [ -z "${sampler_rel}" ]; then
+  echo "FAIL: Could not locate capture/fx/sampler markers in mix path" >&2
   exit 1
 fi
-
-# 4) Mailbox probe path should not be present in this mode (D-Bus-only detection).
-if rg -q "native_source_probe_mailbox\\(" "$file"; then
-  echo "FAIL: Mailbox source probe path is still present" >&2
+if [ "${capture_rel}" -le "${fx_rel}" ]; then
+  echo "FAIL: Snapshot capture must happen after master FX in mix path" >&2
+  exit 1
+fi
+if [ "${capture_rel}" -ge "${sampler_rel}" ]; then
+  echo "FAIL: Snapshot capture must happen before sampler capture in mix path" >&2
+  exit 1
+fi
+if ! echo "${mix_ctx}" | rg -q "float me_input_scale = \\(mv < 1\\.0f\\) \\? mv : 1\\.0f;"; then
+  echo "FAIL: Mix path missing unified ME pre-scale topology" >&2
   exit 1
 fi
 

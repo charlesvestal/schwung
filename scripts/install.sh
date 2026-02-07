@@ -457,6 +457,11 @@ fi
 
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
 scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
+# Validate tar payload layout before extraction.
+# Some host-side tar variants can encode large files under GNUSparseFile.0 paths
+# that BusyBox tar on Move does not restore correctly.
+ssh_ableton_with_retry "tar -tzf ./$remote_filename | grep -qx 'move-anything/move-anything-shim.so'" || \
+    fail "Invalid tar payload: missing move-anything/move-anything-shim.so entry"
 # Use verbose tar only in non-quiet mode (screen reader friendly)
 if [ "$quiet_mode" = true ]; then
     ssh_ableton_with_retry "tar -xzf ./$remote_filename" || fail "Failed to extract tarball"
@@ -606,6 +611,7 @@ ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim
 # Symlink shim to /usr/lib/ (root partition has no free space for copies)
 ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
+ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing after install"
 
 # Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink.
 # Root partition is nearly full, so symlink instead of copying.
@@ -941,13 +947,13 @@ ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to 
 shim_ok=false
 for i in $(seq 1 15); do
     ssh_ableton_with_retry "sleep 1" || true
-    # Use direct ssh here since we're in a verification loop and need different retry semantics
-    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" 2>/dev/null; then
+    # Verify both env and actual mapped shim (env alone can be present while loader ignores preload).
+    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so' && grep -q 'move-anything-shim.so' /proc/\$pid/maps" 2>/dev/null; then
         shim_ok=true
         break
     fi
 done
-$shim_ok || fail "Move started without shim (LD_PRELOAD missing)"
+$shim_ok || fail "Move started without active shim mapping (LD_PRELOAD env/maps check failed)"
 
 iecho ""
 iecho "Installation complete!"

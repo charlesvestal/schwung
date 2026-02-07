@@ -8,32 +8,39 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! rg -q "native_bridge_premaster_gain" "$file"; then
-  echo "FAIL: Missing native bridge pre-master gain state" >&2
+# Capture helper should copy snapshot verbatim.
+capture_start=$(rg -n "static void native_capture_total_mix_snapshot_from_buffer\\(const int16_t \\*src\\)" "$file" | head -n 1 | cut -d: -f1 || true)
+if [ -z "${capture_start}" ]; then
+  echo "FAIL: Could not locate snapshot capture helper" >&2
+  exit 1
+fi
+capture_ctx=$(sed -n "${capture_start},$((capture_start + 40))p" "$file")
+
+if ! echo "${capture_ctx}" | rg -q "memcpy\\(native_total_mix_snapshot, src, AUDIO_BUFFER_SIZE\\);"; then
+  echo "FAIL: Snapshot capture helper should memcpy source verbatim" >&2
+  exit 1
+fi
+if echo "${capture_ctx}" | rg -q "1\\.0f /"; then
+  echo "FAIL: Snapshot capture should not perform inverse volume compensation" >&2
   exit 1
 fi
 
-if ! rg -q "native_resample_refresh_premaster_gain_from_settings" "$file"; then
-  echo "FAIL: Missing settings-driven pre-master gain refresh helper" >&2
+# Gain compensation belongs in overwrite apply helper.
+overwrite_start=$(rg -n "static void native_resample_bridge_apply_overwrite_makeup\\(const int16_t \\*src," "$file" | head -n 1 | cut -d: -f1 || true)
+if [ -z "${overwrite_start}" ]; then
+  echo "FAIL: Could not locate overwrite helper" >&2
+  exit 1
+fi
+overwrite_ctx=$(sed -n "${overwrite_start},$((overwrite_start + 200))p" "$file")
+
+if ! echo "${overwrite_ctx}" | rg -q "float inv_mv = 1\\.0f / mv;"; then
+  echo "FAIL: Overwrite helper missing inverse master-volume compensation math" >&2
+  exit 1
+fi
+if ! echo "${overwrite_ctx}" | rg -q "native_bridge_makeup_desired_gain = inv_mv;"; then
+  echo "FAIL: Overwrite helper should expose desired inverse gain in diagnostics" >&2
   exit 1
 fi
 
-capture_fn_start=$(rg -n "static void native_capture_total_mix_snapshot_from_buffer\\(const int16_t \*src\\)" "$file" | head -n 1 | cut -d: -f1 || true)
-if [ -z "${capture_fn_start}" ]; then
-  echo "FAIL: Could not locate native snapshot capture helper" >&2
-  exit 1
-fi
-capture_ctx=$(sed -n "${capture_fn_start},$((capture_fn_start + 80))p" "$file")
-
-if ! echo "${capture_ctx}" | rg -q "native_bridge_premaster_gain"; then
-  echo "FAIL: Snapshot capture does not reference pre-master gain" >&2
-  exit 1
-fi
-
-if ! echo "${capture_ctx}" | rg -q "1\.0f /"; then
-  echo "FAIL: Snapshot capture does not undo master attenuation" >&2
-  exit 1
-fi
-
-echo "PASS: Native bridge pre-master gain compensation wiring present"
+echo "PASS: Snapshot capture/apply gain staging separation present"
 exit 0
