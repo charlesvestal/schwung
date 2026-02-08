@@ -8,14 +8,22 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 IMAGE_NAME="move-anything-builder"
+DISABLE_SCREEN_READER="${DISABLE_SCREEN_READER:-0}"
+REBUILD_DOCKER_IMAGE="${REBUILD_DOCKER_IMAGE:-0}"
+REQUIRE_SCREEN_READER="${REQUIRE_SCREEN_READER:-0}"
+BOOTSTRAP_SCRIPT="./scripts/bootstrap-build-deps.sh"
 
 # Check if we need Docker
 if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
     echo "=== Move Anything Build (via Docker) ==="
     echo ""
 
-    # Build Docker image if needed
-    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+    # Build/rebuild Docker image if needed
+    if [ "$REBUILD_DOCKER_IMAGE" = "1" ]; then
+        echo "Rebuilding Docker image..."
+        docker build --pull -t "$IMAGE_NAME" "$REPO_ROOT"
+        echo ""
+    elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
         echo "Building Docker image (first time only)..."
         docker build -t "$IMAGE_NAME" "$REPO_ROOT"
         echo ""
@@ -26,6 +34,8 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
     docker run --rm \
         -v "$REPO_ROOT:/build" \
         -u "$(id -u):$(id -g)" \
+        -e DISABLE_SCREEN_READER="$DISABLE_SCREEN_READER" \
+        -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
         "$IMAGE_NAME"
 
     echo ""
@@ -42,6 +52,47 @@ set -x
 
 cd "$REPO_ROOT"
 
+SCREEN_READER_ENABLED=1
+if [ "$DISABLE_SCREEN_READER" = "1" ]; then
+    SCREEN_READER_ENABLED=0
+fi
+
+    if [ "$SCREEN_READER_ENABLED" = "1" ]; then
+        missing_deps=0
+        for dep in \
+            /usr/include/dbus-1.0/dbus/dbus.h \
+            /usr/lib/aarch64-linux-gnu/dbus-1.0/include/dbus/dbus-arch-deps.h \
+        /usr/include/flite/flite.h; do
+        if [ ! -f "$dep" ]; then
+            echo "Missing screen reader dependency: $dep"
+            missing_deps=1
+        fi
+    done
+
+        if [ "$missing_deps" -ne 0 ]; then
+            if [ "$REQUIRE_SCREEN_READER" = "1" ]; then
+                echo "Error: screen reader dependencies are required but missing"
+                echo "Hint: run $BOOTSTRAP_SCRIPT"
+                exit 1
+            fi
+            echo "Warning: screen reader dependencies not found, building without screen reader"
+            echo "Hint: run $BOOTSTRAP_SCRIPT to build with screen reader support"
+            SCREEN_READER_ENABLED=0
+        fi
+    fi
+
+if ! command -v "${CROSS_PREFIX}gcc" >/dev/null 2>&1; then
+    echo "Error: missing compiler '${CROSS_PREFIX}gcc'"
+    echo "Hint: run $BOOTSTRAP_SCRIPT"
+    exit 1
+fi
+
+if [ ! -f "./libs/quickjs/quickjs-2025-04-26/libquickjs.a" ]; then
+    echo "QuickJS static library not found, building it..."
+    make -C ./libs/quickjs/quickjs-2025-04-26 clean >/dev/null 2>&1 || true
+    CC="${CROSS_PREFIX}gcc" make -C ./libs/quickjs/quickjs-2025-04-26 libquickjs.a
+fi
+
 # Clean and prepare
 ./scripts/clean.sh
 mkdir -p ./build/
@@ -49,6 +100,20 @@ mkdir -p ./build/host/
 mkdir -p ./build/shared/
 # Module directories are created automatically when copying files
 # External modules (sf2, dexed, m8, minijv, obxd, clap) are in separate repos
+
+if [ "$SCREEN_READER_ENABLED" = "1" ]; then
+    echo "Screen reader build: enabled"
+    SHIM_TTS_SRC="src/host/tts_engine_flite.c"
+    SHIM_DEFINES="-DENABLE_SCREEN_READER=1"
+    SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include"
+    SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
+else
+    echo "Screen reader build: disabled"
+    SHIM_TTS_SRC="src/host/tts_engine_stub.c"
+    SHIM_DEFINES="-DENABLE_SCREEN_READER=0"
+    SHIM_INCLUDES="-Isrc -I/usr/include"
+    SHIM_LIBS="-ldl -lrt -lpthread -lm"
+fi
 
 echo "Building host..."
 
@@ -65,20 +130,15 @@ echo "Building host..."
     -lquickjs -lm -ldl
 
 # Build shim (with shared memory support for shadow instrument)
-# D-Bus support requires cross-compiled libdbus and libsystemd headers
-# TTS support with Flite (lightweight TTS for embedded systems) - using dynamic linking
+# D-Bus/TTS are optional and can be disabled with DISABLE_SCREEN_READER=1
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
     src/host/unified_log.c \
-    src/host/tts_engine_flite.c \
-    -Isrc \
-    -I/usr/include \
-    -I/usr/include/dbus-1.0 \
-    -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include \
-    -L/usr/lib/aarch64-linux-gnu \
-    -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm \
-    -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex
+    "$SHIM_TTS_SRC" \
+    $SHIM_DEFINES \
+    $SHIM_INCLUDES \
+    $SHIM_LIBS
 
 echo "Building Shadow POC..."
 
@@ -104,31 +164,35 @@ echo "Building Shadow UI..."
     -Llibs/quickjs/quickjs-2025-04-26 \
     -lquickjs -lm -ldl -lrt
 
-echo "Building TTS test program..."
-
-# Build Flite test program for testing TTS - using dynamic linking
 mkdir -p ./build/test/
-"${CROSS_PREFIX}gcc" -g -O3 \
-    test/test_flite.c \
-    -o build/test/test_flite \
-    -I/usr/include \
-    -L/usr/lib/aarch64-linux-gnu \
-    -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex \
-    -lm -lpthread || echo "Warning: TTS test build failed"
+if [ "$SCREEN_READER_ENABLED" = "1" ]; then
+    echo "Building TTS test program..."
 
-echo "Copying Flite libraries for deployment..."
+    # Build Flite test program for testing TTS - using dynamic linking
+    "${CROSS_PREFIX}gcc" -g -O3 \
+        test/test_flite.c \
+        -o build/test/test_flite \
+        -I/usr/include \
+        -L/usr/lib/aarch64-linux-gnu \
+        -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex \
+        -lm -lpthread || echo "Warning: TTS test build failed"
 
-# Copy Flite .so files to build/lib/ for deployment to Move
-mkdir -p ./build/lib/
-cp -L /usr/lib/aarch64-linux-gnu/libflite.so.* ./build/lib/ 2>/dev/null || true
-cp -L /usr/lib/aarch64-linux-gnu/libflite_cmu_us_kal.so.* ./build/lib/ 2>/dev/null || true
-cp -L /usr/lib/aarch64-linux-gnu/libflite_usenglish.so.* ./build/lib/ 2>/dev/null || true
-cp -L /usr/lib/aarch64-linux-gnu/libflite_cmulex.so.* ./build/lib/ 2>/dev/null || true
-./scripts/verify-flite-bundle.sh ./build/lib
+    echo "Copying Flite libraries for deployment..."
 
-# Copy Flite copyright notice (required by BSD-style license)
-mkdir -p ./build/licenses/
-cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || echo "Warning: Flite license file not found"
+    # Copy Flite .so files to build/lib/ for deployment to Move
+    mkdir -p ./build/lib/
+    cp -L /usr/lib/aarch64-linux-gnu/libflite.so.* ./build/lib/ 2>/dev/null || true
+    cp -L /usr/lib/aarch64-linux-gnu/libflite_cmu_us_kal.so.* ./build/lib/ 2>/dev/null || true
+    cp -L /usr/lib/aarch64-linux-gnu/libflite_usenglish.so.* ./build/lib/ 2>/dev/null || true
+    cp -L /usr/lib/aarch64-linux-gnu/libflite_cmulex.so.* ./build/lib/ 2>/dev/null || true
+    ./scripts/verify-flite-bundle.sh ./build/lib
+
+    # Copy Flite copyright notice (required by BSD-style license)
+    mkdir -p ./build/licenses/
+    cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || echo "Warning: Flite license file not found"
+else
+    echo "Skipping TTS/Flite artifacts (screen reader disabled)"
+fi
 
 echo "Building Signal Chain module..."
 

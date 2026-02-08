@@ -359,6 +359,7 @@ skip_confirmation=false
 enable_screen_reader=false
 disable_shadow_ui=false
 disable_standalone=false
+screen_reader_runtime_available=true
 for arg in "$@"; do
   case "$arg" in
     local) use_local=true ;;
@@ -640,10 +641,14 @@ ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so"
 
 # Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink.
 # Root partition is nearly full, so symlink instead of copying.
-ssh_ableton_with_retry "test -d /data/UserData/move-anything/lib" || fail "Payload missing: /data/UserData/move-anything/lib"
-ssh_ableton_with_retry "for lib in libflite.so.1 libflite_cmu_us_kal.so.1 libflite_usenglish.so.1 libflite_cmulex.so.1; do test -e /data/UserData/move-anything/lib/\$lib || exit 1; done" || fail "Payload missing required Flite libraries (screen reader dependency)"
-qecho "Deploying Flite libraries..."
-ssh_root_with_retry "cd /data/UserData/move-anything/lib && set -- libflite*.so.* && [ \"\$1\" != 'libflite*.so.*' ] || exit 1; for lib in \"\$@\"; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+if ssh_ableton_with_retry "test ! -d /data/UserData/move-anything/lib"; then
+  screen_reader_runtime_available=false
+  iecho "Screen reader runtime not bundled; skipping Flite deployment."
+else
+  ssh_ableton_with_retry "for lib in libflite.so.1 libflite_cmu_us_kal.so.1 libflite_usenglish.so.1 libflite_cmulex.so.1; do test -e /data/UserData/move-anything/lib/\$lib || exit 1; done" || fail "Payload missing required Flite libraries (screen reader dependency)"
+  qecho "Deploying Flite libraries..."
+  ssh_root_with_retry "cd /data/UserData/move-anything/lib && set -- libflite*.so.* && [ \"\$1\" != 'libflite*.so.*' ] || exit 1; for lib in \"\$@\"; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+fi
 
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
@@ -679,8 +684,13 @@ EOF" || echo "Warning: Failed to create features.json"
 
 # Create screen reader state file if --enable-screen-reader was passed
 if [ "$enable_screen_reader" = true ]; then
-    qecho "Enabling screen reader..."
-    ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
+    if [ "$screen_reader_runtime_available" = true ]; then
+      qecho "Enabling screen reader..."
+      ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
+    else
+      iecho "Screen reader requested, but this build does not include TTS runtime support."
+      enable_screen_reader=false
+    fi
 fi
 
 if [ "$quiet_mode" = false ]; then

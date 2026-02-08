@@ -12,21 +12,79 @@ This builds everything and creates `move-anything.tar.gz`. The build script auto
 
 Requirements: Docker Desktop (macOS/Windows) or Docker Engine (Linux)
 
+Build without screen reader (skip D-Bus/Flite dependencies):
+```bash
+DISABLE_SCREEN_READER=1 ./scripts/build.sh
+```
+This disables D-Bus-driven accessibility/sync features (screen reader announcements, track-volume D-Bus sync, and set-tempo detection from D-Bus text).
+
+## Verify Disabled Screen Reader Build (Smoke Test)
+
+Use this when validating a fresh environment that does not have D-Bus/Flite dev headers installed.
+
+```bash
+# Optional: return device to stock state first
+MOVE_FORCE_UNINSTALL=1 ./scripts/uninstall.sh
+
+# Build shim without dbus/flite
+DISABLE_SCREEN_READER=1 ./scripts/build.sh
+
+# Install fresh build
+./scripts/install.sh local --skip-confirmation --skip-modules
+```
+
+Expected install output includes:
+- `Screen reader runtime not bundled; skipping Flite deployment.`
+- `Screen Reader: disabled`
+
+Runtime checks on device:
+```bash
+# Shim should still be active
+ssh root@move.local 'pid=$(pidof MoveOriginal | awk "{print \$1}"); tr "\0" "\n" < /proc/$pid/environ | grep "^LD_PRELOAD="'
+
+# No Flite runtime links should be installed
+ssh root@move.local 'ls -1 /usr/lib/libflite*.so* 2>/dev/null || echo absent'
+```
+
+Optional hardening check:
+```bash
+# Force "screen reader on" state file, restart Move, confirm no crash loop
+ssh ableton@move.local 'echo 1 > /data/UserData/move-anything/config/screen_reader_state.txt'
+ssh root@move.local '/etc/init.d/move stop >/dev/null 2>&1 || true; sleep 1; /etc/init.d/move start >/dev/null 2>&1'
+ssh root@move.local 'pid1=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid2=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid3=$(pidof MoveOriginal | awk "{print \$1}"); echo "$pid1 -> $pid2 -> $pid3"'
+```
+PIDs should remain stable (no repeated restarts).
+
+## Bootstrap Dependencies (Debian/Ubuntu)
+
+For a fresh Linux machine, bootstrap dependencies and QuickJS first:
+
+```bash
+./scripts/bootstrap-build-deps.sh
+CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
+```
+
+Without screen reader dependencies:
+
+```bash
+./scripts/bootstrap-build-deps.sh --no-screen-reader
+DISABLE_SCREEN_READER=1 CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
+```
+
 ## Manual Build (without Docker)
 
 ### Ubuntu/Debian
 
 ```bash
-sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu make \
-  libdbus-1-dev:arm64 libsystemd-dev:arm64 libflite1:arm64 flite1-dev:arm64
+./scripts/bootstrap-build-deps.sh
 
 # Build QuickJS
-cd libs/quickjs/quickjs-2025-04-26
-CC=aarch64-linux-gnu-gcc make libquickjs.a
-cd ../../..
+# (handled by bootstrap script; manual fallback shown below if needed)
 
 # Build project
 CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
+# Or build without screen reader:
+# DISABLE_SCREEN_READER=1 CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
 ./scripts/package.sh
 ```
 
@@ -114,8 +172,11 @@ PY
 # Recommended: use Docker build (auto-installs arm64 dependencies)
 ./scripts/build.sh
 
-# If building manually, install required ARM64 Flite/libs:
-sudo apt install libdbus-1-dev:arm64 libsystemd-dev:arm64 libflite1:arm64 flite1-dev:arm64
+# If building manually, bootstrap deps (including Flite/dbus):
+./scripts/bootstrap-build-deps.sh
+
+# Or disable screen reader support in this build:
+DISABLE_SCREEN_READER=1 ./scripts/build.sh
 ```
 
 **Verify binary architecture**

@@ -1,4 +1,9 @@
 #define _GNU_SOURCE
+
+#ifndef ENABLE_SCREEN_READER
+#define ENABLE_SCREEN_READER 1
+#endif
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -20,8 +25,10 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#if ENABLE_SCREEN_READER
 #include <dbus/dbus.h>
 #include <systemd/sd-bus.h>
+#endif
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
@@ -1100,6 +1107,7 @@ static float sampler_set_tempo = 0.0f;              /* 0 = not yet detected */
 static char sampler_current_set_name[128] = "";      /* e.g. "Set 3" from D-Bus */
 static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
 
+#if ENABLE_SCREEN_READER
 /* D-Bus connection for monitoring */
 static DBusConnection *shadow_dbus_conn = NULL;
 static pthread_t shadow_dbus_thread;
@@ -1121,6 +1129,7 @@ static pthread_mutex_t pending_announcements_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Track Move's D-Bus serial number for coordinated message injection */
 static uint32_t move_dbus_serial = 0;
 static pthread_mutex_t move_dbus_serial_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /* Priority announcement flag - blocks D-Bus messages while toggle announcement plays */
 static bool tts_priority_announcement_active = false;
@@ -1622,6 +1631,7 @@ static void native_resample_bridge_apply(void)
     native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
 }
 
+#if ENABLE_SCREEN_READER
 /* Inject pending screen reader announcements immediately */
 static void shadow_inject_pending_announcements(void)
 {
@@ -2212,6 +2222,45 @@ static void shadow_dbus_stop(void)
         shadow_dbus_conn = NULL;
     }
 }
+#else
+/* Screen reader disabled at build time: keep hooks as pass-through no-ops. */
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    static int (*real_connect)(int, const struct sockaddr *, socklen_t) = NULL;
+    if (!real_connect) {
+        real_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
+    }
+    if (!real_connect) return -1;
+    return real_connect(sockfd, addr, addrlen);
+}
+
+ssize_t send(int sockfd, const void *buf, size_t len, int flags)
+{
+    static ssize_t (*real_send)(int, const void *, size_t, int) = NULL;
+    if (!real_send) {
+        real_send = (ssize_t (*)(int, const void *, size_t, int))dlsym(RTLD_NEXT, "send");
+    }
+    if (!real_send) return -1;
+    return real_send(sockfd, buf, len, flags);
+}
+
+static void send_screenreader_announcement(const char *text)
+{
+    (void)text;
+}
+
+static void shadow_inject_pending_announcements(void)
+{
+}
+
+static void shadow_dbus_start(void)
+{
+}
+
+static void shadow_dbus_stop(void)
+{
+}
+#endif
 
 /* Update track button hold state from MIDI (called from ioctl hook) */
 static void shadow_update_held_track(uint8_t cc, int pressed)
