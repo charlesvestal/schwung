@@ -2312,6 +2312,9 @@ static volatile int shadow_volume_knob_touched = 0;
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
+/* Suppress plain volume-touch hide until touch is fully released after
+ * Shift+Vol shortcut launches, avoiding a brief native volume flash. */
+static volatile int shadow_block_plain_volume_hide_until_release = 0;
 
 /* ==========================================================================
  * Shift+Knob Overlay - Show parameter overlay on Move's display
@@ -6906,6 +6909,8 @@ static void shadow_capture_midi_probe(void)
 static void shadow_swap_display(void)
 {
     static uint32_t ui_check_counter = 0;
+    static int display_phase = 0;  /* 0-6: phases of display push */
+    static int display_hidden_for_volume = 0;
 
     if (!shadow_display_shm || !global_mmap_addr) {
         return;
@@ -6914,7 +6919,31 @@ static void shadow_swap_display(void)
         return;
     }
     if (!shadow_display_mode) {
+        display_phase = 0;
+        display_hidden_for_volume = 0;
+        shadow_block_plain_volume_hide_until_release = 0;
         return;  /* Not in shadow mode */
+    }
+    if (!shadow_volume_knob_touched) {
+        shadow_block_plain_volume_hide_until_release = 0;
+    }
+    if (shadow_volume_knob_touched && !shadow_shift_held) {
+        if (shadow_block_plain_volume_hide_until_release) {
+            /* Keep shadow UI visible until shortcut's volume touch is fully released. */
+            if (display_hidden_for_volume) {
+                display_phase = 0;
+                display_hidden_for_volume = 0;
+            }
+        } else if (!shadow_control->overtake_mode) {
+            /* Let native Move overlays remain visible while volume touch is held. */
+            display_phase = 0;
+            display_hidden_for_volume = 1;
+            return;
+        }
+    } else if (display_hidden_for_volume) {
+        /* Restart shadow slicing cleanly after releasing volume touch. */
+        display_phase = 0;
+        display_hidden_for_volume = 0;
     }
     if ((ui_check_counter++ % 256) == 0) {
         launch_shadow_ui();
@@ -6925,7 +6954,6 @@ static void shadow_swap_display(void)
 
     /* Write display using slice protocol - one slice per ioctl */
     /* No rate limiting because we must overwrite Move every ioctl */
-    static int display_phase = 0;  /* 0-6: phases of display push */
 
     if (display_phase == 0) {
         /* Phase 0: Zero out slice area - signals start of new frame */
@@ -7823,7 +7851,16 @@ int ioctl(int fd, unsigned long request, ...)
     static int volume_capture_cooldown = 0;
     static int volume_capture_warmup = 0;  /* Wait for Move to render overlay */
 
-    if (global_mmap_addr && !shadow_display_mode) {
+    /* Native Move display is visible either when shadow mode is off, or when
+     * plain volume-touch temporarily hides shadow UI to reveal Move overlays. */
+    int native_display_visible = (!shadow_display_mode) ||
+                                 (shadow_display_mode &&
+                                  shadow_volume_knob_touched &&
+                                  !shadow_shift_held &&
+                                  shadow_control &&
+                                  !shadow_control->overtake_mode);
+
+    if (global_mmap_addr && native_display_visible) {
         uint8_t *mem = (uint8_t *)global_mmap_addr;
         uint8_t slice_num = mem[80];
 
@@ -8100,9 +8137,21 @@ do_ioctl:
 
                 /* Only filter internal cable (0x00) */
                 if (cable == 0x00) {
-                    /* In overtake mode, filter ALL cable 0 events from Move */
-                    if (overtake_mode) {
+                    /* Overtake mode split:
+                     * - mode 2 (module): block all cable 0 events from Move
+                     * - mode 1 (menu): allow only volume touch/turn passthrough */
+                    if (overtake_mode == 2) {
                         filter = 1;
+                    } else if (overtake_mode == 1) {
+                        filter = 1;
+                        if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
+                            filter = 0;
+                        }
+                        if ((cin == 0x09 || cin == 0x08) &&
+                            (type == 0x90 || type == 0x80) &&
+                            d1 == 8) {
+                            filter = 0;
+                        }
                     } else {
                         /* CC messages: filter jog/back controls (let up/down through for octave) */
                         if (cin == 0x0B && type == 0xB0) {
@@ -8118,9 +8167,11 @@ do_ioctl:
                                 filter = 1;
                             }
                         }
-                        /* Note messages: filter knob touches (0-9) */
+                        /* Note messages: filter knob touches (0-7,9).
+                         * Keep note 8 (volume touch) so Move can do track+volume
+                         * and native volume workflows while shadow UI is active. */
                         if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
-                            if (d1 <= 9) {
+                            if (d1 <= 7 || d1 == 9) {
                                 filter = 1;
                             }
                         }
@@ -8319,6 +8370,7 @@ do_ioctl:
 
                         /* Shift + Volume + Track = jump to that slot's edit screen (if shadow UI enabled) */
                         if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                            shadow_block_plain_volume_hide_until_release = 1;
                             shadow_control->ui_slot = new_slot;
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
                             if (!shadow_display_mode) {
@@ -8429,6 +8481,9 @@ do_ioctl:
                     if (touched != shadow_volume_knob_touched) {
                         shadow_volume_knob_touched = touched;
                         volumeTouched = touched;
+                        if (!touched) {
+                            shadow_block_plain_volume_hide_until_release = 0;
+                        }
                         char msg[64];
                         snprintf(msg, sizeof(msg), "Volume knob touch: %s", touched ? "ON" : "OFF");
                         shadow_log(msg);

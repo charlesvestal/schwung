@@ -59,6 +59,10 @@ typedef struct {
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
+/* Optional file-based debug tracing for chain parsing/preset save diagnostics. */
+#define CHAIN_DEBUG_FLAG_PATH "/data/UserData/move-anything/chain_debug_on"
+#define CHAIN_DEBUG_LOG_PATH "/data/UserData/move-anything/chain_debug.log"
+
 /* Chord types */
 typedef enum {
     CHORD_NONE = 0,
@@ -4117,11 +4121,14 @@ static int save_master_preset(const char *json_str) {
 
     /* Debug: log incoming JSON and extracted name */
     {
-        FILE *dbg = fopen("/tmp/save_preset_debug.log", "a");
-        if (dbg) {
-            fprintf(dbg, "json_str='%.200s'\n", json_str);
-            fprintf(dbg, "extracted name='%s' len=%zu\n", name, strlen(name));
-            fclose(dbg);
+        struct stat st;
+        if (stat(CHAIN_DEBUG_FLAG_PATH, &st) == 0) {
+            FILE *dbg = fopen(CHAIN_DEBUG_LOG_PATH, "a");
+            if (dbg) {
+                fprintf(dbg, "save_master_preset json='%.200s'\n", json_str);
+                fprintf(dbg, "save_master_preset name='%s' len=%zu\n", name, strlen(name));
+                fclose(dbg);
+            }
         }
     }
 
@@ -4288,7 +4295,9 @@ static int load_master_preset_json(int index, char *buf, int buf_len) {
 
 /* Debug logging helper for parsing */
 static void parse_debug_log(const char *msg) {
-    FILE *dbg = fopen("/tmp/chain_parse_debug.txt", "a");
+    struct stat st;
+    if (stat(CHAIN_DEBUG_FLAG_PATH, &st) != 0) return;
+    FILE *dbg = fopen(CHAIN_DEBUG_LOG_PATH, "a");
     if (dbg) {
         fprintf(dbg, "%s\n", msg);
         fclose(dbg);
