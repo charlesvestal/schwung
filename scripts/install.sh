@@ -26,7 +26,7 @@ if [ "$quiet_mode" = false ]; then
                                         |___/                   |___/
 EOM
 else
-  echo "Move Anything installer (screen reader mode)"
+  echo "Move Everything installer (screen reader mode)"
 fi
 
 # uncomment to debug
@@ -395,7 +395,7 @@ if [ "$skip_confirmation" = false ]; then
   echo "*                                                            *"
   echo "*   WARNING:                                                 *"
   echo "*                                                            *"
-  echo "*   Are you sure you want to install Move Anything on your   *"
+  echo "*   Are you sure you want to install Move Everything on your *"
   echo "*   Move? This is UNSUPPORTED by Ableton.                    *"
   echo "*                                                            *"
   echo "*   The authors of this project accept no liability for      *"
@@ -477,7 +477,7 @@ if [ -n "$ssh_result" ]; then
   fi
 else
   qecho "✓ SSH connection OK"
-  iecho "Installing Move Anything..."
+  iecho "Installing Move Everything..."
 fi
 
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
@@ -991,7 +991,7 @@ if [ "$quiet_mode" = true ]; then
 else
     # Verbose output for visual users
     echo
-    echo "Move Anything is now installed with the modular plugin system."
+    echo "Move Everything is now installed with the modular plugin system."
     echo "Modules are located in: /data/UserData/move-anything/modules/"
     echo
 

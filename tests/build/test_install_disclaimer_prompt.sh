@@ -23,6 +23,11 @@ if ! grep -qi "accept no liability" "$SCRIPT"; then
   exit 1
 fi
 
+if ! grep -q "install Move Everything" "$SCRIPT"; then
+  echo "FAIL: install.sh disclaimer should refer to Move Everything" >&2
+  exit 1
+fi
+
 if ! grep -q "Type 'yes' to proceed" "$SCRIPT"; then
   echo "FAIL: install.sh missing explicit yes confirmation prompt" >&2
   exit 1
