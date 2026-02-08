@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <time.h>
@@ -191,6 +192,111 @@ typedef struct {
 } patch_info_t;
 
 /* ============================================================================
+ * Parameter Smoothing (to avoid zipper noise on knob changes)
+ * ============================================================================ */
+
+#define MAX_SMOOTH_PARAMS 16
+#define SMOOTH_COEFF 0.15f  /* Smoothing coefficient per block (~5ms at 128 frames/44100Hz) */
+
+typedef struct {
+    char key[MAX_NAME_LEN];
+    float target;
+    float current;
+    int active;
+} smooth_param_t;
+
+typedef struct {
+    smooth_param_t params[MAX_SMOOTH_PARAMS];
+    int count;
+} param_smoother_t;
+
+/* Find or create a smoothed parameter slot */
+static smooth_param_t* smoother_get_param(param_smoother_t *smoother, const char *key) {
+    /* Look for existing */
+    for (int i = 0; i < smoother->count; i++) {
+        if (strcmp(smoother->params[i].key, key) == 0) {
+            return &smoother->params[i];
+        }
+    }
+    /* Create new if space */
+    if (smoother->count < MAX_SMOOTH_PARAMS) {
+        smooth_param_t *p = &smoother->params[smoother->count++];
+        strncpy(p->key, key, MAX_NAME_LEN - 1);
+        p->key[MAX_NAME_LEN - 1] = '\0';
+        p->target = 0.0f;
+        p->current = 0.0f;
+        p->active = 0;
+        return p;
+    }
+    return NULL;
+}
+
+/* Set a parameter target value for smoothing */
+static void smoother_set_target(param_smoother_t *smoother, const char *key, float value) {
+    smooth_param_t *p = smoother_get_param(smoother, key);
+    if (p) {
+        if (!p->active) {
+            /* First time setting - initialize current to target (no smoothing on first set) */
+            p->current = value;
+        }
+        p->target = value;
+        p->active = 1;
+    }
+}
+
+/* Update all smoothed parameters toward their targets, returns 1 if any changed */
+static int smoother_update(param_smoother_t *smoother) {
+    int changed = 0;
+    for (int i = 0; i < smoother->count; i++) {
+        smooth_param_t *p = &smoother->params[i];
+        if (p->active) {
+            float diff = p->target - p->current;
+            if (fabsf(diff) > 0.0001f) {
+                p->current += diff * SMOOTH_COEFF;
+                changed = 1;
+            } else {
+                p->current = p->target;
+            }
+        }
+    }
+    return changed;
+}
+
+/* Reset smoother state */
+static void smoother_reset(param_smoother_t *smoother) {
+    smoother->count = 0;
+    memset(smoother->params, 0, sizeof(smoother->params));
+}
+
+/* Check if a string looks like a float value (for smoothing eligibility) */
+static int is_smoothable_float(const char *val, float *out_value) {
+    if (!val || !val[0]) return 0;
+
+    /* Skip if it's clearly not a number */
+    char c = val[0];
+    if (c != '-' && c != '.' && (c < '0' || c > '9')) return 0;
+
+    char *endptr;
+    float f = strtof(val, &endptr);
+
+    /* Must have parsed something and no trailing garbage (except whitespace) */
+    if (endptr == val) return 0;
+    while (*endptr == ' ' || *endptr == '\t') endptr++;
+    if (*endptr != '\0') return 0;
+
+    /* Don't smooth integer-like values (presets, indices) */
+    if (f == (int)f && f >= 0 && f < 1000) {
+        /* Could be an index - only smooth if it's in 0-1 range or has decimal */
+        if (strchr(val, '.') == NULL && (f < 0.0f || f > 1.0f)) {
+            return 0;  /* Likely an integer index, don't smooth */
+        }
+    }
+
+    if (out_value) *out_value = f;
+    return 1;
+}
+
+/* ============================================================================
  * V2 Instance-Based API
  * ============================================================================ */
 
@@ -282,6 +388,10 @@ typedef struct chain_instance {
 
     /* Reference to host API (shared) */
     const host_api_v1_t *host;
+
+    /* Parameter smoothing for synth and FX */
+    param_smoother_t synth_smoother;
+    param_smoother_t fx_smoothers[MAX_AUDIO_FX];
 } chain_instance_t;
 
 /* ============================================================================
@@ -430,6 +540,14 @@ static void parse_debug_log(const char *msg);  /* Forward declaration */
 static plugin_api_v1_t g_plugin_api;
 
 /* Logging helper */
+/* Validate a module/FX name contains no path traversal sequences */
+static int valid_module_name(const char *name) {
+    if (!name || !name[0]) return 0;
+    if (strstr(name, "..") != NULL) return 0;
+    if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return 0;
+    return 1;
+}
+
 static void chain_log(const char *msg) {
     /* Use unified log */
     unified_log("chain", LOG_LEVEL_DEBUG, "%s", msg);
@@ -569,13 +687,15 @@ static void start_recording(void) {
     }
 
     /* Create recordings directory */
-    char mkdir_cmd[512];
-    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", RECORDINGS_DIR);
-    system(mkdir_cmd);
+    struct stat st;
+    if (stat(RECORDINGS_DIR, &st) != 0) {
+        mkdir(RECORDINGS_DIR, 0755);
+    }
 
     /* Generate filename with timestamp */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
 
     snprintf(g_current_recording, sizeof(g_current_recording),
              "%s/rec_%04d%02d%02d_%02d%02d%02d.wav",
@@ -762,8 +882,7 @@ static void load_module_settings(const char *module_dir) {
         return;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
     fclose(f);
 
     g_raw_midi = 0;
@@ -963,6 +1082,11 @@ static void unload_synth(void) {
 static int load_audio_fx(const char *fx_name) {
     char msg[256];
 
+    if (!valid_module_name(fx_name)) {
+        chain_log("Invalid audio FX name");
+        return -1;
+    }
+
     if (g_fx_count >= MAX_AUDIO_FX) {
         chain_log("Max audio FX reached");
         return -1;
@@ -1133,8 +1257,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
             if (size > 0 && size < 8192) {
                 char *json = malloc(size + 1);
                 if (json) {
-                    fread(json, 1, size, f);
-                    json[size] = '\0';
+                    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
                     /* Find ui_hierarchy object */
                     const char *hier_start = strstr(json, "\"ui_hierarchy\"");
                     if (hier_start) {
@@ -1412,7 +1535,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size > 8192) {
+    if (size <= 0 || size > 8192) {
         fclose(f);
         return -1;
     }
@@ -1423,8 +1546,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
         return -1;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
     fclose(f);
 
     *count = 0;
@@ -1624,9 +1746,9 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size > 4096) {
+    if (size <= 0 || size > 4096) {
         fclose(f);
-        chain_log("Patch file too large");
+        chain_log("Patch file too large or empty");
         return -1;
     }
 
@@ -1636,8 +1758,7 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
         return -1;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
     fclose(f);
 
     /* Parse fields */
@@ -2030,6 +2151,19 @@ static int save_patch(const char *json_data) {
         }
     }
 
+    /* Escape name for JSON embedding (handle quotes and backslashes) */
+    char escaped_name[MAX_NAME_LEN * 2];
+    {
+        int si = 0, di = 0;
+        while (name[si] && di < (int)sizeof(escaped_name) - 2) {
+            if (name[si] == '"' || name[si] == '\\') {
+                escaped_name[di++] = '\\';
+            }
+            escaped_name[di++] = name[si++];
+        }
+        escaped_name[di] = '\0';
+    }
+
     /* Build final JSON with generated name */
     char final_json[8192];
     snprintf(final_json, sizeof(final_json),
@@ -2038,7 +2172,7 @@ static int save_patch(const char *json_data) {
         "    \"version\": 1,\n"
         "    \"chain\": %s\n"
         "}\n",
-        name, json_data);
+        escaped_name, json_data);
 
     /* Write file */
     FILE *f = fopen(filepath, "w");
@@ -2531,15 +2665,14 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
         synth_on_midi(msg, len, source);
     } else {
         /* Transpose the note */
+        int transposed_note = (int)msg[1] + interval;
+        if (transposed_note < 0 || transposed_note > 127) return;
+
         uint8_t transposed[3];
         transposed[0] = msg[0];
-        transposed[1] = (uint8_t)(msg[1] + interval);  /* Note number + interval */
+        transposed[1] = (uint8_t)transposed_note;
         transposed[2] = msg[2];  /* Velocity */
-
-        /* Only send if note is in valid MIDI range */
-        if (transposed[1] <= 127) {
-            synth_on_midi(transposed, len, source);
-        }
+        synth_on_midi(transposed, len, source);
     }
 }
 
@@ -2773,13 +2906,17 @@ static void plugin_set_param(const char *key, const char *val) {
         return;
     }
     if (strcmp(key, "next_patch") == 0) {
-        int next = (g_current_patch + 1) % g_patch_count;
-        if (g_patch_count > 0) load_patch(next);
+        if (g_patch_count > 0) {
+            int next = (g_current_patch + 1) % g_patch_count;
+            load_patch(next);
+        }
         return;
     }
     if (strcmp(key, "prev_patch") == 0) {
-        int prev = (g_current_patch - 1 + g_patch_count) % g_patch_count;
-        if (g_patch_count > 0) load_patch(prev);
+        if (g_patch_count > 0) {
+            int prev = (g_current_patch - 1 + g_patch_count) % g_patch_count;
+            load_patch(prev);
+        }
         return;
     }
 
@@ -2836,7 +2973,8 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
     /* Component UI mode */
     if (strcmp(key, "component_ui_mode") == 0) {
         const char *modes[] = {"none", "synth", "fx1", "fx2"};
-        snprintf(buf, buf_len, "%s", modes[g_component_ui_mode]);
+        int mode_idx = (g_component_ui_mode >= 0 && g_component_ui_mode < 4) ? g_component_ui_mode : 0;
+        snprintf(buf, buf_len, "%s", modes[mode_idx]);
         return 0;
     }
 
@@ -2895,22 +3033,27 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             strcat(fx_json, "]");
 
             /* Build knob_mappings JSON array with type/min/max */
-            char knob_json[1024] = "[";
+            char knob_json[2048] = "[";
+            int knob_off = 1;
             for (int i = 0; i < p->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
-                if (i > 0) strcat(knob_json, ",");
-                char knob_item[192];
                 const char *type_str = (p->knob_mappings[i].type == KNOB_TYPE_INT) ? "int" : "float";
-                snprintf(knob_item, sizeof(knob_item),
-                    "{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"type\":\"%s\",\"min\":%.3f,\"max\":%.3f}",
+                int written = snprintf(knob_json + knob_off, sizeof(knob_json) - knob_off,
+                    "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"type\":\"%s\",\"min\":%.3f,\"max\":%.3f}",
+                    (i > 0) ? "," : "",
                     p->knob_mappings[i].cc,
                     p->knob_mappings[i].target,
                     p->knob_mappings[i].param,
                     type_str,
                     p->knob_mappings[i].min_val,
                     p->knob_mappings[i].max_val);
-                strcat(knob_json, knob_item);
+                if (written > 0 && knob_off + written < (int)sizeof(knob_json) - 1) {
+                    knob_off += written;
+                } else {
+                    break;
+                }
             }
-            strcat(knob_json, "]");
+            knob_json[knob_off++] = ']';
+            knob_json[knob_off] = '\0';
 
             snprintf(buf, buf_len,
                 "{\"synth\":\"%s\",\"preset\":%d,\"source\":\"%s\","
@@ -3359,6 +3502,10 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
     char fx_dir[MAX_PATH_LEN];
 
     if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return -1;
+    if (fx_name && fx_name[0] && strcmp(fx_name, "none") != 0 && !valid_module_name(fx_name)) {
+        v2_chain_log(inst, "Invalid audio FX name");
+        return -1;
+    }
 
     /* Unload existing FX in this slot first */
     v2_unload_audio_fx_slot(inst, slot);
@@ -3459,6 +3606,10 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
 
     if (!inst) return -1;
     if (!module_name || !module_name[0]) return -1;
+    if (!valid_module_name(module_name)) {
+        v2_chain_log(inst, "Invalid synth module name");
+        return -1;
+    }
 
     /* Make a local copy of module_name immediately - the original pointer may
      * become invalid during file operations (e.g., shared param buffer reuse) */
@@ -3535,8 +3686,7 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
             if (size > 0 && size < 65536) {
                 char *json = malloc(size + 1);
                 if (json) {
-                    fread(json, 1, size, f);
-                    json[size] = '\0';
+                    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
                     int fwd_ch = -1;
                     if (json_get_int_in_section(json, "capabilities", "default_forward_channel", &fwd_ch) == 0) {
                         if (fwd_ch >= 1 && fwd_ch <= 16) {
@@ -3753,6 +3903,19 @@ static int v2_save_patch(chain_instance_t *inst, const char *json_data) {
         }
     }
 
+    /* Escape name for JSON embedding (handle quotes and backslashes) */
+    char escaped_name[MAX_NAME_LEN * 2];
+    {
+        int si = 0, di = 0;
+        while (name[si] && di < (int)sizeof(escaped_name) - 2) {
+            if (name[si] == '"' || name[si] == '\\') {
+                escaped_name[di++] = '\\';
+            }
+            escaped_name[di++] = name[si++];
+        }
+        escaped_name[di] = '\0';
+    }
+
     /* Build final JSON with generated name */
     char final_json[8192];
     snprintf(final_json, sizeof(final_json),
@@ -3761,7 +3924,7 @@ static int v2_save_patch(chain_instance_t *inst, const char *json_data) {
         "    \"version\": 1,\n"
         "    \"chain\": %s\n"
         "}\n",
-        name, json_data);
+        escaped_name, json_data);
 
     /* Write file */
     FILE *f = fopen(filepath, "w");
@@ -4107,9 +4270,15 @@ static int load_master_preset_json(int index, char *buf, int buf_len) {
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    if (len <= 0) {
+        fclose(f);
+        buf[0] = '\0';
+        return 0;
+    }
     if (len >= buf_len) len = buf_len - 1;
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
+    size_t nr = fread(buf, 1, len, f);
+    buf[nr] = '\0';
+    len = (long)nr;
     fclose(f);
 
     return (int)len;
@@ -4152,8 +4321,7 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
         return -1;
     }
 
-    fread(json, 1, size, f);
-    json[size] = '\0';
+    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
     fclose(f);
 
     memset(patch, 0, sizeof(*patch));
@@ -5124,26 +5292,43 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
         if (strcmp(subkey, "module") == 0) {
+            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_synth_panic(inst);
             v2_unload_synth(inst);
+            smoother_reset(&inst->synth_smoother);  /* Reset smoother on module change */
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_synth(inst, val);
             } else {
                 /* Clearing synth - also clear knob mappings */
                 inst->knob_mapping_count = 0;
             }
-        } else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
-            inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
-        } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
-            inst->synth_plugin->set_param(subkey, val);
+        } else {
+            /* Check if this is a smoothable float param */
+            float fval;
+            if (is_smoothable_float(val, &fval)) {
+                /* Store target for smoothing - will be applied in render_block */
+                smoother_set_target(&inst->synth_smoother, subkey, fval);
+            }
+            /* Always forward immediately (smoother will override with interpolated values) */
+            if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+                inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
+            } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+                inst->synth_plugin->set_param(subkey, val);
+            }
         }
     }
     else if (strncmp(key, "fx1:", 4) == 0) {
         const char *subkey = key + 4;
         /* Intercept module change to swap FX1 dynamically */
         if (strcmp(subkey, "module") == 0) {
+            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 0, val);
+            smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
         } else if (inst->fx_count > 0) {
+            float fval;
+            if (is_smoothable_float(val, &fval)) {
+                smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+            }
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
                 inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
             } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
@@ -5155,8 +5340,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 4;
         /* Intercept module change to swap FX2 dynamically */
         if (strcmp(subkey, "module") == 0) {
+            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 1, val);
+            smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
         } else if (inst->fx_count > 1) {
+            float fval;
+            if (is_smoothable_float(val, &fval)) {
+                smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+            }
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
@@ -5242,8 +5433,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                     /* Set mapping */
                     if (found >= 0) {
                         /* Update existing - also update type/range from param info */
-                        strncpy(inst->knob_mappings[found].target, target, 31);
-                        strncpy(inst->knob_mappings[found].param, param, 63);
+                        strncpy(inst->knob_mappings[found].target, target, sizeof(inst->knob_mappings[found].target) - 1);
+                        inst->knob_mappings[found].target[sizeof(inst->knob_mappings[found].target) - 1] = '\0';
+                        strncpy(inst->knob_mappings[found].param, param, sizeof(inst->knob_mappings[found].param) - 1);
+                        inst->knob_mappings[found].param[sizeof(inst->knob_mappings[found].param) - 1] = '\0';
                         if (pinfo) {
                             inst->knob_mappings[found].type = pinfo->type;
                             inst->knob_mappings[found].min_val = pinfo->min_val;
@@ -5253,8 +5446,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         /* Add new */
                         int i = inst->knob_mapping_count++;
                         inst->knob_mappings[i].cc = cc;
-                        strncpy(inst->knob_mappings[i].target, target, 31);
-                        strncpy(inst->knob_mappings[i].param, param, 63);
+                        strncpy(inst->knob_mappings[i].target, target, sizeof(inst->knob_mappings[i].target) - 1);
+                        inst->knob_mappings[i].target[sizeof(inst->knob_mappings[i].target) - 1] = '\0';
+                        strncpy(inst->knob_mappings[i].param, param, sizeof(inst->knob_mappings[i].param) - 1);
+                        inst->knob_mappings[i].param[sizeof(inst->knob_mappings[i].param) - 1] = '\0';
                         if (pinfo) {
                             /* Use actual param type and range */
                             inst->knob_mappings[i].type = pinfo->type;
@@ -5819,6 +6014,43 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         inst->mute_countdown--;
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         return;
+    }
+
+    /* Update smoothed parameters and send interpolated values to sub-plugins */
+    {
+        /* Synth smoother */
+        if (smoother_update(&inst->synth_smoother)) {
+            for (int i = 0; i < inst->synth_smoother.count; i++) {
+                smooth_param_t *p = &inst->synth_smoother.params[i];
+                if (p->active) {
+                    char val_str[32];
+                    snprintf(val_str, sizeof(val_str), "%.6f", p->current);
+                    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+                        inst->synth_plugin_v2->set_param(inst->synth_instance, p->key, val_str);
+                    } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
+                        inst->synth_plugin->set_param(p->key, val_str);
+                    }
+                }
+            }
+        }
+
+        /* FX smoothers */
+        for (int fx = 0; fx < inst->fx_count && fx < MAX_AUDIO_FX; fx++) {
+            if (smoother_update(&inst->fx_smoothers[fx])) {
+                for (int i = 0; i < inst->fx_smoothers[fx].count; i++) {
+                    smooth_param_t *p = &inst->fx_smoothers[fx].params[i];
+                    if (p->active) {
+                        char val_str[32];
+                        snprintf(val_str, sizeof(val_str), "%.6f", p->current);
+                        if (inst->fx_is_v2[fx] && inst->fx_plugins_v2[fx] && inst->fx_instances[fx]) {
+                            inst->fx_plugins_v2[fx]->set_param(inst->fx_instances[fx], p->key, val_str);
+                        } else if (inst->fx_plugins[fx] && inst->fx_plugins[fx]->set_param) {
+                            inst->fx_plugins[fx]->set_param(p->key, val_str);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /* Process MIDI FX tick (for arpeggiator timing) */

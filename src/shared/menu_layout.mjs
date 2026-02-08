@@ -3,6 +3,7 @@
  */
 
 import { getMenuLabelScroller } from './text_scroll.mjs';
+import { announceMenuItem, announceParameter } from './screen_reader.mjs';
 
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
@@ -23,6 +24,10 @@ const LIST_BOTTOM_WITH_FOOTER = FOOTER_RULE_Y - 1;
 const DEFAULT_CHAR_WIDTH = 6;
 const DEFAULT_LABEL_GAP = 6;
 const DEFAULT_VALUE_PADDING_RIGHT = 2;
+
+/* Screen reader state - track last announced item to avoid redundant announcements */
+let lastAnnouncedIndex = -1;
+let lastAnnouncedLabel = "";
 
 export function drawMenuHeader(title, titleRight = "") {
     print(2, TITLE_Y, title, 1);
@@ -106,6 +111,20 @@ export function drawMenuList({
     const labelScroller = getMenuLabelScroller();
     labelScroller.setSelected(selectedIndex);
     labelScroller.tick();  /* Auto-tick during draw */
+
+    /* Announce selected item to screen reader if changed */
+    if (selectedIndex >= 0 && selectedIndex < totalItems) {
+        const selectedItem = items[selectedIndex];
+        const selectedLabel = getLabel(selectedItem, selectedIndex);
+        const selectedValue = getValue ? getValue(selectedItem, selectedIndex) : "";
+
+        /* Only announce if index or label changed */
+        if (selectedIndex !== lastAnnouncedIndex || selectedLabel !== lastAnnouncedLabel) {
+            announceMenuItem(selectedLabel, selectedValue);
+            lastAnnouncedIndex = selectedIndex;
+            lastAnnouncedLabel = selectedLabel;
+        }
+    }
 
     for (let i = startIdx; i < endIdx; i++) {
         const y = resolvedTopY + (i - startIdx) * itemHeight;
@@ -207,10 +226,15 @@ let overlayTimeout = 0;
  * @param {string} value - Value to display (e.g., "50%" or "3")
  */
 export function showOverlay(name, value) {
+    const sameContent = overlayActive && overlayName === name && overlayValue === value;
     overlayActive = true;
     overlayName = name;
     overlayValue = value;
     overlayTimeout = OVERLAY_DURATION_TICKS;
+    /* Announce only when content changes to avoid per-frame D-Bus spam. */
+    if (!sameContent) {
+        announceParameter(name, value);
+    }
 }
 
 /**

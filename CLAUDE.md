@@ -205,10 +205,14 @@ On-device layout:
   move-anything-shim.so       # Shim (also at /usr/lib/)
   host/menu_ui.js
   shared/
-  modules/chain/, controller/, store/  # Built-in modules
+  modules/
+    chain/, controller/, store/     # Built-in modules (root level)
+    sound_generators/<id>/          # External sound generators
+    audio_fx/<id>/                  # External audio effects
+    midi_fx/<id>/                   # External MIDI effects
 ```
 
-External modules are downloaded via Module Store to the same modules/ directory.
+External modules are installed to category subdirectories based on their `component_type`.
 
 Original Move preserved as `/opt/move/MoveOriginal`.
 
@@ -473,7 +477,7 @@ The Module Store (`store` module) downloads and installs external modules from G
 2. For each module, queries GitHub API for latest release
 3. Looks for asset matching `<module-id>-module.tar.gz`
 4. Compares release version to installed version
-5. Downloads and extracts tarball to `modules/` directory
+5. Downloads and extracts tarball to category subdirectory (e.g., `modules/sound_generators/<id>/`)
 
 ### Adding a Module to the Catalog
 

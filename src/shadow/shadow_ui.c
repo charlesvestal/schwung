@@ -10,12 +10,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <limits.h>
 #include <time.h>
 #include <dirent.h>
 
@@ -32,6 +34,7 @@ static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
+static shadow_screenreader_t *shadow_screenreader = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -54,33 +57,50 @@ static int open_shadow_shm(void) {
     if (fd < 0) return -1;
     shadow_display_shm = (uint8_t *)mmap(NULL, DISPLAY_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
+    if (shadow_display_shm == MAP_FAILED) { shadow_display_shm = NULL; return -1; }
 
     fd = shm_open(SHM_SHADOW_UI_MIDI, O_RDWR, 0666);
     if (fd < 0) return -1;
     shadow_ui_midi_shm = (uint8_t *)mmap(NULL, MIDI_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
+    if (shadow_ui_midi_shm == MAP_FAILED) { shadow_ui_midi_shm = NULL; return -1; }
 
     fd = shm_open(SHM_SHADOW_CONTROL, O_RDWR, 0666);
     if (fd < 0) return -1;
     shadow_control = (shadow_control_t *)mmap(NULL, CONTROL_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
+    if (shadow_control == MAP_FAILED) { shadow_control = NULL; return -1; }
 
     fd = shm_open(SHM_SHADOW_UI, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_ui_state = (shadow_ui_state_t *)mmap(NULL, SHADOW_UI_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
+        if (shadow_ui_state == MAP_FAILED) shadow_ui_state = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_PARAM, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_param = (shadow_param_t *)mmap(NULL, SHADOW_PARAM_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
+        if (shadow_param == MAP_FAILED) shadow_param = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_MIDI_OUT, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_midi_out = (shadow_midi_out_t *)mmap(NULL, sizeof(shadow_midi_out_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
+        if (shadow_midi_out == MAP_FAILED) shadow_midi_out = NULL;
+    }
+
+    fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_screenreader = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_screenreader == MAP_FAILED) {
+            shadow_screenreader = NULL;
+        } else {
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow screen reader shm mapped: %p", shadow_screenreader);
+        }
     }
 
     return 0;
@@ -159,14 +179,17 @@ static int getGlobalFunction(JSContext *ctx, const char *func_name, JSValue *ret
     JSValue func = JS_GetPropertyStr(ctx, global_obj, func_name);
     if (!JS_IsFunction(ctx, func)) {
         JS_FreeValue(ctx, func);
+        JS_FreeValue(ctx, global_obj);
         return 0;
     }
     *retFunc = func;
+    JS_FreeValue(ctx, global_obj);
     return 1;
 }
 
 static int callGlobalFunction(JSContext *ctx, JSValue *pfunc, unsigned char *data) {
     JSValue ret;
+    int is_exception;
     if (data) {
         JSValue arr = JS_NewArray(ctx);
         for (int i = 0; i < 3; i++) {
@@ -174,14 +197,16 @@ static int callGlobalFunction(JSContext *ctx, JSValue *pfunc, unsigned char *dat
         }
         JSValue args[1] = { arr };
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 1, args);
+        JS_FreeValue(ctx, arr);
     } else {
         ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 0, 0);
     }
-    if (JS_IsException(ret)) {
+    is_exception = JS_IsException(ret);
+    if (is_exception) {
         js_std_dump_error(ctx);
     }
     JS_FreeValue(ctx, ret);
-    return JS_IsException(ret);
+    return is_exception;
 }
 
 static JSValue js_shadow_get_slots(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -274,6 +299,15 @@ static JSValue js_shadow_get_shift_held(JSContext *ctx, JSValueConst this_val, i
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
     return JS_NewInt32(ctx, shadow_control->shift_held);
+}
+
+/* shadow_get_display_mode() -> int
+ * Returns 0 if Move's UI is visible, 1 if Shadow UI is visible
+ */
+static JSValue js_shadow_get_display_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->display_mode);
 }
 
 /* shadow_set_overtake_mode(mode) -> void
@@ -546,10 +580,39 @@ static JSValue js_unified_log_enabled(JSContext *ctx, JSValueConst this_val,
 #define CURL_PATH "/data/UserData/move-anything/bin/curl"
 
 /* Helper: validate path is within BASE_DIR to prevent directory traversal */
+/* Execute a command safely using fork/execvp instead of system() */
+static int run_command(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
+    if (pid == 0) {
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return -1;
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
+}
+
 static int validate_path(const char *path) {
     if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
     if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
     if (strstr(path, "..") != NULL) return 0;
+
+    /* Resolve symlinks and re-check the resolved path */
+    char resolved[PATH_MAX];
+    if (realpath(path, resolved) != NULL) {
+        if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
+    }
     return 1;
 }
 
@@ -563,6 +626,11 @@ static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
 
     const char *path = JS_ToCString(ctx, argv[0]);
     if (!path) {
+        return JS_FALSE;
+    }
+
+    if (!validate_path(path)) {
+        JS_FreeCString(ctx, path);
         return JS_FALSE;
     }
 
@@ -597,6 +665,15 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     shadow_ui_log_line(url);
     shadow_ui_log_line(dest_path);
 
+    /* Validate URL scheme - only allow https:// and http:// */
+    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+        shadow_ui_log_line("host_http_download: invalid URL scheme");
+        fprintf(stderr, "host_http_download: invalid URL scheme: %s\n", url);
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_FALSE;
+    }
+
     /* Validate destination path */
     if (!validate_path(dest_path)) {
         shadow_ui_log_line("host_http_download: invalid dest path");
@@ -608,15 +685,11 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
 
     shadow_ui_log_line("host_http_download: path validated, running curl");
 
-    /* Build curl command - use -k to skip SSL verification, timeouts to prevent hangs */
-    /* Short timeout (15s) is fine for catalog/release.json; module tarballs are small enough too */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "%s -fsSLk --connect-timeout 5 --max-time 15 -o \"%s\" \"%s\" 2>&1",
-             CURL_PATH, dest_path, url);
-
-    shadow_ui_log_line(cmd);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "15",
+        "-o", dest_path, url, NULL
+    };
+    int result = run_command(argv_cmd);
 
     shadow_ui_log_line("host_http_download: curl returned");
 
@@ -651,12 +724,10 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build tar command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>&1",
-             tar_path, dest_dir);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = {
+        "tar", "-xzf", tar_path, "-C", dest_dir, NULL
+    };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
@@ -787,11 +858,8 @@ static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build rm command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "rm", "-rf", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 
@@ -920,11 +988,8 @@ static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Build mkdir command */
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\" 2>&1", path);
-
-    int result = system(cmd);
+    const char *argv_cmd[] = { "mkdir", "-p", path, NULL };
+    int result = run_command(argv_cmd);
 
     JS_FreeCString(ctx, path);
 
@@ -1039,6 +1104,156 @@ static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue js_host_send_screenreader(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_screenreader) {
+        return JS_UNDEFINED;
+    }
+
+    const char *text = JS_ToCString(ctx, argv[0]);
+    if (!text) {
+        return JS_UNDEFINED;
+    }
+
+    /* Write message to shared memory */
+    strncpy(shadow_screenreader->text, text, SHADOW_SCREENREADER_TEXT_LEN - 1);
+    shadow_screenreader->text[SHADOW_SCREENREADER_TEXT_LEN - 1] = '\0';
+
+    /* Get current time in milliseconds */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    shadow_screenreader->timestamp_ms = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
+
+    /* Increment sequence to signal new message */
+    shadow_screenreader->sequence++;
+
+    JS_FreeCString(ctx, text);
+    return JS_UNDEFINED;
+}
+
+/* tts_set_enabled(enabled) - Write to shared memory */
+static JSValue js_tts_set_enabled(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->tts_enabled = enabled ? 1 : 0;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_enabled() -> bool - Read from shared memory */
+static JSValue js_tts_get_enabled(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, true);
+    return JS_NewBool(ctx, shadow_control->tts_enabled != 0);
+}
+
+/* tts_set_speed(speed) - Write to shared memory */
+static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    double speed = 0;
+    JS_ToFloat64(ctx, &speed, argv[0]);
+
+    /* Clamp to valid range */
+    if (speed < 0.5) speed = 0.5;
+    if (speed > 2.0) speed = 2.0;
+
+    shadow_control->tts_speed = (float)speed;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_speed() -> float - Read from shared memory */
+static JSValue js_tts_get_speed(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewFloat64(ctx, 1.0);
+    return JS_NewFloat64(ctx, (double)shadow_control->tts_speed);
+}
+
+/* tts_set_pitch(pitch_hz) - Write to shared memory */
+static JSValue js_tts_set_pitch(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    double pitch = 0;
+    JS_ToFloat64(ctx, &pitch, argv[0]);
+
+    /* Clamp to valid range */
+    if (pitch < 80.0) pitch = 80.0;
+    if (pitch > 180.0) pitch = 180.0;
+
+    shadow_control->tts_pitch = (uint16_t)pitch;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_pitch() -> float - Read from shared memory */
+static JSValue js_tts_get_pitch(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewFloat64(ctx, 110.0);
+    return JS_NewFloat64(ctx, (double)shadow_control->tts_pitch);
+}
+
+/* tts_set_volume(volume) - Write to shared memory */
+static JSValue js_tts_set_volume(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int volume = 0;
+    JS_ToInt32(ctx, &volume, argv[0]);
+
+    /* Clamp to valid range */
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+
+    shadow_control->tts_volume = (uint8_t)volume;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_volume() -> int - Read from shared memory */
+static JSValue js_tts_get_volume(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 70);
+    return JS_NewInt32(ctx, shadow_control->tts_volume);
+}
+
+/* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off) */
+static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int mode = 0;
+    JS_ToInt32(ctx, &mode, argv[0]);
+    if (mode < 0) mode = 0;
+    if (mode > 2) mode = 2;
+    shadow_control->overlay_knobs_mode = (uint8_t)mode;
+
+    return JS_UNDEFINED;
+}
+
+/* overlay_knobs_get_mode() -> int - Read from shared memory */
+static JSValue js_overlay_knobs_get_mode(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->overlay_knobs_mode);
+}
+
 /* === End host functions === */
 
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -1073,6 +1288,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_slot", JS_NewCFunction(ctx, js_shadow_get_ui_slot, "shadow_get_ui_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_control_restart", JS_NewCFunction(ctx, js_shadow_control_restart, "shadow_control_restart", 0));
@@ -1102,8 +1318,25 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_list_modules", JS_NewCFunction(ctx, js_host_list_modules, "host_list_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_send_screenreader", JS_NewCFunction(ctx, js_host_send_screenreader, "host_send_screenreader", 1));
+
+    /* Register TTS control functions */
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_enabled", JS_NewCFunction(ctx, js_tts_set_enabled, "tts_set_enabled", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_enabled", JS_NewCFunction(ctx, js_tts_get_enabled, "tts_get_enabled", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_speed", JS_NewCFunction(ctx, js_tts_set_speed, "tts_set_speed", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_speed", JS_NewCFunction(ctx, js_tts_get_speed, "tts_get_speed", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_pitch", JS_NewCFunction(ctx, js_tts_set_pitch, "tts_set_pitch", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_pitch", JS_NewCFunction(ctx, js_tts_get_pitch, "tts_get_pitch", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_volume", JS_NewCFunction(ctx, js_tts_set_volume, "tts_set_volume", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_volume", JS_NewCFunction(ctx, js_tts_get_volume, "tts_get_volume", 0));
+
+    /* Register overlay knobs mode functions */
+    JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_set_mode", JS_NewCFunction(ctx, js_overlay_knobs_set_mode, "overlay_knobs_set_mode", 1));
+    JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_get_mode", JS_NewCFunction(ctx, js_overlay_knobs_get_mode, "overlay_knobs_get_mode", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
+
+    JS_FreeValue(ctx, global_obj);
 
     *prt = rt;
     *pctx = ctx;
@@ -1160,10 +1393,10 @@ int main(int argc, char *argv[]) {
     }
     shadow_ui_log_line("shadow_ui: script loaded");
 
-    JSValue JSonMidiMessageInternal;
-    JSValue JSonMidiMessageExternal;
-    JSValue JSinit;
-    JSValue JSTick;
+    JSValue JSonMidiMessageInternal = JS_UNDEFINED;
+    JSValue JSonMidiMessageExternal = JS_UNDEFINED;
+    JSValue JSinit = JS_UNDEFINED;
+    JSValue JSTick = JS_UNDEFINED;
 
     if (!getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal)) {
         shadow_ui_log_line("shadow_ui: onMidiMessageInternal missing");
@@ -1171,7 +1404,8 @@ int main(int argc, char *argv[]) {
     if (!getGlobalFunction(ctx, "onMidiMessageExternal", &JSonMidiMessageExternal)) {
         shadow_ui_log_line("shadow_ui: onMidiMessageExternal missing");
     }
-    if (!getGlobalFunction(ctx, "init", &JSinit)) {
+    int jsInitIsDefined = getGlobalFunction(ctx, "init", &JSinit);
+    if (!jsInitIsDefined) {
         shadow_ui_log_line("shadow_ui: init missing");
     }
     int jsTickIsDefined = getGlobalFunction(ctx, "tick", &JSTick);
@@ -1179,7 +1413,7 @@ int main(int argc, char *argv[]) {
         shadow_ui_log_line("shadow_ui: tick missing");
     }
 
-    callGlobalFunction(ctx, &JSinit, 0);
+    if (jsInitIsDefined) callGlobalFunction(ctx, &JSinit, 0);
     shadow_ui_log_line("shadow_ui: init called");
 
     int refresh_counter = 0;

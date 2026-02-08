@@ -113,6 +113,16 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "junologue-chorus",
+      "name": "Junologue Chorus",
+      "description": "Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes)",
+      "author": "Peter Allwin (port: charlesvestal)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-junologue-chorus",
+      "asset_name": "junologue-chorus-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "sidcontrol",
       "name": "SID Control",
       "description": "MIDI controller for SIDaster III synthesizer",
@@ -131,6 +141,46 @@
       "github_repo": "charlesvestal/move-anything-braids",
       "asset_name": "braids-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "hera",
+      "name": "Hera",
+      "description": "Juno-60 emulation synthesizer with BBD chorus",
+      "author": "jpcima (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-hera",
+      "asset_name": "hera-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "surge",
+      "name": "Surge XT",
+      "description": "Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets",
+      "author": "Surge Synth Team (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-surge",
+      "asset_name": "surge-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "moog",
+      "name": "RaffoSynth",
+      "description": "Monophonic synthesizer with 4 oscillators and Moog ladder filter",
+      "author": "Nicolas Roulet, Julian Palladino (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-moog",
+      "asset_name": "moog-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "webstream",
+      "name": "Webstream",
+      "description": "Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-webstream",
+      "asset_name": "webstream-module.tar.gz",
+      "min_host_version": "0.3.11"
     }
   ]
 }

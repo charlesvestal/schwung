@@ -112,6 +112,12 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    if (len < 0) {
+        printf("mm: ftell failed for %s\n", json_path);
+        fclose(f);
+        return -1;
+    }
+
     if (len > 8192) {
         printf("mm: module.json too large: %s\n", json_path);
         fclose(f);
@@ -124,8 +130,8 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
         return -1;
     }
 
-    fread(json, 1, len, f);
-    json[len] = '\0';
+    size_t read_len = fread(json, 1, len, f);
+    json[read_len] = '\0';
     fclose(f);
 
     memset(info, 0, sizeof(*info));
@@ -217,6 +223,9 @@ static int scan_directory(module_manager_t *mm, const char *dir_path) {
     while ((entry = readdir(dir)) != NULL && mm->module_count < MAX_MODULES) {
         if (entry->d_name[0] == '.') continue;
 
+        /* Reject names containing path traversal sequences */
+        if (strstr(entry->d_name, "..") != NULL || strchr(entry->d_name, '/') != NULL) continue;
+
         char module_path[MAX_PATH_LEN];
         snprintf(module_path, sizeof(module_path), "%s/%s", dir_path, entry->d_name);
 
@@ -263,6 +272,9 @@ int mm_scan_modules(module_manager_t *mm, const char *modules_dir) {
     scan_directory(mm, subdir);
 
     snprintf(subdir, sizeof(subdir), "%s/other", modules_dir);
+    scan_directory(mm, subdir);
+
+    snprintf(subdir, sizeof(subdir), "%s/overtake", modules_dir);
     scan_directory(mm, subdir);
 
     printf("mm: found %d modules\n", mm->module_count);

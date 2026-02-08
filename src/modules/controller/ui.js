@@ -129,14 +129,14 @@ globalThis.onMidiMessageExternal = function (data) {
     if (isNoiseMessage(data)) return;
 
     /* Pass through to Move LEDs */
-    move_midi_internal_send([data[0] / 16, data[0], data[1], data[2]]);
+    move_midi_internal_send([data[0] >> 4, data[0], data[1], data[2]]);
 };
 
 globalThis.onMidiMessageInternal = function (data) {
     if (isNoiseMessage(data)) return;
     if (isCapacitiveTouchMessage(data)) return;
 
-    const status = data[0];
+    const status = data[0] & 0xF0;
     const d1 = data[1];
     const d2 = data[2];
 

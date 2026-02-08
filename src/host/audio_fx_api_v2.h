@@ -39,7 +39,7 @@ typedef struct audio_fx_api_v2 {
 
     /* Handle MIDI input (for capture rules, performance control, etc.)
      * Can be NULL if the effect doesn't process MIDI.
-     * source: MOVE_MIDI_SOURCE_INTERNAL (0), MOVE_MIDI_SOURCE_EXTERNAL (1), MOVE_MIDI_SOURCE_HOST (2)
+     * source: MOVE_MIDI_SOURCE_INTERNAL (0), MOVE_MIDI_SOURCE_EXTERNAL (2), MOVE_MIDI_SOURCE_HOST (3)
      */
     void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
 
