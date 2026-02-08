@@ -355,6 +355,7 @@ ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=acc
 # Parse arguments
 use_local=false
 skip_modules=false
+skip_confirmation=false
 enable_screen_reader=false
 disable_shadow_ui=false
 disable_standalone=false
@@ -362,6 +363,7 @@ for arg in "$@"; do
   case "$arg" in
     local) use_local=true ;;
     -skip-modules|--skip-modules) skip_modules=true ;;
+    -skip-confirmation|--skip-confirmation) skip_confirmation=true ;;
     --enable-screen-reader) enable_screen_reader=true ;;
     --disable-shadow-ui) disable_shadow_ui=true ;;
     --disable-standalone) disable_standalone=true ;;
@@ -371,6 +373,7 @@ for arg in "$@"; do
       echo "Options:"
       echo "  local                    Use local build instead of GitHub release"
       echo "  --skip-modules           Skip module installation prompt"
+      echo "  --skip-confirmation      Skip unsupported/liability confirmation prompt"
       echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
       echo "  --disable-shadow-ui      Disable shadow UI (slot configuration interface)"
       echo "  --disable-standalone     Disable standalone mode (shift+vol+knob8)"
@@ -385,6 +388,28 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ "$skip_confirmation" = false ]; then
+  echo
+  echo "**************************************************************"
+  echo "*                                                            *"
+  echo "*   WARNING:                                                 *"
+  echo "*                                                            *"
+  echo "*   Are you sure you want to install Move Anything on your   *"
+  echo "*   Move? This is UNSUPPORTED by Ableton.                    *"
+  echo "*                                                            *"
+  echo "*   The authors of this project accept no liability for      *"
+  echo "*   any damage you incur by proceeding.                      *"
+  echo "*                                                            *"
+  echo "**************************************************************"
+  echo
+  echo "Type 'yes' to proceed: "
+  read -r response </dev/tty
+  if [ "$response" != "yes" ]; then
+    echo "Installation aborted."
+    exit 1
+  fi
+fi
 
 if [ "$use_local" = true ]; then
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
