@@ -641,13 +641,17 @@ ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so"
 
 # Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink.
 # Root partition is nearly full, so symlink instead of copying.
-if ssh_ableton_with_retry "test ! -d /data/UserData/move-anything/lib"; then
+# Use direct predicate checks so expected test failures don't print misleading
+# "Connection retry" messages from the retry wrapper.
+if $ssh_ableton "test ! -d /data/UserData/move-anything/lib" 2>/dev/null; then
   screen_reader_runtime_available=false
   iecho "Screen reader runtime not bundled; skipping Flite deployment."
-else
+elif $ssh_ableton "test -d /data/UserData/move-anything/lib" 2>/dev/null; then
   ssh_ableton_with_retry "for lib in libflite.so.1 libflite_cmu_us_kal.so.1 libflite_usenglish.so.1 libflite_cmulex.so.1; do test -e /data/UserData/move-anything/lib/\$lib || exit 1; done" || fail "Payload missing required Flite libraries (screen reader dependency)"
   qecho "Deploying Flite libraries..."
   ssh_root_with_retry "cd /data/UserData/move-anything/lib && set -- libflite*.so.* && [ \"\$1\" != 'libflite*.so.*' ] || exit 1; for lib in \"\$@\"; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+else
+  fail "Failed to check screen reader runtime payload on device (SSH error)"
 fi
 
 # Ensure the replacement Move script exists and is executable
@@ -656,10 +660,12 @@ ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" |
 # Backup original only once, and only if current Move exists
 # IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
 # Never create extra copies of large files under /opt/move/ or anywhere on /.
-if ssh_root_with_retry "test ! -f /opt/move/MoveOriginal"; then
+if $ssh_root "test ! -f /opt/move/MoveOriginal" 2>/dev/null; then
   ssh_root_with_retry "test -f /opt/move/Move" || fail "Missing /opt/move/Move; refusing to proceed"
   ssh_root_with_retry "mv /opt/move/Move /opt/move/MoveOriginal" || fail "Failed to backup original Move"
   ssh_ableton_with_retry "cp /opt/move/MoveOriginal ~/" || true
+elif ! $ssh_root "test -f /opt/move/MoveOriginal" 2>/dev/null; then
+  fail "Failed to verify /opt/move/MoveOriginal on device (SSH error)"
 fi
 
 # Install the shimmed Move entrypoint
