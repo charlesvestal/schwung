@@ -596,6 +596,10 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
 
   unsigned char cc = data1;
   unsigned char value = data2;
+  int raw_ui_module_active =
+      g_module_manager_initialized &&
+      mm_is_module_loaded(&g_module_manager) &&
+      mm_module_wants_raw_ui(&g_module_manager);
 
   /* Track Shift key state */
   if (cc == CC_SHIFT) {
@@ -612,8 +616,9 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
 
   /* Back button: return to menu unless module owns UI */
   if (cc == CC_BACK && value == 127) {
-    if (g_module_manager_initialized && mm_is_module_loaded(&g_module_manager) &&
-        !mm_module_wants_raw_ui(&g_module_manager)) {
+    if (g_module_manager_initialized &&
+        mm_is_module_loaded(&g_module_manager) &&
+        !raw_ui_module_active) {
       g_reload_menu_ui = 1;
       return 1;
     }
@@ -647,7 +652,7 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
   }
 
   /* Shift + Up/Down = Semitone transpose */
-  if (host_shift_held && value == 127) {
+  if (!raw_ui_module_active && host_shift_held && value == 127) {
     if (cc == CC_UP) {
       if (host_transpose < 48) {
         host_transpose++;
