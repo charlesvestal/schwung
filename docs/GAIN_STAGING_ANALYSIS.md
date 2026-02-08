@@ -1,312 +1,131 @@
-# Gain Staging Analysis: Live vs Resampled Audio
+# Gain Staging Analysis: Master FX-On Resample Parity
 
-## Status: UNSOLVED
+## Status
 
-The volume curve has been fixed (sqrt model matches Move within ~1.8dB).
-But resampled audio still plays back **quieter** than the live signal.
-Root cause is not yet confirmed.
+- `Master FX OFF`: mostly fixed by `38cba2b` (ME-only master volume attenuation path).
+- `Master FX ON`: still not parity-clean.
+- This document captures the current root cause and mitigation options.
 
-## Measured Volume Curve
+## What We Verified
 
-From Move's Settings.json `globalVolume` at known knob positions:
+### 1) Current signal order in code (main)
 
-| Knob Position | Measured dB | Our Model: dB = -70(1-sqrt(pos)) | Error |
-|---------------|-------------|----------------------------------|-------|
-| 100% (1.00)   | 0.0         | 0.0                              | 0.0   |
-| 75% (0.75)    | -10.4       | -9.4                             | +1.0  |
-| 50% (0.50)    | -19.9       | -20.5                            | -0.6  |
-| 25% (0.25)    | -33.2       | -35.0                            | -1.8  |
-| 0% (0.00)     | -70.0       | -70.0                            | 0.0   |
+In `shadow_inprocess_mix_from_buffer()`:
 
-Current implementation: `dB = -70 * (1 - sqrt(pos))`, then `amplitude = pow(10, dB/20)`
+1. Mix ME deferred buffer into Move mailbox audio.
+2. Apply Master FX chain to combined mailbox audio (Move + ME).
+3. Capture native bridge snapshot **after Master FX** and **before master volume**.
+4. Apply master volume:
+   - If Master FX chain is inactive: scale ME contribution only.
+   - If Master FX chain is active: scale the full mailbox buffer.
 
-## Per-Frame Audio Pipeline
+References:
+- `src/move_anything_shim.c` (`shadow_inprocess_mix_from_buffer`, `shadow_master_fx_chain_active`)
+- `src/move_anything_shim.c` (`native_capture_total_mix_snapshot_from_buffer` call after FX, before master-volume scaling)
 
-Each ioctl cycle is ~2.9ms (128 frames at 44.1kHz).
-
-### Pre-ioctl (before hardware transaction)
-
-At this point, AUDIO_OUT already contains Move's own rendered audio
-(pads, synths, drums). Move has already applied its own internal volume
-scaling to this audio — we don't control that.
-
-```
-AUDIO_OUT = [Move's audio, already volume-scaled by Move internally]
-```
-
-#### Step 1: shadow_inprocess_mix_from_buffer()
-
-```
-A. Mix ME deferred buffer into AUDIO_OUT
-   ─────────────────────────────────────
-   for each sample i:
-     AUDIO_OUT[i] += shadow_deferred_dsp_buffer[i]
-
-   The deferred buffer contains renders from ALL active shadow slots,
-   accumulated from the PREVIOUS frame's post-ioctl render pass.
-   Each slot's audio already has per-slot volume applied (dB-scaled,
-   from D-Bus "Track Volume X dB" → powf(10, dB/20)).
-
-   AUDIO_OUT is now: Move_audio + ME_audio (full gain)
-
-B. Apply Master FX chain (4 slots, in series)
-   ────────────────────────────────────────────
-   Reverb, delay, etc. Applied to combined Move+ME audio.
-
-C. *** SNAPSHOT TAP *** (resample bridge source)
-   ──────────────────────────────────────────────
-   native_capture_total_mix_snapshot_from_buffer(mailbox_audio)
-   Copies AUDIO_OUT verbatim into native_total_mix_snapshot[]
-
-   Signal level: Move_audio + ME_audio + MasterFX
-                 NO shadow_master_volume applied
-
-D. *** ME SAMPLER TAP *** (quantized sampler source)
-   ──────────────────────────────────────────────────
-   sampler_capture_audio() reads from AUDIO_OUT
-   Same signal level as snapshot
-
-E. Apply shadow_master_volume to ENTIRE AUDIO_OUT
-   ─────────────────────────────────────────────────
-   for each sample i:
-     AUDIO_OUT[i] *= shadow_master_volume
-
-   shadow_master_volume = pow(10, (-70 * (1 - sqrt(pos))) / 20)
-   where pos = normalized pixel bar position (0.0 to 1.0)
-
-   ┌─────────────────────────────────────────────────────────┐
-   │ KEY ISSUE: This scales EVERYTHING in AUDIO_OUT:         │
-   │   - Move's own audio (already volume-scaled by Move)    │
-   │   - ME's audio (already slot-volume-scaled)             │
-   │                                                         │
-   │ Move's audio gets attenuated TWICE:                     │
-   │   1. By Move internally                                 │
-   │   2. By shadow_master_volume here                       │
-   │                                                         │
-   │ ME's audio gets attenuated ONCE:                        │
-   │   1. By shadow_master_volume here (correct)             │
-   └─────────────────────────────────────────────────────────┘
-```
-
-#### Step 2: ioctl (hardware transaction)
-
-Audio goes to DAC → speakers/headphones.
-
-### Post-ioctl (after hardware transaction)
-
-```
-F. Copy hardware mailbox back (AUDIO_IN now has fresh mic/line data)
-
-G. native_resample_bridge_apply()
-   ─────────────────────────────────
-   When mode=OVERWRITE:
-     memcpy(AUDIO_IN, native_total_mix_snapshot)
-     Overwrites mic/line-in with our snapshot from Step C
-     Signal level: FULL GAIN (no shadow_master_volume)
-
-   When mode=OFF:
-     No-op (AUDIO_IN keeps hardware mic/line data)
-
-H. shadow_inprocess_render_to_buffer() (DSP for NEXT frame)
-   ──────────────────────────────────────────────────────────
-   For each active shadow slot:
-     render_block() → render_buffer (raw DSP output)
-     render_buffer[i] *= slot.volume  (dB-scaled per-slot volume)
-     Accumulate into shadow_deferred_dsp_buffer[] (clamped int16)
-```
-
-## Signal Flow: Live Listening (what you hear)
-
-```
-┌──────────────┐
-│ Move Synths  │──→ Move internal volume (dB curve) ──┐
-│ Pads, Drums  │                                       │
-└──────────────┘                                       │
-                                                       ▼
-┌──────────────┐                                 ┌──────────┐
-│ ME Slot 1    │──→ slot vol (dB) ──────────────→│          │
-│ (e.g. YT)   │                                  │   SUM    │
-├──────────────┤                                  │ (int16   │
-│ ME Slot 2-4  │──→ slot vol (dB) ──────────────→│  clamp)  │
-└──────────────┘                                  └────┬─────┘
-                                                       │
-                                                       ▼
-                                                 ┌──────────┐
-                                                 │ Master   │
-                                                 │ FX Chain │
-                                                 └────┬─────┘
-                                                       │
-                                          ┌────────────┤
-                                          │            │
-                                     SNAPSHOT TAP      │
-                                     (full gain)       ▼
-                                          │      ┌───────────────┐
-                                          ▼      │ shadow_master │
-                                    ┌──────────┐ │ _volume       │
-                                    │ snapshot │ │ (sqrt curve)  │
-                                    │ buffer   │ └───────┬───────┘
-                                    └──────────┘         │
-                                                         ▼
-                                                   ┌──────────┐
-                                                   │ AUDIO_OUT│──→ DAC → Speakers
-                                                   └──────────┘
-
-Signal at speakers = (Move_audio + ME_audio) × MasterFX × shadow_master_volume
-```
-
-**Note:** Move_audio was already volume-scaled inside Move before reaching AUDIO_OUT.
-So Move's audio effectively gets: `Move_render × Move_vol × shadow_vol` (double-attenuated).
-ME's audio gets: `ME_render × slot_vol × shadow_vol` (single-attenuated, correct).
-
-## Signal Flow: Resample Bridge Capture
-
-```
-snapshot buffer (from SNAPSHOT TAP above)
-  = (Move_audio + ME_audio) × MasterFX
-  = FULL GAIN, no shadow_master_volume
-         │
-         ▼
-┌──────────────────┐
-│ Bridge: OVERWRITE│
-│ memcpy to        │
-│ AUDIO_IN         │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Move's native    │
-│ sampler reads    │
-│ AUDIO_IN         │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Saved to pad     │
-│ as WAV sample    │
-└──────────────────┘
-
-Signal captured = (Move_audio + ME_audio) × MasterFX
-                  (no volume applied — full gain)
-```
-
-## Signal Flow: Pad Playback (resampled audio)
-
-```
-┌──────────────────┐
-│ Pad WAV sample   │
-│ (full gain)      │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Move's playback  │
-│ engine           │
-│ × pad gain (dB)  │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Move's internal  │  ← Move applies its own master volume here
-│ master volume    │
-│ (dB curve)       │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ AUDIO_OUT        │──→ (then shadow_master_volume applied AGAIN by Step E)
-└──────────────────┘
-
-Signal at speakers = captured_audio × pad_gain × Move_vol × shadow_vol
-```
-
-## The Unsolved Problem
-
-### What we measured
-
-USB-C recording at ~50% volume (globalVolume = -20.5 dB):
-
-| Source | RMS Level |
-|--------|-----------|
-| Live YT slot | ~-35.5 dB |
-| Resampled pad playback | ~-58.0 dB |
-| **Gap** | **~22.5 dB** |
-
-Our volume curve computed -20.4 dB for the same knob position (matches Move's -20.5 dB).
-
-### Why the gap exists
-
-The ~22.5 dB gap is consistent with **double attenuation** during pad playback:
-
-```
-Live listening path:
-  ME_audio × slot_vol × shadow_vol
-  = ME_audio × 1.0 × shadow_vol(-20.5 dB)
-  = ME_audio at -20.5 dB
-
-Pad playback path:
-  captured_audio × pad_gain × Move_vol × shadow_vol
-  = ME_audio × 1.0 × Move_vol(-20.5 dB) × shadow_vol(-20.5 dB)
-  = ME_audio at -41.0 dB
-
-Gap = 41.0 - 20.5 = 20.5 dB (close to measured 22.5 dB)
-```
-
-The pad's audio, when played back by Move, goes into AUDIO_OUT where it has
-already been attenuated by Move's own volume. Then our Step E applies
-`shadow_master_volume` on top of that — double attenuation.
-
-### What we've tried (and failed)
-
-1. **me_active conditional** — only apply shadow_vol when ME slots are active.
-   Failed because ME slots are always active in shadow mode (they stay loaded).
-   Also would cause weird volume discontinuities.
-
-2. **Pre-mix volume scaling** — apply shadow_vol to ME deferred buffer before
-   mixing into AUDIO_OUT, skip post-mix volume entirely. Didn't help (still
-   quieter). Trade-off: bridge snapshot loses Master FX.
-
-### Ideas not yet tried
-
-- **Separate ME-only from Move audio**: We can't easily distinguish Move's
-  audio from ME's audio once they're summed in AUDIO_OUT. We'd need to track
-  what we added vs what was already there.
-
-- **Don't apply shadow_vol to AUDIO_OUT at all**: Let the volume bar be
-  cosmetic only, and rely on per-slot volume for ME level control. Problem:
-  the volume knob would stop working for ME audio.
-
-- **Apply shadow_vol only to the deferred buffer during render**: Scale each
-  slot's render output by shadow_vol in `shadow_inprocess_render_to_buffer()`.
-  The mixed AUDIO_OUT would then have Move_audio (untouched) + ME_audio×shadow_vol.
-  Snapshot would capture Move_audio + ME_audio×shadow_vol (which includes our
-  volume). On playback, pad = snapshot × Move_vol × shadow_vol — still double
-  for the ME portion. Snapshot would need to capture ME at full gain separately.
-
-- **Route through Move's volume**: Instead of tracking the pixel bar, find a
-  way to hook into Move's actual volume control. Unknown if possible.
-
-## Per-Slot Volume (working correctly)
-
-Per-slot volume is received via D-Bus as "Track Volume X dB" and converted:
-
-```c
-float vol = powf(10.0f, dB_value / 20.0f);
-shadow_chain_slots[slot].volume = vol;
-```
-
-Applied during render in `shadow_inprocess_render_to_buffer()`:
-
-```c
-for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-    int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
-    ...
-}
-```
-
-This is correct — dB from D-Bus, converted to linear amplitude, applied per-slot.
-
-## Files
-
-- `src/move_anything_shim.c` — all audio mixing, volume, snapshot, bridge logic
-- `src/host/shadow_constants.h` — shared memory layout
-- `docs/GAIN_STAGING_ANALYSIS.md` — this file
+### 2) Why OFF works but ON still fails
+
+The OFF-path fix works because we can isolate ME contribution as a delta:
+
+- `me = (move+me) - move`
+- Scale only `me` by `shadow_master_volume`.
+
+When Master FX is active, we no longer have a separable post-FX ME term from the single processed buffer, so code currently falls back to scaling the full buffer.
+
+### 3) Measured evidence from recordings
+
+We re-analyzed the provided files:
+
+- `/Users/charlesvestal/Set 1 Rec 22.wav`
+- `/Users/charlesvestal/Set 1 Rec 23.wav`
+
+Best aligned gain fit between the pair is about **-19.57 dB** with correlation **~1.0000**.
+
+Interpretation:
+- This pair is essentially the same waveform with one extra attenuation stage.
+- The delta is consistent with a ~50% master setting region (about -20 dB).
+
+This supports gain-staging mismatch, not random tone drift, for that case.
+
+## Root Cause (Master FX ON)
+
+Two constraints collide:
+
+1. Master FX is currently applied on the **combined** bus (Move + ME).
+2. With FX active, master volume currently scales the **entire** post-FX buffer.
+
+That means playback originating from Move's own engine can be attenuated by shim master volume in addition to Move's own volume behavior.
+
+In short:
+- OFF path can keep Move untouched and scale ME only.
+- ON path currently cannot do that with the present single-bus architecture, so it scales everything.
+
+## Why This Is Hard to "Perfectly" Fix in Current Topology
+
+A single stateful FX chain over a summed bus does not give an exact, isolated post-FX ME stem unless you split buses or run mirrored processing with independent state.
+
+Stateful/time-domain FX (reverb/delay/saturation with memory) make one-pass subtraction tricks fragile or wrong.
+
+## Mitigation Options
+
+### Option A (Low-risk incremental): signal-aware master-volume bypass when ME signal is absent
+
+Idea:
+- When Master FX is active but ME deferred buffer energy is below a threshold for the frame, skip shim master-volume attenuation for that frame.
+
+Pros:
+- Small change.
+- Targets the common "sample playback with no live ME signal" case.
+
+Cons:
+- Heuristic thresholds.
+- FX tails/interactions can blur "ME absent" detection.
+
+### Option B (Architectural correction): make Master FX a ME-only bus
+
+Idea:
+- Process Master FX on ME mix only, then sum with Move audio.
+- Apply shim master volume to ME bus only.
+
+Pros:
+- Clean gain separation.
+- Removes need to scale Move audio in shim.
+- Aligns with product language that Master FX is for instrument slots.
+
+Cons:
+- Behavior change for users relying on Master FX processing native Move audio.
+- Needs a deliberate migration note.
+
+### Option C (Highest fidelity, highest complexity): dual-bus/dual-state processing
+
+Idea:
+- Keep combined-bus behavior, but maintain enough separate state to derive Move and ME contributions post-FX safely.
+
+Pros:
+- Can preserve current sonic behavior while improving gain staging.
+
+Cons:
+- Significant complexity and CPU cost.
+- Easy to get wrong with stateful plugins.
+
+## Recommended Path
+
+1. Implement Option A first as a practical mitigation for current users.
+2. In parallel, decide product semantics for Master FX:
+   - If Master FX should target ME only, do Option B as the long-term fix.
+   - If combined-bus is required, treat Option C as a larger refactor.
+
+## Verification Plan (after mitigation)
+
+Use the same A/B method for all checks:
+
+1. Set master volume to max and mid positions.
+2. Capture live ME source and replay resampled pad.
+3. Compare:
+   - Loudness delta (dB)
+   - Correlation of aligned waveforms
+   - Low-end ratio and stereo side ratio
+
+Pass criteria:
+- Delta near 0 dB in matched conditions.
+- High correlation (unless intentional FX differences).

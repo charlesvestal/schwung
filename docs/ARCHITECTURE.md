@@ -211,10 +211,10 @@ The shim can bridge Move Everything's mixed output into Move's native sampler in
 
 In `Replace` mode, the bridge writes a snapshot of the combined Move + Move Everything mix into native `AUDIO_IN`. The snapshot tap point is:
 - after slot mix
-- before master FX
+- after master FX
 - before master-volume attenuation
 
-This keeps native resample capture aligned with the pre-master mix and avoids coupling capture level to transient master-volume reads.
+This bakes Master FX into the captured audio while keeping capture level independent of transient master-volume reads.
 
 The shim still tracks native sampler-source announcements for diagnostics/compatibility, but `Replace` intentionally applies continuously to avoid dropouts during route/source transitions.
 
