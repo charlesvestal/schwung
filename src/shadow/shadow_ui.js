@@ -695,6 +695,11 @@ function checkForUpdatesInBackground() {
     debugLog("checkForUpdatesInBackground: starting");
     const updates = [];
 
+    /* Show status overlay while checking */
+    clear_screen();
+    drawStatusOverlay('Updates', 'Checking...');
+    host_flush_display();
+
     /* Check core update */
     storeHostVersion = getHostVersion();
     debugLog("checkForUpdatesInBackground: hostVersion=" + storeHostVersion);
@@ -713,7 +718,11 @@ function checkForUpdatesInBackground() {
         });
     }
 
-    /* Check module updates - skip for now to keep startup fast */
+    /* Check module updates */
+    clear_screen();
+    drawStatusOverlay('Updates', 'Checking modules...');
+    host_flush_display();
+
     debugLog("checkForUpdatesInBackground: checking modules");
     const installed = scanInstalledModules();
     const catalogResult = fetchCatalog(() => {});
@@ -739,6 +748,8 @@ function checkForUpdatesInBackground() {
         view = VIEWS.UPDATE_PROMPT;
         needsRedraw = true;
         debugLog("checkForUpdatesInBackground: set view to UPDATE_PROMPT");
+    } else {
+        needsRedraw = true;
     }
 }
 
