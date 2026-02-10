@@ -2,9 +2,9 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Move Everything Installer",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.move-everything.installer",
   "build": {
-    "frontendDist": "./ui",
+    "frontendDist": "../ui",
     "devUrl": "http://localhost:3000"
   },
   "app": {
