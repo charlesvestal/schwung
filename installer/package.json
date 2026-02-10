@@ -6,8 +6,10 @@
   "scripts": {
     "start": "electron .",
     "build:mac": "electron-builder --mac",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux"
+    "build:win": "electron-builder --win --x64",
+    "build:win:portable": "electron-builder --win --x64 portable",
+    "build:linux": "electron-builder --linux",
+    "postinstall": "electron-builder install-app-deps"
   },
   "keywords": [],
   "author": "",
@@ -36,7 +38,7 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
-      "target": "nsis",
+      "target": ["nsis", "portable"],
       "publisherName": "Charles Vestal",
       "verifyUpdateCodeSignature": false
     },

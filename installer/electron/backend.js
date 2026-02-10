@@ -46,24 +46,30 @@ async function validateDevice(baseUrl) {
         // For .local domains, use system resolver to get IPv4 (mDNS)
         if (!cachedDeviceIp) {
             try {
-                // Use getent/dscacheutil to resolve mDNS to IPv4
-                const { stdout } = await new Promise((resolve, reject) => {
-                    const cmd = process.platform === 'darwin'
-                        ? `dscacheutil -q host -a name ${hostname} | grep ip_address | head -1 | awk '{print $2}'`
-                        : `getent ahostsv4 ${hostname} | head -1 | awk '{print $1}'`;
-
-                    require('child_process').exec(cmd, (err, stdout, stderr) => {
-                        if (err) reject(err);
-                        else resolve({ stdout });
-                    });
-                });
-
-                const ip = stdout.trim();
-                if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
-                    cachedDeviceIp = ip;
-                    console.log(`[DEBUG] Resolved ${hostname} to ${cachedDeviceIp} (IPv4)`);
+                // Windows: Rely on Bonjour services (from iTunes/iCloud) - just use hostname
+                if (process.platform === 'win32') {
+                    console.log(`[DEBUG] Windows: Using hostname directly (Bonjour will resolve)`);
+                    cachedDeviceIp = hostname;
                 } else {
-                    throw new Error('No IPv4 address found');
+                    // macOS/Linux: Use system resolver to get IPv4
+                    const { stdout } = await new Promise((resolve, reject) => {
+                        const cmd = process.platform === 'darwin'
+                            ? `dscacheutil -q host -a name ${hostname} | grep ip_address | head -1 | awk '{print $2}'`
+                            : `getent ahostsv4 ${hostname} | head -1 | awk '{print $1}'`;
+
+                        require('child_process').exec(cmd, (err, stdout, stderr) => {
+                            if (err) reject(err);
+                            else resolve({ stdout });
+                        });
+                    });
+
+                    const ip = stdout.trim();
+                    if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
+                        cachedDeviceIp = ip;
+                        console.log(`[DEBUG] Resolved ${hostname} to ${cachedDeviceIp} (IPv4)`);
+                    } else {
+                        throw new Error('No IPv4 address found');
+                    }
                 }
             } catch (err) {
                 console.log(`[DEBUG] mDNS resolution failed: ${err.message}, using hostname`);
