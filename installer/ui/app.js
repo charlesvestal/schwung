@@ -703,17 +703,7 @@ async function startInstallation() {
         });
         updateChecklistItem('core', 'completed');
 
-        // Determine which modules to install
-        let modulesToInstall = [];
-        if (state.installType === 'complete') {
-            // Install all modules
-            modulesToInstall = state.allModules.map(m => m.id);
-        } else if (state.installType === 'custom') {
-            // Install selected modules
-            modulesToInstall = state.selectedModules;
-        }
-        // For 'core' and 'screenreader' modes, modulesToInstall stays empty
-
+        // Install modules (if any)
         if (modulesToInstall.length > 0) {
             updateInstallProgress('Fetching module catalog...', 50);
             const modules = state.allModules;
