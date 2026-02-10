@@ -1,6 +1,7 @@
 mod auth;
 mod cookie_storage;
 mod device;
+mod diagnostics;
 mod install;
 mod ssh;
 
@@ -100,6 +101,11 @@ async fn install_module_package(
     install::install_module(&module_id, Path::new(&tarball_path), &component_type, &hostname, None).await
 }
 
+#[tauri::command]
+fn get_diagnostics(device_ip: Option<String>, errors: Vec<String>) -> String {
+    diagnostics::generate_report(device_ip, errors)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -129,7 +135,8 @@ pub fn run() {
       get_module_catalog,
       download_release,
       install_main,
-      install_module_package
+      install_module_package,
+      get_diagnostics
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

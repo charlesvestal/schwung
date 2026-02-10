@@ -4,7 +4,8 @@ const state = {
     deviceIp: null,
     authCode: null,
     selectedModules: [],
-    sshPassword: null
+    sshPassword: null,
+    errors: []
 };
 
 // Screen Management
@@ -328,6 +329,10 @@ function showInstallSuccess() {
 
 // Error Handling
 function showError(message) {
+    state.errors.push({
+        timestamp: new Date().toISOString(),
+        message: message
+    });
     showScreen('error');
     document.getElementById('error-message').textContent = message;
 }
@@ -338,6 +343,7 @@ function retryInstallation() {
     state.authCode = null;
     state.selectedModules = [];
     state.sshPassword = null;
+    state.errors = [];
 
     showScreen('discovery');
     startDeviceDiscovery();
@@ -394,6 +400,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Error screen
     document.getElementById('btn-retry').onclick = retryInstallation;
+    document.getElementById('btn-diagnostics').onclick = async () => {
+        try {
+            const errorMessages = state.errors.map(e => `[${e.timestamp}] ${e.message}`);
+            const report = await window.__TAURI__.invoke('get_diagnostics', {
+                deviceIp: state.deviceIp,
+                errors: errorMessages
+            });
+
+            await navigator.clipboard.writeText(report);
+            alert('Diagnostics copied to clipboard');
+        } catch (error) {
+            console.error('Failed to generate diagnostics:', error);
+            alert('Failed to copy diagnostics: ' + error);
+        }
+    };
 
     // Start discovery on load
     startDeviceDiscovery();
