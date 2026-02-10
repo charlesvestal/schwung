@@ -91,6 +91,19 @@ async function selectDevice(hostname) {
             // Check if we have a saved cookie
             const savedCookie = await window.__TAURI__.invoke('get_saved_cookie');
 
+            // First, test if SSH already works
+            console.log('[DEBUG] Testing SSH connection...');
+            const sshWorks = await window.__TAURI__.invoke('test_ssh', { hostname: hostname });
+
+            if (sshWorks) {
+                console.log('[DEBUG] SSH already works, proceeding to modules');
+                await loadModuleList();
+                showScreen('modules');
+                return;
+            }
+
+            console.log('[DEBUG] SSH not available yet, need to set up key');
+
             if (savedCookie) {
                 console.log('[DEBUG] Found saved cookie, proceeding to SSH setup');
                 // Try to use saved cookie, skip to SSH setup

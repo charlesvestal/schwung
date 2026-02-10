@@ -183,42 +183,75 @@ async function submitSshKeyWithAuth(baseUrl, pubkey) {
 }
 
 async function testSsh(hostname) {
-    return new Promise((resolve) => {
-        const conn = new Client();
+    // Use move_key if it exists, otherwise id_rsa
+    const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
+    const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
 
-        const timeout = setTimeout(() => {
-            conn.end();
-            resolve(false);
-        }, 5000);
+    if (!fs.existsSync(keyPath)) {
+        console.log('[DEBUG] No SSH key found for testing');
+        return false;
+    }
 
-        conn.on('ready', () => {
-            clearTimeout(timeout);
-            conn.end();
-            resolve(true);
-        });
+    const privateKey = fs.readFileSync(keyPath);
 
-        conn.on('error', () => {
-            clearTimeout(timeout);
-            resolve(false);
-        });
+    // Try ableton@move.local first, then root@move.local
+    const users = ['ableton', 'root'];
 
-        // Use move_key if it exists, otherwise id_rsa
-        const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
-        const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
+    for (const username of users) {
+        console.log(`[DEBUG] Testing SSH as ${username}@${hostname}...`);
 
-        try {
-            conn.connect({
-                host: hostname,
-                port: 22,
-                username: 'root',
-                privateKey: fs.readFileSync(keyPath),
-                readyTimeout: 5000
+        const connected = await new Promise((resolve) => {
+            const conn = new Client();
+
+            const timeout = setTimeout(() => {
+                conn.end();
+                resolve(false);
+            }, 5000);
+
+            conn.on('ready', () => {
+                clearTimeout(timeout);
+
+                // If connected as ableton, fix authorized_keys permissions
+                if (username === 'ableton') {
+                    console.log('[DEBUG] Connected as ableton, fixing authorized_keys permissions');
+                    conn.exec('chmod 600 ~/.ssh/authorized_keys && chmod 700 ~/.ssh', (err) => {
+                        conn.end();
+                        resolve(true);
+                    });
+                } else {
+                    conn.end();
+                    resolve(true);
+                }
             });
-        } catch (err) {
-            clearTimeout(timeout);
-            resolve(false);
+
+            conn.on('error', (err) => {
+                clearTimeout(timeout);
+                console.log(`[DEBUG] SSH error for ${username}:`, err.message);
+                resolve(false);
+            });
+
+            try {
+                conn.connect({
+                    host: hostname,
+                    port: 22,
+                    username: username,
+                    privateKey: privateKey,
+                    readyTimeout: 5000
+                });
+            } catch (err) {
+                clearTimeout(timeout);
+                resolve(false);
+            }
+        });
+
+        if (connected) {
+            console.log(`[DEBUG] SSH works as ${username}@${hostname}`);
+            return true;
         }
-    });
+    }
+
+    console.log('[DEBUG] SSH failed for all users');
+    return false;
 }
 
 async function setupSshConfig() {
