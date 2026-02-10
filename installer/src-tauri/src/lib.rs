@@ -1,3 +1,17 @@
+mod device;
+
+use device::{discover_move, validate_device, MoveDevice};
+
+#[tauri::command]
+async fn find_device() -> Result<MoveDevice, String> {
+    discover_move().await
+}
+
+#[tauri::command]
+async fn validate_device_at(base_url: String) -> Result<bool, String> {
+    validate_device(&base_url).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -11,6 +25,7 @@ pub fn run() {
       }
       Ok(())
     })
+    .invoke_handler(tauri::generate_handler![find_device, validate_device_at])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
