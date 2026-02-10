@@ -434,12 +434,6 @@ function updateInstallProgress(message) {
     console.log('Install progress:', message);
 }
 
-function showInstallSuccess() {
-    showScreen('success');
-    document.getElementById('device-ip').textContent = state.deviceIp;
-    document.getElementById('ssh-password').textContent = state.sshPassword;
-}
-
 // Error Handling
 function showError(message) {
     state.errors.push({
@@ -463,24 +457,8 @@ function retryInstallation() {
 }
 
 // Utility Functions
-async function copyCredentialsToClipboard() {
-    const text = `SSH Access Details\nIP: ${state.deviceIp}\nUsername: root\nPassword: ${state.sshPassword}`;
-
-    try {
-        await navigator.clipboard.writeText(text);
-        const button = document.getElementById('btn-copy-credentials');
-        const originalText = button.textContent;
-        button.textContent = 'Copied!';
-        setTimeout(() => {
-            button.textContent = originalText;
-        }, 2000);
-    } catch (error) {
-        console.error('Failed to copy:', error);
-    }
-}
-
 function closeApplication() {
-    window.__TAURI__.process.exit(0);
+    window.close();
 }
 
 // Event Listeners
@@ -520,7 +498,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // Success screen
-    document.getElementById('btn-copy-credentials').onclick = copyCredentialsToClipboard;
     document.getElementById('btn-done').onclick = closeApplication;
 
     // Error screen
