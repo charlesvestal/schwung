@@ -300,22 +300,32 @@ function cancelConfirmation() {
 }
 
 // Module Selection
+function updateVersionCheckStatus(message) {
+    const statusEl = document.querySelector('#version-check-status .instruction');
+    if (statusEl) {
+        statusEl.textContent = message;
+    }
+}
+
 async function checkVersions() {
     try {
         console.log('[DEBUG] Checking installed versions...');
         showScreen('version-check');
 
         // Check what's installed on device
+        updateVersionCheckStatus('Checking what\'s installed on your Move...');
         const hostname = state.deviceIp || 'move.local';
         const installed = await window.__TAURI__.invoke('check_installed_versions', { hostname });
 
         // Get latest release and module catalog
+        updateVersionCheckStatus('Fetching latest releases from GitHub...');
         const [latestRelease, moduleCatalog] = await Promise.all([
             window.__TAURI__.invoke('get_latest_release'),
             window.__TAURI__.invoke('get_module_catalog')
         ]);
 
         // Compare versions
+        updateVersionCheckStatus('Comparing versions...');
         const versionInfo = await window.__TAURI__.invoke('compare_versions', {
             installed,
             latestRelease,

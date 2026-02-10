@@ -410,17 +410,40 @@ async function getModuleCatalog() {
 
 async function getLatestRelease() {
     try {
-        // Use direct download URL like install.sh does (no API, no rate limits)
+        // Fetch latest release info from GitHub API to get actual version
+        const response = await httpClient.get('https://api.github.com/repos/charlesvestal/move-anything/releases/latest');
+
+        if (response.status === 200 && response.data) {
+            const tagName = response.data.tag_name; // e.g., "v0.3.53"
+            const version = tagName.startsWith('v') ? tagName.substring(1) : tagName; // Remove 'v' prefix
+            const assetName = 'move-anything.tar.gz';
+            const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/latest/download/${assetName}`;
+
+            return {
+                version: version,
+                asset_name: assetName,
+                download_url: downloadUrl
+            };
+        }
+
+        // Fallback if API fails
         const assetName = 'move-anything.tar.gz';
         const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/latest/download/${assetName}`;
-
         return {
             version: 'latest',
             asset_name: assetName,
             download_url: downloadUrl
         };
     } catch (err) {
-        throw new Error(`Failed to get latest release: ${err.message}`);
+        console.error('[DEBUG] Failed to get version from API:', err.message);
+        // Fallback to latest URL without version
+        const assetName = 'move-anything.tar.gz';
+        const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/latest/download/${assetName}`;
+        return {
+            version: 'latest',
+            asset_name: assetName,
+            download_url: downloadUrl
+        };
     }
 }
 
