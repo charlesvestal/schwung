@@ -10,14 +10,16 @@
     <div id="app">
         <!-- Warning Screen -->
         <div id="screen-warning" class="screen active">
-            <h1>⚠️ Warning</h1>
+            <h1>⚠️ Important Information</h1>
             <div class="warning-box">
                 <p><strong>Are you sure you want to install Move Everything on your Ableton Move?</strong></p>
-                <p>This is <strong>UNSUPPORTED</strong> by Ableton.</p>
-                <p>The authors of this project accept no liability for any damage you incur by proceeding.</p>
+                <p>This software is <strong>community-developed</strong> and not officially supported by Ableton.</p>
+                <p>The installation is designed to be safe and reversible. The authors accept no liability for issues, but countless users have installed Move Everything with no reports of permanent damage or bricking a device.</p>
             </div>
-            <button id="btn-accept-warning">I Understand, Continue</button>
-            <button id="btn-cancel" class="secondary">Cancel</button>
+            <div class="action-buttons">
+                <button id="btn-cancel" class="secondary">Cancel</button>
+                <button id="btn-accept-warning">I Understand, Continue</button>
+            </div>
         </div>
 
         <!-- Device Discovery Screen -->
@@ -53,10 +55,16 @@
 
         <!-- SSH Key Setup Screen -->
         <div id="screen-ssh-key" class="screen">
-            <h1>SSH Key Setup</h1>
+            <h1>Secure Connection Setup</h1>
             <p class="instruction" id="ssh-key-message"></p>
-            <button id="btn-add-ssh-key">Add SSH Key to Move</button>
-            <button id="btn-back-ssh-key" class="secondary">Back</button>
+            <div class="info-box" id="ssh-key-explanation" style="display: none;">
+                <p><strong>What is this?</strong></p>
+                <p>A secure connection key lets the installer communicate safely with your Move device. This key will only be used for Move Everything installation and won't affect other systems.</p>
+            </div>
+            <div class="action-buttons">
+                <button id="btn-back-ssh-key" class="secondary">Back</button>
+                <button id="btn-add-ssh-key">Add Key to Move</button>
+            </div>
         </div>
 
         <!-- Confirm on Device Screen -->
@@ -64,6 +72,7 @@
             <h1>Confirm on Device</h1>
             <div class="spinner"></div>
             <p class="instruction">On your Ableton Move, use the jog wheel to select "Yes" and press to confirm</p>
+            <p class="instruction" style="font-size: 0.9rem; margin-top: 1rem;">Waiting for confirmation...</p>
             <button id="btn-cancel-confirm" class="secondary">Cancel</button>
         </div>
 
@@ -77,7 +86,10 @@
             <div id="version-info" style="display: none;">
                 <div id="core-version-info"></div>
                 <div id="module-version-info"></div>
-                <button id="btn-continue-to-options">Continue</button>
+                <div class="action-buttons">
+                    <button id="btn-back-version-check" class="secondary">Back</button>
+                    <button id="btn-continue-to-options">Continue</button>
+                </div>
             </div>
         </div>
 
@@ -93,6 +105,7 @@
                         <div class="option-content">
                             <strong>Complete</strong>
                             <span>All modules with full UI (recommended)</span>
+                            <p class="option-detail">Installs Signal Chain, synths, effects, and all UI features. Best for most users.</p>
                         </div>
                     </label>
                     <label class="radio-option">
@@ -100,20 +113,23 @@
                         <div class="option-content">
                             <strong>Custom</strong>
                             <span>Choose specific modules</span>
+                            <p class="option-detail">Select only the modules you want. Saves space if you don't need everything.</p>
                         </div>
                     </label>
                     <label class="radio-option">
                         <input type="radio" name="install-type" value="core">
                         <div class="option-content">
                             <strong>Core Only</strong>
-                            <span>No modules, full UI</span>
+                            <span>Framework and UI, no modules</span>
+                            <p class="option-detail">Minimal installation. Add modules later via Module Store. Good for testing.</p>
                         </div>
                     </label>
                     <label class="radio-option">
                         <input type="radio" name="install-type" value="screenreader">
                         <div class="option-content">
                             <strong>Screen Reader Only</strong>
-                            <span>Audio interface, no graphical UI</span>
+                            <span>Audio interface with text-to-speech</span>
+                            <p class="option-detail">For visually impaired users. No visual display. All navigation via voice prompts.</p>
                         </div>
                     </label>
                 </div>
@@ -147,9 +163,17 @@
 
         <!-- Success Screen -->
         <div id="screen-success" class="screen">
-            <h1>Installation Complete!</h1>
+            <h1>You're All Set! 🎉</h1>
             <div class="success-icon">✓</div>
-            <p class="instruction">Move Everything has been successfully installed on your device</p>
+            <p class="instruction">Move Everything has been successfully installed on your device.</p>
+            <div class="info-box">
+                <p><strong>Next Steps:</strong></p>
+                <ol style="margin: 0.5rem 0 0 1.5rem; color: #b8b8b8;">
+                    <li style="margin: 0.5rem 0;">Restart your Ableton Move to load Move Everything</li>
+                    <li style="margin: 0.5rem 0;">Press <strong style="color: #0066cc;">Shift + Vol + Knob 1</strong> to toggle shadow mode</li>
+                    <li style="margin: 0.5rem 0;">Explore the built-in modules and Signal Chain</li>
+                </ol>
+            </div>
             <button id="btn-done">Done</button>
         </div>
 

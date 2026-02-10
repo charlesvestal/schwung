@@ -213,12 +213,16 @@ async function showSshKeyScreen(baseUrl) {
         let pubkeyPath = await window.__TAURI__.invoke('find_existing_ssh_key');
 
         const messageEl = document.getElementById('ssh-key-message');
+        const explanationEl = document.getElementById('ssh-key-explanation');
+
         if (pubkeyPath) {
             console.log('[DEBUG] Found SSH key:', pubkeyPath);
-            messageEl.textContent = 'SSH key found. Ready to add it to your Move device for secure access.';
+            messageEl.textContent = 'Secure connection key found. Ready to add it to your Move device.';
+            explanationEl.style.display = 'none';
         } else {
             console.log('[DEBUG] No SSH key found');
-            messageEl.textContent = 'No SSH key found. A new key will be generated and added to your Move device for secure access.';
+            messageEl.textContent = 'No secure connection key found. A new key will be generated and added to your Move device.';
+            explanationEl.style.display = 'block';
         }
 
         // Store baseUrl for later
@@ -768,6 +772,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-cancel-confirm').onclick = cancelConfirmation;
 
     // Version check screen
+    document.getElementById('btn-back-version-check').onclick = () => {
+        showScreen('discovery');
+        startDeviceDiscovery();
+    };
+
     document.getElementById('btn-continue-to-options').onclick = async () => {
         await loadModuleList();
         showScreen('modules');

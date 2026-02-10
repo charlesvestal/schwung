@@ -49,7 +49,7 @@ h3 {
 
 .instruction {
     text-align: center;
-    color: #a0a0a0;
+    color: #b8b8b8;
     margin-bottom: 2rem;
 }
 
@@ -77,9 +77,17 @@ button:disabled {
     cursor: not-allowed;
 }
 
+button:focus,
+input:focus,
+input[type="checkbox"]:focus,
+input[type="radio"]:focus {
+    outline: 2px solid #0066cc;
+    outline-offset: 2px;
+}
+
 button.secondary {
     background: #2a2a2a;
-    color: #a0a0a0;
+    color: #b8b8b8;
 }
 
 button.secondary:hover {
@@ -131,7 +139,7 @@ button.secondary:hover {
 
 .device-item p {
     margin: 0.25rem 0 0 0;
-    color: #a0a0a0;
+    color: #b8b8b8;
     font-size: 0.9rem;
 }
 
@@ -144,7 +152,7 @@ button.secondary:hover {
 
 .manual-entry p {
     margin-bottom: 1rem;
-    color: #a0a0a0;
+    color: #b8b8b8;
 }
 
 .manual-entry input {
@@ -238,7 +246,7 @@ button.secondary:hover {
 
 .module-info p {
     margin: 0.25rem 0 0 0;
-    color: #a0a0a0;
+    color: #b8b8b8;
     font-size: 0.9rem;
 }
 
@@ -265,7 +273,7 @@ button.secondary:hover {
 
 #install-status {
     text-align: center;
-    color: #a0a0a0;
+    color: #b8b8b8;
 }
 
 #install-log {
@@ -281,7 +289,7 @@ button.secondary:hover {
 
 .log-entry {
     margin-bottom: 0.25rem;
-    color: #a0a0a0;
+    color: #b8b8b8;
 }
 
 .log-entry.error {
@@ -343,8 +351,25 @@ button.secondary:hover {
 /* Action Buttons */
 .action-buttons {
     display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    flex-direction: row;
+    gap: 0.75rem;
+}
+
+.action-buttons button.secondary {
+    flex: 1;
+}
+
+.action-buttons button:not(.secondary) {
+    flex: 2;
+}
+
+@media (max-width: 600px) {
+    .action-buttons {
+        flex-direction: column;
+    }
+    .action-buttons button {
+        flex: 1;
+    }
 }
 
 /* Warning Screen */
@@ -355,6 +380,24 @@ button.secondary:hover {
     padding: 2rem;
     margin: 2rem 0;
     color: #856404;
+}
+
+/* Info Box */
+.info-box {
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+}
+
+.info-box p {
+    margin: 0.5rem 0;
+    color: #b8b8b8;
+}
+
+.info-box strong {
+    color: #fff;
 }
 
 .warning-box p {
@@ -419,7 +462,7 @@ button.secondary:hover {
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    color: #a0a0a0;
+    color: #b8b8b8;
 }
 
 .option-content strong {
@@ -429,6 +472,13 @@ button.secondary:hover {
 
 .option-content span {
     font-size: 0.9rem;
+}
+
+.option-detail {
+    font-size: 0.85rem;
+    color: #888;
+    margin: 0.5rem 0 0 0;
+    line-height: 1.3;
 }
 
 .checkbox-option {
@@ -494,7 +544,7 @@ button.secondary:hover {
 }
 
 .version-item-name span {
-    color: #a0a0a0;
+    color: #b8b8b8;
     font-size: 0.9rem;
 }
 
@@ -517,5 +567,5 @@ button.secondary:hover {
 
 .version-badge.current {
     background: #333;
-    color: #a0a0a0;
+    color: #b8b8b8;
 }
