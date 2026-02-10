@@ -1,9 +1,11 @@
 mod auth;
 mod cookie_storage;
 mod device;
+mod ssh;
 
 use auth::AuthClient;
 use device::{discover_move, validate_device, MoveDevice};
+use std::path::Path;
 
 #[tauri::command]
 async fn find_device() -> Result<MoveDevice, String> {
@@ -39,6 +41,33 @@ fn clear_saved_cookie() -> Result<(), String> {
     cookie_storage::delete_cookie()
 }
 
+#[tauri::command]
+fn find_existing_ssh_key() -> Option<String> {
+    ssh::find_ssh_key()
+        .and_then(|path| path.to_str().map(|s| s.to_string()))
+}
+
+#[tauri::command]
+fn generate_new_ssh_key() -> Result<String, String> {
+    let pubkey_path = ssh::generate_ssh_key()?;
+    Ok(pubkey_path.to_str().unwrap().to_string())
+}
+
+#[tauri::command]
+fn read_public_key(path: String) -> Result<String, String> {
+    ssh::read_pubkey(Path::new(&path))
+}
+
+#[tauri::command]
+fn test_ssh(hostname: String) -> Result<bool, String> {
+    ssh::test_ssh_connection(&hostname)
+}
+
+#[tauri::command]
+fn setup_ssh_config() -> Result<(), String> {
+    ssh::write_ssh_config()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -58,7 +87,12 @@ pub fn run() {
       submit_auth_code,
       submit_ssh_key_with_auth,
       get_saved_cookie,
-      clear_saved_cookie
+      clear_saved_cookie,
+      find_existing_ssh_key,
+      generate_new_ssh_key,
+      read_public_key,
+      test_ssh,
+      setup_ssh_config
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

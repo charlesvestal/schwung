@@ -29,6 +29,7 @@ dirs = "5.0"
 log = "0.4"
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
+hostname = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["fs"] }
