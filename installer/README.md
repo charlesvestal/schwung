@@ -25,6 +25,20 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
+### Windows
+
+Before building on Windows, you must download OpenSSH binaries:
+
+1. Download the latest release from [Win32-OpenSSH](https://github.com/PowerShell/Win32-OpenSSH/releases)
+2. Extract the following files to `src-tauri/resources/bin/`:
+   - `ssh.exe`
+   - `ssh-keygen.exe`
+   - `scp.exe`
+   - All required DLL files (e.g., `msys-2.0.dll`, `msys-crypto-1.1.dll`, etc.)
+3. Run `npm run tauri:build`
+
+The installer will bundle these binaries for Windows deployments. On macOS/Linux, the system's native OpenSSH is used.
+
 ## Project Structure
 
 - `ui/` - Frontend HTML/CSS/JS
