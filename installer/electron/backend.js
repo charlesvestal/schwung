@@ -347,30 +347,17 @@ async function getModuleCatalog() {
         // Handle v2 catalog format
         const moduleList = catalog.modules || catalog;
 
-        // For each module, get latest release info
-        const modules = await Promise.all(moduleList.map(async (module) => {
-            try {
-                const releaseUrl = `https://api.github.com/repos/${module.github_repo}/releases/latest`;
-                const releaseResponse = await httpClient.get(releaseUrl);
+        // For each module, construct direct download URL (avoid GitHub API rate limits)
+        const modules = moduleList.map((module) => {
+            // Construct direct download URL like install.sh does
+            const downloadUrl = `https://github.com/${module.github_repo}/releases/latest/download/${module.asset_name}`;
 
-                if (releaseResponse.status === 200) {
-                    const release = releaseResponse.data;
-                    const asset = release.assets.find(a => a.name === module.asset_name);
-
-                    if (asset) {
-                        return {
-                            ...module,
-                            version: release.tag_name,
-                            download_url: asset.browser_download_url
-                        };
-                    }
-                }
-            } catch (err) {
-                console.error(`Failed to get release for ${module.id}:`, err.message);
-            }
-
-            return module;
-        }));
+            return {
+                ...module,
+                version: 'latest',
+                download_url: downloadUrl
+            };
+        });
 
         return modules;
     } catch (err) {
