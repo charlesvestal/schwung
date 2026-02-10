@@ -526,14 +526,14 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
         const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
         const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
 
-        // Upload to home directory
+        // Upload to Move Everything directory
         await new Promise((resolve, reject) => {
             const scp = spawn('scp', [
                 '-i', keyPath,
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=/dev/null',
                 tarballPath,
-                `ableton@${hostname}:move-anything/${filename}`
+                `ableton@${hostname}:/data/UserData/move-anything/${filename}`
             ]);
 
             scp.on('close', (code) => {
@@ -544,7 +544,7 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
 
         // Extract and install module (similar to install.sh module installation)
         const categoryPath = componentType ? `${componentType}s` : 'utility';
-        await sshExec(hostname, `cd move-anything && mkdir -p ${categoryPath} && tar -xzf ${filename} -C ${categoryPath}/ && rm ${filename}`);
+        await sshExec(hostname, `cd /data/UserData/move-anything && mkdir -p modules/${categoryPath} && tar -xzf ${filename} -C modules/${categoryPath}/ && rm ${filename}`);
 
         return true;
     } catch (err) {
