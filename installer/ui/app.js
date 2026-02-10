@@ -6,6 +6,7 @@ const state = {
     currentScreen: 'discovery',
     deviceIp: null,
     authCode: null,
+    baseUrl: null,
     selectedModules: [],
     sshPassword: null,
     errors: []
@@ -195,10 +196,34 @@ async function submitAuthCode() {
 
         console.log('Auth successful, cookie saved');
 
-        // Proceed to SSH setup
-        proceedToSshSetup(baseUrl);
+        // Check for SSH key and show confirmation screen
+        showSshKeyScreen(baseUrl);
     } catch (error) {
         showError('Failed to submit code: ' + error);
+    }
+}
+
+async function showSshKeyScreen(baseUrl) {
+    try {
+        // Find or check if SSH key exists
+        console.log('[DEBUG] Looking for existing SSH key...');
+        let pubkeyPath = await window.__TAURI__.invoke('find_existing_ssh_key');
+
+        const messageEl = document.getElementById('ssh-key-message');
+        if (pubkeyPath) {
+            console.log('[DEBUG] Found SSH key:', pubkeyPath);
+            messageEl.textContent = 'SSH key found. Ready to add it to your Move device for secure access.';
+        } else {
+            console.log('[DEBUG] No SSH key found');
+            messageEl.textContent = 'No SSH key found. A new key will be generated and added to your Move device for secure access.';
+        }
+
+        // Store baseUrl for later
+        state.baseUrl = baseUrl;
+
+        showScreen('ssh-key');
+    } catch (error) {
+        showError('SSH key check failed: ' + error);
     }
 }
 
@@ -486,6 +511,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Code entry screen
     document.getElementById('btn-submit-code').onclick = submitAuthCode;
     document.getElementById('btn-back-discovery').onclick = () => showScreen('discovery');
+
+    // SSH Key screen
+    document.getElementById('btn-add-ssh-key').onclick = () => proceedToSshSetup(state.baseUrl);
+    document.getElementById('btn-back-ssh-key').onclick = () => showScreen('code-entry');
 
     // Confirm screen
     document.getElementById('btn-cancel-confirm').onclick = cancelConfirmation;
