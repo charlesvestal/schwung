@@ -230,7 +230,7 @@ async function showSshKeyScreen(baseUrl) {
 
         showScreen('ssh-key');
     } catch (error) {
-        showError('SSH key check failed: ' + error);
+        showError('Connection setup failed: ' + error);
     }
 }
 
@@ -264,10 +264,10 @@ async function proceedToSshSetup(baseUrl) {
         });
         console.log('[DEBUG] SSH key submitted successfully');
 
-        // Start polling for SSH access
+        // Start polling for connection access
         startConfirmationPolling();
     } catch (error) {
-        showError('SSH setup failed: ' + error);
+        showError('Connection setup failed: ' + error);
     }
 }
 
@@ -596,10 +596,76 @@ function updateInstallButtonState() {
 }
 
 // Installation
+function initializeChecklist(modules) {
+    const checklist = document.getElementById('install-checklist');
+    const items = [];
+
+    // Add core item
+    items.push({
+        id: 'core',
+        name: 'Move Everything Core',
+        status: 'pending'
+    });
+
+    // Add module items
+    modules.forEach(module => {
+        items.push({
+            id: module.id,
+            name: module.name,
+            status: 'pending'
+        });
+    });
+
+    // Render checklist
+    checklist.innerHTML = items.map(item => `
+        <div class="checklist-item" data-item-id="${item.id}">
+            <div class="checklist-icon pending">○</div>
+            <div class="checklist-item-text">${item.name}</div>
+        </div>
+    `).join('');
+}
+
+function updateChecklistItem(itemId, status) {
+    const item = document.querySelector(`.checklist-item[data-item-id="${itemId}"]`);
+    if (!item) return;
+
+    const icon = item.querySelector('.checklist-icon');
+
+    // Remove old status classes
+    item.classList.remove('pending', 'in-progress', 'completed');
+    icon.classList.remove('pending', 'in-progress', 'completed');
+
+    // Add new status
+    item.classList.add(status);
+    icon.classList.add(status);
+
+    // Update icon
+    if (status === 'pending') {
+        icon.innerHTML = '○';
+    } else if (status === 'in-progress') {
+        icon.innerHTML = '<div class="spinner"></div>';
+    } else if (status === 'completed') {
+        icon.innerHTML = '✓';
+    }
+}
+
 async function startInstallation() {
     showScreen('installing');
 
     try {
+        // Determine which modules to install
+        let modulesToInstall = [];
+        if (state.installType === 'complete') {
+            modulesToInstall = state.allModules.map(m => m.id);
+        } else if (state.installType === 'custom') {
+            modulesToInstall = state.selectedModules;
+        }
+
+        // Get module objects for checklist
+        const moduleObjects = state.allModules.filter(m => modulesToInstall.includes(m.id));
+
+        // Initialize checklist
+        initializeChecklist(moduleObjects);
         // Setup SSH config
         updateInstallProgress('Setting up SSH configuration...', 0);
         await window.__TAURI__.invoke('setup_ssh_config');
@@ -628,12 +694,14 @@ async function startInstallation() {
 
         // Install/Upgrade main package
         const coreAction = (state.versionInfo && state.versionInfo.coreUpgrade) ? 'Upgrading' : 'Installing';
+        updateChecklistItem('core', 'in-progress');
         updateInstallProgress(`${coreAction} Move Everything core...`, 30);
         await window.__TAURI__.invoke('install_main', {
             tarballPath: mainTarballPath,
             hostname: 'move.local',
             flags: installFlags
         });
+        updateChecklistItem('core', 'completed');
 
         // Determine which modules to install
         let modulesToInstall = [];
@@ -665,6 +733,7 @@ async function startInstallation() {
                     const isUpgrade = state.installedModules.some(m => m.id === module.id);
                     const action = isUpgrade ? 'Upgrading' : 'Installing';
 
+                    updateChecklistItem(module.id, 'in-progress');
                     updateInstallProgress(`Downloading ${module.name} (${i + 1}/${moduleCount})...`, baseProgress);
                     const moduleTarballPath = `/tmp/${module.asset_name}`;
                     await window.__TAURI__.invoke('download_release', {
@@ -679,6 +748,7 @@ async function startInstallation() {
                         componentType: module.component_type,
                         hostname: 'move.local'
                     });
+                    updateChecklistItem(module.id, 'completed');
                 }
             }
         }
@@ -712,13 +782,121 @@ function updateInstallProgress(message, percent) {
 }
 
 // Error Handling
+function parseError(error) {
+    const errorStr = error.toString().toLowerCase();
+
+    // Network/connectivity errors
+    if (errorStr.includes('timeout') || errorStr.includes('econnrefused') || errorStr.includes('ehostunreach')) {
+        return {
+            title: 'Connection Failed',
+            message: 'Could not connect to your Move device.',
+            suggestions: [
+                'Check that your Move is powered on',
+                'Ensure your Move is connected to the same WiFi network',
+                'Try restarting your Move',
+                'Check your WiFi connection'
+            ]
+        };
+    }
+
+    if (errorStr.includes('dns') || errorStr.includes('getaddrinfo') || errorStr.includes('move.local')) {
+        return {
+            title: 'Device Not Found',
+            message: 'Could not find your Move on the network.',
+            suggestions: [
+                'Try entering your Move\'s IP address manually',
+                'Check that your Move is connected to WiFi',
+                'Make sure you\'re on the same WiFi network as your Move',
+                'On Windows, install Bonjour service (comes with iTunes/iCloud)'
+            ]
+        };
+    }
+
+    // Download errors
+    if (errorStr.includes('download') || errorStr.includes('404') || errorStr.includes('fetch failed')) {
+        return {
+            title: 'Download Failed',
+            message: 'Could not download required files.',
+            suggestions: [
+                'Check your internet connection',
+                'Try again in a few moments',
+                'Verify GitHub is accessible from your network'
+            ]
+        };
+    }
+
+    // Authentication errors
+    if (errorStr.includes('auth') || errorStr.includes('unauthorized') || errorStr.includes('challenge')) {
+        return {
+            title: 'Authentication Failed',
+            message: 'Could not authenticate with your Move.',
+            suggestions: [
+                'The authorization code may have expired',
+                'Try restarting the installer',
+                'Make sure you entered the correct code from your Move display'
+            ]
+        };
+    }
+
+    // Connection setup errors
+    if (errorStr.includes('key') || errorStr.includes('permission denied')) {
+        return {
+            title: 'Connection Setup Failed',
+            message: 'Could not set up secure connection to your Move.',
+            suggestions: [
+                'Make sure you confirmed "Yes" on your Move device',
+                'Try the setup process again',
+                'Restart your Move and try again'
+            ]
+        };
+    }
+
+    // Disk space errors
+    if (errorStr.includes('enospc') || errorStr.includes('no space')) {
+        return {
+            title: 'Installation Failed',
+            message: 'Not enough space on your Move device.',
+            suggestions: [
+                'Free up space by deleting unused samples or sets',
+                'Try installing fewer modules (use Custom mode)',
+                'Consider installing Core Only and adding modules later'
+            ]
+        };
+    }
+
+    // Generic fallback
+    return {
+        title: 'Installation Error',
+        message: error.toString(),
+        suggestions: [
+            'Try restarting the installer',
+            'Check that your Move has the latest firmware',
+            'Copy diagnostics and report the issue on GitHub'
+        ]
+    };
+}
+
 function showError(message) {
+    const parsed = parseError(message);
+
     state.errors.push({
         timestamp: new Date().toISOString(),
         message: message
     });
+
     showScreen('error');
-    document.getElementById('error-message').textContent = message;
+
+    const errorDiv = document.getElementById('error-message');
+    errorDiv.innerHTML = `
+        <h3 style="margin: 0 0 1rem 0; color: #ff6666;">${parsed.title}</h3>
+        <p style="margin: 0 0 1rem 0;">${parsed.message}</p>
+        <div style="margin-top: 1.5rem;">
+            <strong style="color: #fff;">What to try:</strong>
+            <ul style="margin: 0.5rem 0 0 1.5rem; color: #b8b8b8;">
+                ${parsed.suggestions.map(s => `<li style="margin: 0.5rem 0;">${s}</li>`).join('')}
+            </ul>
+        </div>
+    `;
 }
 
 function retryInstallation() {

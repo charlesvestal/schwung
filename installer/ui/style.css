@@ -276,24 +276,65 @@ button.secondary:hover {
     color: #b8b8b8;
 }
 
-#install-log {
+#install-checklist {
     background: #2a2a2a;
-    padding: 1rem;
+    padding: 1.5rem;
     border-radius: 6px;
-    max-height: 300px;
+    margin-top: 2rem;
+    max-height: 400px;
     overflow-y: auto;
-    font-family: 'Courier New', monospace;
-    font-size: 0.9rem;
-    line-height: 1.4;
 }
 
-.log-entry {
-    margin-bottom: 0.25rem;
+.checklist-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    background: #1a1a1a;
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+
+.checklist-item.completed {
+    background: #1a3a1a;
+}
+
+.checklist-item.in-progress {
+    background: #2a2a1a;
+}
+
+.checklist-icon {
+    width: 24px;
+    height: 24px;
+    margin-right: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+}
+
+.checklist-icon.pending {
+    color: #666;
+}
+
+.checklist-icon.in-progress .spinner {
+    width: 16px;
+    height: 16px;
+    border-width: 2px;
+    margin: 0;
+}
+
+.checklist-icon.completed {
+    color: #00cc00;
+}
+
+.checklist-item-text {
+    flex: 1;
     color: #b8b8b8;
 }
 
-.log-entry.error {
-    color: #ff4444;
+.checklist-item.completed .checklist-item-text {
+    color: #b8b8b8;
 }
 
 /* Success Screen */
