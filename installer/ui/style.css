@@ -619,3 +619,21 @@ button.secondary:hover {
     background: #333;
     color: #b8b8b8;
 }
+
+/* Footer with export logs link */
+#app-footer {
+    max-width: 600px;
+    margin: 1rem auto 0;
+    text-align: center;
+}
+
+#app-footer a {
+    color: #666;
+    font-size: 0.8rem;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+#app-footer a:hover {
+    color: #999;
+}

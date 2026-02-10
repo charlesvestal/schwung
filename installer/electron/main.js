@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const backend = require('./backend');
 
 let mainWindow;
@@ -19,9 +20,6 @@ function createWindow() {
 
     // Set main window in backend for logging
     backend.setMainWindow(mainWindow);
-
-    // Always open DevTools for debugging
-    mainWindow.webContents.openDevTools();
 }
 
 app.whenReady().then(() => {
@@ -139,4 +137,17 @@ ipcMain.handle('uninstall_move_everything', async (event, { hostname }) => {
 
 ipcMain.handle('test_ssh_formats', async (event, { cookie }) => {
     return await backend.testSshFormats(cookie);
+});
+
+ipcMain.handle('export_logs', async (event, { logs }) => {
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: 'Save Debug Logs',
+        defaultPath: `move-everything-logs-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`,
+        filters: [{ name: 'Text Files', extensions: ['txt'] }]
+    });
+    if (filePath) {
+        fs.writeFileSync(filePath, logs);
+        return true;
+    }
+    return false;
 });

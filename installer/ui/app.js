@@ -1,6 +1,32 @@
 // Test: Change text to confirm app.js is loading
 document.getElementById('status-text').textContent = 'app.js is loading...';
 
+// Log buffer for export
+const logBuffer = [];
+function addLog(source, message) {
+    const timestamp = new Date().toISOString();
+    logBuffer.push(`[${timestamp}] [${source}] ${message}`);
+}
+
+async function exportLogs() {
+    const header = `Move Everything Installer Logs\nExported: ${new Date().toISOString()}\nPlatform: ${navigator.platform}\nUser Agent: ${navigator.userAgent}\n${'='.repeat(60)}\n\n`;
+    const logs = header + logBuffer.join('\n');
+    try {
+        const saved = await window.installer.invoke('export_logs', { logs });
+        if (saved) {
+            alert('Logs saved successfully.');
+        }
+    } catch (err) {
+        // Fallback: copy to clipboard
+        try {
+            await navigator.clipboard.writeText(logs);
+            alert('Logs copied to clipboard.');
+        } catch (e) {
+            console.error('Failed to export logs:', e);
+        }
+    }
+}
+
 // Application State
 const state = {
     currentScreen: 'discovery',
@@ -450,6 +476,7 @@ function setupInstallationOptions() {
             if (e.target.value === 'screenreader') {
                 screenReaderCheckbox.checked = true;
                 screenReaderCheckbox.disabled = true;
+                state.enableScreenReader = true;
             } else {
                 screenReaderCheckbox.disabled = false;
             }
@@ -697,12 +724,12 @@ async function startInstallation() {
 
             // Determine installation flags based on mode
             const installFlags = [];
-            if (state.enableScreenReader) {
-                installFlags.push('--enable-screen-reader');
-            }
             if (state.installType === 'screenreader') {
+                installFlags.push('--enable-screen-reader');
                 installFlags.push('--disable-shadow-ui');
                 installFlags.push('--disable-standalone');
+            } else if (state.enableScreenReader) {
+                installFlags.push('--enable-screen-reader');
             }
 
             // Install/Upgrade main package
@@ -760,7 +787,10 @@ async function startInstallation() {
 
         // Installation complete
         updateInstallProgress('Installation complete!', 100);
-        setTimeout(() => showScreen('success'), 500);
+        setTimeout(() => {
+            populateSuccessScreen();
+            showScreen('success');
+        }, 500);
     } catch (error) {
         state.errors.push({
             timestamp: new Date().toISOString(),
@@ -768,6 +798,36 @@ async function startInstallation() {
         });
         showError('Installation failed: ' + error);
     }
+}
+
+function populateSuccessScreen() {
+    const container = document.getElementById('success-next-steps');
+    const isScreenReaderOnly = state.installType === 'screenreader';
+    const hasShadowUi = !isScreenReaderOnly;
+    const hasStandalone = !isScreenReaderOnly;
+
+    let html = '<p><strong>Getting Started:</strong></p>';
+    html += '<ul style="margin: 0.5rem 0 0 1.5rem; color: #b8b8b8; list-style: none; padding: 0;">';
+
+    if (hasShadowUi) {
+        html += '<li style="margin: 0.5rem 0;"><strong style="color: #0066cc;">Shift + Vol + Track</strong> or <strong style="color: #0066cc;">Shift + Vol + Menu</strong> &mdash; Access track and master slots</li>';
+        html += '<li style="margin: 0.5rem 0;"><strong style="color: #0066cc;">Shift + Vol + Jog Click</strong> &mdash; Access overtake modules</li>';
+    }
+
+    if (hasStandalone) {
+        html += '<li style="margin: 0.5rem 0;"><strong style="color: #0066cc;">Shift + Vol + Knob 8</strong> &mdash; Enter standalone mode</li>';
+    }
+
+    if (isScreenReaderOnly) {
+        html += '<li style="margin: 0.5rem 0;"><strong style="color: #0066cc;">Shift + Menu</strong> &mdash; Toggle screen reader on and off</li>';
+    }
+
+    html += '</ul>';
+    container.innerHTML = html;
+    container.style.display = '';
+
+    // Reset title in case it was changed by uninstall
+    document.querySelector('#screen-success h1').textContent = "You're All Set!";
 }
 
 function updateInstallProgress(message, percent) {
@@ -928,7 +988,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Listen for backend logs
     window.installer.on('backend-log', (message) => {
         console.log('[BACKEND]', message);
+        addLog('BACKEND', message);
     });
+
+    // Capture frontend console.log too
+    const origConsoleLog = console.log;
+    const origConsoleError = console.error;
+    console.log = function(...args) {
+        origConsoleLog.apply(console, args);
+        addLog('UI', args.join(' '));
+    };
+    console.error = function(...args) {
+        origConsoleError.apply(console, args);
+        addLog('UI:ERROR', args.join(' '));
+    };
 
     // Warning screen
     document.getElementById('btn-accept-warning').onclick = async (e) => {
@@ -1156,6 +1229,10 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('Failed to copy diagnostics: ' + error);
         }
     };
+
+    // Export logs buttons
+    document.getElementById('btn-export-logs').onclick = (e) => { e.preventDefault(); exportLogs(); };
+    document.getElementById('btn-export-logs-error').onclick = exportLogs;
 
     // Start on warning screen - user must accept before proceeding
     console.log('[DEBUG] DOM loaded, showing warning');

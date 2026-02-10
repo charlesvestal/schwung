@@ -197,16 +197,10 @@
 
         <!-- Success Screen -->
         <div id="screen-success" class="screen">
-            <h1>You're All Set! 🎉</h1>
+            <h1>You're All Set!</h1>
             <div class="success-icon">✓</div>
             <p class="instruction">Move Everything has been successfully installed on your device.</p>
-            <div class="info-box">
-                <p><strong>Next Steps:</strong></p>
-                <ol style="margin: 0.5rem 0 0 1.5rem; color: #b8b8b8;">
-                    <li style="margin: 0.5rem 0;">Restart your Ableton Move to load Move Everything</li>
-                    <li style="margin: 0.5rem 0;">Press <strong style="color: #0066cc;">Shift + Vol + Knob 1</strong> to toggle shadow mode</li>
-                    <li style="margin: 0.5rem 0;">Explore the built-in modules and Signal Chain</li>
-                </ol>
+            <div class="info-box" id="success-next-steps">
             </div>
             <button id="btn-done">Done</button>
         </div>
@@ -218,8 +212,12 @@
             <div id="error-message"></div>
             <button id="btn-retry">Try Again</button>
             <button id="btn-diagnostics" class="secondary">Copy Diagnostics</button>
+            <button id="btn-export-logs-error" class="secondary">Export Debug Logs</button>
         </div>
     </div>
+    <footer id="app-footer">
+        <a href="#" id="btn-export-logs">Export Debug Logs</a>
+    </footer>
 
     <script>
         // Debug logging
