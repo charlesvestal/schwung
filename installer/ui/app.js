@@ -199,7 +199,6 @@ async function startConfirmationPolling() {
 
             if (connected) {
                 clearInterval(confirmationPollInterval);
-                state.sshPassword = result.password;
                 await loadModuleList();
                 showScreen('modules');
             }
@@ -313,12 +312,76 @@ async function startInstallation() {
     showScreen('installing');
 
     try {
-        // Listen for progress updates
-        await window.__TAURI__.event.listen('install_progress', (event) => {
-            updateInstallProgress(event.payload);
+        // Setup SSH config
+        await window.__TAURI__.invoke('setup_ssh_config');
+        updateInstallProgress('Setting up SSH configuration...');
+
+        // Get latest release info
+        updateInstallProgress('Fetching latest release...');
+        const release = await window.__TAURI__.invoke('get_latest_release');
+
+        // Download main package
+        const mainTarballPath = `/tmp/${release.asset_name}`;
+        updateInstallProgress(`Downloading ${release.asset_name}...`);
+        await window.__TAURI__.invoke('download_release', {
+            url: release.download_url,
+            destPath: mainTarballPath
         });
 
-        const result = await window.__TAURI__.invoke('install_move_everything', {
+        // Install main package
+        updateInstallProgress('Installing Move Everything core...');
+        await window.__TAURI__.invoke('install_main', {
+            tarballPath: mainTarballPath,
+            hostname: 'move.local'
+        });
+
+        // Get module catalog if modules selected
+        if (state.selectedModules.length > 0) {
+            updateInstallProgress('Fetching module catalog...');
+            const modules = await window.__TAURI__.invoke('get_module_catalog');
+
+            // Install each selected module
+            for (let i = 0; i < state.selectedModules.length; i++) {
+                const moduleId = state.selectedModules[i];
+                const module = modules.find(m => m.id === moduleId);
+
+                if (module) {
+                    updateInstallProgress(`Installing ${module.name} (${i + 1}/${state.selectedModules.length})...`);
+
+                    const moduleTarballPath = `/tmp/${module.asset_name}`;
+                    await window.__TAURI__.invoke('download_release', {
+                        url: module.download_url,
+                        destPath: moduleTarballPath
+                    });
+
+                    await window.__TAURI__.invoke('install_module_package', {
+                        moduleId: module.id,
+                        tarballPath: moduleTarballPath,
+                        componentType: module.component_type,
+                        hostname: 'move.local'
+                    });
+                }
+            }
+        }
+
+        // Installation complete
+        showScreen('success');
+    } catch (error) {
+        state.errors.push({
+            timestamp: new Date().toISOString(),
+            message: error.toString()
+        });
+        showError('Installation failed: ' + error);
+    }
+}
+
+function updateInstallProgress(message) {
+    const progressStatus = document.getElementById('install-status');
+    if (progressStatus) {
+        progressStatus.textContent = message;
+    }
+    console.log('Install progress:', message);
+}
             deviceIp: state.deviceIp,
             password: state.sshPassword,
             modules: state.selectedModules
