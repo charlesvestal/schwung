@@ -229,6 +229,9 @@ async function showSshKeyScreen(baseUrl) {
 
 async function proceedToSshSetup(baseUrl) {
     try {
+        // Show confirmation screen FIRST (before submitting key)
+        showScreen('confirm');
+
         // Find or generate SSH key
         console.log('[DEBUG] Looking for existing SSH key...');
         let pubkeyPath = await window.__TAURI__.invoke('find_existing_ssh_key');
@@ -246,7 +249,7 @@ async function proceedToSshSetup(baseUrl) {
         console.log('[DEBUG] Public key length:', pubkey.length);
         console.log('[DEBUG] Public key preview:', pubkey.substring(0, 50) + '...');
 
-        // Submit SSH key with auth cookie
+        // Submit SSH key with auth cookie (this triggers prompt on Move)
         console.log('[DEBUG] Submitting SSH key to', baseUrl);
         await window.__TAURI__.invoke('submit_ssh_key_with_auth', {
             baseUrl: baseUrl,
@@ -254,8 +257,7 @@ async function proceedToSshSetup(baseUrl) {
         });
         console.log('[DEBUG] SSH key submitted successfully');
 
-        // Show confirmation screen and poll for SSH access
-        showScreen('confirm');
+        // Start polling for SSH access
         startConfirmationPolling();
     } catch (error) {
         showError('SSH setup failed: ' + error);
