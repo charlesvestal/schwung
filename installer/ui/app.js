@@ -20,18 +20,24 @@ function showScreen(screenName) {
 // Device Discovery
 async function startDeviceDiscovery() {
     console.log('[DEBUG] Starting device discovery...');
+
+    // Show status in UI
+    const statusDiv = document.getElementById('discovery-status');
+    statusDiv.innerHTML = '<div class="spinner"></div><p>Searching for your Move device...</p>';
+
     try {
         const device = await window.__TAURI__.invoke('find_device');
         console.log('[DEBUG] Device found:', device);
         if (device) {
             displayDevices([device]);
+            statusDiv.innerHTML = '<p>✓ Found Move at ' + device.ip + '</p>';
         } else {
             console.error('[DEBUG] No device returned');
-            showError('No Move device found on the network');
+            statusDiv.innerHTML = '<p style="color: orange;">No device found. Try manual IP entry below.</p>';
         }
     } catch (error) {
         console.error('[DEBUG] Discovery failed with error:', error);
-        showError('Failed to discover devices: ' + error);
+        statusDiv.innerHTML = '<p style="color: red;">Discovery error: ' + error + '</p><p>Use manual IP entry below.</p>';
     }
 }
 
