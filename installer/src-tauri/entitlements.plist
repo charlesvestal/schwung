@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Disable app sandbox for development -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
     <!-- Allow outgoing network connections -->
     <key>com.apple.security.network.client</key>
     <true/>
@@ -10,8 +14,8 @@
     <key>com.apple.security.network.server</key>
     <true/>
 
-    <!-- Allow device access (for network interfaces) -->
-    <key>com.apple.security.device.usb</key>
+    <!-- Disable library validation to allow unsigned dylibs -->
+    <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
 </dict>
 </plist>
