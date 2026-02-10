@@ -29,7 +29,12 @@
     ],
     "mac": {
       "target": "dmg",
-      "icon": "icons/icon.icns"
+      "icon": "icons/icon.icns",
+      "identity": "Developer ID Application: Charles Vestal (J4722B5MJW)",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
       "target": "nsis",
