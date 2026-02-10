@@ -94,6 +94,18 @@
             <button id="btn-diagnostics" class="secondary">Copy Diagnostics</button>
         </div>
     </div>
-    <script src="app.js"></script>
+    <script type="module">
+        // Import Tauri API and make it globally available for vanilla JS
+        import { invoke } from 'https://esm.sh/@tauri-apps/api@2/core';
+
+        // Create global __TAURI__ object for compatibility
+        window.__TAURI__ = {
+            invoke: invoke
+        };
+
+        // Dispatch event when Tauri is ready
+        window.dispatchEvent(new Event('tauri-ready'));
+    </script>
+    <script src="app.js" defer></script>
 </body>
 </html>

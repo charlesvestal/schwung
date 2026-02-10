@@ -20,8 +20,12 @@ function showScreen(screenName) {
 // Device Discovery
 async function startDeviceDiscovery() {
     try {
-        const devices = await window.__TAURI__.invoke('discover_devices');
-        displayDevices(devices);
+        const device = await window.__TAURI__.invoke('find_device');
+        if (device) {
+            displayDevices([device]);
+        } else {
+            showError('No Move device found on the network');
+        }
     } catch (error) {
         console.error('Discovery failed:', error);
         showError('Failed to discover devices: ' + error);
@@ -56,14 +60,24 @@ async function selectDevice(ip) {
     state.deviceIp = ip;
 
     try {
-        // Initiate SSH setup
-        const result = await window.__TAURI__.invoke('setup_ssh', { deviceIp: ip });
+        // Validate device is reachable
+        const baseUrl = `http://${ip}`;
+        const isValid = await window.__TAURI__.invoke('validate_device_at', { baseUrl });
 
-        if (result.success) {
-            showScreen('code-entry');
-            setupCodeEntry();
+        if (isValid) {
+            // Check if we have a saved cookie
+            const savedCookie = await window.__TAURI__.invoke('get_saved_cookie');
+
+            if (savedCookie) {
+                // Try to use saved cookie, skip to SSH setup
+                proceedToSshSetup(baseUrl);
+            } else {
+                // Show code entry screen
+                showScreen('code-entry');
+                setupCodeEntry();
+            }
         } else {
-            showError('Failed to initiate SSH setup: ' + result.error);
+            showError('Device validation failed - not a Move device');
         }
     } catch (error) {
         showError('Connection failed: ' + error);
@@ -130,19 +144,45 @@ async function submitAuthCode() {
     state.authCode = code;
 
     try {
-        const result = await window.__TAURI__.invoke('submit_auth_code', {
-            deviceIp: state.deviceIp,
+        const baseUrl = `http://${state.deviceIp}`;
+        const cookieValue = await window.__TAURI__.invoke('submit_auth_code', {
+            baseUrl: baseUrl,
             code: code
         });
 
-        if (result.success) {
-            showScreen('confirm');
-            startConfirmationPolling();
-        } else {
-            showError('Failed to submit code: ' + result.error);
-        }
+        console.log('Auth successful, cookie saved');
+
+        // Proceed to SSH setup
+        proceedToSshSetup(baseUrl);
     } catch (error) {
         showError('Failed to submit code: ' + error);
+    }
+}
+
+async function proceedToSshSetup(baseUrl) {
+    try {
+        // Find or generate SSH key
+        let pubkeyPath = await window.__TAURI__.invoke('find_existing_ssh_key');
+
+        if (!pubkeyPath) {
+            console.log('No SSH key found, generating new one');
+            pubkeyPath = await window.__TAURI__.invoke('generate_new_ssh_key');
+        }
+
+        // Read public key content
+        const pubkey = await window.__TAURI__.invoke('read_public_key', { path: pubkeyPath });
+
+        // Submit SSH key with auth cookie
+        await window.__TAURI__.invoke('submit_ssh_key_with_auth', {
+            baseUrl: baseUrl,
+            pubkey: pubkey
+        });
+
+        // Show confirmation screen and poll for SSH access
+        showScreen('confirm');
+        startConfirmationPolling();
+    } catch (error) {
+        showError('SSH setup failed: ' + error);
     }
 }
 
@@ -152,11 +192,12 @@ let confirmationPollInterval;
 async function startConfirmationPolling() {
     confirmationPollInterval = setInterval(async () => {
         try {
-            const result = await window.__TAURI__.invoke('check_ssh_confirmed', {
-                deviceIp: state.deviceIp
+            const hostname = 'move.local'; // Use mDNS hostname
+            const connected = await window.__TAURI__.invoke('test_ssh', {
+                hostname: hostname
             });
 
-            if (result.confirmed) {
+            if (connected) {
                 clearInterval(confirmationPollInterval);
                 state.sshPassword = result.password;
                 await loadModuleList();
@@ -416,6 +457,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // Start discovery on load
-    startDeviceDiscovery();
+    // Wait for Tauri API to be ready
+    if (window.__TAURI__) {
+        startDeviceDiscovery();
+    } else {
+        window.addEventListener('tauri-ready', () => {
+            startDeviceDiscovery();
+        });
+    }
 });
