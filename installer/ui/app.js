@@ -487,6 +487,16 @@ function closeApplication() {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[DEBUG] DOM loaded, Tauri available:', !!window.__TAURI__);
 
+    // Warning screen
+    document.getElementById('btn-accept-warning').onclick = () => {
+        showScreen('discovery');
+        startDeviceDiscovery();
+    };
+
+    document.getElementById('btn-cancel').onclick = () => {
+        closeApplication();
+    };
+
     // Discovery screen
     document.getElementById('btn-manual-connect').onclick = () => {
         const ip = document.getElementById('manual-ip').value.trim();
@@ -531,7 +541,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // Tauri API should be available immediately
-    console.log('[DEBUG] DOM loaded, starting discovery');
-    startDeviceDiscovery();
+    // Start on warning screen - user must accept before proceeding
+    console.log('[DEBUG] DOM loaded, showing warning');
 });

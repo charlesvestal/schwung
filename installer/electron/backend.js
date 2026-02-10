@@ -337,17 +337,12 @@ async function getModuleCatalog() {
             throw new Error(`Failed to fetch catalog: ${response.status}`);
         }
 
-        console.log('[DEBUG] Catalog response type:', typeof response.data);
-        console.log('[DEBUG] Catalog response:', response.data);
-
         let catalog = response.data;
 
         // If it's a string, parse it
         if (typeof catalog === 'string') {
             catalog = JSON.parse(catalog);
         }
-
-        console.log('[DEBUG] Parsed catalog is array:', Array.isArray(catalog));
 
         // Handle v2 catalog format
         const moduleList = catalog.modules || catalog;
@@ -473,33 +468,40 @@ async function sshExec(hostname, command) {
 async function installMain(tarballPath, hostname) {
     try {
         const tmpDir = path.join(os.tmpdir(), 'move-installer-' + Date.now());
-        await mkdir(tmpDir, { recursive: true });
+        const scriptsDir = path.join(tmpDir, 'scripts');
+        await mkdir(scriptsDir, { recursive: true });
 
-        // Extract tarball locally
-        console.log('[DEBUG] Extracting tarball to:', tmpDir);
-        await new Promise((resolve, reject) => {
-            const tar = spawn('tar', ['-xzf', tarballPath, '-C', tmpDir]);
+        // Copy tarball to tmpDir (install.sh expects it at $REPO_ROOT/move-anything.tar.gz)
+        const tarballDest = path.join(tmpDir, 'move-anything.tar.gz');
+        fs.copyFileSync(tarballPath, tarballDest);
+        console.log('[DEBUG] Copied tarball to:', tarballDest);
 
-            tar.on('close', (code) => {
-                if (code === 0) resolve();
-                else reject(new Error(`tar extraction failed with code ${code}`));
-            });
+        // Download install.sh from repo to scripts/ directory
+        console.log('[DEBUG] Downloading install.sh from repo...');
+        const installShUrl = 'https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh';
+        const installScriptPath = path.join(scriptsDir, 'install.sh');
 
-            tar.on('error', reject);
-        });
-
-        // Find the extracted directory (should be move-anything/)
-        const extractedDir = path.join(tmpDir, 'move-anything');
-        if (!fs.existsSync(extractedDir)) {
-            throw new Error('Extracted directory not found');
+        const scriptResponse = await httpClient.get(installShUrl);
+        if (scriptResponse.status !== 200) {
+            throw new Error(`Failed to download install.sh: ${scriptResponse.status}`);
         }
 
-        // Run install.sh from the extracted directory
-        console.log('[DEBUG] Running install.sh from:', extractedDir);
+        await writeFile(installScriptPath, scriptResponse.data);
+        fs.chmodSync(installScriptPath, '755');
+
+        // Run install.sh in local mode from tmpDir
+        // Directory structure now matches local repo:
+        //   tmpDir/
+        //     scripts/install.sh
+        //     move-anything.tar.gz
+        console.log('[DEBUG] Running install.sh from:', tmpDir);
         await new Promise((resolve, reject) => {
-            const installScript = spawn('./scripts/install.sh', ['local', '--skip-modules'], {
-                cwd: extractedDir,
-                env: { ...process.env, MOVE_HOSTNAME: hostname }
+            const installScript = spawn('bash', ['scripts/install.sh', 'local', '--skip-modules', '--skip-confirmation'], {
+                cwd: tmpDir,
+                env: {
+                    ...process.env,
+                    MOVE_HOSTNAME: hostname
+                }
             });
 
             installScript.stdout.on('data', (data) => {

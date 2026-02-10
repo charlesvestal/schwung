@@ -346,3 +346,22 @@ button.secondary:hover {
     flex-direction: column;
     gap: 0.5rem;
 }
+
+/* Warning Screen */
+.warning-box {
+    background: #fff3cd;
+    border: 2px solid #ffc107;
+    border-radius: 8px;
+    padding: 2rem;
+    margin: 2rem 0;
+    color: #856404;
+}
+
+.warning-box p {
+    margin: 1rem 0;
+    line-height: 1.6;
+}
+
+.warning-box strong {
+    color: #721c24;
+}

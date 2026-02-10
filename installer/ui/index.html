@@ -8,8 +8,20 @@
 </head>
 <body>
     <div id="app">
+        <!-- Warning Screen -->
+        <div id="screen-warning" class="screen active">
+            <h1>⚠️ Warning</h1>
+            <div class="warning-box">
+                <p><strong>Are you sure you want to install Move Everything on your Ableton Move?</strong></p>
+                <p>This is <strong>UNSUPPORTED</strong> by Ableton.</p>
+                <p>The authors of this project accept no liability for any damage you incur by proceeding.</p>
+            </div>
+            <button id="btn-accept-warning">I Understand, Continue</button>
+            <button id="btn-cancel" class="secondary">Cancel</button>
+        </div>
+
         <!-- Device Discovery Screen -->
-        <div id="screen-discovery" class="screen active">
+        <div id="screen-discovery" class="screen">
             <h1>Move Everything Installer</h1>
             <div id="discovery-status">
                 <div class="spinner"></div>
