@@ -19,15 +19,18 @@ function showScreen(screenName) {
 
 // Device Discovery
 async function startDeviceDiscovery() {
+    console.log('[DEBUG] Starting device discovery...');
     try {
         const device = await window.__TAURI__.invoke('find_device');
+        console.log('[DEBUG] Device found:', device);
         if (device) {
             displayDevices([device]);
         } else {
+            console.error('[DEBUG] No device returned');
             showError('No Move device found on the network');
         }
     } catch (error) {
-        console.error('Discovery failed:', error);
+        console.error('[DEBUG] Discovery failed with error:', error);
         showError('Failed to discover devices: ' + error);
     }
 }

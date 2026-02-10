@@ -33,6 +33,10 @@
     ],
     "resources": [
       "resources/bin/*"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "10.15"
+    }
   }
 }
