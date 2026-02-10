@@ -7,7 +7,9 @@ const state = {
     deviceIp: null,
     authCode: null,
     baseUrl: null,
+    installType: 'complete',
     selectedModules: [],
+    enableScreenReader: false,
     sshPassword: null,
     errors: []
 };
@@ -297,11 +299,51 @@ function cancelConfirmation() {
 async function loadModuleList() {
     try {
         const modules = await window.__TAURI__.invoke('get_module_catalog');
+        state.allModules = modules; // Store for later use
         displayModules(modules);
+        setupInstallationOptions();
     } catch (error) {
         console.error('Failed to load modules:', error);
         showError('Failed to load module list: ' + error);
     }
+}
+
+function setupInstallationOptions() {
+    const radioButtons = document.querySelectorAll('input[name="install-type"]');
+    const screenReaderCheckbox = document.getElementById('enable-screenreader');
+    const moduleCategories = document.getElementById('module-categories');
+
+    // Handle installation type changes
+    radioButtons.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            state.installType = e.target.value;
+
+            // Show/hide module list based on selection
+            if (e.target.value === 'custom') {
+                moduleCategories.style.display = 'block';
+            } else {
+                moduleCategories.style.display = 'none';
+            }
+
+            // Auto-check screen reader for screen reader only mode
+            if (e.target.value === 'screenreader') {
+                screenReaderCheckbox.checked = true;
+                screenReaderCheckbox.disabled = true;
+            } else {
+                screenReaderCheckbox.disabled = false;
+            }
+
+            updateInstallButtonState();
+        });
+    });
+
+    // Handle screen reader checkbox
+    screenReaderCheckbox.addEventListener('change', (e) => {
+        state.enableScreenReader = e.target.checked;
+    });
+
+    // Initialize
+    updateInstallButtonState();
 }
 
 function displayModules(modules) {
@@ -381,8 +423,19 @@ function updateSelectedModules() {
         .filter(cb => cb.checked)
         .map(cb => cb.id.replace('module-', ''));
 
+    updateInstallButtonState();
+}
+
+function updateInstallButtonState() {
     const installButton = document.getElementById('btn-install');
-    installButton.disabled = state.selectedModules.length === 0;
+    if (!installButton) return;
+
+    // Install button is always enabled except for custom mode with no modules selected
+    if (state.installType === 'custom') {
+        installButton.disabled = state.selectedModules.length === 0;
+    } else {
+        installButton.disabled = false;
+    }
 }
 
 // Installation
@@ -406,24 +459,45 @@ async function startInstallation() {
             destPath: mainTarballPath
         });
 
+        // Determine installation flags based on mode
+        const installFlags = [];
+        if (state.enableScreenReader) {
+            installFlags.push('--enable-screen-reader');
+        }
+        if (state.installType === 'screenreader') {
+            installFlags.push('--disable-shadow-ui');
+            installFlags.push('--disable-standalone');
+        }
+
         // Install main package
         updateInstallProgress('Installing Move Everything core...', 30);
         await window.__TAURI__.invoke('install_main', {
             tarballPath: mainTarballPath,
-            hostname: 'move.local'
+            hostname: 'move.local',
+            flags: installFlags
         });
 
-        // Get module catalog if modules selected
-        if (state.selectedModules.length > 0) {
-            updateInstallProgress('Fetching module catalog...', 50);
-            const modules = await window.__TAURI__.invoke('get_module_catalog');
+        // Determine which modules to install
+        let modulesToInstall = [];
+        if (state.installType === 'complete') {
+            // Install all modules
+            modulesToInstall = state.allModules.map(m => m.id);
+        } else if (state.installType === 'custom') {
+            // Install selected modules
+            modulesToInstall = state.selectedModules;
+        }
+        // For 'core' and 'screenreader' modes, modulesToInstall stays empty
 
-            const moduleCount = state.selectedModules.length;
+        if (modulesToInstall.length > 0) {
+            updateInstallProgress('Fetching module catalog...', 50);
+            const modules = state.allModules;
+
+            const moduleCount = modulesToInstall.length;
             const progressPerModule = 50 / moduleCount; // 50% total for all modules
 
-            // Install each selected module
+            // Install each module
             for (let i = 0; i < moduleCount; i++) {
-                const moduleId = state.selectedModules[i];
+                const moduleId = modulesToInstall[i];
                 const module = modules.find(m => m.id === moduleId);
 
                 if (module) {
@@ -537,9 +611,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Module selection screen
     document.getElementById('btn-install').onclick = startInstallation;
-    document.getElementById('btn-back-code').onclick = () => {
-        cancelConfirmation();
-        showScreen('code-entry');
+    document.getElementById('btn-back-modules').onclick = () => {
+        showScreen('confirm');
     };
 
     // Success screen

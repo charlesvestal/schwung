@@ -365,3 +365,94 @@ button.secondary:hover {
 .warning-box strong {
     color: #721c24;
 }
+
+/* Installation Options */
+.install-options {
+    margin-bottom: 2rem;
+}
+
+.install-options h3 {
+    color: #fff;
+    margin: 1.5rem 0 1rem 0;
+    font-size: 1.1rem;
+}
+
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.radio-option {
+    display: flex;
+    align-items: center;
+    background: #2a2a2a;
+    padding: 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+    border: 2px solid transparent;
+}
+
+.radio-option:hover {
+    background: #3a3a3a;
+}
+
+.radio-option input[type="radio"] {
+    margin-right: 1rem;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+}
+
+.radio-option input[type="radio"]:checked + .option-content {
+    color: #fff;
+}
+
+.radio-option:has(input[type="radio"]:checked) {
+    background: #3a3a3a;
+    border-color: #0066cc;
+}
+
+.option-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    color: #a0a0a0;
+}
+
+.option-content strong {
+    font-size: 1rem;
+    color: #e0e0e0;
+}
+
+.option-content span {
+    font-size: 0.9rem;
+}
+
+.checkbox-option {
+    display: flex;
+    align-items: center;
+    background: #2a2a2a;
+    padding: 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.checkbox-option:hover {
+    background: #3a3a3a;
+}
+
+.checkbox-option input[type="checkbox"] {
+    margin-right: 1rem;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+}
+
+.checkbox-option span {
+    flex: 1;
+    color: #e0e0e0;
+}

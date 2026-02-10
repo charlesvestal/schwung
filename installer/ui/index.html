@@ -69,12 +69,53 @@
 
         <!-- Module Selection Screen -->
         <div id="screen-modules" class="screen">
-            <h1>Select Modules to Install</h1>
-            <p class="instruction">Choose which modules you'd like to install</p>
-            <div id="module-categories"></div>
+            <h1>Installation Options</h1>
+
+            <div class="install-options">
+                <h3>Installation Type</h3>
+                <div class="radio-group">
+                    <label class="radio-option">
+                        <input type="radio" name="install-type" value="complete" checked>
+                        <div class="option-content">
+                            <strong>Complete</strong>
+                            <span>All modules with full UI (recommended)</span>
+                        </div>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="install-type" value="custom">
+                        <div class="option-content">
+                            <strong>Custom</strong>
+                            <span>Choose specific modules</span>
+                        </div>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="install-type" value="core">
+                        <div class="option-content">
+                            <strong>Core Only</strong>
+                            <span>No modules, full UI</span>
+                        </div>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="install-type" value="screenreader">
+                        <div class="option-content">
+                            <strong>Screen Reader Only</strong>
+                            <span>Audio interface, no graphical UI</span>
+                        </div>
+                    </label>
+                </div>
+
+                <h3>Accessibility</h3>
+                <label class="checkbox-option">
+                    <input type="checkbox" id="enable-screenreader">
+                    <span>Enable screen reader (text-to-speech)</span>
+                </label>
+            </div>
+
+            <div id="module-categories" style="display: none;"></div>
+
             <div class="action-buttons">
-                <button id="btn-install">Install Selected</button>
-                <button id="btn-back-code" class="secondary">Back</button>
+                <button id="btn-install">Install</button>
+                <button id="btn-back-modules" class="secondary">Back</button>
             </div>
         </div>
 

@@ -90,8 +90,8 @@ ipcMain.handle('download_release', async (event, { url, destPath }) => {
     return await backend.downloadRelease(url, destPath);
 });
 
-ipcMain.handle('install_main', async (event, { tarballPath, hostname }) => {
-    return await backend.installMain(tarballPath, hostname);
+ipcMain.handle('install_main', async (event, { tarballPath, hostname, flags }) => {
+    return await backend.installMain(tarballPath, hostname, flags);
 });
 
 ipcMain.handle('install_module_package', async (event, { moduleId, tarballPath, componentType, hostname }) => {

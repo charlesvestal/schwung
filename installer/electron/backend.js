@@ -473,7 +473,7 @@ async function sshExec(hostname, command) {
     });
 }
 
-async function installMain(tarballPath, hostname) {
+async function installMain(tarballPath, hostname, flags = []) {
     try {
         const tmpDir = path.join(os.tmpdir(), 'move-installer-' + Date.now());
         const scriptsDir = path.join(tmpDir, 'scripts');
@@ -506,8 +506,13 @@ async function installMain(tarballPath, hostname) {
         const targetHost = cachedDeviceIp || hostname;
         console.log('[DEBUG] Running install.sh from:', tmpDir);
         console.log('[DEBUG] Target host:', targetHost, '(cached:', !!cachedDeviceIp + ')');
+        console.log('[DEBUG] Install flags:', flags);
+
+        // Build install.sh arguments
+        const installArgs = ['scripts/install.sh', 'local', '--skip-modules', '--skip-confirmation', ...flags];
+
         await new Promise((resolve, reject) => {
-            const installScript = spawn('bash', ['scripts/install.sh', 'local', '--skip-modules', '--skip-confirmation'], {
+            const installScript = spawn('bash', installArgs, {
                 cwd: tmpDir,
                 env: {
                     ...process.env,
