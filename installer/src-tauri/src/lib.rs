@@ -1,10 +1,12 @@
 mod auth;
 mod cookie_storage;
 mod device;
+mod install;
 mod ssh;
 
 use auth::AuthClient;
 use device::{discover_move, validate_device, MoveDevice};
+use install::{Module, Release};
 use std::path::Path;
 
 #[tauri::command]
@@ -68,6 +70,36 @@ fn setup_ssh_config() -> Result<(), String> {
     ssh::write_ssh_config()
 }
 
+#[tauri::command]
+async fn get_latest_release() -> Result<Release, String> {
+    install::fetch_latest_release().await
+}
+
+#[tauri::command]
+async fn get_module_catalog() -> Result<Vec<Module>, String> {
+    install::fetch_module_catalog().await
+}
+
+#[tauri::command]
+async fn download_release(url: String, dest_path: String) -> Result<(), String> {
+    install::download_file(&url, Path::new(&dest_path)).await
+}
+
+#[tauri::command]
+async fn install_main(tarball_path: String, hostname: String) -> Result<(), String> {
+    install::install_main_package(Path::new(&tarball_path), &hostname, None).await
+}
+
+#[tauri::command]
+async fn install_module_package(
+    module_id: String,
+    tarball_path: String,
+    component_type: String,
+    hostname: String,
+) -> Result<(), String> {
+    install::install_module(&module_id, Path::new(&tarball_path), &component_type, &hostname, None).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -92,7 +124,12 @@ pub fn run() {
       generate_new_ssh_key,
       read_public_key,
       test_ssh,
-      setup_ssh_config
+      setup_ssh_config,
+      get_latest_release,
+      get_module_catalog,
+      download_release,
+      install_main,
+      install_module_package
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
