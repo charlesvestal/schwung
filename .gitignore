@@ -3,20 +3,11 @@
 # Build artifacts
 /build/
 /dist/
-/move-anything.tar.gz
-/libs/quickjs/quickjs-2025-04-26/.obj/
-/libs/quickjs/quickjs-2025-04-26/libquickjs.a
-/.worktrees
-docs/.DS_Store
 *.tar.gz
-
-# Test patches (kept locally, not committed)
-/src/modules/chain/test_patches/
 
 # Local backups
 /backups/
 
 # Compiled shared libraries and test binaries
 *.so
-**/test_seq_plugin
 **/*.dSYM/

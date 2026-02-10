@@ -15,52 +15,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify version match
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MODULE_VERSION=$(grep '"version"' src/module.json | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+          if [ "$TAG_VERSION" != "$MODULE_VERSION" ]; then
+            echo "ERROR: Tag version ($TAG_VERSION) does not match module.json version ($MODULE_VERSION)"
+            echo "Please update src/module.json to version $TAG_VERSION before tagging."
+            exit 1
+          fi
+          echo "Version check passed: $TAG_VERSION"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set version from tag
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "$VERSION" > src/host/version.txt
-          echo "Set version to $VERSION"
-
       - name: Build with Docker
         run: |
-          docker build -t move-anything-builder .
-          docker run --rm -v "$PWD:/build" move-anything-builder
-
-      - name: Verify build
-        run: |
-          ls -la move-anything.tar.gz
-          tar -tzvf move-anything.tar.gz | head -20
+          docker build -t module-builder -f scripts/Dockerfile .
+          docker run --rm -v "$PWD:/build" -w /build module-builder ./scripts/build.sh
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: move-anything.tar.gz
+          files: dist/seqomd-module.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update release.json
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          cat > release.json << EOF
-          {
-            "version": "${VERSION}",
-            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/move-anything.tar.gz"
-          }
-          EOF
-
       - name: Commit release.json
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Save install_path before switching branches
+          INSTALL_PATH=$(jq -r '.install_path // empty' release.json 2>/dev/null || echo "")
+
           git fetch origin main
-          git checkout main
+          git checkout -f main
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add release.json
-          if git diff --cached --quiet; then
-            echo "release.json already up to date"
+
+          # Recreate release.json on main
+          if [ -n "$INSTALL_PATH" ]; then
+            cat > release.json << EOF
+          {
+            "version": "${VERSION}",
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/seqomd-module.tar.gz",
+            "install_path": "${INSTALL_PATH}"
+          }
+          EOF
           else
-            git commit -m "chore: update release.json for ${{ github.ref_name }}"
-            git push origin main
+            cat > release.json << EOF
+          {
+            "version": "${VERSION}",
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/seqomd-module.tar.gz"
+          }
+          EOF
           fi
+
+          git add release.json
+          git commit -m "chore: update release.json for ${{ github.ref_name }}" || echo "No changes to commit"
+          git push origin main

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Move Anything for Ableton Move (ARM64)
+# Build SEQOMD module for Move Anything (ARM64)
 #
 # Automatically uses Docker for cross-compilation if needed.
 # Set CROSS_PREFIX to skip Docker (e.g., for native ARM builds).
@@ -11,13 +11,13 @@ IMAGE_NAME="move-anything-builder"
 
 # Check if we need Docker
 if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
-    echo "=== Move Anything Build (via Docker) ==="
+    echo "=== SEQOMD Module Build (via Docker) ==="
     echo ""
 
     # Build Docker image if needed
     if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
         echo "Building Docker image (first time only)..."
-        docker build -t "$IMAGE_NAME" "$REPO_ROOT"
+        docker build -t "$IMAGE_NAME" -f "$SCRIPT_DIR/Dockerfile" "$REPO_ROOT"
         echo ""
     fi
 
@@ -26,11 +26,13 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
     docker run --rm \
         -v "$REPO_ROOT:/build" \
         -u "$(id -u):$(id -g)" \
-        "$IMAGE_NAME"
+        -w /build \
+        "$IMAGE_NAME" \
+        ./scripts/build.sh
 
     echo ""
     echo "=== Done ==="
-    echo "Output: $REPO_ROOT/move-anything.tar.gz"
+    echo "Output: $REPO_ROOT/seqomd-module.tar.gz"
     echo ""
     echo "To install on Move:"
     echo "  ./scripts/install.sh local"
@@ -38,122 +40,55 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
 fi
 
 # === Actual build (runs in Docker or with cross-compiler) ===
-set -x
+CROSS_PREFIX="${CROSS_PREFIX:-aarch64-linux-gnu-}"
 
 cd "$REPO_ROOT"
 
-# Clean and prepare
-./scripts/clean.sh
-mkdir -p ./build/
-mkdir -p ./build/host/
-mkdir -p ./build/shared/
-# Module directories are created automatically when copying files
+echo "=== Building SEQOMD Module ==="
+echo "Cross prefix: $CROSS_PREFIX"
 
-echo "Building host..."
+# Create build directories
+mkdir -p build/
+mkdir -p dist/seqomd
 
-# Build host with module manager and settings
-"${CROSS_PREFIX}gcc" -g -O3 \
-    src/move_anything.c \
-    src/host/module_manager.c \
-    src/host/settings.c \
-    -o build/move-anything \
-    -Isrc -Isrc/lib \
-    -Ilibs/quickjs/quickjs-2025-04-26 \
-    -Llibs/quickjs/quickjs-2025-04-26 \
-    -lquickjs -lm -ldl
-
-# Build shim
-"${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
-    -o build/move-anything-shim.so \
-    src/move_anything_shim.c -ldl
-
-echo "Building Signal Chain module..."
-
-# Build Signal Chain DSP plugin
-mkdir -p ./build/modules/chain/
+# Compile DSP plugin
+echo "Compile DSP plugin..."
 "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/chain/dsp/chain_host.c \
-    -o build/modules/chain/dsp.so \
-    -Isrc \
-    -lm -ldl -lpthread
-
-echo "Building Audio FX plugins..."
-
-# Build Freeverb audio FX
-mkdir -p ./build/modules/chain/audio_fx/freeverb/
-"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/chain/audio_fx/freeverb/freeverb.c \
-    -o build/modules/chain/audio_fx/freeverb/freeverb.so \
+    src/dsp/seq_plugin.c \
+    src/dsp/midi.c \
+    src/dsp/scheduler.c \
+    src/dsp/transpose.c \
+    src/dsp/scale.c \
+    src/dsp/arpeggiator.c \
+    src/dsp/track.c \
+    src/dsp/params.c \
+    -o build/dsp.so \
     -Isrc \
     -lm
-
-echo "Building Sound Generator plugins..."
-
-# Build Line In sound generator
-mkdir -p ./build/modules/chain/sound_generators/linein/
-"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/chain/sound_generators/linein/linein.c \
-    -o build/modules/chain/sound_generators/linein/dsp.so \
-    -Isrc \
-    -lm
-
-echo "Building SEQOMD module..."
-
-# Build SEQOMD DSP plugin
-mkdir -p ./build/modules/seqomd/
-"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-    src/modules/seqomd/dsp/seq_plugin.c \
-    src/modules/seqomd/dsp/midi.c \
-    src/modules/seqomd/dsp/scheduler.c \
-    src/modules/seqomd/dsp/transpose.c \
-    src/modules/seqomd/dsp/scale.c \
-    src/modules/seqomd/dsp/arpeggiator.c \
-    src/modules/seqomd/dsp/track.c \
-    src/modules/seqomd/dsp/params.c \
-    -o build/modules/seqomd/dsp.so \
-    -Isrc \
-    -lm
-
-# Copy shared utilities
-cp ./src/shared/*.mjs ./build/shared/
-
-# Copy host files
-cp ./src/host/menu_ui.js ./build/host/
-cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
-cp ./src/host/version.txt ./build/host/
-
-# Copy scripts and assets
-cp ./src/shim-entrypoint.sh ./build/
-cp ./src/start.sh ./build/ 2>/dev/null || true
-cp ./src/stop.sh ./build/ 2>/dev/null || true
 
 # Copy all module files (js, mjs, json) - preserves directory structure
 # Compiled .so files are built separately above
 echo "Copying module files..."
-find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while read src; do
-    dest="./build/${src#./src/}"
+find ./src/ -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while read src; do
+    dest="./dist/${src#./src/}"
     mkdir -p "$(dirname "$dest")"
     cp "$src" "$dest"
 done
 
-# Copy curl binary for store module (if present)
-if [ -f "./libs/curl/curl" ]; then
-    mkdir -p ./build/bin/
-    cp ./libs/curl/curl ./build/bin/
-    echo "Bundled curl binary"
-else
-    echo "Warning: libs/curl/curl not found - store module will not work without it"
-fi
+# Copy files to dist (use cat to avoid ExtFS deallocation issues with Docker)
+echo "Packaging..."
+cat build/dsp.so > dist/seqomd/dsp.so
+chmod +x dist/seqomd/dsp.so
 
-# Strip binaries to reduce size
-echo "Stripping binaries..."
-"${CROSS_PREFIX}strip" build/move-anything
-"${CROSS_PREFIX}strip" build/move-anything-shim.so
-"${CROSS_PREFIX}strip" build/modules/chain/dsp.so
-"${CROSS_PREFIX}strip" build/modules/chain/audio_fx/freeverb/freeverb.so
-"${CROSS_PREFIX}strip" build/modules/chain/sound_generators/linein/dsp.so
-"${CROSS_PREFIX}strip" build/modules/seqomd/dsp.so
+# Create tarball for release
+cd dist
+tar -czvf seqomd-module.tar.gz seqomd/
+cd ..
 
-echo "Build complete!"
-echo "Host binary: build/move-anything"
-echo "Modules: build/modules/"
+echo ""
+echo "=== Build Complete ==="
+echo "Output: dist/seqomd/"
+echo "Tarball: dist/seqomd-module.tar.gz"
+echo ""
+echo "To install on Move:"
+echo "  ./scripts/install.sh"

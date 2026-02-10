@@ -1,12 +1,16 @@
 {
   "id": "seqomd",
   "name": "SEQOMD",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "ui": "ui.js",
   "dsp": "dsp.so",
   "api_version": 1,
   "raw_ui": true,
   "capabilities": {
+    "component_type": "overtake",
+    "claims_master_knob": true,
+    "raw_midi": true,
+    "raw_ui": true,
     "audio_out": true,
     "midi_in": true,
     "midi_out": true
