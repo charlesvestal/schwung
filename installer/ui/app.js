@@ -17,28 +17,35 @@ function showScreen(screenName) {
     state.currentScreen = screenName;
 }
 
-// Device Discovery
+// Device Discovery - Try move.local first, fall back to manual entry
 async function startDeviceDiscovery() {
-    console.log('[DEBUG] Starting device discovery...');
+    console.log('[DEBUG] Trying move.local first...');
 
-    // Show status in UI
     const statusDiv = document.getElementById('discovery-status');
-    statusDiv.innerHTML = '<div class="spinner"></div><p>Searching for your Move device...</p>';
+    statusDiv.innerHTML = '<div class="spinner"></div><p>Connecting to move.local...</p>';
 
+    // Try move.local directly
     try {
-        const device = await window.__TAURI__.invoke('find_device');
-        console.log('[DEBUG] Device found:', device);
-        if (device) {
-            displayDevices([device]);
-            statusDiv.innerHTML = '<p>✓ Found Move at ' + device.ip + '</p>';
-        } else {
-            console.error('[DEBUG] No device returned');
-            statusDiv.innerHTML = '<p style="color: orange;">No device found. Try manual IP entry below.</p>';
+        const baseUrl = 'http://move.local';
+        const isValid = await window.__TAURI__.invoke('validate_device_at', { baseUrl });
+
+        if (isValid) {
+            console.log('[DEBUG] move.local validated successfully');
+            statusDiv.innerHTML = '<p style="color: green;">✓ Connected to move.local</p>';
+
+            // Automatically proceed to next step
+            setTimeout(() => {
+                selectDevice('move.local');
+            }, 500);
+            return;
         }
     } catch (error) {
-        console.error('[DEBUG] Discovery failed with error:', error);
-        statusDiv.innerHTML = '<p style="color: red;">Discovery error: ' + error + '</p><p>Use manual IP entry below.</p>';
+        console.error('[DEBUG] move.local validation failed:', error);
     }
+
+    // If move.local fails, show manual entry
+    statusDiv.innerHTML = '<p style="color: orange;">Could not connect to move.local</p><p>Please enter your Move\'s IP address below:</p>';
+    document.querySelector('.manual-entry').style.display = 'block';
 }
 
 function displayDevices(devices) {
@@ -65,31 +72,40 @@ function displayDevices(devices) {
     });
 }
 
-async function selectDevice(ip) {
-    state.deviceIp = ip;
+async function selectDevice(hostname) {
+    state.deviceIp = hostname;
+
+    const statusDiv = document.getElementById('discovery-status');
+    statusDiv.innerHTML = '<div class="spinner"></div><p>Validating device...</p>';
 
     try {
         // Validate device is reachable
-        const baseUrl = `http://${ip}`;
+        const baseUrl = `http://${hostname}`;
         const isValid = await window.__TAURI__.invoke('validate_device_at', { baseUrl });
 
         if (isValid) {
+            console.log('[DEBUG] Device validated, checking for saved cookie...');
             // Check if we have a saved cookie
             const savedCookie = await window.__TAURI__.invoke('get_saved_cookie');
 
             if (savedCookie) {
+                console.log('[DEBUG] Found saved cookie, proceeding to SSH setup');
                 // Try to use saved cookie, skip to SSH setup
                 proceedToSshSetup(baseUrl);
             } else {
+                console.log('[DEBUG] No saved cookie, showing code entry');
                 // Show code entry screen
                 showScreen('code-entry');
                 setupCodeEntry();
             }
         } else {
-            showError('Device validation failed - not a Move device');
+            statusDiv.innerHTML = '<p style="color: red;">Not a valid Move device</p>';
+            document.querySelector('.manual-entry').style.display = 'block';
         }
     } catch (error) {
-        showError('Connection failed: ' + error);
+        console.error('[DEBUG] selectDevice error:', error);
+        statusDiv.innerHTML = '<p style="color: red;">Error: ' + error + '</p>';
+        document.querySelector('.manual-entry').style.display = 'block';
     }
 }
 
