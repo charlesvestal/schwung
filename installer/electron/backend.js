@@ -43,19 +43,11 @@ async function validateDevice(baseUrl) {
         const url = new URL(baseUrl);
         const hostname = url.hostname;
 
-        // Resolve to IPv4 once at the start
+        // For .local domains, don't pre-resolve (mDNS not supported by Node dns)
+        // Just use hostname and let libraries handle it
         if (!cachedDeviceIp) {
-            try {
-                const addresses = await dnsResolve4(hostname);
-                if (addresses && addresses.length > 0) {
-                    cachedDeviceIp = addresses[0];
-                    console.log(`[DEBUG] Resolved ${hostname} to ${cachedDeviceIp} (cached for session)`);
-                }
-            } catch (err) {
-                console.log(`[DEBUG] DNS resolution failed: ${err.message}`);
-                // Fall back to hostname as-is
-                cachedDeviceIp = hostname;
-            }
+            cachedDeviceIp = hostname;
+            console.log(`[DEBUG] Using hostname: ${cachedDeviceIp}`);
         }
 
         // Use cached IP for validation
@@ -282,7 +274,8 @@ async function testSsh(hostname) {
                     port: 22,
                     username: username,
                     privateKey: privateKey,
-                    readyTimeout: 5000
+                    readyTimeout: 5000,
+                    family: 4  // Force IPv4
                 });
             } catch (err) {
                 clearTimeout(timeout);
@@ -447,7 +440,8 @@ async function sshExec(hostname, command) {
             host: hostIp,
             port: 22,
             username: 'root',
-            privateKey: fs.readFileSync(keyPath)
+            privateKey: fs.readFileSync(keyPath),
+            family: 4  // Force IPv4
         });
     });
 }
