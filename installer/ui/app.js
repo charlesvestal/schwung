@@ -391,23 +391,23 @@ async function startInstallation() {
 
     try {
         // Setup SSH config
+        updateInstallProgress('Setting up SSH configuration...', 0);
         await window.__TAURI__.invoke('setup_ssh_config');
-        updateInstallProgress('Setting up SSH configuration...');
 
         // Get latest release info
-        updateInstallProgress('Fetching latest release...');
+        updateInstallProgress('Fetching latest release...', 5);
         const release = await window.__TAURI__.invoke('get_latest_release');
 
         // Download main package
+        updateInstallProgress(`Downloading ${release.asset_name}...`, 10);
         const mainTarballPath = `/tmp/${release.asset_name}`;
-        updateInstallProgress(`Downloading ${release.asset_name}...`);
         await window.__TAURI__.invoke('download_release', {
             url: release.download_url,
             destPath: mainTarballPath
         });
 
         // Install main package
-        updateInstallProgress('Installing Move Everything core...');
+        updateInstallProgress('Installing Move Everything core...', 30);
         await window.__TAURI__.invoke('install_main', {
             tarballPath: mainTarballPath,
             hostname: 'move.local'
@@ -415,23 +415,28 @@ async function startInstallation() {
 
         // Get module catalog if modules selected
         if (state.selectedModules.length > 0) {
-            updateInstallProgress('Fetching module catalog...');
+            updateInstallProgress('Fetching module catalog...', 50);
             const modules = await window.__TAURI__.invoke('get_module_catalog');
 
+            const moduleCount = state.selectedModules.length;
+            const progressPerModule = 50 / moduleCount; // 50% total for all modules
+
             // Install each selected module
-            for (let i = 0; i < state.selectedModules.length; i++) {
+            for (let i = 0; i < moduleCount; i++) {
                 const moduleId = state.selectedModules[i];
                 const module = modules.find(m => m.id === moduleId);
 
                 if (module) {
-                    updateInstallProgress(`Installing ${module.name} (${i + 1}/${state.selectedModules.length})...`);
+                    const baseProgress = 50 + (i * progressPerModule);
 
+                    updateInstallProgress(`Downloading ${module.name} (${i + 1}/${moduleCount})...`, baseProgress);
                     const moduleTarballPath = `/tmp/${module.asset_name}`;
                     await window.__TAURI__.invoke('download_release', {
                         url: module.download_url,
                         destPath: moduleTarballPath
                     });
 
+                    updateInstallProgress(`Installing ${module.name} (${i + 1}/${moduleCount})...`, baseProgress + progressPerModule * 0.5);
                     await window.__TAURI__.invoke('install_module_package', {
                         moduleId: module.id,
                         tarballPath: moduleTarballPath,
@@ -443,7 +448,8 @@ async function startInstallation() {
         }
 
         // Installation complete
-        showScreen('success');
+        updateInstallProgress('Installation complete!', 100);
+        setTimeout(() => showScreen('success'), 500);
     } catch (error) {
         state.errors.push({
             timestamp: new Date().toISOString(),
@@ -453,12 +459,20 @@ async function startInstallation() {
     }
 }
 
-function updateInstallProgress(message) {
+function updateInstallProgress(message, percent) {
     const progressStatus = document.getElementById('install-status');
     if (progressStatus) {
         progressStatus.textContent = message;
     }
-    console.log('Install progress:', message);
+
+    if (percent !== undefined) {
+        const progressFill = document.querySelector('.progress-fill');
+        if (progressFill) {
+            progressFill.style.width = `${percent}%`;
+        }
+    }
+
+    console.log('Install progress:', message, percent !== undefined ? `${percent}%` : '');
 }
 
 // Error Handling
