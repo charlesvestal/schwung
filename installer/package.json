@@ -5,9 +5,11 @@
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
+    "clean": "rm -rf dist/",
+    "build": "npm run clean && npm run build:all",
+    "build:all": "electron-builder --mac --win --linux",
     "build:mac": "electron-builder --mac",
-    "build:win": "electron-builder --win --x64",
-    "build:win:arm64": "electron-builder --win --arm64",
+    "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -25,32 +27,37 @@
   "build": {
     "appId": "com.move-everything.installer",
     "productName": "Move Everything Installer",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "electron/**/*",
       "ui/**/*"
     ],
     "mac": {
-      "target": "dmg",
-      "identity": "Developer ID Application: Charles Vestal (J4722B5MJW)",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "target": [
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "identity": null
     },
     "win": {
-      "target": "portable",
-      "publisherName": "Charles Vestal",
-      "verifyUpdateCodeSignature": false
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "publisherName": "Charles Vestal"
     },
     "linux": {
-      "target": "AppImage",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
       "category": "Utility"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
     }
   }
 }
