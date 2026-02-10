@@ -34,20 +34,17 @@ Built with Electron for cross-platform support:
 
 ### Prerequisites
 
-**All Platforms:**
 ```bash
 cd installer
 npm install
 ```
 
-**Windows Only:**
-Bonjour service is required for mDNS (.local domain) resolution. Install one of:
-- iTunes (includes Bonjour)
-- iCloud for Windows (includes Bonjour)
-- Bonjour Print Services (standalone)
+**mDNS Support (.local domains):**
+- **Windows 10 1703+/11**: Built-in mDNS via DNS Client service (enabled by default on private networks)
+- **macOS/Linux**: Built-in mDNS support
+- **Older Windows**: May require Bonjour (iTunes/iCloud), but versions this old are uncommon
 
-**macOS/Linux:**
-No additional requirements - mDNS support is built-in.
+No additional software needed on modern systems!
 
 ### Run Development Mode
 
@@ -118,7 +115,7 @@ Installation progress is tracked from 0-100%:
 ### IPv4 Resolution
 
 Move uses mDNS (.local domains) which Node.js's built-in DNS doesn't support. The installer uses system resolvers:
-- **Windows**: Uses hostname directly (Bonjour service resolves .local domains)
+- **Windows**: Uses hostname directly (Windows 10 1703+ built-in mDNS resolves .local domains)
 - **macOS**: `dscacheutil -q host -a name move.local`
 - **Linux**: `getent ahostsv4 move.local`
 
@@ -158,9 +155,9 @@ installer/
 
 ### Device Not Found
 - Ensure Move is on same WiFi network
-- Try accessing `http://move.local` in browser
-- **Windows**: Verify Bonjour service is installed and running
-- Use manual IP entry if mDNS fails
+- Try accessing `http://move.local` in browser to verify mDNS is working
+- **Windows**: Ensure network is set to "Private" (mDNS disabled on "Public" networks)
+- Use manual IP entry if mDNS fails or is blocked by firewall
 
 ### SSH Connection Failed
 - Check SSH key was added to Move
