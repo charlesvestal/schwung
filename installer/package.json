@@ -29,7 +29,6 @@
     ],
     "mac": {
       "target": "dmg",
-      "icon": "icons/icon.icns",
       "identity": "Developer ID Application: Charles Vestal (J4722B5MJW)",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -38,11 +37,18 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "icons/icon.ico"
+      "publisherName": "Charles Vestal",
+      "verifyUpdateCodeSignature": false
     },
     "linux": {
       "target": "AppImage",
-      "icon": "icons/icon.png"
+      "category": "Utility"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
     }
   }
 }
