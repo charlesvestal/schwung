@@ -434,17 +434,20 @@ async function sshExec(hostname, command) {
 
 async function installMain(tarballPath, hostname) {
     try {
-        // Upload tarball
-        await sshExec(hostname, `mkdir -p /tmp/move-install`);
+        const filename = path.basename(tarballPath);
 
-        // Use scp to upload (spawn separately)
+        // Use move_key if exists, otherwise id_rsa
+        const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
+        const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
+
+        // Upload to home directory (ableton@move.local = /data/UserData/)
         await new Promise((resolve, reject) => {
             const scp = spawn('scp', [
-                '-i', path.join(os.homedir(), '.ssh', 'id_rsa'),
+                '-i', keyPath,
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=/dev/null',
                 tarballPath,
-                `root@${hostname}:/tmp/move-install/`
+                `ableton@${hostname}:${filename}`
             ]);
 
             scp.on('close', (code) => {
@@ -453,10 +456,11 @@ async function installMain(tarballPath, hostname) {
             });
         });
 
-        // Extract and install
-        const filename = path.basename(tarballPath);
-        await sshExec(hostname, `cd /tmp/move-install && tar -xzf ${filename}`);
-        await sshExec(hostname, `cd /tmp/move-install/move-anything && ./scripts/install.sh local --skip-modules`);
+        // Extract tarball (creates move-anything/ directory in home)
+        await sshExec(hostname, `tar -xzf ${filename}`);
+
+        // Run install script
+        await sshExec(hostname, `cd move-anything && ./scripts/install.sh local --skip-modules`);
 
         return true;
     } catch (err) {
@@ -466,14 +470,20 @@ async function installMain(tarballPath, hostname) {
 
 async function installModulePackage(moduleId, tarballPath, componentType, hostname) {
     try {
-        // Upload module tarball
+        const filename = path.basename(tarballPath);
+
+        // Use move_key if exists, otherwise id_rsa
+        const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
+        const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
+
+        // Upload to home directory
         await new Promise((resolve, reject) => {
             const scp = spawn('scp', [
-                '-i', path.join(os.homedir(), '.ssh', 'id_rsa'),
+                '-i', keyPath,
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=/dev/null',
                 tarballPath,
-                `root@${hostname}:/tmp/move-install/`
+                `ableton@${hostname}:move-anything/${filename}`
             ]);
 
             scp.on('close', (code) => {
@@ -482,14 +492,9 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
             });
         });
 
-        // Extract module
-        const filename = path.basename(tarballPath);
-        await sshExec(hostname, `cd /tmp/move-install && tar -xzf ${filename}`);
-
-        // Install to appropriate category directory
+        // Extract and install module (similar to install.sh module installation)
         const categoryPath = componentType ? `${componentType}s` : 'utility';
-        await sshExec(hostname, `mkdir -p /data/UserData/move-anything/modules/${categoryPath}`);
-        await sshExec(hostname, `cp -r /tmp/move-install/${moduleId} /data/UserData/move-anything/modules/${categoryPath}/`);
+        await sshExec(hostname, `cd move-anything && mkdir -p ${categoryPath} && tar -xzf ${filename} -C ${categoryPath}/ && rm ${filename}`);
 
         return true;
     } catch (err) {
