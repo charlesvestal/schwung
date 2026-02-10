@@ -2,6 +2,7 @@ const axios = require('axios');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const dns = require('dns');
 const { Client } = require('ssh2');
 const { spawn } = require('child_process');
 const { promisify } = require('util');
@@ -9,6 +10,7 @@ const mkdir = promisify(fs.mkdir);
 const writeFile = promisify(fs.writeFile);
 const readFile = promisify(fs.readFile);
 const access = promisify(fs.access);
+const dnsResolve4 = promisify(dns.resolve4);
 
 // State management
 let savedCookie = null;
@@ -16,8 +18,9 @@ const cookieStore = path.join(os.homedir(), '.move-everything-installer-cookie')
 
 // HTTP client with cookie support
 const httpClient = axios.create({
-    timeout: 10000,
-    validateStatus: () => true // Don't throw on non-2xx status
+    timeout: 60000, // 60 seconds for user interactions
+    validateStatus: () => true, // Don't throw on non-2xx status
+    family: 4 // Force IPv4
 });
 
 // Load saved cookie on startup
@@ -31,9 +34,34 @@ const httpClient = axios.create({
     }
 })();
 
+// Cache device IP for current session only (not persisted between runs)
+let cachedDeviceIp = null;
+
 async function validateDevice(baseUrl) {
     try {
-        const response = await httpClient.get(`${baseUrl}/`);
+        // Extract hostname from baseUrl
+        const url = new URL(baseUrl);
+        const hostname = url.hostname;
+
+        // Resolve to IPv4 once at the start
+        if (!cachedDeviceIp) {
+            try {
+                const addresses = await dnsResolve4(hostname);
+                if (addresses && addresses.length > 0) {
+                    cachedDeviceIp = addresses[0];
+                    console.log(`[DEBUG] Resolved ${hostname} to ${cachedDeviceIp} (cached for session)`);
+                }
+            } catch (err) {
+                console.log(`[DEBUG] DNS resolution failed: ${err.message}`);
+                // Fall back to hostname as-is
+                cachedDeviceIp = hostname;
+            }
+        }
+
+        // Use cached IP for validation
+        const validateUrl = cachedDeviceIp ? `http://${cachedDeviceIp}/` : baseUrl;
+        const response = await httpClient.get(validateUrl);
+
         return response.status === 200;
     } catch (err) {
         console.error('Device validation error:', err.message);
@@ -194,11 +222,29 @@ async function testSsh(hostname) {
 
     const privateKey = fs.readFileSync(keyPath);
 
+    // Use cached IP from HTTP connection first, then try DNS
+    let hostIp = cachedDeviceIp || hostname;
+    if (!cachedDeviceIp) {
+        try {
+            const addresses = await dnsResolve4(hostname);
+            if (addresses && addresses.length > 0) {
+                hostIp = addresses[0];
+                console.log(`[DEBUG] Resolved ${hostname} to IPv4: ${hostIp}`);
+            }
+        } catch (err) {
+            console.log(`[DEBUG] DNS resolution failed: ${err.message}`);
+            // Fall back to hostname as-is
+            hostIp = hostname;
+        }
+    } else {
+        console.log(`[DEBUG] Using cached IP: ${hostIp}`);
+    }
+
     // Try ableton@move.local first, then root@move.local
     const users = ['ableton', 'root'];
 
     for (const username of users) {
-        console.log(`[DEBUG] Testing SSH as ${username}@${hostname}...`);
+        console.log(`[DEBUG] Testing SSH as ${username}@${hostIp}...`);
 
         const connected = await new Promise((resolve) => {
             const conn = new Client();
@@ -232,7 +278,7 @@ async function testSsh(hostname) {
 
             try {
                 conn.connect({
-                    host: hostname,
+                    host: hostIp,
                     port: 22,
                     username: username,
                     privateKey: privateKey,
@@ -245,7 +291,7 @@ async function testSsh(hostname) {
         });
 
         if (connected) {
-            console.log(`[DEBUG] SSH works as ${username}@${hostname}`);
+            console.log(`[DEBUG] SSH works as ${username}@${hostIp}`);
             return true;
         }
     }
@@ -339,25 +385,14 @@ async function getModuleCatalog() {
 
 async function getLatestRelease() {
     try {
-        const response = await httpClient.get(
-            'https://api.github.com/repos/charlesvestal/move-anything/releases/latest'
-        );
-
-        if (response.status !== 200) {
-            throw new Error(`Failed to fetch release: ${response.status}`);
-        }
-
-        const release = response.data;
-        const asset = release.assets.find(a => a.name.includes('move-anything') && a.name.endsWith('.tar.gz'));
-
-        if (!asset) {
-            throw new Error('No suitable asset found in release');
-        }
+        // Use direct download URL like install.sh does (no API, no rate limits)
+        const assetName = 'move-anything.tar.gz';
+        const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/latest/download/${assetName}`;
 
         return {
-            version: release.tag_name,
-            asset_name: asset.name,
-            download_url: asset.browser_download_url
+            version: 'latest',
+            asset_name: assetName,
+            download_url: downloadUrl
         };
     } catch (err) {
         throw new Error(`Failed to get latest release: ${err.message}`);
@@ -383,6 +418,9 @@ async function downloadRelease(url, destPath) {
 }
 
 async function sshExec(hostname, command) {
+    // Use cached IP from session (already resolved in validateDevice)
+    const hostIp = cachedDeviceIp || hostname;
+
     return new Promise((resolve, reject) => {
         const conn = new Client();
 
@@ -424,7 +462,7 @@ async function sshExec(hostname, command) {
         const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
 
         conn.connect({
-            host: hostname,
+            host: hostIp,
             port: 22,
             username: 'root',
             privateKey: fs.readFileSync(keyPath)
@@ -434,33 +472,56 @@ async function sshExec(hostname, command) {
 
 async function installMain(tarballPath, hostname) {
     try {
-        const filename = path.basename(tarballPath);
+        const tmpDir = path.join(os.tmpdir(), 'move-installer-' + Date.now());
+        await mkdir(tmpDir, { recursive: true });
 
-        // Use move_key if exists, otherwise id_rsa
-        const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
-        const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
-
-        // Upload to home directory (ableton@move.local = /data/UserData/)
+        // Extract tarball locally
+        console.log('[DEBUG] Extracting tarball to:', tmpDir);
         await new Promise((resolve, reject) => {
-            const scp = spawn('scp', [
-                '-i', keyPath,
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'UserKnownHostsFile=/dev/null',
-                tarballPath,
-                `ableton@${hostname}:${filename}`
-            ]);
+            const tar = spawn('tar', ['-xzf', tarballPath, '-C', tmpDir]);
 
-            scp.on('close', (code) => {
+            tar.on('close', (code) => {
                 if (code === 0) resolve();
-                else reject(new Error(`scp failed with code ${code}`));
+                else reject(new Error(`tar extraction failed with code ${code}`));
             });
+
+            tar.on('error', reject);
         });
 
-        // Extract tarball (creates move-anything/ directory in home)
-        await sshExec(hostname, `tar -xzf ${filename}`);
+        // Find the extracted directory (should be move-anything/)
+        const extractedDir = path.join(tmpDir, 'move-anything');
+        if (!fs.existsSync(extractedDir)) {
+            throw new Error('Extracted directory not found');
+        }
 
-        // Run install script
-        await sshExec(hostname, `cd move-anything && ./scripts/install.sh local --skip-modules`);
+        // Run install.sh from the extracted directory
+        console.log('[DEBUG] Running install.sh from:', extractedDir);
+        await new Promise((resolve, reject) => {
+            const installScript = spawn('./scripts/install.sh', ['local', '--skip-modules'], {
+                cwd: extractedDir,
+                env: { ...process.env, MOVE_HOSTNAME: hostname }
+            });
+
+            installScript.stdout.on('data', (data) => {
+                console.log('[install.sh]', data.toString().trim());
+            });
+
+            installScript.stderr.on('data', (data) => {
+                console.error('[install.sh]', data.toString().trim());
+            });
+
+            installScript.on('close', (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(`install.sh failed with code ${code}`));
+            });
+
+            installScript.on('error', reject);
+        });
+
+        // Cleanup
+        await new Promise((resolve) => {
+            spawn('rm', ['-rf', tmpDir]).on('close', resolve);
+        });
 
         return true;
     } catch (err) {
