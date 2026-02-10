@@ -547,25 +547,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // Wait for Tauri API to be ready
-    if (window.__TAURI__) {
-        console.log('[DEBUG] Tauri API ready, starting discovery');
-        startDeviceDiscovery();
-    } else {
-        console.log('[DEBUG] Waiting for Tauri API...');
-        const statusDiv = document.getElementById('discovery-status');
-        statusDiv.innerHTML = '<p style="color: orange;">Waiting for app to initialize...</p>';
-
-        window.addEventListener('tauri-ready', () => {
-            console.log('[DEBUG] Tauri API became ready');
-            startDeviceDiscovery();
-        });
-
-        // If Tauri doesn't load after 3 seconds, show error
-        setTimeout(() => {
-            if (!window.__TAURI__) {
-                statusDiv.innerHTML = '<p style="color: red;">App initialization failed. Tauri API not available.</p>';
-            }
-        }, 3000);
-    }
+    // Tauri API should be available immediately
+    console.log('[DEBUG] DOM loaded, starting discovery');
+    startDeviceDiscovery();
 });
