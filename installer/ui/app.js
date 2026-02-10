@@ -35,7 +35,7 @@ async function startDeviceDiscovery() {
     // Try move.local directly
     try {
         const baseUrl = 'http://move.local';
-        const isValid = await window.__TAURI__.invoke('validate_device_at', { baseUrl });
+        const isValid = await window.installer.invoke('validate_device_at', { baseUrl });
 
         if (isValid) {
             console.log('[DEBUG] move.local validated successfully');
@@ -89,16 +89,16 @@ async function selectDevice(hostname) {
     try {
         // Validate device is reachable
         const baseUrl = `http://${hostname}`;
-        const isValid = await window.__TAURI__.invoke('validate_device_at', { baseUrl });
+        const isValid = await window.installer.invoke('validate_device_at', { baseUrl });
 
         if (isValid) {
             console.log('[DEBUG] Device validated, checking for saved cookie...');
             // Check if we have a saved cookie
-            const savedCookie = await window.__TAURI__.invoke('get_saved_cookie');
+            const savedCookie = await window.installer.invoke('get_saved_cookie');
 
             // First, test if SSH already works
             console.log('[DEBUG] Testing SSH connection...');
-            const sshWorks = await window.__TAURI__.invoke('test_ssh', { hostname: hostname });
+            const sshWorks = await window.installer.invoke('test_ssh', { hostname: hostname });
 
             if (sshWorks) {
                 console.log('[DEBUG] SSH already works, proceeding to version check');
@@ -115,7 +115,7 @@ async function selectDevice(hostname) {
             } else {
                 console.log('[DEBUG] No saved cookie, requesting challenge code');
                 // Request challenge code from Move
-                await window.__TAURI__.invoke('request_challenge', { baseUrl });
+                await window.installer.invoke('request_challenge', { baseUrl });
                 // Show code entry screen
                 showScreen('code-entry');
                 setupCodeEntry();
@@ -192,12 +192,24 @@ async function submitAuthCode() {
 
     try {
         const baseUrl = `http://${state.deviceIp}`;
-        const cookieValue = await window.__TAURI__.invoke('submit_auth_code', {
+        const cookieValue = await window.installer.invoke('submit_auth_code', {
             baseUrl: baseUrl,
             code: code
         });
 
         console.log('Auth successful, cookie saved');
+
+        // On Windows, check for Git Bash before proceeding
+        const gitBashCheck = await window.installer.invoke('check_git_bash_available');
+        if (!gitBashCheck.available) {
+            showError(
+                'Git Bash is required for installation on Windows.\n\n' +
+                'Please install Git for Windows from:\n' +
+                'https://git-scm.com/download/win\n\n' +
+                'Then restart the installer.'
+            );
+            return;
+        }
 
         // Check for SSH key and show confirmation screen
         showSshKeyScreen(baseUrl);
@@ -210,7 +222,7 @@ async function showSshKeyScreen(baseUrl) {
     try {
         // Find or check if SSH key exists
         console.log('[DEBUG] Looking for existing SSH key...');
-        let pubkeyPath = await window.__TAURI__.invoke('find_existing_ssh_key');
+        let pubkeyPath = await window.installer.invoke('find_existing_ssh_key');
 
         const messageEl = document.getElementById('ssh-key-message');
         const explanationEl = document.getElementById('ssh-key-explanation');
@@ -241,24 +253,24 @@ async function proceedToSshSetup(baseUrl) {
 
         // Find or generate SSH key
         console.log('[DEBUG] Looking for existing SSH key...');
-        let pubkeyPath = await window.__TAURI__.invoke('find_existing_ssh_key');
+        let pubkeyPath = await window.installer.invoke('find_existing_ssh_key');
         console.log('[DEBUG] Found SSH key:', pubkeyPath);
 
         if (!pubkeyPath) {
             console.log('[DEBUG] No SSH key found, generating new one');
-            pubkeyPath = await window.__TAURI__.invoke('generate_new_ssh_key');
+            pubkeyPath = await window.installer.invoke('generate_new_ssh_key');
             console.log('[DEBUG] Generated SSH key:', pubkeyPath);
         }
 
         // Read public key content
         console.log('[DEBUG] Reading public key...');
-        const pubkey = await window.__TAURI__.invoke('read_public_key', { path: pubkeyPath });
+        const pubkey = await window.installer.invoke('read_public_key', { path: pubkeyPath });
         console.log('[DEBUG] Public key length:', pubkey.length);
         console.log('[DEBUG] Public key preview:', pubkey.substring(0, 50) + '...');
 
         // Submit SSH key with auth cookie (this triggers prompt on Move)
         console.log('[DEBUG] Submitting SSH key to', baseUrl);
-        await window.__TAURI__.invoke('submit_ssh_key_with_auth', {
+        await window.installer.invoke('submit_ssh_key_with_auth', {
             baseUrl: baseUrl,
             pubkey: pubkey
         });
@@ -275,15 +287,21 @@ async function proceedToSshSetup(baseUrl) {
 let confirmationPollInterval;
 
 async function startConfirmationPolling() {
+    console.log('[DEBUG] Starting confirmation polling...');
+    showScreen('confirm');
+
     confirmationPollInterval = setInterval(async () => {
         try {
+            console.log('[DEBUG] Polling SSH connection...');
             const hostname = 'move.local'; // Use mDNS hostname
-            const connected = await window.__TAURI__.invoke('test_ssh', {
+            const connected = await window.installer.invoke('test_ssh', {
                 hostname: hostname
             });
 
+            console.log('[DEBUG] SSH connected:', connected);
             if (connected) {
                 clearInterval(confirmationPollInterval);
+                console.log('[DEBUG] SSH confirmed, checking versions...');
                 await checkVersions();
             }
         } catch (error) {
@@ -299,6 +317,14 @@ function cancelConfirmation() {
     showScreen('code-entry');
 }
 
+function cancelDiscovery() {
+    // Reset state
+    state.deviceIp = null;
+    state.baseUrl = null;
+    // Go back to warning screen
+    showScreen('warning');
+}
+
 // Module Selection
 function updateVersionCheckStatus(message) {
     const statusEl = document.querySelector('#version-check-status .instruction');
@@ -309,45 +335,52 @@ function updateVersionCheckStatus(message) {
 
 async function checkVersions() {
     try {
-        console.log('[DEBUG] Checking installed versions...');
-        showScreen('version-check');
+        console.log('[DEBUG] Checking if Move Everything is installed...');
 
-        // Check what's installed on device
-        updateVersionCheckStatus('Checking what\'s installed on your Move...');
         const hostname = state.deviceIp || 'move.local';
-        const installed = await window.__TAURI__.invoke('check_installed_versions', { hostname });
 
-        // Get latest release and module catalog
-        updateVersionCheckStatus('Fetching latest releases from GitHub...');
-        const [latestRelease, moduleCatalog] = await Promise.all([
-            window.__TAURI__.invoke('get_latest_release'),
-            window.__TAURI__.invoke('get_module_catalog')
-        ]);
+        // Quick lightweight check: is Move Everything installed? (doesn't scan modules)
+        const coreCheck = await window.installer.invoke('check_core_installation', { hostname });
 
-        // Compare versions
-        updateVersionCheckStatus('Comparing versions...');
-        const versionInfo = await window.__TAURI__.invoke('compare_versions', {
-            installed,
-            latestRelease,
-            moduleCatalog
-        });
+        if (!coreCheck.installed) {
+            // Not installed - go directly to fresh install flow
+            console.log('[DEBUG] Move Everything not installed, showing installation options');
+            state.managementMode = false;
+            state.installedModules = [];
+            await loadModuleList();
+            document.querySelector('#screen-modules h1').textContent = 'Installation Options';
+            document.getElementById('btn-install').textContent = 'Install';
+            document.querySelector('.install-options').style.display = 'block';
+            document.getElementById('module-categories').style.display = 'none';
+            showScreen('modules');
+            return;
+        }
 
-        state.versionInfo = versionInfo;
-        state.installedModules = installed.modules || [];
-        state.allModules = moduleCatalog;
+        // Already installed - check if core upgrade available
+        console.log('[DEBUG] Move Everything installed, checking for core upgrade...');
+        const latestRelease = await window.installer.invoke('get_latest_release');
 
-        console.log('[DEBUG] Version info:', versionInfo);
+        const hasUpgrade = coreCheck.core && latestRelease.version && coreCheck.core !== latestRelease.version;
 
-        // Display version information
-        displayVersionInfo(installed, versionInfo);
+        state.versionInfo = {
+            coreUpgrade: hasUpgrade ? {
+                current: coreCheck.core,
+                available: latestRelease.version
+            } : null
+        };
 
-        // Hide spinner, show results
-        document.getElementById('version-check-status').style.display = 'none';
-        document.getElementById('version-info').style.display = 'block';
+        // We'll fetch installed modules only when user clicks "Install New Modules"
+        state.installedModules = [];
+
+        // Go to management screen
+        setupManagementScreen();
+        showScreen('management');
 
     } catch (error) {
         console.error('Version check failed:', error);
-        // If version check fails, just proceed to module selection
+        // If version check fails, assume fresh install
+        state.managementMode = false;
+        state.installedModules = [];
         await loadModuleList();
         showScreen('modules');
     }
@@ -371,101 +404,22 @@ function preselectUpgradableModules() {
     console.log('[DEBUG] Pre-selected upgradable modules:', upgradableIds);
 }
 
-function displayVersionInfo(installed, versionInfo) {
-    const coreDiv = document.getElementById('core-version-info');
-    const moduleDiv = document.getElementById('module-version-info');
+function setupManagementScreen() {
+    // Show/hide upgrade core option based on whether upgrade is available
+    const upgradeOption = document.getElementById('option-upgrade-core');
+    const upgradeDescription = document.getElementById('upgrade-core-description');
 
-    // Core version section
-    let coreHTML = '<div class="version-section"><h3>Move Everything Core</h3>';
-
-    if (!installed.installed) {
-        coreHTML += '<p class="instruction">Move Everything is not currently installed on your device.</p>';
-    } else if (versionInfo.coreUpgrade) {
-        coreHTML += `
-            <div class="version-item">
-                <div class="version-item-name">
-                    <strong>Core Framework</strong>
-                    <span>${versionInfo.coreUpgrade.current} → ${versionInfo.coreUpgrade.available}</span>
-                </div>
-                <span class="version-badge upgrade">UPGRADE AVAILABLE</span>
-            </div>
-        `;
-    } else if (installed.core) {
-        coreHTML += `
-            <div class="version-item">
-                <div class="version-item-name">
-                    <strong>Core Framework</strong>
-                    <span>Version ${installed.core}</span>
-                </div>
-                <span class="version-badge current">UP TO DATE</span>
-            </div>
-        `;
+    if (state.versionInfo && state.versionInfo.coreUpgrade) {
+        upgradeOption.style.display = 'flex';
+        upgradeDescription.textContent = `Update from ${state.versionInfo.coreUpgrade.current} to ${state.versionInfo.coreUpgrade.available}`;
+    } else {
+        upgradeOption.style.display = 'none';
     }
-
-    coreHTML += '</div>';
-    coreDiv.innerHTML = coreHTML;
-
-    // Modules section
-    let moduleHTML = '<div class="version-section"><h3>Modules</h3>';
-
-    if (versionInfo.upgradableModules.length > 0) {
-        moduleHTML += '<h4 style="color: #ff9900; margin: 1rem 0 0.5rem 0;">Upgrades Available</h4>';
-        versionInfo.upgradableModules.forEach(module => {
-            moduleHTML += `
-                <div class="version-item">
-                    <div class="version-item-name">
-                        <strong>${module.name}</strong>
-                        <span>${module.currentVersion} → ${module.version}</span>
-                    </div>
-                    <span class="version-badge upgrade">UPGRADE</span>
-                </div>
-            `;
-        });
-    }
-
-    if (versionInfo.upToDateModules.length > 0) {
-        moduleHTML += '<h4 style="color: #a0a0a0; margin: 1rem 0 0.5rem 0;">Up to Date</h4>';
-        versionInfo.upToDateModules.forEach(module => {
-            moduleHTML += `
-                <div class="version-item">
-                    <div class="version-item-name">
-                        <strong>${module.name}</strong>
-                        <span>Version ${module.currentVersion}</span>
-                    </div>
-                    <span class="version-badge current">CURRENT</span>
-                </div>
-            `;
-        });
-    }
-
-    if (versionInfo.newModules.length > 0) {
-        moduleHTML += '<h4 style="color: #00cc00; margin: 1rem 0 0.5rem 0;">New Modules</h4>';
-        versionInfo.newModules.forEach(module => {
-            moduleHTML += `
-                <div class="version-item">
-                    <div class="version-item-name">
-                        <strong>${module.name}</strong>
-                        <span>${module.description || 'Available for installation'}</span>
-                    </div>
-                    <span class="version-badge new">NEW</span>
-                </div>
-            `;
-        });
-    }
-
-    if (versionInfo.upgradableModules.length === 0 &&
-        versionInfo.upToDateModules.length === 0 &&
-        versionInfo.newModules.length === 0) {
-        moduleHTML += '<p class="instruction">No modules installed yet.</p>';
-    }
-
-    moduleHTML += '</div>';
-    moduleDiv.innerHTML = moduleHTML;
 }
 
 async function loadModuleList() {
     try {
-        const modules = await window.__TAURI__.invoke('get_module_catalog');
+        const modules = await window.installer.invoke('get_module_catalog');
         state.allModules = modules; // Store for later use
         displayModules(modules);
         setupInstallationOptions();
@@ -548,20 +502,62 @@ function displayModules(modules) {
             const moduleItem = document.createElement('div');
             moduleItem.className = 'module-item';
 
+            // Check if module is already installed
+            const isInstalled = state.installedModules && state.installedModules.some(m => m.id === module.id);
+
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.id = `module-${module.id}`;
             checkbox.checked = true; // Default to selected
+            checkbox.setAttribute('data-module-id', module.id);
             checkbox.onchange = () => updateSelectedModules();
 
             const moduleInfo = document.createElement('div');
             moduleInfo.className = 'module-info';
 
             const moduleName = document.createElement('h4');
-            moduleName.textContent = module.name;
+            const nameLink = document.createElement('a');
+            nameLink.href = `https://github.com/${module.github_repo}`;
+            nameLink.target = '_blank';
+            nameLink.textContent = module.name;
+            nameLink.onclick = (e) => e.stopPropagation(); // Don't trigger checkbox
+            moduleName.appendChild(nameLink);
 
             const moduleDesc = document.createElement('p');
-            moduleDesc.textContent = module.description || 'No description available';
+
+            // Show installation status in management mode
+            if (state.managementMode && isInstalled) {
+                const installedBadge = document.createElement('span');
+                installedBadge.className = 'version-badge current';
+                installedBadge.textContent = 'INSTALLED';
+                installedBadge.style.marginLeft = '0.5rem';
+                installedBadge.style.fontSize = '0.75rem';
+                installedBadge.style.padding = '0.2rem 0.5rem';
+                installedBadge.style.display = 'inline-block';
+                installedBadge.style.verticalAlign = 'middle';
+                moduleName.appendChild(installedBadge);
+
+                moduleDesc.textContent = `${module.description || 'No description available'} • Will be reinstalled if selected`;
+            } else {
+                moduleDesc.textContent = module.description || 'No description available';
+            }
+
+            // Add version if available
+            if (module.version) {
+                const versionSpan = document.createElement('span');
+                versionSpan.style.marginLeft = '0.5rem';
+                versionSpan.style.color = '#888';
+
+                const versionLink = document.createElement('a');
+                versionLink.href = `https://github.com/${module.github_repo}/releases/latest`;
+                versionLink.target = '_blank';
+                versionLink.textContent = `v${module.version}`;
+                versionLink.style.color = '#0066cc';
+                versionLink.onclick = (e) => e.stopPropagation(); // Don't trigger checkbox
+
+                versionSpan.appendChild(versionLink);
+                moduleName.appendChild(versionSpan);
+            }
 
             moduleInfo.appendChild(moduleName);
             moduleInfo.appendChild(moduleDesc);
@@ -665,7 +661,10 @@ async function startInstallation() {
     try {
         // Determine which modules to install
         let modulesToInstall = [];
-        if (state.installType === 'complete') {
+        if (state.managementMode) {
+            // In management mode, only install selected modules
+            modulesToInstall = state.selectedModules;
+        } else if (state.installType === 'complete') {
             modulesToInstall = state.allModules.map(m => m.id);
         } else if (state.installType === 'custom') {
             modulesToInstall = state.selectedModules;
@@ -676,50 +675,57 @@ async function startInstallation() {
 
         // Initialize checklist
         initializeChecklist(moduleObjects);
+
         // Setup SSH config
         updateInstallProgress('Setting up SSH configuration...', 0);
-        await window.__TAURI__.invoke('setup_ssh_config');
+        await window.installer.invoke('setup_ssh_config');
 
-        // Get latest release info
-        updateInstallProgress('Fetching latest release...', 5);
-        const release = await window.__TAURI__.invoke('get_latest_release');
+        let startProgressForModules = 10;
 
-        // Download main package
-        updateInstallProgress(`Downloading ${release.asset_name}...`, 10);
-        const mainTarballPath = `/tmp/${release.asset_name}`;
-        await window.__TAURI__.invoke('download_release', {
-            url: release.download_url,
-            destPath: mainTarballPath
-        });
+        // Only install core if not in management mode
+        if (!state.managementMode) {
+            // Get latest release info
+            updateInstallProgress('Fetching latest release...', 5);
+            const release = await window.installer.invoke('get_latest_release');
 
-        // Determine installation flags based on mode
-        const installFlags = [];
-        if (state.enableScreenReader) {
-            installFlags.push('--enable-screen-reader');
+            // Download main package
+            updateInstallProgress(`Downloading ${release.asset_name}...`, 10);
+            const mainTarballPath = await window.installer.invoke('download_release', {
+                url: release.download_url,
+                destPath: `/tmp/${release.asset_name}`
+            });
+
+            // Determine installation flags based on mode
+            const installFlags = [];
+            if (state.enableScreenReader) {
+                installFlags.push('--enable-screen-reader');
+            }
+            if (state.installType === 'screenreader') {
+                installFlags.push('--disable-shadow-ui');
+                installFlags.push('--disable-standalone');
+            }
+
+            // Install/Upgrade main package
+            const coreAction = (state.versionInfo && state.versionInfo.coreUpgrade) ? 'Upgrading' : 'Installing';
+            updateChecklistItem('core', 'in-progress');
+            updateInstallProgress(`${coreAction} Move Everything core...`, 30);
+            await window.installer.invoke('install_main', {
+                tarballPath: mainTarballPath,
+                hostname: 'move.local',
+                flags: installFlags
+            });
+            updateChecklistItem('core', 'completed');
+            startProgressForModules = 50;
         }
-        if (state.installType === 'screenreader') {
-            installFlags.push('--disable-shadow-ui');
-            installFlags.push('--disable-standalone');
-        }
-
-        // Install/Upgrade main package
-        const coreAction = (state.versionInfo && state.versionInfo.coreUpgrade) ? 'Upgrading' : 'Installing';
-        updateChecklistItem('core', 'in-progress');
-        updateInstallProgress(`${coreAction} Move Everything core...`, 30);
-        await window.__TAURI__.invoke('install_main', {
-            tarballPath: mainTarballPath,
-            hostname: 'move.local',
-            flags: installFlags
-        });
-        updateChecklistItem('core', 'completed');
 
         // Install modules (if any)
         if (modulesToInstall.length > 0) {
-            updateInstallProgress('Fetching module catalog...', 50);
+            updateInstallProgress('Fetching module catalog...', startProgressForModules);
             const modules = state.allModules;
 
             const moduleCount = modulesToInstall.length;
-            const progressPerModule = 50 / moduleCount; // 50% total for all modules
+            const remainingProgress = 100 - startProgressForModules;
+            const progressPerModule = remainingProgress / moduleCount;
 
             // Install each module
             for (let i = 0; i < moduleCount; i++) {
@@ -727,7 +733,7 @@ async function startInstallation() {
                 const module = modules.find(m => m.id === moduleId);
 
                 if (module) {
-                    const baseProgress = 50 + (i * progressPerModule);
+                    const baseProgress = startProgressForModules + (i * progressPerModule);
 
                     // Determine if this is an upgrade or fresh install
                     const isUpgrade = state.installedModules.some(m => m.id === module.id);
@@ -735,14 +741,13 @@ async function startInstallation() {
 
                     updateChecklistItem(module.id, 'in-progress');
                     updateInstallProgress(`Downloading ${module.name} (${i + 1}/${moduleCount})...`, baseProgress);
-                    const moduleTarballPath = `/tmp/${module.asset_name}`;
-                    await window.__TAURI__.invoke('download_release', {
+                    const moduleTarballPath = await window.installer.invoke('download_release', {
                         url: module.download_url,
-                        destPath: moduleTarballPath
+                        destPath: `/tmp/${module.asset_name}`
                     });
 
                     updateInstallProgress(`${action} ${module.name} (${i + 1}/${moduleCount})...`, baseProgress + progressPerModule * 0.5);
-                    await window.__TAURI__.invoke('install_module_package', {
+                    await window.installer.invoke('install_module_package', {
                         moduleId: module.id,
                         tarballPath: moduleTarballPath,
                         componentType: module.component_type,
@@ -918,10 +923,31 @@ function closeApplication() {
 
 // Event Listeners
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('[DEBUG] DOM loaded, Tauri available:', !!window.__TAURI__);
+    console.log('[DEBUG] DOM loaded, installer API available:', !!window.installer);
+
+    // Listen for backend logs
+    window.installer.on('backend-log', (message) => {
+        console.log('[BACKEND]', message);
+    });
 
     // Warning screen
-    document.getElementById('btn-accept-warning').onclick = () => {
+    document.getElementById('btn-accept-warning').onclick = async (e) => {
+        // Hidden test mode: Shift+Click to run SSH format tests
+        if (e.shiftKey) {
+            console.log('[DEBUG] Running SSH format tests...');
+            alert('Running SSH format tests... Check console for results.');
+            try {
+                const cookie = await window.installer.invoke('get_saved_cookie');
+                const results = await window.installer.invoke('test_ssh_formats', { cookie });
+                console.log('[TEST RESULTS]', JSON.stringify(results, null, 2));
+                alert(`Test complete! Results:\n\n${JSON.stringify(results, null, 2)}`);
+            } catch (err) {
+                console.error('[TEST ERROR]', err);
+                alert(`Test failed: ${err.message}`);
+            }
+            return;
+        }
+
         showScreen('discovery');
         startDeviceDiscovery();
     };
@@ -938,6 +964,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Allow Enter key to connect from manual IP input
+    document.getElementById('manual-ip').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            const ip = e.target.value.trim();
+            if (ip) {
+                selectDevice(ip);
+            }
+        }
+    });
+
+    // Discovery screen
+    document.getElementById('btn-cancel-discovery').onclick = cancelDiscovery;
+
     // Code entry screen
     document.getElementById('btn-submit-code').onclick = submitAuthCode;
     document.getElementById('btn-back-discovery').onclick = () => showScreen('discovery');
@@ -949,23 +988,152 @@ document.addEventListener('DOMContentLoaded', () => {
     // Confirm screen
     document.getElementById('btn-cancel-confirm').onclick = cancelConfirmation;
 
-    // Version check screen
-    document.getElementById('btn-back-version-check').onclick = () => {
-        showScreen('discovery');
-        startDeviceDiscovery();
+    // Management screen
+    document.getElementById('btn-back-management').onclick = () => {
+        showScreen('version-check');
     };
 
-    document.getElementById('btn-continue-to-options').onclick = async () => {
-        await loadModuleList();
-        showScreen('modules');
-        // Pre-select upgradable modules
-        preselectUpgradableModules();
+    document.getElementById('option-manage-modules').onclick = async () => {
+        try {
+            state.managementMode = true;
+
+            // Show loading state
+            showScreen('version-check');
+            document.querySelector('#version-check-status .instruction').textContent = 'Checking installed modules...';
+
+            const hostname = state.deviceIp || 'move.local';
+
+            // Listen for progress updates
+            window.installer.on('version-check-progress', (message) => {
+                document.querySelector('#version-check-status .instruction').textContent = message;
+            });
+
+            // First, fetch what's actually installed (this scans modules)
+            const installed = await window.installer.invoke('check_installed_versions', { hostname });
+            state.installedModules = installed.modules || [];
+
+            const installedModuleIds = state.installedModules.map(m => m.id);
+
+            // Then fetch module catalog with version info
+            const [latestRelease, moduleCatalog] = await Promise.all([
+                window.installer.invoke('get_latest_release'),
+                window.installer.invoke('get_module_catalog', { installedModuleIds })
+            ]);
+
+            // Clean up progress listener
+            window.installer.removeAllListeners('version-check-progress');
+
+            // Compare versions to find upgradable modules
+            const versionInfo = await window.installer.invoke('compare_versions', {
+                installed: { installed: true, core: null, modules: state.installedModules },
+                latestRelease,
+                moduleCatalog
+            });
+
+            state.versionInfo = versionInfo;
+            state.allModules = moduleCatalog;
+
+            // Update UI for management mode
+            document.querySelector('#screen-modules h1').textContent = 'Install Modules';
+            document.getElementById('btn-install').textContent = 'Install Selected Modules';
+
+            // Hide installation type options in management mode
+            document.querySelector('.install-options').style.display = 'none';
+            document.getElementById('module-categories').style.display = 'block';
+
+            // Display modules
+            displayModules(moduleCatalog);
+
+            // Pre-select new modules and upgradable modules
+            preselectUpgradableModules();
+
+            showScreen('modules');
+        } catch (error) {
+            console.error('Failed to load module catalog:', error);
+            showError('Failed to load modules: ' + error.message);
+        }
+    };
+
+    document.getElementById('option-upgrade-core').onclick = async () => {
+        // Start installation with core upgrade only
+        state.selectedModules = [];
+        await startInstallation();
+    };
+
+    document.getElementById('option-toggle-screenreader').onclick = async () => {
+        try {
+            const hostname = state.deviceIp || 'move.local';
+
+            // Check current status
+            updateInstallProgress('Checking screen reader status...', 30);
+            showScreen('installing');
+
+            const currentStatus = await window.installer.invoke('get_screen_reader_status', { hostname });
+
+            // Ask user what they want
+            const action = currentStatus ? 'disable' : 'enable';
+            const confirmMsg = currentStatus
+                ? 'Screen reader is currently enabled. Disable it?'
+                : 'Screen reader is currently disabled. Enable it?';
+
+            if (!confirm(confirmMsg)) {
+                showScreen('management');
+                return;
+            }
+
+            // Toggle the state
+            updateInstallProgress(`${action === 'enable' ? 'Enabling' : 'Disabling'} screen reader...`, 60);
+            const result = await window.installer.invoke('set_screen_reader_state', {
+                hostname,
+                enabled: !currentStatus
+            });
+
+            updateInstallProgress('Complete!', 100);
+            alert(result.message);
+
+            // Go back to management screen
+            showScreen('management');
+        } catch (error) {
+            console.error('Failed to toggle screen reader:', error);
+            showError('Failed to toggle screen reader: ' + error.message);
+        }
+    };
+
+    document.getElementById('option-uninstall').onclick = async () => {
+        if (confirm('Are you sure you want to uninstall Move Everything? This will restore your Move to stock firmware.')) {
+            try {
+                const hostname = state.deviceIp || 'move.local';
+                updateInstallProgress('Uninstalling Move Everything...', 50);
+                showScreen('installing');
+
+                const result = await window.installer.invoke('uninstall_move_everything', { hostname });
+
+                updateInstallProgress('Complete!', 100);
+
+                // Show success message
+                setTimeout(() => {
+                    const successDiv = document.querySelector('#screen-success .instruction');
+                    successDiv.textContent = result.message;
+                    document.querySelector('#screen-success h1').textContent = 'Uninstall Complete';
+                    document.querySelector('.success-icon').textContent = '✓';
+                    document.querySelector('#screen-success .info-box').style.display = 'none';
+                    showScreen('success');
+                }, 500);
+            } catch (error) {
+                console.error('Uninstall failed:', error);
+                showError('Uninstall failed: ' + error.message);
+            }
+        }
     };
 
     // Module selection screen
     document.getElementById('btn-install').onclick = startInstallation;
     document.getElementById('btn-back-modules').onclick = () => {
-        showScreen('confirm');
+        if (state.managementMode) {
+            showScreen('management');
+        } else {
+            showScreen('version-check');
+        }
     };
 
     // Success screen
@@ -976,7 +1144,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-diagnostics').onclick = async () => {
         try {
             const errorMessages = state.errors.map(e => `[${e.timestamp}] ${e.message}`);
-            const report = await window.__TAURI__.invoke('get_diagnostics', {
+            const report = await window.installer.invoke('get_diagnostics', {
                 deviceIp: state.deviceIp,
                 errors: errorMessages
             });

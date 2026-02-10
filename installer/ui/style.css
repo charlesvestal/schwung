@@ -244,6 +244,15 @@ button.secondary:hover {
     color: #fff;
 }
 
+.module-info h4 a {
+    color: #fff;
+    text-decoration: none;
+}
+
+.module-info h4 a:hover {
+    text-decoration: underline;
+}
+
 .module-info p {
     margin: 0.25rem 0 0 0;
     color: #b8b8b8;

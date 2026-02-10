@@ -17,6 +17,9 @@ function createWindow() {
 
     mainWindow.loadFile(path.join(__dirname, '../ui/index.html'));
 
+    // Set main window in backend for logging
+    backend.setMainWindow(mainWindow);
+
     // Always open DevTools for debugging
     mainWindow.webContents.openDevTools();
 }
@@ -78,8 +81,12 @@ ipcMain.handle('setup_ssh_config', async () => {
     return backend.setupSshConfig();
 });
 
-ipcMain.handle('get_module_catalog', async () => {
-    return await backend.getModuleCatalog();
+ipcMain.handle('check_git_bash_available', async () => {
+    return await backend.checkGitBashAvailable();
+});
+
+ipcMain.handle('get_module_catalog', async (event, { installedModuleIds = [] } = {}) => {
+    return await backend.getModuleCatalog(installedModuleIds);
 });
 
 ipcMain.handle('get_latest_release', async () => {
@@ -98,8 +105,16 @@ ipcMain.handle('install_module_package', async (event, { moduleId, tarballPath, 
     return await backend.installModulePackage(moduleId, tarballPath, componentType, hostname);
 });
 
+ipcMain.handle('check_core_installation', async (event, { hostname }) => {
+    return await backend.checkCoreInstallation(hostname);
+});
+
 ipcMain.handle('check_installed_versions', async (event, { hostname }) => {
-    return await backend.checkInstalledVersions(hostname);
+    // Create progress callback that sends events to frontend
+    const progressCallback = (message) => {
+        event.sender.send('version-check-progress', message);
+    };
+    return await backend.checkInstalledVersions(hostname, progressCallback);
 });
 
 ipcMain.handle('compare_versions', async (event, { installed, latestRelease, moduleCatalog }) => {
@@ -108,4 +123,20 @@ ipcMain.handle('compare_versions', async (event, { installed, latestRelease, mod
 
 ipcMain.handle('get_diagnostics', async (event, { deviceIp, errors }) => {
     return backend.getDiagnostics(deviceIp, errors);
+});
+
+ipcMain.handle('get_screen_reader_status', async (event, { hostname }) => {
+    return await backend.getScreenReaderStatus(hostname);
+});
+
+ipcMain.handle('set_screen_reader_state', async (event, { hostname, enabled }) => {
+    return await backend.setScreenReaderState(hostname, enabled);
+});
+
+ipcMain.handle('uninstall_move_everything', async (event, { hostname }) => {
+    return await backend.uninstallMoveEverything(hostname);
+});
+
+ipcMain.handle('test_ssh_formats', async (event, { cookie }) => {
+    return await backend.testSshFormats(cookie);
 });

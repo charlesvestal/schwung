@@ -10,6 +10,7 @@
     "build:all": "electron-builder --mac --win --linux",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
+    "build:win:arm64": "electron-builder --win --arm64",
     "build:linux": "electron-builder --linux",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -18,7 +19,8 @@
   "license": "ISC",
   "dependencies": {
     "axios": "^1.6.7",
-    "ssh2": "^1.15.0"
+    "ssh2": "^1.15.0",
+    "sshpk": "^1.18.0"
   },
   "devDependencies": {
     "electron": "^28.2.0",
@@ -36,7 +38,10 @@
       "target": [
         {
           "target": "zip",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "identity": null
@@ -45,16 +50,19 @@
       "target": [
         {
           "target": "portable",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
-      ],
-      "publisherName": "Charles Vestal"
+      ]
     },
     "linux": {
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "category": "Utility"

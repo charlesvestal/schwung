@@ -15,6 +15,7 @@
                 <p><strong>Are you sure you want to install Move Everything on your Ableton Move?</strong></p>
                 <p>This software is <strong>community-developed</strong> and not officially supported by Ableton.</p>
                 <p>The installation is designed to be safe and reversible. The authors accept no liability for issues, but countless users have installed Move Everything with no reports of permanent damage or bricking a device.</p>
+                <p><strong>Note:</strong> Installation works best when your Move is connected via <strong>WiFi</strong>, not USB-C. Ensure your Move is connected to the same network as this computer.</p>
             </div>
             <div class="action-buttons">
                 <button id="btn-cancel" class="secondary">Cancel</button>
@@ -35,6 +36,7 @@
                 <input type="text" id="manual-ip" placeholder="e.g., 192.168.1.100">
                 <button id="btn-manual-connect">Connect</button>
             </div>
+            <button id="btn-cancel-discovery" class="secondary">Cancel</button>
         </div>
 
         <!-- Code Entry Screen -->
@@ -76,21 +78,53 @@
             <button id="btn-cancel-confirm" class="secondary">Cancel</button>
         </div>
 
-        <!-- Version Check Screen -->
+        <!-- Loading Screen (used for version checks and other loading states) -->
         <div id="screen-version-check" class="screen">
-            <h1>Checking Installation</h1>
+            <h1>Please Wait</h1>
             <div id="version-check-status">
                 <div class="spinner"></div>
-                <p class="instruction">Checking installed versions...</p>
+                <p class="instruction">Loading...</p>
             </div>
-            <div id="version-info" style="display: none;">
-                <div id="core-version-info"></div>
-                <div id="module-version-info"></div>
-                <div class="action-buttons">
-                    <button id="btn-back-version-check" class="secondary">Back</button>
-                    <button id="btn-continue-to-options">Continue</button>
+        </div>
+
+        <!-- Management Screen (for existing installations) -->
+        <div id="screen-management" class="screen">
+            <h1>Manage Move Everything</h1>
+            <p class="instruction">Move Everything is installed on your device. What would you like to do?</p>
+
+            <div class="install-options">
+                <div class="radio-group">
+                    <div class="radio-option" id="option-manage-modules" style="cursor: pointer;">
+                        <div class="option-content">
+                            <strong>Install New Modules</strong>
+                            <span>Add modules to your installation (selecting installed modules will reinstall them)</span>
+                        </div>
+                    </div>
+
+                    <div class="radio-option" id="option-upgrade-core" style="cursor: pointer; display: none;">
+                        <div class="option-content">
+                            <strong>Upgrade Core</strong>
+                            <span id="upgrade-core-description">Update to the latest version</span>
+                        </div>
+                    </div>
+
+                    <div class="radio-option" id="option-toggle-screenreader" style="cursor: pointer;">
+                        <div class="option-content">
+                            <strong>Screen Reader</strong>
+                            <span id="screenreader-status">Enable or disable text-to-speech accessibility</span>
+                        </div>
+                    </div>
+
+                    <div class="radio-option" id="option-uninstall" style="cursor: pointer;">
+                        <div class="option-content">
+                            <strong>Uninstall Move Everything</strong>
+                            <span>Remove all files and restore stock Move firmware</span>
+                        </div>
+                    </div>
                 </div>
             </div>
+
+            <button id="btn-back-management" class="secondary">Back</button>
         </div>
 
         <!-- Module Selection Screen -->
@@ -188,27 +222,12 @@
     </div>
 
     <script>
-        // Use Tauri's internal IPC directly (works in packaged apps)
-        window.__TAURI__ = {
-            invoke: async (cmd, args) => {
-                return window.__TAURI_INTERNALS__.invoke(cmd, args);
-            }
-        };
-
-        // Debug: Test if inline JS works
+        // Debug logging
         console.log('[DEBUG] Inline JavaScript is executing');
         console.log('[DEBUG] Window location:', window.location.href);
 
-        // Try to change text to verify DOM access
         document.addEventListener('DOMContentLoaded', () => {
             console.log('[DEBUG] DOM loaded');
-            const statusEl = document.getElementById('status-text');
-            if (statusEl) {
-                console.log('[DEBUG] Found status-text element');
-                statusEl.textContent = 'Testing inline JS...';
-            } else {
-                console.error('[DEBUG] Could not find status-text element');
-            }
         });
     </script>
     <script src="./app.js"></script>
