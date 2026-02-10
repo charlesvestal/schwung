@@ -3,8 +3,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const dns = require('dns');
+const crypto = require('crypto');
 const { Client } = require('ssh2');
-const { spawn } = require('child_process');
 const { promisify } = require('util');
 const mkdir = promisify(fs.mkdir);
 const writeFile = promisify(fs.writeFile);
@@ -156,32 +156,55 @@ function findExistingSshKey() {
 }
 
 async function generateNewSshKey() {
-    const sshDir = path.join(os.homedir(), '.ssh');
-    const keyPath = path.join(sshDir, 'move_key');
+    try {
+        const sshDir = path.join(os.homedir(), '.ssh');
+        const keyPath = path.join(sshDir, 'move_key');
 
-    // Ensure .ssh directory exists
-    await mkdir(sshDir, { recursive: true });
+        // Ensure .ssh directory exists
+        await mkdir(sshDir, { recursive: true });
 
-    return new Promise((resolve, reject) => {
-        const keygen = spawn('ssh-keygen', [
-            '-t', 'ed25519',
-            '-f', keyPath,
-            '-N', '', // No passphrase
-            '-C', 'move-everything-installer'
-        ]);
+        console.log('[DEBUG] Generating Ed25519 key pair...');
 
-        keygen.on('close', (code) => {
-            if (code === 0) {
-                resolve(`${keyPath}.pub`);
-            } else {
-                reject(new Error(`ssh-keygen failed with code ${code}`));
+        // Generate Ed25519 key pair using Node.js crypto
+        const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
+            publicKeyEncoding: {
+                type: 'spki',
+                format: 'pem'
+            },
+            privateKeyEncoding: {
+                type: 'pkcs8',
+                format: 'pem'
             }
         });
 
-        keygen.on('error', (err) => {
-            reject(new Error(`Failed to run ssh-keygen: ${err.message}`));
-        });
-    });
+        // Convert PEM to OpenSSH format
+        // For Ed25519, we need to extract the raw key bytes and format as OpenSSH
+        const publicKeyBuffer = crypto.createPublicKey(publicKey).export({ type: 'spki', format: 'der' });
+
+        // OpenSSH Ed25519 public key format: "ssh-ed25519 " + base64(keydata) + " comment"
+        // Extract the 32-byte Ed25519 key from the SPKI structure (last 32 bytes)
+        const keyData = publicKeyBuffer.slice(-32);
+
+        // Build OpenSSH format: 4-byte length + "ssh-ed25519" + 4-byte length + 32-byte key
+        const typeBytes = Buffer.from('ssh-ed25519');
+        const typeLength = Buffer.alloc(4);
+        typeLength.writeUInt32BE(typeBytes.length, 0);
+        const keyLength = Buffer.alloc(4);
+        keyLength.writeUInt32BE(keyData.length, 0);
+        const sshPublicKey = Buffer.concat([typeLength, typeBytes, keyLength, keyData]);
+
+        const opensshPublicKey = `ssh-ed25519 ${sshPublicKey.toString('base64')} move-everything-installer\n`;
+
+        // Write private key in OpenSSH format
+        // Convert PKCS8 to OpenSSH format (this is what ssh-keygen outputs)
+        await writeFile(keyPath, privateKey, { mode: 0o600 });
+        await writeFile(`${keyPath}.pub`, opensshPublicKey, { mode: 0o644 });
+
+        console.log('[DEBUG] Key pair generated successfully');
+        return `${keyPath}.pub`;
+    } catch (err) {
+        throw new Error(`Failed to generate SSH key: ${err.message}`);
+    }
 }
 
 async function readPublicKey(keyPath) {
@@ -473,76 +496,102 @@ async function sshExec(hostname, command) {
     });
 }
 
+// Helper to upload file via SFTP
+async function sftpUpload(hostname, localPath, remotePath) {
+    const hostIp = cachedDeviceIp || hostname;
+    const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
+    const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
+
+    return new Promise((resolve, reject) => {
+        const conn = new Client();
+
+        conn.on('ready', () => {
+            conn.sftp((err, sftp) => {
+                if (err) {
+                    conn.end();
+                    return reject(err);
+                }
+
+                sftp.fastPut(localPath, remotePath, (err) => {
+                    conn.end();
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve();
+                    }
+                });
+            });
+        });
+
+        conn.on('error', (err) => {
+            reject(err);
+        });
+
+        conn.connect({
+            host: hostIp,
+            port: 22,
+            username: 'root',
+            privateKey: fs.readFileSync(keyPath),
+            family: 4
+        });
+    });
+}
+
 async function installMain(tarballPath, hostname, flags = []) {
     try {
-        const tmpDir = path.join(os.tmpdir(), 'move-installer-' + Date.now());
-        const scriptsDir = path.join(tmpDir, 'scripts');
-        await mkdir(scriptsDir, { recursive: true });
+        const hostIp = cachedDeviceIp || hostname;
+        console.log('[DEBUG] Installing to:', hostIp);
+        console.log('[DEBUG] Install flags:', flags);
 
-        // Copy tarball to tmpDir (install.sh expects it at $REPO_ROOT/move-anything.tar.gz)
-        const tarballDest = path.join(tmpDir, 'move-anything.tar.gz');
-        fs.copyFileSync(tarballPath, tarballDest);
-        console.log('[DEBUG] Copied tarball to:', tarballDest);
-
-        // Download install.sh from repo to scripts/ directory
+        // Download install.sh from repo
         console.log('[DEBUG] Downloading install.sh from repo...');
         const installShUrl = 'https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh';
-        const installScriptPath = path.join(scriptsDir, 'install.sh');
-
         const scriptResponse = await httpClient.get(installShUrl);
         if (scriptResponse.status !== 200) {
             throw new Error(`Failed to download install.sh: ${scriptResponse.status}`);
         }
 
-        await writeFile(installScriptPath, scriptResponse.data);
-        fs.chmodSync(installScriptPath, '755');
+        // Save install.sh to temp file
+        const tmpDir = path.join(os.tmpdir(), 'move-installer-' + Date.now());
+        await mkdir(tmpDir, { recursive: true });
+        const localInstallScript = path.join(tmpDir, 'install.sh');
+        await writeFile(localInstallScript, scriptResponse.data);
+        console.log('[DEBUG] Saved install.sh to:', localInstallScript);
 
-        // Run install.sh in local mode from tmpDir
-        // Directory structure now matches local repo:
-        //   tmpDir/
-        //     scripts/install.sh
-        //     move-anything.tar.gz
-        // Use cached IP for faster connection (avoid mDNS lookup)
-        const targetHost = cachedDeviceIp || hostname;
-        console.log('[DEBUG] Running install.sh from:', tmpDir);
-        console.log('[DEBUG] Target host:', targetHost, '(cached:', !!cachedDeviceIp + ')');
-        console.log('[DEBUG] Install flags:', flags);
+        // Upload tarball and install.sh to device /tmp
+        const remoteTmpDir = `/tmp/move-install-${Date.now()}`;
+        console.log('[DEBUG] Creating remote temp directory:', remoteTmpDir);
+        await sshExec(hostIp, `mkdir -p ${remoteTmpDir}`);
 
-        // Build install.sh arguments
-        const installArgs = ['scripts/install.sh', 'local', '--skip-modules', '--skip-confirmation', ...flags];
+        console.log('[DEBUG] Uploading tarball to device...');
+        await sftpUpload(hostIp, tarballPath, `${remoteTmpDir}/move-anything.tar.gz`);
 
-        await new Promise((resolve, reject) => {
-            const installScript = spawn('bash', installArgs, {
-                cwd: tmpDir,
-                env: {
-                    ...process.env,
-                    MOVE_HOSTNAME: targetHost
-                }
-            });
+        console.log('[DEBUG] Uploading install.sh to device...');
+        await sftpUpload(hostIp, localInstallScript, `${remoteTmpDir}/install.sh`);
 
-            installScript.stdout.on('data', (data) => {
-                console.log('[install.sh]', data.toString().trim());
-            });
+        // Make install.sh executable
+        await sshExec(hostIp, `chmod +x ${remoteTmpDir}/install.sh`);
 
-            installScript.stderr.on('data', (data) => {
-                console.error('[install.sh]', data.toString().trim());
-            });
+        // Run install.sh ON the device (not in "local" mode)
+        // The script will run directly on the Move, so no SSH needed
+        const flagsStr = flags.join(' ');
+        const installCmd = `cd ${remoteTmpDir} && ./install.sh --skip-modules --skip-confirmation ${flagsStr}`;
+        console.log('[DEBUG] Running install command on device:', installCmd);
 
-            installScript.on('close', (code) => {
-                if (code === 0) resolve();
-                else reject(new Error(`install.sh failed with code ${code}`));
-            });
+        const output = await sshExec(hostIp, installCmd);
+        console.log('[DEBUG] Install output:', output);
 
-            installScript.on('error', reject);
-        });
+        // Cleanup remote temp directory
+        console.log('[DEBUG] Cleaning up remote temp directory');
+        await sshExec(hostIp, `rm -rf ${remoteTmpDir}`);
 
-        // Cleanup
-        await new Promise((resolve) => {
-            spawn('rm', ['-rf', tmpDir]).on('close', resolve);
-        });
+        // Cleanup local temp directory
+        console.log('[DEBUG] Cleaning up local temp directory');
+        await fs.promises.rm(tmpDir, { recursive: true, force: true });
 
         return true;
     } catch (err) {
+        console.error('[DEBUG] Installation error:', err.message);
         throw new Error(`Installation failed: ${err.message}`);
     }
 }
@@ -553,45 +602,19 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
         const filename = path.basename(tarballPath);
 
         // Use cached IP instead of hostname for faster connection
-        const targetHost = cachedDeviceIp || hostname;
-        console.log(`[DEBUG] Using host: ${targetHost} (cached: ${!!cachedDeviceIp})`);
+        const hostIp = cachedDeviceIp || hostname;
+        console.log(`[DEBUG] Using host: ${hostIp} (cached: ${!!cachedDeviceIp})`);
 
-        // Use move_key if exists, otherwise id_rsa
-        const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
-        const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
-        console.log(`[DEBUG] Using SSH key: ${path.basename(keyPath)}`);
-
-        // Upload to Move Everything directory
-        console.log(`[DEBUG] Uploading ${filename} to device...`);
-        await new Promise((resolve, reject) => {
-            const scp = spawn('scp', [
-                '-i', keyPath,
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'UserKnownHostsFile=/dev/null',
-                tarballPath,
-                `ableton@${targetHost}:/data/UserData/move-anything/${filename}`
-            ]);
-
-            let stderr = '';
-            scp.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-
-            scp.on('close', (code) => {
-                if (code === 0) {
-                    console.log(`[DEBUG] Upload complete for ${moduleId}`);
-                    resolve();
-                } else {
-                    console.error(`[DEBUG] scp failed: ${stderr}`);
-                    reject(new Error(`scp failed with code ${code}: ${stderr}`));
-                }
-            });
-        });
+        // Upload to Move Everything directory using SFTP
+        const remotePath = `/data/UserData/move-anything/${filename}`;
+        console.log(`[DEBUG] Uploading ${filename} to device via SFTP...`);
+        await sftpUpload(hostIp, tarballPath, remotePath);
+        console.log(`[DEBUG] Upload complete for ${moduleId}`);
 
         // Extract and install module (similar to install.sh module installation)
         const categoryPath = componentType ? `${componentType}s` : 'utility';
         console.log(`[DEBUG] Extracting ${moduleId} to modules/${categoryPath}/`);
-        await sshExec(targetHost, `cd /data/UserData/move-anything && mkdir -p modules/${categoryPath} && tar -xzf ${filename} -C modules/${categoryPath}/ && rm ${filename}`);
+        await sshExec(hostIp, `cd /data/UserData/move-anything && mkdir -p modules/${categoryPath} && tar -xzf ${filename} -C modules/${categoryPath}/ && rm ${filename}`);
         console.log(`[DEBUG] Module ${moduleId} installed successfully`);
 
         return true;

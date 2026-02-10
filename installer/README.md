@@ -34,10 +34,20 @@ Built with Electron for cross-platform support:
 
 ### Prerequisites
 
+**All Platforms:**
 ```bash
 cd installer
 npm install
 ```
+
+**Windows Only:**
+Bonjour service is required for mDNS (.local domain) resolution. Install one of:
+- iTunes (includes Bonjour)
+- iCloud for Windows (includes Bonjour)
+- Bonjour Print Services (standalone)
+
+**macOS/Linux:**
+No additional requirements - mDNS support is built-in.
 
 ### Run Development Mode
 
@@ -72,17 +82,19 @@ Implements Move's challenge-response authentication:
 ### SSH Key Setup
 
 1. Checks for existing SSH keys (`~/.ssh/move_key` or `~/.ssh/id_rsa`)
-2. Generates new ED25519 key if none found
+2. Generates new ED25519 key using Node.js crypto if none found (cross-platform)
 3. Submits public key: `POST /api/v1/ssh` with auth cookie
 4. Polls SSH connection until user confirms on device
 
 ### Installation
 
-Uses `install.sh` from the repository:
-1. Downloads `install.sh` from GitHub
-2. Sets up directory structure for `install.sh local` mode
-3. Runs `install.sh local --skip-modules --skip-confirmation`
-4. Installs selected modules via direct tarball extraction
+Fully cross-platform installation using ssh2 library (no external dependencies):
+1. Downloads `install.sh` and main tarball from GitHub
+2. Uploads both to Move device via SFTP
+3. Runs `install.sh` directly on the Move (not locally)
+4. Installs selected modules via SFTP upload and SSH extraction
+
+This approach works on Windows, macOS, and Linux without requiring bash, scp, or other Unix tools locally.
 
 ### Module Installation
 
@@ -106,10 +118,11 @@ Installation progress is tracked from 0-100%:
 ### IPv4 Resolution
 
 Move uses mDNS (.local domains) which Node.js's built-in DNS doesn't support. The installer uses system resolvers:
+- **Windows**: Uses hostname directly (Bonjour service resolves .local domains)
 - **macOS**: `dscacheutil -q host -a name move.local`
 - **Linux**: `getent ahostsv4 move.local`
 
-SSH connections force IPv4 via `family: 4` option to avoid IPv6 link-local issues.
+All SSH/SFTP connections force IPv4 via `family: 4` option to avoid IPv6 link-local issues.
 
 ## File Structure
 
@@ -130,19 +143,23 @@ installer/
 ## Dependencies
 
 ### Runtime
-- `electron`: Application framework
-- `ssh2`: SSH client for device access
+- `electron`: Cross-platform application framework
+- `ssh2`: SSH/SFTP client for device access (fully cross-platform)
 - `axios`: HTTP client for API calls
+- `crypto`: Node.js built-in for SSH key generation
 
 ### Build
 - `electron-builder`: Packaging for distribution
 - `electron-rebuild`: Native module compilation
+
+**Note**: No external tools required (bash, scp, ssh-keygen, etc.) - all operations use Node.js libraries for true cross-platform support.
 
 ## Troubleshooting
 
 ### Device Not Found
 - Ensure Move is on same WiFi network
 - Try accessing `http://move.local` in browser
+- **Windows**: Verify Bonjour service is installed and running
 - Use manual IP entry if mDNS fails
 
 ### SSH Connection Failed
@@ -163,9 +180,15 @@ installer/
 - No passwords stored or transmitted
 - All communication over local network only
 
+## Platform Support
+
+The installer is fully cross-platform and tested on:
+- ✅ macOS (x64, ARM64/M1)
+- ✅ Windows (x64, ARM64)
+- ⚠️  Linux (untested but should work with .AppImage)
+
 ## Future Enhancements
 
-- [ ] Windows and Linux builds/testing
 - [ ] Module version checking and updates
 - [ ] Offline mode with cached tarballs
 - [ ] Installation logs export
