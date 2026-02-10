@@ -1,19 +1,43 @@
 {
-  "name": "installer",
+  "name": "move-everything-installer",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Cross-platform installer for Move Everything",
+  "main": "electron/main.js",
   "scripts": {
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.6.7",
+    "ssh2": "^1.15.0"
+  },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.10.0"
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.move-everything.installer",
+    "productName": "Move Everything Installer",
+    "files": [
+      "electron/**/*",
+      "ui/**/*"
+    ],
+    "mac": {
+      "target": "dmg",
+      "icon": "icons/icon.icns"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "icons/icon.ico"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "icons/icon.png"
+    }
   }
 }

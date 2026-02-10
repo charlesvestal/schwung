@@ -95,6 +95,11 @@
         </div>
     </div>
 
+    <!-- Test: Change text immediately to verify JS is running -->
+    <script>
+        document.getElementById('status-text').textContent = 'JavaScript is running!';
+    </script>
+
     <script>
         // Use Tauri's internal IPC directly (works in packaged apps)
         window.__TAURI__ = {
@@ -102,26 +107,7 @@
                 return window.__TAURI_INTERNALS__.invoke(cmd, args);
             }
         };
-
-        // Debug: Test if inline JS works
-        console.log('[DEBUG] Inline JavaScript is executing');
-        console.log('[DEBUG] Window location:', window.location.href);
-
-        // Try to change text to verify DOM access
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log('[DEBUG] DOM loaded');
-            const statusEl = document.getElementById('status-text');
-            if (statusEl) {
-                console.log('[DEBUG] Found status-text element');
-                statusEl.textContent = 'Testing inline JS...';
-            } else {
-                console.error('[DEBUG] Could not find status-text element');
-            }
-        });
     </script>
-    <script src="./app.js"></script>
-    <script>
-        console.log('[DEBUG] After app.js script tag');
-    </script>
+    <script src="app.js"></script>
 </body>
 </html>

@@ -1,3 +1,6 @@
+// Test: Change text to confirm app.js is loading
+document.getElementById('status-text').textContent = 'app.js is loading...';
+
 // Application State
 const state = {
     currentScreen: 'discovery',
@@ -93,7 +96,9 @@ async function selectDevice(hostname) {
                 // Try to use saved cookie, skip to SSH setup
                 proceedToSshSetup(baseUrl);
             } else {
-                console.log('[DEBUG] No saved cookie, showing code entry');
+                console.log('[DEBUG] No saved cookie, requesting challenge code');
+                // Request challenge code from Move
+                await window.__TAURI__.invoke('request_challenge', { baseUrl });
                 // Show code entry screen
                 showScreen('code-entry');
                 setupCodeEntry();
@@ -187,21 +192,29 @@ async function submitAuthCode() {
 async function proceedToSshSetup(baseUrl) {
     try {
         // Find or generate SSH key
+        console.log('[DEBUG] Looking for existing SSH key...');
         let pubkeyPath = await window.__TAURI__.invoke('find_existing_ssh_key');
+        console.log('[DEBUG] Found SSH key:', pubkeyPath);
 
         if (!pubkeyPath) {
-            console.log('No SSH key found, generating new one');
+            console.log('[DEBUG] No SSH key found, generating new one');
             pubkeyPath = await window.__TAURI__.invoke('generate_new_ssh_key');
+            console.log('[DEBUG] Generated SSH key:', pubkeyPath);
         }
 
         // Read public key content
+        console.log('[DEBUG] Reading public key...');
         const pubkey = await window.__TAURI__.invoke('read_public_key', { path: pubkeyPath });
+        console.log('[DEBUG] Public key length:', pubkey.length);
+        console.log('[DEBUG] Public key preview:', pubkey.substring(0, 50) + '...');
 
         // Submit SSH key with auth cookie
+        console.log('[DEBUG] Submitting SSH key to', baseUrl);
         await window.__TAURI__.invoke('submit_ssh_key_with_auth', {
             baseUrl: baseUrl,
             pubkey: pubkey
         });
+        console.log('[DEBUG] SSH key submitted successfully');
 
         // Show confirmation screen and poll for SSH access
         showScreen('confirm');
@@ -406,48 +419,6 @@ function updateInstallProgress(message) {
         progressStatus.textContent = message;
     }
     console.log('Install progress:', message);
-}
-            deviceIp: state.deviceIp,
-            password: state.sshPassword,
-            modules: state.selectedModules
-        });
-
-        if (result.success) {
-            showInstallSuccess();
-        } else {
-            showError('Installation failed: ' + result.error);
-        }
-    } catch (error) {
-        showError('Installation failed: ' + error);
-    }
-}
-
-function updateInstallProgress(progress) {
-    const progressFill = document.querySelector('.progress-fill');
-    const statusText = document.getElementById('install-status');
-    const logDiv = document.getElementById('install-log');
-
-    // Update progress bar
-    if (progress.percent !== undefined) {
-        progressFill.style.width = `${progress.percent}%`;
-    }
-
-    // Update status text
-    if (progress.status) {
-        statusText.textContent = progress.status;
-    }
-
-    // Add log entry
-    if (progress.message) {
-        const logEntry = document.createElement('div');
-        logEntry.className = 'log-entry';
-        if (progress.error) {
-            logEntry.classList.add('error');
-        }
-        logEntry.textContent = progress.message;
-        logDiv.appendChild(logEntry);
-        logDiv.scrollTop = logDiv.scrollHeight;
-    }
 }
 
 function showInstallSuccess() {
