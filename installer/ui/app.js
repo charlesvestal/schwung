@@ -11,7 +11,9 @@ const state = {
     selectedModules: [],
     enableScreenReader: false,
     sshPassword: null,
-    errors: []
+    errors: [],
+    versionInfo: null,
+    installedModules: []
 };
 
 // Screen Management
@@ -99,9 +101,8 @@ async function selectDevice(hostname) {
             const sshWorks = await window.__TAURI__.invoke('test_ssh', { hostname: hostname });
 
             if (sshWorks) {
-                console.log('[DEBUG] SSH already works, proceeding to modules');
-                await loadModuleList();
-                showScreen('modules');
+                console.log('[DEBUG] SSH already works, proceeding to version check');
+                await checkVersions();
                 return;
             }
 
@@ -279,8 +280,7 @@ async function startConfirmationPolling() {
 
             if (connected) {
                 clearInterval(confirmationPollInterval);
-                await loadModuleList();
-                showScreen('modules');
+                await checkVersions();
             }
         } catch (error) {
             console.error('Polling error:', error);
@@ -296,6 +296,159 @@ function cancelConfirmation() {
 }
 
 // Module Selection
+async function checkVersions() {
+    try {
+        console.log('[DEBUG] Checking installed versions...');
+        showScreen('version-check');
+
+        // Check what's installed on device
+        const hostname = state.deviceIp || 'move.local';
+        const installed = await window.__TAURI__.invoke('check_installed_versions', { hostname });
+
+        // Get latest release and module catalog
+        const [latestRelease, moduleCatalog] = await Promise.all([
+            window.__TAURI__.invoke('get_latest_release'),
+            window.__TAURI__.invoke('get_module_catalog')
+        ]);
+
+        // Compare versions
+        const versionInfo = await window.__TAURI__.invoke('compare_versions', {
+            installed,
+            latestRelease,
+            moduleCatalog
+        });
+
+        state.versionInfo = versionInfo;
+        state.installedModules = installed.modules || [];
+        state.allModules = moduleCatalog;
+
+        console.log('[DEBUG] Version info:', versionInfo);
+
+        // Display version information
+        displayVersionInfo(installed, versionInfo);
+
+        // Hide spinner, show results
+        document.getElementById('version-check-status').style.display = 'none';
+        document.getElementById('version-info').style.display = 'block';
+
+    } catch (error) {
+        console.error('Version check failed:', error);
+        // If version check fails, just proceed to module selection
+        await loadModuleList();
+        showScreen('modules');
+    }
+}
+
+function preselectUpgradableModules() {
+    if (!state.versionInfo) return;
+
+    // Pre-select all upgradable modules
+    const upgradableIds = state.versionInfo.upgradableModules.map(m => m.id);
+    state.selectedModules = upgradableIds;
+
+    // Update checkboxes
+    upgradableIds.forEach(moduleId => {
+        const checkbox = document.querySelector(`input[data-module-id="${moduleId}"]`);
+        if (checkbox) {
+            checkbox.checked = true;
+        }
+    });
+
+    console.log('[DEBUG] Pre-selected upgradable modules:', upgradableIds);
+}
+
+function displayVersionInfo(installed, versionInfo) {
+    const coreDiv = document.getElementById('core-version-info');
+    const moduleDiv = document.getElementById('module-version-info');
+
+    // Core version section
+    let coreHTML = '<div class="version-section"><h3>Move Everything Core</h3>';
+
+    if (!installed.installed) {
+        coreHTML += '<p class="instruction">Move Everything is not currently installed on your device.</p>';
+    } else if (versionInfo.coreUpgrade) {
+        coreHTML += `
+            <div class="version-item">
+                <div class="version-item-name">
+                    <strong>Core Framework</strong>
+                    <span>${versionInfo.coreUpgrade.current} → ${versionInfo.coreUpgrade.available}</span>
+                </div>
+                <span class="version-badge upgrade">UPGRADE AVAILABLE</span>
+            </div>
+        `;
+    } else if (installed.core) {
+        coreHTML += `
+            <div class="version-item">
+                <div class="version-item-name">
+                    <strong>Core Framework</strong>
+                    <span>Version ${installed.core}</span>
+                </div>
+                <span class="version-badge current">UP TO DATE</span>
+            </div>
+        `;
+    }
+
+    coreHTML += '</div>';
+    coreDiv.innerHTML = coreHTML;
+
+    // Modules section
+    let moduleHTML = '<div class="version-section"><h3>Modules</h3>';
+
+    if (versionInfo.upgradableModules.length > 0) {
+        moduleHTML += '<h4 style="color: #ff9900; margin: 1rem 0 0.5rem 0;">Upgrades Available</h4>';
+        versionInfo.upgradableModules.forEach(module => {
+            moduleHTML += `
+                <div class="version-item">
+                    <div class="version-item-name">
+                        <strong>${module.name}</strong>
+                        <span>${module.currentVersion} → ${module.version}</span>
+                    </div>
+                    <span class="version-badge upgrade">UPGRADE</span>
+                </div>
+            `;
+        });
+    }
+
+    if (versionInfo.upToDateModules.length > 0) {
+        moduleHTML += '<h4 style="color: #a0a0a0; margin: 1rem 0 0.5rem 0;">Up to Date</h4>';
+        versionInfo.upToDateModules.forEach(module => {
+            moduleHTML += `
+                <div class="version-item">
+                    <div class="version-item-name">
+                        <strong>${module.name}</strong>
+                        <span>Version ${module.currentVersion}</span>
+                    </div>
+                    <span class="version-badge current">CURRENT</span>
+                </div>
+            `;
+        });
+    }
+
+    if (versionInfo.newModules.length > 0) {
+        moduleHTML += '<h4 style="color: #00cc00; margin: 1rem 0 0.5rem 0;">New Modules</h4>';
+        versionInfo.newModules.forEach(module => {
+            moduleHTML += `
+                <div class="version-item">
+                    <div class="version-item-name">
+                        <strong>${module.name}</strong>
+                        <span>${module.description || 'Available for installation'}</span>
+                    </div>
+                    <span class="version-badge new">NEW</span>
+                </div>
+            `;
+        });
+    }
+
+    if (versionInfo.upgradableModules.length === 0 &&
+        versionInfo.upToDateModules.length === 0 &&
+        versionInfo.newModules.length === 0) {
+        moduleHTML += '<p class="instruction">No modules installed yet.</p>';
+    }
+
+    moduleHTML += '</div>';
+    moduleDiv.innerHTML = moduleHTML;
+}
+
 async function loadModuleList() {
     try {
         const modules = await window.__TAURI__.invoke('get_module_catalog');
@@ -469,8 +622,9 @@ async function startInstallation() {
             installFlags.push('--disable-standalone');
         }
 
-        // Install main package
-        updateInstallProgress('Installing Move Everything core...', 30);
+        // Install/Upgrade main package
+        const coreAction = (state.versionInfo && state.versionInfo.coreUpgrade) ? 'Upgrading' : 'Installing';
+        updateInstallProgress(`${coreAction} Move Everything core...`, 30);
         await window.__TAURI__.invoke('install_main', {
             tarballPath: mainTarballPath,
             hostname: 'move.local',
@@ -503,6 +657,10 @@ async function startInstallation() {
                 if (module) {
                     const baseProgress = 50 + (i * progressPerModule);
 
+                    // Determine if this is an upgrade or fresh install
+                    const isUpgrade = state.installedModules.some(m => m.id === module.id);
+                    const action = isUpgrade ? 'Upgrading' : 'Installing';
+
                     updateInstallProgress(`Downloading ${module.name} (${i + 1}/${moduleCount})...`, baseProgress);
                     const moduleTarballPath = `/tmp/${module.asset_name}`;
                     await window.__TAURI__.invoke('download_release', {
@@ -510,7 +668,7 @@ async function startInstallation() {
                         destPath: moduleTarballPath
                     });
 
-                    updateInstallProgress(`Installing ${module.name} (${i + 1}/${moduleCount})...`, baseProgress + progressPerModule * 0.5);
+                    updateInstallProgress(`${action} ${module.name} (${i + 1}/${moduleCount})...`, baseProgress + progressPerModule * 0.5);
                     await window.__TAURI__.invoke('install_module_package', {
                         moduleId: module.id,
                         tarballPath: moduleTarballPath,
@@ -608,6 +766,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Confirm screen
     document.getElementById('btn-cancel-confirm').onclick = cancelConfirmation;
+
+    // Version check screen
+    document.getElementById('btn-continue-to-options').onclick = async () => {
+        await loadModuleList();
+        showScreen('modules');
+        // Pre-select upgradable modules
+        preselectUpgradableModules();
+    };
 
     // Module selection screen
     document.getElementById('btn-install').onclick = startInstallation;

@@ -98,6 +98,14 @@ ipcMain.handle('install_module_package', async (event, { moduleId, tarballPath, 
     return await backend.installModulePackage(moduleId, tarballPath, componentType, hostname);
 });
 
+ipcMain.handle('check_installed_versions', async (event, { hostname }) => {
+    return await backend.checkInstalledVersions(hostname);
+});
+
+ipcMain.handle('compare_versions', async (event, { installed, latestRelease, moduleCatalog }) => {
+    return backend.compareVersions(installed, latestRelease, moduleCatalog);
+});
+
 ipcMain.handle('get_diagnostics', async (event, { deviceIp, errors }) => {
     return backend.getDiagnostics(deviceIp, errors);
 });

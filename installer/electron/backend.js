@@ -624,6 +624,122 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
     }
 }
 
+async function checkInstalledVersions(hostname) {
+    try {
+        const hostIp = cachedDeviceIp || hostname;
+        console.log('[DEBUG] Checking installed versions on device...');
+
+        // Check if Move Everything is installed
+        const installCheck = await sshExec(hostIp, 'test -d /data/UserData/move-anything && echo "installed" || echo "not_installed"');
+        if (installCheck.trim() === 'not_installed') {
+            console.log('[DEBUG] Move Everything not installed on device');
+            return {
+                installed: false,
+                core: null,
+                modules: []
+            };
+        }
+
+        // Get core version
+        let coreVersion = null;
+        try {
+            const versionOutput = await sshExec(hostIp, 'cat /data/UserData/move-anything/version.txt 2>/dev/null || echo ""');
+            coreVersion = versionOutput.trim() || null;
+            console.log('[DEBUG] Core version:', coreVersion);
+        } catch (err) {
+            console.log('[DEBUG] Could not read core version:', err.message);
+        }
+
+        // Find all installed modules
+        const modules = [];
+        try {
+            // Find all module.json files in modules subdirectories
+            const findOutput = await sshExec(hostIp,
+                'find /data/UserData/move-anything/modules -name module.json -type f 2>/dev/null || echo ""'
+            );
+
+            const moduleFiles = findOutput.trim().split('\n').filter(line => line);
+            console.log(`[DEBUG] Found ${moduleFiles.length} module.json files`);
+
+            // Read each module.json
+            for (const moduleFile of moduleFiles) {
+                try {
+                    const jsonContent = await sshExec(hostIp, `cat "${moduleFile}"`);
+                    const moduleInfo = JSON.parse(jsonContent);
+
+                    if (moduleInfo.id && moduleInfo.version) {
+                        modules.push({
+                            id: moduleInfo.id,
+                            name: moduleInfo.name || moduleInfo.id,
+                            version: moduleInfo.version,
+                            component_type: moduleInfo.component_type || 'utility'
+                        });
+                        console.log(`[DEBUG] Found module: ${moduleInfo.id} v${moduleInfo.version}`);
+                    }
+                } catch (err) {
+                    console.log(`[DEBUG] Error reading ${moduleFile}:`, err.message);
+                }
+            }
+        } catch (err) {
+            console.log('[DEBUG] Error finding modules:', err.message);
+        }
+
+        return {
+            installed: true,
+            core: coreVersion,
+            modules
+        };
+    } catch (err) {
+        console.error('[DEBUG] Error checking installed versions:', err.message);
+        throw new Error(`Failed to check installed versions: ${err.message}`);
+    }
+}
+
+function compareVersions(installed, latestRelease, moduleCatalog) {
+    const result = {
+        coreUpgrade: null,
+        upgradableModules: [],
+        upToDateModules: [],
+        newModules: []
+    };
+
+    // Compare core version
+    if (installed.core && latestRelease.version && installed.core !== latestRelease.version) {
+        result.coreUpgrade = {
+            current: installed.core,
+            available: latestRelease.version
+        };
+    }
+
+    // Create map of installed modules by id
+    const installedMap = new Map(installed.modules.map(m => [m.id, m]));
+
+    // Check each module in catalog
+    for (const catalogModule of moduleCatalog) {
+        const installedModule = installedMap.get(catalogModule.id);
+
+        if (installedModule) {
+            // Module is installed - check if upgrade available
+            if (catalogModule.version && catalogModule.version !== installedModule.version) {
+                result.upgradableModules.push({
+                    ...catalogModule,
+                    currentVersion: installedModule.version
+                });
+            } else {
+                result.upToDateModules.push({
+                    ...catalogModule,
+                    currentVersion: installedModule.version
+                });
+            }
+        } else {
+            // Module not installed - it's new
+            result.newModules.push(catalogModule);
+        }
+    }
+
+    return result;
+}
+
 function getDiagnostics(deviceIp, errors) {
     const diagnostics = {
         timestamp: new Date().toISOString(),
@@ -654,5 +770,7 @@ module.exports = {
     downloadRelease,
     installMain,
     installModulePackage,
+    checkInstalledVersions,
+    compareVersions,
     getDiagnostics
 };

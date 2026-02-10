@@ -456,3 +456,66 @@ button.secondary:hover {
     flex: 1;
     color: #e0e0e0;
 }
+
+/* Version Check Screen */
+#version-info {
+    margin-top: 2rem;
+}
+
+.version-section {
+    background: #2a2a2a;
+    padding: 1.5rem;
+    border-radius: 6px;
+    margin-bottom: 1.5rem;
+}
+
+.version-section h3 {
+    margin: 0 0 1rem 0;
+    color: #0066cc;
+}
+
+.version-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    background: #1a1a1a;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+}
+
+.version-item-name {
+    flex: 1;
+}
+
+.version-item-name strong {
+    color: #fff;
+    display: block;
+}
+
+.version-item-name span {
+    color: #a0a0a0;
+    font-size: 0.9rem;
+}
+
+.version-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+
+.version-badge.upgrade {
+    background: #ff9900;
+    color: #000;
+}
+
+.version-badge.new {
+    background: #00cc00;
+    color: #000;
+}
+
+.version-badge.current {
+    background: #333;
+    color: #a0a0a0;
+}
