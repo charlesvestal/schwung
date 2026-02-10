@@ -496,13 +496,16 @@ async function installMain(tarballPath, hostname) {
         //   tmpDir/
         //     scripts/install.sh
         //     move-anything.tar.gz
+        // Use cached IP for faster connection (avoid mDNS lookup)
+        const targetHost = cachedDeviceIp || hostname;
         console.log('[DEBUG] Running install.sh from:', tmpDir);
+        console.log('[DEBUG] Target host:', targetHost, '(cached:', !!cachedDeviceIp + ')');
         await new Promise((resolve, reject) => {
             const installScript = spawn('bash', ['scripts/install.sh', 'local', '--skip-modules', '--skip-confirmation'], {
                 cwd: tmpDir,
                 env: {
                     ...process.env,
-                    MOVE_HOSTNAME: hostname
+                    MOVE_HOSTNAME: targetHost
                 }
             });
 
@@ -535,34 +538,54 @@ async function installMain(tarballPath, hostname) {
 
 async function installModulePackage(moduleId, tarballPath, componentType, hostname) {
     try {
+        console.log(`[DEBUG] Installing module ${moduleId} (${componentType})`);
         const filename = path.basename(tarballPath);
+
+        // Use cached IP instead of hostname for faster connection
+        const targetHost = cachedDeviceIp || hostname;
+        console.log(`[DEBUG] Using host: ${targetHost} (cached: ${!!cachedDeviceIp})`);
 
         // Use move_key if exists, otherwise id_rsa
         const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
         const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
+        console.log(`[DEBUG] Using SSH key: ${path.basename(keyPath)}`);
 
         // Upload to Move Everything directory
+        console.log(`[DEBUG] Uploading ${filename} to device...`);
         await new Promise((resolve, reject) => {
             const scp = spawn('scp', [
                 '-i', keyPath,
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=/dev/null',
                 tarballPath,
-                `ableton@${hostname}:/data/UserData/move-anything/${filename}`
+                `ableton@${targetHost}:/data/UserData/move-anything/${filename}`
             ]);
 
+            let stderr = '';
+            scp.stderr.on('data', (data) => {
+                stderr += data.toString();
+            });
+
             scp.on('close', (code) => {
-                if (code === 0) resolve();
-                else reject(new Error(`scp failed with code ${code}`));
+                if (code === 0) {
+                    console.log(`[DEBUG] Upload complete for ${moduleId}`);
+                    resolve();
+                } else {
+                    console.error(`[DEBUG] scp failed: ${stderr}`);
+                    reject(new Error(`scp failed with code ${code}: ${stderr}`));
+                }
             });
         });
 
         // Extract and install module (similar to install.sh module installation)
         const categoryPath = componentType ? `${componentType}s` : 'utility';
-        await sshExec(hostname, `cd /data/UserData/move-anything && mkdir -p modules/${categoryPath} && tar -xzf ${filename} -C modules/${categoryPath}/ && rm ${filename}`);
+        console.log(`[DEBUG] Extracting ${moduleId} to modules/${categoryPath}/`);
+        await sshExec(targetHost, `cd /data/UserData/move-anything && mkdir -p modules/${categoryPath} && tar -xzf ${filename} -C modules/${categoryPath}/ && rm ${filename}`);
+        console.log(`[DEBUG] Module ${moduleId} installed successfully`);
 
         return true;
     } catch (err) {
+        console.error(`[DEBUG] Module installation error for ${moduleId}:`, err.message);
         throw new Error(`Module installation failed: ${err.message}`);
     }
 }
