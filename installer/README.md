@@ -1,262 +1,172 @@
-# Move Everything Installer
+# Move Everything Desktop Installer
 
-Cross-platform desktop installer (macOS + Windows) that automates SSH setup and installation of Move Everything on Ableton Move hardware.
+Cross-platform desktop application for installing Move Everything on Ableton Move devices.
 
-## What It Does
+## Overview
 
-The installer streamlines the setup process by:
-- **Auto-discovering** Move devices on your network via mDNS
-- **Authenticating** using the 6-digit code from Move's screen
-- **Managing SSH keys** - generates, submits, and configures SSH access automatically
-- **Installing modules** - fetches the latest release from GitHub and lets you cherry-pick which modules to install
-- **Storing credentials** - saves auth cookies securely in your system keychain for future use
+The installer provides a user-friendly graphical interface for:
+- Automatic device discovery via mDNS (move.local)
+- Challenge-response authentication with Move
+- SSH key setup and device pairing
+- Module selection from the official catalog
+- Progress tracking during installation
 
-**Target user flow:**
-1. Launch installer
-2. Enter 6-digit code from Move screen (if not already authenticated)
-3. Confirm SSH key on device
-4. Select modules to install
-5. Done!
+## Architecture
 
-## For Users
+Built with Electron for cross-platform support:
+- **Frontend**: HTML/CSS/JavaScript UI (`ui/`)
+- **Backend**: Node.js with ssh2, axios, child_process (`electron/`)
+- **Main Process**: Electron window management (`electron/main.js`)
+- **Preload**: IPC bridge between frontend and backend (`electron/preload.js`)
 
-### Download & Run
+## Installation Flow
 
-1. Download the latest installer for your platform from [Releases](https://github.com/charlesvestal/move-anything/releases)
-   - **macOS**: `Move-Everything-Installer.dmg`
-   - **Windows**: `Move-Everything-Installer.msi`
-2. Run the installer and follow on-screen instructions
-3. When prompted, enter the 6-digit code shown on your Move's screen
-4. Confirm the SSH key on your Move device
-5. Select which modules to install (or install all)
+1. **Warning Screen** - User accepts UNSUPPORTED disclaimer
+2. **Device Discovery** - Auto-detect move.local or manual IP entry
+3. **Code Entry** - Submit 6-digit code from Move display
+4. **SSH Key Setup** - Confirm adding SSH key to Move
+5. **Confirm on Device** - User selects "Yes" on Move with jog wheel
+6. **Module Selection** - Choose which modules to install
+7. **Installation** - Download and install with progress tracking
+8. **Success** - Installation complete
 
-### After Installation
-
-SSH access to your Move is configured automatically:
-```bash
-ssh ableton@move.local
-```
-
-SFTP access for file transfers:
-```bash
-sftp ableton@move.local
-```
-
-## For Developers
+## Development
 
 ### Prerequisites
-
-- **Node.js 18+** and npm ([download](https://nodejs.org))
-- **Rust 1.70+** ([install from rustup.rs](https://rustup.rs))
-- **Platform-specific tools**:
-  - macOS: Xcode Command Line Tools (`xcode-select --install`)
-  - Windows: Visual Studio Build Tools with C++ support
-  - Linux: Standard build tools (`build-essential`, `libssl-dev`, `libgtk-3-dev`, `libwebkit2gtk-4.0-dev`)
-
-### Setup
 
 ```bash
 cd installer
 npm install
 ```
 
-### Development
-
-Run the installer in development mode with hot reload:
+### Run Development Mode
 
 ```bash
-npm run tauri:dev
+npm start
 ```
 
-This launches the Tauri app with the Rust backend and web frontend. Changes to frontend files (`ui/`) reload automatically. Changes to Rust code require restarting the dev server.
-
-### Build
-
-Create a release build:
+### Build for Distribution
 
 ```bash
-npm run tauri:build
+npm run build
 ```
 
-Output:
-- **macOS**: `src-tauri/target/release/bundle/dmg/Move Everything Installer.dmg`
-- **Windows**: `src-tauri/target/release/bundle/msi/Move Everything Installer.msi`
-- **Linux**: `src-tauri/target/release/bundle/deb/move-everything-installer.deb` (and AppImage)
+This creates platform-specific installers in `dist/`:
+- **macOS**: `.dmg` installer
+- **Windows**: `.exe` installer
+- **Linux**: `.AppImage`
 
-### Windows Build Requirements
+## Technical Details
 
-Before building on Windows, you must bundle OpenSSH binaries:
+### Device Discovery
 
-1. Download the latest release from [Win32-OpenSSH](https://github.com/PowerShell/Win32-OpenSSH/releases)
-2. Extract the following files to `src-tauri/resources/bin/`:
-   - `ssh.exe`
-   - `ssh-keygen.exe`
-   - `scp.exe`
-   - All required DLL files (typically: `msys-2.0.dll`, `msys-crypto-3.dll`, `msys-z.dll`)
-3. Run `npm run tauri:build`
+Uses mDNS to discover `move.local`. Falls back to manual IP entry if discovery fails.
 
-The installer bundles these binaries for Windows deployments. On macOS/Linux, the system's native OpenSSH is used instead.
+### Authentication
 
-## Architecture
+Implements Move's challenge-response authentication:
+1. Request challenge: `POST /api/v1/challenge`
+2. Submit code: `POST /api/v1/challenge-response` with `{"secret": "123456"}`
+3. Returns auth cookie: `Ableton-Challenge-Response-Token`
 
-### Frontend (Web UI)
+### SSH Key Setup
 
-- **Technology**: Vanilla HTML/CSS/JavaScript (no framework)
-- **Location**: `ui/`
-- **Screens**: Device discovery → Code entry → Confirm on device → Module selection → Installing → Success/Error
-- **Communication**: Tauri IPC commands to Rust backend via `window.__TAURI__.invoke()`
+1. Checks for existing SSH keys (`~/.ssh/move_key` or `~/.ssh/id_rsa`)
+2. Generates new ED25519 key if none found
+3. Submits public key: `POST /api/v1/ssh` with auth cookie
+4. Polls SSH connection until user confirms on device
 
-### Backend (Rust)
+### Installation
 
-Modular Rust backend with separate concerns:
+Uses `install.sh` from the repository:
+1. Downloads `install.sh` from GitHub
+2. Sets up directory structure for `install.sh local` mode
+3. Runs `install.sh local --skip-modules --skip-confirmation`
+4. Installs selected modules via direct tarball extraction
 
-- **`device.rs`** - mDNS device discovery, finds Move devices on local network
-- **`auth.rs`** - HTTP client for Move's authentication API, manages cookies
-- **`cookie_storage.rs`** - Platform keychain integration (macOS Keychain, Windows Credential Manager)
-- **`ssh.rs`** - SSH key discovery/generation, connectivity probes, config file updates
-- **`install.rs`** - GitHub release fetching, module catalog parsing, SCP uploads, tarball validation
-- **`diagnostics.rs`** - Error reporting and diagnostics export
+### Module Installation
 
-### Data Flow
+Modules are downloaded from GitHub releases and extracted to:
+- Sound generators: `/data/UserData/move-anything/modules/sound_generators/`
+- Audio effects: `/data/UserData/move-anything/modules/audio_fxs/`
+- MIDI effects: `/data/UserData/move-anything/modules/midi_fxs/`
+- Utilities: `/data/UserData/move-anything/modules/utility/`
+- Overtake: `/data/UserData/move-anything/modules/overtake/`
 
-```
-User opens app
-  ↓
-[Device Discovery] - mDNS probe for move.local
-  ↓
-[Auth Check] - Try saved cookie from keychain
-  ↓
-[Code Entry] - If no valid cookie, prompt for 6-digit code
-  ↓
-[SSH Setup] - Generate/find key, submit to Move API
-  ↓
-[Confirmation] - Poll SSH until device confirms
-  ↓
-[Installation] - Fetch release, select modules, deploy via SCP
-  ↓
-[Success] - Show SSH connection info
-```
+### Progress Tracking
 
-### Storage
+Installation progress is tracked from 0-100%:
+- **0-50%**: Main installation
+  - 0%: SSH setup
+  - 5%: Fetch release info
+  - 10%: Download main package
+  - 30%: Install core
+- **50-100%**: Modules (divided equally among selected modules)
 
-- **SSH Keys**: `~/.ssh/ableton_move` and `~/.ssh/ableton_move.pub`
-- **SSH Config**: Appends `Host move` entry to `~/.ssh/config`
-- **Known Hosts**: Dedicated file `~/.ssh/known_hosts_ableton_move` (avoids conflicts)
-- **Auth Cookie**: Platform keychain (encrypted, persistent across runs)
-- **Last-known IP**: App config file (for faster discovery on subsequent runs)
+### IPv4 Resolution
 
-## API Documentation
+Move uses mDNS (.local domains) which Node.js's built-in DNS doesn't support. The installer uses system resolvers:
+- **macOS**: `dscacheutil -q host -a name move.local`
+- **Linux**: `getent ahostsv4 move.local`
 
-The installer communicates with Move's built-in authentication API. See `../docs/move-auth-api.md` for complete API documentation, including:
-- Code submission endpoint (`POST /api/v1/challenge-response`)
-- SSH key submission endpoint (`POST /api/v1/ssh`)
-- Request/response formats and example curl commands
+SSH connections force IPv4 via `family: 4` option to avoid IPv6 link-local issues.
 
-## Project Structure
+## File Structure
 
 ```
 installer/
-├── ui/                           # Frontend
-│   ├── index.html                # Multi-screen UI
-│   ├── style.css                 # Dark theme styling
-│   └── app.js                    # Application logic, IPC calls
-├── src-tauri/                    # Rust backend
-│   ├── src/
-│   │   ├── main.rs               # Entry point
-│   │   ├── lib.rs                # Tauri app setup, IPC commands
-│   │   ├── device.rs             # mDNS discovery
-│   │   ├── auth.rs               # HTTP client for Move API
-│   │   ├── cookie_storage.rs    # Keychain integration
-│   │   ├── ssh.rs                # SSH key management
-│   │   ├── install.rs            # GitHub + module installation
-│   │   └── diagnostics.rs        # Error reporting
-│   ├── Cargo.toml                # Rust dependencies
-│   ├── tauri.conf.json           # Tauri configuration
-│   └── resources/                # Bundled resources (Windows SSH binaries)
-└── package.json                  # Node.js scripts and dependencies
+├── electron/
+│   ├── main.js         # Electron main process
+│   ├── preload.js      # IPC bridge
+│   └── backend.js      # Core installation logic
+├── ui/
+│   ├── index.html      # Main UI structure
+│   ├── app.js          # Frontend application logic
+│   └── style.css       # UI styling
+├── package.json        # Dependencies and build config
+└── README.md           # This file
 ```
+
+## Dependencies
+
+### Runtime
+- `electron`: Application framework
+- `ssh2`: SSH client for device access
+- `axios`: HTTP client for API calls
+
+### Build
+- `electron-builder`: Packaging for distribution
+- `electron-rebuild`: Native module compilation
 
 ## Troubleshooting
 
 ### Device Not Found
-
-**Problem**: Installer can't find Move on the network
-
-**Solutions**:
-- Ensure Move and computer are on the same WiFi network
-- Check if VPN is interfering with mDNS (try disabling)
-- Verify firewall isn't blocking port 5353 (mDNS)
+- Ensure Move is on same WiFi network
+- Try accessing `http://move.local` in browser
 - Use manual IP entry if mDNS fails
 
-### Authentication Failures
+### SSH Connection Failed
+- Check SSH key was added to Move
+- Confirm user selected "Yes" on Move display
+- Verify no firewall blocking port 22
 
-**Problem**: "Invalid code" or "Code rejected"
+### Installation Failed
+- Check available space on Move's root partition
+- Ensure stable network connection
+- Review error details in diagnostics output
 
-**Solutions**:
-- Double-check the 6-digit code on Move's screen
-- Code expires after a few minutes - get a fresh code
-- You have 3 attempts before needing to restart the auth flow
+## Security
 
-**Problem**: "Cookie expired" on subsequent runs
+- SSH keys stored in `~/.ssh/move_key` (ED25519)
+- Auth cookies cached in `~/.move-everything-installer-cookie`
+- Cookies cleared on application restart
+- No passwords stored or transmitted
+- All communication over local network only
 
-**Solution**: Installer will automatically re-prompt for code. This is expected if it's been a long time since last use.
+## Future Enhancements
 
-### SSH Key Submission Failures
-
-**Problem**: "Timeout waiting for confirmation"
-
-**Solutions**:
-- Check Move's screen - you may need to manually confirm the SSH key
-- Move may be restarting - wait 30 seconds and try again
-- Verify network connectivity to Move
-
-**Problem**: "Permission denied" after successful setup
-
-**Solutions**:
-- Click "Resubmit key" in the installer
-- Manually check Move's SSH settings (if accessible)
-- Try regenerating SSH key in `~/.ssh/ableton_move`
-
-### Installation Failures
-
-**Problem**: "Download failed" or "SCP timeout"
-
-**Solutions**:
-- Check internet connection for GitHub downloads
-- Verify SSH connection to Move is still active
-- Try again - network hiccups are common
-
-**Problem**: "Invalid tarball" or "Corrupted file"
-
-**Solution**: Installer auto-retries up to 3 times. If still failing, report an issue with diagnostics.
-
-### Export Diagnostics
-
-If you encounter persistent issues:
-1. Click "Copy Diagnostics" button on the error screen
-2. Paste the diagnostics JSON when reporting issues
-3. Diagnostics include: timestamp, app version, device IP, error history (no secrets)
-
-### macOS Specific
-
-**Problem**: "Move Everything Installer.app is damaged and can't be opened"
-
-**Solution**: macOS Gatekeeper blocking unsigned app. Right-click → Open, then confirm.
-
-**Problem**: Keychain access prompts
-
-**Solution**: Click "Always Allow" to prevent repeated prompts for cookie storage.
-
-### Windows Specific
-
-**Problem**: "ssh.exe not found" or similar errors
-
-**Solution**: Ensure OpenSSH binaries are bundled correctly (see Build Requirements above).
-
-**Problem**: Credential Manager prompts
-
-**Solution**: Allow access - this stores your auth cookie securely.
-
-## Contributing
-
-See the main project [BUILDING.md](../BUILDING.md) for development guidelines and contribution instructions.
+- [ ] Windows and Linux builds/testing
+- [ ] Module version checking and updates
+- [ ] Offline mode with cached tarballs
+- [ ] Installation logs export
+- [ ] Multiple device management
