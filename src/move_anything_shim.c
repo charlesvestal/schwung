@@ -5622,6 +5622,8 @@ static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 /* Pending LED queue for rate-limited output (like standalone mode) */
 #define SHADOW_LED_MAX_UPDATES_PER_TICK 16
 #define SHADOW_LED_QUEUE_SAFE_BYTES 76
+/* In overtake mode we clear Move's cable-0 LEDs, freeing most of the buffer */
+#define SHADOW_LED_OVERTAKE_BUDGET 48
 static int shadow_pending_note_color[128];   /* -1 = not pending */
 static uint8_t shadow_pending_note_status[128];
 static uint8_t shadow_pending_note_cin[128];
@@ -6131,6 +6133,23 @@ static void shadow_flush_pending_leds(void) {
     shadow_init_led_queue();
 
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+    int overtake = shadow_control && shadow_control->overtake_mode >= 2;
+
+    /* In overtake mode, clear Move's cable-0 LED packets (note-on, CC) to reclaim
+     * buffer space.  Move continuously writes its LED state but in overtake mode
+     * we own all LEDs.  This frees ~40-50 of the 64 available slots. */
+    if (overtake) {
+        for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+            uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+            uint8_t type = midi_out[i+1] & 0xF0;
+            if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+                midi_out[i] = 0;
+                midi_out[i+1] = 0;
+                midi_out[i+2] = 0;
+                midi_out[i+3] = 0;
+            }
+        }
+    }
 
     /* Count how many slots are already used */
     int used = 0;
@@ -6141,8 +6160,11 @@ static void shadow_flush_pending_leds(void) {
         }
     }
 
-    int available = (SHADOW_LED_QUEUE_SAFE_BYTES - used) / 4;
-    int budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
+    /* In overtake mode use full buffer (after clearing Move's LEDs).
+     * In normal mode stay within safe limit to coexist with Move's packets. */
+    int max_bytes = overtake ? MIDI_BUFFER_SIZE : SHADOW_LED_QUEUE_SAFE_BYTES;
+    int available = (max_bytes - used) / 4;
+    int budget = overtake ? SHADOW_LED_OVERTAKE_BUDGET : SHADOW_LED_MAX_UPDATES_PER_TICK;
     if (available <= 0 || budget <= 0) return;
     if (budget > available) budget = available;
 
@@ -6254,16 +6276,29 @@ static void shadow_inject_ui_midi_out(void) {
     last_shadow_midi_out_ready = shadow_midi_out_shm->ready;
     shadow_init_led_queue();
 
+    /* Snapshot write_idx and buffer, then reset immediately.
+     * This avoids a race where the JS process writes new data between
+     * our read loop and the clear at the end. */
+    int snapshot_len = shadow_midi_out_shm->write_idx;
+    shadow_midi_out_shm->write_idx = 0;
+    uint8_t local_buf[SHADOW_MIDI_OUT_BUFFER_SIZE];
+    int copy_len = snapshot_len < (int)SHADOW_MIDI_OUT_BUFFER_SIZE
+                 ? snapshot_len : (int)SHADOW_MIDI_OUT_BUFFER_SIZE;
+    if (copy_len > 0) {
+        memcpy(local_buf, shadow_midi_out_shm->buffer, copy_len);
+    }
+    memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+
     /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
 
     int hw_offset = 0;
-    for (int i = 0; i < shadow_midi_out_shm->write_idx && i < SHADOW_MIDI_OUT_BUFFER_SIZE; i += 4) {
-        uint8_t cin = shadow_midi_out_shm->buffer[i];
+    for (int i = 0; i < copy_len; i += 4) {
+        uint8_t cin = local_buf[i];
         uint8_t cable = (cin >> 4) & 0x0F;
-        uint8_t status = shadow_midi_out_shm->buffer[i + 1];
-        uint8_t data1 = shadow_midi_out_shm->buffer[i + 2];
-        uint8_t data2 = shadow_midi_out_shm->buffer[i + 3];
+        uint8_t status = local_buf[i + 1];
+        uint8_t data1 = local_buf[i + 2];
+        uint8_t data2 = local_buf[i + 3];
         uint8_t type = status & 0xF0;
 
         /* Queue cable 0 LED messages (note-on, CC) for rate-limited sending */
@@ -6282,13 +6317,9 @@ static void shadow_inject_ui_midi_out(void) {
         }
         if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
 
-        memcpy(&midi_out[hw_offset], &shadow_midi_out_shm->buffer[i], 4);
+        memcpy(&midi_out[hw_offset], &local_buf[i], 4);
         hw_offset += 4;
     }
-
-    /* Clear after processing */
-    shadow_midi_out_shm->write_idx = 0;
-    memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
 }
 
 /* Drain MIDI-to-DSP buffer from shadow UI and dispatch to chain slots. */
