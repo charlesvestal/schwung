@@ -91,46 +91,6 @@
             </div>
         </div>
 
-        <!-- Management Screen (for existing installations) -->
-        <div id="screen-management" class="screen">
-            <h1>Manage Move Everything</h1>
-            <p class="instruction">Move Everything is installed on your device. What would you like to do?</p>
-
-            <div class="install-options">
-                <div class="radio-group">
-                    <div class="radio-option" id="option-manage-modules" style="cursor: pointer;">
-                        <div class="option-content">
-                            <strong>Install New Modules</strong>
-                            <span>Add modules to your installation (selecting installed modules will reinstall them)</span>
-                        </div>
-                    </div>
-
-                    <div class="radio-option" id="option-upgrade-core" style="cursor: pointer; display: none;">
-                        <div class="option-content">
-                            <strong>Upgrade Core</strong>
-                            <span id="upgrade-core-description">Update to the latest version</span>
-                        </div>
-                    </div>
-
-                    <div class="radio-option" id="option-toggle-screenreader" style="cursor: pointer;">
-                        <div class="option-content">
-                            <strong>Screen Reader</strong>
-                            <span id="screenreader-status">Enable or disable text-to-speech accessibility</span>
-                        </div>
-                    </div>
-
-                    <div class="radio-option" id="option-uninstall" style="cursor: pointer;">
-                        <div class="option-content">
-                            <strong>Uninstall Move Everything</strong>
-                            <span>Remove all files and restore stock Move firmware</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <button id="btn-back-management" class="secondary">Back</button>
-        </div>
-
         <!-- Module Selection Screen -->
         <div id="screen-modules" class="screen">
             <h1>Installation Options</h1>
@@ -179,11 +139,36 @@
                 </label>
             </div>
 
+            <!-- Management mode: Upgrade All button -->
+            <div id="management-top-actions" style="display: none;">
+                <button id="btn-upgrade-all">Upgrade All</button>
+            </div>
+
+            <!-- Management mode: Core upgrade row -->
+            <div id="core-upgrade-row" style="display: none;"></div>
+
+            <!-- Management mode: Installed modules with action buttons -->
+            <div id="installed-modules" style="display: none;"></div>
+
+            <!-- Management mode: Available (not installed) modules with install buttons -->
+            <div id="available-modules" style="display: none;">
+                <h3>Available Modules</h3>
+                <div id="available-module-list"></div>
+            </div>
+
+            <!-- Fresh install mode: module categories with checkboxes -->
             <div id="module-categories" style="display: none;"></div>
 
             <div class="action-buttons">
                 <button id="btn-install">Install</button>
                 <button id="btn-back-modules" class="secondary">Back</button>
+            </div>
+
+            <!-- Secondary links (shown in management mode) -->
+            <div id="secondary-actions" style="display: none;">
+                <a href="#" id="link-screenreader">Screen Reader</a>
+                <span class="secondary-divider">|</span>
+                <a href="#" id="link-uninstall">Uninstall</a>
             </div>
         </div>
 

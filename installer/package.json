@@ -23,6 +23,7 @@
     "sshpk": "^1.18.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
     "electron": "^28.2.0",
     "electron-builder": "^24.9.1"
   },
@@ -34,6 +35,7 @@
       "electron/**/*",
       "ui/**/*"
     ],
+    "afterSign": "build/notarize.js",
     "mac": {
       "target": [
         {
@@ -44,7 +46,10 @@
           ]
         }
       ],
-      "identity": null
+      "identity": "Charles Vestal (J4722B5MJW)",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
       "target": [

@@ -661,31 +661,28 @@ async function getModuleCatalog(installedModuleIds = []) {
         // Handle v2 catalog format
         const moduleList = catalog.modules || catalog;
 
-        // For each module, construct direct download URL and fetch version if installed
+        // For each module, construct direct download URL and fetch latest version
         const modules = await Promise.all(moduleList.map(async (module) => {
             // Construct direct download URL like install.sh does
             const downloadUrl = `https://github.com/${module.github_repo}/releases/latest/download/${module.asset_name}`;
 
             let version = null;
 
-            // Only fetch version from GitHub API if module is installed (to avoid rate limits)
-            if (installedModuleIds.includes(module.id)) {
-                try {
-                    console.log(`[DEBUG] Fetching version for installed module: ${module.id}`);
-                    const releaseResponse = await httpClient.get(
-                        `https://api.github.com/repos/${module.github_repo}/releases/latest`,
-                        {
-                            headers: { 'User-Agent': 'MoveEverything-Installer' }
-                        }
-                    );
-                    if (releaseResponse.status === 200 && releaseResponse.data && releaseResponse.data.tag_name) {
-                        const tagName = releaseResponse.data.tag_name;
-                        version = tagName.startsWith('v') ? tagName.substring(1) : tagName;
-                        console.log(`[DEBUG] Found version ${version} for ${module.id}`);
+            try {
+                console.log(`[DEBUG] Fetching version for module: ${module.id}`);
+                const releaseResponse = await httpClient.get(
+                    `https://api.github.com/repos/${module.github_repo}/releases/latest`,
+                    {
+                        headers: { 'User-Agent': 'MoveEverything-Installer' }
                     }
-                } catch (err) {
-                    console.log(`[DEBUG] Could not fetch version for ${module.id}:`, err.message);
+                );
+                if (releaseResponse.status === 200 && releaseResponse.data && releaseResponse.data.tag_name) {
+                    const tagName = releaseResponse.data.tag_name;
+                    version = tagName.startsWith('v') ? tagName.substring(1) : tagName;
+                    console.log(`[DEBUG] Found version ${version} for ${module.id}`);
                 }
+            } catch (err) {
+                console.log(`[DEBUG] Could not fetch version for ${module.id}:`, err.message);
             }
 
             return {
@@ -1176,12 +1173,17 @@ async function checkInstalledVersions(hostname, progressCallback = null) {
                     const moduleInfo = JSON.parse(jsonContent);
 
                     if (moduleInfo.id && moduleInfo.version) {
-                        modules.push({
+                        const moduleData = {
                             id: moduleInfo.id,
                             name: moduleInfo.name || moduleInfo.id,
                             version: moduleInfo.version,
                             component_type: moduleInfo.component_type || 'utility'
-                        });
+                        };
+                        // Include assets info if declared
+                        if (moduleInfo.assets) {
+                            moduleData.assets = moduleInfo.assets;
+                        }
+                        modules.push(moduleData);
                         console.log(`[DEBUG] Found module: ${moduleInfo.id} v${moduleInfo.version}`);
                     }
                 } catch (err) {
@@ -1307,6 +1309,61 @@ async function setScreenReaderState(hostname, enabled) {
     } catch (err) {
         console.error('[DEBUG] Screen reader toggle error:', err.message);
         throw new Error(`Failed to set screen reader state: ${err.message}`);
+    }
+}
+
+async function uploadModuleAssets(localPaths, remoteDir, hostname) {
+    try {
+        const hostIp = cachedDeviceIp || hostname;
+        console.log(`[DEBUG] Uploading ${localPaths.length} asset(s) to ${remoteDir}`);
+
+        // Ensure remote directory exists
+        await sshExec(hostIp, `mkdir -p "${remoteDir}"`);
+
+        const results = [];
+        for (const localPath of localPaths) {
+            const filename = path.basename(localPath);
+            const remotePath = `${remoteDir}/${filename}`;
+            console.log(`[DEBUG] Uploading ${filename}...`);
+
+            try {
+                await sftpUpload(hostIp, localPath, remotePath);
+                results.push({ file: filename, success: true });
+                console.log(`[DEBUG] Uploaded ${filename}`);
+            } catch (err) {
+                console.error(`[DEBUG] Failed to upload ${filename}:`, err.message);
+                results.push({ file: filename, success: false, error: err.message });
+            }
+        }
+
+        return results;
+    } catch (err) {
+        console.error('[DEBUG] Asset upload error:', err.message);
+        throw new Error(`Asset upload failed: ${err.message}`);
+    }
+}
+
+async function removeModulePackage(moduleId, componentType, hostname) {
+    try {
+        const hostIp = cachedDeviceIp || hostname;
+        console.log(`[DEBUG] Removing module ${moduleId} (${componentType}) from device`);
+
+        const categoryPath = componentType ? `${componentType}s` : 'utility';
+        const modulePath = `/data/UserData/move-anything/modules/${categoryPath}/${moduleId}`;
+
+        // Verify the directory exists before removing
+        const checkResult = await sshExec(hostIp, `test -d "${modulePath}" && echo "exists" || echo "not_found"`);
+        if (checkResult.trim() !== 'exists') {
+            throw new Error(`Module directory not found: ${modulePath}`);
+        }
+
+        await sshExec(hostIp, `rm -rf "${modulePath}"`);
+        console.log(`[DEBUG] Module ${moduleId} removed successfully`);
+
+        return true;
+    } catch (err) {
+        console.error(`[DEBUG] Module removal error for ${moduleId}:`, err.message);
+        throw new Error(`Module removal failed: ${err.message}`);
     }
 }
 
@@ -1614,6 +1671,8 @@ module.exports = {
     downloadRelease,
     installMain,
     installModulePackage,
+    removeModulePackage,
+    uploadModuleAssets,
     checkCoreInstallation,
     checkInstalledVersions,
     compareVersions,

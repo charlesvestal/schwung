@@ -7,8 +7,8 @@ let mainWindow;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 800,
-        height: 600,
+        width: 910,
+        height: 700,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
@@ -101,6 +101,35 @@ ipcMain.handle('install_main', async (event, { tarballPath, hostname, flags }) =
 
 ipcMain.handle('install_module_package', async (event, { moduleId, tarballPath, componentType, hostname }) => {
     return await backend.installModulePackage(moduleId, tarballPath, componentType, hostname);
+});
+
+ipcMain.handle('remove_module', async (event, { moduleId, componentType, hostname }) => {
+    return await backend.removeModulePackage(moduleId, componentType, hostname);
+});
+
+ipcMain.handle('pick_and_upload_assets', async (event, { remoteDir, hostname, extensions, label }) => {
+    // Build file filters from extensions
+    const filters = [];
+    if (extensions && extensions.length > 0) {
+        filters.push({
+            name: label || 'Asset Files',
+            extensions: extensions.map(ext => ext.replace(/^\./, ''))
+        });
+    }
+    filters.push({ name: 'All Files', extensions: ['*'] });
+
+    const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
+        title: `Add ${label || 'Assets'}`,
+        properties: ['openFile', 'multiSelections'],
+        filters
+    });
+
+    if (canceled || filePaths.length === 0) {
+        return { canceled: true, results: [] };
+    }
+
+    const results = await backend.uploadModuleAssets(filePaths, remoteDir, hostname);
+    return { canceled: false, results };
 });
 
 ipcMain.handle('check_core_installation', async (event, { hostname }) => {
