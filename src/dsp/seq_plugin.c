@@ -44,7 +44,6 @@ const scale_template_t g_scale_templates[NUM_SCALE_TEMPLATES] = {
 
 /* Host API pointer */
 const host_api_v1_t *g_host = NULL;
-static plugin_api_v1_t g_plugin_api;
 
 /* Tracks */
 track_t g_tracks[NUM_TRACKS];
@@ -431,9 +430,41 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
     process_scheduled_notes();
 }
 
-/* ============ Plugin Entry Point ============ */
+/* ============ V2 Wrapper Functions ============ */
 
-plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
+static void* v2_create(const char *dir, const char *defaults) {
+    plugin_on_load(dir, defaults);
+    return (void*)(uintptr_t)1;  /* sentinel - singleton, no real allocation */
+}
+
+static void v2_destroy(void *inst) {
+    (void)inst;
+    plugin_on_unload();
+}
+
+static void v2_on_midi(void *inst, const uint8_t *msg, int len, int src) {
+    (void)inst;
+    plugin_on_midi(msg, len, src);
+}
+
+static void v2_set_param(void *inst, const char *key, const char *val) {
+    (void)inst;
+    plugin_set_param(key, val);
+}
+
+static int v2_get_param(void *inst, const char *key, char *buf, int len) {
+    (void)inst;
+    return plugin_get_param(key, buf, len);
+}
+
+static void v2_render_block(void *inst, int16_t *out, int frames) {
+    (void)inst;
+    plugin_render_block(out, frames);
+}
+
+/* ============ Plugin Entry Point (V2) ============ */
+
+plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
     g_host = host;
 
     /* Verify API version */
@@ -445,18 +476,17 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
         return NULL;
     }
 
-    /* Initialize plugin API struct */
-    memset(&g_plugin_api, 0, sizeof(g_plugin_api));
-    g_plugin_api.api_version = MOVE_PLUGIN_API_VERSION;
-    g_plugin_api.on_load = plugin_on_load;
-    g_plugin_api.on_unload = plugin_on_unload;
-    g_plugin_api.on_midi = plugin_on_midi;
-    g_plugin_api.set_param = plugin_set_param;
-    g_plugin_api.get_param = plugin_get_param;
-    g_plugin_api.get_error = NULL;
-    g_plugin_api.render_block = plugin_render_block;
+    static plugin_api_v2_t api;
+    api.api_version = MOVE_PLUGIN_API_VERSION_2;
+    api.create_instance = v2_create;
+    api.destroy_instance = v2_destroy;
+    api.on_midi = v2_on_midi;
+    api.set_param = v2_set_param;
+    api.get_param = v2_get_param;
+    api.get_error = NULL;
+    api.render_block = v2_render_block;
 
-    plugin_log("SEQOMD initialized");
+    plugin_log("SEQOMD initialized (V2)");
 
-    return &g_plugin_api;
+    return &api;
 }

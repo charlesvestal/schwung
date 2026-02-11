@@ -14,7 +14,7 @@
 #include <stdint.h>
 
 /* Include plugin API */
-#include "host/plugin_api_v1.h"
+#include "include/plugin_api_v1.h"
 
 /* ============ Constants ============ */
 
