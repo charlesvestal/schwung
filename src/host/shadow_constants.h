@@ -26,6 +26,7 @@
 #define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
 #define SHM_SHADOW_PARAM      "/move-shadow-param"        /* Shadow param requests */
 #define SHM_SHADOW_MIDI_OUT   "/move-shadow-midi-out"   /* MIDI output from shadow UI */
+#define SHM_SHADOW_MIDI_DSP   "/move-shadow-midi-dsp"   /* MIDI from shadow UI to DSP slots */
 #define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader announcements */
 
 /* ============================================================================
@@ -38,6 +39,7 @@
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
+#define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
 #define SHADOW_SCREENREADER_BUFFER_SIZE 512  /* Screen reader message buffer */
 
 /* ============================================================================
@@ -136,6 +138,18 @@ typedef struct shadow_midi_out_t {
     volatile uint8_t reserved[2];
     uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_out_t;
+
+/*
+ * MIDI-to-DSP structure for shadow UI to send MIDI to chain DSP slots.
+ * Used by overtake modules to route MIDI to sound generators/effects.
+ * Messages are raw 3-byte MIDI (status, data1, data2), stored 4-byte aligned.
+ */
+typedef struct shadow_midi_dsp_t {
+    volatile uint8_t write_idx;      /* Shadow UI increments after writing */
+    volatile uint8_t ready;          /* Toggle to signal new data */
+    volatile uint8_t reserved[2];
+    uint8_t buffer[SHADOW_MIDI_DSP_BUFFER_SIZE];  /* Raw MIDI (4 bytes each: status, d1, d2, pad) */
+} shadow_midi_dsp_t;
 
 /*
  * Screen reader message structure.
