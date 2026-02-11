@@ -107,8 +107,7 @@ ipcMain.handle('remove_module', async (event, { moduleId, componentType, hostnam
     return await backend.removeModulePackage(moduleId, componentType, hostname);
 });
 
-ipcMain.handle('pick_and_upload_assets', async (event, { remoteDir, hostname, extensions, label }) => {
-    // Build file filters from extensions
+ipcMain.handle('pick_asset_files', async (event, { extensions, label, allowFolders }) => {
     const filters = [];
     if (extensions && extensions.length > 0) {
         filters.push({
@@ -118,18 +117,37 @@ ipcMain.handle('pick_and_upload_assets', async (event, { remoteDir, hostname, ex
     }
     filters.push({ name: 'All Files', extensions: ['*'] });
 
+    const properties = ['openFile', 'multiSelections'];
+    if (allowFolders) {
+        properties.push('openDirectory');
+    }
+
     const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
         title: `Add ${label || 'Assets'}`,
-        properties: ['openFile', 'multiSelections'],
+        properties,
         filters
     });
 
     if (canceled || filePaths.length === 0) {
-        return { canceled: true, results: [] };
+        return { canceled: true, filePaths: [] };
     }
+    return { canceled: false, filePaths };
+});
 
-    const results = await backend.uploadModuleAssets(filePaths, remoteDir, hostname);
-    return { canceled: false, results };
+ipcMain.handle('upload_assets', async (event, { filePaths, remoteDir, hostname }) => {
+    return await backend.uploadModuleAssets(filePaths, remoteDir, hostname);
+});
+
+ipcMain.handle('list_remote_dir', async (event, { hostname, remotePath }) => {
+    return await backend.listRemoteDir(hostname, remotePath);
+});
+
+ipcMain.handle('delete_remote_path', async (event, { hostname, remotePath }) => {
+    return await backend.deleteRemotePath(hostname, remotePath);
+});
+
+ipcMain.handle('create_remote_dir', async (event, { hostname, remotePath }) => {
+    return await backend.createRemoteDir(hostname, remotePath);
 });
 
 ipcMain.handle('check_core_installation', async (event, { hostname }) => {
@@ -166,6 +184,10 @@ ipcMain.handle('uninstall_move_everything', async (event, { hostname }) => {
 
 ipcMain.handle('test_ssh_formats', async (event, { cookie }) => {
     return await backend.testSshFormats(cookie);
+});
+
+ipcMain.handle('clean_device_tmp', async (event, { hostname }) => {
+    return await backend.cleanDeviceTmp(hostname);
 });
 
 ipcMain.handle('export_logs', async (event, { logs }) => {

@@ -865,6 +865,64 @@ button.secondary:hover {
     border-bottom: 1px solid #333;
 }
 
+/* Module requires info (asset dependencies) */
+.module-requires {
+    color: #cc8833;
+    font-size: 0.8rem;
+    font-style: italic;
+    margin: 0.2rem 0 0;
+}
+
+/* Management status message */
+.management-status {
+    color: #88cc88;
+    text-align: center;
+    padding: 0.75rem;
+    margin: 0.5rem 0 1rem;
+    font-size: 0.9rem;
+}
+
+/* Complete mode module summary */
+.module-summary {
+    margin: 0.5rem 0 1rem;
+    padding: 0.75rem 1rem;
+    background: #1e1e1e;
+    border-radius: 8px;
+    border: 1px solid #333;
+}
+
+.module-summary .summary-line {
+    color: #ccc;
+    font-size: 0.85rem;
+    margin: 0.3rem 0;
+}
+
+.module-summary .summary-category {
+    color: #999;
+    font-weight: bold;
+}
+
+.module-summary a {
+    color: #ccc;
+    text-decoration: none;
+}
+
+.module-summary a:hover {
+    color: #fff;
+    text-decoration: underline;
+}
+
+/* Clean Up & Retry button on error screen */
+#btn-clean-retry {
+    background: #ff9900;
+    color: #000;
+    font-weight: bold;
+}
+
+#btn-clean-retry:hover {
+    background: #ffaa22;
+}
+
 /* Footer with export logs link */
 #app-footer {
     max-width: 600px;
@@ -881,4 +939,237 @@ button.secondary:hover {
 
 #app-footer a:hover {
     color: #999;
+}
+
+/* Asset Browser Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background: #1a1a1a;
+    border: 1px solid #444;
+    border-radius: 8px;
+    width: 90%;
+    max-width: 560px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid #333;
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    color: #fff;
+}
+
+.modal-close-btn {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+    width: auto;
+    line-height: 1;
+}
+
+.modal-close-btn:hover {
+    color: #fff;
+    background: none;
+}
+
+.asset-breadcrumb {
+    padding: 0.5rem 1.25rem;
+    font-size: 0.85rem;
+    color: #ccc;
+}
+
+.asset-breadcrumb span {
+    cursor: pointer;
+    color: #0066cc;
+}
+
+.asset-breadcrumb span:hover {
+    text-decoration: underline;
+}
+
+.asset-breadcrumb span.current {
+    color: #ccc;
+    cursor: default;
+}
+
+.asset-breadcrumb span.current:hover {
+    text-decoration: none;
+}
+
+.asset-breadcrumb .breadcrumb-sep {
+    color: #555;
+    margin: 0 0.25rem;
+    cursor: default;
+}
+
+.asset-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 1.25rem;
+}
+
+.asset-dropzone {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 200px;
+    max-height: 400px;
+    position: relative;
+    margin: 0 1.25rem;
+}
+
+.asset-dropzone.drag-over {
+    background: #1a2a3a;
+}
+
+.asset-drop-hint {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border: 2px dashed #0066cc;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0088ff;
+    font-size: 1rem;
+    pointer-events: none;
+    background: rgba(0, 50, 100, 0.2);
+}
+
+.asset-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.asset-entry {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+.asset-entry:last-child {
+    border-bottom: none;
+}
+
+.asset-entry-icon {
+    width: 24px;
+    text-align: center;
+    margin-right: 0.5rem;
+    flex-shrink: 0;
+    font-size: 0.9rem;
+}
+
+.asset-entry-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #ccc;
+    font-size: 0.9rem;
+}
+
+.asset-entry.is-directory .asset-entry-name {
+    color: #0088ff;
+    cursor: pointer;
+}
+
+.asset-entry.is-directory .asset-entry-name:hover {
+    text-decoration: underline;
+}
+
+.asset-entry-size {
+    color: #666;
+    font-size: 0.8rem;
+    margin-left: 1rem;
+    flex-shrink: 0;
+    text-align: right;
+    min-width: 60px;
+}
+
+.asset-entry-delete {
+    background: none;
+    border: none;
+    color: #664444;
+    cursor: pointer;
+    padding: 2px 6px;
+    margin: 0 0 0 0.5rem;
+    width: auto;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+}
+
+.asset-entry-delete:hover {
+    color: #cc4444;
+    background: none;
+}
+
+.asset-list-empty {
+    text-align: center;
+    color: #666;
+    padding: 2rem;
+    font-size: 0.9rem;
+}
+
+.asset-spinner {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 2rem;
+}
+
+.spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid #333;
+    border-top-color: #ff9933;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.asset-status {
+    padding: 0.5rem 1.25rem;
+    font-size: 0.8rem;
+    color: #888;
+    min-height: 1.5rem;
+}
+
+.asset-status.error {
+    color: #cc4444;
+}
+
+.asset-status.uploading {
+    color: #ff9933;
 }

@@ -1,7 +1,10 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // Expose installer API
 contextBridge.exposeInMainWorld('installer', {
+    // Get file path from a dropped File object (Electron 40+)
+    getPathForFile: (file) => webUtils.getPathForFile(file),
+
     // IPC invoke wrapper
     invoke: (cmd, args = {}) => {
         return ipcRenderer.invoke(cmd, args);

@@ -50,6 +50,14 @@ function showScreen(screenName) {
     });
     document.getElementById(`screen-${screenName}`).classList.add('active');
     state.currentScreen = screenName;
+
+    // Reset installing screen state so stale progress/checklist never leaks
+    if (screenName === 'installing') {
+        document.getElementById('install-checklist').innerHTML = '';
+        document.getElementById('install-status').textContent = 'Preparing...';
+        const progressFill = document.querySelector('.progress-fill');
+        if (progressFill) progressFill.style.width = '0%';
+    }
 }
 
 // Device Discovery - Try configured hostname first, fall back to manual entry
@@ -115,6 +123,7 @@ function displayDevices(devices) {
 
 async function selectDevice(hostname) {
     state.deviceIp = hostname;
+    state.hostname = hostname;
 
     const statusDiv = document.getElementById('discovery-status');
     statusDiv.innerHTML = '<div class="spinner"></div><p>Validating device...</p>';
@@ -398,6 +407,9 @@ async function checkVersions() {
         console.log('[DEBUG] Move Everything installed, loading upgrade & manage screen...');
         state.managementMode = true;
 
+        // Set up SSH config once for the session
+        await window.installer.invoke('setup_ssh_config', { hostname: state.hostname });
+
         // Show loading state
         showScreen('version-check');
         updateVersionCheckStatus('Checking installed modules...');
@@ -434,6 +446,7 @@ async function checkVersions() {
             available: latestRelease.version
         } : null;
 
+        versionInfo.coreVersion = coreCheck.core || null;
         state.versionInfo = versionInfo;
         state.allModules = moduleCatalog;
 
@@ -488,6 +501,45 @@ function setupInstallationOptions() {
     const screenReaderCheckbox = document.getElementById('enable-screenreader');
     const moduleCategories = document.getElementById('module-categories');
 
+    // Create or find the module summary element (read-only list for Complete mode)
+    let moduleSummary = document.getElementById('module-summary');
+    if (!moduleSummary) {
+        moduleSummary = document.createElement('div');
+        moduleSummary.id = 'module-summary';
+        moduleSummary.className = 'module-summary';
+        moduleCategories.parentNode.insertBefore(moduleSummary, moduleCategories.nextSibling);
+    }
+
+    function updateModuleSummary() {
+        if (state.installType === 'complete' && state.allModules && state.allModules.length > 0) {
+            const categoryNames = {
+                'sound_generator': 'Sound Generators',
+                'audio_fx': 'Audio Effects',
+                'midi_fx': 'MIDI Effects',
+                'utility': 'Utilities',
+                'overtake': 'Overtake'
+            };
+            const grouped = {};
+            state.allModules.forEach(m => {
+                const cat = m.component_type || 'utility';
+                if (!grouped[cat]) grouped[cat] = [];
+                grouped[cat].push(m);
+            });
+            const lines = Object.entries(categoryNames)
+                .filter(([key]) => grouped[key] && grouped[key].length > 0)
+                .map(([key, title]) => {
+                    const links = grouped[key]
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map(m => `<a href="https://github.com/${m.github_repo}" target="_blank">${m.name}</a>`);
+                    return `<span class="summary-category">${title}:</span> ${links.join(', ')}`;
+                });
+            moduleSummary.innerHTML = lines.map(l => `<p class="summary-line">${l}</p>`).join('');
+            moduleSummary.style.display = '';
+        } else {
+            moduleSummary.style.display = 'none';
+        }
+    }
+
     // Handle installation type changes
     radioButtons.forEach(radio => {
         radio.addEventListener('change', (e) => {
@@ -509,9 +561,12 @@ function setupInstallationOptions() {
                 screenReaderCheckbox.disabled = false;
             }
 
+            updateModuleSummary();
             updateInstallButtonState();
         });
     });
+
+    updateModuleSummary();
 
     // Handle screen reader checkbox
     screenReaderCheckbox.addEventListener('change', (e) => {
@@ -583,6 +638,17 @@ function displayModules(modules) {
             moduleInfo.appendChild(moduleName);
             moduleInfo.appendChild(moduleDesc);
 
+            if (module.assets) {
+                const requiresEl = document.createElement('p');
+                requiresEl.className = 'module-requires';
+                if (module.assets.optional) {
+                    requiresEl.textContent = `Supports additional uploaded ${module.assets.extensions.join(', ')} ${module.assets.label.toLowerCase()}`;
+                } else {
+                    requiresEl.textContent = `Requires ${module.assets.label.toLowerCase()} (${module.assets.extensions.join(', ')} files)`;
+                }
+                moduleInfo.appendChild(requiresEl);
+            }
+
             moduleItem.appendChild(checkbox);
             moduleItem.appendChild(moduleInfo);
             moduleItem.onclick = (e) => {
@@ -610,6 +676,18 @@ function updateSelectedModules() {
     updateInstallButtonState();
 }
 
+// Map component_type to on-device install subdirectory
+function getInstallSubdir(componentType) {
+    switch (componentType) {
+        case 'sound_generator': return 'sound_generators';
+        case 'audio_fx': return 'audio_fx';
+        case 'midi_fx': return 'midi_fx';
+        case 'utility': return 'utilities';
+        case 'overtake': return 'overtake';
+        default: return 'other';
+    }
+}
+
 // --- Module operation queue ---
 // Ensures Install/Upgrade/Remove operations don't collide on the SSH connection
 const moduleOpQueue = [];
@@ -621,6 +699,17 @@ async function enqueueModuleOp(op) {
         processModuleOpQueue();
     });
 }
+
+// --- Asset Browser State ---
+const assetBrowser = {
+    open: false,
+    moduleId: null,
+    componentType: null,
+    assets: null,
+    basePath: null,
+    currentPath: null,
+    loading: false
+};
 
 async function processModuleOpQueue() {
     if (moduleOpRunning || moduleOpQueue.length === 0) return;
@@ -641,24 +730,44 @@ function displayManagementModules() {
     const versionInfo = state.versionInfo;
     if (!versionInfo) return;
 
-    // --- Core upgrade row ---
+    // --- Core row (always shown) ---
     const coreRow = document.getElementById('core-upgrade-row');
+    coreRow.style.display = 'block';
+    coreRow.innerHTML = '';
+
+    const coreRowDiv = document.createElement('div');
+    coreRowDiv.className = 'module-row';
+
+    const coreInfo = document.createElement('div');
+    coreInfo.className = 'module-row-info';
+
+    const coreTitle = document.createElement('h4');
+    coreTitle.textContent = 'Move Everything Core';
+    coreInfo.appendChild(coreTitle);
+
+    const coreVersion = document.createElement('span');
     if (versionInfo.coreUpgrade) {
-        coreRow.style.display = 'block';
-        coreRow.innerHTML = `
-            <div class="module-row">
-                <div class="module-row-info">
-                    <h4>Move Everything Core</h4>
-                    <span class="version-status upgrade">${versionInfo.coreUpgrade.current} \u2192 ${versionInfo.coreUpgrade.available}</span>
-                </div>
-                <div class="module-actions">
-                    <button class="btn-action btn-upgrade" onclick="handleUpgradeCore()">Upgrade</button>
-                </div>
-            </div>
-        `;
+        coreVersion.className = 'version-status upgrade';
+        coreVersion.textContent = `${versionInfo.coreUpgrade.current} \u2192 ${versionInfo.coreUpgrade.available}`;
     } else {
-        coreRow.style.display = 'none';
+        coreVersion.className = 'version-status current';
+        coreVersion.textContent = `${versionInfo.coreVersion || 'installed'} (latest)`;
     }
+    coreInfo.appendChild(coreVersion);
+    coreRowDiv.appendChild(coreInfo);
+
+    if (versionInfo.coreUpgrade) {
+        const coreActions = document.createElement('div');
+        coreActions.className = 'module-actions';
+        const upgradeBtn = document.createElement('button');
+        upgradeBtn.className = 'btn-action btn-upgrade';
+        upgradeBtn.textContent = 'Upgrade';
+        upgradeBtn.onclick = () => handleUpgradeCore();
+        coreActions.appendChild(upgradeBtn);
+        coreRowDiv.appendChild(coreActions);
+    }
+
+    coreRow.appendChild(coreRowDiv);
 
     // --- Installed modules by category ---
     const installedDiv = document.getElementById('installed-modules');
@@ -754,8 +863,8 @@ function displayManagementModules() {
             if (module.assets) {
                 const assetBtn = document.createElement('button');
                 assetBtn.className = 'btn-action btn-add-assets';
-                assetBtn.textContent = `Add ${module.assets.label}`;
-                assetBtn.onclick = () => handleAddAssets(module.id, module.component_type, module.assets);
+                assetBtn.textContent = `Manage ${module.assets.label}`;
+                assetBtn.onclick = () => openAssetBrowser(module.id, module.name, module.component_type, module.assets);
                 actions.appendChild(assetBtn);
             }
 
@@ -808,6 +917,17 @@ function displayManagementModules() {
             info.appendChild(nameEl);
             info.appendChild(descEl);
 
+            if (module.assets) {
+                const requiresEl = document.createElement('p');
+                requiresEl.className = 'module-requires';
+                if (module.assets.optional) {
+                    requiresEl.textContent = `Supports additional uploaded ${module.assets.extensions.join(', ')} ${module.assets.label.toLowerCase()}`;
+                } else {
+                    requiresEl.textContent = `Requires ${module.assets.label.toLowerCase()} (${module.assets.extensions.join(', ')} files)`;
+                }
+                info.appendChild(requiresEl);
+            }
+
             const actions = document.createElement('div');
             actions.className = 'module-actions';
 
@@ -828,6 +948,25 @@ function displayManagementModules() {
     // --- Upgrade All button visibility ---
     const hasAnyUpgrade = versionInfo.coreUpgrade || versionInfo.upgradableModules.length > 0;
     document.getElementById('management-top-actions').style.display = hasAnyUpgrade ? 'block' : 'none';
+
+    // --- "All up to date" status message ---
+    let statusEl = document.getElementById('management-status');
+    if (!statusEl) {
+        statusEl = document.createElement('p');
+        statusEl.id = 'management-status';
+        statusEl.className = 'management-status';
+        // Insert after the core upgrade row
+        coreRow.parentNode.insertBefore(statusEl, coreRow.nextSibling);
+    }
+    if (!hasAnyUpgrade && versionInfo.newModules.length === 0) {
+        statusEl.textContent = 'All modules installed and up to date.';
+        statusEl.style.display = '';
+    } else if (!hasAnyUpgrade && versionInfo.newModules.length > 0) {
+        statusEl.textContent = 'All installed modules are up to date.';
+        statusEl.style.display = '';
+    } else {
+        statusEl.style.display = 'none';
+    }
 }
 
 async function handleUpgradeCore() {
@@ -868,7 +1007,7 @@ async function handleUpgradeCore() {
 
         updateInstallProgress('Upgrade complete!', 100);
         setTimeout(() => {
-            populateSuccessScreen();
+            populateSuccessScreen({ isUpgrade: true });
             showScreen('success');
         }, 500);
     } catch (error) {
@@ -962,7 +1101,7 @@ async function handleUpgradeAll() {
 
         updateInstallProgress('All upgrades complete!', 100);
         setTimeout(() => {
-            populateSuccessScreen();
+            populateSuccessScreen({ isUpgrade: true });
             showScreen('success');
         }, 500);
     } catch (error) {
@@ -974,6 +1113,8 @@ async function handleUpgradeAll() {
 async function handleUpgradeModule(moduleId) {
     const module = state.allModules.find(m => m.id === moduleId);
     if (!module) return;
+
+    if (!confirm(`Upgrade ${module.name}?`)) return;
 
     // Update button to show queued/in-progress state
     const row = document.querySelector(`.module-row[data-module-id="${moduleId}"]`);
@@ -989,8 +1130,6 @@ async function handleUpgradeModule(moduleId) {
                 const actions = row.querySelector('.module-actions');
                 actions.innerHTML = '<span class="action-status installing">Upgrading...</span>';
             }
-
-            await window.installer.invoke('setup_ssh_config', { hostname: state.hostname });
 
             const tarballPath = await window.installer.invoke('download_release', {
                 url: module.download_url,
@@ -1036,11 +1175,15 @@ async function handleRemoveModule(moduleId, componentType) {
     const row = document.querySelector(`.module-row[data-module-id="${moduleId}"]`);
     if (row) {
         const actions = row.querySelector('.module-actions');
-        actions.innerHTML = '<span class="action-status installing">Removing...</span>';
+        actions.innerHTML = '<span class="action-status installing">Queued...</span>';
     }
 
     try {
         await enqueueModuleOp(async () => {
+            if (row) {
+                const actions = row.querySelector('.module-actions');
+                actions.innerHTML = '<span class="action-status installing">Removing...</span>';
+            }
             await window.installer.invoke('remove_module', {
                 moduleId,
                 componentType,
@@ -1095,8 +1238,6 @@ async function handleInstallModule(moduleId) {
                 actions.innerHTML = '<span class="action-status installing">Installing...</span>';
             }
 
-            await window.installer.invoke('setup_ssh_config', { hostname: state.hostname });
-
             const tarballPath = await window.installer.invoke('download_release', {
                 url: module.download_url,
                 destPath: `/tmp/${module.asset_name}`
@@ -1137,60 +1278,274 @@ async function handleInstallModule(moduleId) {
     }
 }
 
-async function handleAddAssets(moduleId, componentType, assets) {
-    const row = document.querySelector(`.module-row[data-module-id="${moduleId}"]`);
-    const assetBtn = row ? row.querySelector('.btn-add-assets') : null;
+// --- Asset Browser Functions ---
 
-    if (assetBtn) {
-        assetBtn.textContent = 'Uploading...';
-        assetBtn.disabled = true;
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    const val = bytes / Math.pow(1024, i);
+    return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function showAssetSpinner(show) {
+    const list = document.getElementById('asset-browser-list');
+    const existing = list.querySelector('.asset-spinner');
+    if (show && !existing) {
+        list.innerHTML = '<div class="asset-spinner"><div class="spinner"></div></div>';
+    } else if (!show && existing) {
+        existing.remove();
     }
+}
+
+function setAssetStatus(msg, type) {
+    const el = document.getElementById('asset-browser-status');
+    el.textContent = msg;
+    el.className = 'asset-status';
+    if (type === 'error') el.classList.add('error');
+    else if (type === 'uploading') el.classList.add('uploading');
+}
+
+function openAssetBrowser(moduleId, moduleName, componentType, assets) {
+    const categoryPath = getInstallSubdir(componentType);
+    const basePath = `/data/UserData/move-anything/modules/${categoryPath}/${moduleId}/${assets.path}`;
+
+    assetBrowser.open = true;
+    assetBrowser.moduleId = moduleId;
+    assetBrowser.componentType = componentType;
+    assetBrowser.assets = assets;
+    assetBrowser.basePath = basePath;
+    assetBrowser.currentPath = basePath;
+
+    document.getElementById('asset-browser-title').textContent = `${moduleName} - Manage ${assets.label}`;
+    document.getElementById('asset-browser-list').innerHTML = '';
+    document.getElementById('asset-browser-breadcrumb').innerHTML = '';
+    setAssetStatus('', null);
+    showAssetSpinner(true);
+    document.getElementById('asset-browser-modal').style.display = 'flex';
+
+    refreshAssetListing();
+}
+
+function closeAssetBrowser() {
+    assetBrowser.open = false;
+    document.getElementById('asset-browser-modal').style.display = 'none';
+}
+
+async function refreshAssetListing() {
+    if (!assetBrowser.open) return;
+    assetBrowser.loading = true;
+    showAssetSpinner(true);
+    setAssetStatus('', null);
 
     try {
-        const categoryPath = componentType ? `${componentType}s` : 'utility';
-        const remoteDir = `/data/UserData/move-anything/modules/${categoryPath}/${moduleId}/${assets.path}`;
-
-        const result = await enqueueModuleOp(async () => {
-            return await window.installer.invoke('pick_and_upload_assets', {
-                remoteDir,
+        const entries = await enqueueModuleOp(async () => {
+            return await window.installer.invoke('list_remote_dir', {
                 hostname: state.deviceIp,
-                extensions: assets.extensions,
-                label: assets.label
+                remotePath: assetBrowser.currentPath
+            });
+        });
+        renderAssetList(entries);
+        renderBreadcrumb();
+        setAssetStatus(`${entries.length} item${entries.length !== 1 ? 's' : ''}`, null);
+    } catch (err) {
+        console.error('Failed to list remote dir:', err);
+        setAssetStatus('Failed to load directory', 'error');
+        renderAssetList([]);
+        renderBreadcrumb();
+    } finally {
+        assetBrowser.loading = false;
+    }
+}
+
+function renderAssetList(entries) {
+    const listEl = document.getElementById('asset-browser-list');
+
+    if (entries.length === 0) {
+        listEl.innerHTML = '<div class="asset-list-empty">Empty directory</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    entries.forEach(entry => {
+        const row = document.createElement('div');
+        row.className = 'asset-entry' + (entry.isDirectory ? ' is-directory' : '');
+
+        const icon = document.createElement('span');
+        icon.className = 'asset-entry-icon';
+        icon.textContent = entry.isDirectory ? '\uD83D\uDCC1' : '\uD83D\uDCC4';
+
+        const name = document.createElement('span');
+        name.className = 'asset-entry-name';
+        name.textContent = entry.name;
+        if (entry.isDirectory) {
+            name.onclick = () => navigateToSubdir(entry.name);
+        }
+
+        const size = document.createElement('span');
+        size.className = 'asset-entry-size';
+        size.textContent = entry.isDirectory ? '' : formatFileSize(entry.size);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'asset-entry-delete';
+        delBtn.textContent = '\u2715';
+        delBtn.title = 'Delete';
+        delBtn.onclick = () => handleDeleteAssetEntry(entry.name, entry.isDirectory);
+
+        row.appendChild(icon);
+        row.appendChild(name);
+        row.appendChild(size);
+        row.appendChild(delBtn);
+        listEl.appendChild(row);
+    });
+}
+
+function renderBreadcrumb() {
+    const el = document.getElementById('asset-browser-breadcrumb');
+    const base = assetBrowser.basePath;
+    const current = assetBrowser.currentPath;
+
+    // Get the relative path from base
+    const relativeParts = current.slice(base.length).split('/').filter(Boolean);
+
+    // Build segments: base label + each subdirectory
+    const segments = [];
+    const baseLabel = assetBrowser.assets ? assetBrowser.assets.label : 'Assets';
+
+    // Root segment
+    if (relativeParts.length === 0) {
+        segments.push({ label: baseLabel, path: base, isCurrent: true });
+    } else {
+        segments.push({ label: baseLabel, path: base, isCurrent: false });
+        relativeParts.forEach((part, i) => {
+            const path = base + '/' + relativeParts.slice(0, i + 1).join('/');
+            segments.push({
+                label: part,
+                path: path,
+                isCurrent: i === relativeParts.length - 1
+            });
+        });
+    }
+
+    el.innerHTML = '';
+    segments.forEach((seg, i) => {
+        if (i > 0) {
+            const sep = document.createElement('span');
+            sep.className = 'breadcrumb-sep';
+            sep.textContent = '/';
+            el.appendChild(sep);
+        }
+        const span = document.createElement('span');
+        span.textContent = seg.label;
+        if (seg.isCurrent) {
+            span.className = 'current';
+        } else {
+            span.onclick = () => {
+                assetBrowser.currentPath = seg.path;
+                refreshAssetListing();
+            };
+        }
+        el.appendChild(span);
+    });
+}
+
+function navigateToSubdir(name) {
+    assetBrowser.currentPath = assetBrowser.currentPath + '/' + name;
+    refreshAssetListing();
+}
+
+async function handleDeleteAssetEntry(name, isDir) {
+    const type = isDir ? 'folder' : 'file';
+    if (!confirm(`Delete ${type} "${name}"?${isDir ? ' This will delete all contents.' : ''}`)) return;
+
+    showAssetSpinner(true);
+    setAssetStatus(`Deleting ${name}...`, 'uploading');
+    try {
+        const fullPath = assetBrowser.currentPath + '/' + name;
+        await enqueueModuleOp(async () => {
+            return await window.installer.invoke('delete_remote_path', {
+                hostname: state.deviceIp,
+                remotePath: fullPath
+            });
+        });
+        await refreshAssetListing();
+    } catch (err) {
+        console.error('Delete failed:', err);
+        showAssetSpinner(false);
+        setAssetStatus('Delete failed: ' + err.message, 'error');
+    }
+}
+
+async function handleAssetBrowserUpload() {
+    const pickResult = await window.installer.invoke('pick_asset_files', {
+        extensions: assetBrowser.assets ? assetBrowser.assets.extensions : [],
+        label: assetBrowser.assets ? assetBrowser.assets.label : 'Assets',
+        allowFolders: assetBrowser.assets ? !!assetBrowser.assets.allowFolders : false
+    });
+
+    if (pickResult.canceled || pickResult.filePaths.length === 0) return;
+    await uploadFilesToCurrentDir(pickResult.filePaths);
+}
+
+async function uploadFilesToCurrentDir(filePaths) {
+    showAssetSpinner(true);
+    setAssetStatus(`Uploading ${filePaths.length} item${filePaths.length !== 1 ? 's' : ''}...`, 'uploading');
+
+    try {
+        const results = await enqueueModuleOp(async () => {
+            return await window.installer.invoke('upload_assets', {
+                filePaths: filePaths,
+                remoteDir: assetBrowser.currentPath,
+                hostname: state.deviceIp
             });
         });
 
-        if (result.canceled) {
-            // User cancelled file picker
-            if (assetBtn) {
-                assetBtn.textContent = `Add ${assets.label}`;
-                assetBtn.disabled = false;
-            }
-            return;
-        }
-
-        const failed = result.results.filter(r => !r.success);
+        const failed = results.filter(r => !r.success);
         if (failed.length > 0) {
             const failedNames = failed.map(f => f.file).join(', ');
-            alert(`Some files failed to upload: ${failedNames}`);
+            setAssetStatus(`Upload failed for: ${failedNames}`, 'error');
         }
 
-        const succeeded = result.results.filter(r => r.success).length;
-        if (assetBtn) {
-            assetBtn.textContent = `${succeeded} uploaded`;
-            assetBtn.disabled = false;
-            setTimeout(() => {
-                assetBtn.textContent = `Add ${assets.label}`;
-            }, 2000);
-        }
-    } catch (error) {
-        console.error('Asset upload failed:', error);
-        if (assetBtn) {
-            assetBtn.textContent = 'Failed';
-            assetBtn.disabled = false;
-            setTimeout(() => {
-                assetBtn.textContent = `Add ${assets.label}`;
-            }, 2000);
-        }
+        await refreshAssetListing();
+    } catch (err) {
+        console.error('Upload failed:', err);
+        showAssetSpinner(false);
+        setAssetStatus('Upload failed: ' + err.message, 'error');
+    }
+}
+
+async function handleAssetBrowserMkdir() {
+    const name = prompt('New folder name:');
+    if (!name || !name.trim()) return;
+
+    const folderName = name.trim();
+    // Basic validation
+    if (folderName.includes('/') || folderName.includes('\\')) {
+        setAssetStatus('Folder name cannot contain slashes', 'error');
+        return;
+    }
+
+    showAssetSpinner(true);
+    setAssetStatus(`Creating folder "${folderName}"...`, 'uploading');
+    try {
+        const fullPath = assetBrowser.currentPath + '/' + folderName;
+        await enqueueModuleOp(async () => {
+            return await window.installer.invoke('create_remote_dir', {
+                hostname: state.deviceIp,
+                remotePath: fullPath
+            });
+        });
+        await refreshAssetListing();
+    } catch (err) {
+        console.error('Create folder failed:', err);
+        showAssetSpinner(false);
+        setAssetStatus('Failed to create folder: ' + err.message, 'error');
     }
 }
 
@@ -1374,8 +1729,38 @@ async function startInstallation() {
     }
 }
 
-function populateSuccessScreen() {
+function populateSuccessScreen(options = {}) {
+    const { isUpgrade = false, isUninstall = false } = options;
     const container = document.getElementById('success-next-steps');
+    const backBtn = document.getElementById('btn-back-manage');
+    const instructionEl = document.querySelector('#screen-success .instruction');
+
+    const startOverBtn = document.getElementById('btn-start-over');
+
+    if (isUninstall) {
+        document.querySelector('#screen-success h1').textContent = 'Uninstall Complete';
+        instructionEl.textContent = 'Move Everything has been removed from your device.';
+        container.innerHTML = '<p>You can reinstall Move Everything by clicking "Start Over" below.</p>';
+        container.style.display = '';
+        backBtn.style.display = 'none';
+        startOverBtn.style.display = '';
+        return;
+    }
+    startOverBtn.style.display = 'none';
+
+    if (isUpgrade) {
+        document.querySelector('#screen-success h1').textContent = 'Upgrade Complete';
+        instructionEl.textContent = 'Your modules have been upgraded successfully.';
+        container.style.display = 'none';
+        backBtn.style.display = '';
+        return;
+    }
+
+    // Fresh install
+    document.querySelector('#screen-success h1').textContent = "You're All Set!";
+    instructionEl.textContent = 'Move Everything has been successfully installed on your device.';
+    backBtn.style.display = '';
+
     const isScreenReaderOnly = state.installType === 'screenreader';
     const hasShadowUi = !isScreenReaderOnly;
     const hasStandalone = !isScreenReaderOnly;
@@ -1399,9 +1784,6 @@ function populateSuccessScreen() {
     html += '</ul>';
     container.innerHTML = html;
     container.style.display = '';
-
-    // Reset title in case it was changed by uninstall
-    document.querySelector('#screen-success h1').textContent = "You're All Set!";
 }
 
 function updateInstallProgress(message, percent) {
@@ -1493,12 +1875,13 @@ function parseError(error) {
     // Disk space errors
     if (errorStr.includes('enospc') || errorStr.includes('no space')) {
         return {
-            title: 'Installation Failed',
+            title: 'Disk Full',
             message: 'Not enough space on your Move device.',
+            canCleanTmp: true,
             suggestions: [
+                'Click "Clean Up & Retry" below to remove temp files from your device and try again',
                 'Free up space by deleting unused samples or sets',
-                'Try installing fewer modules (use Custom mode)',
-                'Consider installing Core Only and adding modules later'
+                'Try installing fewer modules (use Custom mode)'
             ]
         };
     }
@@ -1536,6 +1919,12 @@ function showError(message) {
             </ul>
         </div>
     `;
+
+    // Show cleanup button for disk-full errors
+    const cleanupBtn = document.getElementById('btn-clean-retry');
+    if (cleanupBtn) {
+        cleanupBtn.style.display = parsed.canCleanTmp ? '' : 'none';
+    }
 }
 
 function retryInstallation() {
@@ -1556,7 +1945,7 @@ function closeApplication() {
 }
 
 // Event Listeners
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     console.log('[DEBUG] DOM loaded, installer API available:', !!window.installer);
 
     // Listen for backend logs
@@ -1576,6 +1965,18 @@ document.addEventListener('DOMContentLoaded', () => {
         origConsoleError.apply(console, args);
         addLog('UI:ERROR', args.join(' '));
     };
+
+    // Check if returning user and soften warning
+    try {
+        const savedCookie = await window.installer.invoke('get_saved_cookie');
+        if (savedCookie) {
+            document.getElementById('warning-title').textContent = 'Move Everything Installer';
+            document.getElementById('warning-box').innerHTML = `
+                <p><strong>Welcome back!</strong> This installer will connect to your Ableton Move to manage your installation.</p>
+                <p><strong>Note:</strong> Ensure your Move is connected to the same WiFi network as this computer.</p>
+            `;
+        }
+    } catch (e) { /* ignore */ }
 
     // Warning screen
     document.getElementById('btn-accept-warning').onclick = async (e) => {
@@ -1641,41 +2042,130 @@ document.addEventListener('DOMContentLoaded', () => {
     // Secondary action links (Screen Reader / Uninstall)
     document.getElementById('link-screenreader').onclick = async (e) => {
         e.preventDefault();
+        const link = e.target;
+        const originalText = link.textContent;
         try {
             const hostname = state.deviceIp;
 
-            // Check current status
-            updateInstallProgress('Checking screen reader status...', 30);
-            showScreen('installing');
+            link.textContent = 'Checking...';
+            link.style.pointerEvents = 'none';
 
             const currentStatus = await window.installer.invoke('get_screen_reader_status', { hostname });
 
-            // Ask user what they want
             const action = currentStatus ? 'disable' : 'enable';
             const confirmMsg = currentStatus
                 ? 'Screen reader is currently enabled. Disable it?'
                 : 'Screen reader is currently disabled. Enable it?';
 
             if (!confirm(confirmMsg)) {
-                showScreen('modules');
+                link.textContent = originalText;
+                link.style.pointerEvents = '';
                 return;
             }
 
-            // Toggle the state
-            updateInstallProgress(`${action === 'enable' ? 'Enabling' : 'Disabling'} screen reader...`, 60);
+            link.textContent = `${action === 'enable' ? 'Enabling' : 'Disabling'}...`;
+
             const result = await window.installer.invoke('set_screen_reader_state', {
                 hostname,
                 enabled: !currentStatus
             });
 
-            updateInstallProgress('Complete!', 100);
-            alert(result.message);
-
-            // Go back to modules screen
-            showScreen('modules');
+            link.textContent = result.message || 'Done';
+            setTimeout(() => {
+                link.textContent = originalText;
+                link.style.pointerEvents = '';
+            }, 2000);
         } catch (error) {
             console.error('Failed to toggle screen reader:', error);
-            showError('Failed to toggle screen reader: ' + error.message);
+            link.textContent = 'Failed';
+            setTimeout(() => {
+                link.textContent = originalText;
+                link.style.pointerEvents = '';
+            }, 2000);
+        }
+    };
+
+    document.getElementById('link-repair').onclick = async (e) => {
+        e.preventDefault();
+        const vi = state.versionInfo;
+        if (!vi) return;
+
+        // Build list: core + all installed modules
+        const allInstalled = [...(vi.upgradableModules || []), ...(vi.upToDateModules || [])];
+        const items = ['Core', ...allInstalled.map(m => m.name)];
+
+        if (!confirm(`Repair installation? This will reinstall:\n\n${items.join('\n')}`)) return;
+
+        showScreen('installing');
+        try {
+            // Build checklist
+            const checklist = document.getElementById('install-checklist');
+            const allItems = [{ id: 'core', name: 'Move Everything Core' }, ...allInstalled.map(m => ({ id: m.id, name: m.name }))];
+            checklist.innerHTML = allItems.map(item => `
+                <div class="checklist-item" data-item-id="${item.id}">
+                    <div class="checklist-icon pending">\u25CB</div>
+                    <div class="checklist-item-text">${item.name}</div>
+                </div>
+            `).join('');
+
+            updateInstallProgress('Setting up SSH configuration...', 0);
+            await window.installer.invoke('setup_ssh_config', { hostname: state.hostname });
+
+            // Reinstall core
+            updateInstallProgress('Fetching latest release...', 5);
+            const release = await window.installer.invoke('get_latest_release');
+
+            updateChecklistItem('core', 'in-progress');
+            updateInstallProgress(`Downloading ${release.asset_name}...`, 10);
+            const coreTarball = await window.installer.invoke('download_release', {
+                url: release.download_url,
+                destPath: `/tmp/${release.asset_name}`
+            });
+
+            updateInstallProgress('Reinstalling Move Everything core...', 20);
+            const installFlags = [];
+            if (state.enableScreenReader) installFlags.push('--enable-screen-reader');
+
+            await window.installer.invoke('install_main', {
+                tarballPath: coreTarball,
+                hostname: state.deviceIp,
+                flags: installFlags
+            });
+            updateChecklistItem('core', 'completed');
+
+            // Reinstall each module
+            if (allInstalled.length > 0) {
+                const progressPerModule = 60 / allInstalled.length;
+                for (let i = 0; i < allInstalled.length; i++) {
+                    const module = allInstalled[i];
+                    const baseProgress = 30 + (i * progressPerModule);
+
+                    updateChecklistItem(module.id, 'in-progress');
+                    updateInstallProgress(`Downloading ${module.name} (${i + 1}/${allInstalled.length})...`, baseProgress);
+                    const tarballPath = await window.installer.invoke('download_release', {
+                        url: module.download_url,
+                        destPath: `/tmp/${module.asset_name}`
+                    });
+
+                    updateInstallProgress(`Reinstalling ${module.name} (${i + 1}/${allInstalled.length})...`, baseProgress + progressPerModule * 0.5);
+                    await window.installer.invoke('install_module_package', {
+                        moduleId: module.id,
+                        tarballPath,
+                        componentType: module.component_type,
+                        hostname: state.deviceIp
+                    });
+                    updateChecklistItem(module.id, 'completed');
+                }
+            }
+
+            updateInstallProgress('Repair complete!', 100);
+            setTimeout(() => {
+                populateSuccessScreen({ isUpgrade: true });
+                showScreen('success');
+            }, 500);
+        } catch (error) {
+            state.errors.push({ timestamp: new Date().toISOString(), message: error.toString() });
+            showError('Repair failed: ' + error);
         }
     };
 
@@ -1693,11 +2183,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // Show success message
                 setTimeout(() => {
-                    const successDiv = document.querySelector('#screen-success .instruction');
-                    successDiv.textContent = result.message;
-                    document.querySelector('#screen-success h1').textContent = 'Uninstall Complete';
-                    document.querySelector('.success-icon').textContent = '✓';
-                    document.querySelector('#screen-success .info-box').style.display = 'none';
+                    populateSuccessScreen({ isUninstall: true });
                     showScreen('success');
                 }, 500);
             } catch (error) {
@@ -1710,14 +2196,36 @@ document.addEventListener('DOMContentLoaded', () => {
     // Module selection screen
     document.getElementById('btn-install').onclick = startInstallation;
     document.getElementById('btn-back-modules').onclick = () => {
-        showScreen('discovery');
-        startDeviceDiscovery();
+        showScreen('warning');
     };
 
     // Success screen
     document.getElementById('btn-done').onclick = closeApplication;
+    document.getElementById('btn-back-manage').onclick = () => checkVersions();
+    document.getElementById('btn-start-over').onclick = () => {
+        // Reset state for fresh install
+        state.managementMode = false;
+        state.installedModules = [];
+        state.versionInfo = null;
+        showScreen('discovery');
+        startDeviceDiscovery();
+    };
 
     // Error screen
+    document.getElementById('btn-clean-retry').onclick = async () => {
+        const btn = document.getElementById('btn-clean-retry');
+        btn.textContent = 'Cleaning...';
+        btn.disabled = true;
+        try {
+            const result = await window.installer.invoke('clean_device_tmp', { hostname: state.deviceIp });
+            btn.textContent = `Freed ${result.freedMB}MB — retrying...`;
+            setTimeout(() => retryInstallation(), 1000);
+        } catch (err) {
+            console.error('Cleanup failed:', err);
+            btn.textContent = 'Cleanup failed';
+            btn.disabled = false;
+        }
+    };
     document.getElementById('btn-retry').onclick = retryInstallation;
     document.getElementById('btn-diagnostics').onclick = async () => {
         try {
@@ -1738,6 +2246,63 @@ document.addEventListener('DOMContentLoaded', () => {
     // Export logs buttons
     document.getElementById('btn-export-logs').onclick = (e) => { e.preventDefault(); exportLogs(); };
     document.getElementById('btn-export-logs-error').onclick = exportLogs;
+
+    // Asset browser modal events
+    document.getElementById('asset-browser-close').onclick = closeAssetBrowser;
+    document.getElementById('asset-browser-upload').onclick = handleAssetBrowserUpload;
+    document.getElementById('asset-browser-mkdir').onclick = handleAssetBrowserMkdir;
+
+    // Close modal on backdrop click
+    document.getElementById('asset-browser-modal').onclick = (e) => {
+        if (e.target.id === 'asset-browser-modal') closeAssetBrowser();
+    };
+
+    // Close modal on Escape key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && assetBrowser.open) closeAssetBrowser();
+    });
+
+    // Drag-and-drop on asset browser dropzone
+    const dropzone = document.getElementById('asset-browser-dropzone');
+    let dragCounter = 0;
+
+    dropzone.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        dragCounter++;
+        dropzone.classList.add('drag-over');
+        document.getElementById('asset-browser-drop-hint').style.display = 'flex';
+    });
+
+    dropzone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) {
+            dragCounter = 0;
+            dropzone.classList.remove('drag-over');
+            document.getElementById('asset-browser-drop-hint').style.display = 'none';
+        }
+    });
+
+    dropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dragCounter = 0;
+        dropzone.classList.remove('drag-over');
+        document.getElementById('asset-browser-drop-hint').style.display = 'none';
+
+        if (!assetBrowser.open) return;
+
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length === 0) return;
+
+        const filePaths = files.map(f => window.installer.getPathForFile(f)).filter(Boolean);
+        if (filePaths.length > 0) {
+            uploadFilesToCurrentDir(filePaths);
+        }
+    });
 
     // Start on warning screen - user must accept before proceeding
     console.log('[DEBUG] DOM loaded, showing warning');

@@ -10,8 +10,8 @@
     <div id="app">
         <!-- Warning Screen -->
         <div id="screen-warning" class="screen active">
-            <h1>⚠️ Important Information</h1>
-            <div class="warning-box">
+            <h1 id="warning-title">Move Everything Installer</h1>
+            <div class="warning-box" id="warning-box">
                 <p><strong>Are you sure you want to install Move Everything on your Ableton Move?</strong></p>
                 <p>This software is <strong>community-developed</strong> and not officially supported by Ableton.</p>
                 <p>The installation is designed to be safe and reversible. The authors accept no liability for issues, but countless users have installed Move Everything with no reports of permanent damage or bricking a device.</p>
@@ -19,7 +19,7 @@
             </div>
             <div class="action-buttons">
                 <button id="btn-cancel" class="secondary">Cancel</button>
-                <button id="btn-accept-warning">I Understand, Continue</button>
+                <button id="btn-accept-warning">Continue</button>
             </div>
         </div>
 
@@ -40,7 +40,7 @@
                 <input type="text" id="manual-ip" placeholder="e.g., 192.168.1.100">
                 <button id="btn-manual-connect">Connect</button>
             </div>
-            <button id="btn-cancel-discovery" class="secondary">Cancel</button>
+            <button id="btn-cancel-discovery" class="secondary">Back</button>
         </div>
 
         <!-- Code Entry Screen -->
@@ -135,7 +135,7 @@
                 <h3>Accessibility</h3>
                 <label class="checkbox-option">
                     <input type="checkbox" id="enable-screenreader">
-                    <span>Enable screen reader (text-to-speech)</span>
+                    <span>Add screen reader alongside visual UI (text-to-speech navigation)</span>
                 </label>
             </div>
 
@@ -166,6 +166,8 @@
 
             <!-- Secondary links (shown in management mode) -->
             <div id="secondary-actions" style="display: none;">
+                <a href="#" id="link-repair">Repair Installation</a>
+                <span class="secondary-divider">|</span>
                 <a href="#" id="link-screenreader">Screen Reader</a>
                 <span class="secondary-divider">|</span>
                 <a href="#" id="link-uninstall">Uninstall</a>
@@ -191,6 +193,8 @@
             <p class="instruction">Move Everything has been successfully installed on your device.</p>
             <div class="info-box" id="success-next-steps">
             </div>
+            <button id="btn-back-manage" class="secondary" style="display: none;">Back to Manage</button>
+            <button id="btn-start-over" class="secondary" style="display: none;">Start Over</button>
             <button id="btn-done">Done</button>
         </div>
 
@@ -199,9 +203,31 @@
             <h1>Installation Failed</h1>
             <div class="error-icon">✗</div>
             <div id="error-message"></div>
+            <button id="btn-clean-retry" style="display: none;">Clean Up & Retry</button>
             <button id="btn-retry">Try Again</button>
             <button id="btn-diagnostics" class="secondary">Copy Diagnostics</button>
             <button id="btn-export-logs-error" class="secondary">Export Debug Logs</button>
+        </div>
+        <!-- Asset Browser Modal -->
+        <div id="asset-browser-modal" class="modal-overlay" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="asset-browser-title">Manage Assets</h2>
+                    <button id="asset-browser-close" class="modal-close-btn">&times;</button>
+                </div>
+                <div id="asset-browser-breadcrumb" class="asset-breadcrumb"></div>
+                <div class="asset-toolbar">
+                    <button id="asset-browser-upload" class="btn-action btn-add-assets">Upload</button>
+                    <button id="asset-browser-mkdir" class="btn-action btn-add-assets">New Folder</button>
+                </div>
+                <div id="asset-browser-dropzone" class="asset-dropzone">
+                    <div id="asset-browser-list" class="asset-list"></div>
+                    <div id="asset-browser-drop-hint" class="asset-drop-hint" style="display: none;">
+                        Drop files here to upload
+                    </div>
+                </div>
+                <div id="asset-browser-status" class="asset-status"></div>
+            </div>
         </div>
     </div>
     <footer id="app-footer">

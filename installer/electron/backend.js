@@ -984,7 +984,8 @@ async function installMain(tarballPath, hostname, flags = []) {
             try {
                 const cleanupCmds = [
                     'rm -f ~/move-anything.tar.gz',  // Remove old tarball (may be root-owned)
-                    'rm -rf /var/volatile/tmp/move-install-* /var/volatile/tmp/move-uninstall-*'  // Stale temp dirs
+                    'rm -rf /var/volatile/tmp/move-install-* /var/volatile/tmp/move-uninstall-*',  // Stale temp dirs
+                    'rm -f /tmp/*.log /tmp/*.json /tmp/*.tar.gz'  // Logs, json, tarballs filling root partition
                 ];
                 for (const cleanCmd of cleanupCmds) {
                     // Try as ableton first, then as root for permission issues
@@ -1063,6 +1064,17 @@ async function installMain(tarballPath, hostname, flags = []) {
     }
 }
 
+function getInstallSubdir(componentType) {
+    switch (componentType) {
+        case 'sound_generator': return 'sound_generators';
+        case 'audio_fx': return 'audio_fx';
+        case 'midi_fx': return 'midi_fx';
+        case 'utility': return 'utilities';
+        case 'overtake': return 'overtake';
+        default: return 'other';
+    }
+}
+
 async function installModulePackage(moduleId, tarballPath, componentType, hostname) {
     try {
         console.log(`[DEBUG] Installing module ${moduleId} (${componentType})`);
@@ -1079,7 +1091,7 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
         console.log(`[DEBUG] Upload complete for ${moduleId}`);
 
         // Extract and install module (similar to install.sh module installation)
-        const categoryPath = componentType ? `${componentType}s` : 'utility';
+        const categoryPath = getInstallSubdir(componentType);
         console.log(`[DEBUG] Extracting ${moduleId} to modules/${categoryPath}/`);
         await sshExec(hostIp, `cd /data/UserData/move-anything && mkdir -p modules/${categoryPath} && tar -xzf ${filename} -C modules/${categoryPath}/ && rm ${filename}`);
         console.log(`[DEBUG] Module ${moduleId} installed successfully`);
@@ -1088,6 +1100,111 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
     } catch (err) {
         console.error(`[DEBUG] Module installation error for ${moduleId}:`, err.message);
         throw new Error(`Module installation failed: ${err.message}`);
+    }
+}
+
+async function cleanDeviceTmp(hostname) {
+    try {
+        const hostIp = cachedDeviceIp || hostname;
+        console.log('[DEBUG] Cleaning /tmp on device to free root partition space...');
+
+        // Get before size
+        let beforeFree = '';
+        try {
+            beforeFree = await sshExec(hostIp, "df / | tail -1 | awk '{print $4}'");
+        } catch (e) { /* ignore */ }
+
+        // Remove log, json, and tarball files from /tmp
+        const cleanupCmds = [
+            'rm -f /tmp/*.log /tmp/*.json /tmp/*.tar.gz',
+            'rm -rf /tmp/move-install-* /tmp/move-uninstall-*',
+            'rm -rf /var/volatile/tmp/move-install-* /var/volatile/tmp/move-uninstall-*',
+            'rm -f ~/move-anything.tar.gz'
+        ];
+
+        for (const cmd of cleanupCmds) {
+            try {
+                await sshExec(hostIp, cmd);
+            } catch (e) {
+                console.log('[DEBUG] Cleanup cmd failed (non-fatal):', cmd, e.message);
+            }
+        }
+
+        // Get after size
+        let afterFree = '';
+        try {
+            afterFree = await sshExec(hostIp, "df / | tail -1 | awk '{print $4}'");
+        } catch (e) { /* ignore */ }
+
+        const freedKB = parseInt(afterFree) - parseInt(beforeFree);
+        const freedMB = freedKB > 0 ? (freedKB / 1024).toFixed(1) : '0';
+        console.log(`[DEBUG] Freed ${freedMB}MB on root partition`);
+
+        return { success: true, freedMB };
+    } catch (err) {
+        console.error('[DEBUG] Device /tmp cleanup error:', err.message);
+        throw new Error(`Cleanup failed: ${err.message}`);
+    }
+}
+
+async function listRemoteDir(hostname, remotePath) {
+    try {
+        const hostIp = cachedDeviceIp || hostname;
+        // Ensure the directory exists
+        await sshExec(hostIp, `mkdir -p "${remotePath}"`);
+        const output = await sshExec(hostIp, `ls -lA "${remotePath}"`);
+        const lines = output.trim().split('\n');
+        const entries = [];
+        const lineRegex = /^([d\-l])\S+\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\w+\s+\d+\s+[\d:]+\s+(.+)$/;
+        for (const line of lines) {
+            const match = line.match(lineRegex);
+            if (match) {
+                entries.push({
+                    name: match[3],
+                    isDirectory: match[1] === 'd',
+                    size: parseInt(match[2], 10)
+                });
+            }
+        }
+        // Sort: directories first, then alphabetical
+        entries.sort((a, b) => {
+            if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        });
+        return entries;
+    } catch (err) {
+        console.error('[DEBUG] listRemoteDir error:', err.message);
+        throw new Error(`Failed to list remote directory: ${err.message}`);
+    }
+}
+
+async function deleteRemotePath(hostname, remotePath) {
+    try {
+        // Validate path is within modules directory
+        if (!remotePath.startsWith('/data/UserData/move-anything/modules/')) {
+            throw new Error('Path must be within /data/UserData/move-anything/modules/');
+        }
+        const hostIp = cachedDeviceIp || hostname;
+        await sshExec(hostIp, `rm -rf "${remotePath}"`);
+        return true;
+    } catch (err) {
+        console.error('[DEBUG] deleteRemotePath error:', err.message);
+        throw new Error(`Failed to delete remote path: ${err.message}`);
+    }
+}
+
+async function createRemoteDir(hostname, remotePath) {
+    try {
+        // Validate path is within modules directory
+        if (!remotePath.startsWith('/data/UserData/move-anything/modules/')) {
+            throw new Error('Path must be within /data/UserData/move-anything/modules/');
+        }
+        const hostIp = cachedDeviceIp || hostname;
+        await sshExec(hostIp, `mkdir -p "${remotePath}"`);
+        return true;
+    } catch (err) {
+        console.error('[DEBUG] createRemoteDir error:', err.message);
+        throw new Error(`Failed to create remote directory: ${err.message}`);
     }
 }
 
@@ -1204,6 +1321,19 @@ async function checkInstalledVersions(hostname, progressCallback = null) {
     }
 }
 
+function isNewerVersion(candidate, current) {
+    const parse = (v) => (v || '').replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+    const a = parse(candidate);
+    const b = parse(current);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const av = a[i] || 0;
+        const bv = b[i] || 0;
+        if (av > bv) return true;
+        if (av < bv) return false;
+    }
+    return false;
+}
+
 function compareVersions(installed, latestRelease, moduleCatalog) {
     const result = {
         coreUpgrade: null,
@@ -1213,7 +1343,7 @@ function compareVersions(installed, latestRelease, moduleCatalog) {
     };
 
     // Compare core version
-    if (installed.core && latestRelease.version && installed.core !== latestRelease.version) {
+    if (installed.core && latestRelease.version && isNewerVersion(latestRelease.version, installed.core)) {
         result.coreUpgrade = {
             current: installed.core,
             available: latestRelease.version
@@ -1228,8 +1358,8 @@ function compareVersions(installed, latestRelease, moduleCatalog) {
         const installedModule = installedMap.get(catalogModule.id);
 
         if (installedModule) {
-            // Module is installed - check if upgrade available
-            if (catalogModule.version && catalogModule.version !== installedModule.version) {
+            // Module is installed - check if catalog version is newer
+            if (catalogModule.version && isNewerVersion(catalogModule.version, installedModule.version)) {
                 result.upgradableModules.push({
                     ...catalogModule,
                     currentVersion: installedModule.version
@@ -1320,19 +1450,38 @@ async function uploadModuleAssets(localPaths, remoteDir, hostname) {
         await sshExec(hostIp, `mkdir -p "${remoteDir}"`);
 
         const results = [];
-        for (const localPath of localPaths) {
-            const filename = path.basename(localPath);
-            const remotePath = `${remoteDir}/${filename}`;
-            console.log(`[DEBUG] Uploading ${filename}...`);
 
-            try {
-                await sftpUpload(hostIp, localPath, remotePath);
-                results.push({ file: filename, success: true });
-                console.log(`[DEBUG] Uploaded ${filename}`);
-            } catch (err) {
-                console.error(`[DEBUG] Failed to upload ${filename}:`, err.message);
-                results.push({ file: filename, success: false, error: err.message });
+        async function uploadEntry(localPath, targetDir) {
+            const stat = fs.statSync(localPath);
+            if (stat.isDirectory()) {
+                // Upload folder contents recursively, preserving structure
+                const folderName = path.basename(localPath);
+                const remoteSubdir = `${targetDir}/${folderName}`;
+                await sshExec(hostIp, `mkdir -p "${remoteSubdir}"`);
+                console.log(`[DEBUG] Created remote dir ${remoteSubdir}`);
+
+                const entries = fs.readdirSync(localPath);
+                for (const entry of entries) {
+                    await uploadEntry(path.join(localPath, entry), remoteSubdir);
+                }
+                results.push({ file: folderName + '/', success: true });
+            } else {
+                const filename = path.basename(localPath);
+                const remotePath = `${targetDir}/${filename}`;
+                console.log(`[DEBUG] Uploading ${filename}...`);
+                try {
+                    await sftpUpload(hostIp, localPath, remotePath);
+                    results.push({ file: filename, success: true });
+                    console.log(`[DEBUG] Uploaded ${filename}`);
+                } catch (err) {
+                    console.error(`[DEBUG] Failed to upload ${filename}:`, err.message);
+                    results.push({ file: filename, success: false, error: err.message });
+                }
             }
+        }
+
+        for (const localPath of localPaths) {
+            await uploadEntry(localPath, remoteDir);
         }
 
         return results;
@@ -1347,7 +1496,7 @@ async function removeModulePackage(moduleId, componentType, hostname) {
         const hostIp = cachedDeviceIp || hostname;
         console.log(`[DEBUG] Removing module ${moduleId} (${componentType}) from device`);
 
-        const categoryPath = componentType ? `${componentType}s` : 'utility';
+        const categoryPath = getInstallSubdir(componentType);
         const modulePath = `/data/UserData/move-anything/modules/${categoryPath}/${moduleId}`;
 
         // Verify the directory exists before removing
@@ -1672,6 +1821,9 @@ module.exports = {
     installModulePackage,
     removeModulePackage,
     uploadModuleAssets,
+    listRemoteDir,
+    deleteRemotePath,
+    createRemoteDir,
     checkCoreInstallation,
     checkInstalledVersions,
     compareVersions,
@@ -1679,5 +1831,6 @@ module.exports = {
     getScreenReaderStatus,
     setScreenReaderState,
     uninstallMoveEverything,
-    testSshFormats
+    testSshFormats,
+    cleanDeviceTmp
 };
