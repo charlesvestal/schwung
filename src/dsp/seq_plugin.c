@@ -453,6 +453,7 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
     g_plugin_api.on_midi = plugin_on_midi;
     g_plugin_api.set_param = plugin_set_param;
     g_plugin_api.get_param = plugin_get_param;
+    g_plugin_api.get_error = NULL;
     g_plugin_api.render_block = plugin_render_block;
 
     plugin_log("SEQOMD initialized");

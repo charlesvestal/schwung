@@ -93,6 +93,13 @@ typedef struct plugin_api_v1 {
      */
     int (*get_param)(const char *key, char *buf, int buf_len);
 
+    /* Get error message if module is in error state
+     * buf: output buffer
+     * buf_len: size of output buffer
+     * Returns: length written, or 0 if no error
+     */
+    int (*get_error)(char *buf, int buf_len);
+
     /* Audio rendering */
 
     /* Render one block of audio
@@ -143,6 +150,7 @@ typedef struct plugin_api_v2 {
     void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
     void (*set_param)(void *instance, const char *key, const char *val);
     int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+    int (*get_error)(void *instance, char *buf, int buf_len);
     void (*render_block)(void *instance, int16_t *out_interleaved_lr, int frames);
 
 } plugin_api_v2_t;
