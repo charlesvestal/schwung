@@ -17,7 +17,7 @@ echo "=== Installing SEQOMD Module ==="
 # Deploy to Move - utilities subdirectory
 echo "Copying module to Move..."
 ssh ableton@move.local "mkdir -p /data/UserData/move-anything/modules/other/seqomd"
-scp -r dist/control/* ableton@move.local:/data/UserData/move-anything/modules/other/seqomd/
+scp -r dist/seqomd/* ableton@move.local:/data/UserData/move-anything/modules/other/seqomd/
 
 # Set permissions so Module Store can update later
 echo "Setting permissions..."

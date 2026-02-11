@@ -70,7 +70,7 @@ echo "Compile DSP plugin..."
 # Compiled .so files are built separately above
 echo "Copying module files..."
 find ./src/ -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" \) | while read src; do
-    dest="./dist/${src#./src/}"
+    dest="./dist/seqomd/${src#./src/}"
     mkdir -p "$(dirname "$dest")"
     cp "$src" "$dest"
 done
