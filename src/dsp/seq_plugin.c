@@ -178,7 +178,52 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     (void)source;
 }
 
+static void plugin_set_param(const char *key, const char *val);
+
+/* Parse and apply bulk parameter string: "key\nvalue\nkey\nvalue\n..." */
+static void handle_bulk_set(const char *val) {
+    if (!val || !*val) return;
+
+    /* Work on a mutable copy */
+    size_t len = strlen(val);
+    char *buf = malloc(len + 1);
+    if (!buf) return;
+    memcpy(buf, val, len + 1);
+
+    char *pos = buf;
+    while (*pos) {
+        /* Find key (up to next newline) */
+        char *key_start = pos;
+        char *nl = strchr(pos, '\n');
+        if (!nl) break;  /* Need at least key\nvalue */
+        *nl = '\0';
+
+        /* Find value (up to next newline or end of string) */
+        char *val_start = nl + 1;
+        char *nl2 = strchr(val_start, '\n');
+        if (nl2) {
+            *nl2 = '\0';
+            pos = nl2 + 1;
+        } else {
+            pos = val_start + strlen(val_start);
+        }
+
+        /* Apply this param (skip empty keys and recursive bulk_set) */
+        if (*key_start && strcmp(key_start, "bulk_set") != 0) {
+            plugin_set_param(key_start, val_start);
+        }
+    }
+
+    free(buf);
+}
+
 static void plugin_set_param(const char *key, const char *val) {
+    /* Bulk param import: newline-separated key\nvalue pairs */
+    if (strcmp(key, "bulk_set") == 0) {
+        handle_bulk_set(val);
+        return;
+    }
+
     /* Global params */
     if (strcmp(key, "bpm") == 0) {
         int new_bpm = atoi(val);

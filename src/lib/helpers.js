@@ -12,10 +12,45 @@ import { markDirty } from './persistence.js';
 
 /* ============ DSP Communication ============ */
 
+/* Bulk param mode: collect setParam calls and send as one SHM request.
+ * Prevents multi-second freezes when syncing thousands of params (e.g. loading sets). */
+let _bulkMode = false;
+let _bulkBuffer = [];
+
+export function beginBulk() {
+    _bulkMode = true;
+    _bulkBuffer = [];
+}
+
+export function endBulk() {
+    _bulkMode = false;
+    if (_bulkBuffer.length === 0) return;
+
+    /* Serialize as key\nvalue\nkey\nvalue\n... and send in chunks under 60KB */
+    let chunk = "";
+    for (let i = 0; i < _bulkBuffer.length; i++) {
+        const entry = _bulkBuffer[i][0] + "\n" + _bulkBuffer[i][1] + "\n";
+        if (chunk.length + entry.length > 60000 && chunk.length > 0) {
+            host_module_set_param("bulk_set", chunk);
+            chunk = "";
+        }
+        chunk += entry;
+    }
+    if (chunk.length > 0) {
+        host_module_set_param("bulk_set", chunk);
+    }
+    _bulkBuffer = [];
+}
+
 /**
- * Set a parameter on the DSP plugin
+ * Set a parameter on the DSP plugin.
+ * In bulk mode, params are collected and sent together via endBulk().
  */
 export function setParam(key, value) {
+    if (_bulkMode) {
+        _bulkBuffer.push([key, value]);
+        return;
+    }
     host_module_set_param(key, value);
 }
 
@@ -177,10 +212,12 @@ export function updatePadLEDs() {
 }
 
 /**
- * Sync all track data from JS state to DSP
- * Call this after loading a set
+ * Sync all track data from JS state to DSP.
+ * Uses bulk mode to send all params in 1-2 SHM requests instead of 1000+.
  */
 export function syncAllTracksToDSP() {
+    beginBulk();
+
     /* Sync BPM */
     setParam("bpm", String(state.bpm));
 
@@ -307,6 +344,8 @@ export function syncAllTracksToDSP() {
 
     /* Sync master reset */
     setParam("master_reset", String(state.masterReset));
+
+    endBulk();
 
     console.log("All tracks synced to DSP");
 }

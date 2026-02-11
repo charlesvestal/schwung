@@ -362,7 +362,17 @@ export function loadSetToTracks(setIdx) {
         };
     }
 
-    const setData = state.sets[setIdx];
+    let setData = state.sets[setIdx];
+
+    /* Handle metadata-only records (e.g. {"color":31}) that have no track data.
+     * Promote to a proper v2 empty set while preserving metadata like color. */
+    if (!setData.v && !setData.tracks && !Array.isArray(setData)) {
+        const promoted = { v: 2, t: {}, bpm: 120 };
+        if (setData.color !== undefined) promoted.color = setData.color;
+        state.sets[setIdx] = promoted;
+        setData = promoted;
+    }
+
     const isV2 = setData.v === 2;
 
     /* Deserialize tracks based on format */
