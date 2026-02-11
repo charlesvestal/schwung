@@ -1900,7 +1900,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 8192) {
+    if (size <= 0 || size > 16384) {
         fclose(f);
         return -1;
     }
@@ -4684,7 +4684,7 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 8192) {
+    if (size <= 0 || size > 16384) {
         fclose(f);
         return -1;
     }
@@ -5297,6 +5297,22 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
             inst->synth_plugin->set_param("preset", preset_str);
         }
 
+        /* Reset mod wheel (CC 1) to 0 BEFORE state restore.
+         * This clears stale mod wheel values from Move's track state,
+         * but must happen before state restore so saved param values
+         * (e.g. Braids FM which is mapped to CC 1) are not clobbered. */
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+            for (int ch = 0; ch < 16; ch++) {
+                uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};
+                inst->synth_plugin_v2->on_midi(inst->synth_instance, mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
+            }
+        } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+            for (int ch = 0; ch < 16; ch++) {
+                uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};
+                inst->synth_plugin->on_midi(mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
+            }
+        }
+
         /* Apply saved state if present */
         if (patch->synth_state[0] && inst->synth_plugin_v2 && inst->synth_instance) {
             snprintf(msg, sizeof(msg), "Applying synth state: %.50s...", patch->synth_state);
@@ -5443,21 +5459,6 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
 
     snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
     v2_chain_log(inst, msg);
-
-    /* Reset mod wheel (CC 1) to 0 on all channels after patch load.
-     * This prevents stale mod wheel values from Move's track state
-     * causing unwanted vibrato on startup. */
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
-        for (int ch = 0; ch < 16; ch++) {
-            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};  /* CC 1 = mod wheel */
-            inst->synth_plugin_v2->on_midi(inst->synth_instance, mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
-        }
-    } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
-        for (int ch = 0; ch < 16; ch++) {
-            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};  /* CC 1 = mod wheel */
-            inst->synth_plugin->on_midi(mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
-        }
-    }
 
     return 0;
 }
