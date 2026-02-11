@@ -30,6 +30,7 @@ async function exportLogs() {
 // Application State
 const state = {
     currentScreen: 'discovery',
+    hostname: 'move.local',
     deviceIp: null,
     authCode: null,
     baseUrl: null,
@@ -51,34 +52,40 @@ function showScreen(screenName) {
     state.currentScreen = screenName;
 }
 
-// Device Discovery - Try move.local first, fall back to manual entry
+// Device Discovery - Try configured hostname first, fall back to manual entry
 async function startDeviceDiscovery() {
-    console.log('[DEBUG] Trying move.local first...');
+    // Read hostname from input field
+    const hostnameInput = document.getElementById('device-hostname');
+    if (hostnameInput && hostnameInput.value.trim()) {
+        state.hostname = hostnameInput.value.trim();
+    }
+
+    console.log('[DEBUG] Trying', state.hostname, 'first...');
 
     const statusDiv = document.getElementById('discovery-status');
-    statusDiv.innerHTML = '<div class="spinner"></div><p>Connecting to move.local...</p>';
+    statusDiv.innerHTML = `<div class="spinner"></div><p>Connecting to ${state.hostname}...</p>`;
 
-    // Try move.local directly
+    // Try configured hostname directly
     try {
-        const baseUrl = 'http://move.local';
+        const baseUrl = `http://${state.hostname}`;
         const isValid = await window.installer.invoke('validate_device_at', { baseUrl });
 
         if (isValid) {
-            console.log('[DEBUG] move.local validated successfully');
-            statusDiv.innerHTML = '<p style="color: green;">✓ Connected to move.local</p>';
+            console.log('[DEBUG]', state.hostname, 'validated successfully');
+            statusDiv.innerHTML = `<p style="color: green;">✓ Connected to ${state.hostname}</p>`;
 
             // Automatically proceed to next step
             setTimeout(() => {
-                selectDevice('move.local');
+                selectDevice(state.hostname);
             }, 500);
             return;
         }
     } catch (error) {
-        console.error('[DEBUG] move.local validation failed:', error);
+        console.error('[DEBUG]', state.hostname, 'validation failed:', error);
     }
 
-    // If move.local fails, show manual entry
-    statusDiv.innerHTML = '<p style="color: orange;">Could not connect to move.local</p><p>Please enter your Move\'s IP address below:</p>';
+    // If hostname fails, show manual entry
+    statusDiv.innerHTML = `<p style="color: orange;">Could not connect to ${state.hostname}</p><p>Please enter your Move\'s IP address below:</p>`;
     document.querySelector('.manual-entry').style.display = 'block';
 }
 
@@ -319,9 +326,8 @@ async function startConfirmationPolling() {
     confirmationPollInterval = setInterval(async () => {
         try {
             console.log('[DEBUG] Polling SSH connection...');
-            const hostname = 'move.local'; // Use mDNS hostname
             const connected = await window.installer.invoke('test_ssh', {
-                hostname: hostname
+                hostname: state.deviceIp
             });
 
             console.log('[DEBUG] SSH connected:', connected);
@@ -363,7 +369,7 @@ async function checkVersions() {
     try {
         console.log('[DEBUG] Checking if Move Everything is installed...');
 
-        const hostname = state.deviceIp || 'move.local';
+        const hostname = state.deviceIp;
 
         // Quick lightweight check: is Move Everything installed? (doesn't scan modules)
         const coreCheck = await window.installer.invoke('check_core_installation', { hostname });
@@ -705,7 +711,7 @@ async function startInstallation() {
 
         // Setup SSH config
         updateInstallProgress('Setting up SSH configuration...', 0);
-        await window.installer.invoke('setup_ssh_config');
+        await window.installer.invoke('setup_ssh_config', { hostname: state.hostname });
 
         let startProgressForModules = 10;
 
@@ -738,7 +744,7 @@ async function startInstallation() {
             updateInstallProgress(`${coreAction} Move Everything core...`, 30);
             await window.installer.invoke('install_main', {
                 tarballPath: mainTarballPath,
-                hostname: 'move.local',
+                hostname: state.deviceIp,
                 flags: installFlags
             });
             updateChecklistItem('core', 'completed');
@@ -778,7 +784,7 @@ async function startInstallation() {
                         moduleId: module.id,
                         tarballPath: moduleTarballPath,
                         componentType: module.component_type,
-                        hostname: 'move.local'
+                        hostname: state.deviceIp
                     });
                     updateChecklistItem(module.id, 'completed');
                 }
@@ -864,7 +870,7 @@ function parseError(error) {
         };
     }
 
-    if (errorStr.includes('dns') || errorStr.includes('getaddrinfo') || errorStr.includes('move.local')) {
+    if (errorStr.includes('dns') || errorStr.includes('getaddrinfo') || errorStr.includes('.local')) {
         return {
             title: 'Device Not Found',
             message: 'Could not find your Move on the network.',
@@ -1074,7 +1080,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showScreen('version-check');
             document.querySelector('#version-check-status .instruction').textContent = 'Checking installed modules...';
 
-            const hostname = state.deviceIp || 'move.local';
+            const hostname = state.deviceIp;
 
             // Listen for progress updates
             window.installer.on('version-check-progress', (message) => {
@@ -1135,7 +1141,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('option-toggle-screenreader').onclick = async () => {
         try {
-            const hostname = state.deviceIp || 'move.local';
+            const hostname = state.deviceIp;
 
             // Check current status
             updateInstallProgress('Checking screen reader status...', 30);
@@ -1175,7 +1181,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('option-uninstall').onclick = async () => {
         if (confirm('Are you sure you want to uninstall Move Everything? This will restore your Move to stock firmware.')) {
             try {
-                const hostname = state.deviceIp || 'move.local';
+                const hostname = state.deviceIp;
                 updateInstallProgress('Uninstalling Move Everything...', 50);
                 showScreen('installing');
 

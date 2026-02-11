@@ -26,13 +26,17 @@
         <!-- Device Discovery Screen -->
         <div id="screen-discovery" class="screen">
             <h1>Move Everything Installer</h1>
+            <div class="hostname-entry">
+                <label for="device-hostname">Device hostname:</label>
+                <input type="text" id="device-hostname" value="move.local">
+            </div>
             <div id="discovery-status">
                 <div class="spinner"></div>
                 <p id="status-text">Searching for your Ableton Move...</p>
             </div>
             <div id="device-list"></div>
             <div class="manual-entry" style="display: none;">
-                <p>Can't find move.local? Enter IP address:</p>
+                <p>Can't find your device? Enter IP address:</p>
                 <input type="text" id="manual-ip" placeholder="e.g., 192.168.1.100">
                 <button id="btn-manual-connect">Connect</button>
             </div>

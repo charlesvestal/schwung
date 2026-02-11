@@ -591,16 +591,19 @@ async function testSsh(hostname) {
     }
 }
 
-async function setupSshConfig() {
+async function setupSshConfig(hostname = 'move.local') {
     const sshDir = path.join(os.homedir(), '.ssh');
     const configPath = path.join(sshDir, 'config');
 
     // Strip brackets from IPv6 if present
     const deviceIp = cachedDeviceIp ? cachedDeviceIp.replace(/^\[|\]$/g, '') : null;
 
+    // Escape hostname for use in regex
+    const hostnameEscaped = hostname.replace(/\./g, '\\.');
+
     let configEntry = `
-Host move.local
-    HostName move.local
+Host ${hostname}
+    HostName ${hostname}
     User ableton
     IdentityFile ~/.ssh/move_key
     StrictHostKeyChecking no
@@ -627,11 +630,12 @@ Host movedevice
         }
 
         // Remove old entries to avoid duplicates
-        existingConfig = existingConfig.replace(/Host move\.local\n(?:.*\n)*?(?=Host |$)/m, '');
+        const hostnameRegex = new RegExp(`Host ${hostnameEscaped}\n(?:.*\n)*?(?=Host |$)`, 'm');
+        existingConfig = existingConfig.replace(hostnameRegex, '');
         existingConfig = existingConfig.replace(/Host movedevice\n(?:.*\n)*?(?=Host |$)/m, '');
 
         await writeFile(configPath, existingConfig + configEntry);
-        console.log('[DEBUG] SSH config updated for move.local and movedevice ->', deviceIp);
+        console.log(`[DEBUG] SSH config updated for ${hostname} and movedevice ->`, deviceIp);
     } catch (err) {
         throw new Error(`Failed to setup SSH config: ${err.message}`);
     }

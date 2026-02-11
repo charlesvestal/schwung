@@ -75,8 +75,8 @@ ipcMain.handle('test_ssh', async (event, { hostname }) => {
     return await backend.testSsh(hostname);
 });
 
-ipcMain.handle('setup_ssh_config', async () => {
-    return backend.setupSshConfig();
+ipcMain.handle('setup_ssh_config', async (event, { hostname } = {}) => {
+    return backend.setupSshConfig(hostname);
 });
 
 ipcMain.handle('check_git_bash_available', async () => {
