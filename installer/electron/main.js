@@ -83,8 +83,8 @@ ipcMain.handle('check_git_bash_available', async () => {
     return await backend.checkGitBashAvailable();
 });
 
-ipcMain.handle('get_module_catalog', async (event, { installedModuleIds = [] } = {}) => {
-    return await backend.getModuleCatalog(installedModuleIds);
+ipcMain.handle('get_module_catalog', async () => {
+    return await backend.getModuleCatalog();
 });
 
 ipcMain.handle('get_latest_release', async () => {

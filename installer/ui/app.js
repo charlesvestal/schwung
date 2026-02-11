@@ -414,9 +414,8 @@ async function checkVersions() {
         ]);
 
         state.installedModules = installed.modules || [];
-        const installedModuleIds = state.installedModules.map(m => m.id);
 
-        const moduleCatalog = await window.installer.invoke('get_module_catalog', { installedModuleIds });
+        const moduleCatalog = await window.installer.invoke('get_module_catalog');
 
         // Clean up progress listener
         window.installer.removeAllListeners('version-check-progress');
@@ -437,16 +436,6 @@ async function checkVersions() {
 
         state.versionInfo = versionInfo;
         state.allModules = moduleCatalog;
-
-        // Merge assets info from installed modules into versionInfo entries
-        const installedAssetsMap = new Map(
-            state.installedModules.filter(m => m.assets).map(m => [m.id, m.assets])
-        );
-        for (const m of [...versionInfo.upgradableModules, ...versionInfo.upToDateModules]) {
-            if (installedAssetsMap.has(m.id)) {
-                m.assets = installedAssetsMap.get(m.id);
-            }
-        }
 
         // Configure modules screen for management mode
         document.querySelector('#screen-modules h1').textContent = 'Upgrade & Manage';
@@ -556,6 +545,8 @@ function displayModules(modules) {
     // Display categories with checkboxes (fresh install mode only)
     Object.entries(categories).forEach(([key, category]) => {
         if (category.modules.length === 0) return;
+
+        category.modules.sort((a, b) => a.name.localeCompare(b.name));
 
         const categoryDiv = document.createElement('div');
         categoryDiv.className = 'module-category';
@@ -697,6 +688,8 @@ function displayManagementModules() {
     Object.entries(categories).forEach(([key, category]) => {
         if (category.modules.length === 0) return;
 
+        category.modules.sort((a, b) => a.name.localeCompare(b.name));
+
         const categoryDiv = document.createElement('div');
         categoryDiv.className = 'module-category';
 
@@ -781,6 +774,8 @@ function displayManagementModules() {
     if (versionInfo.newModules.length > 0) {
         availableDiv.style.display = 'block';
         availableList.innerHTML = '';
+
+        versionInfo.newModules.sort((a, b) => a.name.localeCompare(b.name));
 
         versionInfo.newModules.forEach(module => {
             const row = document.createElement('div');

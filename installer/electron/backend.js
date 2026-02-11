@@ -641,7 +641,7 @@ Host movedevice
     }
 }
 
-async function getModuleCatalog(installedModuleIds = []) {
+async function getModuleCatalog() {
     try {
         const response = await httpClient.get(
             'https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json'
@@ -661,33 +661,32 @@ async function getModuleCatalog(installedModuleIds = []) {
         // Handle v2 catalog format
         const moduleList = catalog.modules || catalog;
 
-        // For each module, construct direct download URL and fetch latest version
+        // For each module, fetch module.json from repo for version + assets info
         const modules = await Promise.all(moduleList.map(async (module) => {
-            // Construct direct download URL like install.sh does
             const downloadUrl = `https://github.com/${module.github_repo}/releases/latest/download/${module.asset_name}`;
 
             let version = null;
+            let assets = null;
 
             try {
-                console.log(`[DEBUG] Fetching version for module: ${module.id}`);
-                const releaseResponse = await httpClient.get(
-                    `https://api.github.com/repos/${module.github_repo}/releases/latest`,
-                    {
-                        headers: { 'User-Agent': 'MoveEverything-Installer' }
-                    }
+                console.log(`[DEBUG] Fetching module.json for: ${module.id}`);
+                const mjResponse = await httpClient.get(
+                    `https://raw.githubusercontent.com/${module.github_repo}/main/src/module.json`
                 );
-                if (releaseResponse.status === 200 && releaseResponse.data && releaseResponse.data.tag_name) {
-                    const tagName = releaseResponse.data.tag_name;
-                    version = tagName.startsWith('v') ? tagName.substring(1) : tagName;
+                if (mjResponse.status === 200) {
+                    const mj = typeof mjResponse.data === 'string' ? JSON.parse(mjResponse.data) : mjResponse.data;
+                    version = mj.version || null;
+                    assets = mj.assets || null;
                     console.log(`[DEBUG] Found version ${version} for ${module.id}`);
                 }
             } catch (err) {
-                console.log(`[DEBUG] Could not fetch version for ${module.id}:`, err.message);
+                console.log(`[DEBUG] Could not fetch module.json for ${module.id}:`, err.message);
             }
 
             return {
                 ...module,
-                version: version,
+                version,
+                assets,
                 download_url: downloadUrl
             };
         }));
