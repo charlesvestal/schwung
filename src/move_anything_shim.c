@@ -767,6 +767,18 @@ static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
 
+/* Overtake DSP state - loaded when an overtake module has a dsp.so */
+static void *overtake_dsp_handle = NULL;           /* dlopen handle */
+static plugin_api_v2_t *overtake_dsp_gen = NULL;   /* V2 generator plugin */
+static void *overtake_dsp_gen_inst = NULL;          /* Generator instance */
+static audio_fx_api_v2_t *overtake_dsp_fx = NULL;  /* V2 FX plugin */
+static void *overtake_dsp_fx_inst = NULL;           /* FX instance */
+static host_api_v1_t overtake_host_api;             /* Host API provided to plugin */
+
+/* Forward declarations for overtake DSP */
+static void shadow_overtake_dsp_load(const char *path);
+static void shadow_overtake_dsp_unload(void);
+
 /* Startup mod wheel reset countdown - resets mod wheel after Move finishes its startup MIDI burst */
 #define STARTUP_MODWHEEL_RESET_FRAMES 20  /* ~0.6 seconds at 128 frames/block */
 static int shadow_startup_modwheel_countdown = 0;
@@ -4889,6 +4901,52 @@ static void shadow_inprocess_handle_param_request(void) {
         return;
     }
 
+    /* Handle overtake DSP params: overtake_dsp:load, overtake_dsp:unload, overtake_dsp:<param> */
+    if (strncmp(shadow_param->key, "overtake_dsp:", 13) == 0) {
+        const char *param_key = shadow_param->key + 13;
+        if (req_type == 1) {  /* SET */
+            if (strcmp(param_key, "load") == 0) {
+                shadow_overtake_dsp_load(shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (strcmp(param_key, "unload") == 0) {
+                shadow_overtake_dsp_unload();
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->set_param) {
+                overtake_dsp_gen->set_param(overtake_dsp_gen_inst, param_key, shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->set_param) {
+                overtake_dsp_fx->set_param(overtake_dsp_fx_inst, param_key, shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else {
+                shadow_param->error = 13;
+                shadow_param->result_len = -1;
+            }
+        } else if (req_type == 2) {  /* GET */
+            int len = -1;
+            if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->get_param) {
+                len = overtake_dsp_gen->get_param(overtake_dsp_gen_inst, param_key,
+                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+            } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->get_param) {
+                len = overtake_dsp_fx->get_param(overtake_dsp_fx_inst, param_key,
+                                                  shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+            }
+            if (len >= 0) {
+                shadow_param->error = 0;
+                shadow_param->result_len = len;
+            } else {
+                shadow_param->error = 14;
+                shadow_param->result_len = -1;
+            }
+        }
+        shadow_param->response_ready = 1;
+        shadow_param->request_type = 0;
+        return;
+    }
+
     int slot = shadow_param->slot;
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) {
         shadow_param->error = 1;
@@ -5183,6 +5241,15 @@ static void shadow_inprocess_process_midi(void) {
                 continue;
             }
             shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
+
+            /* Also route to overtake DSP if loaded */
+            if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
+                uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+                overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+            } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->on_midi) {
+                uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+                overtake_dsp_fx->on_midi(overtake_dsp_fx_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+            }
         }
         /* Raw MIDI format fallback removed - was matching garbage/stale data.
          * USB MIDI format (with CIN validation) is the proper format for this buffer. */
@@ -5258,6 +5325,172 @@ static void shadow_inprocess_mix_audio(void) {
     memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
 }
 
+/* === OVERTAKE DSP LOAD/UNLOAD ===
+ * Overtake modules can optionally include a dsp.so that runs in the shim's
+ * audio thread.  V2-only: supports both generator (plugin_api_v2_t, outputs
+ * audio) and effect (audio_fx_api_v2_t, processes combined audio in-place).
+ */
+
+/* MIDI send callback for overtake DSP → chain slots */
+static int overtake_midi_send_internal(const uint8_t *msg, int len) {
+    if (!msg || len < 3) return 0;
+    /* Build USB-MIDI packet: [CIN, status, d1, d2] */
+    uint8_t cin = (msg[1] >> 4) & 0x0F;
+    uint8_t pkt[4] = { cin, msg[1], msg[2], msg[3] };
+    static int midi_log_count = 0;
+    int log_on = shadow_midi_out_log_enabled();
+    shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
+    return len;
+}
+
+/* MIDI send callback for overtake DSP → external USB MIDI */
+static int overtake_midi_send_external(const uint8_t *msg, int len) {
+    if (!msg || len < 4) return 0;
+    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        if (midi_out[i] == 0 && midi_out[i+1] == 0 &&
+            midi_out[i+2] == 0 && midi_out[i+3] == 0) {
+            memcpy(&midi_out[i], msg, 4);
+            return len;
+        }
+    }
+    return 0;  /* Buffer full */
+}
+
+static void shadow_overtake_dsp_load(const char *path) {
+    /* Unload previous if any */
+    if (overtake_dsp_handle) {
+        shadow_log("Overtake DSP: unloading previous before loading new");
+        if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->destroy_instance)
+            overtake_dsp_gen->destroy_instance(overtake_dsp_gen_inst);
+        if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->destroy_instance)
+            overtake_dsp_fx->destroy_instance(overtake_dsp_fx_inst);
+        dlclose(overtake_dsp_handle);
+        overtake_dsp_handle = NULL;
+        overtake_dsp_gen = NULL;
+        overtake_dsp_gen_inst = NULL;
+        overtake_dsp_fx = NULL;
+        overtake_dsp_fx_inst = NULL;
+    }
+
+    if (!path || !path[0]) return;
+
+    overtake_dsp_handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!overtake_dsp_handle) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "Overtake DSP: failed to load %s: %s", path, dlerror());
+        shadow_log(msg);
+        return;
+    }
+
+    /* Set up host API for the overtake plugin */
+    memset(&overtake_host_api, 0, sizeof(overtake_host_api));
+    overtake_host_api.api_version = MOVE_PLUGIN_API_VERSION;
+    overtake_host_api.sample_rate = MOVE_SAMPLE_RATE;
+    overtake_host_api.frames_per_block = MOVE_FRAMES_PER_BLOCK;
+    overtake_host_api.mapped_memory = global_mmap_addr;
+    overtake_host_api.audio_out_offset = MOVE_AUDIO_OUT_OFFSET;
+    overtake_host_api.audio_in_offset = MOVE_AUDIO_IN_OFFSET;
+    overtake_host_api.log = shadow_log;
+    overtake_host_api.midi_send_internal = overtake_midi_send_internal;
+    overtake_host_api.midi_send_external = overtake_midi_send_external;
+
+    /* Extract module directory from dsp path */
+    char module_dir[256];
+    strncpy(module_dir, path, sizeof(module_dir) - 1);
+    module_dir[sizeof(module_dir) - 1] = '\0';
+    char *last_slash = strrchr(module_dir, '/');
+    if (last_slash) *last_slash = '\0';
+
+    /* Try V2 generator first (e.g. SEQOMD) */
+    move_plugin_init_v2_fn init_gen = (move_plugin_init_v2_fn)dlsym(
+        overtake_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
+    if (init_gen) {
+        overtake_dsp_gen = init_gen(&overtake_host_api);
+        if (overtake_dsp_gen && overtake_dsp_gen->create_instance) {
+            /* Read defaults from module.json if available */
+            char json_path[512];
+            snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
+            char *defaults = NULL;
+            FILE *f = fopen(json_path, "r");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                if (sz > 0 && sz < 16384) {
+                    defaults = malloc(sz + 1);
+                    if (defaults) {
+                        size_t nr = fread(defaults, 1, sz, f);
+                        defaults[nr] = '\0';
+                        /* Extract just the "defaults" value */
+                        const char *dp = strstr(defaults, "\"defaults\"");
+                        if (!dp) { free(defaults); defaults = NULL; }
+                    }
+                }
+                fclose(f);
+            }
+
+            overtake_dsp_gen_inst = overtake_dsp_gen->create_instance(
+                module_dir, defaults);
+            if (defaults) free(defaults);
+
+            if (overtake_dsp_gen_inst) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Overtake DSP: loaded generator from %s", path);
+                shadow_log(msg);
+                return;
+            }
+        }
+        overtake_dsp_gen = NULL;
+    }
+
+    /* Try audio FX v2 (effect mode) */
+    audio_fx_init_v2_fn init_fx = (audio_fx_init_v2_fn)dlsym(
+        overtake_dsp_handle, AUDIO_FX_INIT_V2_SYMBOL);
+    if (init_fx) {
+        overtake_dsp_fx = init_fx(&overtake_host_api);
+        if (overtake_dsp_fx && overtake_dsp_fx->create_instance) {
+            overtake_dsp_fx_inst = overtake_dsp_fx->create_instance(module_dir, NULL);
+            if (overtake_dsp_fx_inst) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Overtake DSP: loaded FX from %s", path);
+                shadow_log(msg);
+                return;
+            }
+        }
+        overtake_dsp_fx = NULL;
+    }
+
+    /* Neither worked */
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Overtake DSP: no V2 generator or FX entry point in %s", path);
+    shadow_log(msg);
+    dlclose(overtake_dsp_handle);
+    overtake_dsp_handle = NULL;
+}
+
+static void shadow_overtake_dsp_unload(void) {
+    if (!overtake_dsp_handle) return;
+
+    if (overtake_dsp_gen && overtake_dsp_gen_inst) {
+        if (overtake_dsp_gen->destroy_instance)
+            overtake_dsp_gen->destroy_instance(overtake_dsp_gen_inst);
+        shadow_log("Overtake DSP: generator unloaded");
+    }
+    if (overtake_dsp_fx && overtake_dsp_fx_inst) {
+        if (overtake_dsp_fx->destroy_instance)
+            overtake_dsp_fx->destroy_instance(overtake_dsp_fx_inst);
+        shadow_log("Overtake DSP: FX unloaded");
+    }
+
+    dlclose(overtake_dsp_handle);
+    overtake_dsp_handle = NULL;
+    overtake_dsp_gen = NULL;
+    overtake_dsp_gen_inst = NULL;
+    overtake_dsp_fx = NULL;
+    overtake_dsp_fx_inst = NULL;
+}
+
 /* === DEFERRED DSP RENDERING ===
  * Render DSP into buffer (slow, ~300µs) - called POST-ioctl
  * This renders audio for the NEXT frame, adding one frame of latency (~3ms)
@@ -5286,6 +5519,19 @@ static void shadow_inprocess_render_to_buffer(void) {
                 if (mixed < -32768) mixed = -32768;
                 shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
             }
+        }
+    }
+
+    /* Overtake DSP generator: mix its output into the deferred buffer */
+    if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->render_block) {
+        int16_t render_buffer[FRAMES_PER_BLOCK * 2];
+        memset(render_buffer, 0, sizeof(render_buffer));
+        overtake_dsp_gen->render_block(overtake_dsp_gen_inst, render_buffer, MOVE_FRAMES_PER_BLOCK);
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)render_buffer[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
         }
     }
 
@@ -5326,6 +5572,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
         mailbox_audio[i] = (int16_t)mixed;
     }
 
+    /* Overtake DSP FX: process combined Move+shadow audio in-place */
+    if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
+        overtake_dsp_fx->process_block(overtake_dsp_fx_inst, mailbox_audio, FRAMES_PER_BLOCK);
+    }
+
     /* Apply master FX chain to combined audio - process through all 4 slots in series */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
@@ -5364,6 +5615,7 @@ static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shado
 static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
+
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 

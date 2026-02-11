@@ -1039,7 +1039,9 @@ function scanForOvertakeModules() {
                     id: json.id || name,
                     name: json.name || name,
                     path: dirPath,
-                    uiPath: `${dirPath}/${json.ui || 'ui.js'}`
+                    uiPath: `${dirPath}/${json.ui || 'ui.js'}`,
+                    dsp: json.dsp || null,
+                    basePath: dirPath
                 });
             }
         } catch (e) {
@@ -1124,6 +1126,13 @@ let overtakeExitPending = false;
 
 /* Exit overtake mode back to Move */
 function exitOvertakeMode() {
+    /* Unload overtake DSP if loaded */
+    if (typeof shadow_set_param === "function") {
+        shadow_set_param(0, "overtake_dsp:unload", "1");
+    }
+    delete globalThis.host_module_set_param;
+    delete globalThis.host_module_get_param;
+
     overtakeModuleLoaded = false;
     overtakeModulePath = "";
     overtakeModuleCallbacks = null;
@@ -1217,7 +1226,29 @@ function loadOvertakeModule(moduleInfo) {
 
         overtakeModuleLoaded = true;
 
-        /* Step 2: Defer init() call - LEDs will be cleared progressively during loading screen */
+        /* Step 2: Load DSP plugin if the module has one */
+        if (moduleInfo.dsp && typeof shadow_set_param === "function") {
+            const dspPath = moduleInfo.basePath + "/" + moduleInfo.dsp;
+            debugLog("loadOvertakeModule: loading DSP from " + dspPath);
+            shadow_set_param(0, "overtake_dsp:load", dspPath);
+        }
+
+        /* Step 3: Set up host_module_set_param / host_module_get_param shims
+         * so the overtake module's JS can communicate with its DSP plugin */
+        globalThis.host_module_set_param = function(key, value) {
+            if (typeof shadow_set_param === "function") {
+                return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+            }
+        };
+        globalThis.host_module_get_param = function(key) {
+            if (typeof shadow_get_param === "function") {
+                return shadow_get_param(0, "overtake_dsp:" + key);
+            }
+            return null;
+        };
+        debugLog("loadOvertakeModule: param shims installed");
+
+        /* Step 4: Defer init() call - LEDs will be cleared progressively during loading screen */
         overtakeInitPending = true;
         overtakeInitTicks = 0;
         ledClearIndex = 0;  /* Start LED clearing from beginning */
@@ -1228,6 +1259,12 @@ function loadOvertakeModule(moduleInfo) {
         debugLog("loadOvertakeModule error: " + e);
         overtakeModuleLoaded = false;
         overtakeModuleCallbacks = null;
+        /* Clean up DSP and param shims on error */
+        if (typeof shadow_set_param === "function") {
+            shadow_set_param(0, "overtake_dsp:unload", "1");
+        }
+        delete globalThis.host_module_set_param;
+        delete globalThis.host_module_get_param;
         if (typeof shadow_set_overtake_mode === "function") {
             shadow_set_overtake_mode(0);
         }
