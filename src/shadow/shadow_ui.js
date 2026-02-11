@@ -1190,7 +1190,31 @@ function loadOvertakeModule(moduleInfo) {
         setView(VIEWS.OVERTAKE_MODULE);
         needsRedraw = true;
 
-        /* Load the module's UI script */
+        /* Step 2: Load DSP plugin if the module has one (before JS load so params work) */
+        if (moduleInfo.dsp && typeof shadow_set_param === "function") {
+            const dspPath = moduleInfo.basePath + "/" + moduleInfo.dsp;
+            debugLog("loadOvertakeModule: loading DSP from " + dspPath);
+            shadow_set_param(0, "overtake_dsp:load", dspPath);
+        }
+
+        /* Step 3: Install host_module_set_param / host_module_get_param shims BEFORE
+         * loading the module JS. QuickJS ES modules resolve bare global identifiers at
+         * compile time — if the identifier doesn't exist on globalThis when the module
+         * is evaluated, it won't be found later even if added afterwards. */
+        globalThis.host_module_set_param = function(key, value) {
+            if (typeof shadow_set_param === "function") {
+                return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+            }
+        };
+        globalThis.host_module_get_param = function(key) {
+            if (typeof shadow_get_param === "function") {
+                return shadow_get_param(0, "overtake_dsp:" + key);
+            }
+            return null;
+        };
+        debugLog("loadOvertakeModule: param shims installed");
+
+        /* Step 4: Load the module's UI script (after DSP + shims so module can use them) */
         debugLog("loadOvertakeModule: loading " + moduleInfo.uiPath);
         if (typeof shadow_load_ui_module === "function") {
             const result = shadow_load_ui_module(moduleInfo.uiPath);
@@ -1198,6 +1222,11 @@ function loadOvertakeModule(moduleInfo) {
             if (!result) {
                 overtakeModuleLoaded = false;
                 overtakeModuleCallbacks = null;
+                delete globalThis.host_module_set_param;
+                delete globalThis.host_module_get_param;
+                if (typeof shadow_set_param === "function") {
+                    shadow_set_param(0, "overtake_dsp:unload", "1");
+                }
                 if (typeof shadow_set_overtake_mode === "function") {
                     shadow_set_overtake_mode(0);
                 }
@@ -1205,10 +1234,12 @@ function loadOvertakeModule(moduleInfo) {
             }
         } else {
             debugLog("loadOvertakeModule: shadow_load_ui_module not available");
+            delete globalThis.host_module_set_param;
+            delete globalThis.host_module_get_param;
             return false;
         }
 
-        /* Capture the module's callbacks */
+        /* Step 5: Capture the module's callbacks */
         overtakeModuleCallbacks = {
             init: (globalThis.init !== savedInit) ? globalThis.init : null,
             tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
@@ -1226,29 +1257,7 @@ function loadOvertakeModule(moduleInfo) {
 
         overtakeModuleLoaded = true;
 
-        /* Step 2: Load DSP plugin if the module has one */
-        if (moduleInfo.dsp && typeof shadow_set_param === "function") {
-            const dspPath = moduleInfo.basePath + "/" + moduleInfo.dsp;
-            debugLog("loadOvertakeModule: loading DSP from " + dspPath);
-            shadow_set_param(0, "overtake_dsp:load", dspPath);
-        }
-
-        /* Step 3: Set up host_module_set_param / host_module_get_param shims
-         * so the overtake module's JS can communicate with its DSP plugin */
-        globalThis.host_module_set_param = function(key, value) {
-            if (typeof shadow_set_param === "function") {
-                return shadow_set_param(0, "overtake_dsp:" + key, String(value));
-            }
-        };
-        globalThis.host_module_get_param = function(key) {
-            if (typeof shadow_get_param === "function") {
-                return shadow_get_param(0, "overtake_dsp:" + key);
-            }
-            return null;
-        };
-        debugLog("loadOvertakeModule: param shims installed");
-
-        /* Step 4: Defer init() call - LEDs will be cleared progressively during loading screen */
+        /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen */
         overtakeInitPending = true;
         overtakeInitTicks = 0;
         ledClearIndex = 0;  /* Start LED clearing from beginning */

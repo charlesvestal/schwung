@@ -356,7 +356,14 @@ static JSValue js_shadow_request_exit(JSContext *ctx, JSValueConst this_val, int
  * Loads and evaluates a JS file (typically ui_chain.js) in the current context.
  * The loaded module can set globalThis.chain_ui to provide init/tick/onMidi functions.
  * Returns true on success, false on error.
+ *
+ * Uses a unique module name (path#N) for each load to bypass QuickJS's module
+ * cache. This ensures overtake modules get fresh code on every launch and
+ * picks up on-disk changes without restarting shadow_ui.
+ * Relative imports still resolve correctly since QuickJS uses the dirname.
  */
+static int shadow_ui_module_load_counter = 0;
+
 static JSValue js_shadow_load_ui_module(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1) return JS_FALSE;
@@ -367,8 +374,23 @@ static JSValue js_shadow_load_ui_module(JSContext *ctx, JSValueConst this_val, i
     shadow_ui_log_line("Loading UI module:");
     shadow_ui_log_line(path);
 
-    int ret = eval_file(ctx, path, 1);  /* Load as ES module */
+    /* Read the file from disk */
+    size_t buf_len;
+    uint8_t *buf = js_load_file(ctx, &buf_len, path);
+    if (!buf) {
+        perror(path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Create a unique module name to bypass QuickJS module cache */
+    char module_name[512];
+    snprintf(module_name, sizeof(module_name), "%s#%d", path, ++shadow_ui_module_load_counter);
     JS_FreeCString(ctx, path);
+
+    int eval_flags = JS_EVAL_FLAG_STRICT | JS_EVAL_TYPE_MODULE;
+    int ret = eval_buf(ctx, buf, buf_len, module_name, eval_flags);
+    js_free(ctx, buf);
 
     return ret == 0 ? JS_TRUE : JS_FALSE;
 }
