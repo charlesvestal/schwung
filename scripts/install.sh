@@ -813,6 +813,7 @@ if [ "$skip_modules" = false ]; then
     echo "  - Mini-JV: ROM files + optional SR-JV80 expansions"
     echo "  - SF2: SoundFont files (.sf2)"
     echo "  - Dexed: Additional .syx patch banks (optional - defaults included)"
+    echo "  - NAM: .nam model files (free models at tonehunt.org and tone3000.com)"
     echo
     printf "Would you like to copy assets to your Move now? (y/N): "
     read -r copy_assets </dev/tty
@@ -846,8 +847,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r rom_path </dev/tty
 
     if [ -n "$rom_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rom_path" ]; then
             rom_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms" || true
@@ -897,8 +898,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r sf2_path </dev/tty
 
     if [ -n "$sf2_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts" || true
@@ -930,8 +931,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r syx_path </dev/tty
 
     if [ -n "$syx_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$syx_path" ]; then
             syx_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/dexed/banks" || true
@@ -952,6 +953,40 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             fi
         else
             echo "  Directory not found: $syx_path"
+        fi
+    fi
+
+    # NAM models
+    echo
+    echo "NAM: Enter the folder containing your .nam model files."
+    echo "Free models available at: https://tonehunt.org and https://tone3000.com"
+    echo "(Press ENTER to skip)"
+    printf "Enter or drag folder path: "
+    read -r nam_path </dev/tty
+
+    if [ -n "$nam_path" ]; then
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        nam_path=$(echo "$nam_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
+        if [ -d "$nam_path" ]; then
+            nam_count=0
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/audio_fx/nam/models" || true
+            for nam in "$nam_path"/*.nam "$nam_path"/*.NAM; do
+                if [ -f "$nam" ]; then
+                    echo "  Copying $(basename "$nam")..."
+                    if scp_with_retry "$nam" "$username@$hostname:./move-anything/modules/audio_fx/nam/models/"; then
+                        nam_count=$((nam_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
+                fi
+            done
+            if [ $nam_count -gt 0 ]; then
+                echo "  Copied $nam_count NAM model(s)"
+            else
+                echo "  No .nam files found in $nam_path"
+            fi
+        else
+            echo "  Directory not found: $nam_path"
         fi
     fi
 

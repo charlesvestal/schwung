@@ -1,0 +1,884 @@
+/* Reset and Base Styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: #1a1a1a;
+    color: #e0e0e0;
+    line-height: 1.6;
+    padding: 20px;
+}
+
+#app {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+/* Screen Management */
+.screen {
+    display: none;
+    animation: fadeIn 0.3s ease-in;
+}
+
+.screen.active {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Typography */
+h1 {
+    font-size: 2rem;
+    margin-bottom: 1rem;
+    text-align: center;
+    color: #fff;
+}
+
+h3 {
+    font-size: 1.2rem;
+    margin-bottom: 0.5rem;
+    color: #fff;
+}
+
+.instruction {
+    text-align: center;
+    color: #b8b8b8;
+    margin-bottom: 2rem;
+}
+
+/* Buttons */
+button {
+    background: #0066cc;
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 6px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background 0.2s;
+    width: 100%;
+    margin-top: 1rem;
+}
+
+button:hover {
+    background: #0052a3;
+}
+
+button:disabled {
+    background: #333;
+    color: #666;
+    cursor: not-allowed;
+}
+
+button:focus,
+input:focus,
+input[type="checkbox"]:focus,
+input[type="radio"]:focus {
+    outline: 2px solid #0066cc;
+    outline-offset: 2px;
+}
+
+button.secondary {
+    background: #2a2a2a;
+    color: #b8b8b8;
+}
+
+button.secondary:hover {
+    background: #3a3a3a;
+}
+
+/* Spinner */
+.spinner {
+    width: 40px;
+    height: 40px;
+    margin: 2rem auto;
+    border: 4px solid #333;
+    border-top-color: #0066cc;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Discovery Screen */
+.hostname-entry {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.hostname-entry label {
+    color: #b8b8b8;
+    font-size: 0.95rem;
+    white-space: nowrap;
+}
+
+.hostname-entry input {
+    padding: 8px 12px;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 0.95rem;
+    width: 200px;
+}
+
+.hostname-entry input:focus {
+    outline: none;
+    border-color: #0066cc;
+}
+
+#discovery-status {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+#device-list {
+    margin-bottom: 2rem;
+}
+
+.device-item {
+    background: #2a2a2a;
+    padding: 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.device-item:hover {
+    background: #3a3a3a;
+}
+
+.device-item h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.device-item p {
+    margin: 0.25rem 0 0 0;
+    color: #b8b8b8;
+    font-size: 0.9rem;
+}
+
+.manual-entry {
+    background: #2a2a2a;
+    padding: 1.5rem;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.manual-entry p {
+    margin-bottom: 1rem;
+    color: #b8b8b8;
+}
+
+.manual-entry input {
+    width: 100%;
+    padding: 12px;
+    background: #1a1a1a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.manual-entry input:focus {
+    outline: none;
+    border-color: #0066cc;
+}
+
+/* Code Entry Screen */
+.code-input {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 2rem;
+}
+
+.code-digit {
+    width: 50px;
+    height: 60px;
+    text-align: center;
+    font-size: 2rem;
+    background: #2a2a2a;
+    border: 2px solid #444;
+    border-radius: 6px;
+    color: #fff;
+    transition: border-color 0.2s;
+}
+
+.code-digit:focus {
+    outline: none;
+    border-color: #0066cc;
+}
+
+/* Module Selection Screen */
+#module-categories {
+    margin-bottom: 2rem;
+}
+
+.module-category {
+    margin-bottom: 2rem;
+}
+
+.module-category h3 {
+    color: #0066cc;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #333;
+}
+
+.module-item {
+    background: #2a2a2a;
+    padding: 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.module-item:hover {
+    background: #3a3a3a;
+}
+
+.module-item input[type="checkbox"] {
+    margin-right: 1rem;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+}
+
+.module-info {
+    flex: 1;
+}
+
+.module-info h4 {
+    margin: 0;
+    font-size: 1rem;
+    color: #fff;
+}
+
+.module-info h4 a {
+    color: #fff;
+    text-decoration: none;
+}
+
+.module-info h4 a:hover {
+    text-decoration: underline;
+}
+
+.module-info p {
+    margin: 0.25rem 0 0 0;
+    color: #b8b8b8;
+    font-size: 0.9rem;
+}
+
+/* Progress Screen */
+.progress-container {
+    margin: 2rem 0;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 30px;
+    background: #2a2a2a;
+    border-radius: 15px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #0066cc, #0088ff);
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+#install-status {
+    text-align: center;
+    color: #b8b8b8;
+}
+
+#install-checklist {
+    background: #2a2a2a;
+    padding: 1.5rem;
+    border-radius: 6px;
+    margin-top: 2rem;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.checklist-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    background: #1a1a1a;
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+
+.checklist-item.completed {
+    background: #1a3a1a;
+}
+
+.checklist-item.in-progress {
+    background: #2a2a1a;
+}
+
+.checklist-icon {
+    width: 24px;
+    height: 24px;
+    margin-right: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+}
+
+.checklist-icon.pending {
+    color: #666;
+}
+
+.checklist-icon.in-progress .spinner {
+    width: 16px;
+    height: 16px;
+    border-width: 2px;
+    margin: 0;
+}
+
+.checklist-icon.completed {
+    color: #00cc00;
+}
+
+.checklist-item-text {
+    flex: 1;
+    color: #b8b8b8;
+}
+
+.checklist-item.completed .checklist-item-text {
+    color: #b8b8b8;
+}
+
+/* Success Screen */
+.success-icon {
+    width: 80px;
+    height: 80px;
+    margin: 2rem auto;
+    background: #00aa00;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 3rem;
+    color: white;
+}
+
+.credentials-box {
+    background: #2a2a2a;
+    padding: 1.5rem;
+    border-radius: 6px;
+    margin: 2rem 0;
+}
+
+.credentials-box p {
+    margin: 0.5rem 0;
+    font-family: 'Courier New', monospace;
+}
+
+.credentials-box strong {
+    color: #0066cc;
+}
+
+/* Error Screen */
+.error-icon {
+    width: 80px;
+    height: 80px;
+    margin: 2rem auto;
+    background: #cc0000;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 3rem;
+    color: white;
+}
+
+#error-message {
+    background: #2a2a2a;
+    padding: 1.5rem;
+    border-radius: 6px;
+    margin: 2rem 0;
+    color: #ff6666;
+}
+
+/* Action Buttons */
+.action-buttons {
+    display: flex;
+    flex-direction: row;
+    gap: 0.75rem;
+}
+
+.action-buttons button.secondary {
+    flex: 1;
+}
+
+.action-buttons button:not(.secondary) {
+    flex: 2;
+}
+
+@media (max-width: 600px) {
+    .action-buttons {
+        flex-direction: column;
+    }
+    .action-buttons button {
+        flex: 1;
+    }
+}
+
+/* Warning Screen */
+.warning-box {
+    background: #fff3cd;
+    border: 2px solid #ffc107;
+    border-radius: 8px;
+    padding: 2rem;
+    margin: 2rem 0;
+    color: #856404;
+}
+
+/* Info Box */
+.info-box {
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+}
+
+.info-box p {
+    margin: 0.5rem 0;
+    color: #b8b8b8;
+}
+
+.info-box strong {
+    color: #fff;
+}
+
+.warning-box p {
+    margin: 1rem 0;
+    line-height: 1.6;
+}
+
+.warning-box strong {
+    color: #721c24;
+}
+
+/* Installation Options */
+.install-options {
+    margin-bottom: 2rem;
+}
+
+.install-options h3 {
+    color: #fff;
+    margin: 1.5rem 0 1rem 0;
+    font-size: 1.1rem;
+}
+
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.radio-option {
+    display: flex;
+    align-items: center;
+    background: #2a2a2a;
+    padding: 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+    border: 2px solid transparent;
+}
+
+.radio-option:hover {
+    background: #3a3a3a;
+}
+
+.radio-option input[type="radio"] {
+    margin-right: 1rem;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+}
+
+.radio-option input[type="radio"]:checked + .option-content {
+    color: #fff;
+}
+
+.radio-option:has(input[type="radio"]:checked) {
+    background: #3a3a3a;
+    border-color: #0066cc;
+}
+
+.option-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    color: #b8b8b8;
+}
+
+.option-content strong {
+    font-size: 1rem;
+    color: #e0e0e0;
+}
+
+.option-content span {
+    font-size: 0.9rem;
+}
+
+.option-detail {
+    font-size: 0.85rem;
+    color: #888;
+    margin: 0.5rem 0 0 0;
+    line-height: 1.3;
+}
+
+.checkbox-option {
+    display: flex;
+    align-items: center;
+    background: #2a2a2a;
+    padding: 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.checkbox-option:hover {
+    background: #3a3a3a;
+}
+
+.checkbox-option input[type="checkbox"] {
+    margin-right: 1rem;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+}
+
+.checkbox-option span {
+    flex: 1;
+    color: #e0e0e0;
+}
+
+/* Version Check Screen */
+#version-info {
+    margin-top: 2rem;
+}
+
+.version-section {
+    background: #2a2a2a;
+    padding: 1.5rem;
+    border-radius: 6px;
+    margin-bottom: 1.5rem;
+}
+
+.version-section h3 {
+    margin: 0 0 1rem 0;
+    color: #0066cc;
+}
+
+.version-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    background: #1a1a1a;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+}
+
+.version-item-name {
+    flex: 1;
+}
+
+.version-item-name strong {
+    color: #fff;
+    display: block;
+}
+
+.version-item-name span {
+    color: #b8b8b8;
+    font-size: 0.9rem;
+}
+
+.version-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+
+.version-badge.upgrade {
+    background: #ff9900;
+    color: #000;
+}
+
+.version-badge.new {
+    background: #00cc00;
+    color: #000;
+}
+
+.version-badge.current {
+    background: #333;
+    color: #b8b8b8;
+}
+
+/* Core Upgrade Section */
+#core-upgrade-section {
+    margin-bottom: 1.5rem;
+}
+
+.core-upgrade-option {
+    border: 2px solid #ff9900;
+    background: #2a2a1a;
+}
+
+.core-upgrade-option:hover {
+    background: #3a3a2a;
+}
+
+/* Secondary Action Links */
+#secondary-actions {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #333;
+}
+
+#secondary-actions a {
+    color: #888;
+    font-size: 0.9rem;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+#secondary-actions a:hover {
+    color: #ccc;
+}
+
+.secondary-divider {
+    color: #444;
+}
+
+/* Management Mode - Module Rows */
+.module-row {
+    background: #2a2a2a;
+    padding: 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.module-row-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.module-row-info h4 {
+    margin: 0;
+    font-size: 1rem;
+    color: #fff;
+}
+
+.module-row-info h4 a {
+    color: #fff;
+    text-decoration: none;
+}
+
+.module-row-info h4 a:hover {
+    text-decoration: underline;
+}
+
+.module-row-info h4 a.version-status {
+    color: #888;
+    font-size: 0.85rem;
+    font-weight: normal;
+}
+
+.module-row-info p {
+    margin: 0.25rem 0 0 0;
+    color: #b8b8b8;
+    font-size: 0.9rem;
+}
+
+.version-status {
+    display: inline-block;
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.version-status.upgrade {
+    color: #ff9933;
+}
+
+.version-status.current {
+    color: #888;
+}
+
+.version-status a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.version-status a:hover {
+    text-decoration: underline;
+}
+
+.module-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: 1rem;
+    flex-shrink: 0;
+}
+
+.btn-action {
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border: none;
+    width: auto;
+    margin: 0;
+    white-space: nowrap;
+}
+
+.btn-upgrade {
+    background: #ff9900;
+    color: #000;
+}
+
+.btn-upgrade:hover {
+    background: #ffaa22;
+}
+
+.btn-remove {
+    background: #3a3a3a;
+    color: #cc4444;
+}
+
+.btn-remove:hover {
+    background: #4a4a4a;
+}
+
+.btn-install-module {
+    background: #0066cc;
+    color: #fff;
+}
+
+.btn-install-module:hover {
+    background: #0077ee;
+}
+
+.btn-add-assets {
+    background: #2a4a2a;
+    color: #88cc88;
+}
+
+.btn-add-assets:hover {
+    background: #3a5a3a;
+}
+
+.btn-add-assets:disabled {
+    background: #2a2a2a;
+    color: #888;
+    cursor: wait;
+}
+
+.action-status {
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.action-status.installing {
+    color: #ff9933;
+}
+
+.action-status.error {
+    color: #ff4444;
+}
+
+/* Management Mode - Upgrade All */
+#management-top-actions {
+    margin-bottom: 1.5rem;
+}
+
+#btn-upgrade-all {
+    background: #ff9900;
+    color: #000;
+    font-weight: bold;
+}
+
+#btn-upgrade-all:hover {
+    background: #ffaa22;
+}
+
+/* Management Mode - Core Upgrade Row */
+#core-upgrade-row {
+    margin-bottom: 1.5rem;
+}
+
+#core-upgrade-row .module-row {
+    border: 2px solid #ff9900;
+    background: #2a2a1a;
+}
+
+/* Management Mode - Available Modules Section */
+#available-modules {
+    margin-top: 1.5rem;
+}
+
+#available-modules h3 {
+    color: #0066cc;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #333;
+}
+
+/* Footer with export logs link */
+#app-footer {
+    max-width: 600px;
+    margin: 1rem auto 0;
+    text-align: center;
+}
+
+#app-footer a {
+    color: #666;
+    font-size: 0.8rem;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+#app-footer a:hover {
+    color: #999;
+}

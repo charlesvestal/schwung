@@ -471,9 +471,37 @@ If your overtake module communicates with an external USB device that expects an
 The Module Store (`store` module) downloads and installs external modules from GitHub releases. The catalog is fetched from:
 `https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json`
 
+### Catalog Format (v2)
+
+```json
+{
+  "catalog_version": 2,
+  "host": {
+    "name": "Move Anything",
+    "github_repo": "charlesvestal/move-anything",
+    "asset_name": "move-anything.tar.gz",
+    "latest_version": "0.3.11",
+    "download_url": "https://github.com/.../move-anything.tar.gz",
+    "min_host_version": "0.1.0"
+  },
+  "modules": [
+    {
+      "id": "mymodule",
+      "name": "My Module",
+      "description": "What it does",
+      "author": "Your Name",
+      "component_type": "sound_generator",
+      "github_repo": "username/move-anything-mymodule",
+      "asset_name": "mymodule-module.tar.gz",
+      "min_host_version": "0.1.0"
+    }
+  ]
+}
+```
+
 ### How the Store Works
 
-1. Fetches `module-catalog.json` for list of available modules
+1. Fetches `module-catalog.json` and extracts `catalog.modules` array
 2. For each module, queries GitHub API for latest release
 3. Looks for asset matching `<module-id>-module.tar.gz`
 4. Compares release version to installed version
@@ -481,19 +509,7 @@ The Module Store (`store` module) downloads and installs external modules from G
 
 ### Adding a Module to the Catalog
 
-Edit `module-catalog.json` and add an entry:
-```json
-{
-  "id": "mymodule",
-  "name": "My Module",
-  "description": "What it does",
-  "author": "Your Name",
-  "component_type": "sound_generator",
-  "github_repo": "username/move-anything-mymodule",
-  "asset_name": "mymodule-module.tar.gz",
-  "min_host_version": "0.1.0"
-}
-```
+Edit `module-catalog.json` and add an entry to the `modules` array (see format above).
 
 ## External Module Development
 
