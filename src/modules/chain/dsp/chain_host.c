@@ -1973,16 +1973,23 @@ static int parse_hierarchy_params(const char *json, chain_param_info_t *out_para
     /* Parse params from all levels */
     const char *levels = strstr(hierarchy, "\"levels\"");
     if (levels) {
-        levels = strchr(levels, '{');
-        if (levels) {
-            levels++;
+        const char *levels_open = strchr(levels, '{');
+        if (levels_open) {
+            /* Find end of levels object using brace-depth tracking */
+            int levels_depth = 0;
+            const char *levels_end = levels_open;
+            do {
+                if (*levels_end == '{') levels_depth++;
+                if (*levels_end == '}') levels_depth--;
+                levels_end++;
+            } while (levels_depth > 0 && *levels_end);
 
-            /* Iterate through each level object */
-            const char *level_start = levels;
-            while (param_count < max_params) {
+            /* Iterate through each level object, bounded by levels_end */
+            const char *level_start = levels_open + 1;
+            while (param_count < max_params && level_start < levels_end) {
                 /* Skip to next level definition */
                 level_start = strchr(level_start, '{');
-                if (!level_start) break;
+                if (!level_start || level_start >= levels_end) break;
 
                 /* Find end of this level */
                 int brace_depth = 0;
@@ -1996,9 +2003,7 @@ static int parse_hierarchy_params(const char *json, chain_param_info_t *out_para
                 /* Parse params from this level */
                 parse_level_params(level_start, out_params, &param_count, max_params);
 
-                /* Check if we've reached end of levels object */
                 level_start = level_end;
-                if (*level_start == '}') break;
             }
         }
     }
@@ -2059,8 +2064,13 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
                      i, params[i].key, params[i].name, params[i].type);
             chain_log(log_msg);
         }
-        free(json);
-        return 0;
+        if (*count > 0) {
+            free(json);
+            return 0;
+        }
+        /* count == 0: hierarchy had no inline params (string refs only).
+         * Fall through to chain_params for metadata. */
+        chain_log("No inline params in ui_hierarchy, falling through to chain_params");
     }
 
     /* Fall back to legacy chain_params */
@@ -4113,10 +4123,6 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     strncpy(module_name_copy, module_name, MAX_NAME_LEN - 1);
     module_name_copy[MAX_NAME_LEN - 1] = '\0';
     module_name = module_name_copy;  /* Use local copy from now on */
-
-    /* Debug: log input module_name at entry */
-    snprintf(msg, sizeof(msg), "v2_load_synth ENTRY: module_name='%s'", module_name);
-    v2_chain_log(inst, msg);
 
     /* Build path to synth module - all sound generators in modules/sound_generators/ */
     snprintf(synth_path, sizeof(synth_path), "%s/../sound_generators/%s",
@@ -6398,16 +6404,6 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route synth: prefixed params to synth (strip prefix) */
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
-
-        /* Debug: log ui_hierarchy queries */
-        if (strcmp(subkey, "ui_hierarchy") == 0) {
-            char dbg[512];
-            snprintf(dbg, sizeof(dbg), "ui_hierarchy query: synth_plugin_v2=%p synth_instance=%p get_param=%p current_synth_module='%s'",
-                     (void*)inst->synth_plugin_v2, (void*)inst->synth_instance,
-                     inst->synth_plugin_v2 ? (void*)inst->synth_plugin_v2->get_param : NULL,
-                     inst->current_synth_module);
-            v2_chain_log(inst, dbg);
-        }
 
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {

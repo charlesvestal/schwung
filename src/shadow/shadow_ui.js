@@ -962,9 +962,6 @@ function loadChainConfigFromSlot(slotIndex) {
     const fx1Module = getSlotParam(slotIndex, "fx1_module");
     const fx2Module = getSlotParam(slotIndex, "fx2_module");
 
-    /* Debug: track what DSP returned */
-    globalThis._debugLoad = `syn:${synthModule || '-'} fx1:${fx1Module || '-'}`;
-
     cfg.synth = synthModule && synthModule !== "" ? { module: synthModule.toLowerCase(), params: {} } : null;
     cfg.midiFx = midiFxModule && midiFxModule !== "" ? { module: midiFxModule.toLowerCase(), params: {} } : null;
     cfg.fx1 = fx1Module && fx1Module !== "" ? { module: fx1Module.toLowerCase(), params: {} } : null;
@@ -2985,7 +2982,9 @@ function applyComponentSelection() {
     }
 
     if (paramKey) {
+        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${selectedSlot} param=${paramKey} module=${moduleId}`);
         const success = setSlotParam(selectedSlot, paramKey, moduleId);
+        if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
         }
@@ -5901,6 +5900,10 @@ function drawChainEdit() {
     const headerText = truncateText(`S${selectedSlot + 1} ${slotName}`, 24);
     drawHeader(headerText);
 
+    /* Refresh chain config from DSP each render to ensure display matches actual state.
+     * Without this, the cached chainConfigs can be stale if the slot was loaded
+     * externally (e.g. patch restore) and the periodic signature refresh hasn't run yet. */
+    loadChainConfigFromSlot(selectedSlot);
     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
     const chainSelected = selectedChainComponent === -1;
 
