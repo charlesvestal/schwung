@@ -1,48 +1,54 @@
 /*
  * link_subscriber.cpp — Standalone Link Audio subscriber
  *
- * Hybrid approach:
- *   - Uses the Ableton Link SDK for session management and channel discovery
- *     (keeps the session alive via _asdp_v1 heartbeats)
- *   - Sends raw ChannelRequest packets ourselves to trigger Move's audio
- *     streaming (avoids SDK's LinkAudioSource which crashes on Move's kernel)
+ * Uses the Ableton Link SDK's LinkAudioSource to subscribe to Move's
+ * per-track audio channels. This triggers Move to stream audio via
+ * chnnlsv, which the shim's sendto() hook intercepts.
  *
- * The shim's sendto() hook intercepts the resulting audio packets.
+ * Running as a standalone process (not inside Move's LD_PRELOAD shim)
+ * avoids the hook conflicts that caused SIGSEGV in the in-shim approach.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <ableton/LinkAudio.hpp>
 
-#include <arpa/inet.h>
-#include <net/if.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <atomic>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 static std::atomic<bool> g_running{true};
+
+/* Channel IDs discovered via callback — processed in main loop */
+struct PendingChannel {
+    ableton::ChannelId id;
+    std::string peerName;
+    std::string name;
+};
+static std::mutex g_pending_mu;
+static std::vector<PendingChannel> g_pending_channels;
 static std::atomic<bool> g_channels_changed{false};
 
-/* Captured channel info for raw packet sending */
-struct ChannelInfo {
-    uint8_t id_bytes[8];
-    char name[32];
-};
-static std::vector<ChannelInfo> g_move_channels;
-
-/* Our subscriber peer ID (random, generated once) */
-static uint8_t g_peer_id[8];
+static std::atomic<uint64_t> g_buffers_received{0};
 
 static void signal_handler(int sig)
 {
+    const char *name = "?";
+    switch (sig) {
+        case SIGSEGV: name = "SIGSEGV"; break;
+        case SIGBUS:  name = "SIGBUS"; break;
+        case SIGABRT: name = "SIGABRT"; break;
+        case SIGTERM: name = "SIGTERM"; break;
+        case SIGINT:  name = "SIGINT"; break;
+    }
+    printf("link-subscriber: caught signal %d (%s)\n", sig, name);
+
     if (sig == SIGSEGV || sig == SIGBUS || sig == SIGABRT) {
         _exit(128 + sig);
     }
@@ -63,32 +69,13 @@ static bool is_link_audio_enabled()
     return content.find("true", colon) < nl;
 }
 
-static void generate_peer_id()
-{
-    FILE *f = fopen("/dev/urandom", "r");
-    if (f) {
-        fread(g_peer_id, 1, sizeof(g_peer_id), f);
-        fclose(f);
-    }
-}
-
-/* Build a 28-byte ChannelRequest: 20-byte header + 8-byte raw ChannelId.
- * msg_type=4 (kChannelRequest), NOT TLV-wrapped. */
-static void build_channel_request(uint8_t *pkt, const uint8_t *channel_id)
-{
-    memset(pkt, 0, 28);
-    memcpy(pkt, "chnnlsv", 7);    /* magic */
-    pkt[7] = 0x01;                  /* version */
-    pkt[8] = 0x04;                  /* msg_type = kChannelRequest */
-    /* pkt[9] = flags = 0, pkt[10..11] = reserved = 0 */
-    memcpy(pkt + 12, g_peer_id, 8); /* subscriber PeerID */
-    memcpy(pkt + 20, channel_id, 8); /* ChannelID to subscribe to */
-}
-
 int main()
 {
     std::signal(SIGTERM, signal_handler);
     std::signal(SIGINT, signal_handler);
+    std::signal(SIGSEGV, signal_handler);
+    std::signal(SIGBUS, signal_handler);
+    std::signal(SIGABRT, signal_handler);
 
     setvbuf(stdout, NULL, _IOLBF, 0);
 
@@ -96,120 +83,109 @@ int main()
         return 0;
     }
 
-    generate_peer_id();
     printf("link-subscriber: starting\n");
 
-    /* Phase 1: Join session and discover channels via SDK */
+    /* Join Link session and enable audio */
     ableton::LinkAudio link(120.0, "ME-Sub");
     link.enable(true);
     link.enableLinkAudio(true);
 
-    link.setChannelsChangedCallback([&]() {
-        auto chans = link.channels();
+    printf("link-subscriber: peer ");
+    auto nid = link.localNodeId();
+    for (int i = 0; i < 8; i++) printf("%02x", nid[i]);
+    printf("\n");
 
-        g_move_channels.clear();
-        for (const auto& ch : chans) {
+    /* Create a dummy sink so that our PeerAnnouncements include at least one
+     * channel.  Move's Sink handler looks up ChannelRequest.peerId in
+     * mPeerSendHandlers, which is only populated when a PeerAnnouncement
+     * with channels is received.  Without this, forPeer() returns nullopt
+     * and audio is silently never sent. */
+    ableton::LinkAudioSink dummySink(link, "ME-Sub-Ack", 256);
+    printf("link-subscriber: dummy sink created (triggers peer announcement)\n");
+
+    /* Callback just records channel IDs — source creation deferred to main loop
+     * because LinkAudioSource constructor isn't safe from the callback thread */
+    link.setChannelsChangedCallback([&]() {
+        auto channels = link.channels();
+        std::lock_guard<std::mutex> lock(g_pending_mu);
+        g_pending_channels.clear();
+        for (const auto& ch : channels) {
             if (ch.peerName.find("Move") != std::string::npos) {
-                ChannelInfo ci;
-                /* Copy the 8-byte channel ID from the SDK's Id type */
-                static_assert(sizeof(ch.id) >= 8, "ChannelId must be 8+ bytes");
-                memcpy(ci.id_bytes, &ch.id, 8);
-                snprintf(ci.name, sizeof(ci.name), "%s", ch.name.c_str());
-                g_move_channels.push_back(ci);
+                g_pending_channels.push_back({ch.id, ch.peerName, ch.name});
             }
         }
         g_channels_changed = true;
-
         printf("link-subscriber: discovered %zu Move channels\n",
-               g_move_channels.size());
-        for (const auto& ci : g_move_channels) {
-            printf("  %s\n", ci.name);
-        }
+               g_pending_channels.size());
     });
 
-    /* Phase 2: Wait for channel discovery, then get Move's endpoint
-     * from the shim (written to shared file when sendto captures it). */
     printf("link-subscriber: waiting for channel discovery...\n");
 
-    /* The shim writes Move's chnnlsv endpoint to a file when it
-     * captures the first sendto. We poll for it. If it doesn't exist,
-     * Move isn't streaming yet (needs Live or another subscriber first).
-     *
-     * But we ARE the subscriber! Chicken-and-egg.
-     *
-     * Solution: use callOnLinkThread to send our ChannelRequests through
-     * the SDK's own networking layer, bypassing the broken Source receiver. */
+    /* Active sources — managed in main loop only */
+    std::vector<ableton::LinkAudioSource> sources;
 
-    /* Phase 2b: Send ChannelRequests via the SDK's network thread.
-     * The SDK's UdpMessenger knows Move's endpoint. We send raw packets
-     * by creating a separate socket and sending to the address the SDK
-     * knows. We discover it from the _asdp_v1 data by listening to
-     * multicast discovery ourselves.
-     *
-     * Actually, simplest: just open a raw socket, receive Move's
-     * chnnlsv messages (session announcements), and get its address
-     * from the source. Move sends session announcements to all known
-     * peers — and since our SDK instance is a peer, Move sends to us. */
-
-    /* Open a UDP socket to receive chnnlsv announcements and send requests */
-    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        perror("link-subscriber: socket");
-        return 1;
-    }
-
-    int reuse = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    /* We need Move's chnnlsv address. The simplest reliable way:
-     * listen on the same port the SDK bound to, receive Move's
-     * session announcements, and extract the source address. */
-
-    /* Actually, we'll take a simpler approach: just send ChannelRequests
-     * to Move's link-local address on the port the shim captures.
-     * The shim writes this to /tmp/link-audio-endpoint when it sees
-     * the first chnnlsv packet from Move. */
-
-    struct sockaddr_in6 move_addr;
-    memset(&move_addr, 0, sizeof(move_addr));
-    bool have_endpoint = false;
+    uint64_t last_count = 0;
+    int tick = 0;
 
     while (g_running) {
-        /* Try to read Move's endpoint from shim */
-        if (!have_endpoint) {
-            FILE *ep = fopen("/data/UserData/move-anything/link-audio-endpoint", "r");
-            if (ep) {
-                char addr_str[128];
-                int port = 0;
-                unsigned scope = 0;
-                if (fscanf(ep, "%127s %d %u", addr_str, &port, &scope) == 3) {
-                    move_addr.sin6_family = AF_INET6;
-                    move_addr.sin6_port = htons(port);
-                    move_addr.sin6_scope_id = scope;
-                    if (inet_pton(AF_INET6, addr_str, &move_addr.sin6_addr) == 1) {
-                        have_endpoint = true;
-                        printf("link-subscriber: got Move endpoint %s port %d scope %u\n",
-                               addr_str, port, scope);
-                    }
-                }
-                fclose(ep);
-            }
-        }
-
-        /* Send ChannelRequests for all discovered Move channels */
-        if (have_endpoint && !g_move_channels.empty()) {
-            for (const auto& ci : g_move_channels) {
-                uint8_t pkt[28];
-                build_channel_request(pkt, ci.id_bytes);
-                sendto(sock, pkt, 28, 0,
-                       (struct sockaddr *)&move_addr, sizeof(move_addr));
-            }
-        }
-
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        tick++;
+
+        /* Create sources when channels change */
+        if (g_channels_changed.exchange(false)) {
+            std::vector<PendingChannel> pending;
+            {
+                std::lock_guard<std::mutex> lock(g_pending_mu);
+                pending = g_pending_channels;
+            }
+
+            /* Destroy old sources first */
+            sources.clear();
+            printf("link-subscriber: cleared old sources\n");
+
+            /* Small delay to let SDK process the unsubscriptions */
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            /* Pre-allocate to avoid reallocation (which moves LinkAudioSource objects) */
+            sources.reserve(pending.size());
+
+            /* Create new sources one at a time */
+            for (const auto& pc : pending) {
+                printf("link-subscriber: subscribing to %s/%s...\n",
+                       pc.peerName.c_str(), pc.name.c_str());
+
+                try {
+                    sources.emplace_back(link, pc.id,
+                        [](ableton::LinkAudioSource::BufferHandle) {
+                            g_buffers_received.fetch_add(1, std::memory_order_relaxed);
+                        });
+                    printf("link-subscriber: OK\n");
+                } catch (const std::exception& e) {
+                    printf("link-subscriber: ERROR: %s\n", e.what());
+                } catch (...) {
+                    printf("link-subscriber: ERROR (unknown)\n");
+                }
+
+                /* Small delay between source creation to avoid overwhelming */
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+
+            printf("link-subscriber: %zu sources active\n", sources.size());
+        }
+
+        /* Log buffer count every 30 seconds */
+        if (tick % 60 == 0) {
+            uint64_t count = g_buffers_received.load(std::memory_order_relaxed);
+            if (count != last_count) {
+                printf("link-subscriber: %llu audio buffers received\n",
+                       (unsigned long long)count);
+                last_count = count;
+            }
+        }
     }
 
-    close(sock);
-    printf("link-subscriber: shutting down\n");
+    sources.clear();
+    printf("link-subscriber: shutting down (%llu total buffers)\n",
+           (unsigned long long)g_buffers_received.load());
     return 0;
 }

@@ -2036,6 +2036,7 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
         if (memcmp(p, LINK_AUDIO_MAGIC, LINK_AUDIO_MAGIC_LEN) == 0 &&
             p[7] == LINK_AUDIO_VERSION) {
             uint8_t msg_type = p[8];
+
             if (msg_type == LINK_AUDIO_MSG_AUDIO && len == LINK_AUDIO_PACKET_SIZE) {
                 link_audio_intercept_audio(p);
             } else if (msg_type == LINK_AUDIO_MSG_SESSION) {
@@ -2151,16 +2152,17 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
                 }
             }
             link_audio.move_channel_count = count;
+
         }
 
         pos += tlen;
     }
 
-    /* Mark session as parsed and start subscriber if not already running.
-     * Require both channels AND address to be captured before starting threads. */
+    /* Mark session as parsed and start threads.
+     * For standalone subscriber (no Live), addr_captured may be false
+     * since audio flows via IPv4 loopback. Still mark as parsed. */
     if (!link_audio.session_parsed &&
-        link_audio.move_channel_count > 0 &&
-        link_audio.addr_captured) {
+        link_audio.move_channel_count > 0) {
         link_audio.session_parsed = 1;
         char logbuf[256];
         snprintf(logbuf, sizeof(logbuf),
@@ -2174,8 +2176,10 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
             shadow_log(ch_log);
         }
 
-        /* Start publisher for shadow audio (subscriber is now standalone binary) */
-        link_audio_start_publisher();
+        /* Start publisher for shadow audio only when Live's address is known */
+        if (link_audio.addr_captured) {
+            link_audio_start_publisher();
+        }
     }
 }
 
@@ -2193,7 +2197,34 @@ static void link_audio_intercept_audio(const uint8_t *pkt)
             break;
         }
     }
-    if (idx < 0) return;  /* unknown channel, skip */
+
+    /* Auto-discover channels from audio packets when not yet known via session.
+     * The standalone link-subscriber triggers Move to stream audio, but session
+     * announcements (msg_type=1) may not flow through sendto() on loopback. */
+    if (idx < 0 && link_audio.move_channel_count < LINK_AUDIO_MOVE_CHANNELS) {
+        idx = link_audio.move_channel_count;
+        link_audio_channel_t *ch = &link_audio.channels[idx];
+        memcpy(ch->channel_id, channel_id, 8);
+        snprintf(ch->name, sizeof(ch->name), "ch%d", idx);
+        ch->active = 1;
+        ch->write_pos = 0;
+        ch->read_pos = 0;
+        ch->peak = 0;
+        ch->pkt_count = 0;
+        link_audio.move_channel_count = idx + 1;
+
+        /* Also capture Move's PeerID from offset 12 */
+        memcpy(link_audio.move_peer_id, pkt + 12, 8);
+
+        char logbuf[128];
+        snprintf(logbuf, sizeof(logbuf),
+                 "Link Audio: auto-discovered channel %d (id %02x%02x%02x%02x%02x%02x%02x%02x)",
+                 idx, channel_id[0], channel_id[1], channel_id[2], channel_id[3],
+                 channel_id[4], channel_id[5], channel_id[6], channel_id[7]);
+        shadow_log(logbuf);
+    }
+
+    if (idx < 0) return;  /* no room for more channels */
 
     link_audio_channel_t *ch = &link_audio.channels[idx];
 
@@ -8413,9 +8444,10 @@ int ioctl(int fd, unsigned long request, ...)
 
                 int ui_alive = shadow_ui_pid_alive(shadow_ui_pid);
                 unified_log("shim", LOG_LEVEL_DEBUG,
-                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d",
+                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d la_pkts=%u la_ch=%d",
                     getpid(), rss_kb, consecutive_overruns,
-                    (int)shadow_ui_pid, ui_alive, shadow_display_mode);
+                    (int)shadow_ui_pid, ui_alive, shadow_display_mode,
+                    link_audio.packets_intercepted, link_audio.move_channel_count);
             }
         }
     }
