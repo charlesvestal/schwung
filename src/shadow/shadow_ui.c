@@ -430,10 +430,22 @@ static JSValue js_shadow_set_param(JSContext *ctx, JSValueConst this_val, int ar
     shadow_param->error = 0;
     shadow_param->request_type = 1;  /* SET */
 
-    /* Wait for response with timeout */
-    int timeout = 100;  /* ~100ms */
+    /* In overtake mode, fire-and-forget: don't block waiting for the shim
+     * to acknowledge.  The shim will process the SET on its next ioctl.
+     * This prevents rapid knob turns (many CCs → many setParams) from
+     * stalling the UI thread.  If another setParam overwrites the SHM
+     * before the shim processes it, last-writer-wins — correct for knobs. */
+    if (shadow_control && shadow_control->overtake_mode >= 2) {
+        return JS_TRUE;
+    }
+
+    /* Normal mode: wait for response with timeout.
+     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
+     * Use 200 µs sleep for tighter polling — reduces per-call latency
+     * while keeping CPU low. */
+    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
     while (!shadow_param->response_ready && timeout > 0) {
-        usleep(1000);
+        usleep(200);
         timeout--;
     }
 
@@ -473,10 +485,13 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     shadow_param->error = 0;
     shadow_param->request_type = 2;  /* GET */
 
-    /* Wait for response with timeout */
-    int timeout = 100;  /* ~100ms */
+    /* Wait for response with timeout.
+     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
+     * Use 200 µs sleep for tighter polling — reduces per-call latency
+     * while keeping CPU low. */
+    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
     while (!shadow_param->response_ready && timeout > 0) {
-        usleep(1000);
+        usleep(200);
         timeout--;
     }
 
@@ -1385,10 +1400,9 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        if (jsTickIsDefined) {
-            callGlobalFunction(ctx, &JSTick, 0);
-        }
-
+        /* Process incoming MIDI BEFORE tick() so that the current frame's
+         * drawUI() reflects the latest input (knob CCs, button presses).
+         * This eliminates one full loop iteration of display latency. */
         if (shadow_control && shadow_control->midi_ready != last_midi_ready) {
             last_midi_ready = shadow_control->midi_ready;
             process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
@@ -1400,6 +1414,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        if (jsTickIsDefined) {
+            callGlobalFunction(ctx, &JSTick, 0);
+        }
 
         refresh_counter++;
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
@@ -1408,7 +1425,13 @@ int main(int argc, char *argv[]) {
             js_display_screen_dirty = 0;
         }
 
-        usleep(16000);
+        /* Overtake modules need a faster tick rate for responsive display/LED
+         * updates.  Normal shadow UI (slot management) is fine at ~60 Hz. */
+        if (shadow_control && shadow_control->overtake_mode >= 2) {
+            usleep(2000);   /* ~500 Hz effective (minus tick work) */
+        } else {
+            usleep(16000);  /* ~60 Hz for normal shadow UI */
+        }
     }
 
     js_std_free_handlers(rt);
