@@ -2079,6 +2079,12 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
 
         link_audio.addr_captured = 1;
 
+        /* If session was already parsed (standalone subscriber beat Live),
+         * start the publisher now that we have Live's address */
+        if (link_audio.session_parsed && !link_audio.publisher_running) {
+            link_audio_start_publisher();
+        }
+
         /* Write Move's chnnlsv endpoint to file for standalone link-subscriber */
         {
             char local_str_ep[INET6_ADDRSTRLEN];
