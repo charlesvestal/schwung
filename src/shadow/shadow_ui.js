@@ -433,6 +433,11 @@ function updateTriggerEnumAccum(knobIndex, delta) {
 
     triggerEnumLastMs[knobIndex] = now;
 
+    if (latched && delta < 0) {
+        accum = 0;
+        latched = false;
+    }
+
     if (latched) {
         triggerEnumAccum[knobIndex] = TRIGGER_ENUM_TURN_THRESHOLD;
         triggerEnumLatched[knobIndex] = true;

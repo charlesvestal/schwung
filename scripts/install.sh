@@ -617,6 +617,10 @@ else
   echo "No migration needed."
 fi
 
+# Preflight: clean stale debug/tmp artifacts that can fill root on dev-heavy setups.
+# Keep runtime sockets and only remove known one-off files/directories.
+ssh_root_with_retry "rm -rf /var/volatile/tmp/_MEI* 2>/dev/null || true; rm -f /var/volatile/tmp/*.pcm /var/volatile/tmp/*.out /var/volatile/tmp/*.err /var/volatile/tmp/yt* /var/volatile/tmp/ytdlp* /var/volatile/tmp/ytmod* /var/volatile/tmp/ytsearch* /var/volatile/tmp/clap_* /var/volatile/tmp/chain_* /var/volatile/tmp/lddebug_* /var/volatile/tmp/preload_* /var/volatile/tmp/verify-* /var/volatile/tmp/auxv_* /var/volatile/tmp/test_shadow.js /var/volatile/tmp/trigger /var/volatile/tmp/surge_debug.log 2>/dev/null || true" || true
+
 # Safety: check root partition has enough free space (< 10MB free = danger zone)
 root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || echo "0")
 if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
