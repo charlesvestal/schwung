@@ -177,17 +177,23 @@ static int format_param_value(chain_param_info_t *param, float value, char *buf,
         return strlen(buf);
     }
 
+    /* Scale 0-1 values to 0-100 for percentage display */
+    float display_value = value;
+    if (strcmp(param->unit, "%") == 0 && param->max_val <= 1.0f) {
+        display_value = value * 100.0f;
+    }
+
     /* Format numeric value */
     char val_str[32];
     if (param->display_format[0]) {
         /* Use custom format */
-        snprintf(val_str, sizeof(val_str), param->display_format, value);
+        snprintf(val_str, sizeof(val_str), param->display_format, display_value);
     } else {
         /* Use defaults based on type */
         if (param->type == KNOB_TYPE_FLOAT) {
-            snprintf(val_str, sizeof(val_str), "%.2f", value);
+            snprintf(val_str, sizeof(val_str), "%.2f", display_value);
         } else {
-            snprintf(val_str, sizeof(val_str), "%d", (int)value);
+            snprintf(val_str, sizeof(val_str), "%d", (int)display_value);
         }
     }
 
@@ -586,6 +592,8 @@ static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
+static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char *target, const char *key);
+static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
 
@@ -5362,8 +5370,13 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                     }
                 }
 
-                /* Type/min/max now come from chain_params - not stored in mapping */
-                m->current_value = 0.5f;
+                /* Parse saved value if present */
+                m->current_value = -999999.0f;  /* Sentinel: no saved value */
+                const char *val_pos = strstr(obj_start, "\"value\"");
+                if (val_pos && val_pos < obj_end) {
+                    const char *colon = strchr(val_pos, ':');
+                    if (colon) m->current_value = strtof(colon + 1, NULL);
+                }
 
                 if (m->cc >= KNOB_CC_START && m->cc <= KNOB_CC_END && m->param[0]) {
                     patch->knob_mapping_count++;
@@ -5542,34 +5555,47 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     memcpy(inst->knob_mappings, patch->knob_mappings,
            sizeof(knob_mapping_t) * patch->knob_mapping_count);
 
-    /* Initialize current values (type/min/max looked up dynamically during knob processing) */
+    /* Sync knob current_value from actual DSP state.
+     * The saved value may be stale if params were changed via module UI,
+     * so always read the real value from the plugin after state restore. */
     for (int i = 0; i < inst->knob_mapping_count; i++) {
         const char *target = inst->knob_mappings[i].target;
         const char *param = inst->knob_mappings[i].param;
-        chain_param_info_t *pinfo = NULL;
 
-        if (strcmp(target, "synth") == 0) {
-            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-        } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-            pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-            pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-            pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
+        char val_buf[64];
+        int got = -1;
+        if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
+            got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0 &&
+                   inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
+            got = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1 &&
+                   inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
+            got = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0 &&
+                   inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
+            got = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1 &&
+                   inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
+            got = inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], param, val_buf, sizeof(val_buf));
         }
 
-        if (pinfo) {
-            /* Initialize to middle of range */
-            float mid = (pinfo->min_val + pinfo->max_val) / 2.0f;
-            if (pinfo->type == KNOB_TYPE_INT) {
-                inst->knob_mappings[i].current_value = (float)((int)mid);
+        chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+        if (got > 0) {
+            inst->knob_mappings[i].current_value = dsp_value_to_float(
+                val_buf, pinfo, pinfo ? (pinfo->min_val + pinfo->max_val) / 2.0f : 0.5f);
+        } else if (pinfo) {
+            /* No DSP read — use saved value or midpoint */
+            float saved = patch->knob_mappings[i].current_value;
+            if (saved > -999998.0f) {
+                if (saved < pinfo->min_val) saved = pinfo->min_val;
+                if (saved > pinfo->max_val) saved = pinfo->max_val;
+                inst->knob_mappings[i].current_value = saved;
             } else {
-                inst->knob_mappings[i].current_value = mid;
+                inst->knob_mappings[i].current_value = (pinfo->min_val + pinfo->max_val) / 2.0f;
             }
+        } else {
+            inst->knob_mappings[i].current_value = 0.5f;
         }
     }
 
@@ -6070,6 +6096,29 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 }
 
 /*
+ * Convert a DSP get_param return string to a float value.
+ * Handles numeric strings directly. For non-numeric strings (enum labels),
+ * looks up the index in the param's options list.
+ * Returns the float value, or fallback if conversion fails.
+ */
+static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback) {
+    char *endptr;
+    float v = strtof(val_str, &endptr);
+    if (endptr != val_str) {
+        return v;  /* Parsed a number */
+    }
+    /* Non-numeric — try enum option lookup */
+    if (pinfo && pinfo->type == KNOB_TYPE_ENUM) {
+        for (int j = 0; j < pinfo->option_count; j++) {
+            if (strcmp(val_str, pinfo->options[j]) == 0) {
+                return (float)j;
+            }
+        }
+    }
+    return fallback;
+}
+
+/*
  * Find parameter metadata by target and key.
  */
 static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target, const char *key) {
@@ -6184,6 +6233,47 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
 
     /* Knob mapping info */
+    if (strcmp(key, "knob_mappings") == 0) {
+        /* Return full knob mappings array as JSON for patch saving.
+         * Read ACTUAL current values from DSP plugins, not the knob
+         * tracking value which may be stale if params were changed
+         * via module UI or state restore. */
+        int off = 0;
+        off += snprintf(buf + off, buf_len - off, "[");
+        for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
+            const char *target = inst->knob_mappings[i].target;
+            const char *param = inst->knob_mappings[i].param;
+            float value = inst->knob_mappings[i].current_value;
+
+            /* Try to read actual value from DSP plugin */
+            char val_buf[64];
+            int got = -1;
+            if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
+                got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
+            } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0 &&
+                       inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
+                got = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], param, val_buf, sizeof(val_buf));
+            } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1 &&
+                       inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
+                got = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], param, val_buf, sizeof(val_buf));
+            } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0 &&
+                       inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
+                got = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], param, val_buf, sizeof(val_buf));
+            }
+            if (got > 0) {
+                chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+                value = dsp_value_to_float(val_buf, pinfo, value);
+            }
+
+            off += snprintf(buf + off, buf_len - off,
+                "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f}",
+                (i > 0) ? "," : "",
+                inst->knob_mappings[i].cc, target, param, value);
+            if (off >= buf_len - 1) break;
+        }
+        off += snprintf(buf + off, buf_len - off, "]");
+        return off;
+    }
     if (strcmp(key, "knob_mapping_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->knob_mapping_count);
     }
