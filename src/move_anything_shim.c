@@ -651,6 +651,7 @@ static void spi_trace_ioctl(unsigned long request, char *argp)
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/move-anything/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/move-anything/modules/chain/dsp.so"
 #define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
+#define SLOT_STATE_DIR "/data/UserData/move-anything/slot_state"
 /* SHADOW_CHAIN_INSTANCES from shadow_constants.h */
 
 /* System volume - for now just a placeholder, we'll find the real source */
@@ -4950,6 +4951,67 @@ static int shadow_inprocess_load_chain(void) {
         if (!shadow_chain_slots[i].instance) {
             continue;
         }
+
+        /* Check for autosave file first (preserves unsaved work across reboots) */
+        char autosave_path[256];
+        snprintf(autosave_path, sizeof(autosave_path),
+                 SLOT_STATE_DIR "/slot_%d.json", i);
+        FILE *af = fopen(autosave_path, "r");
+        if (af) {
+            /* Check if autosave has content (not just "{}") */
+            fseek(af, 0, SEEK_END);
+            long asize = ftell(af);
+            fclose(af);
+            if (asize > 10) {  /* More than just "{}\n" */
+                shadow_plugin_v2->set_param(
+                    shadow_chain_slots[i].instance, "load_file", autosave_path);
+                shadow_chain_slots[i].active = 1;
+                shadow_chain_slots[i].patch_index = -1;
+                /* Query channel settings from loaded autosave */
+                if (shadow_chain_slots[i].forward_channel == -1 && shadow_plugin_v2->get_param) {
+                    char fwd_buf[16];
+                    int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                        "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
+                    if (len > 0) {
+                        fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
+                        int default_fwd = atoi(fwd_buf);
+                        if (default_fwd >= 0 && default_fwd <= 15) {
+                            shadow_chain_slots[i].forward_channel = default_fwd;
+                        }
+                    }
+                }
+                if (shadow_plugin_v2->get_param) {
+                    char ch_buf[16];
+                    int len;
+                    len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                        "patch:receive_channel", ch_buf, sizeof(ch_buf));
+                    if (len > 0) {
+                        ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+                        int recv_ch = atoi(ch_buf);
+                        if (recv_ch != 0) {
+                            shadow_chain_slots[i].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
+                        }
+                    }
+                    len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                        "patch:forward_channel", ch_buf, sizeof(ch_buf));
+                    if (len > 0) {
+                        ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+                        int fwd_ch = atoi(ch_buf);
+                        if (fwd_ch != 0) {
+                            shadow_chain_slots[i].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
+                        }
+                    }
+                }
+                {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Shadow inprocess: slot %d loaded from autosave", i);
+                    shadow_log(msg);
+                }
+                continue;
+            }
+        }
+
+        /* Fall back to name-based lookup from config */
         /* Check for "none" - means slot should be inactive */
         if (strcasecmp(shadow_chain_slots[i].patch_name, "none") == 0 ||
             shadow_chain_slots[i].patch_name[0] == '\0') {
@@ -5015,7 +5077,7 @@ static int shadow_inprocess_load_chain(void) {
 
     shadow_ui_state_refresh();
 
-    /* Pre-create recording directories so mkdir fork() doesn't glitch audio later */
+    /* Pre-create directories so mkdir fork() doesn't glitch audio later */
     {
         struct stat st;
         if (stat(SAMPLER_RECORDINGS_DIR, &st) != 0) {
@@ -5024,6 +5086,10 @@ static int shadow_inprocess_load_chain(void) {
         }
         if (stat(SKIPBACK_DIR, &st) != 0) {
             const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+        if (stat(SLOT_STATE_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SLOT_STATE_DIR, NULL };
             shim_run_command(mkdir_argv);
         }
     }

@@ -455,6 +455,9 @@ typedef struct chain_instance {
     param_smoother_t synth_smoother;
     param_smoother_t fx_smoothers[MAX_AUDIO_FX];
 
+    /* Dirty flag: 1 = modified since last load/save */
+    int dirty;
+
     /* External audio injection (e.g. Move track audio from Link Audio).
      * Set by host before render_block; mixed after synth, before FX. */
     int16_t *inject_audio;
@@ -3804,6 +3807,7 @@ static void v2_unload_midi_source(chain_instance_t *inst);
 static int v2_load_synth(chain_instance_t *inst, const char *module_name);
 static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name);
 static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch);
+static int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch);
 static int v2_scan_patches(chain_instance_t *inst);
 static int v2_load_patch(chain_instance_t *inst, int patch_idx);
 
@@ -5430,14 +5434,12 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
 }
 
 /* V2 load patch */
-static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
+static int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
     char msg[256];
 
-    if (!inst || patch_idx < 0 || patch_idx >= inst->patch_count) {
+    if (!inst || !patch) {
         return -1;
     }
-
-    patch_info_t *patch = &inst->patches[patch_idx];
 
     snprintf(msg, sizeof(msg), "Loading patch: %s (synth=%s, %d FX)",
              patch->name, patch->synth_module, patch->audio_fx_count);
@@ -5636,13 +5638,25 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     /* Copy other settings */
     inst->midi_input = patch->midi_input;
 
-    inst->current_patch = patch_idx;
     inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
     snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
     v2_chain_log(inst, msg);
 
     return 0;
+}
+
+static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
+    if (!inst || patch_idx < 0 || patch_idx >= inst->patch_count) {
+        return -1;
+    }
+
+    int rc = v2_load_from_patch_info(inst, &inst->patches[patch_idx]);
+    if (rc == 0) {
+        inst->current_patch = patch_idx;
+        inst->dirty = 0;
+    }
+    return rc;
 }
 
 /* ==========================================================================
@@ -5840,6 +5854,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         /* Save new patch to disk, then rescan this instance's patch list */
         v2_save_patch(inst, val);
         v2_scan_patches(inst);
+        inst->dirty = 0;
     }
     else if (strcmp(key, "delete_patch") == 0) {
         int index = atoi(val);
@@ -5853,6 +5868,29 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             int index = atoi(val);
             v2_update_patch(inst, index, colon + 1);
             v2_scan_patches(inst);
+            inst->dirty = 0;
+        }
+    }
+    else if (strcmp(key, "load_file") == 0) {
+        /* Load patch from arbitrary file path (used for autosave restore) */
+        patch_info_t temp_patch;
+        memset(&temp_patch, 0, sizeof(temp_patch));
+        if (v2_parse_patch_file(inst, val, &temp_patch) == 0) {
+            v2_load_from_patch_info(inst, &temp_patch);
+            inst->current_patch = -1;  /* Not from library */
+            /* Check for "modified" field to restore dirty state */
+            FILE *mf = fopen(val, "r");
+            if (mf) {
+                char mbuf[256];
+                inst->dirty = 0;
+                while (fgets(mbuf, sizeof(mbuf), mf)) {
+                    if (strstr(mbuf, "\"modified\"") && strstr(mbuf, "true")) {
+                        inst->dirty = 1;
+                        break;
+                    }
+                }
+                fclose(mf);
+            }
         }
     }
     /* Master preset commands */
@@ -5885,6 +5923,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 /* Clearing synth - also clear knob mappings */
                 inst->knob_mapping_count = 0;
             }
+            inst->dirty = 1;
         } else {
             /* Check if this is a smoothable float param */
             float fval;
@@ -5898,6 +5937,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
                 inst->synth_plugin->set_param(subkey, val);
             }
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "fx1:", 4) == 0) {
@@ -5907,6 +5947,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 0, val);
             smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
+            inst->dirty = 1;
         } else if (inst->fx_count > 0) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
@@ -5917,6 +5958,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
                 inst->fx_plugins[0]->set_param(subkey, val);
             }
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "fx2:", 4) == 0) {
@@ -5926,6 +5968,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 1, val);
             smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
+            inst->dirty = 1;
         } else if (inst->fx_count > 1) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
@@ -5936,6 +5979,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
                 inst->fx_plugins[1]->set_param(subkey, val);
             }
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "midi_fx1:", 9) == 0) {
@@ -5949,8 +5993,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_midi_fx(inst, val);
             }
+            inst->dirty = 1;
         } else if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
             inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], subkey, val);
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "midi_fx2:", 9) == 0) {
@@ -5961,8 +6007,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_midi_fx(inst, val);
             }
+            inst->dirty = 1;
         } else if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
             inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], subkey, val);
+            inst->dirty = 1;
         }
     }
     /* Knob mapping set: knob_N_set with value "target:param" */
@@ -6035,6 +6083,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         }
                     }
                 }
+                inst->dirty = 1;
             }
             else if (strcmp(action, "clear") == 0) {
                 /* Remove mapping for this CC */
@@ -6045,6 +6094,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                             inst->knob_mappings[j] = inst->knob_mappings[j + 1];
                         }
                         inst->knob_mapping_count--;
+                        inst->dirty = 1;
                         break;
                     }
                 }
@@ -6135,6 +6185,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                                 inst->fx_plugins[1]->set_param(param, val_str);
                             }
                         }
+                        inst->dirty = 1;
                         break;
                     }
                 }
@@ -6214,6 +6265,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return -1;
 
+    if (strcmp(key, "dirty") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->dirty);
+    }
     if (strcmp(key, "patch_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->patch_count);
     }

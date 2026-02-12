@@ -102,6 +102,8 @@ const NUM_KNOBS = 8;
 
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/patches";
+const SLOT_STATE_DIR = "/data/UserData/move-anything/slot_state";
+const AUTOSAVE_INTERVAL = 300;  /* ~10 seconds at 30fps */
 const DEFAULT_SLOTS = [
     { channel: 1, name: "" },
     { channel: 2, name: "" },
@@ -175,6 +177,8 @@ let editingSettingValue = false;
 let view = VIEWS.SLOTS;
 let needsRedraw = true;
 let refreshCounter = 0;
+let autosaveCounter = 0;
+let slotDirtyCache = [false, false, false, false];
 
 /* View names for screen reader announcements */
 const VIEW_NAMES = {
@@ -2055,6 +2059,41 @@ function buildSlotPatchJson(slotIndex, name) {
     }
 
     return JSON.stringify(patch);
+}
+
+/* Autosave all slot states to slot_state/slot_N.json */
+function autosaveAllSlots() {
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        const cfg = chainConfigs[i];
+        if (!cfg || !cfg.synth || !cfg.synth.module) {
+            /* Empty slot - write empty marker to clear autosave */
+            host_write_file(
+                SLOT_STATE_DIR + "/slot_" + i + ".json",
+                "{}\n"
+            );
+            slotDirtyCache[i] = false;
+            continue;
+        }
+
+        const dirty = getSlotParam(i, "dirty");
+        slotDirtyCache[i] = (dirty === "1");
+
+        const patchJson = buildSlotPatchJson(i, slots[i].name || "Untitled");
+        if (!patchJson) continue;
+
+        /* Wrap with name, version, modified flag */
+        const wrapper = {
+            name: slots[i].name || "Untitled",
+            version: 1,
+            modified: slotDirtyCache[i],
+            chain: JSON.parse(patchJson)
+        };
+
+        host_write_file(
+            SLOT_STATE_DIR + "/slot_" + i + ".json",
+            JSON.stringify(wrapper, null, 2) + "\n"
+        );
+    }
 }
 
 /* Actually save the preset */
@@ -4254,15 +4293,16 @@ function drawHierarchyEditor() {
     }
 
     /* Build header: S#: Module: Bank (preset browser) or Preset (edit view) */
+    const dirtyMark = slotDirtyCache[hierEditorSlot] ? "*" : "";
     let headerText;
     if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
         /* In preset browser, always show bank name */
-        headerText = `S${hierEditorSlot + 1}: ${abbrev}: ${headerName}${modeIndicator}`;
+        headerText = `S${hierEditorSlot + 1}${dirtyMark}: ${abbrev}: ${headerName}${modeIndicator}`;
     } else if (hierEditorPath.length > 0) {
         /* If navigated into sub-levels, append path */
-        headerText = `S${hierEditorSlot + 1}: ${abbrev} > ${hierEditorPath[hierEditorPath.length - 1]}`;
+        headerText = `S${hierEditorSlot + 1}${dirtyMark}: ${abbrev} > ${hierEditorPath[hierEditorPath.length - 1]}`;
     } else {
-        headerText = `S${hierEditorSlot + 1}: ${abbrev}: ${headerName}${modeIndicator}`;
+        headerText = `S${hierEditorSlot + 1}${dirtyMark}: ${abbrev}: ${headerName}${modeIndicator}`;
     }
 
     drawHeader(truncateText(headerText, 24));
@@ -5698,7 +5738,7 @@ function drawSlots() {
      * Use leading space for non-selected to maintain alignment */
     const items = [
         ...slots.map((s, i) => ({
-            label: (i === trackSelectedSlot ? "*" : " ") + (s.name || "Unknown Patch"),
+            label: (i === trackSelectedSlot ? "*" : " ") + (slotDirtyCache[i] ? "*" : "") + (s.name || "Unknown Patch"),
             value: s.channel === 0 ? "All" : `Ch${s.channel}`,
             isSlot: true
         })),
@@ -5897,7 +5937,8 @@ function drawChainEdit() {
     clear_screen();
     /* Slot view: show slot patch name in header */
     const slotName = slots[selectedSlot]?.name || "Unknown";
-    const headerText = truncateText(`S${selectedSlot + 1} ${slotName}`, 24);
+    const dirtyMark = slotDirtyCache[selectedSlot] ? "*" : "";
+    const headerText = truncateText(`S${selectedSlot + 1} ${dirtyMark}${slotName}`, 24);
     drawHeader(headerText);
 
     /* Refresh chain config from DSP each render to ensure display matches actual state.
@@ -6679,6 +6720,24 @@ globalThis.init = function() {
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
 
+    /* Sync dirty cache and slot names from autosave files (shim loaded them on startup) */
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        const dirty = getSlotParam(i, "dirty");
+        slotDirtyCache[i] = (dirty === "1");
+        /* Sync slot names from autosave if present */
+        const path = SLOT_STATE_DIR + "/slot_" + i + ".json";
+        if (host_file_exists(path)) {
+            const raw = host_read_file(path);
+            if (raw) {
+                const m = raw.match(/"name"\s*:\s*"([^"]+)"/);
+                if (m && m[1] && !slots[i].name) {
+                    slots[i].name = m[1];
+                }
+            }
+        }
+    }
+    saveSlotsToConfig(slots);
+
     /* Announce initial view + selection */
     const slotName = slots[selectedSlot]?.name || "Unknown";
     announce(`Slots Menu, S${selectedSlot + 1} ${slotName}`);
@@ -6733,6 +6792,24 @@ globalThis.tick = function() {
     refreshCounter++;
     if (refreshCounter % 120 === 0) {
         refreshSlots();
+    }
+
+    /* Periodic autosave */
+    autosaveCounter++;
+    if (autosaveCounter >= AUTOSAVE_INTERVAL) {
+        autosaveCounter = 0;
+        autosaveAllSlots();
+    }
+    /* Refresh dirty cache frequently for responsive UI */
+    if (refreshCounter % 15 === 0) {
+        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+            const dirty = getSlotParam(i, "dirty");
+            const isDirty = (dirty === "1");
+            if (slotDirtyCache[i] !== isDirty) {
+                slotDirtyCache[i] = isDirty;
+                needsRedraw = true;
+            }
+        }
     }
 
     let currentTargetSlot = 0;
