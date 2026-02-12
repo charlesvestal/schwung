@@ -6014,9 +6014,12 @@ static void shadow_inprocess_mix_audio(void) {
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
-            /* Capture per-slot audio for Link Audio publisher (pre-volume) */
+            /* Capture per-slot audio for Link Audio publisher (with slot volume) */
             if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                memcpy(shadow_slot_capture[s], render_buffer, sizeof(render_buffer));
+                float cap_vol = shadow_chain_slots[s].volume;
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
+                }
             }
 
             /* Accumulate raw Move audio for subtraction from mailbox */
@@ -6035,12 +6038,12 @@ static void shadow_inprocess_mix_audio(void) {
         }
     }
 
-    /* Subtract raw Move track audio from mix to avoid doubling.
-     * Move's mailbox contains the sum of all tracks; we remove the ones
-     * we routed through shadow FX so only the FX'd versions are heard. */
+    /* Subtract Move track audio from mix to avoid doubling.
+     * Link Audio per-track streams are pre-fader; mailbox is post-fader.
+     * Scale subtraction by Move's volume so the levels match. */
     if (any_injected) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
-            mix[i] -= move_injected[i];
+            mix[i] -= (int32_t)lroundf((float)move_injected[i] * mv);
     }
 
     /* Save ME full-gain component for bridge split */
@@ -6281,9 +6284,12 @@ static void shadow_inprocess_render_to_buffer(void) {
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
-            /* Capture per-slot audio for Link Audio publisher (pre-volume) */
+            /* Capture per-slot audio for Link Audio publisher (with slot volume) */
             if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                memcpy(shadow_slot_capture[s], render_buffer, sizeof(render_buffer));
+                float cap_vol = shadow_chain_slots[s].volume;
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
+                }
             }
 
             /* Accumulate raw Move audio for subtraction in mix_from_buffer */
@@ -6342,12 +6348,14 @@ static void shadow_inprocess_mix_from_buffer(void) {
     native_bridge_capture_mv = mv;
     native_bridge_split_valid = 1;
 
-    /* Subtract raw Move track audio that was injected via Link Audio.
-     * This removes the dry Move tracks from the mailbox so we only hear
-     * the FX'd versions coming through our shadow chain output. */
+    /* Subtract Move track audio that was injected via Link Audio.
+     * Link Audio per-track streams are pre-fader (full level), but the mailbox
+     * has them post-fader (scaled by Move's volume).  Scale the subtraction
+     * by shadow_master_volume so the levels match. */
     if (shadow_link_audio_subtract_valid) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            int32_t adjusted = (int32_t)mailbox_audio[i] - shadow_link_audio_subtract[i];
+            int32_t scaled_sub = (int32_t)lroundf((float)shadow_link_audio_subtract[i] * mv);
+            int32_t adjusted = (int32_t)mailbox_audio[i] - scaled_sub;
             if (adjusted > 32767) adjusted = 32767;
             if (adjusted < -32768) adjusted = -32768;
             mailbox_audio[i] = (int16_t)adjusted;
