@@ -26,7 +26,7 @@ if [ "$quiet_mode" = false ]; then
                                         |___/                   |___/
 EOM
 else
-  echo "Move Anything installer (screen reader mode)"
+  echo "Move Everything installer (screen reader mode)"
 fi
 
 # uncomment to debug
@@ -355,13 +355,16 @@ ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=acc
 # Parse arguments
 use_local=false
 skip_modules=false
+skip_confirmation=false
 enable_screen_reader=false
 disable_shadow_ui=false
 disable_standalone=false
+screen_reader_runtime_available=true
 for arg in "$@"; do
   case "$arg" in
     local) use_local=true ;;
     -skip-modules|--skip-modules) skip_modules=true ;;
+    -skip-confirmation|--skip-confirmation) skip_confirmation=true ;;
     --enable-screen-reader) enable_screen_reader=true ;;
     --disable-shadow-ui) disable_shadow_ui=true ;;
     --disable-standalone) disable_standalone=true ;;
@@ -371,6 +374,7 @@ for arg in "$@"; do
       echo "Options:"
       echo "  local                    Use local build instead of GitHub release"
       echo "  --skip-modules           Skip module installation prompt"
+      echo "  --skip-confirmation      Skip unsupported/liability confirmation prompt"
       echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
       echo "  --disable-shadow-ui      Disable shadow UI (slot configuration interface)"
       echo "  --disable-standalone     Disable standalone mode (shift+vol+knob8)"
@@ -385,6 +389,28 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ "$skip_confirmation" = false ]; then
+  echo
+  echo "**************************************************************"
+  echo "*                                                            *"
+  echo "*   WARNING:                                                 *"
+  echo "*                                                            *"
+  echo "*   Are you sure you want to install Move Everything on your *"
+  echo "*   Move? This is UNSUPPORTED by Ableton.                    *"
+  echo "*                                                            *"
+  echo "*   The authors of this project accept no liability for      *"
+  echo "*   any damage you incur by proceeding.                      *"
+  echo "*                                                            *"
+  echo "**************************************************************"
+  echo
+  echo "Type 'yes' to proceed: "
+  read -r response </dev/tty
+  if [ "$response" != "yes" ]; then
+    echo "Installation aborted."
+    exit 1
+  fi
+fi
 
 if [ "$use_local" = true ]; then
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -452,11 +478,16 @@ if [ -n "$ssh_result" ]; then
   fi
 else
   qecho "✓ SSH connection OK"
-  iecho "Installing Move Anything..."
+  iecho "Installing Move Everything..."
 fi
 
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
 scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
+# Validate tar payload layout before extraction.
+# Some host-side tar variants can encode large files under GNUSparseFile.0 paths
+# that BusyBox tar on Move does not restore correctly.
+ssh_ableton_with_retry "tar -tzf ./$remote_filename | grep -qx 'move-anything/move-anything-shim.so'" || \
+    fail "Invalid tar payload: missing move-anything/move-anything-shim.so entry"
 # Use verbose tar only in non-quiet mode (screen reader friendly)
 if [ "$quiet_mode" = true ]; then
     ssh_ableton_with_retry "tar -xzf ./$remote_filename" || fail "Failed to extract tarball"
@@ -606,12 +637,21 @@ ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim
 # Symlink shim to /usr/lib/ (root partition has no free space for copies)
 ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
+ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing after install"
 
-# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink
-# Root partition is nearly full, so symlink instead of copying
-if ssh_ableton_with_retry "test -d /data/UserData/move-anything/lib"; then
+# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink.
+# Root partition is nearly full, so symlink instead of copying.
+# Use direct predicate checks so expected test failures don't print misleading
+# "Connection retry" messages from the retry wrapper.
+if $ssh_ableton "test ! -d /data/UserData/move-anything/lib" 2>/dev/null; then
+  screen_reader_runtime_available=false
+  iecho "Screen reader runtime not bundled; skipping Flite deployment."
+elif $ssh_ableton "test -d /data/UserData/move-anything/lib" 2>/dev/null; then
+  ssh_ableton_with_retry "for lib in libflite.so.1 libflite_cmu_us_kal.so.1 libflite_usenglish.so.1 libflite_cmulex.so.1; do test -e /data/UserData/move-anything/lib/\$lib || exit 1; done" || fail "Payload missing required Flite libraries (screen reader dependency)"
   qecho "Deploying Flite libraries..."
-  ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in libflite*.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+  ssh_root_with_retry "cd /data/UserData/move-anything/lib && set -- libflite*.so.* && [ \"\$1\" != 'libflite*.so.*' ] || exit 1; for lib in \"\$@\"; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+else
+  fail "Failed to check screen reader runtime payload on device (SSH error)"
 fi
 
 # Ensure the replacement Move script exists and is executable
@@ -620,10 +660,12 @@ ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" |
 # Backup original only once, and only if current Move exists
 # IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
 # Never create extra copies of large files under /opt/move/ or anywhere on /.
-if ssh_root_with_retry "test ! -f /opt/move/MoveOriginal"; then
+if $ssh_root "test ! -f /opt/move/MoveOriginal" 2>/dev/null; then
   ssh_root_with_retry "test -f /opt/move/Move" || fail "Missing /opt/move/Move; refusing to proceed"
   ssh_root_with_retry "mv /opt/move/Move /opt/move/MoveOriginal" || fail "Failed to backup original Move"
   ssh_ableton_with_retry "cp /opt/move/MoveOriginal ~/" || true
+elif ! $ssh_root "test -f /opt/move/MoveOriginal" 2>/dev/null; then
+  fail "Failed to verify /opt/move/MoveOriginal on device (SSH error)"
 fi
 
 # Install the shimmed Move entrypoint
@@ -648,8 +690,13 @@ EOF" || echo "Warning: Failed to create features.json"
 
 # Create screen reader state file if --enable-screen-reader was passed
 if [ "$enable_screen_reader" = true ]; then
-    qecho "Enabling screen reader..."
-    ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
+    if [ "$screen_reader_runtime_available" = true ]; then
+      qecho "Enabling screen reader..."
+      ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
+    else
+      iecho "Screen reader requested, but this build does not include TTS runtime support."
+      enable_screen_reader=false
+    fi
 fi
 
 if [ "$quiet_mode" = false ]; then
@@ -766,6 +813,7 @@ if [ "$skip_modules" = false ]; then
     echo "  - Mini-JV: ROM files + optional SR-JV80 expansions"
     echo "  - SF2: SoundFont files (.sf2)"
     echo "  - Dexed: Additional .syx patch banks (optional - defaults included)"
+    echo "  - NAM: .nam model files (free models at tonehunt.org and tone3000.com)"
     echo
     printf "Would you like to copy assets to your Move now? (y/N): "
     read -r copy_assets </dev/tty
@@ -799,8 +847,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r rom_path </dev/tty
 
     if [ -n "$rom_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rom_path" ]; then
             rom_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms" || true
@@ -850,8 +898,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r sf2_path </dev/tty
 
     if [ -n "$sf2_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts" || true
@@ -883,8 +931,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r syx_path </dev/tty
 
     if [ -n "$syx_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$syx_path" ]; then
             syx_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/dexed/banks" || true
@@ -905,6 +953,40 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             fi
         else
             echo "  Directory not found: $syx_path"
+        fi
+    fi
+
+    # NAM models
+    echo
+    echo "NAM: Enter the folder containing your .nam model files."
+    echo "Free models available at: https://tonehunt.org and https://tone3000.com"
+    echo "(Press ENTER to skip)"
+    printf "Enter or drag folder path: "
+    read -r nam_path </dev/tty
+
+    if [ -n "$nam_path" ]; then
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        nam_path=$(echo "$nam_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
+        if [ -d "$nam_path" ]; then
+            nam_count=0
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/audio_fx/nam/models" || true
+            for nam in "$nam_path"/*.nam "$nam_path"/*.NAM; do
+                if [ -f "$nam" ]; then
+                    echo "  Copying $(basename "$nam")..."
+                    if scp_with_retry "$nam" "$username@$hostname:./move-anything/modules/audio_fx/nam/models/"; then
+                        nam_count=$((nam_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
+                fi
+            done
+            if [ $nam_count -gt 0 ]; then
+                echo "  Copied $nam_count NAM model(s)"
+            else
+                echo "  No .nam files found in $nam_path"
+            fi
+        else
+            echo "  Directory not found: $nam_path"
         fi
     fi
 
@@ -941,13 +1023,13 @@ ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to 
 shim_ok=false
 for i in $(seq 1 15); do
     ssh_ableton_with_retry "sleep 1" || true
-    # Use direct ssh here since we're in a verification loop and need different retry semantics
-    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so'" 2>/dev/null; then
+    # Verify both env and actual mapped shim (env alone can be present while loader ignores preload).
+    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so' && grep -q 'move-anything-shim.so' /proc/\$pid/maps" 2>/dev/null; then
         shim_ok=true
         break
     fi
 done
-$shim_ok || fail "Move started without shim (LD_PRELOAD missing)"
+$shim_ok || fail "Move started without active shim mapping (LD_PRELOAD env/maps check failed)"
 
 iecho ""
 iecho "Installation complete!"
@@ -960,7 +1042,7 @@ if [ "$quiet_mode" = true ]; then
 else
     # Verbose output for visual users
     echo
-    echo "Move Anything is now installed with the modular plugin system."
+    echo "Move Everything is now installed with the modular plugin system."
     echo "Modules are located in: /data/UserData/move-anything/modules/"
     echo
 

@@ -64,8 +64,13 @@ function ensureTmpDir() {
     }
 }
 
-/* Fetch release info from release.json in repo */
-export function fetchReleaseJson(github_repo) {
+/* Fetch release info from release.json in repo
+ * For multi-module repos, pass module_id to get that specific module's info.
+ * Supports two formats:
+ *   - Single module: { version, download_url, ... }
+ *   - Multi-module:  { modules: { module_id: { version, download_url, ... }, ... } }
+ */
+export function fetchReleaseJson(github_repo, module_id) {
     ensureTmpDir();
     const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
     const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
@@ -82,6 +87,26 @@ export function fetchReleaseJson(github_repo) {
 
         const release = JSON.parse(jsonStr);
 
+        /* Check for multi-module format */
+        if (release.modules && module_id && release.modules[module_id]) {
+            const modRelease = release.modules[module_id];
+            if (!modRelease.version || !modRelease.download_url) {
+                console.log(`Invalid module entry for ${module_id} in ${github_repo}`);
+                return null;
+            }
+            return {
+                version: modRelease.version,
+                download_url: modRelease.download_url,
+                install_path: modRelease.install_path || '',
+                name: modRelease.name || '',
+                description: modRelease.description || '',
+                requires: modRelease.requires || '',
+                post_install: modRelease.post_install || '',
+                repo_url: modRelease.repo_url || ''
+            };
+        }
+
+        /* Single module format (backwards compatible) */
         if (!release.version || !release.download_url) {
             console.log(`Invalid release.json format for ${github_repo}`);
             return null;
@@ -150,7 +175,8 @@ export function loadCatalogFromCache(onProgress) {
                 if (mod.github_repo) {
                     if (onProgress) onProgress('Loading Catalog', mod.name);
 
-                    const release = fetchReleaseJson(mod.github_repo);
+                    /* Pass module id for multi-module repo support */
+                    const release = fetchReleaseJson(mod.github_repo, mod.id);
                     if (release) {
                         mod.latest_version = release.version;
                         mod.download_url = release.download_url;

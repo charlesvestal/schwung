@@ -171,6 +171,27 @@
       "github_repo": "charlesvestal/move-anything-moog",
       "asset_name": "moog-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "webstream",
+      "name": "Webstream",
+      "description": "Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-webstream",
+      "asset_name": "webstream-module.tar.gz",
+      "min_host_version": "0.3.11"
+    },
+    {
+      "id": "nam",
+      "name": "NAM",
+      "description": "Neural Amp Modeler - neural network guitar amp/effect emulation",
+      "author": "NeuralAudio by Mike Oliphant (port: charlesvestal)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-nam",
+      "asset_name": "nam-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": ".nam model files (free models at tonehunt.org and tone3000.com)"
     }
   ]
 }

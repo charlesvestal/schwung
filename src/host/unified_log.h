@@ -24,6 +24,9 @@ int unified_log_enabled(void);
 void unified_log(const char *source, int level, const char *fmt, ...);
 void unified_log_v(const char *source, int level, const char *fmt, va_list args);
 
+/* Async-signal-safe crash logger - uses write() only, no mutex, no malloc */
+void unified_log_crash(const char *msg);
+
 /* Convenience macros */
 #define LOG_ERROR(src, ...) unified_log(src, LOG_LEVEL_ERROR, __VA_ARGS__)
 #define LOG_WARN(src, ...)  unified_log(src, LOG_LEVEL_WARN, __VA_ARGS__)

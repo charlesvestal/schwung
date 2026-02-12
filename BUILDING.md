@@ -12,20 +12,79 @@ This builds everything and creates `move-anything.tar.gz`. The build script auto
 
 Requirements: Docker Desktop (macOS/Windows) or Docker Engine (Linux)
 
+Build without screen reader (skip D-Bus/Flite dependencies):
+```bash
+DISABLE_SCREEN_READER=1 ./scripts/build.sh
+```
+This disables D-Bus-driven accessibility/sync features (screen reader announcements, track-volume D-Bus sync, and set-tempo detection from D-Bus text).
+
+## Verify Disabled Screen Reader Build (Smoke Test)
+
+Use this when validating a fresh environment that does not have D-Bus/Flite dev headers installed.
+
+```bash
+# Optional: return device to stock state first
+MOVE_FORCE_UNINSTALL=1 ./scripts/uninstall.sh
+
+# Build shim without dbus/flite
+DISABLE_SCREEN_READER=1 ./scripts/build.sh
+
+# Install fresh build
+./scripts/install.sh local --skip-confirmation --skip-modules
+```
+
+Expected install output includes:
+- `Screen reader runtime not bundled; skipping Flite deployment.`
+- `Screen Reader: disabled`
+
+Runtime checks on device:
+```bash
+# Shim should still be active
+ssh root@move.local 'pid=$(pidof MoveOriginal | awk "{print \$1}"); tr "\0" "\n" < /proc/$pid/environ | grep "^LD_PRELOAD="'
+
+# No Flite runtime links should be installed
+ssh root@move.local 'ls -1 /usr/lib/libflite*.so* 2>/dev/null || echo absent'
+```
+
+Optional hardening check:
+```bash
+# Force "screen reader on" state file, restart Move, confirm no crash loop
+ssh ableton@move.local 'echo 1 > /data/UserData/move-anything/config/screen_reader_state.txt'
+ssh root@move.local '/etc/init.d/move stop >/dev/null 2>&1 || true; sleep 1; /etc/init.d/move start >/dev/null 2>&1'
+ssh root@move.local 'pid1=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid2=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid3=$(pidof MoveOriginal | awk "{print \$1}"); echo "$pid1 -> $pid2 -> $pid3"'
+```
+PIDs should remain stable (no repeated restarts).
+
+## Bootstrap Dependencies (Debian/Ubuntu)
+
+For a fresh Linux machine, bootstrap dependencies and QuickJS first:
+
+```bash
+./scripts/bootstrap-build-deps.sh
+CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
+```
+
+Without screen reader dependencies:
+
+```bash
+./scripts/bootstrap-build-deps.sh --no-screen-reader
+DISABLE_SCREEN_READER=1 CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
+```
+
 ## Manual Build (without Docker)
 
 ### Ubuntu/Debian
 
 ```bash
-sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu make
+./scripts/bootstrap-build-deps.sh
 
 # Build QuickJS
-cd libs/quickjs/quickjs-2025-04-26
-CC=aarch64-linux-gnu-gcc make libquickjs.a
-cd ../../..
+# (handled by bootstrap script; manual fallback shown below if needed)
 
 # Build project
 CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
+# Or build without screen reader:
+# DISABLE_SCREEN_READER=1 CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh
 ./scripts/package.sh
 ```
 
@@ -108,6 +167,18 @@ Path("build/font.png.dat").write_text(mod.CHARS + "\n")
 PY
 ```
 
+**Flite bundle verification failed**
+```bash
+# Recommended: use Docker build (auto-installs arm64 dependencies)
+./scripts/build.sh
+
+# If building manually, bootstrap deps (including Flite/dbus):
+./scripts/bootstrap-build-deps.sh
+
+# Or disable screen reader support in this build:
+DISABLE_SCREEN_READER=1 ./scripts/build.sh
+```
+
 **Verify binary architecture**
 ```bash
 file build/move-anything
@@ -187,16 +258,28 @@ GitHub Actions will automatically create a release when you push a tag matching 
 
 ## External Module Releases
 
-External modules (SF2, Dexed, Mini-JV, etc.) are built and released separately. Each module repo has its own release workflow.
+External modules (SF2, Dexed, Braids, etc.) are built and released separately. Each module repo has its own GitHub Actions workflow that automates the entire build-and-release pipeline.
+
+### How It Works
+
+When you push a version tag (e.g., `v0.2.0`), GitHub Actions automatically:
+
+1. **Verifies** the tag version matches `src/module.json`
+2. **Builds** the module via Docker cross-compilation
+3. **Creates** a GitHub Release with the compiled tarball attached
+4. **Updates** `release.json` on the main branch so the Module Store can find the new version
+
+No manual release creation or file uploads needed — just tag and push.
 
 ### Build Script Requirements
 
 Each external module's `scripts/build.sh` must:
 
-1. Build the module to `dist/<module-id>/`
-2. Create a tarball at `dist/<module-id>-module.tar.gz`
+1. Cross-compile DSP code for ARM64 (aarch64 Linux)
+2. Package all files to `dist/<module-id>/`
+3. Create a tarball at `dist/<module-id>-module.tar.gz`
 
-Example tarball creation (add at end of build.sh, after packaging):
+Example tarball creation (at end of build.sh, after packaging):
 ```bash
 # Create tarball for release
 cd dist
@@ -206,9 +289,12 @@ cd ..
 echo "Tarball: dist/mymodule-module.tar.gz"
 ```
 
+The tarball must contain a single directory (`<module-id>/`) with all module files inside it.
+
 ### Release Workflow
 
-Each module should have `.github/workflows/release.yml`:
+Each module needs `.github/workflows/release.yml`. Here's the complete, production-ready workflow:
+
 ```yaml
 name: Release
 
@@ -227,6 +313,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Step 1: Verify tag version matches module.json
+      # Prevents releasing with mismatched versions
+      - name: Verify version match
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MODULE_VERSION=$(grep '"version"' src/module.json | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+          if [ "$TAG_VERSION" != "$MODULE_VERSION" ]; then
+            echo "ERROR: Tag version ($TAG_VERSION) does not match module.json version ($MODULE_VERSION)"
+            echo "Please update src/module.json to version $TAG_VERSION before tagging."
+            exit 1
+          fi
+          echo "Version check passed: $TAG_VERSION"
+
+      # Step 2: Cross-compile for ARM64 via Docker
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -235,19 +335,89 @@ jobs:
           docker build -t module-builder -f scripts/Dockerfile .
           docker run --rm -v "$PWD:/build" -w /build module-builder ./scripts/build.sh
 
+      # Step 3: Create GitHub Release with tarball attached
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: dist/<module-id>-module.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 4: Update release.json on main branch
+      # The Module Store reads this file to discover the latest version
+      - name: Commit release.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          INSTALL_PATH=$(jq -r '.install_path // empty' release.json 2>/dev/null || echo "")
+
+          git fetch origin main
+          git checkout -f main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -n "$INSTALL_PATH" ]; then
+            cat > release.json << EOF
+          {
+            "version": "${VERSION}",
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/<module-id>-module.tar.gz",
+            "install_path": "${INSTALL_PATH}"
+          }
+          EOF
+          else
+            cat > release.json << EOF
+          {
+            "version": "${VERSION}",
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/<module-id>-module.tar.gz"
+          }
+          EOF
+          fi
+
+          git add release.json
+          git commit -m "chore: update release.json for ${{ github.ref_name }}" || echo "No changes to commit"
+          git push origin main
 ```
 
-### Version Management
+Replace `<module-id>` with your module's actual ID (e.g., `braids`, `sf2`, `cloudseed`).
 
-1. Update `src/module.json` version before tagging
-2. Create and push a version tag: `git tag v0.2.0 && git push --tags`
-3. The release workflow builds and uploads the tarball automatically
+### Workflow Step-by-Step
+
+**Step 1 — Version Verification:**
+The workflow extracts the version from the git tag (stripping the `v` prefix) and compares it to the `version` field in `src/module.json`. If they don't match, the build fails immediately. This prevents accidentally releasing with a stale version number.
+
+**Step 2 — Docker Build:**
+Uses the module's `scripts/Dockerfile` to create a cross-compilation environment with the ARM64 toolchain, then runs `scripts/build.sh` inside the container. The build script compiles DSP code and creates the tarball at `dist/<module-id>-module.tar.gz`.
+
+**Step 3 — GitHub Release:**
+Creates a GitHub Release named after the tag and attaches the compiled tarball as a release asset. Uses `softprops/action-gh-release@v1`.
+
+**Step 4 — release.json Update:**
+Switches to the `main` branch and writes/updates `release.json` with the new version and download URL. This file is what the Module Store reads to discover available updates. If the repo already has an `install_path` in release.json (for legacy reasons), it's preserved.
+
+### Releasing a New Version
+
+```bash
+# 1. Update version in module.json
+#    Edit src/module.json and set "version": "0.2.0"
+
+# 2. Commit the version bump
+git add src/module.json
+git commit -m "bump version to 0.2.0"
+
+# 3. Tag and push
+git tag v0.2.0
+git push origin main --tags
+
+# 4. (Automated) GitHub Actions builds, creates release, updates release.json
+
+# 5. Add release notes after the release is created
+gh release edit v0.2.0 --notes "$(cat <<'EOF'
+- Brief description of changes
+- One bullet per significant change
+EOF
+)"
+```
+
+The tag version (e.g., `v0.2.0`) **must** match the version in `src/module.json` (e.g., `"version": "0.2.0"`), or the build will fail.
 
 ### Module Store Integration
 
@@ -257,6 +427,25 @@ The Module Store fetches release info from GitHub API:
 - If asset not found, shows version as "0.0.0"
 
 The `module-catalog.json` in this repo lists all available modules. The store uses the `github_repo` and `asset_name` fields to locate releases.
+
+### Variations
+
+**Modules with git submodules** (e.g., NAM): Add `submodules: recursive` to the checkout step:
+```yaml
+- uses: actions/checkout@v4
+  with:
+    submodules: recursive
+```
+
+**Modules with multiple release assets** (e.g., webstream): List multiple files in the release step:
+```yaml
+- name: Create Release
+  uses: softprops/action-gh-release@v1
+  with:
+    files: |
+      dist/mymodule-module.tar.gz
+      dist/mymodule-module-core.tar.gz
+```
 
 ## Plugin API Versions
 
@@ -340,32 +529,7 @@ Installation paths are automatically determined by the `component_type` field in
 
 The Module Store reads `component_type` from the catalog and installs modules to the appropriate subdirectory automatically.
 
-### GitHub Actions Workflow
-
-The release workflow should preserve `install_path` when updating release.json:
-
-```yaml
-- name: Update release.json
-  run: |
-    VERSION="${GITHUB_REF_NAME#v}"
-    INSTALL_PATH=$(jq -r '.install_path // empty' release.json 2>/dev/null || echo "")
-    if [ -n "$INSTALL_PATH" ]; then
-      cat > release.json << EOFJ
-    {
-      "version": "${VERSION}",
-      "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/<id>-module.tar.gz",
-      "install_path": "${INSTALL_PATH}"
-    }
-    EOFJ
-    else
-      cat > release.json << EOFJ
-    {
-      "version": "${VERSION}",
-      "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/<id>-module.tar.gz"
-    }
-    EOFJ
-    fi
-```
+The release workflow automatically updates `release.json` on each release — see [Release Workflow](#release-workflow) above for the complete workflow including the `release.json` commit step.
 
 ## Architecture
 

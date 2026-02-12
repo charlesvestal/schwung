@@ -1,4 +1,9 @@
 #define _GNU_SOURCE
+
+#ifndef ENABLE_SCREEN_READER
+#define ENABLE_SCREEN_READER 1
+#endif
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -20,8 +25,10 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#if ENABLE_SCREEN_READER
 #include <dbus/dbus.h>
 #include <systemd/sd-bus.h>
+#endif
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
@@ -103,6 +110,7 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
+static volatile float shadow_master_volume;  /* Defined later */
 
 /* Feature flags from config/features.json */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
@@ -759,6 +767,18 @@ static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
 
+/* Overtake DSP state - loaded when an overtake module has a dsp.so */
+static void *overtake_dsp_handle = NULL;           /* dlopen handle */
+static plugin_api_v2_t *overtake_dsp_gen = NULL;   /* V2 generator plugin */
+static void *overtake_dsp_gen_inst = NULL;          /* Generator instance */
+static audio_fx_api_v2_t *overtake_dsp_fx = NULL;  /* V2 FX plugin */
+static void *overtake_dsp_fx_inst = NULL;           /* FX instance */
+static host_api_v1_t overtake_host_api;             /* Host API provided to plugin */
+
+/* Forward declarations for overtake DSP */
+static void shadow_overtake_dsp_load(const char *path);
+static void shadow_overtake_dsp_unload(void);
+
 /* Startup mod wheel reset countdown - resets mod wheel after Move finishes its startup MIDI burst */
 #define STARTUP_MODWHEEL_RESET_FRAMES 20  /* ~0.6 seconds at 128 frames/block */
 static int shadow_startup_modwheel_countdown = 0;
@@ -1070,6 +1090,16 @@ static master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 #define shadow_master_fx_module (shadow_master_fx_slots[0].module_path)
 #define shadow_master_fx_capture (shadow_master_fx_slots[0].capture)
 
+static int shadow_master_fx_chain_active(void) {
+    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+        master_fx_slot_t *s = &shadow_master_fx_slots[fx];
+        if (s->instance && s->api && s->api->process_block) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ==========================================================================
  * D-Bus Volume Sync - Monitor Move's track volume via accessibility D-Bus
  * ========================================================================== */
@@ -1089,6 +1119,7 @@ static float sampler_set_tempo = 0.0f;              /* 0 = not yet detected */
 static char sampler_current_set_name[128] = "";      /* e.g. "Set 3" from D-Bus */
 static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
 
+#if ENABLE_SCREEN_READER
 /* D-Bus connection for monitoring */
 static DBusConnection *shadow_dbus_conn = NULL;
 static pthread_t shadow_dbus_thread;
@@ -1110,6 +1141,7 @@ static pthread_mutex_t pending_announcements_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Track Move's D-Bus serial number for coordinated message injection */
 static uint32_t move_dbus_serial = 0;
 static pthread_mutex_t move_dbus_serial_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /* Priority announcement flag - blocks D-Bus messages while toggle announcement plays */
 static bool tts_priority_announcement_active = false;
@@ -1145,6 +1177,473 @@ static float shadow_parse_volume_db(const char *text)
     return linear;
 }
 
+/* Native Move sampler source tracking (from stock D-Bus announcements) */
+typedef enum {
+    NATIVE_SAMPLER_SOURCE_UNKNOWN = 0,
+    NATIVE_SAMPLER_SOURCE_RESAMPLING,
+    NATIVE_SAMPLER_SOURCE_LINE_IN,
+    NATIVE_SAMPLER_SOURCE_MIC_IN,
+    NATIVE_SAMPLER_SOURCE_USB_C_IN
+} native_sampler_source_t;
+static volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
+/* Sticky source fallback for transient UNKNOWN states (e.g. route/re-init changes). */
+static volatile native_sampler_source_t native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
+
+typedef enum {
+    NATIVE_RESAMPLE_BRIDGE_OFF = 0,
+    NATIVE_RESAMPLE_BRIDGE_MIX,
+    NATIVE_RESAMPLE_BRIDGE_OVERWRITE
+} native_resample_bridge_mode_t;
+static volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
+
+/* Snapshot of final mixed output (AUDIO_OUT) at pre-master tap for native resample bridge. */
+static int16_t native_total_mix_snapshot[FRAMES_PER_BLOCK * 2];
+static volatile int native_total_mix_snapshot_valid = 0;
+/* Split component buffers for bridge compensation (no-MFX case).
+ * move_component: Move's audio from AUDIO_OUT before ME mixing.
+ * me_component: ME's deferred buffer at full gain (slot-vol only, no master-vol). */
+static int16_t native_bridge_move_component[FRAMES_PER_BLOCK * 2];
+static int16_t native_bridge_me_component[FRAMES_PER_BLOCK * 2];
+static float native_bridge_capture_mv = 1.0f;
+static volatile int native_bridge_split_valid = 0;
+/* Overwrite makeup diagnostics (helps trace master-volume compensation behavior). */
+static volatile float native_bridge_makeup_desired_gain = 1.0f;
+static volatile float native_bridge_makeup_applied_gain = 1.0f;
+static volatile int native_bridge_makeup_limited = 0;
+
+static int shadow_read_global_volume_from_settings(float *linear_out, float *db_out);
+
+typedef struct {
+    float rms_l;
+    float rms_r;
+    float rms_mid;
+    float rms_side;
+    float rms_low_l;
+    float rms_low_r;
+} native_audio_metrics_t;
+
+static const char *native_sampler_source_name(native_sampler_source_t src)
+{
+    switch (src) {
+        case NATIVE_SAMPLER_SOURCE_RESAMPLING: return "resampling";
+        case NATIVE_SAMPLER_SOURCE_LINE_IN: return "line-in";
+        case NATIVE_SAMPLER_SOURCE_MIC_IN: return "mic-in";
+        case NATIVE_SAMPLER_SOURCE_USB_C_IN: return "usb-c-in";
+        case NATIVE_SAMPLER_SOURCE_UNKNOWN:
+        default: return "unknown";
+    }
+}
+
+static const char *native_resample_bridge_mode_name(native_resample_bridge_mode_t mode)
+{
+    switch (mode) {
+        case NATIVE_RESAMPLE_BRIDGE_OFF: return "off";
+        case NATIVE_RESAMPLE_BRIDGE_OVERWRITE: return "overwrite";
+        case NATIVE_RESAMPLE_BRIDGE_MIX:
+        default: return "mix";
+    }
+}
+
+static int native_resample_diag_is_enabled(void)
+{
+    static int cached = 0;
+    static int check_counter = 0;
+    static int last_logged = -1;
+
+    if (check_counter++ % 200 == 0) {
+        cached = (access("/data/UserData/move-anything/native_resample_diag_on", F_OK) == 0);
+        if (cached != last_logged) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Native bridge diag: %s",
+                     cached ? "enabled" : "disabled");
+            shadow_log(msg);
+            last_logged = cached;
+        }
+    }
+    return cached;
+}
+
+static void native_compute_audio_metrics(const int16_t *buf, native_audio_metrics_t *m)
+{
+    if (!m) return;
+    memset(m, 0, sizeof(*m));
+    if (!buf) return;
+
+    double sum_l = 0.0;
+    double sum_r = 0.0;
+    double sum_mid = 0.0;
+    double sum_side = 0.0;
+    double sum_low_l = 0.0;
+    double sum_low_r = 0.0;
+    float lp_l = 0.0f;
+    float lp_r = 0.0f;
+    const float alpha = 0.028f;  /* ~200 Hz one-pole lowpass at 44.1 kHz */
+
+    for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
+        float l = (float)buf[i * 2] / 32768.0f;
+        float r = (float)buf[i * 2 + 1] / 32768.0f;
+        float mid = 0.5f * (l + r);
+        float side = 0.5f * (l - r);
+
+        sum_l += (double)l * (double)l;
+        sum_r += (double)r * (double)r;
+        sum_mid += (double)mid * (double)mid;
+        sum_side += (double)side * (double)side;
+
+        lp_l += alpha * (l - lp_l);
+        lp_r += alpha * (r - lp_r);
+        sum_low_l += (double)lp_l * (double)lp_l;
+        sum_low_r += (double)lp_r * (double)lp_r;
+    }
+
+    const float inv_n = 1.0f / (float)FRAMES_PER_BLOCK;
+    m->rms_l = sqrtf((float)sum_l * inv_n);
+    m->rms_r = sqrtf((float)sum_r * inv_n);
+    m->rms_mid = sqrtf((float)sum_mid * inv_n);
+    m->rms_side = sqrtf((float)sum_side * inv_n);
+    m->rms_low_l = sqrtf((float)sum_low_l * inv_n);
+    m->rms_low_r = sqrtf((float)sum_low_r * inv_n);
+}
+
+static native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *text)
+{
+    if (!text || !text[0]) return NATIVE_RESAMPLE_BRIDGE_OFF;
+
+    char lower[64];
+    str_to_lower(lower, sizeof(lower), text);
+
+    if (strcmp(lower, "0") == 0 || strcmp(lower, "off") == 0) {
+        return NATIVE_RESAMPLE_BRIDGE_OFF;
+    }
+    if (strcmp(lower, "2") == 0 ||
+        strcmp(lower, "overwrite") == 0 ||
+        strcmp(lower, "replace") == 0) {
+        return NATIVE_RESAMPLE_BRIDGE_OVERWRITE;
+    }
+    if (strcmp(lower, "1") == 0 || strcmp(lower, "mix") == 0) {
+        return NATIVE_RESAMPLE_BRIDGE_MIX;
+    }
+
+    return NATIVE_RESAMPLE_BRIDGE_OFF;
+}
+
+static void native_resample_bridge_load_mode_from_shadow_config(void)
+{
+    const char *config_path = "/data/UserData/move-anything/shadow_config.json";
+    FILE *f = fopen(config_path, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 8192) {
+        fclose(f);
+        return;
+    }
+
+    char *json = malloc((size_t)size + 1);
+    if (!json) {
+        fclose(f);
+        return;
+    }
+
+    size_t nread = fread(json, 1, (size_t)size, f);
+    fclose(f);
+    json[nread] = '\0';
+
+    char *mode_key = strstr(json, "\"resample_bridge_mode\"");
+    if (!mode_key) {
+        free(json);
+        return;
+    }
+
+    char *colon = strchr(mode_key, ':');
+    if (!colon) {
+        free(json);
+        return;
+    }
+    colon++;
+    while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
+
+    char token[32];
+    size_t idx = 0;
+    while (*colon && idx + 1 < sizeof(token)) {
+        char c = *colon;
+        if (c == '"' || c == ',' || c == '}' || c == '\n' || c == '\r' || c == ' ' || c == '\t') {
+            break;
+        }
+        token[idx++] = c;
+        colon++;
+    }
+    token[idx] = '\0';
+    free(json);
+
+    if (!token[0]) return;
+
+    native_resample_bridge_mode_t new_mode = native_resample_bridge_mode_from_text(token);
+    native_resample_bridge_mode = new_mode;
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Native resample bridge mode: %s (from config)",
+             native_resample_bridge_mode_name(new_mode));
+    shadow_log(msg);
+}
+
+static native_sampler_source_t native_sampler_source_from_text(const char *text)
+{
+    if (!text || !text[0]) return NATIVE_SAMPLER_SOURCE_UNKNOWN;
+
+    char lower[256];
+    str_to_lower(lower, sizeof(lower), text);
+
+    if (strstr(lower, "resampl")) return NATIVE_SAMPLER_SOURCE_RESAMPLING;
+    if (strstr(lower, "line in") || strstr(lower, "line-in") || strstr(lower, "linein"))
+        return NATIVE_SAMPLER_SOURCE_LINE_IN;
+    if (strstr(lower, "usb-c") || strstr(lower, "usb c") || strstr(lower, "usbc"))
+        return NATIVE_SAMPLER_SOURCE_USB_C_IN;
+    if (strstr(lower, "mic") || strstr(lower, "microphone"))
+        return NATIVE_SAMPLER_SOURCE_MIC_IN;
+
+    return NATIVE_SAMPLER_SOURCE_UNKNOWN;
+}
+
+static void native_sampler_update_from_dbus_text(const char *text)
+{
+    native_sampler_source_t parsed = native_sampler_source_from_text(text);
+    if (parsed == NATIVE_SAMPLER_SOURCE_UNKNOWN) return;
+
+    if (parsed != native_sampler_source) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Native sampler source: %s (from \"%s\")",
+                 native_sampler_source_name(parsed), text);
+        shadow_log(msg);
+        native_sampler_source = parsed;
+        native_sampler_source_last_known = parsed;
+    }
+}
+
+static int16_t clamp_i16(int32_t v)
+{
+    if (v > 32767) return 32767;
+    if (v < -32768) return -32768;
+    return (int16_t)v;
+}
+
+/* Overwrite path with component-based compensation.
+ *
+ * When Master FX is OFF and split buffers are valid, we can compensate for
+ * Move's internal master-volume attenuation on the native audio component.
+ *
+ * Problem: Move's audio in AUDIO_OUT is already attenuated by Move's master
+ * volume. When captured and played back as a pad, Move attenuates it AGAIN.
+ * Result: pad = captured × Move_vol = Move_audio × Move_vol² (double atten).
+ *
+ * Fix: undo Move's volume on the native component before writing to bridge:
+ *   dst = clamp(move_component / mv + me_component)
+ * On playback Move applies its vol once: (move/mv + me) × Move_vol
+ *   ≈ move + me × Move_vol ≈ move + me × mv = live output.
+ *
+ * When Master FX is ON, the signals are nonlinearly mixed and can't be
+ * decomposed — fall back to unity copy from the post-FX snapshot. */
+static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
+                                                          int16_t *dst,
+                                                          size_t samples)
+{
+    if (!src || !dst || samples == 0) return;
+
+    float mv = native_bridge_capture_mv;
+    if (mv < 0.001f) {
+        /* Volume essentially muted — can't compensate meaningfully */
+        memcpy(dst, src, samples * sizeof(int16_t));
+        native_bridge_makeup_desired_gain = 0.0f;
+        native_bridge_makeup_applied_gain = 1.0f;
+        native_bridge_makeup_limited = 0;
+        return;
+    }
+
+    float inv_mv = 1.0f / mv;
+    /* Cap makeup gain to prevent extreme boosting at very low volumes.
+     * 20× = +26dB. */
+    float max_makeup = 20.0f;
+
+    if (!shadow_master_fx_chain_active() && native_bridge_split_valid) {
+        /* Component compensation for no-MFX case */
+        float native_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
+        int limiter_hit = 0;
+
+        for (size_t i = 0; i < samples; i++) {
+            float move_scaled = (float)native_bridge_move_component[i] * native_gain;
+            float me = (float)native_bridge_me_component[i];
+            float sum = move_scaled + me;
+            if (sum > 32767.0f) { sum = 32767.0f; limiter_hit = 1; }
+            if (sum < -32768.0f) { sum = -32768.0f; limiter_hit = 1; }
+            dst[i] = (int16_t)lroundf(sum);
+        }
+
+        native_bridge_makeup_desired_gain = inv_mv;
+        native_bridge_makeup_applied_gain = native_gain;
+        native_bridge_makeup_limited = limiter_hit;
+    } else if (shadow_master_fx_chain_active()) {
+        /* MFX-active case: snapshot is already post-FX.
+         * Compensate by inverse master volume so playback through Move's
+         * master volume lands at live level, then cap by available headroom
+         * to avoid hard clipping. */
+        float applied_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
+        float peak = 0.0f;
+        for (size_t i = 0; i < samples; i++) {
+            float a = fabsf((float)src[i]);
+            if (a > peak) peak = a;
+        }
+
+        int limiter_hit = 0;
+        if (peak > 1.0f) {
+            float safe_gain = 32760.0f / peak;
+            if (applied_gain > safe_gain) {
+                applied_gain = safe_gain;
+                limiter_hit = 1;
+            }
+        }
+
+        for (size_t i = 0; i < samples; i++) {
+            float scaled = (float)src[i] * applied_gain;
+            if (scaled > 32767.0f) scaled = 32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            dst[i] = (int16_t)lroundf(scaled);
+        }
+
+        native_bridge_makeup_desired_gain = inv_mv;
+        native_bridge_makeup_applied_gain = applied_gain;
+        native_bridge_makeup_limited = limiter_hit;
+    } else {
+        /* Split not valid and no MFX path available — unity copy */
+        memcpy(dst, src, samples * sizeof(int16_t));
+        native_bridge_makeup_desired_gain = 1.0f;
+        native_bridge_makeup_applied_gain = 1.0f;
+        native_bridge_makeup_limited = 0;
+    }
+}
+
+static void native_capture_total_mix_snapshot_from_buffer(const int16_t *src)
+{
+    if (!src) return;
+    memcpy(native_total_mix_snapshot, src, AUDIO_BUFFER_SIZE);
+
+    __sync_synchronize();
+    native_total_mix_snapshot_valid = 1;
+}
+
+/* Source gating policy for native bridge.
+ * - Replace mode: always allow. User explicitly chose full input replacement.
+ * - Mix mode: block explicit Mic In / USB-C In announcements to reduce feedback risk.
+ * - Unknown source fails open to avoid getting stuck when announcements are missing. */
+static int native_resample_bridge_source_allows_apply(native_resample_bridge_mode_t mode)
+{
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) return 1;
+
+    native_sampler_source_t src = native_sampler_source;
+
+    if (src == NATIVE_SAMPLER_SOURCE_MIC_IN) return 0;
+    if (src == NATIVE_SAMPLER_SOURCE_USB_C_IN) return 0;
+    return 1;
+}
+
+static void native_resample_diag_log_skip(native_resample_bridge_mode_t mode, const char *reason)
+{
+    static int skip_counter = 0;
+    if (!native_resample_diag_is_enabled()) return;
+    if (skip_counter++ % 200 != 0) return;
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Native bridge diag: skip reason=%s mode=%s src=%s last=%s",
+             reason ? reason : "unknown",
+             native_resample_bridge_mode_name(mode),
+             native_sampler_source_name(native_sampler_source),
+             native_sampler_source_name(native_sampler_source_last_known));
+    shadow_log(msg);
+}
+
+static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
+                                           const int16_t *src,
+                                           const int16_t *dst)
+{
+    static int apply_counter = 0;
+    if (!native_resample_diag_is_enabled()) return;
+    if (apply_counter++ % 200 != 0) return;
+
+    native_audio_metrics_t src_m;
+    native_audio_metrics_t dst_m;
+    native_compute_audio_metrics(src, &src_m);
+    native_compute_audio_metrics(dst, &dst_m);
+
+    int overwrite_diff = -1;
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE && src && dst) {
+        overwrite_diff = 0;
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            if (src[i] != dst[i]) overwrite_diff++;
+        }
+    }
+
+    float src_side_ratio = src_m.rms_side / (src_m.rms_mid + 1e-9f);
+    float dst_side_ratio = dst_m.rms_side / (dst_m.rms_mid + 1e-9f);
+
+    char msg[512];
+    snprintf(msg, sizeof(msg),
+             "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f split=%d mfx=%d makeup=(%.2fx->%.2fx lim=%d) tap=post-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
+             native_resample_bridge_mode_name(mode),
+             native_sampler_source_name(native_sampler_source),
+             native_sampler_source_name(native_sampler_source_last_known),
+             shadow_master_volume,
+             native_bridge_split_valid,
+             shadow_master_fx_chain_active(),
+             native_bridge_makeup_desired_gain,
+             native_bridge_makeup_applied_gain,
+             native_bridge_makeup_limited,
+             src_m.rms_l, src_m.rms_r,
+             dst_m.rms_l, dst_m.rms_r,
+             src_m.rms_low_l, src_m.rms_low_r,
+             dst_m.rms_low_l, dst_m.rms_low_r,
+             src_side_ratio, dst_side_ratio,
+             overwrite_diff);
+    shadow_log(msg);
+}
+
+static void native_resample_bridge_apply(void)
+{
+    if (!global_mmap_addr || !native_total_mix_snapshot_valid) return;
+
+    native_resample_bridge_mode_t mode = native_resample_bridge_mode;
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OFF) {
+        native_resample_diag_log_skip(mode, "mode_off");
+        return;
+    }
+
+    if (!native_resample_bridge_source_allows_apply(mode)) {
+        native_resample_diag_log_skip(mode, "source_blocked");
+        return;
+    }
+
+    int16_t *dst = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
+    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) {
+        int16_t compensated_snapshot[FRAMES_PER_BLOCK * 2];
+        native_resample_bridge_apply_overwrite_makeup(
+            native_total_mix_snapshot,
+            compensated_snapshot,
+            FRAMES_PER_BLOCK * 2
+        );
+        memcpy(dst, compensated_snapshot, AUDIO_BUFFER_SIZE);
+        native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
+        return;
+    }
+
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        int32_t mixed = (int32_t)dst[i] + (int32_t)native_total_mix_snapshot[i];
+        dst[i] = clamp_i16(mixed);
+    }
+    native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
+}
+
+#if ENABLE_SCREEN_READER
 /* Inject pending screen reader announcements immediately */
 static void shadow_inject_pending_announcements(void)
 {
@@ -1223,6 +1722,9 @@ static void shadow_dbus_handle_text(const char *text)
         shadow_log(msg);
     }
 
+    /* Track native Move sampler source from stock announcements. */
+    native_sampler_update_from_dbus_text(text);
+
     /* Block D-Bus messages while priority announcement is playing */
     if (tts_priority_announcement_active) {
         struct timespec ts;
@@ -1264,7 +1766,7 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Check if it's a volume message */
+    /* Check if it's a track volume message */
     if (strncmp(text, "Track Volume ", 13) == 0) {
         float volume = shadow_parse_volume_db(text);
         if (volume >= 0.0f && shadow_held_track >= 0 && shadow_held_track < SHADOW_CHAIN_INSTANCES) {
@@ -1732,6 +2234,45 @@ static void shadow_dbus_stop(void)
         shadow_dbus_conn = NULL;
     }
 }
+#else
+/* Screen reader disabled at build time: keep hooks as pass-through no-ops. */
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    static int (*real_connect)(int, const struct sockaddr *, socklen_t) = NULL;
+    if (!real_connect) {
+        real_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
+    }
+    if (!real_connect) return -1;
+    return real_connect(sockfd, addr, addrlen);
+}
+
+ssize_t send(int sockfd, const void *buf, size_t len, int flags)
+{
+    static ssize_t (*real_send)(int, const void *, size_t, int) = NULL;
+    if (!real_send) {
+        real_send = (ssize_t (*)(int, const void *, size_t, int))dlsym(RTLD_NEXT, "send");
+    }
+    if (!real_send) return -1;
+    return real_send(sockfd, buf, len, flags);
+}
+
+static void send_screenreader_announcement(const char *text)
+{
+    (void)text;
+}
+
+static void shadow_inject_pending_announcements(void)
+{
+}
+
+static void shadow_dbus_start(void)
+{
+}
+
+static void shadow_dbus_stop(void)
+{
+}
+#endif
 
 /* Update track button hold state from MIDI (called from ioctl hook) */
 static void shadow_update_held_track(uint8_t cc, int pressed)
@@ -1767,6 +2308,8 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 static volatile float shadow_master_volume = 1.0f;
 /* Is volume knob currently being touched? (note 8) */
 static volatile int shadow_volume_knob_touched = 0;
+/* Is jog encoder currently being touched? (note 9) */
+static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
 
@@ -1783,8 +2326,10 @@ static char shift_knob_overlay_patch[64] = "";   /* Patch name */
 static char shift_knob_overlay_param[64] = "";   /* Parameter name */
 static char shift_knob_overlay_value[32] = "";   /* Parameter value */
 
-/* Config: enable Shift+Knob in Move mode */
-static int shift_knob_enabled = 1;  /* Default enabled */
+/* Overlay knobs activation mode (from shadow_control->overlay_knobs_mode) */
+#define OVERLAY_KNOBS_SHIFT     0
+#define OVERLAY_KNOBS_JOG_TOUCH 1
+#define OVERLAY_KNOBS_OFF       2
 
 #define SHIFT_KNOB_OVERLAY_FRAMES 60  /* ~1 second at 60fps */
 
@@ -2130,7 +2675,8 @@ static void overlay_draw_shift_knob(uint8_t *buf)
 static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
 {
     (void)cc_value;  /* No longer used - we show "Unmapped" instead */
-    if (!shift_knob_enabled) return;
+    uint8_t okm = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_SHIFT;
+    if (okm == OVERLAY_KNOBS_OFF) return;
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
 
     shift_knob_overlay_slot = slot;
@@ -3002,14 +3548,10 @@ static void load_feature_config(void)
     shadow_log(log_msg);
 }
 
-/* Read initial volume from Move's Settings.json */
-static void shadow_read_initial_volume(void)
+static int shadow_read_global_volume_from_settings(float *linear_out, float *db_out)
 {
     FILE *f = fopen("/data/UserData/settings/Settings.json", "r");
-    if (!f) {
-        shadow_log("Master volume: Settings.json not found, defaulting to 1.0");
-        return;
-    }
+    if (!f) return 0;
 
     /* Read file */
     fseek(f, 0, SEEK_END);
@@ -3018,13 +3560,13 @@ static void shadow_read_initial_volume(void)
 
     if (size <= 0 || size > 8192) {
         fclose(f);
-        return;
+        return 0;
     }
 
     char *json = malloc(size + 1);
     if (!json) {
         fclose(f);
-        return;
+        return 0;
     }
 
     size_t nread = fread(json, 1, size, f);
@@ -3034,24 +3576,41 @@ static void shadow_read_initial_volume(void)
     /* Find "globalVolume": X.X */
     const char *key = "\"globalVolume\":";
     char *pos = strstr(json, key);
-    if (pos) {
-        pos += strlen(key);
-        while (*pos == ' ') pos++;
-        float db = strtof(pos, NULL);
-        /* globalVolume is in dB, convert to linear */
-        /* 0 dB = 1.0, -inf = 0.0 */
-        if (db <= -60.0f) {
-            shadow_master_volume = 0.0f;
-        } else {
-            shadow_master_volume = powf(10.0f, db / 20.0f);
-            if (shadow_master_volume > 1.0f) shadow_master_volume = 1.0f;
-        }
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Master volume: read %.1f dB -> %.3f linear", db, shadow_master_volume);
-        shadow_log(msg);
+    if (!pos) {
+        free(json);
+        return 0;
     }
 
+    pos += strlen(key);
+    while (*pos == ' ') pos++;
+
+    float db = strtof(pos, NULL);
+    float linear = (db <= -60.0f) ? 0.0f : powf(10.0f, db / 20.0f);
+    if (linear < 0.0f) linear = 0.0f;
+    if (linear > 1.0f) linear = 1.0f;
+
+    if (linear_out) *linear_out = linear;
+    if (db_out) *db_out = db;
+
     free(json);
+    return 1;
+}
+
+/* Read initial volume from Move's Settings.json */
+static void shadow_read_initial_volume(void)
+{
+    float linear = 1.0f;
+    float db = 0.0f;
+    if (!shadow_read_global_volume_from_settings(&linear, &db)) {
+        shadow_log("Master volume: Settings.json not found, defaulting to 1.0");
+        return;
+    }
+
+    shadow_master_volume = linear;
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Master volume: read %.1f dB -> %.3f linear", db, shadow_master_volume);
+    shadow_log(msg);
 }
 
 /* ==========================================================================
@@ -4137,19 +4696,32 @@ static void shadow_inprocess_handle_param_request(void) {
     if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
         const char *fx_key = shadow_param->key + 10;
         int mfx_slot = -1;  /* -1 = legacy (slot 0), 0-3 = specific slot */
+        int has_slot_prefix = 0;
         const char *param_key = fx_key;
 
         /* Parse slot: fx1:, fx2:, fx3:, fx4: */
-        if (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; }
+        if (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; has_slot_prefix = 1; }
+        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; has_slot_prefix = 1; }
+        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; has_slot_prefix = 1; }
+        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; has_slot_prefix = 1; }
         else { mfx_slot = 0; param_key = fx_key; }  /* Legacy: default to slot 0 */
 
         master_fx_slot_t *mfx = &shadow_master_fx_slots[mfx_slot];
 
         if (req_type == 1) {  /* SET */
-            if (strcmp(param_key, "module") == 0) {
+            if (!has_slot_prefix && strcmp(param_key, "resample_bridge") == 0) {
+                native_resample_bridge_mode_t new_mode =
+                    native_resample_bridge_mode_from_text(shadow_param->value);
+                if (new_mode != native_resample_bridge_mode) {
+                    char msg[128];
+                    snprintf(msg, sizeof(msg), "Native resample bridge mode: %s",
+                             native_resample_bridge_mode_name(new_mode));
+                    shadow_log(msg);
+                }
+                native_resample_bridge_mode = new_mode;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (strcmp(param_key, "module") == 0) {
                 /* Load or unload master FX slot */
                 int result = shadow_master_fx_slot_load(mfx_slot, shadow_param->value);
                 shadow_param->error = (result == 0) ? 0 : 7;
@@ -4176,7 +4748,12 @@ static void shadow_inprocess_handle_param_request(void) {
                 shadow_param->result_len = -1;
             }
         } else if (req_type == 2) {  /* GET */
-            if (strcmp(param_key, "module") == 0) {
+            if (!has_slot_prefix && strcmp(param_key, "resample_bridge") == 0) {
+                int mode = (int)native_resample_bridge_mode;
+                if (mode < 0 || mode > 2) mode = 0;
+                shadow_param->result_len = snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d", mode);
+                shadow_param->error = 0;
+            } else if (strcmp(param_key, "module") == 0) {
                 strncpy(shadow_param->value, mfx->module_path, SHADOW_PARAM_VALUE_LEN - 1);
                 shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
                 shadow_param->error = 0;
@@ -4318,6 +4895,52 @@ static void shadow_inprocess_handle_param_request(void) {
         } else {
             shadow_param->error = 6;
             shadow_param->result_len = -1;
+        }
+        shadow_param->response_ready = 1;
+        shadow_param->request_type = 0;
+        return;
+    }
+
+    /* Handle overtake DSP params: overtake_dsp:load, overtake_dsp:unload, overtake_dsp:<param> */
+    if (strncmp(shadow_param->key, "overtake_dsp:", 13) == 0) {
+        const char *param_key = shadow_param->key + 13;
+        if (req_type == 1) {  /* SET */
+            if (strcmp(param_key, "load") == 0) {
+                shadow_overtake_dsp_load(shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (strcmp(param_key, "unload") == 0) {
+                shadow_overtake_dsp_unload();
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->set_param) {
+                overtake_dsp_gen->set_param(overtake_dsp_gen_inst, param_key, shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->set_param) {
+                overtake_dsp_fx->set_param(overtake_dsp_fx_inst, param_key, shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else {
+                shadow_param->error = 13;
+                shadow_param->result_len = -1;
+            }
+        } else if (req_type == 2) {  /* GET */
+            int len = -1;
+            if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->get_param) {
+                len = overtake_dsp_gen->get_param(overtake_dsp_gen_inst, param_key,
+                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+            } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->get_param) {
+                len = overtake_dsp_fx->get_param(overtake_dsp_fx_inst, param_key,
+                                                  shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+            }
+            if (len >= 0) {
+                shadow_param->error = 0;
+                shadow_param->result_len = len;
+            } else {
+                shadow_param->error = 14;
+                shadow_param->result_len = -1;
+            }
         }
         shadow_param->response_ready = 1;
         shadow_param->request_type = 0;
@@ -4618,6 +5241,15 @@ static void shadow_inprocess_process_midi(void) {
                 continue;
             }
             shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
+
+            /* Also route to overtake DSP if loaded */
+            if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
+                uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+                overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+            } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->on_midi) {
+                uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+                overtake_dsp_fx->on_midi(overtake_dsp_fx_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+            }
         }
         /* Raw MIDI format fallback removed - was matching garbage/stale data.
          * USB MIDI format (with CIN validation) is the proper format for this buffer. */
@@ -4628,9 +5260,18 @@ static void shadow_inprocess_mix_audio(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    float mv = shadow_master_volume;
+    /* Use one gain topology for all cases: pre-scale ME input by current master factor. */
+    float me_input_scale = (mv < 1.0f) ? mv : 1.0f;
+
+    /* Save Move's audio for bridge split component (before mixing ME). */
+    memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
+
     int32_t mix[FRAMES_PER_BLOCK * 2];
+    int32_t me_full[FRAMES_PER_BLOCK * 2];  /* ME at full gain for bridge */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         mix[i] = mailbox_audio[i];
+        me_full[i] = 0;
     }
 
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
@@ -4642,11 +5283,22 @@ static void shadow_inprocess_mix_audio(void) {
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
             float vol = shadow_chain_slots[s].volume;
+            float gain = vol * me_input_scale;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                mix[i] += (int32_t)(render_buffer[i] * vol);
+                mix[i] += (int32_t)lroundf((float)render_buffer[i] * gain);
+                me_full[i] += (int32_t)lroundf((float)render_buffer[i] * vol);
             }
         }
     }
+
+    /* Save ME full-gain component for bridge split */
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        if (me_full[i] > 32767) me_full[i] = 32767;
+        if (me_full[i] < -32768) me_full[i] = -32768;
+        native_bridge_me_component[i] = (int16_t)me_full[i];
+    }
+    native_bridge_capture_mv = mv;
+    native_bridge_split_valid = 1;
 
     /* Clamp and write to output buffer */
     int16_t output_buffer[FRAMES_PER_BLOCK * 2];
@@ -4664,16 +5316,179 @@ static void shadow_inprocess_mix_audio(void) {
         }
     }
 
-    /* Apply master volume to shadow output */
-    float mv = shadow_master_volume;
-    if (mv < 1.0f) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            output_buffer[i] = (int16_t)(output_buffer[i] * mv);
-        }
-    }
+    /* Capture native bridge source AFTER master FX, BEFORE master volume.
+     * This bakes master FX into native bridge resampling while keeping
+     * capture independent of master-volume attenuation. */
+    native_capture_total_mix_snapshot_from_buffer(output_buffer);
 
     /* Write final output to mailbox */
     memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
+}
+
+/* === OVERTAKE DSP LOAD/UNLOAD ===
+ * Overtake modules can optionally include a dsp.so that runs in the shim's
+ * audio thread.  V2-only: supports both generator (plugin_api_v2_t, outputs
+ * audio) and effect (audio_fx_api_v2_t, processes combined audio in-place).
+ */
+
+/* MIDI send callback for overtake DSP → chain slots */
+static int overtake_midi_send_internal(const uint8_t *msg, int len) {
+    if (!msg || len < 3) return 0;
+    /* Build USB-MIDI packet: [CIN, status, d1, d2] */
+    uint8_t cin = (msg[1] >> 4) & 0x0F;
+    uint8_t pkt[4] = { cin, msg[1], msg[2], msg[3] };
+    static int midi_log_count = 0;
+    int log_on = shadow_midi_out_log_enabled();
+    shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
+    return len;
+}
+
+/* MIDI send callback for overtake DSP → external USB MIDI */
+static int overtake_midi_send_external(const uint8_t *msg, int len) {
+    if (!msg || len < 4) return 0;
+    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        if (midi_out[i] == 0 && midi_out[i+1] == 0 &&
+            midi_out[i+2] == 0 && midi_out[i+3] == 0) {
+            memcpy(&midi_out[i], msg, 4);
+            return len;
+        }
+    }
+    return 0;  /* Buffer full */
+}
+
+static void shadow_overtake_dsp_load(const char *path) {
+    /* Unload previous if any */
+    if (overtake_dsp_handle) {
+        shadow_log("Overtake DSP: unloading previous before loading new");
+        if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->destroy_instance)
+            overtake_dsp_gen->destroy_instance(overtake_dsp_gen_inst);
+        if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->destroy_instance)
+            overtake_dsp_fx->destroy_instance(overtake_dsp_fx_inst);
+        dlclose(overtake_dsp_handle);
+        overtake_dsp_handle = NULL;
+        overtake_dsp_gen = NULL;
+        overtake_dsp_gen_inst = NULL;
+        overtake_dsp_fx = NULL;
+        overtake_dsp_fx_inst = NULL;
+    }
+
+    if (!path || !path[0]) return;
+
+    overtake_dsp_handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!overtake_dsp_handle) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "Overtake DSP: failed to load %s: %s", path, dlerror());
+        shadow_log(msg);
+        return;
+    }
+
+    /* Set up host API for the overtake plugin */
+    memset(&overtake_host_api, 0, sizeof(overtake_host_api));
+    overtake_host_api.api_version = MOVE_PLUGIN_API_VERSION;
+    overtake_host_api.sample_rate = MOVE_SAMPLE_RATE;
+    overtake_host_api.frames_per_block = MOVE_FRAMES_PER_BLOCK;
+    overtake_host_api.mapped_memory = global_mmap_addr;
+    overtake_host_api.audio_out_offset = MOVE_AUDIO_OUT_OFFSET;
+    overtake_host_api.audio_in_offset = MOVE_AUDIO_IN_OFFSET;
+    overtake_host_api.log = shadow_log;
+    overtake_host_api.midi_send_internal = overtake_midi_send_internal;
+    overtake_host_api.midi_send_external = overtake_midi_send_external;
+
+    /* Extract module directory from dsp path */
+    char module_dir[256];
+    strncpy(module_dir, path, sizeof(module_dir) - 1);
+    module_dir[sizeof(module_dir) - 1] = '\0';
+    char *last_slash = strrchr(module_dir, '/');
+    if (last_slash) *last_slash = '\0';
+
+    /* Try V2 generator first (e.g. SEQOMD) */
+    move_plugin_init_v2_fn init_gen = (move_plugin_init_v2_fn)dlsym(
+        overtake_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
+    if (init_gen) {
+        overtake_dsp_gen = init_gen(&overtake_host_api);
+        if (overtake_dsp_gen && overtake_dsp_gen->create_instance) {
+            /* Read defaults from module.json if available */
+            char json_path[512];
+            snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
+            char *defaults = NULL;
+            FILE *f = fopen(json_path, "r");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                if (sz > 0 && sz < 16384) {
+                    defaults = malloc(sz + 1);
+                    if (defaults) {
+                        size_t nr = fread(defaults, 1, sz, f);
+                        defaults[nr] = '\0';
+                        /* Extract just the "defaults" value */
+                        const char *dp = strstr(defaults, "\"defaults\"");
+                        if (!dp) { free(defaults); defaults = NULL; }
+                    }
+                }
+                fclose(f);
+            }
+
+            overtake_dsp_gen_inst = overtake_dsp_gen->create_instance(
+                module_dir, defaults);
+            if (defaults) free(defaults);
+
+            if (overtake_dsp_gen_inst) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Overtake DSP: loaded generator from %s", path);
+                shadow_log(msg);
+                return;
+            }
+        }
+        overtake_dsp_gen = NULL;
+    }
+
+    /* Try audio FX v2 (effect mode) */
+    audio_fx_init_v2_fn init_fx = (audio_fx_init_v2_fn)dlsym(
+        overtake_dsp_handle, AUDIO_FX_INIT_V2_SYMBOL);
+    if (init_fx) {
+        overtake_dsp_fx = init_fx(&overtake_host_api);
+        if (overtake_dsp_fx && overtake_dsp_fx->create_instance) {
+            overtake_dsp_fx_inst = overtake_dsp_fx->create_instance(module_dir, NULL);
+            if (overtake_dsp_fx_inst) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Overtake DSP: loaded FX from %s", path);
+                shadow_log(msg);
+                return;
+            }
+        }
+        overtake_dsp_fx = NULL;
+    }
+
+    /* Neither worked */
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Overtake DSP: no V2 generator or FX entry point in %s", path);
+    shadow_log(msg);
+    dlclose(overtake_dsp_handle);
+    overtake_dsp_handle = NULL;
+}
+
+static void shadow_overtake_dsp_unload(void) {
+    if (!overtake_dsp_handle) return;
+
+    if (overtake_dsp_gen && overtake_dsp_gen_inst) {
+        if (overtake_dsp_gen->destroy_instance)
+            overtake_dsp_gen->destroy_instance(overtake_dsp_gen_inst);
+        shadow_log("Overtake DSP: generator unloaded");
+    }
+    if (overtake_dsp_fx && overtake_dsp_fx_inst) {
+        if (overtake_dsp_fx->destroy_instance)
+            overtake_dsp_fx->destroy_instance(overtake_dsp_fx_inst);
+        shadow_log("Overtake DSP: FX unloaded");
+    }
+
+    dlclose(overtake_dsp_handle);
+    overtake_dsp_handle = NULL;
+    overtake_dsp_gen = NULL;
+    overtake_dsp_gen_inst = NULL;
+    overtake_dsp_fx = NULL;
+    overtake_dsp_fx_inst = NULL;
 }
 
 /* === DEFERRED DSP RENDERING ===
@@ -4707,6 +5522,19 @@ static void shadow_inprocess_render_to_buffer(void) {
         }
     }
 
+    /* Overtake DSP generator: mix its output into the deferred buffer */
+    if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->render_block) {
+        int16_t render_buffer[FRAMES_PER_BLOCK * 2];
+        memset(render_buffer, 0, sizeof(render_buffer));
+        overtake_dsp_gen->render_block(overtake_dsp_gen_inst, render_buffer, MOVE_FRAMES_PER_BLOCK);
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)render_buffer[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
+        }
+    }
+
     /* Note: Master FX is applied in mix_from_buffer() AFTER mixing with Move's audio */
 
     shadow_deferred_dsp_valid = 1;
@@ -4720,13 +5548,33 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    float mv = shadow_master_volume;
+    /* Use one gain topology for all cases: pre-scale ME input by current master factor. */
+    float me_input_scale = (mv < 1.0f) ? mv : 1.0f;
+
+    /* Save split components for bridge compensation (before mixing).
+     * move_component = Move's audio (already Move-vol-scaled internally).
+     * me_component = ME deferred buffer at full gain (slot-vol only). */
+    memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
+    memcpy(native_bridge_me_component, shadow_deferred_dsp_buffer, sizeof(native_bridge_me_component));
+    native_bridge_capture_mv = mv;
+    native_bridge_split_valid = 1;
 
     /* Mix deferred buffer into mailbox audio */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t mixed = mailbox_audio[i] + shadow_deferred_dsp_buffer[i];
+        int32_t me_sample = (int32_t)shadow_deferred_dsp_buffer[i];
+        if (me_input_scale < 0.9999f) {
+            me_sample = (int32_t)lroundf((float)me_sample * me_input_scale);
+        }
+        int32_t mixed = (int32_t)mailbox_audio[i] + me_sample;
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
+    }
+
+    /* Overtake DSP FX: process combined Move+shadow audio in-place */
+    if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
+        overtake_dsp_fx->process_block(overtake_dsp_fx_inst, mailbox_audio, FRAMES_PER_BLOCK);
     }
 
     /* Apply master FX chain to combined audio - process through all 4 slots in series */
@@ -4737,6 +5585,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
+    /* Capture native bridge source AFTER master FX, BEFORE master volume.
+     * This bakes master FX into native bridge resampling while keeping
+     * capture independent of master-volume attenuation. */
+    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
+
     /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
         sampler_capture_audio();
@@ -4745,13 +5598,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
         skipback_capture(mailbox_audio);
     }
 
-    /* Apply master volume */
-    float mv = shadow_master_volume;
-    if (mv < 1.0f) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            mailbox_audio[i] = (int16_t)(mailbox_audio[i] * mv);
-        }
-    }
+    /* No extra post-scale here: live path and bridge tap must share the same gain topology. */
 }
 
 /* Shared memory segment names from shadow_constants.h */
@@ -4766,12 +5613,17 @@ static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static uint8_t last_shadow_midi_out_ready = 0;
+static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
+static uint8_t last_shadow_midi_dsp_ready = 0;
+
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 
 /* Pending LED queue for rate-limited output (like standalone mode) */
 #define SHADOW_LED_MAX_UPDATES_PER_TICK 16
 #define SHADOW_LED_QUEUE_SAFE_BYTES 76
+/* In overtake mode we clear Move's cable-0 LEDs, freeing most of the buffer */
+#define SHADOW_LED_OVERTAKE_BUDGET 48
 static int shadow_pending_note_color[128];   /* -1 = not pending */
 static uint8_t shadow_pending_note_status[128];
 static uint8_t shadow_pending_note_cin[128];
@@ -4798,18 +5650,59 @@ static int shm_control_fd = -1;
 static int shm_ui_fd = -1;
 static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
+static int shm_midi_dsp_fd = -1;
 static int shm_screenreader_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
 
 /* Initialize shadow shared memory segments */
+
+/* Signal handler for crash diagnostics - async-signal-safe */
+static void crash_signal_handler(int sig)
+{
+    const char *name;
+    switch (sig) {
+        case SIGSEGV: name = "SIGSEGV"; break;
+        case SIGBUS:  name = "SIGBUS";  break;
+        case SIGABRT: name = "SIGABRT"; break;
+        case SIGTERM: name = "SIGTERM"; break;
+        case SIGINT:  name = "SIGINT";  break;
+        default:      name = "UNKNOWN"; break;
+    }
+    /* Build message: "Caught <signal> - terminating (pid=<pid>)" */
+    char msg[128];
+    int pos = 0;
+    const char prefix[] = "Caught ";
+    for (int i = 0; prefix[i]; i++) msg[pos++] = prefix[i];
+    for (int i = 0; name[i]; i++) msg[pos++] = name[i];
+    const char suffix[] = " - terminating";
+    for (int i = 0; suffix[i]; i++) msg[pos++] = suffix[i];
+    msg[pos] = '\0';
+
+    unified_log_crash(msg);
+    _exit(128 + sig);
+}
+
 static void init_shadow_shm(void)
 {
     if (shadow_shm_initialized) return;
 
     /* Initialize unified logging first so we can log during shm init */
     unified_log_init();
+
+    /* Install crash signal handlers */
+    signal(SIGSEGV, crash_signal_handler);
+    signal(SIGBUS,  crash_signal_handler);
+    signal(SIGABRT, crash_signal_handler);
+    signal(SIGTERM, crash_signal_handler);
+
+    /* Log startup identity (always-on, no flag needed) */
+    {
+        char init_msg[64];
+        snprintf(init_msg, sizeof(init_msg), "Shim init: pid=%d ppid=%d", getpid(), getppid());
+        unified_log_crash(init_msg);
+    }
 
     printf("Shadow: Initializing shared memory...\n");
 
@@ -4985,6 +5878,23 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create midi_out shm\n");
     }
 
+    /* Create/open MIDI-to-DSP shared memory (for shadow UI to route MIDI to chain slots) */
+    shm_midi_dsp_fd = shm_open(SHM_SHADOW_MIDI_DSP, O_CREAT | O_RDWR, 0666);
+    if (shm_midi_dsp_fd >= 0) {
+        ftruncate(shm_midi_dsp_fd, sizeof(shadow_midi_dsp_t));
+        shadow_midi_dsp_shm = (shadow_midi_dsp_t *)mmap(NULL, sizeof(shadow_midi_dsp_t),
+                                                         PROT_READ | PROT_WRITE,
+                                                         MAP_SHARED, shm_midi_dsp_fd, 0);
+        if (shadow_midi_dsp_shm == MAP_FAILED) {
+            shadow_midi_dsp_shm = NULL;
+            printf("Shadow: Failed to mmap midi_dsp shm\n");
+        } else {
+            memset(shadow_midi_dsp_shm, 0, sizeof(shadow_midi_dsp_t));
+        }
+    } else {
+        printf("Shadow: Failed to create midi_dsp shm\n");
+    }
+
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
     shm_screenreader_fd = shm_open(SHM_SHADOW_SCREENREADER, O_CREAT | O_RDWR, 0666);
     if (shm_screenreader_fd >= 0) {
@@ -5007,9 +5917,9 @@ static void init_shadow_shm(void)
     printf("Shadow: TTS engine configured (will init on first use)\n");
 
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, screenreader=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_screenreader_shm);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_midi_dsp_shm, shadow_screenreader_shm);
 }
 
 #if SHADOW_DEBUG
@@ -5218,11 +6128,32 @@ static void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t
     }
 }
 
+/* In overtake mode, clear Move's cable-0 LED packets from MIDI_OUT buffer.
+ * Move continuously writes its LED state but in overtake mode we own all LEDs.
+ * Must be called BEFORE shadow_inject_ui_midi_out() so cable-2 (external MIDI)
+ * messages can find empty slots in the buffer. */
+static void shadow_clear_move_leds_if_overtake(void) {
+    if (!shadow_control || shadow_control->overtake_mode < 2) return;
+
+    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+        uint8_t type = midi_out[i+1] & 0xF0;
+        if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+            midi_out[i] = 0;
+            midi_out[i+1] = 0;
+            midi_out[i+2] = 0;
+            midi_out[i+3] = 0;
+        }
+    }
+}
+
 /* Flush pending LED updates to hardware, rate-limited */
 static void shadow_flush_pending_leds(void) {
     shadow_init_led_queue();
 
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+    int overtake = shadow_control && shadow_control->overtake_mode >= 2;
 
     /* Count how many slots are already used */
     int used = 0;
@@ -5233,8 +6164,11 @@ static void shadow_flush_pending_leds(void) {
         }
     }
 
-    int available = (SHADOW_LED_QUEUE_SAFE_BYTES - used) / 4;
-    int budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
+    /* In overtake mode use full buffer (after clearing Move's LEDs).
+     * In normal mode stay within safe limit to coexist with Move's packets. */
+    int max_bytes = overtake ? MIDI_BUFFER_SIZE : SHADOW_LED_QUEUE_SAFE_BYTES;
+    int available = (max_bytes - used) / 4;
+    int budget = overtake ? SHADOW_LED_OVERTAKE_BUDGET : SHADOW_LED_MAX_UPDATES_PER_TICK;
     if (available <= 0 || budget <= 0) return;
     if (budget > available) budget = available;
 
@@ -5346,16 +6280,29 @@ static void shadow_inject_ui_midi_out(void) {
     last_shadow_midi_out_ready = shadow_midi_out_shm->ready;
     shadow_init_led_queue();
 
+    /* Snapshot write_idx and buffer, then reset immediately.
+     * This avoids a race where the JS process writes new data between
+     * our read loop and the clear at the end. */
+    int snapshot_len = shadow_midi_out_shm->write_idx;
+    shadow_midi_out_shm->write_idx = 0;
+    uint8_t local_buf[SHADOW_MIDI_OUT_BUFFER_SIZE];
+    int copy_len = snapshot_len < (int)SHADOW_MIDI_OUT_BUFFER_SIZE
+                 ? snapshot_len : (int)SHADOW_MIDI_OUT_BUFFER_SIZE;
+    if (copy_len > 0) {
+        memcpy(local_buf, shadow_midi_out_shm->buffer, copy_len);
+    }
+    memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+
     /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
 
     int hw_offset = 0;
-    for (int i = 0; i < shadow_midi_out_shm->write_idx && i < SHADOW_MIDI_OUT_BUFFER_SIZE; i += 4) {
-        uint8_t cin = shadow_midi_out_shm->buffer[i];
+    for (int i = 0; i < copy_len; i += 4) {
+        uint8_t cin = local_buf[i];
         uint8_t cable = (cin >> 4) & 0x0F;
-        uint8_t status = shadow_midi_out_shm->buffer[i + 1];
-        uint8_t data1 = shadow_midi_out_shm->buffer[i + 2];
-        uint8_t data2 = shadow_midi_out_shm->buffer[i + 3];
+        uint8_t status = local_buf[i + 1];
+        uint8_t data1 = local_buf[i + 2];
+        uint8_t data2 = local_buf[i + 3];
         uint8_t type = status & 0xF0;
 
         /* Queue cable 0 LED messages (note-on, CC) for rate-limited sending */
@@ -5374,13 +6321,39 @@ static void shadow_inject_ui_midi_out(void) {
         }
         if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
 
-        memcpy(&midi_out[hw_offset], &shadow_midi_out_shm->buffer[i], 4);
+        memcpy(&midi_out[hw_offset], &local_buf[i], 4);
         hw_offset += 4;
+    }
+}
+
+/* Drain MIDI-to-DSP buffer from shadow UI and dispatch to chain slots. */
+static void shadow_drain_ui_midi_dsp(void) {
+    if (!shadow_midi_dsp_shm) return;
+    if (shadow_midi_dsp_shm->ready == last_shadow_midi_dsp_ready) return;
+
+    last_shadow_midi_dsp_ready = shadow_midi_dsp_shm->ready;
+
+    static int midi_log_count = 0;
+    int log_on = shadow_midi_out_log_enabled();
+
+    for (int i = 0; i < shadow_midi_dsp_shm->write_idx && i < SHADOW_MIDI_DSP_BUFFER_SIZE; i += 4) {
+        uint8_t status = shadow_midi_dsp_shm->buffer[i];
+        uint8_t d1 = shadow_midi_dsp_shm->buffer[i + 1];
+        uint8_t d2 = shadow_midi_dsp_shm->buffer[i + 2];
+
+        /* Validate status byte has high bit set */
+        if (!(status & 0x80)) continue;
+
+        /* Construct USB-MIDI packet for dispatch: [CIN, status, d1, d2] */
+        uint8_t cin = (status >> 4) & 0x0F;
+        uint8_t pkt[4] = { cin, status, d1, d2 };
+
+        shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
     }
 
     /* Clear after processing */
-    shadow_midi_out_shm->write_idx = 0;
-    memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+    shadow_midi_dsp_shm->write_idx = 0;
+    memset(shadow_midi_dsp_shm->buffer, 0, SHADOW_MIDI_DSP_BUFFER_SIZE);
 }
 
 /* Check for and send screen reader announcements via D-Bus */
@@ -5784,7 +6757,8 @@ static void shadow_filter_move_input(void)
         if (type == 0x90 || type == 0x80) {
             /* Knob touch notes 0-7 pass through to Move for touch-to-peek in Chain UI.
              * Only block note 9 (jog wheel touch - not needed). */
-            if (d1 == 9) {  /* Jog wheel touch - not needed */
+            if (d1 == 9) {  /* Jog wheel touch - track state, block from Move */
+                shadow_jog_touched = (type == 0x90 && d2 > 0) ? 1 : 0;
                 src[i] = 0;
                 src[i + 1] = 0;
                 src[i + 2] = 0;
@@ -6068,6 +7042,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
         load_feature_config();  /* Load feature flags from config */
+        native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
         shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
@@ -6667,6 +7642,48 @@ int ioctl(int fd, unsigned long request, ...)
 
     clock_gettime(CLOCK_MONOTONIC, &ioctl_start);
 
+    /* === IOCTL GAP DETECTION (always-on, no flag needed) === */
+    {
+        static struct timespec last_ioctl_time = {0, 0};
+        if (last_ioctl_time.tv_sec > 0) {
+            uint64_t gap_ms = (ioctl_start.tv_sec - last_ioctl_time.tv_sec) * 1000 +
+                              (ioctl_start.tv_nsec - last_ioctl_time.tv_nsec) / 1000000;
+            if (gap_ms > 1000) {
+                char gap_msg[64];
+                snprintf(gap_msg, sizeof(gap_msg), "Ioctl gap: %lu ms", (unsigned long)gap_ms);
+                unified_log_crash(gap_msg);
+            }
+        }
+        last_ioctl_time = ioctl_start;
+    }
+
+    /* === HEARTBEAT (every ~5700 frames / ~100s) === */
+    {
+        static uint32_t heartbeat_counter = 0;
+        heartbeat_counter++;
+        if (heartbeat_counter >= 5700) {
+            heartbeat_counter = 0;
+            if (unified_log_enabled()) {
+                /* Read VmRSS from /proc/self/statm */
+                long rss_pages = 0;
+                FILE *statm = fopen("/proc/self/statm", "r");
+                if (statm) {
+                    long size;
+                    if (fscanf(statm, "%ld %ld", &size, &rss_pages) != 2)
+                        rss_pages = 0;
+                    fclose(statm);
+                }
+                long rss_kb = rss_pages * 4;  /* 4KB pages on ARM */
+
+                int ui_alive = shadow_ui_pid_alive(shadow_ui_pid);
+                unified_log("shim", LOG_LEVEL_DEBUG,
+                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d",
+                    getpid(), rss_kb, consecutive_overruns,
+                    (int)shadow_ui_pid, ui_alive, shadow_display_mode);
+            }
+        }
+    }
+
     /* Check if previous frame overran - if so, consider skipping expensive work */
     if (last_frame_total_us > OVERRUN_THRESHOLD_US) {
         consecutive_overruns++;
@@ -6749,6 +7766,9 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_inprocess_process_midi();
     TIME_SECTION_END(proc_midi_sum, proc_midi_max);
 
+    /* Drain MIDI-to-DSP from shadow UI (overtake modules sending to chain slots) */
+    shadow_drain_ui_midi_dsp();
+
     /* Pre-ioctl: Mix from pre-rendered buffer (FAST, ~5µs)
      * DSP was rendered post-ioctl in the previous frame.
      * This adds ~3ms latency but lets Move process pad events faster.
@@ -6757,7 +7777,10 @@ int ioctl(int fd, unsigned long request, ...)
     static int mix_time_count = 0;
     static uint64_t mix_time_max = 0;
 
-    if (!skip_dsp_this_frame) {
+    /* Always run pre-ioctl mix/capture path.
+     * This path is lightweight and feeds native bridge state; skipping it causes
+     * stale/invalid bridge snapshots and inconsistent resample behavior. */
+    {
         struct timespec mix_start, mix_end;
         clock_gettime(CLOCK_MONOTONIC, &mix_start);
 
@@ -6875,16 +7898,32 @@ int ioctl(int fd, unsigned long request, ...)
 
                 /* Skip if row 29 has many lit pixels (waveform 0dB line, not volume overlay) */
                 if (bar_col >= 0 && ref_lit < 50) {
-                    /* Map column range 4-122 to volume 0.0-1.0 */
                     float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
                     if (normalized < 0.0f) normalized = 0.0f;
                     if (normalized > 1.0f) normalized = 1.0f;
 
-                    if (fabsf(normalized - shadow_master_volume) > 0.01f) {
-                        shadow_master_volume = normalized;
-                        char msg[64];
-                        snprintf(msg, sizeof(msg), "Master volume: x=%d -> %.3f",
-                                 bar_col, shadow_master_volume);
+                    /* Map pixel bar position to amplitude matching Move's volume curve.
+                     * sqrt model: dB = -70 * (1 - sqrt(pos))
+                     * Measured from Move's Settings.json globalVolume:
+                     *   pos 0.25 → -33.2 dB (model: -35.0)
+                     *   pos 0.50 → -19.9 dB (model: -20.5)
+                     *   pos 0.75 → -10.4 dB (model:  -9.4)
+                     *   pos 1.00 →   0.0 dB (model:   0.0) */
+                    float amplitude;
+                    if (normalized <= 0.0f) {
+                        amplitude = 0.0f;
+                    } else if (normalized >= 1.0f) {
+                        amplitude = 1.0f;
+                    } else {
+                        float db = -70.0f * (1.0f - sqrtf(normalized));
+                        amplitude = powf(10.0f, db / 20.0f);
+                    }
+
+                    if (fabsf(amplitude - shadow_master_volume) > 0.003f) {
+                        shadow_master_volume = amplitude;
+                        float db_val = (amplitude > 0.0f) ? (20.0f * log10f(amplitude)) : -99.0f;
+                        char msg[112];
+                        snprintf(msg, sizeof(msg), "Master volume: x=%d pos=%.3f dB=%.1f amp=%.4f", bar_col, normalized, db_val, amplitude);
                         shadow_log(msg);
                     }
                 }
@@ -6999,6 +8038,7 @@ do_ioctl:
     /* === SHADOW UI MIDI OUT (PRE-IOCTL) ===
      * Inject any MIDI from shadow UI into the mailbox before sync.
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
+    shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
     shadow_inject_ui_midi_out();
     shadow_flush_pending_leds();  /* Rate-limited LED output */
 
@@ -7030,6 +8070,9 @@ do_ioctl:
                MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
         memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
                MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
+
+        /* Bridge Move Everything's total mix into native resampling path when selected. */
+        native_resample_bridge_apply();
 
         /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
         if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {
@@ -7392,6 +8435,11 @@ do_ioctl:
                     }
                 }
 
+                /* Jog encoder touch (note 9) */
+                if (d1 == 9) {
+                    shadow_jog_touched = touched;
+                }
+
                 /* Knob 8 touch (note 7) */
                 if (d1 == 7) {
                     if (touched != knob8touched) {
@@ -7438,12 +8486,17 @@ do_ioctl:
         }
     }
 
-    /* === POST-IOCTL: SHIFT+KNOB INTERCEPTION (MOVE MODE) ===
-     * When in Move mode (not shadow mode) but Shift is held,
+    /* === POST-IOCTL: OVERLAY KNOB INTERCEPTION (MOVE MODE) ===
+     * When in Move mode (not shadow mode) and the overlay activation condition is met,
      * intercept knob CCs (71-78) and route to shadow chain DSP.
      * Also block knob touch notes (0-7) to prevent them reaching Move.
-     * This allows adjusting shadow synth parameters while playing Move's sequencer. */
-    if (!shadow_display_mode && shiftHeld && shift_knob_enabled && shadow_ui_enabled &&
+     * Activation depends on overlay_knobs_mode: Shift (0), Jog Touch (1), or Off (2). */
+    uint8_t overlay_knobs_mode = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_SHIFT;
+    int overlay_active = 0;
+    if (overlay_knobs_mode == OVERLAY_KNOBS_SHIFT) overlay_active = shiftHeld;
+    else if (overlay_knobs_mode == OVERLAY_KNOBS_JOG_TOUCH) overlay_active = shadow_jog_touched;
+
+    if (!shadow_display_mode && overlay_active && shadow_ui_enabled &&
         shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {

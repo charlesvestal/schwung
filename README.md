@@ -8,6 +8,8 @@ Move Everything adds a Shadow UI that runs alongside stock Move, enabling additi
 
 ## Important Notice
 
+This project is in no way approved, endorsed or supported by Ableton.
+
 This project modifies software on your Ableton Move. Back up important sets and samples before installing and familiarize yourself with DFU restore mode (on [Centercode](https://ableton.centercode.com/project/article/item.html?cap=ecd3942a1fe3405eb27a806608401a0b&arttypeid=%7Be70be312-f44a-418b-bb74-ed1030e3a49a%7D&artid=%7BC0A2D9E2-D52F-4DEB-8BEE-356B65C8942E%7D)) in case you need to restore your device. Move still works normally after installation; Move Everything runs alongside it.
 
 This is, in the truest sense of the word, a hack. It is not stable, or generally usable as a daily driver, but it's interesting, and super fun. Be warned, but have fun!
@@ -70,6 +72,22 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 - **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode. (To be deprecated, soon)
 
 Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md) (primarily standalone-focused).
+
+## Native Sampler Bridge
+
+In **Master FX > Settings**, `Resample Src` controls whether Move Everything audio is fed into native Move sampling workflows:
+
+- `Off`: Disabled (default)
+- `Replace`: Replaces native sampler input with Move Everything master output
+
+`Mix` is retained only as a legacy config value and is treated as `Replace`.
+
+For the most reliable native sampling behavior with this feature:
+- Set `Resample Src` to **Replace**
+- In Move's sampler, set sample source to **Line In**
+- Set monitoring to **Off**
+
+If monitoring is on (or source/routing is configured differently), audio feedback may occur.
 
 ## Documentation
 

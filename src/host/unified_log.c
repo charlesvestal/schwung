@@ -5,9 +5,11 @@
 #include <time.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <pthread.h>
 
 static FILE *log_file = NULL;
+static int log_crash_fd = -1;  /* Async-signal-safe FD for crash logging */
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int log_enabled_cache = 0;
 static int check_counter = 0;
@@ -22,6 +24,8 @@ void unified_log_init(void) {
             time_t now = time(NULL);
             fprintf(log_file, "\n=== Log started: %s", ctime(&now));
             fflush(log_file);
+            /* Keep a raw FD for async-signal-safe crash logging */
+            log_crash_fd = fileno(log_file);
         }
     }
     /* Initial flag check */
@@ -104,4 +108,64 @@ void unified_log(const char *source, int level, const char *fmt, ...) {
     va_start(args, fmt);
     unified_log_v(source, level, fmt, args);
     va_end(args);
+}
+
+/* Async-signal-safe integer-to-string helper */
+static int crash_itoa(int val, char *buf, int buflen) {
+    if (buflen < 2) return 0;
+    if (val < 0) {
+        buf[0] = '-';
+        int n = crash_itoa(-val, buf + 1, buflen - 1);
+        return n + 1;
+    }
+    /* Write digits in reverse, then flip */
+    char tmp[16];
+    int len = 0;
+    if (val == 0) { tmp[len++] = '0'; }
+    while (val > 0 && len < (int)sizeof(tmp)) {
+        tmp[len++] = '0' + (val % 10);
+        val /= 10;
+    }
+    if (len >= buflen) len = buflen - 1;
+    for (int i = 0; i < len; i++) buf[i] = tmp[len - 1 - i];
+    return len;
+}
+
+void unified_log_crash(const char *msg) {
+    int fd = log_crash_fd;
+    if (fd < 0) {
+        /* Try opening directly as last resort */
+        fd = open(UNIFIED_LOG_PATH, O_WRONLY | O_APPEND | O_CREAT, 0666);
+        if (fd < 0) return;
+    }
+
+    /* Build message using only async-signal-safe calls */
+    char buf[256];
+    int pos = 0;
+
+    /* Timestamp: seconds since epoch (async-signal-safe via clock_gettime) */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    pos += crash_itoa((int)(ts.tv_sec % 100000), buf + pos, sizeof(buf) - pos);
+    buf[pos++] = '.';
+    pos += crash_itoa((int)(ts.tv_nsec / 1000000), buf + pos, sizeof(buf) - pos);
+
+    /* Header */
+    const char hdr[] = " [CRASH] [shim] ";
+    int hdr_len = sizeof(hdr) - 1;
+    if (pos + hdr_len < (int)sizeof(buf)) {
+        for (int i = 0; i < hdr_len; i++) buf[pos++] = hdr[i];
+    }
+
+    /* Message */
+    if (msg) {
+        int i = 0;
+        while (msg[i] && pos < (int)sizeof(buf) - 2) buf[pos++] = msg[i++];
+    }
+    buf[pos++] = '\n';
+
+    write(fd, buf, pos);
+
+    /* If we opened a new fd, close it */
+    if (fd != log_crash_fd) close(fd);
 }

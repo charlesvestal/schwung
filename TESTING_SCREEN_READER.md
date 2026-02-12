@@ -304,6 +304,46 @@ Test matrix:
 
 ---
 
+## Test Suite 7: Build Without D-Bus/Flite Dependencies
+
+Purpose: verify `DISABLE_SCREEN_READER=1` builds and runs safely when screen reader libs are not present.
+
+**Setup:**
+```bash
+MOVE_FORCE_UNINSTALL=1 ./scripts/uninstall.sh
+DISABLE_SCREEN_READER=1 ./scripts/build.sh
+./scripts/install.sh local --skip-confirmation --skip-modules
+```
+
+**Test 7.1: Install and Runtime Wiring**
+1. Check installer output:
+   - Expected: `Screen reader runtime not bundled; skipping Flite deployment.`
+   - Expected: `Screen Reader: disabled`
+2. Verify shim is active:
+   ```bash
+   ssh root@move.local 'pid=$(pidof MoveOriginal | awk "{print \$1}"); tr "\0" "\n" < /proc/$pid/environ | grep "^LD_PRELOAD="'
+   ```
+   - Expected: `LD_PRELOAD=move-anything-shim.so`
+3. Verify Flite runtime is absent:
+   ```bash
+   ssh root@move.local 'ls -1 /usr/lib/libflite*.so* 2>/dev/null || echo absent'
+   ```
+   - Expected: `absent`
+
+**Test 7.2: No Crash Loop When Screen Reader State Is Forced On**
+1. Force state file to `1` and restart Move:
+   ```bash
+   ssh ableton@move.local 'echo 1 > /data/UserData/move-anything/config/screen_reader_state.txt'
+   ssh root@move.local '/etc/init.d/move stop >/dev/null 2>&1 || true; sleep 1; /etc/init.d/move start >/dev/null 2>&1'
+   ```
+2. Check PID stability:
+   ```bash
+   ssh root@move.local 'pid1=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid2=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid3=$(pidof MoveOriginal | awk "{print \$1}"); echo "$pid1 -> $pid2 -> $pid3"'
+   ```
+   - Expected: same PID at each sample (no restart/crash loop)
+
+---
+
 ## Verification Checklist
 
 After each test suite:
