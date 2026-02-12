@@ -285,10 +285,13 @@ static smooth_param_t* smoother_get_param(param_smoother_t *smoother, const char
 static void smoother_set_target(param_smoother_t *smoother, const char *key, float value) {
     smooth_param_t *p = smoother_get_param(smoother, key);
     if (p) {
-        if (!p->active) {
-            /* First time setting - initialize current to target (no smoothing on first set) */
-            p->current = value;
-        }
+        /* Always jump current to new value.  The hierarchy editor uses a
+         * read-modify-write cycle: it reads the plugin's current value,
+         * applies a delta, and writes back.  If current lags behind target
+         * (as it does with interpolation), render_block overwrites the
+         * plugin value with the lagged current, and the next UI read sees
+         * that lagged value — making the parameter appear stuck near 0. */
+        p->current = value;
         p->target = value;
         p->active = 1;
     }
