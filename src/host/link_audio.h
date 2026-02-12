@@ -18,7 +18,9 @@
 #define LINK_AUDIO_MAGIC_LEN    7
 #define LINK_AUDIO_VERSION      0x01
 #define LINK_AUDIO_MSG_SESSION  1
-#define LINK_AUDIO_MSG_REQUEST  3
+#define LINK_AUDIO_MSG_PONG     3
+#define LINK_AUDIO_MSG_REQUEST  4
+#define LINK_AUDIO_MSG_STOP     5
 #define LINK_AUDIO_MSG_AUDIO    6
 #define LINK_AUDIO_HEADER_SIZE  74
 #define LINK_AUDIO_PAYLOAD_SIZE 500
@@ -79,7 +81,7 @@ typedef struct {
     volatile int session_parsed;   /* Set once we've parsed a session announcement */
 
     /* Move channels (intercepted via sendto hook) */
-    int move_channel_count;
+    volatile int move_channel_count;
     link_audio_channel_t channels[LINK_AUDIO_MOVE_CHANNELS];
 
     /* Network state captured from sendto hook */
@@ -102,6 +104,7 @@ typedef struct {
     volatile uint32_t packets_intercepted;
     volatile uint32_t packets_published;
     volatile uint32_t underruns;
+    volatile uint32_t overruns;   /* ring buffer overflow (producer too far ahead) */
 } link_audio_state_t;
 
 #endif /* LINK_AUDIO_H */

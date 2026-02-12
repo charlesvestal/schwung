@@ -13,6 +13,8 @@
 
 #include <ableton/LinkAudio.hpp>
 
+#include <unistd.h>
+
 #include <atomic>
 #include <csignal>
 #include <cstdio>
@@ -39,17 +41,19 @@ static std::atomic<uint64_t> g_buffers_received{0};
 
 static void signal_handler(int sig)
 {
-    const char *name = "?";
+    /* Use write() — async-signal-safe, unlike printf() */
+    const char *msg = "link-subscriber: caught signal\n";
     switch (sig) {
-        case SIGSEGV: name = "SIGSEGV"; break;
-        case SIGBUS:  name = "SIGBUS"; break;
-        case SIGABRT: name = "SIGABRT"; break;
-        case SIGTERM: name = "SIGTERM"; break;
-        case SIGINT:  name = "SIGINT"; break;
+        case SIGSEGV: msg = "link-subscriber: SIGSEGV\n"; break;
+        case SIGBUS:  msg = "link-subscriber: SIGBUS\n"; break;
+        case SIGABRT: msg = "link-subscriber: SIGABRT\n"; break;
+        case SIGTERM: msg = "link-subscriber: SIGTERM\n"; break;
+        case SIGINT:  msg = "link-subscriber: SIGINT\n"; break;
     }
-    printf("link-subscriber: caught signal %d (%s)\n", sig, name);
+    (void)write(STDOUT_FILENO, msg, strlen(msg));
 
     if (sig == SIGSEGV || sig == SIGBUS || sig == SIGABRT) {
+        /* _exit() skips destructors — acceptable for fatal signals */
         _exit(128 + sig);
     }
     g_running = false;

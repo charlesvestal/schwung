@@ -2237,20 +2237,29 @@ static void link_audio_intercept_audio(const uint8_t *pkt)
     /* Byte-swap 125 stereo frames from BE int16 → LE int16, write to ring */
     const int16_t *src = (const int16_t *)(pkt + LINK_AUDIO_HEADER_SIZE);
     uint32_t wp = ch->write_pos;
-    int16_t local_peak = ch->peak;
+    uint32_t rp = ch->read_pos;
+    int samples_to_write = LINK_AUDIO_FRAMES_PER_PACKET * 2;
 
-    for (int i = 0; i < LINK_AUDIO_FRAMES_PER_PACKET * 2; i++) {
+    /* Overflow check: drop packet if ring is too full */
+    if ((wp - rp) + (uint32_t)samples_to_write > LINK_AUDIO_RING_SAMPLES) {
+        link_audio.overruns++;
+        return;
+    }
+
+    int peak = ch->peak;
+
+    for (int i = 0; i < samples_to_write; i++) {
         int16_t sample = link_audio_swap_i16(src[i]);
         ch->ring[wp & LINK_AUDIO_RING_MASK] = sample;
         wp++;
-        int16_t abs_s = (sample < 0) ? -sample : sample;
-        if (abs_s > local_peak) local_peak = abs_s;
+        int abs_s = (sample < 0) ? -(int)sample : (int)sample;
+        if (abs_s > peak) peak = abs_s;
     }
 
     /* Memory barrier before publishing write_pos */
     __sync_synchronize();
     ch->write_pos = wp;
-    ch->peak = local_peak;
+    ch->peak = (int16_t)(peak > 32767 ? 32767 : peak);
     ch->pkt_count++;
 
     /* Update sequence from packet (offset 44, u32 BE) */
