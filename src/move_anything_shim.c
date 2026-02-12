@@ -4438,6 +4438,22 @@ static void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, 
         dispatched++;
     }
 
+    /* Broadcast MIDI to active slots that didn't match the channel filter.
+     * Audio FX like ducker need MIDI from all channels, not just their slot's.
+     * FX_BROADCAST tells the chain to only forward to audio FX, not synth. */
+    if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+            if (!shadow_chain_slots[i].active || !shadow_chain_slots[i].instance)
+                continue;
+            /* Skip slots that already received this MIDI via channel match */
+            if (shadow_chain_slots[i].channel == (int)midi_ch || shadow_chain_slots[i].channel == -1)
+                continue;
+            uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+            shadow_plugin_v2->on_midi(shadow_chain_slots[i].instance, msg, 3,
+                                      MOVE_MIDI_SOURCE_FX_BROADCAST);
+        }
+    }
+
     /* Forward MIDI to master FX (e.g. ducker) regardless of slot routing */
     {
         uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
@@ -8809,6 +8825,23 @@ do_ioctl:
                             shadow_plugin_v2->on_midi(shadow_chain_slots[slot].instance, msg, 3,
                                                       MOVE_MIDI_SOURCE_INTERNAL);
                         }
+                    }
+                }
+
+                /* Broadcast internal MIDI to all slots for audio FX (e.g. ducker).
+                 * Skip the focused slot if it already received this note via capture rules
+                 * (to avoid double-delivery to its audio FX). */
+                if (d1 >= 10 && shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                    int focused = shadow_control ? shadow_control->ui_slot : -1;
+                    const shadow_capture_rules_t *cap = shadow_get_focused_capture();
+                    int focused_captured = (cap && capture_has_note(cap, d1));
+                    for (int si = 0; si < SHADOW_CHAIN_INSTANCES; si++) {
+                        if (si == focused && focused_captured) continue;
+                        if (!shadow_chain_slots[si].active || !shadow_chain_slots[si].instance)
+                            continue;
+                        uint8_t msg[3] = { status, d1, d2 };
+                        shadow_plugin_v2->on_midi(shadow_chain_slots[si].instance, msg, 3,
+                                                  MOVE_MIDI_SOURCE_FX_BROADCAST);
                     }
                 }
 

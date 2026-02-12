@@ -5658,6 +5658,18 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || len < 1) return;
 
+    /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
+     * Skip synth, MIDI FX, and knob handling - this MIDI is from a
+     * different channel than the slot's target. */
+    if (source == MOVE_MIDI_SOURCE_FX_BROADCAST) {
+        for (int f = 0; f < inst->fx_count; f++) {
+            if (inst->fx_on_midi[f] && inst->fx_instances[f]) {
+                inst->fx_on_midi[f](inst->fx_instances[f], msg, len, source);
+            }
+        }
+        return;
+    }
+
     /* Handle knob CC mappings */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
         uint8_t cc = msg[1];
