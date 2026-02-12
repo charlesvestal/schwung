@@ -5717,7 +5717,10 @@ static void shadow_inprocess_handle_param_request(void) {
             shadow_param->error = 0;
             shadow_param->result_len = 0;
 
-            /* Activate slot when synth module is loaded */
+            /* Activate slot when synth module is loaded.
+             * Don't deactivate when synth is removed — the slot may still
+             * have FX that need to process inject audio (Link Audio).
+             * Deactivation only happens when the whole patch is cleared. */
             if (strcmp(key_copy, "synth:module") == 0) {
                 if (value_copy[0] != '\0') {
                     shadow_chain_slots[slot].active = 1;
@@ -5737,9 +5740,15 @@ static void shadow_inprocess_handle_param_request(void) {
                             }
                         }
                     }
-                } else {
-                    shadow_chain_slots[slot].active = 0;
                 }
+                /* synth cleared: slot stays active for FX processing */
+            }
+            /* Also activate when FX modules are loaded on an inactive slot */
+            if (!shadow_chain_slots[slot].active &&
+                (strcmp(key_copy, "fx1:module") == 0 ||
+                 strcmp(key_copy, "fx2:module") == 0) &&
+                value_copy[0] != '\0') {
+                shadow_chain_slots[slot].active = 1;
             }
             /* Activate slot when a patch is loaded via set_param */
             if (strcmp(key_copy, "load_patch") == 0 ||
