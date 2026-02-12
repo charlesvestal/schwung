@@ -1079,6 +1079,7 @@ typedef struct {
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
     char chain_params_cache[2048];   /* Cached chain_params to avoid file I/O in audio thread */
     int chain_params_cached;         /* 1 if cache is valid */
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);  /* Optional MIDI handler (via dlsym) */
 } master_fx_slot_t;
 
 static master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
@@ -4046,6 +4047,7 @@ static void shadow_master_fx_slot_unload(int slot) {
     }
     s->instance = NULL;
     s->api = NULL;
+    s->on_midi = NULL;
     if (s->handle) {
         dlclose(s->handle);
         s->handle = NULL;
@@ -4180,6 +4182,12 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
         fclose(f);
     }
 
+    /* Check for optional MIDI handler (e.g. ducker) */
+    {
+        typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
+        s->on_midi = (fx_on_midi_fn)dlsym(s->handle, "move_audio_fx_on_midi");
+    }
+
     fprintf(stderr, "Shadow master FX[%d]: loaded %s\n", slot, dsp_path);
     return 0;
 }
@@ -4192,6 +4200,16 @@ static int shadow_master_fx_load(const char *dsp_path) {
 /* Legacy wrapper: unload slot 0 */
 static void shadow_master_fx_unload(void) {
     shadow_master_fx_slot_unload(0);
+}
+
+/* Forward MIDI to master FX slots that have on_midi (e.g. ducker) */
+static void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source) {
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        master_fx_slot_t *s = &shadow_master_fx_slots[i];
+        if (s->on_midi && s->instance) {
+            s->on_midi(s->instance, msg, len, source);
+        }
+    }
 }
 
 /* Forward declaration for capture loading */
@@ -4418,6 +4436,12 @@ static void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, 
                                       MOVE_MIDI_SOURCE_EXTERNAL);
         }
         dispatched++;
+    }
+
+    /* Forward MIDI to master FX (e.g. ducker) regardless of slot routing */
+    {
+        uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+        shadow_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
     }
 
     if (log_on && type == 0x90 && pkt[3] > 0 && *midi_log_count < 100) {
@@ -8786,6 +8810,12 @@ do_ioctl:
                                                       MOVE_MIDI_SOURCE_INTERNAL);
                         }
                     }
+                }
+
+                /* Forward note events to master FX (e.g. ducker) */
+                if (d1 >= 10) {
+                    uint8_t msg[3] = { status, d1, d2 };
+                    shadow_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
                 }
                 continue;
             }

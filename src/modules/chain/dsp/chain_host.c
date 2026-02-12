@@ -386,6 +386,9 @@ typedef struct chain_instance {
     int fx_count;
     char current_fx_modules[MAX_AUDIO_FX][MAX_NAME_LEN];  /* Track loaded FX names */
 
+    /* Optional MIDI handler for audio FX (discovered via dlsym) */
+    void (*fx_on_midi[MAX_AUDIO_FX])(void *instance, const uint8_t *msg, int len, int source);
+
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
     int synth_param_count;
@@ -3932,6 +3935,7 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
         inst->fx_plugins_v2[i] = NULL;
         inst->fx_instances[i] = NULL;
         inst->fx_is_v2[i] = 0;
+        inst->fx_on_midi[i] = NULL;
         inst->fx_param_counts[i] = 0;
         inst->current_fx_modules[i][0] = '\0';
     }
@@ -3961,6 +3965,7 @@ static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     inst->fx_plugins_v2[slot] = NULL;
     inst->fx_instances[slot] = NULL;
     inst->fx_is_v2[slot] = 0;
+    inst->fx_on_midi[slot] = NULL;
     inst->fx_param_counts[slot] = 0;
     inst->current_fx_modules[slot][0] = '\0';
 }
@@ -4034,6 +4039,12 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
     inst->fx_instances[slot] = fx_inst;
     inst->fx_is_v2[slot] = 1;
 
+    /* Check for optional MIDI handler (e.g. ducker) */
+    {
+        typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
+        inst->fx_on_midi[slot] = (fx_on_midi_fn)dlsym(handle, "move_audio_fx_on_midi");
+    }
+
     /* Track the loaded module name */
     strncpy(inst->current_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
     inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
@@ -4047,6 +4058,7 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         inst->fx_plugins_v2[slot] = NULL;
         inst->fx_instances[slot] = NULL;
         inst->fx_is_v2[slot] = 0;
+        inst->fx_on_midi[slot] = NULL;
         inst->current_fx_modules[slot][0] = '\0';
         return -1;
     }
@@ -4249,6 +4261,12 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
     inst->fx_instances[slot] = fx_inst;
     inst->fx_is_v2[slot] = 1;
 
+    /* Check for optional MIDI handler (e.g. ducker) */
+    {
+        typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
+        inst->fx_on_midi[slot] = (fx_on_midi_fn)dlsym(handle, "move_audio_fx_on_midi");
+    }
+
     /* Track the loaded module name */
     strncpy(inst->current_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
     inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
@@ -4262,6 +4280,7 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
         inst->fx_plugins_v2[slot] = NULL;
         inst->fx_instances[slot] = NULL;
         inst->fx_is_v2[slot] = 0;
+        inst->fx_on_midi[slot] = NULL;
         inst->current_fx_modules[slot][0] = '\0';
         return -1;
     }
@@ -5753,6 +5772,15 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], source);
         } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
             inst->synth_plugin->on_midi(out_msgs[i], out_lens[i], source);
+        }
+    }
+
+    /* Forward MIDI to audio FX that have on_midi (e.g. ducker) */
+    for (int f = 0; f < inst->fx_count; f++) {
+        if (inst->fx_on_midi[f] && inst->fx_instances[f]) {
+            for (int j = 0; j < out_count; j++) {
+                inst->fx_on_midi[f](inst->fx_instances[f], out_msgs[j], out_lens[j], source);
+            }
         }
     }
 }
