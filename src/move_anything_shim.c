@@ -8816,41 +8816,36 @@ int ioctl(int fd, unsigned long request, ...)
                     memcpy(full_display + offset, captured_slices[s], bytes);
                 }
 
-                /* Detect waveform/pad-edit screen by checking row 29 (0dB reference line).
-                 * The waveform view draws a dithered horizontal line across the full width
-                 * on row 29 (~60 lit pixels). The volume overlay has at most 1-2 pixels there. */
-                int ref_row = 29;
-                int ref_page = ref_row / 8;  /* page 3 */
-                int ref_bit = ref_row % 8;   /* bit 5 */
-                int ref_lit = 0;
-                for (int col = 0; col < 128; col++) {
-                    int byte_idx = ref_page * 128 + col;
-                    if (full_display[byte_idx] & (1 << ref_bit)) ref_lit++;
-                }
-
-                /* Check row 30 for the volume bar position */
+                /* Check row 30 for the volume position indicator.
+                 * On the volume overlay (2.0 beta), row 30 sits in the gap between
+                 * the upper and lower VU meter bars — only the 1-pixel-wide vertical
+                 * position indicator is lit there.  On waveform/pad-edit screens,
+                 * row 30 has many lit pixels.  Use the lit count to distinguish. */
                 int bar_row = 30;
                 int page = bar_row / 8;  /* page 3 */
                 int bit = bar_row % 8;   /* bit 6 */
                 int bar_col = -1;
+                int row30_lit = 0;
 
                 for (int col = 0; col < 128; col++) {
                     int byte_idx = page * 128 + col;
                     if (full_display[byte_idx] & (1 << bit)) {
-                        bar_col = col;
-                        break;  /* Found the bar */
+                        row30_lit++;
+                        if (bar_col < 0) bar_col = col;  /* First lit pixel */
                     }
                 }
 
                 /* Log analysis for debugging */
                 {
                     char msg[128];
-                    snprintf(msg, sizeof(msg), "Row29: ref_lit=%d  Row30: bar_col=%d", ref_lit, bar_col);
+                    snprintf(msg, sizeof(msg), "Row30: lit=%d  bar_col=%d", row30_lit, bar_col);
                     shadow_log(msg);
                 }
 
-                /* Skip if row 29 has many lit pixels (waveform 0dB line, not volume overlay) */
-                if (bar_col >= 0 && ref_lit < 50) {
+                /* Volume overlay: row 30 has exactly 1 lit pixel (the indicator).
+                 * Waveform/other screens: row 30 has many lit pixels.
+                 * Allow up to 3 for tolerance. */
+                if (bar_col >= 0 && row30_lit <= 3) {
                     float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
                     if (normalized < 0.0f) normalized = 0.0f;
                     if (normalized > 1.0f) normalized = 1.0f;
