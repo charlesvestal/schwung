@@ -2293,6 +2293,10 @@ static int link_audio_read_channel(int idx, int16_t *out, int frames)
 
 static void link_audio_start_publisher(void)
 {
+    /* Publisher disabled: raw chnnlsv packets aren't discoverable by Live.
+     * Needs proper Link SDK integration to appear as a peer. */
+    return;
+
     if (link_audio.publisher_running) return;
     link_audio.publisher_running = 1;
 
