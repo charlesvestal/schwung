@@ -691,10 +691,14 @@ qecho ""
 qecho "Configuring features..."
 ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
 
+# Preserve link_audio_enabled from existing config (defaults to false)
+link_audio_val=$(ssh_ableton_with_retry "grep -o '\"link_audio_enabled\"[[:space:]]*:[[:space:]]*[a-z]*' /data/UserData/move-anything/config/features.json 2>/dev/null | grep -o 'true\|false'" 2>/dev/null || echo "false")
+
 # Build features.json content
 features_json="{
   \"shadow_ui_enabled\": $([ "$disable_shadow_ui" = false ] && echo "true" || echo "false"),
-  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false")
+  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false"),
+  \"link_audio_enabled\": $link_audio_val
 }"
 
 # Write features.json

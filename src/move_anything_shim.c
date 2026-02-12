@@ -25,6 +25,9 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 #if ENABLE_SCREEN_READER
 #include <dbus/dbus.h>
 #include <systemd/sd-bus.h>
@@ -35,6 +38,7 @@
 #include "host/shadow_constants.h"
 #include "host/unified_log.h"
 #include "host/tts_engine.h"
+#include "host/link_audio.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_DEBUG 0           /* Master debug flag for mailbox/MIDI debug */
@@ -115,6 +119,10 @@ static volatile float shadow_master_volume;  /* Defined later */
 /* Feature flags from config/features.json */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool standalone_enabled = true;     /* Standalone mode enabled by default */
+
+/* Link Audio interception and publishing state */
+static link_audio_state_t link_audio;
+static int16_t shadow_slot_capture[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
 
 static void launch_shadow_ui(void);
 static void load_feature_config(void);
@@ -1941,6 +1949,701 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags)
     return real_send(sockfd, buf, len, flags);
 }
 
+/* ============================================================================
+ * LINK AUDIO INTERCEPTION AND PUBLISHING
+ * ============================================================================
+ * Hooks sendto() to intercept Move's per-track Link Audio packets, provides
+ * a self-subscriber to trigger audio transmission without Live, and publishes
+ * shadow slot audio as additional Link Audio channels visible in Live.
+ * ============================================================================ */
+
+/* Forward declarations for link audio functions */
+static void link_audio_parse_session(const uint8_t *pkt, size_t len,
+                                     int sockfd, const struct sockaddr *dest,
+                                     socklen_t addrlen);
+static void link_audio_intercept_audio(const uint8_t *pkt);
+static void *link_audio_subscriber_thread(void *arg);
+static void *link_audio_publisher_thread(void *arg);
+static void link_audio_start_subscriber(void);
+static void link_audio_start_publisher(void);
+
+/* Read big-endian uint32 from buffer */
+static inline uint32_t link_audio_read_u32_be(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
+}
+
+/* Read big-endian uint16 from buffer */
+static inline uint16_t link_audio_read_u16_be(const uint8_t *p)
+{
+    return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+}
+
+/* Write big-endian uint32 to buffer */
+static inline void link_audio_write_u32_be(uint8_t *p, uint32_t v)
+{
+    p[0] = (v >> 24) & 0xFF;
+    p[1] = (v >> 16) & 0xFF;
+    p[2] = (v >> 8)  & 0xFF;
+    p[3] = v & 0xFF;
+}
+
+/* Write big-endian uint16 to buffer */
+static inline void link_audio_write_u16_be(uint8_t *p, uint16_t v)
+{
+    p[0] = (v >> 8) & 0xFF;
+    p[1] = v & 0xFF;
+}
+
+/* Write big-endian uint64 to buffer */
+static inline void link_audio_write_u64_be(uint8_t *p, uint64_t v)
+{
+    for (int i = 7; i >= 0; i--) {
+        p[i] = v & 0xFF;
+        v >>= 8;
+    }
+}
+
+/* Swap int16 from big-endian to native (little-endian on ARM) */
+static inline int16_t link_audio_swap_i16(int16_t be_val)
+{
+    uint16_t u = (uint16_t)be_val;
+    return (int16_t)(((u >> 8) & 0xFF) | ((u & 0xFF) << 8));
+}
+
+/* sendto() hook — intercepts Link Audio packets from Move */
+static ssize_t (*real_sendto)(int, const void *, size_t, int,
+                              const struct sockaddr *, socklen_t) = NULL;
+
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+    if (!real_sendto) {
+        real_sendto = (ssize_t (*)(int, const void *, size_t, int,
+                       const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "sendto");
+    }
+
+    /* Check for Link Audio packets when feature is enabled */
+    if (link_audio.enabled && len >= 12) {
+        const uint8_t *p = (const uint8_t *)buf;
+        if (memcmp(p, LINK_AUDIO_MAGIC, LINK_AUDIO_MAGIC_LEN) == 0 &&
+            p[7] == LINK_AUDIO_VERSION) {
+            uint8_t msg_type = p[8];
+            if (msg_type == LINK_AUDIO_MSG_AUDIO && len == LINK_AUDIO_PACKET_SIZE) {
+                link_audio_intercept_audio(p);
+            } else if (msg_type == LINK_AUDIO_MSG_SESSION) {
+                link_audio_parse_session(p, len, sockfd, dest_addr, addrlen);
+            }
+        }
+    }
+
+    return real_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+}
+
+/* Parse TLV session announcement (msg_type=1) to discover channels */
+static void link_audio_parse_session(const uint8_t *pkt, size_t len,
+                                     int sockfd, const struct sockaddr *dest,
+                                     socklen_t addrlen)
+{
+    if (len < 20) return;
+
+    /* Copy Move's PeerID from offset 12 */
+    memcpy(link_audio.move_peer_id, pkt + 12, 8);
+
+    /* Capture network info for self-subscriber (first time only).
+     * We're on the audio thread here, so the socket fd is valid for getsockname. */
+    if (!link_audio.addr_captured && dest && dest->sa_family == AF_INET6) {
+        link_audio.move_socket_fd = sockfd;
+        memcpy(&link_audio.move_addr, dest, sizeof(struct sockaddr_in6));
+        link_audio.move_addrlen = addrlen;
+
+        /* Capture Move's own local address via getsockname (valid on audio thread) */
+        socklen_t local_len = sizeof(link_audio.move_local_addr);
+        if (getsockname(sockfd, (struct sockaddr *)&link_audio.move_local_addr,
+                        &local_len) == 0) {
+            /* Use the dest port as the port to send requests to
+             * (Move listens on the same port it sends from) */
+            link_audio.move_local_addr.sin6_port = link_audio.move_addr.sin6_port;
+        } else {
+            /* Fallback: copy dest addr (better than nothing) */
+            memcpy(&link_audio.move_local_addr, dest, sizeof(struct sockaddr_in6));
+        }
+
+        link_audio.addr_captured = 1;
+
+        char dest_str[INET6_ADDRSTRLEN], local_str[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &link_audio.move_addr.sin6_addr,
+                  dest_str, sizeof(dest_str));
+        inet_ntop(AF_INET6, &link_audio.move_local_addr.sin6_addr,
+                  local_str, sizeof(local_str));
+        char logbuf[512];
+        snprintf(logbuf, sizeof(logbuf),
+                 "Link Audio: captured dest=%s:%d, local=%s:%d scope=%d",
+                 dest_str, ntohs(link_audio.move_addr.sin6_port),
+                 local_str, ntohs(link_audio.move_local_addr.sin6_port),
+                 link_audio.move_local_addr.sin6_scope_id);
+        shadow_log(logbuf);
+    }
+
+    /* Parse TLV entries starting at offset 20 */
+    size_t pos = 20;
+    while (pos + 8 <= len) {
+        /* TLV: 4-byte tag + 4-byte length */
+        const uint8_t *tag = pkt + pos;
+        uint32_t tlen = link_audio_read_u32_be(pkt + pos + 4);
+        pos += 8;
+
+        if (pos + tlen > len) break;  /* malformed */
+
+        if (memcmp(tag, "sess", 4) == 0 && tlen == 8) {
+            /* Session ID */
+            memcpy(link_audio.session_id, pkt + pos, 8);
+
+        } else if (memcmp(tag, "auca", 4) == 0 && tlen >= 4) {
+            /* Audio channel announcements */
+            const uint8_t *auca = pkt + pos;
+            size_t auca_end = tlen;
+            uint32_t num_channels = link_audio_read_u32_be(auca);
+            size_t auca_pos = 4;
+
+            int count = 0;
+            for (uint32_t c = 0; c < num_channels && auca_pos + 4 <= auca_end; c++) {
+                uint32_t name_len = link_audio_read_u32_be(auca + auca_pos);
+                auca_pos += 4;
+                if (auca_pos + name_len + 8 > auca_end) break;
+
+                if (count < LINK_AUDIO_MOVE_CHANNELS) {
+                    link_audio_channel_t *ch = &link_audio.channels[count];
+                    /* Copy name */
+                    int nlen = name_len < 31 ? name_len : 31;
+                    memcpy(ch->name, auca + auca_pos, nlen);
+                    ch->name[nlen] = '\0';
+                    auca_pos += name_len;
+                    /* Copy channel ID */
+                    memcpy(ch->channel_id, auca + auca_pos, 8);
+                    auca_pos += 8;
+                    ch->active = 1;
+                    count++;
+                } else {
+                    auca_pos += name_len + 8;
+                }
+            }
+            link_audio.move_channel_count = count;
+        }
+
+        pos += tlen;
+    }
+
+    /* Mark session as parsed and start subscriber if not already running.
+     * Require both channels AND address to be captured before starting threads. */
+    if (!link_audio.session_parsed &&
+        link_audio.move_channel_count > 0 &&
+        link_audio.addr_captured) {
+        link_audio.session_parsed = 1;
+        char logbuf[256];
+        snprintf(logbuf, sizeof(logbuf),
+                 "Link Audio: session parsed, %d channels discovered",
+                 link_audio.move_channel_count);
+        shadow_log(logbuf);
+        for (int i = 0; i < link_audio.move_channel_count; i++) {
+            char ch_log[128];
+            snprintf(ch_log, sizeof(ch_log), "Link Audio:   [%d] \"%s\"",
+                     i, link_audio.channels[i].name);
+            shadow_log(ch_log);
+        }
+
+        /* Start self-subscriber to trigger audio flow */
+        link_audio_start_subscriber();
+        /* Start publisher for shadow audio */
+        link_audio_start_publisher();
+    }
+}
+
+/* Intercept audio data packet (msg_type=6, runs on audio thread — must be fast) */
+static void link_audio_intercept_audio(const uint8_t *pkt)
+{
+    /* Extract ChannelID at offset 20 */
+    const uint8_t *channel_id = pkt + 20;
+
+    /* Find matching channel */
+    int idx = -1;
+    for (int i = 0; i < link_audio.move_channel_count; i++) {
+        if (memcmp(link_audio.channels[i].channel_id, channel_id, 8) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) return;  /* unknown channel, skip */
+
+    link_audio_channel_t *ch = &link_audio.channels[idx];
+
+    /* Byte-swap 125 stereo frames from BE int16 → LE int16, write to ring */
+    const int16_t *src = (const int16_t *)(pkt + LINK_AUDIO_HEADER_SIZE);
+    uint32_t wp = ch->write_pos;
+    int16_t local_peak = ch->peak;
+
+    for (int i = 0; i < LINK_AUDIO_FRAMES_PER_PACKET * 2; i++) {
+        int16_t sample = link_audio_swap_i16(src[i]);
+        ch->ring[wp & LINK_AUDIO_RING_MASK] = sample;
+        wp++;
+        int16_t abs_s = (sample < 0) ? -sample : sample;
+        if (abs_s > local_peak) local_peak = abs_s;
+    }
+
+    /* Memory barrier before publishing write_pos */
+    __sync_synchronize();
+    ch->write_pos = wp;
+    ch->peak = local_peak;
+    ch->pkt_count++;
+
+    /* Update sequence from packet (offset 44, u32 BE) */
+    ch->sequence = link_audio_read_u32_be(pkt + 44);
+
+    link_audio.packets_intercepted++;
+}
+
+/* Read from a Move channel's ring buffer (called from consumer thread) */
+static int link_audio_read_channel(int idx, int16_t *out, int frames)
+{
+    if (idx < 0 || idx >= link_audio.move_channel_count) return 0;
+
+    link_audio_channel_t *ch = &link_audio.channels[idx];
+    int samples = frames * 2;  /* stereo */
+
+    __sync_synchronize();
+    uint32_t rp = ch->read_pos;
+    uint32_t wp = ch->write_pos;
+    uint32_t avail = wp - rp;
+
+    if (avail < (uint32_t)samples) {
+        /* Underrun — zero-fill */
+        memset(out, 0, samples * sizeof(int16_t));
+        link_audio.underruns++;
+        return 0;
+    }
+
+    for (int i = 0; i < samples; i++) {
+        out[i] = ch->ring[rp & LINK_AUDIO_RING_MASK];
+        rp++;
+    }
+
+    __sync_synchronize();
+    ch->read_pos = rp;
+    return 1;
+}
+
+/* ---- Self-subscriber thread ---- */
+
+static void link_audio_start_subscriber(void)
+{
+    if (link_audio.subscriber_running) return;
+    link_audio.subscriber_running = 1;
+
+    /* Generate a random PeerID for the subscriber */
+    FILE *urandom = fopen("/dev/urandom", "r");
+    if (urandom) {
+        fread(link_audio.subscriber_peer_id, 1, 8, urandom);
+        fclose(urandom);
+    } else {
+        /* Fallback: use time-based seed */
+        uint64_t t = (uint64_t)time(NULL) ^ (uint64_t)getpid();
+        memcpy(link_audio.subscriber_peer_id, &t, 8);
+    }
+
+    pthread_create(&link_audio.subscriber_thread, NULL,
+                   link_audio_subscriber_thread, NULL);
+    shadow_log("Link Audio: subscriber thread started");
+}
+
+/* Build a 36-byte ChannelRequest packet (msg_type=3) */
+static void link_audio_build_channel_request(uint8_t *pkt,
+                                             const uint8_t *subscriber_peer_id,
+                                             const uint8_t *channel_id)
+{
+    memset(pkt, 0, 36);
+    /* Common header */
+    memcpy(pkt, LINK_AUDIO_MAGIC, LINK_AUDIO_MAGIC_LEN);
+    pkt[7] = LINK_AUDIO_VERSION;
+    pkt[8] = LINK_AUDIO_MSG_REQUEST;  /* msg_type = 3 */
+    /* pkt[9] = flags = 0, pkt[10..11] = reserved = 0 */
+
+    /* Subscriber's PeerID at offset 12 */
+    memcpy(pkt + 12, subscriber_peer_id, 8);
+
+    /* Channel ID at offset 20 */
+    memcpy(pkt + 20, channel_id, 8);
+
+    /* Heartbeat TLV "__ht" at offset 28 */
+    memcpy(pkt + 28, "__ht", 4);
+    link_audio_write_u32_be(pkt + 32, 0);  /* minimal heartbeat value */
+}
+
+/* Self-subscriber thread: sends heartbeats to Move to trigger audio */
+static void *link_audio_subscriber_thread(void *arg)
+{
+    (void)arg;
+
+    /* Create our own IPv6 UDP socket */
+    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        shadow_log("Link Audio: subscriber failed to create socket");
+        link_audio.subscriber_running = 0;
+        return NULL;
+    }
+
+    /* Use Move's local address captured during sendto hook (on audio thread
+     * where the fd was valid for getsockname). */
+    struct sockaddr_in6 move_target;
+    memcpy(&move_target, &link_audio.move_local_addr, sizeof(move_target));
+
+    char addr_str[INET6_ADDRSTRLEN];
+    inet_ntop(AF_INET6, &move_target.sin6_addr, addr_str, sizeof(addr_str));
+    char logbuf[256];
+    snprintf(logbuf, sizeof(logbuf),
+             "Link Audio: subscriber targeting Move at %s port %d scope %d",
+             addr_str, ntohs(move_target.sin6_port), move_target.sin6_scope_id);
+    shadow_log(logbuf);
+
+    uint32_t heartbeat_count = 0;
+
+    while (link_audio.subscriber_running && link_audio.enabled) {
+        /* Send a ChannelRequest for each Move channel */
+        for (int i = 0; i < link_audio.move_channel_count; i++) {
+            uint8_t request[36];
+            link_audio_build_channel_request(request,
+                                             link_audio.subscriber_peer_id,
+                                             link_audio.channels[i].channel_id);
+            real_sendto(sock, request, 36, 0,
+                        (struct sockaddr *)&move_target, sizeof(move_target));
+        }
+        heartbeat_count++;
+
+        /* Log stats every ~10 seconds (20 heartbeats at 500ms interval) */
+        if (heartbeat_count % 20 == 0) {
+            /* Build per-channel level string and reset peaks */
+            char levels[256];
+            int lpos = 0;
+            for (int i = 0; i < link_audio.move_channel_count && i < 5; i++) {
+                link_audio_channel_t *ch = &link_audio.channels[i];
+                int16_t pk = ch->peak;
+                /* Convert peak to approximate dB: 20*log10(peak/32767) */
+                int db = -96;
+                if (pk > 0) {
+                    db = (int)(20.0f * log10f((float)pk / 32767.0f));
+                }
+                int n = snprintf(levels + lpos, sizeof(levels) - lpos,
+                                 " %s:%ddB", ch->name, db);
+                if (n > 0) lpos += n;
+                ch->peak = 0;  /* reset for next interval */
+            }
+            char stats[512];
+            snprintf(stats, sizeof(stats),
+                     "Link Audio:%s (pkts=%u pub=%u)",
+                     levels,
+                     link_audio.packets_intercepted,
+                     link_audio.packets_published);
+            shadow_log(stats);
+        }
+
+        /* Sleep between heartbeats */
+        struct timespec ts = {0, LINK_AUDIO_SUBSCRIBER_INTERVAL_MS * 1000000L};
+        nanosleep(&ts, NULL);
+    }
+
+    close(sock);
+    shadow_log("Link Audio: subscriber thread exited");
+    return NULL;
+}
+
+/* ---- Shadow audio publisher ---- */
+
+static void link_audio_start_publisher(void)
+{
+    if (link_audio.publisher_running) return;
+    link_audio.publisher_running = 1;
+
+    /* Generate publisher PeerID and session ID */
+    FILE *urandom = fopen("/dev/urandom", "r");
+    if (urandom) {
+        fread(link_audio.publisher_peer_id, 1, 8, urandom);
+        fread(link_audio.publisher_session_id, 1, 8, urandom);
+        fclose(urandom);
+    } else {
+        uint64_t t = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32);
+        memcpy(link_audio.publisher_peer_id, &t, 8);
+        t ^= 0xDEADBEEFCAFE1234ULL;
+        memcpy(link_audio.publisher_session_id, &t, 8);
+    }
+
+    /* Initialize publisher channels */
+    for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+        link_audio_pub_channel_t *pc = &link_audio.pub_channels[i];
+        memset(pc, 0, sizeof(*pc));
+        snprintf(pc->name, sizeof(pc->name), "Shadow-%d", i + 1);
+        /* Generate unique channel IDs */
+        memcpy(pc->channel_id, link_audio.publisher_peer_id, 8);
+        pc->channel_id[0] ^= (uint8_t)(i + 1);  /* make each unique */
+    }
+
+    /* Create publisher socket */
+    link_audio.publisher_socket_fd = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (link_audio.publisher_socket_fd < 0) {
+        shadow_log("Link Audio: publisher failed to create socket");
+        link_audio.publisher_running = 0;
+        return;
+    }
+
+    /* Allow address reuse */
+    int reuse = 1;
+    setsockopt(link_audio.publisher_socket_fd, SOL_SOCKET, SO_REUSEADDR,
+               &reuse, sizeof(reuse));
+
+    /* Set non-blocking for recvfrom */
+    int fl = fcntl(link_audio.publisher_socket_fd, F_GETFL, 0);
+    fcntl(link_audio.publisher_socket_fd, F_SETFL, fl | O_NONBLOCK);
+
+    /* Bind to same interface as Move */
+    struct sockaddr_in6 bind_addr;
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin6_family = AF_INET6;
+    bind_addr.sin6_addr = in6addr_any;
+    bind_addr.sin6_port = 0;  /* ephemeral port */
+    bind(link_audio.publisher_socket_fd, (struct sockaddr *)&bind_addr,
+         sizeof(bind_addr));
+
+    pthread_create(&link_audio.publisher_thread, NULL,
+                   link_audio_publisher_thread, NULL);
+    shadow_log("Link Audio: publisher thread started");
+}
+
+/* Build a session announcement packet for the shadow publisher */
+static int link_audio_build_session_announcement(uint8_t *pkt, int max_len)
+{
+    int pos = 0;
+
+    /* Common header (12 bytes) */
+    memcpy(pkt + pos, LINK_AUDIO_MAGIC, LINK_AUDIO_MAGIC_LEN);
+    pos += LINK_AUDIO_MAGIC_LEN;
+    pkt[pos++] = LINK_AUDIO_VERSION;
+    pkt[pos++] = LINK_AUDIO_MSG_SESSION;  /* msg_type = 1 */
+    pkt[pos++] = 0;  /* flags */
+    pkt[pos++] = 0;  /* reserved hi */
+    pkt[pos++] = 0;  /* reserved lo */
+
+    /* PeerID (8 bytes) */
+    memcpy(pkt + pos, link_audio.publisher_peer_id, 8);
+    pos += 8;
+
+    /* TLV: "sess" - session ID */
+    memcpy(pkt + pos, "sess", 4); pos += 4;
+    link_audio_write_u32_be(pkt + pos, 8); pos += 4;
+    memcpy(pkt + pos, link_audio.publisher_session_id, 8); pos += 8;
+
+    /* TLV: "__pi" - peer info (name = "ME") */
+    const char *peer_name = "ME";
+    uint32_t name_len = (uint32_t)strlen(peer_name);
+    memcpy(pkt + pos, "__pi", 4); pos += 4;
+    link_audio_write_u32_be(pkt + pos, 4 + name_len); pos += 4;
+    link_audio_write_u32_be(pkt + pos, name_len); pos += 4;
+    memcpy(pkt + pos, peer_name, name_len); pos += name_len;
+
+    /* TLV: "auca" - audio channel announcements */
+    /* Count active shadow channels */
+    int active_count = 0;
+    for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+        if (shadow_chain_slots[i].active) active_count++;
+    }
+
+    /* Calculate auca payload size */
+    uint32_t auca_size = 4;  /* num_channels u32 */
+    for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+        if (!shadow_chain_slots[i].active) continue;
+        auca_size += 4 + (uint32_t)strlen(link_audio.pub_channels[i].name) + 8;
+    }
+
+    memcpy(pkt + pos, "auca", 4); pos += 4;
+    link_audio_write_u32_be(pkt + pos, auca_size); pos += 4;
+    link_audio_write_u32_be(pkt + pos, active_count); pos += 4;
+
+    for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+        if (!shadow_chain_slots[i].active) continue;
+        uint32_t ch_name_len = (uint32_t)strlen(link_audio.pub_channels[i].name);
+        link_audio_write_u32_be(pkt + pos, ch_name_len); pos += 4;
+        memcpy(pkt + pos, link_audio.pub_channels[i].name, ch_name_len);
+        pos += ch_name_len;
+        memcpy(pkt + pos, link_audio.pub_channels[i].channel_id, 8);
+        pos += 8;
+    }
+
+    /* TLV: "__ht" - heartbeat */
+    memcpy(pkt + pos, "__ht", 4); pos += 4;
+    link_audio_write_u32_be(pkt + pos, 8); pos += 4;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t ts = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+    link_audio_write_u64_be(pkt + pos, ts); pos += 8;
+
+    return pos;
+}
+
+/* Build a 574-byte audio data packet */
+static void link_audio_build_audio_packet(uint8_t *pkt,
+                                          const uint8_t *peer_id,
+                                          const uint8_t *channel_id,
+                                          uint32_t sequence,
+                                          const int16_t *samples_le,
+                                          int num_frames)
+{
+    memset(pkt, 0, LINK_AUDIO_PACKET_SIZE);
+
+    /* Common header */
+    memcpy(pkt, LINK_AUDIO_MAGIC, LINK_AUDIO_MAGIC_LEN);
+    pkt[7] = LINK_AUDIO_VERSION;
+    pkt[8] = LINK_AUDIO_MSG_AUDIO;
+
+    /* Identity block */
+    memcpy(pkt + 12, peer_id, 8);      /* PeerID */
+    memcpy(pkt + 20, channel_id, 8);   /* ChannelID */
+    memcpy(pkt + 28, peer_id, 8);      /* SourcePeerID */
+
+    /* Audio metadata */
+    link_audio_write_u32_be(pkt + 36, 1);           /* stream version */
+    /* pkt + 40: reserved = 0 */
+    link_audio_write_u32_be(pkt + 44, sequence);     /* sequence number */
+    link_audio_write_u16_be(pkt + 48, (uint16_t)num_frames);
+    /* pkt + 50: padding = 0 */
+    /* Timestamp at offset 52 */
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t ts = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+    link_audio_write_u64_be(pkt + 52, ts);
+    link_audio_write_u32_be(pkt + 60, 6);            /* audio descriptor */
+    pkt[64] = 0xd5; pkt[65] = 0x11; pkt[66] = 0x01; /* constant */
+    link_audio_write_u32_be(pkt + 67, 44100);        /* sample rate */
+    pkt[71] = 2;                                      /* stereo */
+    link_audio_write_u16_be(pkt + 72, LINK_AUDIO_PAYLOAD_SIZE);
+
+    /* Audio payload: convert LE int16 → BE int16 */
+    int16_t *dst = (int16_t *)(pkt + LINK_AUDIO_HEADER_SIZE);
+    for (int i = 0; i < num_frames * 2; i++) {
+        dst[i] = link_audio_swap_i16(samples_le[i]);
+    }
+}
+
+/* Publisher thread: sends shadow audio to Live as Link Audio */
+static void *link_audio_publisher_thread(void *arg)
+{
+    (void)arg;
+
+    /* We need to know where to send session announcements.
+     * Use the same destination as Move's session announcements. */
+    struct sockaddr_in6 dest_addr;
+    memcpy(&dest_addr, &link_audio.move_addr, sizeof(dest_addr));
+
+    uint8_t session_pkt[512];
+    uint8_t audio_pkt[LINK_AUDIO_PACKET_SIZE];
+    uint8_t recv_buf[128];
+
+    uint32_t session_counter = 0;
+    uint32_t tick_counter = 0;
+
+    /* Per-channel output accumulator for 128→125 frame conversion */
+    int16_t accum[LINK_AUDIO_SHADOW_CHANNELS][LINK_AUDIO_PUB_RING_SAMPLES];
+    uint32_t accum_wp[LINK_AUDIO_SHADOW_CHANNELS];
+    uint32_t accum_rp[LINK_AUDIO_SHADOW_CHANNELS];
+    memset(accum_wp, 0, sizeof(accum_wp));
+    memset(accum_rp, 0, sizeof(accum_rp));
+    memset(accum, 0, sizeof(accum));
+
+    while (link_audio.publisher_running && link_audio.enabled) {
+        /* Wait for ioctl tick signal (set by ioctl hook at ~344 Hz) */
+        while (!link_audio.publisher_tick && link_audio.publisher_running) {
+            struct timespec ts = {0, 500000L};  /* 0.5ms poll */
+            nanosleep(&ts, NULL);
+        }
+        link_audio.publisher_tick = 0;
+        tick_counter++;
+
+        /* Send session announcement every ~1 second (~344 ticks) */
+        if (tick_counter % 344 == 0) {
+            int pkt_len = link_audio_build_session_announcement(session_pkt,
+                                                                sizeof(session_pkt));
+            real_sendto(link_audio.publisher_socket_fd, session_pkt, pkt_len, 0,
+                        (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+            session_counter++;
+        }
+
+        /* Check for incoming ChannelRequests (non-blocking) */
+        struct sockaddr_in6 from_addr;
+        socklen_t from_len = sizeof(from_addr);
+        ssize_t n = recvfrom(link_audio.publisher_socket_fd, recv_buf,
+                             sizeof(recv_buf), MSG_DONTWAIT,
+                             (struct sockaddr *)&from_addr, &from_len);
+        if (n >= 36 && memcmp(recv_buf, LINK_AUDIO_MAGIC, LINK_AUDIO_MAGIC_LEN) == 0 &&
+            recv_buf[8] == LINK_AUDIO_MSG_REQUEST) {
+            /* Match ChannelID at offset 20 to our channels */
+            for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+                if (memcmp(recv_buf + 20,
+                           link_audio.pub_channels[i].channel_id, 8) == 0) {
+                    link_audio.pub_channels[i].subscribed = 1;
+                    /* Store subscriber address for sending audio */
+                    memcpy(&dest_addr, &from_addr, sizeof(dest_addr));
+                }
+            }
+        }
+
+        /* Feed captured slot audio into accumulators */
+        for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+            if (!shadow_chain_slots[i].active) continue;
+
+            uint32_t wp = accum_wp[i];
+            for (int s = 0; s < FRAMES_PER_BLOCK * 2; s++) {
+                accum[i][wp & LINK_AUDIO_PUB_RING_MASK] = shadow_slot_capture[i][s];
+                wp++;
+            }
+            accum_wp[i] = wp;
+        }
+
+        /* Drain 125-frame packets from accumulators for subscribed channels */
+        for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+            if (!link_audio.pub_channels[i].subscribed) continue;
+            if (!shadow_chain_slots[i].active) continue;
+
+            uint32_t avail = accum_wp[i] - accum_rp[i];
+            while (avail >= LINK_AUDIO_FRAMES_PER_PACKET * 2) {
+                /* Read 125 frames from accumulator */
+                int16_t out_frames[LINK_AUDIO_FRAMES_PER_PACKET * 2];
+                uint32_t rp = accum_rp[i];
+                for (int s = 0; s < LINK_AUDIO_FRAMES_PER_PACKET * 2; s++) {
+                    out_frames[s] = accum[i][rp & LINK_AUDIO_PUB_RING_MASK];
+                    rp++;
+                }
+                accum_rp[i] = rp;
+
+                /* Build and send audio packet */
+                link_audio_build_audio_packet(audio_pkt,
+                                              link_audio.publisher_peer_id,
+                                              link_audio.pub_channels[i].channel_id,
+                                              link_audio.pub_channels[i].sequence++,
+                                              out_frames,
+                                              LINK_AUDIO_FRAMES_PER_PACKET);
+                real_sendto(link_audio.publisher_socket_fd, audio_pkt,
+                            LINK_AUDIO_PACKET_SIZE, 0,
+                            (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+                link_audio.packets_published++;
+
+                avail = accum_wp[i] - accum_rp[i];
+            }
+        }
+    }
+
+    close(link_audio.publisher_socket_fd);
+    link_audio.publisher_socket_fd = -1;
+    shadow_log("Link Audio: publisher thread exited");
+    return NULL;
+}
+
 int sd_bus_default_system(sd_bus **ret)
 {
     static int (*real_default)(sd_bus**) = NULL;
@@ -3544,10 +4247,25 @@ static void load_feature_config(void)
         }
     }
 
-    char log_msg[128];
-    snprintf(log_msg, sizeof(log_msg), "Features: shadow_ui=%s, standalone=%s",
+    /* Parse link_audio_enabled (defaults to false) */
+    const char *link_audio_key = strstr(config_buf, "\"link_audio_enabled\"");
+    if (link_audio_key) {
+        const char *colon = strchr(link_audio_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                link_audio.enabled = 1;
+            }
+        }
+    }
+
+    char log_msg[256];
+    snprintf(log_msg, sizeof(log_msg),
+             "Features: shadow_ui=%s, standalone=%s, link_audio=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
-             standalone_enabled ? "enabled" : "disabled");
+             standalone_enabled ? "enabled" : "disabled",
+             link_audio.enabled ? "enabled" : "disabled");
     shadow_log(log_msg);
 }
 
@@ -5285,6 +6003,10 @@ static void shadow_inprocess_mix_audio(void) {
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
+            /* Capture per-slot audio for Link Audio publisher (pre-volume) */
+            if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
+                memcpy(shadow_slot_capture[s], render_buffer, sizeof(render_buffer));
+            }
             float vol = shadow_chain_slots[s].volume;
             float gain = vol * me_input_scale;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -5514,6 +6236,10 @@ static void shadow_inprocess_render_to_buffer(void) {
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
+            /* Capture per-slot audio for Link Audio publisher (pre-volume) */
+            if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
+                memcpy(shadow_slot_capture[s], render_buffer, sizeof(render_buffer));
+            }
             float vol = shadow_chain_slots[s].volume;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                 int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
@@ -5918,6 +6644,12 @@ static void init_shadow_shm(void)
     /* TTS engine uses lazy initialization - will init on first speak */
     tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
     printf("Shadow: TTS engine configured (will init on first use)\n");
+
+    /* Initialize Link Audio state */
+    memset(&link_audio, 0, sizeof(link_audio));
+    link_audio.move_socket_fd = -1;
+    link_audio.publisher_socket_fd = -1;
+    memset(shadow_slot_capture, 0, sizeof(shadow_slot_capture));
 
     shadow_shm_initialized = 1;
     printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p)\n",
@@ -7824,6 +8556,11 @@ int ioctl(int fd, unsigned long request, ...)
         /* Track in granular timing */
         inproc_mix_sum += mix_us;
         if (mix_us > inproc_mix_max) inproc_mix_max = mix_us;
+    }
+
+    /* Signal Link Audio publisher thread to drain accumulated audio */
+    if (link_audio.publisher_running) {
+        link_audio.publisher_tick = 1;
     }
 
     /* Log pre-ioctl mix timing every 1000 blocks (~23 seconds) */
