@@ -698,8 +698,8 @@ qecho ""
 qecho "Configuring features..."
 ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
 
-# Preserve link_audio_enabled from existing config (defaults to false)
-link_audio_val=$(ssh_ableton_with_retry "grep -o '\"link_audio_enabled\"[[:space:]]*:[[:space:]]*[a-z]*' /data/UserData/move-anything/config/features.json 2>/dev/null | grep -o 'true\|false'" 2>/dev/null || echo "false")
+# Link Audio enabled by default (harmless on 1.x, activates on 2.0+ with Link)
+link_audio_val="true"
 
 # Build features.json content
 features_json="{
