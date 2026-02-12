@@ -6128,28 +6128,32 @@ static void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t
     }
 }
 
+/* In overtake mode, clear Move's cable-0 LED packets from MIDI_OUT buffer.
+ * Move continuously writes its LED state but in overtake mode we own all LEDs.
+ * Must be called BEFORE shadow_inject_ui_midi_out() so cable-2 (external MIDI)
+ * messages can find empty slots in the buffer. */
+static void shadow_clear_move_leds_if_overtake(void) {
+    if (!shadow_control || shadow_control->overtake_mode < 2) return;
+
+    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+        uint8_t type = midi_out[i+1] & 0xF0;
+        if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+            midi_out[i] = 0;
+            midi_out[i+1] = 0;
+            midi_out[i+2] = 0;
+            midi_out[i+3] = 0;
+        }
+    }
+}
+
 /* Flush pending LED updates to hardware, rate-limited */
 static void shadow_flush_pending_leds(void) {
     shadow_init_led_queue();
 
     uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
     int overtake = shadow_control && shadow_control->overtake_mode >= 2;
-
-    /* In overtake mode, clear Move's cable-0 LED packets (note-on, CC) to reclaim
-     * buffer space.  Move continuously writes its LED state but in overtake mode
-     * we own all LEDs.  This frees ~40-50 of the 64 available slots. */
-    if (overtake) {
-        for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-            uint8_t cable = (midi_out[i] >> 4) & 0x0F;
-            uint8_t type = midi_out[i+1] & 0xF0;
-            if (cable == 0 && (type == 0x90 || type == 0xB0)) {
-                midi_out[i] = 0;
-                midi_out[i+1] = 0;
-                midi_out[i+2] = 0;
-                midi_out[i+3] = 0;
-            }
-        }
-    }
 
     /* Count how many slots are already used */
     int used = 0;
@@ -8034,6 +8038,7 @@ do_ioctl:
     /* === SHADOW UI MIDI OUT (PRE-IOCTL) ===
      * Inject any MIDI from shadow UI into the mailbox before sync.
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
+    shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
     shadow_inject_ui_midi_out();
     shadow_flush_pending_leds();  /* Rate-limited LED output */
 
