@@ -23,6 +23,7 @@
 #define MOVE_MIDI_SOURCE_INTERNAL 0
 #define MOVE_MIDI_SOURCE_EXTERNAL 2
 #define MOVE_MIDI_SOURCE_HOST 3  /* Host-generated (clock, etc) */
+#define MOVE_MIDI_SOURCE_FX_BROADCAST 4  /* Broadcast to audio FX only (skip synth) */
 
 /*
  * Host API - provided by host to plugin during initialization

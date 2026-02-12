@@ -11,49 +11,42 @@
       "levels": {
         "root": {
           "name": "Chord",
-          "params": ["type", "inversion", "voicing", "strum", "strum_dir"],
-          "knobs": ["type", "inversion", "voicing", "strum", "strum_dir"]
+          "params": [
+            {
+              "key": "chord_type",
+              "name": "Type",
+              "type": "enum",
+              "options": ["Major", "Minor", "Dim", "Aug", "Sus2", "Sus4", "Maj7", "Min7", "Dom7"],
+              "default": 0
+            },
+            {
+              "key": "inversion",
+              "name": "Inversion",
+              "type": "int",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "key": "voicing",
+              "name": "Voicing",
+              "type": "enum",
+              "options": ["Close", "Open", "Drop2", "Drop3"],
+              "default": 0
+            },
+            {
+              "key": "velocity_scale",
+              "name": "Vel Scale",
+              "type": "float",
+              "min": 0.0,
+              "max": 2.0,
+              "default": 1.0,
+              "display_format": "%.2f"
+            }
+          ],
+          "knobs": ["chord_type", "inversion", "voicing", "velocity_scale"]
         }
       }
-    },
-    "chain_params": [
-      {
-        "key": "type",
-        "name": "Chord Type",
-        "type": "enum",
-        "options": ["none", "major", "minor", "dim", "aug", "sus2", "sus4", "maj7", "min7", "dom7", "dim7", "power", "5th", "octave", "add9"],
-        "default": "major"
-      },
-      {
-        "key": "inversion",
-        "name": "Inversion",
-        "type": "enum",
-        "options": ["root", "1st", "2nd", "3rd"],
-        "default": "root"
-      },
-      {
-        "key": "voicing",
-        "name": "Voicing",
-        "type": "enum",
-        "options": ["close", "open", "drop2", "drop3"],
-        "default": "close"
-      },
-      {
-        "key": "strum",
-        "name": "Strum",
-        "type": "int",
-        "min": 0,
-        "max": 100,
-        "default": 0,
-        "step": 1
-      },
-      {
-        "key": "strum_dir",
-        "name": "Strum Dir",
-        "type": "enum",
-        "options": ["up", "down"],
-        "default": "up"
-      }
-    ]
+    }
   }
 }

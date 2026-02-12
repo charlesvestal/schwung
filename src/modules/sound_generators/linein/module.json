@@ -3,25 +3,34 @@
   "name": "Line In",
   "abbrev": "LI",
   "version": "0.1.0",
+  "description": "Pass through audio from line input",
   "dsp": "dsp.so",
   "api_version": 1,
   "capabilities": {
-    "audio_out": true,
     "audio_in": true,
+    "audio_out": true,
     "midi_in": false,
     "midi_out": false,
     "chainable": true,
     "component_type": "sound_generator",
-    "chain_params": [
-      {
-        "key": "gain",
-        "name": "Gain",
-        "type": "float",
-        "min": 0.0,
-        "max": 2.0,
-        "default": 1.0,
-        "step": 0.05
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "label": "Line In",
+          "params": [
+            {
+              "key": "gain",
+              "label": "Gain",
+              "type": "float",
+              "min": 0,
+              "max": 2,
+              "default": 1.0,
+              "step": 0.01
+            }
+          ],
+          "knobs": ["gain"]
+        }
       }
-    ]
+    }
   }
 }

@@ -11,42 +11,45 @@
       "levels": {
         "root": {
           "name": "Arpeggiator",
-          "params": ["mode", "bpm", "division", "sync"],
-          "knobs": ["mode", "bpm", "division", "sync"]
+          "params": [
+            {
+              "key": "mode",
+              "name": "Mode",
+              "type": "enum",
+              "options": ["Up", "Down", "Up/Down", "Random"],
+              "default": 0
+            },
+            {
+              "key": "rate",
+              "name": "Rate",
+              "type": "int",
+              "min": 1,
+              "max": 16,
+              "default": 4,
+              "unit": "steps"
+            },
+            {
+              "key": "gate",
+              "name": "Gate",
+              "type": "float",
+              "min": 10.0,
+              "max": 200.0,
+              "default": 90.0,
+              "unit": "%",
+              "display_format": "%.0f"
+            },
+            {
+              "key": "octaves",
+              "name": "Octaves",
+              "type": "int",
+              "min": 1,
+              "max": 4,
+              "default": 1
+            }
+          ],
+          "knobs": ["mode", "rate", "gate", "octaves"]
         }
       }
-    },
-    "chain_params": [
-      {
-        "key": "mode",
-        "name": "Mode",
-        "type": "enum",
-        "options": ["off", "up", "down", "up_down", "random"],
-        "default": "up"
-      },
-      {
-        "key": "bpm",
-        "name": "BPM",
-        "type": "int",
-        "min": 40,
-        "max": 240,
-        "default": 120,
-        "step": 1
-      },
-      {
-        "key": "division",
-        "name": "Division",
-        "type": "enum",
-        "options": ["1/4.", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32"],
-        "default": "1/16"
-      },
-      {
-        "key": "sync",
-        "name": "Sync",
-        "type": "enum",
-        "options": ["internal", "clock"],
-        "default": "internal"
-      }
-    ]
+    }
   }
 }
