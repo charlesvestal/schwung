@@ -772,6 +772,7 @@ static void debug_dump_mailbox_changes(void) {
 
 static void *shadow_dsp_handle = NULL;
 static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
+static void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
 
@@ -4952,6 +4953,10 @@ static int shadow_inprocess_load_chain(void) {
         return -1;
     }
 
+    /* Look up optional chain_set_inject_audio for Link Audio routing */
+    shadow_chain_set_inject_audio = (void (*)(void *, int16_t *, int))
+        dlsym(shadow_dsp_handle, "chain_set_inject_audio");
+
     shadow_chain_load_config();
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_chain_slots[i].instance = shadow_plugin_v2->create_instance(
@@ -5998,6 +6003,18 @@ static void shadow_inprocess_mix_audio(void) {
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+
+            /* Inject Move track audio from Link Audio into chain before FX */
+            if (link_audio.enabled && shadow_chain_set_inject_audio &&
+                s < link_audio.move_channel_count) {
+                int16_t move_track[FRAMES_PER_BLOCK * 2];
+                if (link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK)) {
+                    shadow_chain_set_inject_audio(
+                        shadow_chain_slots[s].instance,
+                        move_track, FRAMES_PER_BLOCK);
+                }
+            }
+
             int16_t render_buffer[FRAMES_PER_BLOCK * 2];
             memset(render_buffer, 0, sizeof(render_buffer));
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
@@ -6231,6 +6248,18 @@ static void shadow_inprocess_render_to_buffer(void) {
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+
+            /* Inject Move track audio from Link Audio into chain before FX */
+            if (link_audio.enabled && shadow_chain_set_inject_audio &&
+                s < link_audio.move_channel_count) {
+                int16_t move_track[FRAMES_PER_BLOCK * 2];
+                if (link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK)) {
+                    shadow_chain_set_inject_audio(
+                        shadow_chain_slots[s].instance,
+                        move_track, FRAMES_PER_BLOCK);
+                }
+            }
+
             int16_t render_buffer[FRAMES_PER_BLOCK * 2];
             memset(render_buffer, 0, sizeof(render_buffer));
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
