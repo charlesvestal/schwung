@@ -459,6 +459,10 @@ typedef struct chain_instance {
      * Set by host before render_block; mixed after synth, before FX. */
     int16_t *inject_audio;
     int inject_audio_frames;
+
+    /* When set, render_block outputs raw synth only (no inject mix, no FX).
+     * The shim calls chain_process_fx() separately for same-frame FX. */
+    int external_fx_mode;
 } chain_instance_t;
 
 /* ============================================================================
@@ -6780,6 +6784,11 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
     }
 
+    /* In external_fx_mode, output raw synth only — skip inject and FX.
+     * The shim reads Link Audio in the same frame as the mailbox,
+     * combines with this raw synth, and calls chain_process_fx(). */
+    if (inst->external_fx_mode) return;
+
     /* Mix in external audio (e.g. Move track from Link Audio) before FX.
      * This lets the FX chain process both synth and Move audio together. */
     if (inst->inject_audio && inst->inject_audio_frames > 0) {
@@ -6845,3 +6854,32 @@ void chain_set_inject_audio(void *instance, int16_t *buf, int frames) {
     inst->inject_audio = buf;
     inst->inject_audio_frames = frames;
 }
+
+/* Exported: enable/disable external FX mode.
+ * When enabled, render_block outputs raw synth only (no inject, no FX).
+ * The caller is responsible for running chain_process_fx() separately. */
+void chain_set_external_fx_mode(void *instance, int mode) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->external_fx_mode = mode;
+}
+
+/* Exported: run only the audio FX chain on the provided buffer.
+ * Used by the shim for same-frame FX processing when external_fx_mode is set. */
+void chain_process_fx(void *instance, int16_t *buf, int frames) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    for (int i = 0; i < inst->fx_count; i++) {
+        if (inst->fx_is_v2[i]) {
+            if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
+                inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], buf, frames);
+            }
+        } else {
+            if (inst->fx_plugins[i] && inst->fx_plugins[i]->process_block) {
+                inst->fx_plugins[i]->process_block(buf, frames);
+            }
+        }
+    }
+}
+
+

@@ -773,6 +773,8 @@ static void debug_dump_mailbox_changes(void) {
 static void *shadow_dsp_handle = NULL;
 static const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 static void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) = NULL;
+static void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
+static void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
 static host_api_v1_t shadow_host_api;
 static int shadow_inprocess_ready = 0;
 
@@ -792,14 +794,15 @@ static void shadow_overtake_dsp_unload(void);
 #define STARTUP_MODWHEEL_RESET_FRAMES 20  /* ~0.6 seconds at 128 frames/block */
 static int shadow_startup_modwheel_countdown = 0;
 
-/* Deferred DSP rendering buffer - rendered post-ioctl, mixed pre-ioctl next frame */
+/* Deferred DSP rendering buffer - rendered post-ioctl, mixed pre-ioctl next frame.
+ * Used for overtake DSP and as fallback when chain_process_fx is unavailable. */
 static int16_t shadow_deferred_dsp_buffer[FRAMES_PER_BLOCK * 2];
 static int shadow_deferred_dsp_valid = 0;
 
-/* Accumulated raw Move track audio injected via Link Audio during render_to_buffer.
- * Subtracted from mailbox in mix_from_buffer to avoid doubling. */
-static int32_t shadow_link_audio_subtract[FRAMES_PER_BLOCK * 2];
-static int shadow_link_audio_subtract_valid = 0;
+/* Per-slot raw synth output from render_to_buffer (no FX applied).
+ * FX is processed in mix_from_buffer using same-frame Link Audio data. */
+static int16_t shadow_slot_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
+static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
 /* ==========================================================================
  * Shadow Capture Rules - Allow slots to capture specific MIDI controls
@@ -2287,6 +2290,14 @@ static int link_audio_read_channel(int idx, int16_t *out, int frames)
         memset(out, 0, samples * sizeof(int16_t));
         link_audio.underruns++;
         return 0;
+    }
+
+    /* If the writer lapped the reader (e.g. slot was inactive), skip ahead
+     * to the most recent data.  Reading stale ring positions produces audio
+     * that doesn't match the current mailbox frame, breaking inject/subtract
+     * cancellation.  Keep one frame of margin to avoid racing the writer. */
+    if (avail > (uint32_t)samples * 4) {
+        rp = wp - (uint32_t)samples;
     }
 
     for (int i = 0; i < samples; i++) {
@@ -4918,9 +4929,19 @@ static int shadow_inprocess_load_chain(void) {
         return -1;
     }
 
-    /* Look up optional chain_set_inject_audio for Link Audio routing */
+    /* Look up optional chain exports for Link Audio routing + same-frame FX */
     shadow_chain_set_inject_audio = (void (*)(void *, int16_t *, int))
         dlsym(shadow_dsp_handle, "chain_set_inject_audio");
+    shadow_chain_set_external_fx_mode = (void (*)(void *, int))
+        dlsym(shadow_dsp_handle, "chain_set_external_fx_mode");
+    shadow_chain_process_fx = (void (*)(void *, int16_t *, int))
+        dlsym(shadow_dsp_handle, "chain_process_fx");
+
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d",
+            (void*)shadow_chain_set_inject_audio,
+            (void*)shadow_chain_set_external_fx_mode,
+            (void*)shadow_chain_process_fx,
+            (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
 
     shadow_chain_load_config();
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
@@ -5108,15 +5129,12 @@ static void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, 
         dispatched++;
     }
 
-    /* Broadcast MIDI to active slots that didn't match the channel filter.
-     * Audio FX like ducker need MIDI from all channels, not just their slot's.
-     * FX_BROADCAST tells the chain to only forward to audio FX, not synth. */
+    /* Broadcast MIDI to ALL active slots for audio FX (e.g. ducker).
+     * FX_BROADCAST only forwards to audio FX, not synth/MIDI FX, so this
+     * is safe even for slots that already received normal MIDI dispatch. */
     if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
         for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
             if (!shadow_chain_slots[i].active || !shadow_chain_slots[i].instance)
-                continue;
-            /* Skip slots that already received this MIDI via channel match */
-            if (shadow_chain_slots[i].channel == (int)midi_ch || shadow_chain_slots[i].channel == -1)
                 continue;
             uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
             shadow_plugin_v2->on_midi(shadow_chain_slots[i].instance, msg, 3,
@@ -6263,58 +6281,51 @@ static void shadow_overtake_dsp_unload(void) {
 static void shadow_inprocess_render_to_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
-    /* Clear the deferred buffer */
+    /* Clear the deferred buffer (used for overtake DSP) */
     memset(shadow_deferred_dsp_buffer, 0, sizeof(shadow_deferred_dsp_buffer));
 
-    /* Clear Link Audio subtraction accumulator */
-    memset(shadow_link_audio_subtract, 0, sizeof(shadow_link_audio_subtract));
-    shadow_link_audio_subtract_valid = 0;
+    /* Clear per-slot deferred buffers */
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        memset(shadow_slot_deferred[s], 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        shadow_slot_deferred_valid[s] = 0;
+    }
 
-    /* Render each slot's DSP */
+    /* Same-frame FX: render synth only into per-slot buffers.
+     * FX + Link Audio inject are processed in mix_from_buffer (same frame as mailbox)
+     * so the inject/subtract cancellation is sample-accurate. */
+    int same_frame_fx = (shadow_chain_set_external_fx_mode != NULL &&
+                         shadow_chain_process_fx != NULL);
+
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
-            /* Inject Move track audio from Link Audio into chain before FX */
-            int16_t move_track[FRAMES_PER_BLOCK * 2];
-            int have_move_track = 0;
-            if (link_audio.enabled && shadow_chain_set_inject_audio &&
-                s < link_audio.move_channel_count) {
-                have_move_track = link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK);
-                if (have_move_track) {
-                    shadow_chain_set_inject_audio(
-                        shadow_chain_slots[s].instance,
-                        move_track, FRAMES_PER_BLOCK);
+            if (same_frame_fx) {
+                /* New path: synth only → per-slot buffer. FX in mix_from_buffer. */
+                shadow_chain_set_external_fx_mode(shadow_chain_slots[s].instance, 1);
+                shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
+                                               shadow_slot_deferred[s],
+                                               MOVE_FRAMES_PER_BLOCK);
+                shadow_slot_deferred_valid[s] = 1;
+            } else {
+                /* Fallback: full render (synth + FX) → accumulated buffer.
+                 * No Link Audio inject (one-frame delay would cause issues). */
+                int16_t render_buffer[FRAMES_PER_BLOCK * 2];
+                memset(render_buffer, 0, sizeof(render_buffer));
+                shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
+                                               render_buffer, MOVE_FRAMES_PER_BLOCK);
+                if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
+                    float cap_vol = shadow_chain_slots[s].volume;
+                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+                        shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
                 }
-            }
-
-            int16_t render_buffer[FRAMES_PER_BLOCK * 2];
-            memset(render_buffer, 0, sizeof(render_buffer));
-            shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
-                                           render_buffer,
-                                           MOVE_FRAMES_PER_BLOCK);
-            /* Capture per-slot audio for Link Audio publisher (with slot volume) */
-            if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                float cap_vol = shadow_chain_slots[s].volume;
+                float vol = shadow_chain_slots[s].volume;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
+                    int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
+                    if (mixed > 32767) mixed = 32767;
+                    if (mixed < -32768) mixed = -32768;
+                    shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
                 }
-            }
-
-            /* Accumulate raw Move audio for subtraction in mix_from_buffer */
-            if (have_move_track) {
-                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
-                    shadow_link_audio_subtract[i] += (int32_t)move_track[i];
-                shadow_link_audio_subtract_valid = 1;
-            }
-
-            float vol = shadow_chain_slots[s].volume;
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
-                /* Clamp during accumulation */
-                if (mixed > 32767) mixed = 32767;
-                if (mixed < -32768) mixed = -32768;
-                shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
             }
         }
     }
@@ -6337,8 +6348,11 @@ static void shadow_inprocess_render_to_buffer(void) {
     shadow_deferred_dsp_valid = 1;
 }
 
-/* Mix from pre-rendered buffer (fast, ~5µs) - called PRE-ioctl
- * Mixes shadow DSP with Move's audio, then applies Master FX to combined audio.
+/* Mix from pre-rendered buffer - called PRE-ioctl
+ * When Link Audio is active: zeroes the mailbox and rebuilds from per-track
+ * Link Audio data, routing each track through its slot's FX chain.
+ * Tracks without active FX pass through at Move's volume level.
+ * This eliminates dry signal leakage entirely (no subtraction needed).
  */
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
@@ -6349,40 +6363,121 @@ static void shadow_inprocess_mix_from_buffer(void) {
     /* Use one gain topology for all cases: pre-scale ME input by current master factor. */
     float me_input_scale = (mv < 1.0f) ? mv : 1.0f;
 
-    /* Save split components for bridge compensation (before mixing).
-     * move_component = Move's audio (already Move-vol-scaled internally).
-     * me_component = ME deferred buffer at full gain (slot-vol only). */
+    /* Save Move's audio for bridge split (before zeroing) */
     memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
-    memcpy(native_bridge_me_component, shadow_deferred_dsp_buffer, sizeof(native_bridge_me_component));
-    native_bridge_capture_mv = mv;
-    native_bridge_split_valid = 1;
 
-    /* Subtract Move track audio that was injected via Link Audio.
-     * Link Audio per-track streams are pre-fader (full level), but the mailbox
-     * has them post-fader (scaled by Move's volume).  Scale the subtraction
-     * by shadow_master_volume so the levels match. */
-    if (shadow_link_audio_subtract_valid) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            int32_t scaled_sub = (int32_t)lroundf((float)shadow_link_audio_subtract[i] * mv);
-            int32_t adjusted = (int32_t)mailbox_audio[i] - scaled_sub;
-            if (adjusted > 32767) adjusted = 32767;
-            if (adjusted < -32768) adjusted = -32768;
-            mailbox_audio[i] = (int16_t)adjusted;
+    /* Accumulate ME output across slots for bridge split component */
+    int32_t me_full[FRAMES_PER_BLOCK * 2];
+    memset(me_full, 0, sizeof(me_full));
+
+    /* Zero-and-rebuild approach: if Link Audio provides per-track data,
+     * zero the mailbox and rebuild from Link Audio, applying FX per-slot.
+     * This completely eliminates dry signal leakage — no subtraction needed. */
+    int rebuild_from_la = (link_audio.enabled && shadow_chain_process_fx &&
+                           link_audio.move_channel_count >= 4);
+
+    if (rebuild_from_la) {
+        /* Zero the mailbox — all audio reconstructed from Link Audio */
+        memset(mailbox_audio, 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            /* Read Link Audio for this track (pre-fader, same frame as mailbox) */
+            int16_t move_track[FRAMES_PER_BLOCK * 2];
+            int have_move_track = 0;
+            if (s < link_audio.move_channel_count) {
+                have_move_track = link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK);
+            }
+
+            int slot_active = (shadow_chain_slots[s].active &&
+                               shadow_chain_slots[s].instance &&
+                               shadow_slot_deferred_valid[s]);
+
+            if (slot_active) {
+                /* Active slot: combine synth + Link Audio, run through FX */
+                int16_t fx_buf[FRAMES_PER_BLOCK * 2];
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    int32_t combined = (int32_t)shadow_slot_deferred[s][i];
+                    if (have_move_track)
+                        combined += (int32_t)move_track[i];
+                    if (combined > 32767) combined = 32767;
+                    if (combined < -32768) combined = -32768;
+                    fx_buf[i] = (int16_t)combined;
+                }
+
+                /* Run FX chain */
+                shadow_chain_process_fx(shadow_chain_slots[s].instance,
+                                        fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                /* Capture for Link Audio publisher */
+                if (s < LINK_AUDIO_SHADOW_CHANNELS) {
+                    float cap_vol = shadow_chain_slots[s].volume;
+                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+                        shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
+                }
+
+                /* Add FX output to mailbox */
+                float vol = shadow_chain_slots[s].volume;
+                float gain = vol * me_input_scale;
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
+                    if (mixed > 32767) mixed = 32767;
+                    if (mixed < -32768) mixed = -32768;
+                    mailbox_audio[i] = (int16_t)mixed;
+                    me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                }
+            } else if (have_move_track) {
+                /* Inactive slot: pass Link Audio through at Move's volume level */
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    int32_t scaled = (int32_t)lroundf((float)move_track[i] * mv);
+                    int32_t mixed = (int32_t)mailbox_audio[i] + scaled;
+                    if (mixed > 32767) mixed = 32767;
+                    if (mixed < -32768) mixed = -32768;
+                    mailbox_audio[i] = (int16_t)mixed;
+                }
+            }
         }
-        shadow_link_audio_subtract_valid = 0;
+    } else if (shadow_chain_process_fx) {
+        /* Fallback: no Link Audio — just process deferred synth through FX */
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            if (!shadow_slot_deferred_valid[s] || !shadow_chain_slots[s].instance) continue;
+
+            int16_t fx_buf[FRAMES_PER_BLOCK * 2];
+            memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
+            shadow_chain_process_fx(shadow_chain_slots[s].instance,
+                                    fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+            float vol = shadow_chain_slots[s].volume;
+            float gain = vol * me_input_scale;
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
+                if (mixed > 32767) mixed = 32767;
+                if (mixed < -32768) mixed = -32768;
+                mailbox_audio[i] = (int16_t)mixed;
+                me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+            }
+        }
     }
 
-    /* Mix deferred buffer into mailbox audio */
+    /* Mix overtake DSP buffer */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t me_sample = (int32_t)shadow_deferred_dsp_buffer[i];
-        if (me_input_scale < 0.9999f) {
-            me_sample = (int32_t)lroundf((float)me_sample * me_input_scale);
-        }
-        int32_t mixed = (int32_t)mailbox_audio[i] + me_sample;
+        int32_t ov = (int32_t)shadow_deferred_dsp_buffer[i];
+        if (me_input_scale < 0.9999f)
+            ov = (int32_t)lroundf((float)ov * me_input_scale);
+        int32_t mixed = (int32_t)mailbox_audio[i] + ov;
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
+        me_full[i] += (int32_t)shadow_deferred_dsp_buffer[i];
     }
+
+    /* Save ME full-gain component for bridge split */
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        if (me_full[i] > 32767) me_full[i] = 32767;
+        if (me_full[i] < -32768) me_full[i] = -32768;
+        native_bridge_me_component[i] = (int16_t)me_full[i];
+    }
+    native_bridge_capture_mv = mv;
+    native_bridge_split_valid = 1;
 
     /* Overtake DSP FX: process combined Move+shadow audio in-place */
     if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
@@ -9609,15 +9704,11 @@ do_ioctl:
                     }
                 }
 
-                /* Broadcast internal MIDI to all slots for audio FX (e.g. ducker).
-                 * Skip the focused slot if it already received this note via capture rules
-                 * (to avoid double-delivery to its audio FX). */
+                /* Broadcast internal MIDI to ALL active slots for audio FX (e.g. ducker).
+                 * FX_BROADCAST only forwards to audio FX, not synth/MIDI FX, so this
+                 * is safe even for the focused slot that received normal dispatch. */
                 if (d1 >= 10 && shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                    int focused = shadow_control ? shadow_control->ui_slot : -1;
-                    const shadow_capture_rules_t *cap = shadow_get_focused_capture();
-                    int focused_captured = (cap && capture_has_note(cap, d1));
                     for (int si = 0; si < SHADOW_CHAIN_INSTANCES; si++) {
-                        if (si == focused && focused_captured) continue;
                         if (!shadow_chain_slots[si].active || !shadow_chain_slots[si].instance)
                             continue;
                         uint8_t msg[3] = { status, d1, d2 };
