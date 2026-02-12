@@ -457,9 +457,15 @@ if [ -n "$ssh_result" ]; then
     fail "Network connection to Move failed"
   fi
 
-  # SSH failed for auth/key reasons - offer wizard
+  # SSH failed for auth/key reasons - offer wizard (interactive only)
   echo
   echo "SSH connection failed."
+
+  if [ "$skip_confirmation" = true ]; then
+    # Non-interactive mode (GUI installer) - fail immediately
+    fail "SSH connection to $hostname failed (non-interactive mode)"
+  fi
+
   printf "Would you like help setting up SSH access? (y/N): "
   read -r run_wizard </dev/tty
 
@@ -574,8 +580,12 @@ if [ -n "$old_modules" ] || [ "$old_patches" = true ] || [ -n "$old_chain_module
   echo
   echo "After migration, reinstall modules via the Module Store."
   echo
-  printf "Proceed with migration? [Y/n] "
-  read -r do_migrate </dev/tty
+  if [ "$skip_confirmation" = true ]; then
+    do_migrate="y"
+  else
+    printf "Proceed with migration? [Y/n] "
+    read -r do_migrate </dev/tty
+  fi
 
   if [ "$do_migrate" != "n" ] && [ "$do_migrate" != "N" ]; then
     echo "Migrating..."

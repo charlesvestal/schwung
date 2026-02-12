@@ -598,6 +598,16 @@ async function setupSshConfig(hostname = 'move.local') {
     // Strip brackets from IPv6 if present
     const deviceIp = cachedDeviceIp ? cachedDeviceIp.replace(/^\[|\]$/g, '') : null;
 
+    // Use whichever SSH key actually exists (match order from findExistingSshKey/testSsh)
+    let identityFile = '~/.ssh/id_ed25519';
+    if (fs.existsSync(path.join(sshDir, 'move_key'))) {
+        identityFile = '~/.ssh/move_key';
+    } else if (fs.existsSync(path.join(sshDir, 'id_ed25519'))) {
+        identityFile = '~/.ssh/id_ed25519';
+    } else if (fs.existsSync(path.join(sshDir, 'id_rsa'))) {
+        identityFile = '~/.ssh/id_rsa';
+    }
+
     // Escape hostname for use in regex
     const hostnameEscaped = hostname.replace(/\./g, '\\.');
 
@@ -605,7 +615,7 @@ async function setupSshConfig(hostname = 'move.local') {
 Host ${hostname}
     HostName ${hostname}
     User ableton
-    IdentityFile ~/.ssh/move_key
+    IdentityFile ${identityFile}
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 `;
@@ -617,7 +627,7 @@ Host ${hostname}
 Host movedevice
     HostName ${deviceIp}
     User ableton
-    IdentityFile ~/.ssh/move_key
+    IdentityFile ${identityFile}
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 `;
@@ -772,7 +782,7 @@ async function downloadRelease(url, destPath) {
     }
 }
 
-async function sshExec(hostname, command) {
+async function sshExec(hostname, command, { username = 'ableton' } = {}) {
     // Use cached IP from session (already resolved in validateDevice)
     // Prefer cached IP, but allow fallback to hostname for SSH (native ssh can resolve .local)
     const hostIp = cachedDeviceIp || hostname;
@@ -787,7 +797,7 @@ async function sshExec(hostname, command) {
         const { promisify } = require('util');
         const execAsync = promisify(exec);
 
-        const sshCmd = `ssh -i "${keyPath}" -o StrictHostKeyChecking=no -o BatchMode=yes root@${hostIp} "${command.replace(/"/g, '\\"')}"`;
+        const sshCmd = `ssh -i "${keyPath}" -o StrictHostKeyChecking=no -o BatchMode=yes ${username}@${hostIp} "${command.replace(/"/g, '\\"')}"`;
         const { stdout } = await execAsync(sshCmd, { timeout: 30000 });
         return stdout;
     } catch (nativeErr) {
@@ -831,7 +841,7 @@ async function sshExec(hostname, command) {
             conn.connect({
                 host: hostIp,
                 port: 22,
-                username: 'root',
+                username,
                 privateKey: fs.readFileSync(keyPath),
                 family: 4  // Force IPv4
             });
@@ -840,7 +850,7 @@ async function sshExec(hostname, command) {
 }
 
 // Helper to upload file via SFTP
-async function sftpUpload(hostname, localPath, remotePath) {
+async function sftpUpload(hostname, localPath, remotePath, { username = 'ableton' } = {}) {
     const hostIp = cachedDeviceIp || hostname;
     const moveKeyPath = path.join(os.homedir(), '.ssh', 'move_key');
     const keyPath = fs.existsSync(moveKeyPath) ? moveKeyPath : path.join(os.homedir(), '.ssh', 'id_rsa');
@@ -873,7 +883,7 @@ async function sftpUpload(hostname, localPath, remotePath) {
         conn.connect({
             host: hostIp,
             port: 22,
-            username: 'root',
+            username,
             privateKey: fs.readFileSync(keyPath),
             family: 4
         });
@@ -948,6 +958,10 @@ async function installMain(tarballPath, hostname, flags = []) {
         console.log('[DEBUG] Installing to:', hostIp);
         console.log('[DEBUG] Install flags:', flags);
 
+        // Ensure SSH config alias exists before running install.sh
+        // (install.sh uses "movedevice" as hostname, which must resolve via ~/.ssh/config)
+        await setupSshConfig(hostname);
+
         const { exec } = require('child_process');
         const { promisify } = require('util');
         const execAsync = promisify(exec);
@@ -1017,7 +1031,8 @@ async function installMain(tarballPath, hostname, flags = []) {
             console.log('[DEBUG] Script:', tempInstallScript);
             console.log('[DEBUG] Args:', installArgs.join(' '));
 
-            const cmd = `"${bashPath}" -c "cd '${unixTempDir}/scripts' && ./install.sh ${installArgs.join(' ')}"`;
+            // Redirect stdin from /dev/null so install.sh never blocks on interactive prompts
+            const cmd = `"${bashPath}" -c "cd '${unixTempDir}/scripts' && ./install.sh ${installArgs.join(' ')} < /dev/null"`;
             console.log('[DEBUG] Command:', cmd);
 
             let stdout, stderr;
@@ -1106,15 +1121,16 @@ async function installModulePackage(moduleId, tarballPath, componentType, hostna
 async function cleanDeviceTmp(hostname) {
     try {
         const hostIp = cachedDeviceIp || hostname;
+        const asRoot = { username: 'root' };
         console.log('[DEBUG] Cleaning /tmp on device to free root partition space...');
 
         // Get before size
         let beforeFree = '';
         try {
-            beforeFree = await sshExec(hostIp, "df / | tail -1 | awk '{print $4}'");
+            beforeFree = await sshExec(hostIp, "df / | tail -1 | awk '{print $4}'", asRoot);
         } catch (e) { /* ignore */ }
 
-        // Remove log, json, and tarball files from /tmp
+        // Remove log, json, and tarball files from /tmp (root partition)
         const cleanupCmds = [
             'rm -f /tmp/*.log /tmp/*.json /tmp/*.tar.gz',
             'rm -rf /tmp/move-install-* /tmp/move-uninstall-*',
@@ -1124,7 +1140,7 @@ async function cleanDeviceTmp(hostname) {
 
         for (const cmd of cleanupCmds) {
             try {
-                await sshExec(hostIp, cmd);
+                await sshExec(hostIp, cmd, asRoot);
             } catch (e) {
                 console.log('[DEBUG] Cleanup cmd failed (non-fatal):', cmd, e.message);
             }
@@ -1133,7 +1149,7 @@ async function cleanDeviceTmp(hostname) {
         // Get after size
         let afterFree = '';
         try {
-            afterFree = await sshExec(hostIp, "df / | tail -1 | awk '{print $4}'");
+            afterFree = await sshExec(hostIp, "df / | tail -1 | awk '{print $4}'", asRoot);
         } catch (e) { /* ignore */ }
 
         const freedKB = parseInt(afterFree) - parseInt(beforeFree);
@@ -1429,7 +1445,7 @@ async function setScreenReaderState(hostname, enabled) {
 
         // Restart move-anything process so it picks up the new state
         console.log('[DEBUG] Restarting move-anything...');
-        await sshExec(hostIp, 'killall move-anything 2>/dev/null || true');
+        await sshExec(hostIp, 'killall move-anything 2>/dev/null || true', { username: 'root' });
 
         return {
             enabled: enabled,
@@ -1520,17 +1536,19 @@ async function uninstallMoveEverything(hostname) {
         const hostIp = cachedDeviceIp || hostname;
         console.log('[DEBUG] Uninstalling Move Everything from:', hostIp);
 
+        const asRoot = { username: 'root' };
+
         // Stop move-anything service
         console.log('[DEBUG] Stopping move-anything service...');
-        await sshExec(hostIp, 'systemctl stop move-anything 2>/dev/null || killall move-anything 2>/dev/null || true');
+        await sshExec(hostIp, 'systemctl stop move-anything 2>/dev/null || killall move-anything 2>/dev/null || true', asRoot);
 
         // Remove shim from /usr/lib if it exists
         console.log('[DEBUG] Removing shim library...');
-        await sshExec(hostIp, 'rm -f /usr/lib/move-anything-shim.so');
+        await sshExec(hostIp, 'rm -f /usr/lib/move-anything-shim.so', asRoot);
 
         // Remove Move Everything directory
         console.log('[DEBUG] Removing Move Everything files...');
-        await sshExec(hostIp, 'rm -rf /data/UserData/move-anything');
+        await sshExec(hostIp, 'rm -rf /data/UserData/move-anything', asRoot);
 
         // Restore original Move binary if backup exists
         console.log('[DEBUG] Restoring original Move binary...');
@@ -1542,7 +1560,7 @@ async function uninstallMoveEverything(hostname) {
                 echo "no_backup"
             fi
         `;
-        const restoreResult = (await sshExec(hostIp, restoreCmd)).trim();
+        const restoreResult = (await sshExec(hostIp, restoreCmd, asRoot)).trim();
 
         if (restoreResult === 'no_backup') {
             console.log('[DEBUG] No backup found, original Move binary may already be in place');
@@ -1550,7 +1568,7 @@ async function uninstallMoveEverything(hostname) {
 
         // Restart the device
         console.log('[DEBUG] Restarting device...');
-        await sshExec(hostIp, 'reboot');
+        await sshExec(hostIp, 'reboot', asRoot);
 
         console.log('[DEBUG] Uninstall complete');
         return {
