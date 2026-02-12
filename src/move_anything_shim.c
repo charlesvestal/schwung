@@ -2064,13 +2064,13 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
         memcpy(&link_audio.move_addr, dest, sizeof(struct sockaddr_in6));
         link_audio.move_addrlen = addrlen;
 
-        /* Capture Move's own local address via getsockname (valid on audio thread) */
+        /* Capture Move's own local address via getsockname (valid on audio thread).
+         * The local port from getsockname IS Move's listening port — do NOT
+         * overwrite it with the destination port (that's the peer's port). */
         socklen_t local_len = sizeof(link_audio.move_local_addr);
         if (getsockname(sockfd, (struct sockaddr *)&link_audio.move_local_addr,
                         &local_len) == 0) {
-            /* Use the dest port as the port to send requests to
-             * (Move listens on the same port it sends from) */
-            link_audio.move_local_addr.sin6_port = link_audio.move_addr.sin6_port;
+            /* Keep the port from getsockname — it's Move's bound/listening port */
         } else {
             /* Fallback: copy dest addr (better than nothing) */
             memcpy(&link_audio.move_local_addr, dest, sizeof(struct sockaddr_in6));
@@ -2085,7 +2085,7 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
                   local_str, sizeof(local_str));
         char logbuf[512];
         snprintf(logbuf, sizeof(logbuf),
-                 "Link Audio: captured dest=%s:%d, local=%s:%d scope=%d",
+                 "Link Audio: captured dest=%s:%d, local(Move)=%s:%d scope=%d",
                  dest_str, ntohs(link_audio.move_addr.sin6_port),
                  local_str, ntohs(link_audio.move_local_addr.sin6_port),
                  link_audio.move_local_addr.sin6_scope_id);
