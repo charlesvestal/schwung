@@ -8816,36 +8816,31 @@ int ioctl(int fd, unsigned long request, ...)
                     memcpy(full_display + offset, captured_slices[s], bytes);
                 }
 
-                /* Check row 30 for the volume position indicator.
-                 * On the volume overlay (2.0 beta), row 30 sits in the gap between
-                 * the upper and lower VU meter bars — only the 1-pixel-wide vertical
-                 * position indicator is lit there.  On waveform/pad-edit screens,
-                 * row 30 has many lit pixels.  Use the lit count to distinguish. */
-                int bar_row = 30;
-                int page = bar_row / 8;  /* page 3 */
-                int bit = bar_row % 8;   /* bit 6 */
+                /* Find the volume position indicator in the gap between VU bars.
+                 * Rows 30-32 are blank on the volume overlay except for the 1-pixel
+                 * vertical indicator.  Require: vertical alignment on rows 30+31+32
+                 * at the same column AND the gap rows are otherwise blank (total lit
+                 * pixels across all three rows <= 6).  Waveform screens have many
+                 * scattered pixels on these rows. */
                 int bar_col = -1;
-                int row30_lit = 0;
-
-                for (int col = 0; col < 128; col++) {
-                    int byte_idx = page * 128 + col;
-                    if (full_display[byte_idx] & (1 << bit)) {
-                        row30_lit++;
-                        if (bar_col < 0) bar_col = col;  /* First lit pixel */
+                int gap_total_lit = 0;
+                {
+                    int page3 = 30 / 8;  /* page 3 for rows 30-31 */
+                    int page4 = 32 / 8;  /* page 4 for row 32 */
+                    int bit30 = 30 % 8;
+                    int bit31 = 31 % 8;
+                    int bit32 = 32 % 8;
+                    for (int col = 0; col < 128; col++) {
+                        int l30 = !!(full_display[page3 * 128 + col] & (1 << bit30));
+                        int l31 = !!(full_display[page3 * 128 + col] & (1 << bit31));
+                        int l32 = !!(full_display[page4 * 128 + col] & (1 << bit32));
+                        gap_total_lit += l30 + l31 + l32;
+                        if (l30 && l31 && l32 && bar_col < 0)
+                            bar_col = col;
                     }
                 }
 
-                /* Log analysis for debugging */
-                {
-                    char msg[128];
-                    snprintf(msg, sizeof(msg), "Row30: lit=%d  bar_col=%d", row30_lit, bar_col);
-                    shadow_log(msg);
-                }
-
-                /* Volume overlay: row 30 has exactly 1 lit pixel (the indicator).
-                 * Waveform/other screens: row 30 has many lit pixels.
-                 * Allow up to 3 for tolerance. */
-                if (bar_col >= 0 && row30_lit <= 3) {
+                if (bar_col >= 0 && gap_total_lit <= 6) {
                     float normalized = (float)(bar_col - 4) / (122.0f - 4.0f);
                     if (normalized < 0.0f) normalized = 0.0f;
                     if (normalized > 1.0f) normalized = 1.0f;
@@ -8877,7 +8872,7 @@ int ioctl(int fd, unsigned long request, ...)
                 }
 
                 memset(slice_fresh, 0, 6);  /* Reset for next capture */
-                volume_capture_cooldown = 50;  /* Wait ~50 frames before next */
+                volume_capture_cooldown = 12;  /* ~2 display frames between reads */
             }
         } else {
             volume_capture_active = 0;
