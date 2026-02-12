@@ -94,11 +94,6 @@ int main()
     link.enable(true);
     link.enableLinkAudio(true);
 
-    printf("link-subscriber: peer ");
-    auto nid = link.localNodeId();
-    for (int i = 0; i < 8; i++) printf("%02x", nid[i]);
-    printf("\n");
-
     /* Create a dummy sink so that our PeerAnnouncements include at least one
      * channel.  Move's Sink handler looks up ChannelRequest.peerId in
      * mPeerSendHandlers, which is only populated when a PeerAnnouncement
