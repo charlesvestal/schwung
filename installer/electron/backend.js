@@ -598,6 +598,16 @@ async function setupSshConfig(hostname = 'move.local') {
     // Strip brackets from IPv6 if present
     const deviceIp = cachedDeviceIp ? cachedDeviceIp.replace(/^\[|\]$/g, '') : null;
 
+    // Use whichever SSH key actually exists (match order from findExistingSshKey/testSsh)
+    let identityFile = '~/.ssh/id_ed25519';
+    if (fs.existsSync(path.join(sshDir, 'move_key'))) {
+        identityFile = '~/.ssh/move_key';
+    } else if (fs.existsSync(path.join(sshDir, 'id_ed25519'))) {
+        identityFile = '~/.ssh/id_ed25519';
+    } else if (fs.existsSync(path.join(sshDir, 'id_rsa'))) {
+        identityFile = '~/.ssh/id_rsa';
+    }
+
     // Escape hostname for use in regex
     const hostnameEscaped = hostname.replace(/\./g, '\\.');
 
@@ -605,7 +615,7 @@ async function setupSshConfig(hostname = 'move.local') {
 Host ${hostname}
     HostName ${hostname}
     User ableton
-    IdentityFile ~/.ssh/move_key
+    IdentityFile ${identityFile}
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 `;
@@ -617,7 +627,7 @@ Host ${hostname}
 Host movedevice
     HostName ${deviceIp}
     User ableton
-    IdentityFile ~/.ssh/move_key
+    IdentityFile ${identityFile}
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 `;
@@ -948,6 +958,10 @@ async function installMain(tarballPath, hostname, flags = []) {
         console.log('[DEBUG] Installing to:', hostIp);
         console.log('[DEBUG] Install flags:', flags);
 
+        // Ensure SSH config alias exists before running install.sh
+        // (install.sh uses "movedevice" as hostname, which must resolve via ~/.ssh/config)
+        await setupSshConfig(hostname);
+
         const { exec } = require('child_process');
         const { promisify } = require('util');
         const execAsync = promisify(exec);
@@ -1017,7 +1031,8 @@ async function installMain(tarballPath, hostname, flags = []) {
             console.log('[DEBUG] Script:', tempInstallScript);
             console.log('[DEBUG] Args:', installArgs.join(' '));
 
-            const cmd = `"${bashPath}" -c "cd '${unixTempDir}/scripts' && ./install.sh ${installArgs.join(' ')}"`;
+            // Redirect stdin from /dev/null so install.sh never blocks on interactive prompts
+            const cmd = `"${bashPath}" -c "cd '${unixTempDir}/scripts' && ./install.sh ${installArgs.join(' ')} < /dev/null"`;
             console.log('[DEBUG] Command:', cmd);
 
             let stdout, stderr;
