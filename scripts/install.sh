@@ -421,8 +421,15 @@ if [ "$use_local" = true ]; then
     fail "Local build not found. Run ./scripts/build.sh first."
   fi
 else
-  url=https://github.com/charlesvestal/move-anything/releases/latest/download/
-  qecho "Downloading latest release from $url$remote_filename"
+  # Find latest binary release (v* tag, not installer-v*)
+  tag=$(curl -fsSL https://api.github.com/repos/charlesvestal/move-anything/releases \
+    | grep '"tag_name"' | grep -v installer | head -1 | sed 's/.*"tag_name": "//;s/".*//' ) \
+    || fail "Failed to query GitHub releases API"
+  if [ -z "$tag" ]; then
+    fail "Could not find a binary release. Check https://github.com/charlesvestal/move-anything/releases"
+  fi
+  url="https://github.com/charlesvestal/move-anything/releases/download/${tag}/"
+  qecho "Downloading release $tag from $url$remote_filename"
   # Use silent curl in quiet mode (screen reader friendly)
   if [ "$quiet_mode" = true ]; then
     curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"

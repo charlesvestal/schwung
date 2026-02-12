@@ -709,9 +709,8 @@ async function getModuleCatalog() {
 
 async function getLatestRelease() {
     try {
-        // Fetch latest release info from GitHub API to get actual version
-        // GitHub API requires a User-Agent header
-        const response = await httpClient.get('https://api.github.com/repos/charlesvestal/move-anything/releases/latest', {
+        // Fetch all releases and find the latest binary release (v* tag, not installer-v*)
+        const response = await httpClient.get('https://api.github.com/repos/charlesvestal/move-anything/releases', {
             headers: {
                 'User-Agent': 'MoveEverything-Installer'
             }
@@ -719,33 +718,28 @@ async function getLatestRelease() {
 
         console.log('[DEBUG] GitHub API response status:', response.status);
 
-        if (response.status === 200 && response.data && response.data.tag_name) {
-            const tagName = response.data.tag_name; // e.g., "v0.3.53"
-            const version = tagName.startsWith('v') ? tagName.substring(1) : tagName; // Remove 'v' prefix
-            const assetName = 'move-anything.tar.gz';
-            const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/latest/download/${assetName}`;
+        if (response.status === 200 && Array.isArray(response.data)) {
+            const binaryRelease = response.data.find(r => /^v\d/.test(r.tag_name));
+            if (binaryRelease) {
+                const tagName = binaryRelease.tag_name;
+                const version = tagName.startsWith('v') ? tagName.substring(1) : tagName;
+                const assetName = 'move-anything.tar.gz';
+                const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/download/${tagName}/${assetName}`;
 
-            console.log('[DEBUG] Extracted version from GitHub:', version);
+                console.log('[DEBUG] Found binary release:', tagName, 'version:', version);
 
-            return {
-                version: version,
-                asset_name: assetName,
-                download_url: downloadUrl
-            };
+                return {
+                    version: version,
+                    asset_name: assetName,
+                    download_url: downloadUrl
+                };
+            }
         }
 
-        // Fallback if API fails
-        console.log('[DEBUG] GitHub API response missing tag_name, falling back to "latest"');
-        const assetName = 'move-anything.tar.gz';
-        const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/latest/download/${assetName}`;
-        return {
-            version: 'latest',
-            asset_name: assetName,
-            download_url: downloadUrl
-        };
+        throw new Error('No binary release found');
     } catch (err) {
         console.error('[DEBUG] Failed to get version from API:', err.message);
-        // Fallback to latest URL without version
+        // Fallback: try /releases/latest which may or may not be correct
         const assetName = 'move-anything.tar.gz';
         const downloadUrl = `https://github.com/charlesvestal/move-anything/releases/latest/download/${assetName}`;
         return {
