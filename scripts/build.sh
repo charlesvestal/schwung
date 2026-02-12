@@ -164,6 +164,30 @@ echo "Building Shadow UI..."
     -Llibs/quickjs/quickjs-2025-04-26 \
     -lquickjs -lm -ldl -lrt
 
+# Build Link Audio subscriber (C++17, requires Link SDK)
+if [ -d "./libs/link/include/ableton" ]; then
+    echo "Building Link Audio subscriber..."
+    # Build arc4random compat shim (Move's glibc 2.34 lacks arc4random from 2.36)
+    "${CROSS_PREFIX}gcc" -c -g -O0 \
+        src/host/arc4random_compat.c \
+        -o build/arc4random_compat.o
+    "${CROSS_PREFIX}g++" -std=c++17 -O3 -DNDEBUG \
+        -DLINK_PLATFORM_UNIX=1 \
+        -DLINK_PLATFORM_LINUX=1 \
+        -Wno-multichar \
+        -I./libs/link/include \
+        -I./libs/link/modules/asio-standalone/asio/include \
+        src/host/link_subscriber.cpp \
+        build/arc4random_compat.o \
+        -o build/link-subscriber \
+        -lpthread -latomic \
+        -static-libstdc++ \
+        -Wl,--wrap=arc4random
+    echo "Link Audio subscriber built"
+else
+    echo "Warning: Link SDK not found at libs/link/, skipping link-subscriber"
+fi
+
 mkdir -p ./build/test/
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Building TTS test program..."
