@@ -796,6 +796,11 @@ static int shadow_startup_modwheel_countdown = 0;
 static int16_t shadow_deferred_dsp_buffer[FRAMES_PER_BLOCK * 2];
 static int shadow_deferred_dsp_valid = 0;
 
+/* Accumulated raw Move track audio injected via Link Audio during render_to_buffer.
+ * Subtracted from mailbox in mix_from_buffer to avoid doubling. */
+static int32_t shadow_link_audio_subtract[FRAMES_PER_BLOCK * 2];
+static int shadow_link_audio_subtract_valid = 0;
+
 /* ==========================================================================
  * Shadow Capture Rules - Allow slots to capture specific MIDI controls
  * ========================================================================== */
@@ -6000,15 +6005,22 @@ static void shadow_inprocess_mix_audio(void) {
         me_full[i] = 0;
     }
 
+    /* Track raw Move audio injected via Link Audio for subtraction */
+    int32_t move_injected[FRAMES_PER_BLOCK * 2];
+    int any_injected = 0;
+    memset(move_injected, 0, sizeof(move_injected));
+
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
             /* Inject Move track audio from Link Audio into chain before FX */
+            int16_t move_track[FRAMES_PER_BLOCK * 2];
+            int have_move_track = 0;
             if (link_audio.enabled && shadow_chain_set_inject_audio &&
                 s < link_audio.move_channel_count) {
-                int16_t move_track[FRAMES_PER_BLOCK * 2];
-                if (link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK)) {
+                have_move_track = link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK);
+                if (have_move_track) {
                     shadow_chain_set_inject_audio(
                         shadow_chain_slots[s].instance,
                         move_track, FRAMES_PER_BLOCK);
@@ -6024,6 +6036,14 @@ static void shadow_inprocess_mix_audio(void) {
             if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
                 memcpy(shadow_slot_capture[s], render_buffer, sizeof(render_buffer));
             }
+
+            /* Accumulate raw Move audio for subtraction from mailbox */
+            if (have_move_track) {
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+                    move_injected[i] += (int32_t)move_track[i];
+                any_injected = 1;
+            }
+
             float vol = shadow_chain_slots[s].volume;
             float gain = vol * me_input_scale;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -6031,6 +6051,14 @@ static void shadow_inprocess_mix_audio(void) {
                 me_full[i] += (int32_t)lroundf((float)render_buffer[i] * vol);
             }
         }
+    }
+
+    /* Subtract raw Move track audio from mix to avoid doubling.
+     * Move's mailbox contains the sum of all tracks; we remove the ones
+     * we routed through shadow FX so only the FX'd versions are heard. */
+    if (any_injected) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+            mix[i] -= move_injected[i];
     }
 
     /* Save ME full-gain component for bridge split */
@@ -6244,16 +6272,22 @@ static void shadow_inprocess_render_to_buffer(void) {
     /* Clear the deferred buffer */
     memset(shadow_deferred_dsp_buffer, 0, sizeof(shadow_deferred_dsp_buffer));
 
+    /* Clear Link Audio subtraction accumulator */
+    memset(shadow_link_audio_subtract, 0, sizeof(shadow_link_audio_subtract));
+    shadow_link_audio_subtract_valid = 0;
+
     /* Render each slot's DSP */
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
             /* Inject Move track audio from Link Audio into chain before FX */
+            int16_t move_track[FRAMES_PER_BLOCK * 2];
+            int have_move_track = 0;
             if (link_audio.enabled && shadow_chain_set_inject_audio &&
                 s < link_audio.move_channel_count) {
-                int16_t move_track[FRAMES_PER_BLOCK * 2];
-                if (link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK)) {
+                have_move_track = link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK);
+                if (have_move_track) {
                     shadow_chain_set_inject_audio(
                         shadow_chain_slots[s].instance,
                         move_track, FRAMES_PER_BLOCK);
@@ -6269,6 +6303,14 @@ static void shadow_inprocess_render_to_buffer(void) {
             if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
                 memcpy(shadow_slot_capture[s], render_buffer, sizeof(render_buffer));
             }
+
+            /* Accumulate raw Move audio for subtraction in mix_from_buffer */
+            if (have_move_track) {
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+                    shadow_link_audio_subtract[i] += (int32_t)move_track[i];
+                shadow_link_audio_subtract_valid = 1;
+            }
+
             float vol = shadow_chain_slots[s].volume;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                 int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
@@ -6317,6 +6359,19 @@ static void shadow_inprocess_mix_from_buffer(void) {
     memcpy(native_bridge_me_component, shadow_deferred_dsp_buffer, sizeof(native_bridge_me_component));
     native_bridge_capture_mv = mv;
     native_bridge_split_valid = 1;
+
+    /* Subtract raw Move track audio that was injected via Link Audio.
+     * This removes the dry Move tracks from the mailbox so we only hear
+     * the FX'd versions coming through our shadow chain output. */
+    if (shadow_link_audio_subtract_valid) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t adjusted = (int32_t)mailbox_audio[i] - shadow_link_audio_subtract[i];
+            if (adjusted > 32767) adjusted = 32767;
+            if (adjusted < -32768) adjusted = -32768;
+            mailbox_audio[i] = (int16_t)adjusted;
+        }
+        shadow_link_audio_subtract_valid = 0;
+    }
 
     /* Mix deferred buffer into mailbox audio */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
