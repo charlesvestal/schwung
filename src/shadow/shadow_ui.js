@@ -2991,7 +2991,13 @@ function applyComponentSelection() {
         }
     }
 
-    invalidateKnobContextCache();  /* Clear stale knob contexts after module change */
+    /* Force sync chainConfigs from DSP and reset caches after module change.
+     * Without this, the knob overlay can show the old module's name and params
+     * because the periodic refreshSlotModuleSignature (every 30 ticks) hasn't
+     * run yet to sync the in-memory state with DSP. */
+    loadChainConfigFromSlot(selectedSlot);
+    lastSlotModuleSignatures[selectedSlot] = getSlotModuleSignature(selectedSlot);
+    invalidateKnobContextCache();
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 }
