@@ -421,8 +421,15 @@ if [ "$use_local" = true ]; then
     fail "Local build not found. Run ./scripts/build.sh first."
   fi
 else
-  url=https://github.com/charlesvestal/move-anything/releases/latest/download/
-  qecho "Downloading latest release from $url$remote_filename"
+  # Find latest binary release (v* tag, not installer-v*)
+  tag=$(curl -fsSL https://api.github.com/repos/charlesvestal/move-anything/releases \
+    | grep '"tag_name"' | grep -v installer | head -1 | sed 's/.*"tag_name": "//;s/".*//' ) \
+    || fail "Failed to query GitHub releases API"
+  if [ -z "$tag" ]; then
+    fail "Could not find a binary release. Check https://github.com/charlesvestal/move-anything/releases"
+  fi
+  url="https://github.com/charlesvestal/move-anything/releases/download/${tag}/"
+  qecho "Downloading release $tag from $url$remote_filename"
   # Use silent curl in quiet mode (screen reader friendly)
   if [ "$quiet_mode" = true ]; then
     curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
@@ -691,10 +698,14 @@ qecho ""
 qecho "Configuring features..."
 ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
 
+# Link Audio enabled by default (harmless on 1.x, activates on 2.0+ with Link)
+link_audio_val="true"
+
 # Build features.json content
 features_json="{
   \"shadow_ui_enabled\": $([ "$disable_shadow_ui" = false ] && echo "true" || echo "false"),
-  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false")
+  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false"),
+  \"link_audio_enabled\": $link_audio_val
 }"
 
 # Write features.json
@@ -1021,7 +1032,7 @@ iecho "Restarting Move..."
 # Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
 # Use retry wrappers because Windows mDNS resolution can be flaky.
 ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything link-subscriber; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
 # Clean up stale shared memory so it's recreated with correct permissions
 ssh_root_with_retry "rm -f /dev/shm/move-shadow-*" || true
 # Free the SPI device if anything still holds it (prevents "communication error" on restart)

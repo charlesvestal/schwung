@@ -454,6 +454,11 @@ typedef struct chain_instance {
     /* Parameter smoothing for synth and FX */
     param_smoother_t synth_smoother;
     param_smoother_t fx_smoothers[MAX_AUDIO_FX];
+
+    /* External audio injection (e.g. Move track audio from Link Audio).
+     * Set by host before render_block; mixed after synth, before FX. */
+    int16_t *inject_audio;
+    int inject_audio_frames;
 } chain_instance_t;
 
 /* ============================================================================
@@ -6779,6 +6784,20 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
     }
 
+    /* Mix in external audio (e.g. Move track from Link Audio) before FX.
+     * This lets the FX chain process both synth and Move audio together. */
+    if (inst->inject_audio && inst->inject_audio_frames > 0) {
+        int samples = (inst->inject_audio_frames < frames ? inst->inject_audio_frames : frames) * 2;
+        for (int i = 0; i < samples; i++) {
+            int32_t mixed = (int32_t)out_interleaved_lr[i] + (int32_t)inst->inject_audio[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            out_interleaved_lr[i] = (int16_t)mixed;
+        }
+        inst->inject_audio = NULL;
+        inst->inject_audio_frames = 0;
+    }
+
     /* Process through audio FX chain */
     for (int i = 0; i < inst->fx_count; i++) {
         if (inst->fx_is_v2[i]) {
@@ -6819,4 +6838,14 @@ plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
     if (host->log) host->log("[chain-v2] Plugin v2 API initialized");
 
     return &g_plugin_api_v2;
+}
+
+/* Exported: set external audio buffer to mix before FX processing.
+ * Called by shim to inject Move track audio from Link Audio ring buffers.
+ * The buffer is consumed (mixed + cleared) during the next render_block call. */
+void chain_set_inject_audio(void *instance, int16_t *buf, int frames) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->inject_audio = buf;
+    inst->inject_audio_frames = frames;
 }
