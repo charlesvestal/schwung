@@ -123,6 +123,7 @@ static bool standalone_enabled = true;     /* Standalone mode enabled by default
 /* Link Audio interception and publishing state */
 static link_audio_state_t link_audio;
 static int16_t shadow_slot_capture[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
+static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;  /* Forward decl for pub shm */
 
 static void launch_shadow_ui(void);
 static void load_feature_config(void);
@@ -6113,6 +6114,18 @@ static void shadow_inprocess_mix_audio(void) {
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
                 }
+                /* Write to publisher shared memory for link_subscriber */
+                if (shadow_pub_audio_shm) {
+                    link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
+                    uint32_t wp = ps->write_pos;
+                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                        ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] = shadow_slot_capture[s][i];
+                        wp++;
+                    }
+                    __sync_synchronize();
+                    ps->write_pos = wp;
+                    ps->active = 1;
+                }
             }
 
             /* Accumulate raw Move audio for subtraction from mailbox */
@@ -6384,6 +6397,18 @@ static void shadow_inprocess_render_to_buffer(void) {
                     float cap_vol = shadow_chain_slots[s].volume;
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
+                    /* Write to publisher shared memory for link_subscriber */
+                    if (shadow_pub_audio_shm) {
+                        link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
+                        uint32_t wp = ps->write_pos;
+                        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                            ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] = shadow_slot_capture[s][i];
+                            wp++;
+                        }
+                        __sync_synchronize();
+                        ps->write_pos = wp;
+                        ps->active = 1;
+                    }
                 }
                 float vol = shadow_chain_slots[s].volume;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -6497,6 +6522,17 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     float cap_vol = shadow_chain_slots[s].volume;
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
+                    /* Write to publisher shared memory for link_subscriber */
+                    if (shadow_pub_audio_shm) {
+                        link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
+                        uint32_t wp = ps->write_pos;
+                        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                            ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] = shadow_slot_capture[s][i];
+                            wp++;
+                        }
+                        __sync_synchronize();
+                        ps->write_pos = wp;
+                    }
                 }
 
                 /* Add FX output to mailbox */
@@ -6518,6 +6554,17 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
                 }
+                /* Publish Move track audio to ME channel even without a synth loaded */
+                if (s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
+                    link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
+                    uint32_t wp = ps->write_pos;
+                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                        ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] = move_track[i];
+                        wp++;
+                    }
+                    __sync_synchronize();
+                    ps->write_pos = wp;
+                }
             }
         }
     } else if (shadow_chain_process_fx) {
@@ -6529,6 +6576,20 @@ static void shadow_inprocess_mix_from_buffer(void) {
             memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
             shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                     fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+            /* Write to publisher shared memory for link_subscriber */
+            if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
+                float cap_vol = shadow_chain_slots[s].volume;
+                link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
+                uint32_t wp = ps->write_pos;
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] =
+                        (int16_t)lroundf((float)fx_buf[i] * cap_vol);
+                    wp++;
+                }
+                __sync_synchronize();
+                ps->write_pos = wp;
+            }
 
             float vol = shadow_chain_slots[s].volume;
             float gain = vol * me_input_scale;
@@ -6562,6 +6623,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
     }
     native_bridge_capture_mv = mv;
     native_bridge_split_valid = 1;
+
+    /* Write master mix to publisher shm (slot index LINK_AUDIO_PUB_MASTER_IDX) */
+    if (link_audio.enabled && shadow_pub_audio_shm) {
+        link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX];
+        uint32_t wp = ps->write_pos;
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] = native_bridge_me_component[i];
+            wp++;
+        }
+        __sync_synchronize();
+        ps->write_pos = wp;
+    }
 
     /* Overtake DSP FX: process combined Move+shadow audio in-place */
     if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
@@ -6643,6 +6716,7 @@ static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
 static int shm_midi_dsp_fd = -1;
 static int shm_screenreader_fd = -1;
+static int shm_pub_audio_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -6907,6 +6981,27 @@ static void init_shadow_shm(void)
     tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
     printf("Shadow: TTS engine configured (will init on first use)\n");
 
+    /* Create/open Link Audio publisher shared memory */
+    shm_pub_audio_fd = shm_open(SHM_LINK_AUDIO_PUB, O_CREAT | O_RDWR, 0666);
+    if (shm_pub_audio_fd >= 0) {
+        ftruncate(shm_pub_audio_fd, sizeof(link_audio_pub_shm_t));
+        shadow_pub_audio_shm = (link_audio_pub_shm_t *)mmap(NULL,
+            sizeof(link_audio_pub_shm_t),
+            PROT_READ | PROT_WRITE, MAP_SHARED, shm_pub_audio_fd, 0);
+        if (shadow_pub_audio_shm == MAP_FAILED) {
+            shadow_pub_audio_shm = NULL;
+            printf("Shadow: Failed to mmap pub audio shm\n");
+        } else {
+            memset(shadow_pub_audio_shm, 0, sizeof(link_audio_pub_shm_t));
+            shadow_pub_audio_shm->magic = LINK_AUDIO_PUB_SHM_MAGIC;
+            shadow_pub_audio_shm->version = LINK_AUDIO_PUB_SHM_VERSION;
+            printf("Shadow: Link Audio publisher shm initialized (%zu bytes)\n",
+                   sizeof(link_audio_pub_shm_t));
+        }
+    } else {
+        printf("Shadow: Failed to create pub audio shm\n");
+    }
+
     /* Initialize Link Audio state */
     memset(&link_audio, 0, sizeof(link_audio));
     link_audio.move_socket_fd = -1;
@@ -6914,9 +7009,9 @@ static void init_shadow_shm(void)
     memset(shadow_slot_capture, 0, sizeof(shadow_slot_capture));
 
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p, pub_audio=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_midi_dsp_shm, shadow_screenreader_shm);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_midi_dsp_shm, shadow_screenreader_shm, shadow_pub_audio_shm);
 }
 
 #if SHADOW_DEBUG
@@ -8832,6 +8927,25 @@ int ioctl(int fd, unsigned long request, ...)
         /* Track in granular timing */
         inproc_mix_sum += mix_us;
         if (mix_us > inproc_mix_max) inproc_mix_max = mix_us;
+    }
+
+    /* Update publisher shm slot active flags (subscriber reads these).
+     * When Link Audio is receiving Move per-track audio, always mark all
+     * 4 slots active so Live sees ME-1 through ME-4 even without synths.
+     * The mix_from_buffer path publishes Move audio for inactive slots. */
+    if (shadow_pub_audio_shm && link_audio.enabled) {
+        int la_flowing = (link_audio.packets_intercepted > 0 &&
+                          link_audio.move_channel_count >= 4);
+        for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+            int is_active = la_flowing ||
+                            (i < SHADOW_CHAIN_INSTANCES &&
+                             shadow_chain_slots[i].active &&
+                             shadow_chain_slots[i].instance != NULL);
+            shadow_pub_audio_shm->slots[i].active = is_active;
+        }
+        /* Master slot is always active when Link Audio is flowing */
+        shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX].active = la_flowing;
+        shadow_pub_audio_shm->num_slots = la_flowing ? LINK_AUDIO_PUB_SLOT_COUNT : 0;
     }
 
     /* Signal Link Audio publisher thread to drain accumulated audio */

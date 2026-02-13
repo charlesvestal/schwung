@@ -177,10 +177,11 @@ if [ -d "./libs/link/include/ableton" ]; then
         -Wno-multichar \
         -I./libs/link/include \
         -I./libs/link/modules/asio-standalone/asio/include \
+        -I./src/host \
         src/host/link_subscriber.cpp \
         build/arc4random_compat.o \
         -o build/link-subscriber \
-        -lpthread -latomic \
+        -lpthread -lrt -latomic \
         -static-libstdc++ \
         -Wl,--wrap=arc4random
     echo "Link Audio subscriber built"
