@@ -1,6 +1,6 @@
 {
   "name": "move-everything-installer",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Cross-platform installer for Move Everything",
   "main": "electron/main.js",
   "scripts": {
