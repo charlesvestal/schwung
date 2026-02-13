@@ -8332,6 +8332,8 @@ static int shadow_ui_pid_alive(pid_t pid)
     if (matched != 3) return 0;
     if (rpid != (int)pid) return 0;
     if (state == 'Z') return 0;
+    /* Guard against PID reuse: verify the process is actually shadow_ui */
+    if (!strstr(comm, "shadow_ui")) return 0;
     return 1;
 }
 
