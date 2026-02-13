@@ -202,6 +202,16 @@
       "github_repo": "charlesvestal/move-anything-ducker",
       "asset_name": "ducker-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "radiogarden",
+      "name": "Radio Garden",
+      "description": "Browse and stream live radio from 200 cities worldwide via Radio Garden",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-radiogarden",
+      "asset_name": "radiogarden-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
