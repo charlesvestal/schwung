@@ -6438,9 +6438,27 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
     /* Zero-and-rebuild approach: if Link Audio provides per-track data,
      * zero the mailbox and rebuild from Link Audio, applying FX per-slot.
-     * This completely eliminates dry signal leakage — no subtraction needed. */
+     * This completely eliminates dry signal leakage — no subtraction needed.
+     *
+     * IMPORTANT: Only rebuild when audio data is actually flowing.
+     * Session announcements set move_channel_count but don't mean audio
+     * is streaming.  Without a subscriber triggering ChannelRequests,
+     * the ring buffers are empty and zeroing the mailbox kills all audio. */
+    static uint32_t la_prev_intercepted = 0;
+    static uint32_t la_stale_frames = 0;
+    uint32_t la_cur = link_audio.packets_intercepted;
+    if (la_cur > la_prev_intercepted) {
+        la_stale_frames = 0;
+        la_prev_intercepted = la_cur;
+    } else if (la_cur > 0) {
+        la_stale_frames++;
+    }
+    /* Consider Link Audio active if packets arrived within the last ~290ms */
+    int la_receiving = (la_cur > 0 && la_stale_frames < 100);
+
     int rebuild_from_la = (link_audio.enabled && shadow_chain_process_fx &&
-                           link_audio.move_channel_count >= 4);
+                           link_audio.move_channel_count >= 4 &&
+                           la_receiving);
 
     if (rebuild_from_la) {
         /* Zero the mailbox — all audio reconstructed from Link Audio */
