@@ -22,42 +22,20 @@ Move still works normally after installation - Move Everything runs alongside it
 
 ## Installation
 
-### Prerequisites
+### Desktop Installer (Recommended)
 
-1. Your Move must be connected to WiFi
-2. You need a computer on the same network with SSH access
+Download the [Move Everything Installer](https://github.com/charlesvestal/move-everything-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface.
 
-### Setup SSH Access
+### Command Line
 
-1. On your computer, generate an SSH key if you don't have one:
-   ```
-   ssh-keygen -t ed25519
-   ```
+**Prerequisites:** Move connected to WiFi, a computer on the same network.
 
-2. Copy your public key (usually `~/.ssh/id_ed25519.pub`)
-
-3. Open a browser and go to:
-   ```
-   http://move.local/development/ssh
-   ```
-
-4. Paste your public key and save
-
-5. Test the connection:
-   ```
-   ssh ableton@move.local
-   ```
-
-### Install Move Everything
-
-Run the installer:
+Run:
 ```
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
 ```
 
-The installer will ask if you want to install all available modules. Choose:
-- **Yes** to download all synths and effects (recommended for first install)
-- **No** to install just the core - you can add modules later via the Module Store
+The installer will guide you through SSH setup, download the framework, and offer to install modules.
 
 After installation, Move will restart automatically.
 
@@ -73,6 +51,8 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 | **Shift+Vol + Menu** | Open Master FX |
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
 | **Shift+Vol + Knob 8** | Open Standalone Mode |
+| **Shift+Sample** | Open Quantized Sampler |
+| **Shift+Capture** | Skipback (save last 30 seconds) |
 
 **Tip:** You can access slots directly from normal Move mode - you don't need to be in shadow mode first.
 
@@ -132,12 +112,11 @@ Access via **Shift+Vol + Menu**. Contains four audio effect slots that process t
 
 ### Native Sampler Bridge (Resample Src)
 
-In **Master FX > Settings**, `Resample Src` controls how Move Everything audio is exposed to native Move sampling:
+In **Master FX > Settings**, `Resample Src` controls whether Move Everything audio is fed into native Move sampling:
 
 | Option | Behavior |
 |--------|----------|
 | **Off** | Disabled (default) |
-| **Mix** | Adds Move Everything master output into native sampler input |
 | **Replace** | Replaces native sampler input with Move Everything master output |
 
 Recommended setup to avoid feedback:
@@ -145,7 +124,7 @@ Recommended setup to avoid feedback:
 2. In native Move Sampler, set source to **Line In**
 3. Set monitoring to **Off**
 
-If monitoring is enabled, feedback may occur.
+If monitoring is on or routing is configured differently, audio feedback may occur.
 
 ---
 
@@ -183,29 +162,84 @@ These modules are included with Move Everything:
 
 ---
 
+## Quantized Sampler
+
+Access via **Shift+Sample**. Records Move's audio output (including Move Everything synths) to WAV files, quantized to bars.
+
+### Options
+
+- **Source**: `Resample` (Move's mixed output including Move Everything) or `Move Input` (whatever is set in Move's sample input - line-in, mic, etc.)
+- **Duration**: Until stopped, 1, 2, 4, 8, or 16 bars
+
+### Usage
+
+1. Press **Shift+Sample** to open the sampler
+2. Use the jog wheel to select source and duration
+3. Recording starts on a note event or pressing Play
+4. Press **Shift+Sample** again to stop (or it stops automatically at the set duration)
+
+Recordings are saved to `Samples/Move Everything/`.
+
+Uses MIDI clock for accurate bar timing, falling back to project tempo if no clock is available. You can also use Move's built-in count-in for line-in recordings.
+
+---
+
+## Skipback
+
+Press **Shift+Capture** to save the last 30 seconds of audio to disk.
+
+Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
+
+Files are saved to `Samples/Move Everything/Skipback/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
+
+---
+
 ## Module Store
 
-When selection a Module, "[Get more...]" will open the Module Store to download additional Modules of that type. To update Move Anything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
-
+When selecting a module, "[Get more...]" opens the Module Store to download additional modules of that type. To update Move Everything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
 
 **Sound Generators:**
 - **Braids** - Mutable Instruments macro oscillator (47 algorithms)
 - **Dexed** - 6-operator FM synthesizer (DX7 compatible)
-- **SF2** - SoundFont player
-- **Mini-JV** - Roland JV-880 emulation
+- **SF2** - SoundFont player (requires .sf2 files)
+- **Mini-JV** - Roland JV-880 emulation (requires ROM files)
 - **OB-Xd** - Oberheim-style virtual analog
+- **Hera** - Juno-60 emulation with BBD chorus
+- **Surge XT** - Hybrid synthesizer (wavetable, FM, subtractive, physical modeling)
+- **RaffoSynth** - Monophonic synth with Moog ladder filter
+- **Webstream** - Web audio search and streaming
 
 **Audio Effects:**
-- **CloudSeed** - Shimmer reverb
+- **CloudSeed** - Algorithmic reverb
 - **PSXVerb** - PlayStation-style reverb
 - **TapeDelay** - RE-201 Space Echo style delay
 - **TAPESCAM** - Tape saturation/degradation
+- **Junologue Chorus** - Juno-60 chorus emulation (I, I+II, II modes)
+- **NAM** - Neural Amp Modeler (requires .nam model files)
+- **Ducker** - MIDI-triggered sidechain ducker
 
-**Overtake:**
+**Overtake/Utility:**
+- **MIDI Controller** - 16-bank MIDI controller (built-in)
+- **Four Track** - Four-track recorder
 - **M8 LPP** - Launchpad Pro emulator for Dirtywave M8
 - **SID Control** - Controller for SIDaster III
 
-**Note:** Some modules require additional files (patches, ROMs, SoundFonts). Check each module's documentation.
+**Note:** Some modules require additional files (ROMs, SoundFonts, .nam models). Check each module's documentation.
+
+---
+
+## Screen Reader
+
+Move Everything includes an optional screen reader for accessibility, using text-to-speech to announce UI elements.
+
+Toggle via **Shadow UI > Settings > Screen Reader**, or **Shift+Menu** when Shadow UI is disabled.
+
+Settings:
+- **Speed**: 0.5x to 2.0x
+- **Pitch**: Low to high
+- **Volume**: 0-100
+
+Can be enabled during installation with `--enable-screen-reader`.
 
 ---
 
@@ -218,5 +252,5 @@ Access via **Shift+Vol + Knob 8**. Includes the full Module Store for downloadin
 ## Tips
 
 - Slot settings persist between sessions
-- Use the Module Store (in standalone mode) to update Move Everything itself
+- Use the Module Store (in Standalone Mode) to update Move Everything itself
 - If something goes wrong, use Move's DFU restore mode to reset

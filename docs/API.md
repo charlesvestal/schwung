@@ -146,6 +146,9 @@ host_extract_tar(tarball, dir) // Extract .tar.gz to directory, returns bool
 host_extract_tar_strip(tarball, dir, strip) // Extract with --strip-components
 host_ensure_dir(path)         // Create directory if it doesn't exist, returns bool
 host_remove_dir(path)         // Recursively remove directory, returns bool
+
+// Screen reader
+host_announce_screenreader(text) // Speak text via TTS (if screen reader enabled)
 ```
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
