@@ -1,3 +1,0 @@
-# This directory will contain OpenSSH binaries for Windows builds
-# Download from: https://github.com/PowerShell/Win32-OpenSSH/releases
-# Required files: ssh.exe, ssh-keygen.exe, scp.exe, and required DLLs
