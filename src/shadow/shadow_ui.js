@@ -2752,9 +2752,16 @@ function fetchStoreCatalogSync() {
     if (storeFetchPending) return;
     storeFetchPending = true;
 
-    const onProgress = (title, message) => {
+    const spinChars = ['-', '\\', '|', '/'];
+    let spinIdx = 0;
+    const onProgress = (title, message, current, total) => {
         storePickerLoadingTitle = title;
-        storePickerLoadingMessage = message;
+        if (current && total) {
+            storePickerLoadingMessage = message + ' (' + current + '/' + total + ') ' + spinChars[spinIdx % 4];
+        } else {
+            storePickerLoadingMessage = message + ' ' + spinChars[spinIdx % 4];
+        }
+        spinIdx++;
         /* Update display during long fetch operations */
         drawStorePickerLoading();
         host_flush_display();

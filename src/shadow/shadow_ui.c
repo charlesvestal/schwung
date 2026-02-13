@@ -762,7 +762,7 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     shadow_ui_log_line("host_http_download: path validated, running curl");
 
     const char *argv_cmd[] = {
-        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "15",
+        CURL_PATH, "-fsSLk", "--connect-timeout", "2", "--max-time", "5",
         "-o", dest_path, url, NULL
     };
     int result = run_command(argv_cmd);
@@ -1073,14 +1073,18 @@ static JSValue js_host_rescan_modules(JSContext *ctx, JSValueConst this_val,
 }
 
 /* host_flush_display() -> void
- * In shadow UI context, just mark display as dirty.
- * The main loop handles copying to shared memory.
+ * Immediately pack and copy display to shared memory.
+ * This is critical for showing progress during blocking operations
+ * (e.g. catalog fetch) where the main loop can't run.
  */
 static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
-    /* Mark display as dirty - main loop will copy to shared memory */
-    js_display_screen_dirty = 1;
+    if (shadow_display_shm) {
+        js_display_pack(packed_buffer);
+        memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
+    }
+    js_display_screen_dirty = 0;
     return JS_UNDEFINED;
 }
 
