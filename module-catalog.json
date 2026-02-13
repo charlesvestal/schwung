@@ -212,6 +212,16 @@
       "github_repo": "charlesvestal/move-anything-radiogarden",
       "asset_name": "radiogarden-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "airplay",
+      "name": "AirPlay",
+      "description": "AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-airplay",
+      "asset_name": "airplay-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
