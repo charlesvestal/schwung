@@ -46,9 +46,9 @@ struct HostInfo {
     min_host_version: String,
 }
 
-/// Fetch latest Move Anything release from GitHub
+/// Fetch latest Move Anything release from GitHub (only v* tags, skips installer-* tags)
 pub async fn fetch_latest_release() -> Result<Release, String> {
-    let url = "https://api.github.com/repos/charlesvestal/move-anything/releases/latest";
+    let url = "https://api.github.com/repos/charlesvestal/move-anything/releases?per_page=10";
 
     let client = reqwest::Client::new();
     let response = client
@@ -56,18 +56,22 @@ pub async fn fetch_latest_release() -> Result<Release, String> {
         .header("User-Agent", "move-installer")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch release: {}", e))?;
+        .map_err(|e| format!("Failed to fetch releases: {}", e))?;
 
     if !response.status().is_success() {
         return Err(format!("GitHub API error: {}", response.status()));
     }
 
-    let release: Release = response
+    let releases: Vec<Release> = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse release JSON: {}", e))?;
+        .map_err(|e| format!("Failed to parse releases JSON: {}", e))?;
 
-    Ok(release)
+    // Find the first release whose tag starts with "v" (skip installer-* etc.)
+    releases
+        .into_iter()
+        .find(|r| r.tag_name.starts_with('v'))
+        .ok_or_else(|| "No v* release found".to_string())
 }
 
 /// Fetch module catalog from GitHub
