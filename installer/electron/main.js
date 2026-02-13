@@ -190,6 +190,10 @@ ipcMain.handle('clean_device_tmp', async (event, { hostname }) => {
     return await backend.cleanDeviceTmp(hostname);
 });
 
+ipcMain.handle('fix_permissions', async (event, { hostname }) => {
+    return await backend.fixPermissions(hostname);
+});
+
 ipcMain.handle('export_logs', async (event, { logs }) => {
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
         title: 'Save Debug Logs',

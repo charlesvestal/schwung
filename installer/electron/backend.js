@@ -1525,6 +1525,29 @@ async function removeModulePackage(moduleId, componentType, hostname) {
     }
 }
 
+async function fixPermissions(hostname) {
+    try {
+        const hostIp = cachedDeviceIp || hostname;
+        console.log('[DEBUG] Fixing file permissions on device...');
+
+        // Ensure all files in move-anything are owned by ableton
+        // Use root to fix any files that may have been created with wrong ownership
+        await sshExec(hostIp, 'chown -R ableton:ableton /data/UserData/move-anything/', { username: 'root' });
+
+        // Ensure shim has setuid bit (critical for LD_PRELOAD to work)
+        await sshExec(hostIp, 'chmod u+s /data/UserData/move-anything/move-anything-shim.so', { username: 'root' });
+
+        // Ensure executables are executable
+        await sshExec(hostIp, 'chmod +x /data/UserData/move-anything/move-anything /data/UserData/move-anything/shim-entrypoint.sh /data/UserData/move-anything/start.sh /data/UserData/move-anything/stop.sh', { username: 'root' });
+
+        console.log('[DEBUG] Permissions fixed');
+        return { success: true };
+    } catch (err) {
+        console.error('[DEBUG] Fix permissions error:', err.message);
+        throw new Error(`Failed to fix permissions: ${err.message}`);
+    }
+}
+
 async function uninstallMoveEverything(hostname) {
     try {
         const hostIp = cachedDeviceIp || hostname;
@@ -1844,5 +1867,6 @@ module.exports = {
     setScreenReaderState,
     uninstallMoveEverything,
     testSshFormats,
-    cleanDeviceTmp
+    cleanDeviceTmp,
+    fixPermissions
 };

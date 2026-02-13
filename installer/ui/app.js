@@ -641,7 +641,9 @@ function displayModules(modules) {
             if (module.assets) {
                 const requiresEl = document.createElement('p');
                 requiresEl.className = 'module-requires';
-                if (module.assets.optional) {
+                if (module.assets.description) {
+                    requiresEl.textContent = module.assets.description;
+                } else if (module.assets.optional) {
                     requiresEl.textContent = `Supports additional uploaded ${module.assets.extensions.join(', ')} ${module.assets.label.toLowerCase()}`;
                 } else {
                     requiresEl.textContent = `Requires ${module.assets.label.toLowerCase()} (${module.assets.extensions.join(', ')} files)`;
@@ -920,7 +922,9 @@ function displayManagementModules() {
             if (module.assets) {
                 const requiresEl = document.createElement('p');
                 requiresEl.className = 'module-requires';
-                if (module.assets.optional) {
+                if (module.assets.description) {
+                    requiresEl.textContent = module.assets.description;
+                } else if (module.assets.optional) {
                     requiresEl.textContent = `Supports additional uploaded ${module.assets.extensions.join(', ')} ${module.assets.label.toLowerCase()}`;
                 } else {
                     requiresEl.textContent = `Requires ${module.assets.label.toLowerCase()} (${module.assets.extensions.join(', ')} files)`;
@@ -2157,6 +2161,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateChecklistItem(module.id, 'completed');
                 }
             }
+
+            // Fix permissions on all files
+            updateInstallProgress('Fixing file permissions...', 95);
+            await window.installer.invoke('fix_permissions', { hostname: state.deviceIp });
 
             updateInstallProgress('Repair complete!', 100);
             setTimeout(() => {
