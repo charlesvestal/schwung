@@ -43,7 +43,6 @@
 #define LINK_AUDIO_PUB_RING_MASK    (LINK_AUDIO_PUB_RING_SAMPLES - 1)
 
 /* Timing */
-#define LINK_AUDIO_SUBSCRIBER_INTERVAL_MS  500
 #define LINK_AUDIO_SESSION_INTERVAL_MS     1000
 
 /* Per-channel state with SPSC ring buffer */
@@ -89,11 +88,6 @@ typedef struct {
     struct sockaddr_in6 move_local_addr; /* Move's own local address (from getsockname) */
     socklen_t move_addrlen;
     volatile int addr_captured;        /* set once we have Move's network info */
-
-    /* Self-subscriber thread (triggers Move to send audio) */
-    volatile int subscriber_running;
-    pthread_t subscriber_thread;
-    uint8_t subscriber_peer_id[8];     /* our fake peer ID */
 
     /* Publisher thread (sends shadow audio to Live) */
     volatile int publisher_running;

@@ -1955,6 +1955,8 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags)
     return real_send(sockfd, buf, len, flags);
 }
 
+#endif /* ENABLE_SCREEN_READER — Link Audio is independent of screen reader */
+
 /* ============================================================================
  * LINK AUDIO INTERCEPTION AND PUBLISHING
  * ============================================================================
@@ -1968,9 +1970,7 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
                                      int sockfd, const struct sockaddr *dest,
                                      socklen_t addrlen);
 static void link_audio_intercept_audio(const uint8_t *pkt);
-static void *link_audio_subscriber_thread(void *arg);
 static void *link_audio_publisher_thread(void *arg);
-static void link_audio_start_subscriber(void);
 static void link_audio_start_publisher(void);
 
 /* Read big-endian uint32 from buffer */
@@ -2078,6 +2078,21 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
 
         link_audio.addr_captured = 1;
 
+        /* Write Move's chnnlsv endpoint to file for standalone link-subscriber */
+        {
+            char local_str_ep[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, &link_audio.move_local_addr.sin6_addr,
+                      local_str_ep, sizeof(local_str_ep));
+            FILE *ep = fopen("/data/UserData/move-anything/link-audio-endpoint", "w");
+            if (ep) {
+                fprintf(ep, "%s %d %u\n",
+                        local_str_ep,
+                        ntohs(link_audio.move_local_addr.sin6_port),
+                        link_audio.move_local_addr.sin6_scope_id);
+                fclose(ep);
+            }
+        }
+
         char dest_str[INET6_ADDRSTRLEN], local_str[INET6_ADDRSTRLEN];
         inet_ntop(AF_INET6, &link_audio.move_addr.sin6_addr,
                   dest_str, sizeof(dest_str));
@@ -2159,9 +2174,7 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
             shadow_log(ch_log);
         }
 
-        /* Start self-subscriber to trigger audio flow */
-        link_audio_start_subscriber();
-        /* Start publisher for shadow audio */
+        /* Start publisher for shadow audio (subscriber is now standalone binary) */
         link_audio_start_publisher();
     }
 }
@@ -2237,129 +2250,6 @@ static int link_audio_read_channel(int idx, int16_t *out, int frames)
     __sync_synchronize();
     ch->read_pos = rp;
     return 1;
-}
-
-/* ---- Self-subscriber thread ---- */
-
-static void link_audio_start_subscriber(void)
-{
-    if (link_audio.subscriber_running) return;
-    link_audio.subscriber_running = 1;
-
-    /* Generate a random PeerID for the subscriber */
-    FILE *urandom = fopen("/dev/urandom", "r");
-    if (urandom) {
-        fread(link_audio.subscriber_peer_id, 1, 8, urandom);
-        fclose(urandom);
-    } else {
-        /* Fallback: use time-based seed */
-        uint64_t t = (uint64_t)time(NULL) ^ (uint64_t)getpid();
-        memcpy(link_audio.subscriber_peer_id, &t, 8);
-    }
-
-    pthread_create(&link_audio.subscriber_thread, NULL,
-                   link_audio_subscriber_thread, NULL);
-    shadow_log("Link Audio: subscriber thread started");
-}
-
-/* Build a 36-byte ChannelRequest packet (msg_type=3) */
-static void link_audio_build_channel_request(uint8_t *pkt,
-                                             const uint8_t *subscriber_peer_id,
-                                             const uint8_t *channel_id)
-{
-    memset(pkt, 0, 36);
-    /* Common header */
-    memcpy(pkt, LINK_AUDIO_MAGIC, LINK_AUDIO_MAGIC_LEN);
-    pkt[7] = LINK_AUDIO_VERSION;
-    pkt[8] = LINK_AUDIO_MSG_REQUEST;  /* msg_type = 3 */
-    /* pkt[9] = flags = 0, pkt[10..11] = reserved = 0 */
-
-    /* Subscriber's PeerID at offset 12 */
-    memcpy(pkt + 12, subscriber_peer_id, 8);
-
-    /* Channel ID at offset 20 */
-    memcpy(pkt + 20, channel_id, 8);
-
-    /* Heartbeat TLV "__ht" at offset 28 */
-    memcpy(pkt + 28, "__ht", 4);
-    link_audio_write_u32_be(pkt + 32, 0);  /* minimal heartbeat value */
-}
-
-/* Self-subscriber thread: sends heartbeats to Move to trigger audio */
-static void *link_audio_subscriber_thread(void *arg)
-{
-    (void)arg;
-
-    /* Create our own IPv6 UDP socket */
-    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        shadow_log("Link Audio: subscriber failed to create socket");
-        link_audio.subscriber_running = 0;
-        return NULL;
-    }
-
-    /* Use Move's local address captured during sendto hook (on audio thread
-     * where the fd was valid for getsockname). */
-    struct sockaddr_in6 move_target;
-    memcpy(&move_target, &link_audio.move_local_addr, sizeof(move_target));
-
-    char addr_str[INET6_ADDRSTRLEN];
-    inet_ntop(AF_INET6, &move_target.sin6_addr, addr_str, sizeof(addr_str));
-    char logbuf[256];
-    snprintf(logbuf, sizeof(logbuf),
-             "Link Audio: subscriber targeting Move at %s port %d scope %d",
-             addr_str, ntohs(move_target.sin6_port), move_target.sin6_scope_id);
-    shadow_log(logbuf);
-
-    uint32_t heartbeat_count = 0;
-
-    while (link_audio.subscriber_running && link_audio.enabled) {
-        /* Send a ChannelRequest for each Move channel */
-        for (int i = 0; i < link_audio.move_channel_count; i++) {
-            uint8_t request[36];
-            link_audio_build_channel_request(request,
-                                             link_audio.subscriber_peer_id,
-                                             link_audio.channels[i].channel_id);
-            real_sendto(sock, request, 36, 0,
-                        (struct sockaddr *)&move_target, sizeof(move_target));
-        }
-        heartbeat_count++;
-
-        /* Log stats every ~10 seconds (20 heartbeats at 500ms interval) */
-        if (heartbeat_count % 20 == 0) {
-            /* Build per-channel level string and reset peaks */
-            char levels[256];
-            int lpos = 0;
-            for (int i = 0; i < link_audio.move_channel_count && i < 5; i++) {
-                link_audio_channel_t *ch = &link_audio.channels[i];
-                int16_t pk = ch->peak;
-                /* Convert peak to approximate dB: 20*log10(peak/32767) */
-                int db = -96;
-                if (pk > 0) {
-                    db = (int)(20.0f * log10f((float)pk / 32767.0f));
-                }
-                int n = snprintf(levels + lpos, sizeof(levels) - lpos,
-                                 " %s:%ddB", ch->name, db);
-                if (n > 0) lpos += n;
-                ch->peak = 0;  /* reset for next interval */
-            }
-            char stats[512];
-            snprintf(stats, sizeof(stats),
-                     "Link Audio:%s (pkts=%u pub=%u)",
-                     levels,
-                     link_audio.packets_intercepted,
-                     link_audio.packets_published);
-            shadow_log(stats);
-        }
-
-        /* Sleep between heartbeats */
-        struct timespec ts = {0, LINK_AUDIO_SUBSCRIBER_INTERVAL_MS * 1000000L};
-        nanosleep(&ts, NULL);
-    }
-
-    close(sock);
-    shadow_log("Link Audio: subscriber thread exited");
-    return NULL;
 }
 
 /* ---- Shadow audio publisher ---- */
@@ -2649,6 +2539,8 @@ static void *link_audio_publisher_thread(void *arg)
     shadow_log("Link Audio: publisher thread exited");
     return NULL;
 }
+
+#if ENABLE_SCREEN_READER /* Resume screen reader / D-Bus hooks */
 
 int sd_bus_default_system(sd_bus **ret)
 {

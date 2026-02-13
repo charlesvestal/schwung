@@ -30,6 +30,11 @@ if [ -d "./licenses" ]; then
     ITEMS="$ITEMS ./licenses"
 fi
 
+# Add link-subscriber if it was built
+if [ -f "./link-subscriber" ]; then
+    ITEMS="$ITEMS ./link-subscriber"
+fi
+
 tar -czvf ../move-anything.tar.gz \
     --transform 's,^\.,move-anything,' \
     $ITEMS
