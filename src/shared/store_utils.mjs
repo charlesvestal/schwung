@@ -174,12 +174,12 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
 
         /* For catalog v2+, fetch release info — but skip if network is down */
         if (catalog.catalog_version >= 2 && catalog.modules && networkAvailable) {
-            let networkFailed = false;
+            let consecutiveFailures = 0;
             for (let i = 0; i < catalog.modules.length; i++) {
                 const mod = catalog.modules[i];
                 if (mod.github_repo) {
-                    if (networkFailed) {
-                        /* Skip remaining fetches after first failure */
+                    if (consecutiveFailures >= 2) {
+                        /* Network likely down — skip remaining fetches */
                         mod.latest_version = mod.latest_version || '?';
                         mod.download_url = mod.download_url || null;
                         continue;
@@ -198,20 +198,25 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
                         mod.requires = release.requires;
                         mod.post_install = release.post_install;
                         mod.repo_url = release.repo_url;
+                        consecutiveFailures = 0;
                     } else {
                         mod.latest_version = '?';
                         mod.download_url = null;
-                        networkFailed = true;
-                        console.log('Network failed during release fetch, skipping remaining modules');
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= 2) {
+                            console.log('Two consecutive release fetch failures, skipping remaining modules');
+                        }
                     }
                 }
             }
         } else if (catalog.catalog_version >= 2 && catalog.modules && !networkAvailable) {
-            /* Network down — leave modules with whatever cached data they have */
+            /* Network down — construct download URLs from catalog fields as fallback */
             for (let i = 0; i < catalog.modules.length; i++) {
                 const mod = catalog.modules[i];
                 mod.latest_version = mod.latest_version || '?';
-                mod.download_url = mod.download_url || null;
+                if (!mod.download_url && mod.github_repo && mod.asset_name) {
+                    mod.download_url = `https://github.com/${mod.github_repo}/releases/latest/download/${mod.asset_name}`;
+                }
             }
         }
 
@@ -269,7 +274,7 @@ function isValidModuleId(id) {
 }
 
 /* Install a module, returns { success, error } */
-export function installModule(mod, hostVersion) {
+export function installModule(mod, hostVersion, onProgress) {
     if (!isValidModuleId(mod.id)) {
         return { success: false, error: 'Invalid module ID' };
     }
@@ -289,6 +294,7 @@ export function installModule(mod, hostVersion) {
     const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
 
     /* Download the module tarball */
+    if (onProgress) onProgress('Downloading', mod.name);
     const downloadOk = globalThis.host_http_download(mod.download_url, tarPath);
     if (!downloadOk) {
         return { success: false, error: 'Download failed' };
@@ -304,6 +310,7 @@ export function installModule(mod, hostVersion) {
     }
 
     /* Extract to appropriate directory */
+    if (onProgress) onProgress('Extracting', mod.name);
     const extractOk = globalThis.host_extract_tar(tarPath, extractDir);
     if (!extractOk) {
         return { success: false, error: 'Extract failed' };

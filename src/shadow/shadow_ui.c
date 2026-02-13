@@ -762,7 +762,7 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     shadow_ui_log_line("host_http_download: path validated, running curl");
 
     const char *argv_cmd[] = {
-        CURL_PATH, "-fsSLk", "--connect-timeout", "2", "--max-time", "5",
+        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "600",
         "-o", dest_path, url, NULL
     };
     int result = run_command(argv_cmd);

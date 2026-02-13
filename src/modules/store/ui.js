@@ -356,7 +356,12 @@ function installModule(mod) {
     draw();
     host_flush_display();
 
-    const result = sharedInstallModule(mod, hostVersion);
+    const result = sharedInstallModule(mod, hostVersion, (phase, name) => {
+        loadingTitle = phase;
+        loadingMessage = name;
+        draw();
+        host_flush_display();
+    });
 
     scanInstalledModules();
 

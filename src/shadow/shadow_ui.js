@@ -2864,7 +2864,13 @@ function handleStorePickerDetailSelect() {
             result = { success: false, error: 'Download failed' };
         }
     } else {
-        result = sharedInstallModule(mod, storeHostVersion);
+        const installProgress = (phase, name) => {
+            storePickerLoadingTitle = phase;
+            storePickerLoadingMessage = name;
+            drawStorePickerLoading();
+            host_flush_display();
+        };
+        result = sharedInstallModule(mod, storeHostVersion, installProgress);
     }
 
     if (result.success) {
@@ -2914,6 +2920,7 @@ function handleStorePickerBack() {
                 availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
                 setView(VIEWS.COMPONENT_SELECT);
             }
+            storeCatalog = null;
             storePickerCategory = null;
             storePickerModules = [];
             break;

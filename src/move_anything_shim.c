@@ -7925,8 +7925,19 @@ static void shadow_swap_display(void)
         launch_shadow_ui();
     }
 
+    /* Composite overlays onto shadow display if active */
+    static uint8_t shadow_composited[DISPLAY_BUFFER_SIZE];
+    const uint8_t *display_src = shadow_display_shm;
+
+    if (skipback_overlay_timeout > 0) {
+        memcpy(shadow_composited, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+        overlay_draw_skipback(shadow_composited);
+        skipback_overlay_timeout--;
+        display_src = shadow_composited;
+    }
+
     /* Write full display to DISPLAY_OFFSET (768) */
-    memcpy(global_mmap_addr + DISPLAY_OFFSET, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+    memcpy(global_mmap_addr + DISPLAY_OFFSET, display_src, DISPLAY_BUFFER_SIZE);
 
     /* Write display using slice protocol - one slice per ioctl */
     /* No rate limiting because we must overwrite Move every ioctl */
@@ -7941,7 +7952,7 @@ static void shadow_swap_display(void)
         int slice_offset = slice * 172;
         int slice_bytes = (slice == 5) ? 164 : 172;
         global_mmap_addr[80] = slice + 1;
-        memcpy(global_mmap_addr + 84, shadow_display_shm + slice_offset, slice_bytes);
+        memcpy(global_mmap_addr + 84, display_src + slice_offset, slice_bytes);
     }
 
     display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
