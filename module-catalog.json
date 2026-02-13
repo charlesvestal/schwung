@@ -192,6 +192,16 @@
       "asset_name": "nam-module.tar.gz",
       "min_host_version": "0.3.0",
       "requires": ".nam model files (free models at tonehunt.org and tone3000.com)"
+    },
+    {
+      "id": "ducker",
+      "name": "Ducker",
+      "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-ducker",
+      "asset_name": "ducker-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
