@@ -1071,6 +1071,8 @@ typedef struct shadow_chain_slot_t {
     int patch_index;
     int active;
     float volume;           /* 0.0 to 1.0, applied to audio output */
+    float pre_mute_volume;  /* saved volume before mute (0 = not muted) */
+    int muted;              /* 1 = muted by Move track mute sync */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
@@ -1133,10 +1135,41 @@ static volatile int shadow_held_track = -1;
 /* Selected slot for Shift+Knob routing: 0-3, persists even when shadow UI is off */
 static volatile int shadow_selected_slot = 0;
 
+/* Mute button hold state: 1 while CC 88 is held, 0 when released */
+static volatile int shadow_mute_held = 0;
+
 /* Set tempo detection (declared here for D-Bus handler access) */
 static float sampler_set_tempo = 0.0f;              /* 0 = not yet detected */
 static char sampler_current_set_name[128] = "";      /* e.g. "Set 3" from D-Bus */
 static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
+static void shadow_ui_state_update_slot(int slot);          /* forward decl */
+static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]);  /* forward decl */
+static void shadow_rebuild_set_name_cache(void);  /* forward decl */
+static int shadow_is_set_name(const char *text);  /* forward decl */
+
+/* Apply mute/unmute to a shadow slot */
+static void shadow_apply_mute(int slot, int is_muted) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (is_muted && !shadow_chain_slots[slot].muted) {
+        shadow_chain_slots[slot].pre_mute_volume = shadow_chain_slots[slot].volume;
+        shadow_chain_slots[slot].volume = 0.0f;
+        shadow_chain_slots[slot].muted = 1;
+        shadow_ui_state_update_slot(slot);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Mute sync: slot %d muted (saved vol=%.3f)",
+                 slot, shadow_chain_slots[slot].pre_mute_volume);
+        shadow_log(msg);
+    } else if (!is_muted && shadow_chain_slots[slot].muted) {
+        shadow_chain_slots[slot].volume = shadow_chain_slots[slot].pre_mute_volume;
+        shadow_chain_slots[slot].muted = 0;
+        shadow_ui_state_update_slot(slot);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Mute sync: slot %d unmuted (restored vol=%.3f)",
+                 slot, shadow_chain_slots[slot].volume);
+        shadow_log(msg);
+    }
+}
+
 
 #if ENABLE_SCREEN_READER
 /* D-Bus connection for monitoring */
@@ -1771,17 +1804,42 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Check if it's a Set name (e.g. "Set 1", "Set 28") - read tempo from Song.abl */
-    if (strncmp(text, "Set ", 4) == 0) {
-        /* Verify the rest is a number (Set names are "Set <N>") */
-        const char *num = text + 4;
-        if (*num >= '0' && *num <= '9') {
-            snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", text);
-            sampler_set_tempo = sampler_read_set_tempo(text);
-            char msg[128];
-            snprintf(msg, sizeof(msg), "Set detected: \"%s\" -> tempo=%.1f",
-                     text, sampler_set_tempo);
-            shadow_log(msg);
+    /* Check if it's a Set name - match against cached set names */
+    if (shadow_is_set_name(text)) {
+        snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", text);
+        sampler_set_tempo = sampler_read_set_tempo(text);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Set detected: \"%s\" -> tempo=%.1f",
+                 text, sampler_set_tempo);
+        shadow_log(msg);
+
+        /* Rebuild cache in case sets were added/renamed */
+        shadow_rebuild_set_name_cache();
+
+        /* Read initial mute states from Song.abl */
+        int muted[4];
+        int n = shadow_read_set_mute_states(text, muted);
+        for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
+            if (muted[i] && !shadow_chain_slots[i].muted) {
+                /* Track is muted in set: save volume and zero it */
+                shadow_chain_slots[i].pre_mute_volume = shadow_chain_slots[i].volume;
+                shadow_chain_slots[i].volume = 0.0f;
+                shadow_chain_slots[i].muted = 1;
+                shadow_ui_state_update_slot(i);
+                char m[64];
+                snprintf(m, sizeof(m), "Set load: slot %d muted (saved vol=%.3f)",
+                         i, shadow_chain_slots[i].pre_mute_volume);
+                shadow_log(m);
+            } else if (!muted[i] && shadow_chain_slots[i].muted) {
+                /* Track is unmuted in set: restore volume */
+                shadow_chain_slots[i].volume = shadow_chain_slots[i].pre_mute_volume;
+                shadow_chain_slots[i].muted = 0;
+                shadow_ui_state_update_slot(i);
+                char m[64];
+                snprintf(m, sizeof(m), "Set load: slot %d unmuted (restored vol=%.3f)",
+                         i, shadow_chain_slots[i].volume);
+                shadow_log(m);
+            }
         }
     }
 
@@ -1789,17 +1847,37 @@ static void shadow_dbus_handle_text(const char *text)
     if (strncmp(text, "Track Volume ", 13) == 0) {
         float volume = shadow_parse_volume_db(text);
         if (volume >= 0.0f && shadow_held_track >= 0 && shadow_held_track < SHADOW_CHAIN_INSTANCES) {
-            /* Update the held track's slot volume */
-            shadow_chain_slots[shadow_held_track].volume = volume;
+            if (!shadow_chain_slots[shadow_held_track].muted) {
+                /* Update the held track's slot volume (skip if muted) */
+                shadow_chain_slots[shadow_held_track].volume = volume;
 
-            /* Log the volume sync */
-            char msg[128];
-            snprintf(msg, sizeof(msg), "D-Bus volume sync: slot %d = %.3f (%s)",
-                     shadow_held_track, volume, text);
-            shadow_log(msg);
+                /* Log the volume sync */
+                char msg[128];
+                snprintf(msg, sizeof(msg), "D-Bus volume sync: slot %d = %.3f (%s)",
+                         shadow_held_track, volume, text);
+                shadow_log(msg);
 
-            /* Persist slot volumes */
-            shadow_save_state();
+                /* Persist slot volumes */
+                shadow_save_state();
+            }
+        }
+    }
+
+
+    /* Auto-correct mute state from D-Bus screen reader text.
+     * Move announces "<Instrument> muted" / "<Instrument> unmuted" on any
+     * mute state change. Apply to the selected slot so we stay in sync even
+     * when Move mutes/unmutes independently of our Mute+Track shortcut. */
+    {
+        int text_len = strlen(text);
+        int ends_with_unmuted = (text_len >= 8 && strcmp(text + text_len - 7, "unmuted") == 0
+                                 && text[text_len - 8] == ' ');
+        int ends_with_muted = !ends_with_unmuted &&
+                              (text_len >= 6 && strcmp(text + text_len - 5, "muted") == 0
+                               && text[text_len - 6] == ' ');
+
+        if (ends_with_muted || ends_with_unmuted) {
+            shadow_apply_mute(shadow_selected_slot, ends_with_muted);
         }
     }
 
@@ -3044,6 +3122,60 @@ static int sampler_settings_tempo = 0;       /* 0 = not yet read */
 /* Tempo detection: current Set's Song.abl (declared early for D-Bus handler access) */
 #define SAMPLER_SETS_DIR "/data/UserData/UserLibrary/Sets"
 
+/* Cached set names for fast D-Bus text matching */
+#define MAX_CACHED_SETS 64
+#define MAX_SET_NAME_LEN 128
+static char cached_set_names[MAX_CACHED_SETS][MAX_SET_NAME_LEN];
+static int cached_set_count = 0;
+
+/* Scan the Sets directory and cache all set names */
+static void shadow_rebuild_set_name_cache(void) {
+    cached_set_count = 0;
+
+    DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
+    if (!sets_dir) return;
+
+    struct dirent *uuid_entry;
+    while ((uuid_entry = readdir(sets_dir)) != NULL && cached_set_count < MAX_CACHED_SETS) {
+        if (uuid_entry->d_name[0] == '.') continue;
+
+        /* Each UUID dir contains set name subdirs */
+        char uuid_path[512];
+        snprintf(uuid_path, sizeof(uuid_path), "%s/%s", SAMPLER_SETS_DIR, uuid_entry->d_name);
+
+        DIR *uuid_dir = opendir(uuid_path);
+        if (!uuid_dir) continue;
+
+        struct dirent *set_entry;
+        while ((set_entry = readdir(uuid_dir)) != NULL && cached_set_count < MAX_CACHED_SETS) {
+            if (set_entry->d_name[0] == '.') continue;
+            /* Verify Song.abl exists */
+            char song_path[512];
+            snprintf(song_path, sizeof(song_path), "%s/%s/Song.abl", uuid_path, set_entry->d_name);
+            struct stat st;
+            if (stat(song_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                strncpy(cached_set_names[cached_set_count], set_entry->d_name, MAX_SET_NAME_LEN - 1);
+                cached_set_names[cached_set_count][MAX_SET_NAME_LEN - 1] = '\0';
+                cached_set_count++;
+            }
+        }
+        closedir(uuid_dir);
+    }
+    closedir(sets_dir);
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Set name cache: %d sets found", cached_set_count);
+    shadow_log(msg);
+}
+
+/* Check if text matches a cached set name */
+static int shadow_is_set_name(const char *text) {
+    for (int i = 0; i < cached_set_count; i++) {
+        if (strcmp(text, cached_set_names[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 /* Tempo source tracking for display */
 typedef enum {
     TEMPO_SOURCE_DEFAULT = 0,
@@ -3527,6 +3659,81 @@ static float sampler_read_set_tempo(const char *set_name) {
     }
     fclose(f);
     return tempo;
+}
+
+/* Read track mute states from Song.abl for the given set name.
+ * Track-level "speakerOn" fields are at exactly 8-space indent.
+ * Results stored in muted_out[0..3]: 1=muted, 0=not muted.
+ * Returns number of tracks found (0 on failure). */
+static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]) {
+    memset(muted_out, 0, 4 * sizeof(int));
+    if (!set_name || !set_name[0]) return 0;
+
+    DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
+    if (!sets_dir) return 0;
+
+    char best_path[512] = "";
+    time_t best_mtime = 0;
+    struct dirent *entry;
+
+    while ((entry = readdir(sets_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s/%s/Song.abl",
+                 SAMPLER_SETS_DIR, entry->d_name, set_name);
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            if (st.st_mtime > best_mtime) {
+                best_mtime = st.st_mtime;
+                snprintf(best_path, sizeof(best_path), "%s", path);
+            }
+        }
+    }
+    closedir(sets_dir);
+
+    if (best_path[0] == '\0') return 0;
+
+    FILE *f = fopen(best_path, "r");
+    if (!f) return 0;
+
+    /* Parse by tracking brace/bracket depth.
+     * Track-level structure: "tracks": [ { ... "mixer": { "speakerOn": X } } ]
+     * Track-level mixer is at brace_depth=3 (root=1, track=2, mixer=3).
+     * Deeper mixers (drum cells, device chains) are at depth 5+. */
+    int track_count = 0;
+    int brace_depth = 0;
+    int in_tracks = 0;       /* 1 after seeing "tracks" key */
+    int bracket_depth = 0;   /* track [] nesting after "tracks" */
+    char line[512];
+    while (fgets(line, sizeof(line), f) && track_count < 4) {
+        /* Count braces and brackets on this line */
+        for (char *p = line; *p; p++) {
+            if (*p == '{') brace_depth++;
+            else if (*p == '}') brace_depth--;
+            else if (*p == '[') bracket_depth++;
+            else if (*p == ']') bracket_depth--;
+        }
+
+        /* Detect "tracks" key to know we're in the tracks array */
+        if (!in_tracks && strstr(line, "\"tracks\"")) {
+            in_tracks = 1;
+        }
+
+        /* Track-level speakerOn: inside tracks array, at brace depth 3 */
+        if (in_tracks && brace_depth == 3 && strstr(line, "\"speakerOn\"")) {
+            muted_out[track_count] = strstr(line, "false") ? 1 : 0;
+            track_count++;
+        }
+    }
+    fclose(f);
+
+    if (track_count > 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Set mute states from %s: [%d,%d,%d,%d]",
+                 set_name, muted_out[0], muted_out[1], muted_out[2], muted_out[3]);
+        shadow_log(msg);
+    }
+    return track_count;
 }
 
 /* Read tempo_bpm from Move Anything settings file */
@@ -4564,6 +4771,8 @@ static void shadow_chain_defaults(void) {
         shadow_chain_slots[i].patch_index = -1;
         shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
         shadow_chain_slots[i].volume = 1.0f;
+        shadow_chain_slots[i].pre_mute_volume = 0.0f;
+        shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].forward_channel = -1;
         capture_clear(&shadow_chain_slots[i].capture);
         strncpy(shadow_chain_slots[i].patch_name,
@@ -4945,6 +5154,7 @@ static int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
 
     shadow_chain_load_config();
+    shadow_rebuild_set_name_cache();
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_chain_slots[i].instance = shadow_plugin_v2->create_instance(
             SHADOW_CHAIN_MODULE_DIR, NULL);
@@ -9371,6 +9581,11 @@ do_ioctl:
                             shadow_log(msg);
                         }
 
+                        /* Mute + Track = toggle shadow slot mute */
+                        if (shadow_mute_held) {
+                            shadow_apply_mute(new_slot, !shadow_chain_slots[new_slot].muted);
+                        }
+
                         /* Shift + Volume + Track = jump to that slot's edit screen (if shadow UI enabled) */
                         if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                             shadow_block_plain_volume_hide_until_release = 1;
@@ -9385,6 +9600,11 @@ do_ioctl:
                             /* If already in shadow mode, flag will be picked up by tick() */
                         }
                     }
+                }
+
+                /* Mute button (CC 88): track held state */
+                if (d1 == CC_MUTE) {
+                    shadow_mute_held = (d2 > 0) ? 1 : 0;
                 }
 
                 /* Shift + Volume + Jog Click = toggle overtake module menu (if shadow UI enabled) */

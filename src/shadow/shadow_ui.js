@@ -3075,7 +3075,7 @@ function getChainSettingValue(slot, setting) {
 
     if (setting.key === "slot:volume") {
         const pct = Math.round(parseFloat(val) * 100);
-        return `${pct}%`;
+        return pct === 0 ? "Muted" : `${pct}%`;
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
@@ -4472,7 +4472,8 @@ function getSlotSettingValue(slot, setting) {
 
     if (setting.key === "slot:volume") {
         const num = parseFloat(val);
-        return isNaN(num) ? val : `${Math.round(num * 100)}%`;
+        const pct = isNaN(num) ? 0 : Math.round(num * 100);
+        return pct === 0 ? "Muted" : `${pct}%`;
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
