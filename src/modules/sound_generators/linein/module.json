@@ -2,8 +2,8 @@
   "id": "linein",
   "name": "Line In",
   "abbrev": "LI",
-  "version": "0.1.0",
-  "description": "Pass through audio from line input",
+  "version": "0.2.0",
+  "description": "Line input with conditioning for Line, Guitar, and Phono sources",
   "dsp": "dsp.so",
   "api_version": 1,
   "capabilities": {
@@ -19,16 +19,193 @@
           "label": "Line In",
           "params": [
             {
-              "key": "gain",
-              "label": "Gain",
+              "key": "input_type",
+              "label": "Input Type",
+              "type": "enum",
+              "options": ["Line", "Guitar", "Phono"],
+              "default": 0
+            },
+            {
+              "key": "input_trim",
+              "label": "Input Trim",
+              "type": "float",
+              "min": -12,
+              "max": 40,
+              "default": 0,
+              "step": 0.5,
+              "unit": "dB",
+              "display_format": "%.1f"
+            },
+            {
+              "key": "output_trim",
+              "label": "Output Trim",
+              "type": "float",
+              "min": -24,
+              "max": 12,
+              "default": 0,
+              "step": 0.5,
+              "unit": "dB",
+              "display_format": "%.1f"
+            },
+            {
+              "key": "gate_mode",
+              "label": "Gate",
+              "type": "enum",
+              "options": ["Off", "Auto", "Manual"],
+              "default": 1
+            },
+            {
+              "key": "gate_amount",
+              "label": "Gate Amount",
               "type": "float",
               "min": 0,
-              "max": 2,
-              "default": 1.0,
-              "step": 0.01
+              "max": 100,
+              "default": 50,
+              "step": 1,
+              "unit": "%",
+              "display_format": "%.0f"
+            },
+            { "level": "gate_settings", "label": "Gate Settings" },
+            { "level": "line_settings", "label": "Line Settings" },
+            { "level": "guitar_settings", "label": "Guitar Settings" },
+            { "level": "phono_settings", "label": "Phono Settings" }
+          ],
+          "knobs": ["input_type", "input_trim", "output_trim", "gate_amount"]
+        },
+        "gate_settings": {
+          "label": "Gate",
+          "params": [
+            {
+              "key": "gate_threshold",
+              "label": "Threshold",
+              "type": "float",
+              "min": -80,
+              "max": 0,
+              "default": -40,
+              "step": 1,
+              "unit": "dB",
+              "display_format": "%.0f"
+            },
+            {
+              "key": "gate_attack",
+              "label": "Attack",
+              "type": "float",
+              "min": 0.5,
+              "max": 50,
+              "default": 3,
+              "step": 0.5,
+              "unit": "ms",
+              "display_format": "%.1f"
+            },
+            {
+              "key": "gate_hold",
+              "label": "Hold",
+              "type": "float",
+              "min": 5,
+              "max": 500,
+              "default": 80,
+              "step": 5,
+              "unit": "ms",
+              "display_format": "%.0f"
+            },
+            {
+              "key": "gate_release",
+              "label": "Release",
+              "type": "float",
+              "min": 10,
+              "max": 1000,
+              "default": 200,
+              "step": 10,
+              "unit": "ms",
+              "display_format": "%.0f"
+            },
+            {
+              "key": "gate_range",
+              "label": "Range",
+              "type": "float",
+              "min": 0,
+              "max": 80,
+              "default": 18,
+              "step": 1,
+              "unit": "dB",
+              "display_format": "%.0f"
             }
           ],
-          "knobs": ["gain"]
+          "knobs": ["gate_threshold", "gate_attack", "gate_release", "gate_range"]
+        },
+        "line_settings": {
+          "label": "Line",
+          "params": [
+            {
+              "key": "hpf_freq",
+              "label": "HPF",
+              "type": "enum",
+              "options": ["Off", "20 Hz", "40 Hz", "60 Hz", "80 Hz", "120 Hz"],
+              "default": 0
+            },
+            {
+              "key": "safety_limiter",
+              "label": "Limiter",
+              "type": "enum",
+              "options": ["Off", "On"],
+              "default": 0
+            }
+          ],
+          "knobs": ["hpf_freq", "safety_limiter"]
+        },
+        "guitar_settings": {
+          "label": "Guitar",
+          "params": [
+            {
+              "key": "cable_comp",
+              "label": "Cable Comp",
+              "type": "enum",
+              "options": ["Off", "Low", "Med", "High"],
+              "default": 2
+            },
+            {
+              "key": "soft_clip",
+              "label": "Soft Clip",
+              "type": "enum",
+              "options": ["Off", "On"],
+              "default": 0
+            }
+          ],
+          "knobs": ["cable_comp", "soft_clip"]
+        },
+        "phono_settings": {
+          "label": "Phono",
+          "params": [
+            {
+              "key": "riaa_eq",
+              "label": "RIAA EQ",
+              "type": "enum",
+              "options": ["Off", "On"],
+              "default": 1
+            },
+            {
+              "key": "subsonic_freq",
+              "label": "Sub Filter",
+              "type": "enum",
+              "options": ["10 Hz", "15 Hz", "20 Hz", "30 Hz", "40 Hz"],
+              "default": 2
+            },
+            {
+              "key": "hum_notch",
+              "label": "Hum Notch",
+              "type": "enum",
+              "options": ["Off", "On"],
+              "default": 1
+            },
+            {
+              "key": "hum_freq",
+              "label": "Hum Freq",
+              "type": "enum",
+              "options": ["50 Hz", "60 Hz"],
+              "default": 1
+            }
+          ],
+          "knobs": ["riaa_eq", "subsonic_freq", "hum_notch", "hum_freq"]
         }
       }
     }

@@ -1,0 +1,28 @@
+{
+    "name": "Line In - Phono RIAA",
+    "version": 1,
+    "chain": {
+        "input": "both",
+        "synth": {
+            "module": "linein",
+            "config": {
+                "input_type": 2,
+                "input_trim": 34.0,
+                "output_trim": 0.0,
+                "gate_mode": 1,
+                "gate_amount": 30,
+                "riaa_eq": 1,
+                "subsonic_freq": 2,
+                "hum_notch": 1,
+                "hum_freq": 1
+            }
+        },
+        "audio_fx": [],
+        "knob_mappings": [
+            {"cc": 71, "target": "synth", "param": "input_type"},
+            {"cc": 72, "target": "synth", "param": "input_trim"},
+            {"cc": 73, "target": "synth", "param": "output_trim"},
+            {"cc": 74, "target": "synth", "param": "gate_amount"}
+        ]
+    }
+}
