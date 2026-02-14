@@ -48,8 +48,6 @@
 unsigned char *global_mmap_addr = NULL;  /* Points to shadow_mailbox (what Move sees) */
 unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
 static unsigned char shadow_mailbox[4096] __attribute__((aligned(64))); /* Shadow buffer for Move */
-FILE *output_file;
-int frame_counter = 0;
 
 /* ============================================================================
  * SHADOW INSTRUMENT SUPPORT
@@ -1147,7 +1145,6 @@ static volatile int shadow_dbus_running = 0;
 /* Move's D-Bus socket FD (ORIGINAL, for send() hook to recognize) */
 static int move_dbus_socket_fd = -1;
 static sd_bus *move_sdbus_conn = NULL;
-static DBusConnection *shadow_dbus_conn_old = NULL; /* Old libdbus listener (keep for compatibility) */
 static pthread_mutex_t move_dbus_conn_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Shadow buffer for pending screen reader announcements */
@@ -2315,65 +2312,8 @@ static int link_audio_read_channel(int idx, int16_t *out, int frames)
 
 static void link_audio_start_publisher(void)
 {
-    /* Publisher disabled: raw chnnlsv packets aren't discoverable by Live.
-     * Needs proper Link SDK integration to appear as a peer. */
+    /* Publisher disabled on main: needs Link SDK integration (see link-audio-publish branch) */
     return;
-
-    if (link_audio.publisher_running) return;
-    link_audio.publisher_running = 1;
-
-    /* Generate publisher PeerID and session ID */
-    FILE *urandom = fopen("/dev/urandom", "r");
-    if (urandom) {
-        fread(link_audio.publisher_peer_id, 1, 8, urandom);
-        fread(link_audio.publisher_session_id, 1, 8, urandom);
-        fclose(urandom);
-    } else {
-        uint64_t t = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32);
-        memcpy(link_audio.publisher_peer_id, &t, 8);
-        t ^= 0xDEADBEEFCAFE1234ULL;
-        memcpy(link_audio.publisher_session_id, &t, 8);
-    }
-
-    /* Initialize publisher channels */
-    for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
-        link_audio_pub_channel_t *pc = &link_audio.pub_channels[i];
-        memset(pc, 0, sizeof(*pc));
-        snprintf(pc->name, sizeof(pc->name), "Shadow-%d", i + 1);
-        /* Generate unique channel IDs */
-        memcpy(pc->channel_id, link_audio.publisher_peer_id, 8);
-        pc->channel_id[0] ^= (uint8_t)(i + 1);  /* make each unique */
-    }
-
-    /* Create publisher socket */
-    link_audio.publisher_socket_fd = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (link_audio.publisher_socket_fd < 0) {
-        shadow_log("Link Audio: publisher failed to create socket");
-        link_audio.publisher_running = 0;
-        return;
-    }
-
-    /* Allow address reuse */
-    int reuse = 1;
-    setsockopt(link_audio.publisher_socket_fd, SOL_SOCKET, SO_REUSEADDR,
-               &reuse, sizeof(reuse));
-
-    /* Set non-blocking for recvfrom */
-    int fl = fcntl(link_audio.publisher_socket_fd, F_GETFL, 0);
-    fcntl(link_audio.publisher_socket_fd, F_SETFL, fl | O_NONBLOCK);
-
-    /* Bind to same interface as Move */
-    struct sockaddr_in6 bind_addr;
-    memset(&bind_addr, 0, sizeof(bind_addr));
-    bind_addr.sin6_family = AF_INET6;
-    bind_addr.sin6_addr = in6addr_any;
-    bind_addr.sin6_port = 0;  /* ephemeral port */
-    bind(link_audio.publisher_socket_fd, (struct sockaddr *)&bind_addr,
-         sizeof(bind_addr));
-
-    pthread_create(&link_audio.publisher_thread, NULL,
-                   link_audio_publisher_thread, NULL);
-    shadow_log("Link Audio: publisher thread started");
 }
 
 /* Build a session announcement packet for the shadow publisher */
@@ -6057,8 +5997,6 @@ static void shadow_inprocess_process_midi(void) {
                 overtake_dsp_fx->on_midi(overtake_dsp_fx_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
             }
         }
-        /* Raw MIDI format fallback removed - was matching garbage/stale data.
-         * USB MIDI format (with CIN validation) is the proper format for this buffer. */
     }
 }
 
@@ -6181,7 +6119,7 @@ static void shadow_inprocess_mix_audio(void) {
 
 /* MIDI send callback for overtake DSP → chain slots */
 static int overtake_midi_send_internal(const uint8_t *msg, int len) {
-    if (!msg || len < 3) return 0;
+    if (!msg || len < 4) return 0;
     /* Build USB-MIDI packet: [CIN, status, d1, d2] */
     uint8_t cin = (msg[1] >> 4) & 0x0F;
     uint8_t pkt[4] = { cin, msg[1], msg[2], msg[3] };
@@ -7277,17 +7215,18 @@ static void shadow_inject_ui_midi_out(void) {
     last_shadow_midi_out_ready = shadow_midi_out_shm->ready;
     shadow_init_led_queue();
 
-    /* Snapshot write_idx and buffer, then reset immediately.
-     * This avoids a race where the JS process writes new data between
-     * our read loop and the clear at the end. */
+    /* Snapshot buffer first, then reset write_idx.
+     * Copy before resetting to avoid a race where the JS process writes
+     * new data between our reset and memcpy. */
     int snapshot_len = shadow_midi_out_shm->write_idx;
-    shadow_midi_out_shm->write_idx = 0;
     uint8_t local_buf[SHADOW_MIDI_OUT_BUFFER_SIZE];
     int copy_len = snapshot_len < (int)SHADOW_MIDI_OUT_BUFFER_SIZE
                  ? snapshot_len : (int)SHADOW_MIDI_OUT_BUFFER_SIZE;
     if (copy_len > 0) {
         memcpy(local_buf, shadow_midi_out_shm->buffer, copy_len);
     }
+    __sync_synchronize();
+    shadow_midi_out_shm->write_idx = 0;
     memset(shadow_midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
 
     /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
@@ -7976,64 +7915,6 @@ static void shadow_swap_display(void)
     display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
 }
 
-void print_mem()
-{
-    printf("\033[H\033[J");
-    for (int i = 0; i < 4096; ++i)
-    {
-        printf("%02x ", (unsigned char)global_mmap_addr[i]);
-        if (i == 2048 - 1)
-        {
-            printf("\n\n");
-        }
-
-        if (i == 2048 + 256 - 1)
-        {
-            printf("\n\n");
-        }
-
-        if (i == 2048 + 256 + 512 - 1)
-        {
-            printf("\n\n");
-        }
-    }
-    printf("\n\n");
-}
-
-void write_mem()
-{
-    if (!output_file)
-    {
-        return;
-    }
-
-    // printf("\033[H\033[J");
-    fprintf(output_file, "--------------------------------------------------------------------------------------------------------------");
-    fprintf(output_file, "Frame: %d\n", frame_counter);
-    for (int i = 0; i < 4096; ++i)
-    {
-        fprintf(output_file, "%02x ", (unsigned char)global_mmap_addr[i]);
-        if (i == 2048 - 1)
-        {
-            fprintf(output_file, "\n\n");
-        }
-
-        if (i == 2048 + 256 - 1)
-        {
-            fprintf(output_file, "\n\n");
-        }
-
-        if (i == 2048 + 256 + 512 - 1)
-        {
-            fprintf(output_file, "\n\n");
-        }
-    }
-    fprintf(output_file, "\n\n");
-
-    sync();
-
-    frame_counter++;
-}
 
 void *(*real_mmap)(void *, size_t, int, int, int, off_t) = NULL;
 static int (*real_open)(const char *pathname, int flags, ...) = NULL;
@@ -8744,9 +8625,6 @@ int ioctl(int fd, unsigned long request, ...)
 
     /* Skip all processing in baseline mode to measure pure Move ioctl time */
     if (baseline_mode) goto do_ioctl;
-
-    // print_mem();
-    // write_mem();
 
     // TODO: Consider using move-anything host code and quickjs for flexibility
     TIME_SECTION_START();

@@ -434,10 +434,11 @@ void tts_set_speed(float speed) {
     if (speed < 0.5f) speed = 0.5f;
     if (speed > 2.0f) speed = 2.0f;
 
-    /* Save config only if value changed */
+    /* Save config only if value changed (compare before assignment) */
     bool changed = (tts_speed != speed);
 
     unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS speed to %.2f (was %.2f)", speed, tts_speed);
+    if (!changed) return;
     tts_speed = speed;
 
     /* Apply to voice if already initialized */
@@ -452,10 +453,8 @@ void tts_set_speed(float speed) {
     /* Clear buffer so new setting takes effect on next announcement */
     tts_clear_buffer();
 
-    /* Persist to disk if changed */
-    if (changed) {
-        tts_save_config();
-    }
+    /* Persist to disk */
+    tts_save_config();
 }
 
 void tts_set_pitch(float pitch_hz) {
@@ -463,10 +462,11 @@ void tts_set_pitch(float pitch_hz) {
     if (pitch_hz < 80.0f) pitch_hz = 80.0f;
     if (pitch_hz > 180.0f) pitch_hz = 180.0f;
 
-    /* Save config only if value changed */
+    /* Save config only if value changed (compare before assignment) */
     bool changed = (tts_pitch != pitch_hz);
 
     unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS pitch to %.1f Hz (was %.1f Hz)", pitch_hz, tts_pitch);
+    if (!changed) return;
     tts_pitch = pitch_hz;
 
     /* Apply to voice if already initialized */
@@ -480,10 +480,8 @@ void tts_set_pitch(float pitch_hz) {
     /* Clear buffer so new setting takes effect on next announcement */
     tts_clear_buffer();
 
-    /* Persist to disk if changed */
-    if (changed) {
-        tts_save_config();
-    }
+    /* Persist to disk */
+    tts_save_config();
 }
 
 /* Clear the ring buffer (stops any ongoing speech immediately) */

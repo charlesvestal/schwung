@@ -96,9 +96,7 @@ int frame = 0;
 
 /* Display refresh rate limiting */
 int display_pending = 0;           /* Display has changes waiting to be flushed */
-int display_countdown = 0;         /* Countdown to next allowed refresh */
 int display_refresh_interval = 30; /* Ticks between refreshes (~11Hz at 344Hz loop) */
-int display_force_flush = 0;       /* Force immediate flush */
 
 /* Forward declarations */
 void push_screen(int sync);
@@ -106,11 +104,9 @@ void push_screen(int sync);
 struct SPI_Memory
 {
     unsigned char outgoing_midi[256];
-    unsigned char outgoing_random[512];
-    unsigned char outgoing_unknown[1280];
+    unsigned char _outgoing_pad[1792];  /* Unused regions of SPI memory */
     unsigned char incoming_midi[256];
-    unsigned char incoming_random[512];
-    unsigned char incoming_unknown[1280];
+    unsigned char _incoming_pad[1792];
 };
 
 unsigned char *mapped_memory;
@@ -187,28 +183,6 @@ static JSValue js_get_int16(JSContext *ctx, JSValueConst this_val, int argc, JSV
   JSValue js_val = JS_NewInt32(ctx, val);
   return js_val;
 }
-
-
-
-// void set_audio_out_L(int index, int16_t value) {
-//   if (index >= 512/4) {
-//     return;
-//   }
-
-//   int out256+index*4+0
-// }
-
-// void set_audio_out_R(int index, int16_t value) {
-
-// }
-
-// void get_audio_in_L() {
-
-// }
-
-// void get_audio_in_R() {
-
-// }
 
 void dirty_screen() {
   /* Mark that display needs to be pushed */
@@ -766,19 +740,6 @@ static void flush_pending_leds(void) {
     }
 }
 
-void onExternalMidiMessage(unsigned char midi_message[4])
-{
-    // js_on_external_midi_message()
-}
-
-void onInternalMidiMessage(unsigned char midi_message[4])
-{
-    // js_on_internal_midi_message()
-}
-
-/* onMidiMessage removed - was dead code with uninitialized 'cable' variable.
-   Actual MIDI routing happens in main() loop via onInternalMidiMessage/onExternalMidiMessage. */
-
 void clearPads(unsigned char *mapped_memory, int fd)
 {
 
@@ -922,10 +883,6 @@ static int eval_file(JSContext *ctx, const char *filename, int module)
         exit(1);
     }
 
-    // if (module < 0) {
-    //     module = (has_suffix(filename, ".mjs") ||
-    //               JS_DetectModule((const char *)buf, buf_len));
-    // }
     if (module)
         eval_flags |= JS_EVAL_TYPE_MODULE;
     else
@@ -1135,8 +1092,6 @@ static JSValue js_move_midi_send(int cable, JSContext *ctx, JSValueConst this_va
     JS_ToUint32(ctx, &len, length_val);
     JS_FreeValue(ctx, length_val);
 
-    //printf("[");
-    JSValue entry;
     for (int i = 0; i < len; i++)
     {
 
@@ -1158,13 +1113,6 @@ static JSValue js_move_midi_send(int cable, JSContext *ctx, JSValueConst this_va
             JS_FreeValue(ctx, val);
             return JS_ThrowRangeError(ctx, "Array element at index %u (%u) is out of byte range (0-255)", i, byte_val);
         }
-
-        // total_sum += byte_val;
-        //printf("%d(%x)", byte_val, byte_val);
-        /*if (i != len - 1)
-        {
-            printf(", ");
-        }*/
 
         js_move_midi_send_buffer[send_buffer_index] = byte_val;
         send_buffer_index++;
@@ -1728,9 +1676,6 @@ static JSValue js_host_set_refresh_rate(JSContext *ctx, JSValueConst this_val,
     display_refresh_interval = 344 / hz;
     if (display_refresh_interval < 1) display_refresh_interval = 1;
 
-    /* Reset countdown so new rate takes effect immediately */
-    display_countdown = 0;
-
     return JS_UNDEFINED;
 }
 
@@ -2184,10 +2129,6 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     }
 
     js_std_add_helpers(ctx, -1, 0);
-    // char jsCode[] = "console.log('Hello world!')\0";
-    // char jsCode[] = "console.log('Hello world!');\0";
-
-    // eval_buf(ctx, jsCode, strlen(jsCode), "<cmdline>", 0);
     JSValue global_obj = JS_GetGlobalObject(ctx);
 
     JSValue move_midi_external_send_func = JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1);
@@ -2335,12 +2276,6 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
 
-    // Free our reference to the global object
-
-    // eval_file(ctx, "move_m8.js", -1);
-
-    // JSValue val;
-    // val = JS_Eval(ctx, jsCode, strlen(jsCode), "foo.js", 0);
     *prt = rt;
     *pctx = ctx;
 }
@@ -2655,11 +2590,12 @@ int main(int argc, char *argv[])
             }
             if (g_menu_script_path[0]) {
                 eval_file(ctx, g_menu_script_path, -1);
-                JSValue JSinit;
-                getGlobalFunction(&ctx, "init", &JSinit);
-                if (callGlobalFunction(&ctx, &JSinit, 0)) {
+                JSValue JSinitMenu;
+                getGlobalFunction(&ctx, "init", &JSinitMenu);
+                if (callGlobalFunction(&ctx, &JSinitMenu, 0)) {
                     printf("JS:init failed\n");
                 }
+                JS_FreeValue(ctx, JSinitMenu);
                 g_js_functions_need_refresh = 1;
             }
         }
@@ -2838,14 +2774,5 @@ int main(int argc, char *argv[])
 
 
     printf("Exiting\n");
-    // deinit is currenlty failing due to there being JS objects hanging around so...
     exit(0);
-    deinit_javascript(&rt, &ctx);
-
-    // js_std_free_handlers(rt);
-
-    // JS_FreeContext(ctx);
-    // JS_FreeRuntime(rt);
-
-    return 0;
 }
