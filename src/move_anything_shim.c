@@ -1774,6 +1774,15 @@ static void shadow_dbus_handle_text(const char *text)
         shadow_log(msg);
     }
 
+    /* If Move is asking user to confirm shutdown, dismiss shadow UI so jog wheel
+     * press reaches Move's native firmware instead of being captured by us. */
+    if (shadow_display_mode && shadow_control &&
+        strcasecmp(text, "Press wheel to shut down") == 0) {
+        shadow_log("Shutdown prompt detected — dismissing shadow UI");
+        shadow_display_mode = 0;
+        shadow_control->display_mode = 0;
+    }
+
     /* Track native Move sampler source from stock announcements. */
     native_sampler_update_from_dbus_text(text);
 

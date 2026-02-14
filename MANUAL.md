@@ -138,6 +138,42 @@ Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from
 
 ---
 
+## Routing Move Tracks Through Custom FX
+
+On Move firmware 2.0.0+, you can route Move's own track audio through Move Everything's audio effects using Link Audio. This lets you add effects like CloudSeed reverb, TapeDelay, or NAM amp models to your native Move tracks.
+
+### Setup
+
+1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
+2. **Install or update Move Everything** — the installer enables Link Audio automatically.
+
+### How It Works
+
+When Link Audio is enabled, Move streams each track's audio separately. Move Everything intercepts these streams and routes them through the audio FX in the corresponding slot:
+
+```
+Move Track 1 audio → Slot 1 Audio FX 1 → Audio FX 2 → mixed output
+Move Track 2 audio → Slot 2 Audio FX 1 → Audio FX 2 → mixed output
+...
+```
+
+This means you can set up a slot with just audio effects (no synth) and it will process that Move track's audio.
+
+### Example: Adding Reverb to a Move Track
+
+1. Open Slot 1 (**Shift+Vol + Track 1**)
+2. Navigate to **Audio FX 1** and load CloudSeed (or any audio effect)
+3. Optionally load a second effect in **Audio FX 2**
+4. Play Move Track 1 — you'll hear it processed through your effects
+
+### Notes
+
+- Move must be on firmware **2.0.0 or later** for Link Audio support
+- Each Move track maps to the matching slot number (Track 1 → Slot 1, etc.)
+- A slot can have both a synth (triggered by MIDI) and audio FX (processing Move's track audio) simultaneously
+
+---
+
 ## Overtake Modules
 
 Overtake modules take full control of Move's display and controls. Access via **Shift+Vol + Jog Click**.
