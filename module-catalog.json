@@ -4,8 +4,8 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.4.1",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.4.1/move-anything.tar.gz",
+    "latest_version": "0.4.7",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.4.7/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -243,6 +243,18 @@
       "default_branch": "main",
       "asset_name": "airplay-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "clap",
+      "name": "CLAP Host",
+      "description": "Host for CLAP audio plugins - load any .clap plugin as a sound generator or audio effect",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-clap",
+      "default_branch": "main",
+      "asset_name": "clap-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": ".clap plugin files (place in module's plugins/ folder)"
     },
     {
       "id": "control",

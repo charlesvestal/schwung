@@ -2283,6 +2283,19 @@ function loadMasterPreset(index, presetName) {
                 if (opt) {
                     setMasterFxSlotModule(i, opt.dspPath || "");
                     masterFxConfig[key].module = opt.id;
+
+                    /* Restore plugin_id first (CLAP sub-plugin selection) */
+                    if (fxConfig.params && typeof shadow_set_param === "function") {
+                        if (fxConfig.params.plugin_id) {
+                            shadow_set_param(0, `master_fx:${key}:plugin_id`, fxConfig.params.plugin_id);
+                        }
+                        /* Restore remaining params */
+                        for (const [pkey, pval] of Object.entries(fxConfig.params)) {
+                            if (pkey !== "plugin_id") {
+                                shadow_set_param(0, `master_fx:${key}:${pkey}`, String(pval));
+                            }
+                        }
+                    }
                 } else {
                     /* Module not found - clear slot */
                     setMasterFxSlotModule(i, "");
@@ -2319,10 +2332,35 @@ function buildMasterPresetJson(name) {
         const key = `fx${i + 1}`;
         const moduleId = masterFxConfig[key]?.module;
         if (moduleId) {
-            preset[key] = {
+            const slotPreset = {
                 type: moduleId,
                 params: {}
             };
+
+            /* Capture plugin_id (for CLAP sub-plugin selection) */
+            if (typeof shadow_get_param === "function") {
+                try {
+                    const pluginId = shadow_get_param(0, `master_fx:${key}:plugin_id`);
+                    if (pluginId) {
+                        slotPreset.params["plugin_id"] = pluginId;
+                    }
+                } catch (e) {}
+
+                /* Capture individual params from chain_params */
+                try {
+                    const chainParams = getMasterFxChainParams(i);
+                    if (chainParams && chainParams.length > 0) {
+                        for (const p of chainParams) {
+                            const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                            if (val !== null && val !== undefined && val !== "") {
+                                slotPreset.params[p.key] = val;
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            preset[key] = slotPreset;
         }
     }
 
