@@ -246,10 +246,10 @@
     },
     {
       "id": "clap",
-      "name": "CLAP Host",
-      "description": "Host for CLAP audio plugins - load any .clap plugin as a sound generator or audio effect",
+      "name": "CLAP FX",
+      "description": "Host for CLAP audio effect plugins",
       "author": "charlesvestal",
-      "component_type": "sound_generator",
+      "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-clap",
       "default_branch": "main",
       "asset_name": "clap-module.tar.gz",
