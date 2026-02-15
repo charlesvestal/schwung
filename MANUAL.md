@@ -106,28 +106,6 @@ The last position in each slot contains settings:
 
 ---
 
-## Master FX
-
-Access via **Shift+Vol + Menu**. Contains four audio effect slots that process the mixed output of all instrument slots.
-
-### Native Sampler Bridge (Resample Src)
-
-In **Master FX > Settings**, `Resample Src` controls whether Move Everything audio is fed into native Move sampling:
-
-| Option | Behavior |
-|--------|----------|
-| **Off** | Disabled (default) |
-| **Replace** | Replaces native sampler input with Move Everything master output |
-
-Recommended setup to avoid feedback:
-1. Set `Resample Src` to **Replace**
-2. In native Move Sampler, set source to **Line In**
-3. Set monitoring to **Off**
-
-If monitoring is on or routing is configured differently, audio feedback may occur.
-
----
-
 ## Connecting to Move Tracks
 
 1. Set a Move track's **MIDI Out** to a channel (1-4)
@@ -135,6 +113,12 @@ If monitoring is on or routing is configured differently, audio feedback may occ
 3. Play the Move track - its MIDI triggers the slot's synth
 
 Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
+
+---
+
+## Master FX
+
+Access via **Shift+Vol + Menu**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
 ---
 
@@ -174,17 +158,59 @@ This means you can set up a slot with just audio effects (no synth) and it will 
 
 ---
 
-## Overtake Modules
+## Native Sampler Bridge
 
-Overtake modules take full control of Move's display and controls. Access via **Shift+Vol + Jog Click**.
+Move Everything audio can be fed into Move's native sampler for resampling.
 
-To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
+In **Master FX > Settings**, `Resample Src` controls this:
 
-**Note:** After exiting an overtake module, Move's pad and button LEDs won't refresh automatically. Change tracks or sets and they'll come back as they light back on.
+| Option | Behavior |
+|--------|----------|
+| **Off** | Disabled (default) |
+| **Replace** | Replaces native sampler input with Move Everything master output |
+
+Recommended setup to avoid feedback:
+1. Set `Resample Src` to **Replace**
+2. In native Move Sampler, set source to **Line In**
+3. Set monitoring to **Off**
+
+If monitoring is on or routing is configured differently, audio feedback may occur.
 
 ---
 
-## Built-in Modules
+## Recording
+
+### Quantized Sampler
+
+Access via **Shift+Sample**. Records Move's audio output (including Move Everything synths) to WAV files, quantized to bars.
+
+**Options:**
+- **Source**: `Resample` (Move's mixed output including Move Everything) or `Move Input` (whatever is set in Move's sample input - line-in, mic, etc.)
+- **Duration**: Until stopped, 1, 2, 4, 8, or 16 bars
+
+**Usage:**
+1. Press **Shift+Sample** to open the sampler
+2. Use the jog wheel to select source and duration
+3. Recording starts on a note event or pressing Play
+4. Press **Shift+Sample** again to stop (or it stops automatically at the set duration)
+
+Recordings are saved to `Samples/Move Everything/`.
+
+Uses MIDI clock for accurate bar timing, falling back to project tempo if no clock is available. You can also use Move's built-in count-in for line-in recordings.
+
+### Skipback
+
+Press **Shift+Capture** to save the last 30 seconds of audio to disk.
+
+Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
+
+Files are saved to `Samples/Move Everything/Skipback/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
+
+---
+
+## Available Modules
+
+### Built-in
 
 These modules are included with Move Everything:
 
@@ -198,43 +224,9 @@ These modules are included with Move Everything:
 **Overtake:**
 - **MIDI Controller** - 16-bank MIDI controller with customizable knob/pad assignments
 
----
+### Module Store
 
-## Quantized Sampler
-
-Access via **Shift+Sample**. Records Move's audio output (including Move Everything synths) to WAV files, quantized to bars.
-
-### Options
-
-- **Source**: `Resample` (Move's mixed output including Move Everything) or `Move Input` (whatever is set in Move's sample input - line-in, mic, etc.)
-- **Duration**: Until stopped, 1, 2, 4, 8, or 16 bars
-
-### Usage
-
-1. Press **Shift+Sample** to open the sampler
-2. Use the jog wheel to select source and duration
-3. Recording starts on a note event or pressing Play
-4. Press **Shift+Sample** again to stop (or it stops automatically at the set duration)
-
-Recordings are saved to `Samples/Move Everything/`.
-
-Uses MIDI clock for accurate bar timing, falling back to project tempo if no clock is available. You can also use Move's built-in count-in for line-in recordings.
-
----
-
-## Skipback
-
-Press **Shift+Capture** to save the last 30 seconds of audio to disk.
-
-Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
-
-Files are saved to `Samples/Move Everything/Skipback/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
-
----
-
-## Module Store
-
-When selecting a module, "[Get more...]" opens the Module Store to download additional modules of that type. To update Move Everything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
+When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Move Everything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
 
 **Sound Generators:**
 - **Braids** - Mutable Instruments macro oscillator (47 algorithms)
@@ -257,12 +249,21 @@ When selecting a module, "[Get more...]" opens the Module Store to download addi
 - **Ducker** - MIDI-triggered sidechain ducker
 
 **Overtake/Utility:**
-- **MIDI Controller** - 16-bank MIDI controller (built-in)
 - **Four Track** - Four-track recorder
 - **M8 LPP** - Launchpad Pro emulator for Dirtywave M8
 - **SID Control** - Controller for SIDaster III
 
 **Note:** Some modules require additional files (ROMs, SoundFonts, .nam models). Check each module's documentation.
+
+---
+
+## Overtake Modules
+
+Overtake modules take full control of Move's display and controls. Access via **Shift+Vol + Jog Click**.
+
+To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
+
+**Note:** After exiting an overtake module, Move's pad and button LEDs won't refresh automatically. Change tracks or sets and they'll come back as they light back on.
 
 ---
 
@@ -281,14 +282,8 @@ Can be enabled during installation with `--enable-screen-reader`.
 
 ---
 
-## Standalone Mode
-
-Access via **Shift+Vol + Knob 8**. Includes the full Module Store for downloading modules and updating Move Everything. Also lets you run modules without Move's audio.
-
----
-
 ## Tips
 
 - Slot settings persist between sessions
-- Use the Module Store (in Standalone Mode) to update Move Everything itself
+- Use **Standalone Mode** (**Shift+Vol + Knob 8**) to run modules without Move's audio, or to access the Module Store for updates
 - If something goes wrong, use Move's DFU restore mode to reset
