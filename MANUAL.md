@@ -180,6 +180,8 @@ Overtake modules take full control of Move's display and controls. Access via **
 
 To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
 
+**Note:** After exiting an overtake module, Move's pad and button LEDs won't refresh automatically. Change tracks or sets and they'll come back as they light back on.
+
 ---
 
 ## Built-in Modules
