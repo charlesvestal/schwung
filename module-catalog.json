@@ -222,6 +222,16 @@
       "github_repo": "charlesvestal/move-anything-airplay",
       "asset_name": "airplay-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "control",
+      "name": "Custom MIDI Control",
+      "description": "Custom MIDI controller with 16 banks of configurable pads/knobs/buttons",
+      "author": "chaolue",
+      "component_type": "overtake",
+      "github_repo": "chaolue/move-anything-control",
+      "asset_name": "control-module.tar.gz",
+      "min_host_version": "0.3.6"
     }
   ]
 }
