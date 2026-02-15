@@ -7,12 +7,14 @@
             "module": "linein",
             "config": {
                 "input_type": 1,
+                "input_mode": 1,
                 "input_trim": 18.0,
                 "output_trim": 0.0,
-                "gate_mode": 1,
+                "gate_mode": 0,
                 "gate_amount": 50,
                 "cable_comp": 2,
-                "soft_clip": 0
+                "soft_clip": 0,
+                "hum_filter": 2
             }
         },
         "audio_fx": [],

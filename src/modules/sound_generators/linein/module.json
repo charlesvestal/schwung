@@ -26,6 +26,13 @@
               "default": 0
             },
             {
+              "key": "input_mode",
+              "label": "Input Mode",
+              "type": "enum",
+              "options": ["Stereo", "Mono (L)", "Mono (R)"],
+              "default": 0
+            },
+            {
               "key": "input_trim",
               "label": "Input Trim",
               "type": "float",
@@ -52,7 +59,7 @@
               "label": "Gate",
               "type": "enum",
               "options": ["Off", "Auto", "Manual"],
-              "default": 1
+              "default": 0
             },
             {
               "key": "gate_amount",
@@ -65,12 +72,13 @@
               "unit": "%",
               "display_format": "%.0f"
             },
+            { "level": "noise_reduction", "label": "Noise Reduction" },
             { "level": "gate_settings", "label": "Gate Settings" },
             { "level": "line_settings", "label": "Line Settings" },
             { "level": "guitar_settings", "label": "Guitar Settings" },
             { "level": "phono_settings", "label": "Phono Settings" }
           ],
-          "knobs": ["input_type", "input_trim", "output_trim", "gate_amount"]
+          "knobs": ["input_type", "input_mode", "input_trim", "output_trim"]
         },
         "gate_settings": {
           "label": "Gate",
@@ -206,6 +214,19 @@
             }
           ],
           "knobs": ["riaa_eq", "subsonic_freq", "hum_notch", "hum_freq"]
+        },
+        "noise_reduction": {
+          "label": "Noise Reduction",
+          "params": [
+            {
+              "key": "hum_filter",
+              "label": "Hum Filter",
+              "type": "enum",
+              "options": ["Off", "50 Hz", "60 Hz"],
+              "default": 0
+            }
+          ],
+          "knobs": ["hum_filter"]
         }
       }
     }
