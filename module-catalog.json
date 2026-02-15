@@ -257,6 +257,17 @@
       "requires": ".clap plugin files (place in module's plugins/ folder)"
     },
     {
+      "id": "gate",
+      "name": "Gate",
+      "description": "Noise gate and downward expander",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-gate",
+      "default_branch": "main",
+      "asset_name": "gate-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "control",
       "name": "Custom MIDI Control",
       "description": "Custom MIDI controller with 16 banks of configurable pads/knobs/buttons",
