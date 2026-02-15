@@ -1775,12 +1775,17 @@ static void shadow_dbus_handle_text(const char *text)
     }
 
     /* If Move is asking user to confirm shutdown, dismiss shadow UI so jog wheel
-     * press reaches Move's native firmware instead of being captured by us. */
-    if (shadow_display_mode && shadow_control &&
+     * press reaches Move's native firmware instead of being captured by us.
+     * Also signal the JS UI to save all state before power-off. */
+    if (shadow_control &&
         strcasecmp(text, "Press wheel to shut down") == 0) {
-        shadow_log("Shutdown prompt detected — dismissing shadow UI");
-        shadow_display_mode = 0;
-        shadow_control->display_mode = 0;
+        shadow_log("Shutdown prompt detected — saving state and dismissing shadow UI");
+        shadow_control->ui_flags |= SHADOW_UI_FLAG_SAVE_STATE;
+        shadow_save_state();
+        if (shadow_display_mode) {
+            shadow_display_mode = 0;
+            shadow_control->display_mode = 0;
+        }
     }
 
     /* Track native Move sampler source from stock announcements. */
@@ -4519,18 +4524,21 @@ static void shadow_read_initial_volume(void)
 
 static void shadow_save_state(void)
 {
-    /* Read existing config to preserve patches and master_fx fields */
+    /* Read existing config to preserve fields written by shadow_ui.js */
     FILE *f = fopen(SHADOW_CONFIG_PATH, "r");
     char patches_buf[4096] = "";
     char master_fx[256] = "";
     char master_fx_path[256] = "";
+    char master_fx_chain_buf[2048] = "";
+    int overlay_knobs_mode = -1;
+    int resample_bridge_mode = -1;
 
     if (f) {
         fseek(f, 0, SEEK_END);
         long size = ftell(f);
         fseek(f, 0, SEEK_SET);
 
-        if (size > 0 && size < 8192) {
+        if (size > 0 && size < 16384) {
             char *json = malloc(size + 1);
             if (json) {
                 size_t nread = fread(json, 1, size, f);
@@ -4556,7 +4564,7 @@ static void shadow_save_state(void)
                     }
                 }
 
-                /* Extract master_fx string */
+                /* Extract master_fx string (legacy single-slot) */
                 char *mfx = strstr(json, "\"master_fx\":");
                 if (mfx) {
                     mfx = strchr(mfx, ':');
@@ -4590,6 +4598,48 @@ static void shadow_save_state(void)
                     }
                 }
 
+                /* Extract master_fx_chain object (written by shadow_ui.js) */
+                char *mfc = strstr(json, "\"master_fx_chain\":");
+                if (mfc) {
+                    char *obj_start = strchr(mfc, '{');
+                    if (obj_start) {
+                        int depth = 1;
+                        char *obj_end = obj_start + 1;
+                        while (*obj_end && depth > 0) {
+                            if (*obj_end == '{') depth++;
+                            else if (*obj_end == '}') depth--;
+                            obj_end++;
+                        }
+                        int len = obj_end - obj_start;
+                        if (len < (int)sizeof(master_fx_chain_buf) - 1) {
+                            strncpy(master_fx_chain_buf, obj_start, len);
+                            master_fx_chain_buf[len] = '\0';
+                        }
+                    }
+                }
+
+                /* Extract overlay_knobs_mode integer */
+                char *okm = strstr(json, "\"overlay_knobs_mode\":");
+                if (okm) {
+                    okm = strchr(okm, ':');
+                    if (okm) {
+                        okm++;
+                        while (*okm == ' ') okm++;
+                        overlay_knobs_mode = atoi(okm);
+                    }
+                }
+
+                /* Extract resample_bridge_mode integer */
+                char *rbm = strstr(json, "\"resample_bridge_mode\":");
+                if (rbm) {
+                    rbm = strchr(rbm, ':');
+                    if (rbm) {
+                        rbm++;
+                        while (*rbm == ' ') rbm++;
+                        resample_bridge_mode = atoi(rbm);
+                    }
+                }
+
                 free(json);
             }
         }
@@ -4610,6 +4660,15 @@ static void shadow_save_state(void)
     fprintf(f, "  \"master_fx\": \"%s\",\n", master_fx);
     if (master_fx_path[0]) {
         fprintf(f, "  \"master_fx_path\": \"%s\",\n", master_fx_path);
+    }
+    if (master_fx_chain_buf[0]) {
+        fprintf(f, "  \"master_fx_chain\": %s,\n", master_fx_chain_buf);
+    }
+    if (overlay_knobs_mode >= 0) {
+        fprintf(f, "  \"overlay_knobs_mode\": %d,\n", overlay_knobs_mode);
+    }
+    if (resample_bridge_mode >= 0) {
+        fprintf(f, "  \"resample_bridge_mode\": %d,\n", resample_bridge_mode);
     }
     fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f],\n",
             shadow_chain_slots[0].volume,
@@ -4962,7 +5021,13 @@ static void shadow_master_fx_unload_all(void) {
 
 /* Load a master FX module into a specific slot by full DSP path.
  * Returns 0 on success, -1 on failure. */
+static int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json);
+
 static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
+    return shadow_master_fx_slot_load_with_config(slot, dsp_path, NULL);
+}
+
+static int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json) {
     if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
     master_fx_slot_t *s = &shadow_master_fx_slots[slot];
 
@@ -4971,8 +5036,8 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
         return 0;  /* Empty = disable this slot */
     }
 
-    /* Already loaded? */
-    if (strcmp(s->module_path, dsp_path) == 0 && s->instance) {
+    /* Already loaded? (skip check if config_json provided - need fresh instance) */
+    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
         return 0;
     }
 
@@ -5012,7 +5077,7 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
         *last_slash = '\0';
     }
 
-    s->instance = s->api->create_instance(module_dir, NULL);
+    s->instance = s->api->create_instance(module_dir, config_json);
     if (!s->instance) {
         fprintf(stderr, "Shadow master FX[%d]: create_instance failed for %s\n", slot, dsp_path);
         dlclose(s->handle);
@@ -5292,6 +5357,194 @@ static int shadow_inprocess_load_chain(void) {
                      shadow_chain_slots[i].patch_name);
             shadow_log(msg);
         }
+    }
+
+    /* Load master FX slots from state files (written by shadow_ui.js autosave) */
+    for (int mfx = 0; mfx < MASTER_FX_SLOTS; mfx++) {
+        char mfx_path[256];
+        snprintf(mfx_path, sizeof(mfx_path), SLOT_STATE_DIR "/master_fx_%d.json", mfx);
+        FILE *mf = fopen(mfx_path, "r");
+        if (!mf) continue;
+
+        fseek(mf, 0, SEEK_END);
+        long msize = ftell(mf);
+        fseek(mf, 0, SEEK_SET);
+
+        if (msize <= 10) {  /* Empty marker "{}\n" */
+            fclose(mf);
+            continue;
+        }
+
+        char *mjson = malloc(msize + 1);
+        if (!mjson) { fclose(mf); continue; }
+        size_t mnread = fread(mjson, 1, msize, mf);
+        mjson[mnread] = '\0';
+        fclose(mf);
+
+        /* Extract module_path */
+        char dsp_path[256] = "";
+        {
+            char *mp = strstr(mjson, "\"module_path\":");
+            if (mp) {
+                mp = strchr(mp, ':');
+                if (mp) {
+                    mp++;
+                    while (*mp == ' ' || *mp == '"') mp++;
+                    char *end = mp;
+                    while (*end && *end != '"') end++;
+                    int len = end - mp;
+                    if (len > 0 && len < (int)sizeof(dsp_path) - 1) {
+                        strncpy(dsp_path, mp, len);
+                        dsp_path[len] = '\0';
+                    }
+                }
+            }
+        }
+
+        if (!dsp_path[0]) {
+            free(mjson);
+            continue;
+        }
+
+        /* Extract plugin_id from params BEFORE loading module.
+         * Pass it as config_json to create_instance so the CLAP host
+         * starts with the correct sub-plugin immediately (no default→switch). */
+        char config_json_buf[512] = "";
+        char *params_start = strstr(mjson, "\"params\":");
+        if (params_start) {
+            char *pid_key = strstr(params_start, "\"plugin_id\"");
+            if (pid_key) {
+                char *pc = strchr(pid_key + 11, ':');
+                if (pc) {
+                    pc++;
+                    while (*pc == ' ') pc++;
+                    if (*pc == '"') {
+                        pc++;
+                        char *pe = strchr(pc, '"');
+                        if (pe) {
+                            int plen = pe - pc;
+                            if (plen > 0 && plen < 256) {
+                                char pid_val[256];
+                                strncpy(pid_val, pc, plen);
+                                pid_val[plen] = '\0';
+                                snprintf(config_json_buf, sizeof(config_json_buf),
+                                         "{\"plugin_id\":\"%s\"}", pid_val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Load the module (with plugin_id config if available) */
+        int load_result = shadow_master_fx_slot_load_with_config(mfx, dsp_path,
+            config_json_buf[0] ? config_json_buf : NULL);
+        if (load_result != 0) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "MFX boot: slot %d failed to load %s", mfx, dsp_path);
+            shadow_log(msg);
+            free(mjson);
+            continue;
+        }
+
+        master_fx_slot_t *s = &shadow_master_fx_slots[mfx];
+
+        /* Restore state if available */
+        char *state_start = strstr(mjson, "\"state\":");
+        if (state_start && s->api && s->instance && s->api->set_param) {
+            char *obj_start = strchr(state_start, '{');
+            if (obj_start) {
+                int depth = 1;
+                char *obj_end = obj_start + 1;
+                while (*obj_end && depth > 0) {
+                    if (*obj_end == '{') depth++;
+                    else if (*obj_end == '}') depth--;
+                    obj_end++;
+                }
+                int slen = obj_end - obj_start;
+                char *state_buf = malloc(slen + 1);
+                if (state_buf) {
+                    memcpy(state_buf, obj_start, slen);
+                    state_buf[slen] = '\0';
+                    s->api->set_param(s->instance, "state", state_buf);
+                    free(state_buf);
+                }
+            }
+        } else if (params_start && s->api && s->instance && s->api->set_param) {
+            /* Fall back to individual params */
+            char *obj_start = strchr(params_start, '{');
+            if (obj_start) {
+                int depth = 1;
+                char *obj_end = obj_start + 1;
+                while (*obj_end && depth > 0) {
+                    if (*obj_end == '{') depth++;
+                    else if (*obj_end == '}') depth--;
+                    obj_end++;
+                }
+                /* Parse individual key:value pairs from the params object */
+                char *p = obj_start + 1;
+                while (p < obj_end - 1) {
+                    /* Find key */
+                    char *kstart = strchr(p, '"');
+                    if (!kstart || kstart >= obj_end) break;
+                    kstart++;
+                    char *kend = strchr(kstart, '"');
+                    if (!kend || kend >= obj_end) break;
+
+                    char param_key[128];
+                    int klen = kend - kstart;
+                    if (klen >= (int)sizeof(param_key)) { p = kend + 1; continue; }
+                    strncpy(param_key, kstart, klen);
+                    param_key[klen] = '\0';
+
+                    /* Find value (after colon) */
+                    char *colon = strchr(kend, ':');
+                    if (!colon || colon >= obj_end) break;
+                    colon++;
+                    while (*colon == ' ') colon++;
+
+                    char param_val[256];
+                    if (*colon == '"') {
+                        /* String value */
+                        colon++;
+                        char *vend = strchr(colon, '"');
+                        if (!vend || vend >= obj_end) break;
+                        int vlen = vend - colon;
+                        if (vlen >= (int)sizeof(param_val)) { p = vend + 1; continue; }
+                        strncpy(param_val, colon, vlen);
+                        param_val[vlen] = '\0';
+                        p = vend + 1;
+                    } else {
+                        /* Numeric value */
+                        char *vend = colon;
+                        while (*vend && *vend != ',' && *vend != '}' && *vend != '\n') vend++;
+                        int vlen = vend - colon;
+                        if (vlen >= (int)sizeof(param_val)) { p = vend; continue; }
+                        strncpy(param_val, colon, vlen);
+                        param_val[vlen] = '\0';
+                        /* Trim trailing whitespace */
+                        while (vlen > 0 && (param_val[vlen-1] == ' ' || param_val[vlen-1] == '\r')) {
+                            param_val[--vlen] = '\0';
+                        }
+                        p = vend;
+                    }
+
+                    /* Skip plugin_id - already applied via config_json */
+                    if (strcmp(param_key, "plugin_id") != 0) {
+                        s->api->set_param(s->instance, param_key, param_val);
+                    }
+                }
+            }
+        }
+
+        {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "MFX boot: slot %d loaded %s%s",
+                     mfx, s->module_id,
+                     state_start ? " (with state)" : (strstr(mjson, "\"params\":") ? " (with params)" : ""));
+            shadow_log(msg);
+        }
+        free(mjson);
     }
 
     shadow_ui_state_refresh();

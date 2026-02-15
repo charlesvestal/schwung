@@ -94,6 +94,7 @@ const SHADOW_UI_SLOTS = 4;
 const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
 const SHADOW_UI_FLAG_JUMP_TO_MASTER_FX = 0x02;
 const SHADOW_UI_FLAG_JUMP_TO_OVERTAKE = 0x04;
+const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -2529,20 +2530,83 @@ function saveMasterFxChainConfig() {
             if (content) config = JSON.parse(content);
         } catch (e) {}
 
-        /* Save master FX chain - store dspPaths for each slot */
+        /* Save master FX chain - store dspPaths and plugin state for each slot */
         config.master_fx_chain = {
             preset_name: currentMasterPresetName || ""
         };
         for (let i = 1; i <= 4; i++) {
             const key = `fx${i}`;
+            const slotIdx = i - 1;
             const moduleId = masterFxConfig[key]?.module || "";
-            if (moduleId) {
-                const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleId);
-                config.master_fx_chain[key] = {
-                    id: moduleId,
-                    path: opt?.dspPath || ""
-                };
+            const stateFilePath = SLOT_STATE_DIR + "/master_fx_" + slotIdx + ".json";
+
+            if (!moduleId) {
+                /* Empty slot - write empty marker */
+                host_write_file(stateFilePath, "{}\n");
+                continue;
             }
+
+            const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleId);
+            const dspPath = opt?.dspPath || "";
+            const slotConfig = {
+                id: moduleId,
+                path: dspPath
+            };
+
+            /* Snapshot plugin state if available */
+            let stateObj = null;
+            let paramsObj = null;
+            if (typeof shadow_get_param === "function") {
+                try {
+                    const stateJson = shadow_get_param(0, `master_fx:${key}:state`);
+                    if (stateJson) {
+                        stateObj = JSON.parse(stateJson);
+                        slotConfig.state = stateObj;
+                    }
+                } catch (e) {
+                    /* state not supported - fall back to chain_params */
+                }
+
+                /* If no state, save individual params from chain_params */
+                if (!stateObj) {
+                    try {
+                        paramsObj = {};
+                        /* Query plugin_id first (needed by CLAP and other host plugins) */
+                        try {
+                            const pluginId = shadow_get_param(0, `master_fx:${key}:plugin_id`);
+                            if (pluginId) {
+                                paramsObj["plugin_id"] = pluginId;
+                            }
+                        } catch (e2) {}
+                        const chainParams = getMasterFxChainParams(slotIdx);
+                        if (chainParams && chainParams.length > 0) {
+                            for (const p of chainParams) {
+                                const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                if (val !== null && val !== undefined && val !== "") {
+                                    paramsObj[p.key] = val;
+                                }
+                            }
+                        }
+                        if (Object.keys(paramsObj).length > 0) {
+                            slotConfig.params = paramsObj;
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            config.master_fx_chain[key] = slotConfig;
+
+            /* Write per-slot state file for shim-side restore at boot */
+            const stateFile = {
+                module_path: dspPath,
+                module_id: moduleId
+            };
+            if (stateObj) {
+                stateFile.state = stateObj;
+            } else if (paramsObj) {
+                stateFile.params = paramsObj;
+            }
+            host_write_file(stateFilePath, JSON.stringify(stateFile, null, 2) + "\n");
         }
 
         /* Save overlay knobs mode */
@@ -2560,7 +2624,10 @@ function saveMasterFxChainConfig() {
     }
 }
 
-/* Load master FX chain from config at startup */
+/* Load master FX chain from config at startup.
+ * The shim handles actual module loading + state restore from
+ * slot_state/master_fx_N.json files at boot. This function just
+ * syncs the JS-side masterFxConfig to reflect what the shim loaded. */
 function loadMasterFxChainFromConfig() {
     try {
         const configPath = "/data/UserData/move-anything/shadow_config.json";
@@ -2585,14 +2652,20 @@ function loadMasterFxChainFromConfig() {
             currentMasterPresetName = config.master_fx_chain.preset_name;
         }
 
-        /* Load each slot from config */
-        for (let i = 1; i <= 4; i++) {
-            const key = `fx${i}`;
-            const slotConfig = config.master_fx_chain[key];
-            if (slotConfig && slotConfig.path) {
-                setMasterFxSlotModule(i - 1, slotConfig.path);
-                masterFxConfig[key].module = slotConfig.id || "";
-            }
+        /* Sync masterFxConfig from state files (shim already loaded the modules) */
+        for (let i = 0; i < 4; i++) {
+            const key = `fx${i + 1}`;
+            const stateFilePath = SLOT_STATE_DIR + "/master_fx_" + i + ".json";
+            try {
+                const raw = host_read_file(stateFilePath);
+                if (raw) {
+                    const stateFile = JSON.parse(raw);
+                    if (stateFile.module_id) {
+                        masterFxConfig[key].module = stateFile.module_id;
+                        debugLog(`MFX sync ${key}: module=${stateFile.module_id} (loaded by shim)`);
+                    }
+                }
+            } catch (e) {}
         }
     } catch (e) {
         /* Ignore errors */
@@ -6802,6 +6875,14 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_OVERTAKE);
             }
         }
+        if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
+            debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
+            autosaveAllSlots();
+            saveMasterFxChainConfig();
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
+            }
+        }
     }
 
     refreshCounter++;
@@ -6814,6 +6895,7 @@ globalThis.tick = function() {
     if (autosaveCounter >= AUTOSAVE_INTERVAL) {
         autosaveCounter = 0;
         autosaveAllSlots();
+        saveMasterFxChainConfig();
     }
     /* Refresh dirty cache frequently for responsive UI */
     if (refreshCounter % 15 === 0) {
