@@ -101,7 +101,8 @@ typedef struct shadow_control_t {
     volatile uint8_t overlay_knobs_mode; /* 0=shift, 1=jog_touch, 2=off */
     volatile uint8_t display_mirror;     /* 0=off, 1=on (stream display to browser) */
     volatile uint8_t tts_engine;         /* 0=espeak-ng, 1=flite */
-    volatile uint8_t reserved[29];
+    volatile uint8_t pin_challenge_active; /* 0=none, 1=challenge detected, 2=submitted */
+    volatile uint8_t reserved[28];
 } shadow_control_t;
 
 /*

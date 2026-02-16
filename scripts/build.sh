@@ -141,6 +141,14 @@ echo "Building host..."
     $SHIM_INCLUDES \
     $SHIM_LIBS
 
+# Build web shim (tiny LD_PRELOAD for MoveWebService PIN challenge detection)
+echo "Building web shim..."
+"${CROSS_PREFIX}gcc" -g -shared -fPIC \
+    -o build/move-anything-web-shim.so \
+    src/host/web_shim.c \
+    -Isrc \
+    -ldl -lrt
+
 echo "Building Shadow POC..."
 
 # Build Shadow Instrument POC (reference example - not used in production)

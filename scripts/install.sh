@@ -660,6 +660,12 @@ ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserDat
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
 ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing after install"
 
+# Symlink web shim to /usr/lib/ (for MoveWebService PIN challenge detection)
+if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+  qecho "Installing web shim for PIN readout..."
+  ssh_root_with_retry "rm -f /usr/lib/move-anything-web-shim.so && ln -s /data/UserData/move-anything/move-anything-web-shim.so /usr/lib/move-anything-web-shim.so" || echo "Warning: Failed to install web shim"
+fi
+
 # Deploy TTS libraries (eSpeak-NG + Flite) from /data to /usr/lib via symlink.
 # Root partition is nearly full, so symlink libraries instead of copying.
 # Use direct predicate checks so expected test failures don't print misleading
@@ -698,6 +704,31 @@ fi
 # Install the shimmed Move entrypoint
 ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
+# Wrap MoveWebService with web shim (same pattern as Move → MoveOriginal + shim-entrypoint)
+# This enables PIN TTS readout when a browser connects to move.local
+if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+  qecho "Installing web shim for PIN readout..."
+  # Find the MoveWebService binary path from init script (may be in a variable assignment or inline)
+  web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+  if [ -n "$web_svc_path" ]; then
+    # Backup original only once (skip if already backed up)
+    if ! $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+      ssh_root_with_retry "mv $web_svc_path ${web_svc_path}Original" || echo "Warning: Failed to backup MoveWebService"
+    fi
+    # Create wrapper script that loads the web shim
+    if $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+      ssh_root_with_retry "cat > $web_svc_path << 'WEOF'
+#!/bin/sh
+export LD_LIBRARY_PATH=/data/UserData/move-anything/lib:\$LD_LIBRARY_PATH
+export LD_PRELOAD=/usr/lib/move-anything-web-shim.so
+exec ${web_svc_path}Original \"\$@\"
+WEOF
+chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
+    fi
+  else
+    echo "Warning: Could not find MoveWebService path, skipping web shim wrapper"
+  fi
+fi
 
 # Create feature configuration file
 qecho ""
@@ -1080,6 +1111,16 @@ ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n 
 ssh_ableton_with_retry "sleep 2" || true
 
 ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
+
+# Restart MoveWebService to pick up web shim wrapper
+if $ssh_root "test -f /etc/init.d/move-web-service" 2>/dev/null; then
+    web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+    if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+        qecho "Restarting MoveWebService with PIN readout shim..."
+        ssh_root_with_retry "/etc/init.d/move-web-service stop >/dev/null 2>&1 || true" || true
+        ssh_root_with_retry "/etc/init.d/move-web-service start >/dev/null 2>&1 || true" || true
+    fi
+fi
 
 # Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
 ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to restart Move service"
