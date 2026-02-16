@@ -1137,6 +1137,72 @@ static JSValue js_tts_get_enabled(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->tts_enabled != 0);
 }
 
+/* display_mirror_set(enabled) - Write to shared memory + persist to features.json */
+static JSValue js_display_mirror_set(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->display_mirror = enabled ? 1 : 0;
+
+    /* Persist to features.json */
+    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    char buf[512];
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        len = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    buf[len] = '\0';
+
+    /* Check if key already exists */
+    char *key = strstr(buf, "\"display_mirror_enabled\"");
+    if (key) {
+        /* Replace the value */
+        char *colon = strchr(key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            /* Build new file content */
+            char newbuf[512];
+            int prefix_len = (int)(colon - buf);
+            int suffix_start = (int)(val_end - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
+                     prefix_len, buf,
+                     enabled ? "true" : "false",
+                     buf + suffix_start);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else if (len > 0) {
+        /* Append before closing brace */
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            char newbuf[512];
+            int prefix_len = (int)(brace - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"display_mirror_enabled\": %s\n}",
+                     prefix_len, buf, enabled ? "true" : "false");
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* display_mirror_get() -> bool - Read from shared memory */
+static JSValue js_display_mirror_get(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 0);
+    return JS_NewBool(ctx, shadow_control->display_mirror != 0);
+}
+
 /* tts_set_speed(speed) - Write to shared memory */
 static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -1315,6 +1381,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register overlay knobs mode functions */
     JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_set_mode", JS_NewCFunction(ctx, js_overlay_knobs_set_mode, "overlay_knobs_set_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_get_mode", JS_NewCFunction(ctx, js_overlay_knobs_get_mode, "overlay_knobs_get_mode", 0));
+
+    /* Register display mirror functions */
+    JS_SetPropertyStr(ctx, global_obj, "display_mirror_set", JS_NewCFunction(ctx, js_display_mirror_set, "display_mirror_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "display_mirror_get", JS_NewCFunction(ctx, js_display_mirror_get, "display_mirror_get", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 

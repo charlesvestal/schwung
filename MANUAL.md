@@ -282,6 +282,28 @@ Can be enabled during installation with `--enable-screen-reader`.
 
 ---
 
+## Display Mirror
+
+Stream Move's 128x64 OLED display to any browser on your network in real time. Useful for remote monitoring, screen capture, or development.
+
+### Setup
+
+1. Open **Master FX > Settings** (Shift+Vol + Menu, then scroll to Settings)
+2. Toggle **Mirror Display** to **On**
+3. Open `http://move.local:7681` in a browser
+
+The display updates at ~30 fps and shows whatever is on screen - both normal Move UI and Shadow UI.
+
+### Notes
+
+- Mirror Display is **off by default** and must be enabled via the settings toggle
+- The setting persists across reboots
+- The display server runs on port 7681 and starts automatically at boot
+- When mirroring is off, the server is running but idle (no overhead from the shim)
+- Multiple browsers can connect simultaneously (up to 8 clients)
+
+---
+
 ## Tips
 
 - Slot settings persist between sessions

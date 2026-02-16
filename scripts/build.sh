@@ -272,6 +272,12 @@ cp ./src/shared/*.mjs ./build/shared/
 cp ./src/host/menu_ui.js ./build/host/
 cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
 cp ./src/host/version.txt ./build/host/
+# Build display server (live display SSE streaming to browser)
+echo "Building display server..."
+"${CROSS_PREFIX}gcc" -g -O3 \
+    src/host/display_server.c \
+    -o build/display-server \
+    -lrt
 
 # Copy shadow UI files
 cp ./src/shadow/shadow_ui.js ./build/shadow/

@@ -526,6 +526,7 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
       options: ["Off", "Replace"], values: [0, 2] },
     { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
       options: ["+Shift", "+Jog Touch", "Off"], values: [0, 1, 2] },
+    { key: "display_mirror", label: "Mirror Display", type: "bool" },
     { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
     { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 2.0, step: 0.1 },
     { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
@@ -4639,6 +4640,9 @@ function getMasterFxSettingValue(setting) {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
         return ["+Shift", "+Jog Touch", "Off"][mode] || "+Shift";
     }
+    if (setting.key === "display_mirror") {
+        return (typeof display_mirror_get === "function" && display_mirror_get()) ? "On" : "Off";
+    }
     if (setting.key === "screen_reader_enabled") {
         return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
     }
@@ -4694,6 +4698,13 @@ function adjustMasterFxSetting(setting, delta) {
         const next = ((current + (delta > 0 ? 1 : count - 1)) % count);
         overlay_knobs_set_mode(next);
         saveMasterFxChainConfig();
+        return;
+    }
+
+    if (setting.key === "display_mirror" && typeof display_mirror_set === "function") {
+        /* Toggle boolean */
+        const current = typeof display_mirror_get === "function" ? display_mirror_get() : false;
+        display_mirror_set(!current ? 1 : 0);
         return;
     }
 

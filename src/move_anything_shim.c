@@ -119,6 +119,7 @@ static volatile float shadow_master_volume;  /* Defined later */
 /* Feature flags from config/features.json */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool standalone_enabled = true;     /* Standalone mode enabled by default */
+static bool display_mirror_enabled = false; /* Display mirror off by default */
 
 /* Link Audio interception and publishing state */
 static link_audio_state_t link_audio;
@@ -4442,12 +4443,26 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse display_mirror_enabled (defaults to false) */
+    const char *display_mirror_key = strstr(config_buf, "\"display_mirror_enabled\"");
+    if (display_mirror_key) {
+        const char *colon = strchr(display_mirror_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                display_mirror_enabled = true;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, standalone=%s, link_audio=%s",
+             "Features: shadow_ui=%s, standalone=%s, link_audio=%s, display_mirror=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              standalone_enabled ? "enabled" : "disabled",
-             link_audio.enabled ? "enabled" : "disabled");
+             link_audio.enabled ? "enabled" : "disabled",
+             display_mirror_enabled ? "enabled" : "disabled");
     shadow_log(log_msg);
 }
 
@@ -7074,6 +7089,7 @@ static int16_t *shadow_movein_shm = NULL;   /* Move's audio for shadow to read *
 static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
+static uint8_t *display_live_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
@@ -7253,6 +7269,23 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create display shm\n");
+    }
+
+    /* Create/open live display shared memory (for remote display server) */
+    int shm_display_live_fd = shm_open(SHM_DISPLAY_LIVE, O_CREAT | O_RDWR, 0666);
+    if (shm_display_live_fd >= 0) {
+        ftruncate(shm_display_live_fd, DISPLAY_BUFFER_SIZE);
+        display_live_shm = (uint8_t *)mmap(NULL, DISPLAY_BUFFER_SIZE,
+                                            PROT_READ | PROT_WRITE,
+                                            MAP_SHARED, shm_display_live_fd, 0);
+        if (display_live_shm == MAP_FAILED) {
+            display_live_shm = NULL;
+            printf("Shadow: Failed to mmap live display shm\n");
+        } else {
+            memset(display_live_shm, 0, DISPLAY_BUFFER_SIZE);
+        }
+    } else {
+        printf("Shadow: Failed to create live display shm\n");
     }
 
     /* Create/open control shared memory - DON'T zero it, shadow_poc owns the state */
@@ -8547,6 +8580,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
         load_feature_config();  /* Load feature flags from config */
+        if (shadow_control) {
+            shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
+        }
         native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
@@ -9539,6 +9575,34 @@ int ioctl(int fd, unsigned long request, ...)
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
     shadow_swap_display();
     TIME_SECTION_END(display_sum, display_max);  /* End timing display section */
+
+    /* Capture final display to live shm for remote viewer.
+     * Shadow mode: copy from shadow display shm (full composited frame).
+     * Native mode: reconstruct from captured slices (written above). */
+    if (display_live_shm && shadow_control && shadow_control->display_mirror) {
+        if (shadow_display_mode && shadow_display_shm) {
+            memcpy(display_live_shm, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+        } else {
+            static uint8_t live_native[DISPLAY_BUFFER_SIZE];
+            static int live_slice_seen[6] = {0};
+            uint8_t cur_slice = global_mmap_addr ? ((uint8_t *)global_mmap_addr)[80] : 0;
+            if (cur_slice >= 1 && cur_slice <= 6) {
+                int idx = cur_slice - 1;
+                int bytes = (idx == 5) ? 164 : 172;
+                memcpy(live_native + idx * 172, (uint8_t *)global_mmap_addr + 84, bytes);
+                live_slice_seen[idx] = 1;
+                /* On last slice, push full frame */
+                if (cur_slice == 6) {
+                    int all = 1;
+                    for (int i = 0; i < 6; i++) { if (!live_slice_seen[i]) all = 0; }
+                    if (all) {
+                        memcpy(display_live_shm, live_native, DISPLAY_BUFFER_SIZE);
+                        memset(live_slice_seen, 0, sizeof(live_slice_seen));
+                    }
+                }
+            }
+        }
+    }
 
     /* Mark end of pre-ioctl processing */
     clock_gettime(CLOCK_MONOTONIC, &pre_end);

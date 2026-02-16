@@ -35,6 +35,11 @@ if [ -f "./link-subscriber" ]; then
     ITEMS="$ITEMS ./link-subscriber"
 fi
 
+# Add display-server if it was built
+if [ -f "./display-server" ]; then
+    ITEMS="$ITEMS ./display-server"
+fi
+
 tar -czvf ../move-anything.tar.gz \
     --transform 's,^\.,move-anything,' \
     $ITEMS

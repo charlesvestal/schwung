@@ -28,6 +28,7 @@
 #define SHM_SHADOW_MIDI_OUT   "/move-shadow-midi-out"   /* MIDI output from shadow UI */
 #define SHM_SHADOW_MIDI_DSP   "/move-shadow-midi-dsp"   /* MIDI from shadow UI to DSP slots */
 #define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader announcements */
+#define SHM_DISPLAY_LIVE    "/move-display-live"    /* Live display for remote viewer */
 
 /* ============================================================================
  * Buffer Sizes
@@ -97,7 +98,8 @@ typedef struct shadow_control_t {
     volatile uint16_t tts_pitch;      /* TTS pitch in Hz (80-180) */
     volatile float tts_speed;         /* TTS speed multiplier (0.5-2.0) */
     volatile uint8_t overlay_knobs_mode; /* 0=shift, 1=jog_touch, 2=off */
-    volatile uint8_t reserved[31];
+    volatile uint8_t display_mirror;     /* 0=off, 1=on (stream display to browser) */
+    volatile uint8_t reserved[30];
 } shadow_control_t;
 
 /*
