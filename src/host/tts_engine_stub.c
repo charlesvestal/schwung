@@ -71,3 +71,13 @@ float tts_get_pitch(void)
 {
     return 110.0f;
 }
+
+void tts_set_engine(const char *engine_name)
+{
+    (void)engine_name;
+}
+
+const char *tts_get_engine(void)
+{
+    return "espeak";
+}

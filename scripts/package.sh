@@ -20,9 +20,14 @@ if [ -d "./bin" ]; then
     ITEMS="$ITEMS ./bin"
 fi
 
-# Add lib directory if it exists (contains Flite .so files for TTS)
+# Add lib directory if it exists (contains eSpeak-NG .so files for TTS)
 if [ -d "./lib" ]; then
     ITEMS="$ITEMS ./lib"
+fi
+
+# Add eSpeak-NG data directory if it exists (phoneme data, voice definitions)
+if [ -d "./espeak-ng-data" ]; then
+    ITEMS="$ITEMS ./espeak-ng-data"
 fi
 
 # Add licenses directory if it exists (third-party license files)

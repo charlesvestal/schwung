@@ -100,7 +100,8 @@ typedef struct shadow_control_t {
     volatile float tts_speed;         /* TTS speed multiplier (0.5-6.0) */
     volatile uint8_t overlay_knobs_mode; /* 0=shift, 1=jog_touch, 2=off */
     volatile uint8_t display_mirror;     /* 0=off, 1=on (stream display to browser) */
-    volatile uint8_t reserved[30];
+    volatile uint8_t tts_engine;         /* 0=espeak-ng, 1=flite */
+    volatile uint8_t reserved[29];
 } shadow_control_t;
 
 /*

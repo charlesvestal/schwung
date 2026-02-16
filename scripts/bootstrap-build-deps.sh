@@ -86,8 +86,9 @@ base_packages=(
 screen_reader_packages=(
     libdbus-1-dev:arm64
     libsystemd-dev:arm64
-    libflite1:arm64
-    flite1-dev:arm64
+    libespeak-ng1:arm64
+    libespeak-ng-dev:arm64
+    espeak-ng-data
 )
 
 echo "Installing base cross-build packages..."

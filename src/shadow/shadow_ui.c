@@ -1281,6 +1281,33 @@ static JSValue js_tts_get_volume(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, shadow_control->tts_volume);
 }
 
+/* tts_set_engine(name) - Write engine choice to shared memory (0=espeak, 1=flite) */
+static JSValue js_tts_set_engine(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_UNDEFINED;
+
+    if (strcmp(name, "flite") == 0) {
+        shadow_control->tts_engine = 1;
+    } else {
+        shadow_control->tts_engine = 0;  /* default: espeak */
+    }
+
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
+}
+
+/* tts_get_engine() -> string - Read engine choice from shared memory */
+static JSValue js_tts_get_engine(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewString(ctx, "espeak");
+    return JS_NewString(ctx, shadow_control->tts_engine == 1 ? "flite" : "espeak");
+}
+
 /* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off) */
 static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
@@ -1377,6 +1404,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "tts_get_pitch", JS_NewCFunction(ctx, js_tts_get_pitch, "tts_get_pitch", 0));
     JS_SetPropertyStr(ctx, global_obj, "tts_set_volume", JS_NewCFunction(ctx, js_tts_set_volume, "tts_set_volume", 1));
     JS_SetPropertyStr(ctx, global_obj, "tts_get_volume", JS_NewCFunction(ctx, js_tts_get_volume, "tts_get_volume", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_engine", JS_NewCFunction(ctx, js_tts_set_engine, "tts_set_engine", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_engine", JS_NewCFunction(ctx, js_tts_get_engine, "tts_get_engine", 0));
 
     /* Register overlay knobs mode functions */
     JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_set_mode", JS_NewCFunction(ctx, js_overlay_knobs_set_mode, "overlay_knobs_set_mode", 1));

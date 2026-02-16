@@ -660,19 +660,25 @@ ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserDat
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
 ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing after install"
 
-# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink.
-# Root partition is nearly full, so symlink instead of copying.
+# Deploy TTS libraries (eSpeak-NG + Flite) from /data to /usr/lib via symlink.
+# Root partition is nearly full, so symlink libraries instead of copying.
 # Use direct predicate checks so expected test failures don't print misleading
 # "Connection retry" messages from the retry wrapper.
 if $ssh_ableton "test ! -d /data/UserData/move-anything/lib" 2>/dev/null; then
   screen_reader_runtime_available=false
-  iecho "Screen reader runtime not bundled; skipping Flite deployment."
+  iecho "Screen reader runtime not bundled; skipping TTS library deployment."
 elif $ssh_ableton "test -d /data/UserData/move-anything/lib" 2>/dev/null; then
-  ssh_ableton_with_retry "for lib in libflite.so.1 libflite_cmu_us_kal.so.1 libflite_usenglish.so.1 libflite_cmulex.so.1; do test -e /data/UserData/move-anything/lib/\$lib || exit 1; done" || fail "Payload missing required Flite libraries (screen reader dependency)"
-  qecho "Deploying Flite libraries..."
-  ssh_root_with_retry "cd /data/UserData/move-anything/lib && set -- libflite*.so.* && [ \"\$1\" != 'libflite*.so.*' ] || exit 1; for lib in \"\$@\"; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+  qecho "Deploying TTS libraries (eSpeak-NG + Flite)..."
+  # Symlink all bundled TTS libraries to /usr/lib
+  ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in *.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install TTS libraries"
+  # eSpeak-NG data directory
+  if $ssh_ableton "test -d /data/UserData/move-anything/espeak-ng-data" 2>/dev/null; then
+    qecho "eSpeak-NG data directory present"
+  else
+    qecho "Warning: eSpeak-NG data directory not found (eSpeak engine may not work)"
+  fi
 else
-  fail "Failed to check screen reader runtime payload on device (SSH error)"
+  fail "Failed to check TTS runtime payload on device (SSH error)"
 fi
 
 # Ensure the replacement Move script exists and is executable

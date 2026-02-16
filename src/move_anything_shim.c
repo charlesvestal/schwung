@@ -7316,6 +7316,7 @@ static void init_shadow_shm(void)
             shadow_control->tts_volume = 70;    /* 70% volume */
             shadow_control->tts_pitch = 110;    /* 110 Hz */
             shadow_control->tts_speed = 1.0f;   /* Normal speed */
+            shadow_control->tts_engine = 0;     /* 0=espeak-ng, 1=flite */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -7504,6 +7505,13 @@ static void shadow_check_screenreader(void)
     if (has_pending_message && (now_ms - last_message_time_ms >= TTS_DEBOUNCE_MS)) {
         /* Apply TTS settings from shared memory before speaking */
         if (shadow_control) {
+            /* Check for engine switch (must happen before other settings) */
+            const char *current_engine = tts_get_engine();
+            const char *requested_engine = shadow_control->tts_engine == 1 ? "flite" : "espeak";
+            if (strcmp(current_engine, requested_engine) != 0) {
+                tts_set_engine(requested_engine);
+            }
+
             tts_set_enabled(shadow_control->tts_enabled != 0);
             tts_set_volume(shadow_control->tts_volume);
             tts_set_speed(shadow_control->tts_speed);
@@ -7539,6 +7547,13 @@ static void shadow_mix_audio(void)
         if (tts_test_frame_count == 1035) {  /* ~3 seconds at 44.1kHz, 128 frames/block */
             printf("TTS test: Speaking test phrase...\n");
             /* Apply TTS settings before test phrase */
+            {
+                const char *current_engine = tts_get_engine();
+                const char *requested_engine = shadow_control->tts_engine == 1 ? "flite" : "espeak";
+                if (strcmp(current_engine, requested_engine) != 0) {
+                    tts_set_engine(requested_engine);
+                }
+            }
             tts_set_enabled(shadow_control->tts_enabled != 0);
             tts_set_volume(shadow_control->tts_volume);
             tts_set_speed(shadow_control->tts_speed);
@@ -8599,6 +8614,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
             shadow_control->tts_volume = tts_get_volume();
             shadow_control->tts_speed = tts_get_speed();
             shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
+            shadow_control->tts_engine = (strcmp(tts_get_engine(), "flite") == 0) ? 1 : 0;
             unified_log("shim", LOG_LEVEL_INFO,
                        "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
                        shadow_control->tts_enabled ? "ON" : "OFF",
