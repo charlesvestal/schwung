@@ -5944,11 +5944,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else {
-            /* Check if this is a smoothable float param */
+            /* Only smooth float params — int/enum values must not be interpolated */
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                /* Store target for smoothing - will be applied in render_block */
-                smoother_set_target(&inst->synth_smoother, subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->synth_params, inst->synth_param_count, subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->synth_smoother, subkey, fval);
+                }
             }
             /* Always forward immediately (smoother will override with interpolated values) */
             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
@@ -5970,7 +5972,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         } else if (inst->fx_count > 0) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                }
             }
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
                 inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
@@ -5991,7 +5996,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         } else if (inst->fx_count > 1) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+                }
             }
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
