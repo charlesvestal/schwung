@@ -95,6 +95,7 @@ const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
 const SHADOW_UI_FLAG_JUMP_TO_MASTER_FX = 0x02;
 const SHADOW_UI_FLAG_JUMP_TO_OVERTAKE = 0x04;
 const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
+const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -528,7 +529,7 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
       options: ["+Shift", "+Jog Touch", "Off"], values: [0, 1, 2] },
     { key: "display_mirror", label: "Mirror Display", type: "bool" },
     { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
-    { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 2.0, step: 0.1 },
+    { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
     { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
     { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
     { key: "save", label: "[Save]", type: "action" },
@@ -564,6 +565,18 @@ let selectedMasterFxSetting = 0;
 let editingMasterFxSetting = false;
 let editMasterFxValue = "";
 let inMasterFxSettingsMenu = false;  /* True when in settings submenu */
+
+/* Screen Reader settings menu */
+const SCREENREADER_SETTINGS_ITEMS = [
+    { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
+    { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
+    { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
+    { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
+];
+let inScreenReaderSettingsMenu = false;
+let selectedScreenReaderSetting = 0;
+let editingScreenReaderSetting = false;
+let srAnnounceTimer = 0;
 
 /* Slot settings definitions */
 const SLOT_SETTINGS = [
@@ -4775,6 +4788,20 @@ function updateFocusedSlot(slot) {
 
 function handleJog(delta) {
     hideOverlay();
+    if (inScreenReaderSettingsMenu) {
+        if (editingScreenReaderSetting) {
+            const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+            adjustMasterFxSetting(item, delta);
+            srAnnounceTimer = 15;
+        } else {
+            selectedScreenReaderSetting = Math.max(0, Math.min(SCREENREADER_SETTINGS_ITEMS.length - 1, selectedScreenReaderSetting + delta));
+            const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+            const value = getMasterFxSettingValue(item);
+            announceMenuItem(item.label, value);
+        }
+        needsRedraw = true;
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             /* 5 items: 4 slots + Master FX */
@@ -4928,10 +4955,14 @@ function handleJog(delta) {
             } else if (hierEditorEditMode) {
                 /* Adjust selected param value */
                 adjustHierSelectedParam(delta);
-                /* Get current param and announce value */
+                /* Fetch fresh value and announce it */
                 if (hierEditorParams.length > 0 && hierEditorSelectedIdx >= 0 && hierEditorSelectedIdx < hierEditorParams.length) {
                     const param = hierEditorParams[hierEditorSelectedIdx];
-                    announceParameter(param.label || param.key, param.value || "");
+                    const key = typeof param === "string" ? param : param.key || param;
+                    const fullKey = buildHierarchyParamKey(key);
+                    const freshVal = getSlotParam(hierEditorSlot, fullKey);
+                    const displayVal = freshVal !== null ? formatHierDisplayValue(key, freshVal) : "";
+                    announceParameter(param.label || key, displayVal);
                 }
             } else {
                 /* Scroll param list (includes preset edit mode) */
@@ -4978,6 +5009,18 @@ function handleJog(delta) {
 
 function handleSelect() {
     hideOverlay();
+    if (inScreenReaderSettingsMenu) {
+        const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+        if (item.type === "bool" || item.type === "enum") {
+            adjustMasterFxSetting(item, 1);
+            const newVal = getMasterFxSettingValue(item);
+            announceParameter(item.label, newVal);
+        } else if (item.type === "float" || item.type === "int") {
+            editingScreenReaderSetting = !editingScreenReaderSetting;
+        }
+        needsRedraw = true;
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             if (selectedSlot < slots.length) {
@@ -5565,6 +5608,18 @@ function handleSelect() {
 
 function handleBack() {
     hideOverlay();
+    if (inScreenReaderSettingsMenu) {
+        if (editingScreenReaderSetting) {
+            editingScreenReaderSetting = false;
+        } else {
+            inScreenReaderSettingsMenu = false;
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+        }
+        needsRedraw = true;
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             /* At root level - exit shadow mode and return to Move */
@@ -6691,6 +6746,21 @@ function drawMasterFxSettingsMenu() {
 
 /* ========== End Master Preset Draw Functions ========== */
 
+function drawScreenReaderSettingsMenu() {
+    drawHeader("Screen Reader");
+
+    drawMenuList({
+        items: SCREENREADER_SETTINGS_ITEMS,
+        selectedIndex: selectedScreenReaderSetting,
+        getLabel: (item) => item.label,
+        getValue: (item) => getMasterFxSettingValue(item),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true
+    });
+
+    drawFooter("Back: exit");
+}
+
 function drawMasterFx() {
     clear_screen();
 
@@ -6932,6 +7002,30 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
             }
         }
+        if (flags & SHADOW_UI_FLAG_JUMP_TO_SCREENREADER) {
+            debugLog("SCREENREADER flag detected, entering screen reader settings");
+            inScreenReaderSettingsMenu = true;
+            selectedScreenReaderSetting = 0;
+            editingScreenReaderSetting = false;
+            needsRedraw = true;
+            /* Announce menu + initial selection */
+            const item = SCREENREADER_SETTINGS_ITEMS[0];
+            const value = getMasterFxSettingValue(item);
+            announce(`Screen Reader Settings, ${item.label}: ${value}`);
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SCREENREADER);
+            }
+        }
+    }
+
+    /* Screen reader settings debounce timer */
+    if (srAnnounceTimer > 0) {
+        srAnnounceTimer--;
+        if (srAnnounceTimer === 0) {
+            const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+            const value = getMasterFxSettingValue(item);
+            announceParameter(item.label, value);
+        }
     }
 
     refreshCounter++;
@@ -7002,6 +7096,11 @@ globalThis.tick = function() {
         return;
     }
     needsRedraw = false;
+    if (inScreenReaderSettingsMenu) {
+        clear_screen();
+        drawScreenReaderSettingsMenu();
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             drawSlots();

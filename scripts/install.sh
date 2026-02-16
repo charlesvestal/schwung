@@ -701,12 +701,45 @@ ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
 # Link Audio enabled by default (harmless on 1.x, activates on 2.0+ with Link)
 link_audio_val="true"
 
+# Read existing features.json from device (if any) to preserve user settings
+existing_features=$(ssh_ableton_with_retry "cat /data/UserData/move-anything/config/features.json 2>/dev/null" || echo "")
+
+# Helper: extract a JSON bool value from existing config, with fallback
+get_existing_feature() {
+    local key="$1"
+    local fallback="$2"
+    if [ -n "$existing_features" ]; then
+        local val=$(echo "$existing_features" | grep "\"$key\"" | grep -o 'true\|false' | head -1)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$fallback"
+}
+
+# Determine feature values: CLI flags override, otherwise preserve existing, otherwise default
+if [ "$disable_shadow_ui" = true ]; then
+    shadow_ui_val="false"
+else
+    shadow_ui_val=$(get_existing_feature "shadow_ui_enabled" "true")
+fi
+
+if [ "$disable_standalone" = true ]; then
+    standalone_val="false"
+else
+    standalone_val=$(get_existing_feature "standalone_enabled" "true")
+fi
+
+existing_link_audio=$(get_existing_feature "link_audio_enabled" "$link_audio_val")
+existing_display_mirror=$(get_existing_feature "display_mirror_enabled" "false")
+
 # Build features.json content
 features_json="{
-  \"shadow_ui_enabled\": $([ "$disable_shadow_ui" = false ] && echo "true" || echo "false"),
-  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false"),
-  \"link_audio_enabled\": $link_audio_val,
-  \"display_mirror_enabled\": false
+  \"shadow_ui_enabled\": $shadow_ui_val,
+  \"standalone_enabled\": $standalone_val,
+  \"link_audio_enabled\": $existing_link_audio,
+  \"display_mirror_enabled\": $existing_display_mirror
 }"
 
 # Write features.json
@@ -727,8 +760,8 @@ fi
 
 if [ "$quiet_mode" = false ]; then
     echo "Features configured:"
-    echo "  Shadow UI: $([ "$disable_shadow_ui" = false ] && echo "enabled" || echo "disabled")"
-    echo "  Standalone: $([ "$disable_standalone" = false ] && echo "enabled" || echo "disabled")"
+    echo "  Shadow UI: $([ "$shadow_ui_val" = "true" ] && echo "enabled" || echo "disabled")"
+    echo "  Standalone: $([ "$standalone_val" = "true" ] && echo "enabled" || echo "disabled")"
     echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
 fi
 

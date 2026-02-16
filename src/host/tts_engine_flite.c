@@ -430,9 +430,9 @@ void tts_set_volume(int volume) {
 }
 
 void tts_set_speed(float speed) {
-    /* Clamp to reasonable range: 0.5x to 2.0x */
+    /* Clamp to reasonable range: 0.5x to 6.0x */
     if (speed < 0.5f) speed = 0.5f;
-    if (speed > 2.0f) speed = 2.0f;
+    if (speed > 6.0f) speed = 6.0f;
 
     /* Save config only if value changed */
     bool changed = (tts_speed != speed);

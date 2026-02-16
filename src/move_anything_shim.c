@@ -8891,9 +8891,12 @@ static void shadow_ui_reap(void)
 
 static void launch_shadow_ui(void)
 {
+    /* Quick check before reap/refresh — if we just forked, trust the state
+     * even if /proc hasn't appeared yet (avoids double-fork race). */
+    if (shadow_ui_started && shadow_ui_pid > 0) return;
     shadow_ui_reap();
     shadow_ui_refresh_pid();
-    if (shadow_ui_started && shadow_ui_pid_alive(shadow_ui_pid)) return;
+    if (shadow_ui_started && shadow_ui_pid > 0) return;
     if (access("/data/UserData/move-anything/shadow/shadow_ui", X_OK) != 0) {
         return;
     }
@@ -9780,28 +9783,12 @@ do_ioctl:
                                 shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                             }
                         } else {
-                            /* Shadow UI disabled: toggle screen reader */
-                            bool current_state = tts_get_enabled();
-                            snprintf(log_msg, sizeof(log_msg), "Toggling screen reader: %s -> %s",
-                                     current_state ? "ON" : "OFF",
-                                     !current_state ? "ON" : "OFF");
-                            shadow_log(log_msg);
-
-                            /* Set priority flag to block D-Bus messages during toggle announcement */
-                            struct timespec ts;
-                            clock_gettime(CLOCK_MONOTONIC, &ts);
-                            tts_priority_announcement_time_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
-                            tts_priority_announcement_active = true;
-
-                            tts_set_enabled(!current_state);
-                            /* Update shared memory so D-Bus handler doesn't re-sync stale value */
-                            if (shadow_control) {
-                                shadow_control->tts_enabled = !current_state ? 1 : 0;
-                            }
-                            if (!current_state) {
-                                /* Just enabled - announce it */
-                                tts_speak("screen reader on");
-                            }
+                            /* Shadow UI disabled: launch screen reader settings menu */
+                            shadow_log("Shadow UI disabled path: launching screen reader settings");
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SCREENREADER;
+                            shadow_display_mode = 1;
+                            shadow_control->display_mode = 1;
+                            launch_shadow_ui();
                         }
                     }
                     /* Block Menu CC from reaching Move by zeroing in shadow buffer */

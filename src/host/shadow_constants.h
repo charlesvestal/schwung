@@ -62,6 +62,7 @@
 #define SHADOW_UI_FLAG_JUMP_TO_MASTER_FX 0x02 /* Jump to Master FX on open */
 #define SHADOW_UI_FLAG_JUMP_TO_OVERTAKE 0x04  /* Jump to overtake module menu */
 #define SHADOW_UI_FLAG_SAVE_STATE 0x08        /* Save all state (shutdown imminent) */
+#define SHADOW_UI_FLAG_JUMP_TO_SCREENREADER 0x10 /* Jump to screen reader settings */
 
 /* ============================================================================
  * Special Values
@@ -96,7 +97,7 @@ typedef struct shadow_control_t {
     volatile uint8_t tts_enabled;     /* Screen Reader on/off (1=on, 0=off) */
     volatile uint8_t tts_volume;      /* TTS volume (0-100) */
     volatile uint16_t tts_pitch;      /* TTS pitch in Hz (80-180) */
-    volatile float tts_speed;         /* TTS speed multiplier (0.5-2.0) */
+    volatile float tts_speed;         /* TTS speed multiplier (0.5-6.0) */
     volatile uint8_t overlay_knobs_mode; /* 0=shift, 1=jog_touch, 2=off */
     volatile uint8_t display_mirror;     /* 0=off, 1=on (stream display to browser) */
     volatile uint8_t reserved[30];

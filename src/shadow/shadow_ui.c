@@ -1214,7 +1214,7 @@ static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
 
     /* Clamp to valid range */
     if (speed < 0.5) speed = 0.5;
-    if (speed > 2.0) speed = 2.0;
+    if (speed > 6.0) speed = 6.0;
 
     shadow_control->tts_speed = (float)speed;
 
