@@ -3700,7 +3700,13 @@ function loadHierarchyLevel() {
     }
 
     /* Determine if this is the top level (swap module only at top) */
-    const isTopLevel = hierEditorLevel === "root" && !hierEditorHierarchy.modes;
+    /* Also treat the direct child of root as top level when root has children,
+       since root's edit mode (where swap is injected) is never shown in that case */
+    const rootDef = levels["root"];
+    const isTopLevel = !hierEditorHierarchy.modes && (
+        hierEditorLevel === "root" ||
+        (rootDef && rootDef.children === hierEditorLevel)
+    );
 
     /* Child selector for levels that require child_prefix */
     if (levelDef.child_prefix && hierEditorChildCount > 0 && hierEditorChildIndex < 0) {

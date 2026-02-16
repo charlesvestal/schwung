@@ -7575,16 +7575,20 @@ static void shadow_check_screenreader(void)
 #define PIN_STATE_IDLE     0
 #define PIN_STATE_WAITING  1  /* Waiting for PIN to render (~500ms) */
 #define PIN_STATE_SCANNING 2  /* Scanning display for digits */
-#define PIN_STATE_DONE     3  /* PIN spoken, waiting for dismiss */
+#define PIN_STATE_COOLDOWN 3  /* PIN spoken, cooling down before accepting new */
 
 static int pin_state = PIN_STATE_IDLE;
 static uint64_t pin_state_entered_ms = 0;
-static uint8_t pin_last_challenge = 0;
+static char pin_last_spoken[8] = {0};  /* Last PIN we spoke, to avoid repeats */
 
 /* File-scope display buffer for PIN scanning, accumulated from slices */
 static uint8_t pin_display_buf[DISPLAY_BUFFER_SIZE];
 static int pin_display_slices_seen[6] = {0};
 static int pin_display_complete = 0;
+
+/* Shift+Menu double-click detection state */
+static uint64_t shift_menu_pending_ms = 0;
+static int shift_menu_pending = 0;
 
 /* Accumulate a display slice into the PIN display buffer.
  * Called from the ioctl handler's slice capture section. */
@@ -7667,8 +7671,9 @@ static int pin_display_is_pin_screen(const uint8_t *display)
 }
 
 /* Extract digits from display and build TTS string.
- * Returns 1 on success with pin_text filled, 0 on failure. */
-static int pin_extract_digits(const uint8_t *display, char *pin_text, int text_len)
+ * Returns 1 on success with pin_text and raw_digits filled, 0 on failure.
+ * raw_digits must be at least 7 bytes (6 digits + NUL). */
+static int pin_extract_digits(const uint8_t *display, char *pin_text, int text_len, char *raw_digits)
 {
     char logbuf[512];
 
@@ -7748,7 +7753,7 @@ static int pin_extract_digits(const uint8_t *display, char *pin_text, int text_l
             /* Dump column bytes for pages 3-4 */
             int pos = 0;
             pos += snprintf(logbuf + pos, sizeof(logbuf) - pos, "PIN: digit %d p3:", i);
-            for (int c = spans[i].start; c < spans[i].end && pos < 400; c++) {
+            for (int c = spans[i].start; c < spans[i].end && pos < 300; c++) {
                 pos += snprintf(logbuf + pos, sizeof(logbuf) - pos,
                                " %02x", display[3 * 128 + c]);
             }
@@ -7762,17 +7767,20 @@ static int pin_extract_digits(const uint8_t *display, char *pin_text, int text_l
     }
     digits[6] = '\0';
 
+    /* Copy raw digits to output parameter for dedup */
+    memcpy(raw_digits, digits, 7);
+
     if (!all_matched) {
         snprintf(logbuf, sizeof(logbuf), "PIN: some digits unmatched, raw string: %s", digits);
         shadow_log(logbuf);
         /* Still try to speak what we have - the user may recognize partial info */
     }
 
-    /* Build TTS string: repeat 3 times with pauses.
-     * "Pairing pin displayed: 1, 2, 3, 4, 5, 6. ... (repeat)"
-     * Use "...." between repetitions for ~3s pause in TTS. */
+    /* Build TTS string: repeat 2 times with a pause.
+     * "Pairing pin displayed: 1, 2, 3, 4, 5, 6. (pause) (repeat)"
+     * Keep under 12 seconds of audio to fit in ring buffer. */
     int n = 0;
-    for (int rep = 0; rep < 3; rep++) {
+    for (int rep = 0; rep < 2; rep++) {
         if (rep > 0) n += snprintf(pin_text + n, text_len - n, ".... ");
         n += snprintf(pin_text + n, text_len - n, "Pairing pin displayed: ");
         for (int i = 0; i < 6 && n < text_len - 4; i++) {
@@ -7787,7 +7795,14 @@ static int pin_extract_digits(const uint8_t *display, char *pin_text, int text_l
     return 1;
 }
 
-/* Main PIN scanner - called from the display section of the tick loop */
+/* Main PIN scanner - called from the display section of the tick loop.
+ *
+ * State machine: IDLE → WAITING → SCANNING → COOLDOWN → IDLE
+ *
+ * Key design: we never clear pin_challenge_active from the shim side because
+ * the web shim will immediately re-set it on the browser's next HTTP poll.
+ * Instead, after speaking we enter COOLDOWN which ignores the flag until it
+ * naturally clears (user enters PIN or navigates away) or a timeout expires. */
 static void pin_check_and_speak(void)
 {
     if (!shadow_control) return;
@@ -7799,28 +7814,27 @@ static void pin_check_and_speak(void)
 
     uint8_t challenge = shadow_control->pin_challenge_active;
 
-    /* Detect transition to challenge state (0→1) */
-    if (challenge == 1 && pin_last_challenge != 1) {
-        pin_state = PIN_STATE_WAITING;
+    /* If challenge-response submitted (2), cancel any active scan */
+    if (challenge == 2 && pin_state != PIN_STATE_IDLE && pin_state != PIN_STATE_COOLDOWN) {
+        shadow_log("PIN: challenge-response submitted, cancelling scan");
+        pin_state = PIN_STATE_COOLDOWN;
         pin_state_entered_ms = now_ms;
-        pin_display_complete = 0;
-        memset(pin_display_slices_seen, 0, sizeof(pin_display_slices_seen));
-        shadow_log("PIN: challenge detected, waiting for display render");
-    }
-
-    /* If challenge was submitted (2), cancel immediately and clear */
-    if (challenge == 2 && pin_state != PIN_STATE_IDLE) {
-        shadow_log("PIN: challenge-response submitted, cancelling");
-        shadow_control->pin_challenge_active = 0;
-        pin_state = PIN_STATE_IDLE;
-        pin_last_challenge = 0;
         return;
     }
 
-    pin_last_challenge = challenge;
-
     /* State machine */
     switch (pin_state) {
+    case PIN_STATE_IDLE:
+        /* Only trigger on challenge=1 from IDLE */
+        if (challenge == 1) {
+            pin_state = PIN_STATE_WAITING;
+            pin_state_entered_ms = now_ms;
+            pin_display_complete = 0;
+            memset(pin_display_slices_seen, 0, sizeof(pin_display_slices_seen));
+            shadow_log("PIN: challenge detected, waiting for display render");
+        }
+        break;
+
     case PIN_STATE_WAITING:
         /* Wait 500ms for the PIN to render on the display */
         if (now_ms - pin_state_entered_ms > 500) {
@@ -7834,12 +7848,19 @@ static void pin_check_and_speak(void)
     case PIN_STATE_SCANNING:
         if (pin_display_complete) {
             char pin_text[512];
-            if (pin_extract_digits(pin_display_buf, pin_text, sizeof(pin_text))) {
-                /* Speak the PIN */
-                { char lb[128]; snprintf(lb, sizeof(lb), "PIN: speaking '%s'", pin_text); shadow_log(lb); }
-                tts_speak(pin_text);
-                pin_state = PIN_STATE_DONE;
-                pin_state_entered_ms = now_ms;
+            char raw_digits[8] = {0};
+            if (pin_extract_digits(pin_display_buf, pin_text, sizeof(pin_text), raw_digits)) {
+                if (strcmp(raw_digits, pin_last_spoken) == 0) {
+                    /* Same PIN as last time — skip to avoid repeating */
+                    pin_state = PIN_STATE_COOLDOWN;
+                    pin_state_entered_ms = now_ms;
+                } else {
+                    { char lb[128]; snprintf(lb, sizeof(lb), "PIN: speaking '%s'", pin_text); shadow_log(lb); }
+                    tts_speak(pin_text);
+                    strncpy(pin_last_spoken, raw_digits, sizeof(pin_last_spoken) - 1);
+                    pin_state = PIN_STATE_COOLDOWN;
+                    pin_state_entered_ms = now_ms;
+                }
             } else {
                 /* Try again on next full frame */
                 pin_display_complete = 0;
@@ -7848,18 +7869,22 @@ static void pin_check_and_speak(void)
         /* Timeout after 10 seconds of scanning */
         if (now_ms - pin_state_entered_ms > 10000) {
             shadow_log("PIN: scan timeout");
-            pin_state = PIN_STATE_DONE;
+            pin_state = PIN_STATE_COOLDOWN;
             pin_state_entered_ms = now_ms;
         }
         break;
 
-    case PIN_STATE_DONE:
-        /* Stay in DONE until the challenge flag clears (0 or 2),
-         * then return to idle so we can detect a fresh challenge. */
+    case PIN_STATE_COOLDOWN:
+        /* Wait for the challenge flag to clear naturally (user entered PIN
+         * or browser navigated away), then return to IDLE.
+         * Safety timeout after 60s to avoid being stuck forever. */
         if (challenge == 0 || challenge == 2) {
             pin_state = PIN_STATE_IDLE;
-            pin_last_challenge = 0;
+            pin_last_spoken[0] = '\0';  /* Clear dedup so new session can repeat */
             shadow_log("PIN: challenge cleared, returning to idle");
+        } else if (now_ms - pin_state_entered_ms > 5000) {
+            pin_state = PIN_STATE_IDLE;
+            shadow_log("PIN: cooldown timeout, returning to idle");
         }
         break;
 
@@ -7942,21 +7967,32 @@ static void shadow_mix_audio(void)
     }
     #endif
 
-    /* Mix TTS audio on top, scaled by Move's master volume */
-    if (tts_is_speaking()) {
-        static int16_t tts_buffer[FRAMES_PER_BLOCK * 2];  /* Stereo interleaved */
-        int frames_read = tts_get_audio(tts_buffer, FRAMES_PER_BLOCK);
+    /* NOTE: TTS mixing moved to shadow_mix_tts() which runs AFTER
+     * shadow_inprocess_mix_from_buffer(). That function zeros the mailbox
+     * when Link Audio is active, so TTS must be mixed in afterward. */
+}
 
-        if (frames_read > 0) {
-            float mv = shadow_master_volume;
-            for (int i = 0; i < frames_read * 2; i++) {
-                int32_t scaled_tts = (int32_t)lroundf((float)tts_buffer[i] * mv);
-                int32_t mixed = (int32_t)mailbox_audio[i] + scaled_tts;
-                /* Clip to int16 range */
-                if (mixed > 32767) mixed = 32767;
-                if (mixed < -32768) mixed = -32768;
-                mailbox_audio[i] = (int16_t)mixed;
-            }
+/* Mix TTS audio into mailbox.  Called AFTER shadow_inprocess_mix_from_buffer()
+ * because that function may zero-and-rebuild the mailbox when Link Audio is
+ * active.  Mixing TTS here ensures it is never wiped by the rebuild. */
+static void shadow_mix_tts(void)
+{
+    if (!global_mmap_addr) return;
+    if (!tts_is_speaking()) return;
+
+    int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    static int16_t tts_buffer[FRAMES_PER_BLOCK * 2];  /* Stereo interleaved */
+    int frames_read = tts_get_audio(tts_buffer, FRAMES_PER_BLOCK);
+
+    if (frames_read > 0) {
+        float mv = shadow_master_volume;
+        for (int i = 0; i < frames_read * 2; i++) {
+            int32_t scaled_tts = (int32_t)lroundf((float)tts_buffer[i] * mv);
+            int32_t mixed = (int32_t)mailbox_audio[i] + scaled_tts;
+            /* Clip to int16 range */
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            mailbox_audio[i] = (int16_t)mixed;
         }
     }
 }
@@ -9704,6 +9740,9 @@ int ioctl(int fd, unsigned long request, ...)
         if (mix_us > inproc_mix_max) inproc_mix_max = mix_us;
     }
 
+    /* Mix TTS audio AFTER inprocess mix (which may zero-rebuild mailbox for Link Audio) */
+    shadow_mix_tts();
+
     /* Signal Link Audio publisher thread to drain accumulated audio */
     if (link_audio.publisher_running) {
         link_audio.publisher_tick = 1;
@@ -10119,41 +10158,29 @@ do_ioctl:
                 uint8_t d1 = hw_midi[j + 2];
                 uint8_t d2 = hw_midi[j + 3];
 
-                /* Shift + Menu = jump to Master FX view (or toggle screen reader if shadow UI disabled) */
+                /* Shift + Menu: single press = Master FX / screen reader settings
+                 *                double press = toggle screen reader on/off
+                 * First press is deferred 400ms to detect double-click. */
                 /* Block Menu CC entirely when Shift is held (both press and release) */
                 if (d1 == CC_MENU && shadow_shift_held) {
-                    /* Only process action on button press (d2 > 0), but block both press and release */
                     if (d2 > 0 && shadow_control) {
-                        char log_msg[128];
-                        snprintf(log_msg, sizeof(log_msg), "Shift+Menu detected (POST-IOCTL), shadow_ui_enabled=%s",
-                                 shadow_ui_enabled ? "true" : "false");
-                        shadow_log(log_msg);
+                        struct timespec sm_ts;
+                        clock_gettime(CLOCK_MONOTONIC, &sm_ts);
+                        uint64_t sm_now = (uint64_t)(sm_ts.tv_sec * 1000) + (sm_ts.tv_nsec / 1000000);
 
-                        if (shadow_ui_enabled) {
-                            /* Shadow UI enabled: launch/navigate to Master FX */
-                            snprintf(log_msg, sizeof(log_msg), "Shadow UI enabled path: shadow_display_mode=%d", shadow_display_mode);
-                            shadow_log(log_msg);
-                            if (!shadow_display_mode) {
-                                /* From Move mode: launch shadow UI and jump to Master FX */
-                                shadow_log("Setting jump flag and launching shadow UI");
-                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                                shadow_display_mode = 1;
-                                shadow_control->display_mode = 1;
-                                shadow_log("Calling launch_shadow_ui()...");
-                                launch_shadow_ui();
-                                shadow_log("launch_shadow_ui() returned");
-                            } else {
-                                /* Already in shadow mode: set flag */
-                                shadow_log("Already in shadow mode, setting jump flag");
-                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                            }
+                        if (shift_menu_pending && (sm_now - shift_menu_pending_ms) < 300) {
+                            /* Double-click: toggle screen reader */
+                            shift_menu_pending = 0;
+                            uint8_t was_on = shadow_control->tts_enabled;
+                            shadow_control->tts_enabled = was_on ? 0 : 1;
+                            tts_set_enabled(!was_on);
+                            tts_speak(was_on ? "Screen reader off" : "Screen reader on");
+                            shadow_log(was_on ? "Shift+Menu double-click: screen reader OFF"
+                                              : "Shift+Menu double-click: screen reader ON");
                         } else {
-                            /* Shadow UI disabled: launch screen reader settings menu */
-                            shadow_log("Shadow UI disabled path: launching screen reader settings");
-                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SCREENREADER;
-                            shadow_display_mode = 1;
-                            shadow_control->display_mode = 1;
-                            launch_shadow_ui();
+                            /* First press: defer action */
+                            shift_menu_pending = 1;
+                            shift_menu_pending_ms = sm_now;
                         }
                     }
                     /* Block Menu CC from reaching Move by zeroing in shadow buffer */
@@ -10168,6 +10195,36 @@ do_ioctl:
             }
         }
         skip_shift_menu:
+
+        /* Deferred Shift+Menu single-press action (fires 400ms after first press if no double-click) */
+        if (shift_menu_pending && shadow_control) {
+            struct timespec sm_ts2;
+            clock_gettime(CLOCK_MONOTONIC, &sm_ts2);
+            uint64_t sm_now2 = (uint64_t)(sm_ts2.tv_sec * 1000) + (sm_ts2.tv_nsec / 1000000);
+            if (sm_now2 - shift_menu_pending_ms >= 300) {
+                shift_menu_pending = 0;
+                char log_msg[128];
+                snprintf(log_msg, sizeof(log_msg), "Shift+Menu single-press (deferred), shadow_ui_enabled=%s",
+                         shadow_ui_enabled ? "true" : "false");
+                shadow_log(log_msg);
+
+                if (shadow_ui_enabled) {
+                    if (!shadow_display_mode) {
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui();
+                    } else {
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                    }
+                } else {
+                    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SCREENREADER;
+                    shadow_display_mode = 1;
+                    shadow_control->display_mode = 1;
+                    launch_shadow_ui();
+                }
+            }
+        }
 
         /* === SAMPLER MIDI FILTERING ===
          * Block events from reaching Move for sampler use.

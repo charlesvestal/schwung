@@ -472,6 +472,16 @@ static void espeak_clear_buffer(void) {
 void espeak_tts_set_enabled(bool enabled) {
     if (enabled == tts_enabled && !tts_disabling) return;
 
+    /* Re-enable while disable is still in progress: cancel the disable */
+    if (enabled && tts_disabling) {
+        unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader re-enabled (cancelled pending disable)");
+        tts_disabling = false;
+        tts_disabling_had_audio = false;
+        tts_enabled = true;
+        espeak_save_state();
+        return;
+    }
+
     if (enabled && !tts_enabled) {
         tts_enabled = true;
         tts_disabling = false;

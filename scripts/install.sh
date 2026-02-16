@@ -1117,8 +1117,8 @@ if $ssh_root "test -f /etc/init.d/move-web-service" 2>/dev/null; then
     web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
     if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
         qecho "Restarting MoveWebService with PIN readout shim..."
-        ssh_root_with_retry "/etc/init.d/move-web-service stop >/dev/null 2>&1 || true" || true
-        ssh_root_with_retry "/etc/init.d/move-web-service start >/dev/null 2>&1 || true" || true
+        # Kill both wrapper name and original binary name (init script stop only matches MoveWebService)
+        ssh_root_with_retry "killall MoveWebServiceOriginal MoveWebService 2>/dev/null; sleep 1; /etc/init.d/move-web-service start >/dev/null 2>&1 || true" || true
     fi
 fi
 
