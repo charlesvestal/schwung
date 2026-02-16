@@ -7587,14 +7587,16 @@ static void shadow_mix_audio(void)
     }
     #endif
 
-    /* Mix TTS audio on top */
+    /* Mix TTS audio on top, scaled by Move's master volume */
     if (tts_is_speaking()) {
         static int16_t tts_buffer[FRAMES_PER_BLOCK * 2];  /* Stereo interleaved */
         int frames_read = tts_get_audio(tts_buffer, FRAMES_PER_BLOCK);
 
         if (frames_read > 0) {
+            float mv = shadow_master_volume;
             for (int i = 0; i < frames_read * 2; i++) {
-                int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)tts_buffer[i];
+                int32_t scaled_tts = (int32_t)lroundf((float)tts_buffer[i] * mv);
+                int32_t mixed = (int32_t)mailbox_audio[i] + scaled_tts;
                 /* Clip to int16 range */
                 if (mixed > 32767) mixed = 32767;
                 if (mixed < -32768) mixed = -32768;
