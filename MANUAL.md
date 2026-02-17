@@ -96,7 +96,12 @@ The last position in each slot contains settings:
 | **Knob 1-8** | Assign any module parameter to a knob. These work even in normal Move mode (hold Shift + turn knob). |
 | **Volume** | Slot volume level |
 | **Receive Ch** | MIDI channel this slot listens to (match your Move track's MIDI Out) |
-| **Forward Ch** | MIDI channel sent to the synth module (use for multitimbral patches) |
+| **Forward Ch** | MIDI channel sent to the synth module (see below) |
+
+**Forward Channel modes:**
+- **Auto** (default): Remaps MIDI to the slot's receive channel. If Receive Ch is "All", passes through unchanged.
+- **Thru**: Passes the original MIDI channel through unchanged — useful for multitimbral synths that respond differently on each channel.
+- **1-16**: Forces all MIDI to a specific channel regardless of what was received.
 
 ### Slot Presets
 
