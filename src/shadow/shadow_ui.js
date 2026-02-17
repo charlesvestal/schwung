@@ -523,6 +523,7 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "link_audio_routing", label: "Link Audio", type: "bool" },
     { key: "resample_bridge", label: "Resample Src", type: "enum",
       options: ["Off", "Replace"], values: [0, 2] },
     { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
@@ -678,6 +679,12 @@ let masterPresets = [];              // List of {name, index} from /presets_mast
 let selectedMasterPresetIndex = 0;   // Index in picker (0 = [New])
 let currentMasterPresetName = "";    // Name of loaded preset ("" if new/unsaved)
 let inMasterPresetPicker = false;    // True when showing preset picker
+
+/* Cached settings — written during save instead of reading from shim,
+ * to avoid a race where the periodic autosave reads shim defaults before
+ * loadMasterFxChainFromConfig() has restored the correct values. */
+let cachedResampleBridgeMode = 0;
+let cachedLinkAudioRouting = false;
 
 /* Master preset CRUD state (reuse pattern from slot presets) */
 let masterPendingSaveName = "";
@@ -1200,6 +1207,7 @@ function enterOvertakeMenu() {
     overtakeModules = scanForOvertakeModules();
     /* Add [Get more...] option at the end */
     overtakeModules.push({ id: "__get_more__", name: "[Get more...]", path: null, uiPath: null });
+    overtakeModules.push({ id: "__back_to_move__", name: "[Back to Move]", path: null, uiPath: null });
     selectedOvertakeModule = 0;
     previousView = view;
     setView(VIEWS.OVERTAKE_MENU);
@@ -1428,7 +1436,9 @@ function handleOvertakeMenuInput(cc, value) {
         /* Jog click - select module */
         if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
             const selected = overtakeModules[selectedOvertakeModule];
-            if (selected.id === "__get_more__") {
+            if (selected.id === "__back_to_move__") {
+                exitOvertakeMode();
+            } else if (selected.id === "__get_more__") {
                 /* Open store picker - stay in menu mode so we receive input */
                 enterStorePicker('overtake');
             } else {
@@ -2083,8 +2093,15 @@ function buildSlotPatchJson(slotIndex, name) {
 /* Autosave all slot states to slot_state/slot_N.json */
 function autosaveAllSlots() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        /* Sync chainConfigs from DSP before checking - prevents clobbering
+         * valid autosave files for slots we haven't navigated to yet */
+        refreshSlotModuleSignature(i);
         const cfg = chainConfigs[i];
-        if (!cfg || !cfg.synth || !cfg.synth.module) {
+        const hasSynth = cfg && cfg.synth && cfg.synth.module;
+        const hasFx1 = cfg && cfg.fx1 && cfg.fx1.module;
+        const hasFx2 = cfg && cfg.fx2 && cfg.fx2.module;
+        const hasMidiFx = cfg && cfg.midiFx && cfg.midiFx.module;
+        if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
             /* Empty slot - write empty marker to clear autosave */
             host_write_file(
                 SLOT_STATE_DIR + "/slot_" + i + ".json",
@@ -2669,10 +2686,11 @@ function saveMasterFxChainConfig() {
         if (typeof overlay_knobs_get_mode === "function") {
             config.overlay_knobs_mode = overlay_knobs_get_mode();
         }
-        if (typeof shadow_get_param === "function") {
-            const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
-            config.resample_bridge_mode = parseResampleBridgeMode(modeRaw);
-        }
+        /* Use JS-cached values instead of reading from shim to avoid
+         * race condition where periodic autosave reads shim defaults
+         * before loadMasterFxChainFromConfig() has restored them. */
+        config.resample_bridge_mode = cachedResampleBridgeMode;
+        config.link_audio_routing = cachedLinkAudioRouting;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -2699,6 +2717,11 @@ function loadMasterFxChainFromConfig() {
         if (config.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
             const mode = parseResampleBridgeMode(config.resample_bridge_mode);
             shadow_set_param(0, "master_fx:resample_bridge", String(mode));
+            cachedResampleBridgeMode = mode;
+        }
+        if (config.link_audio_routing !== undefined && typeof shadow_set_param === "function") {
+            shadow_set_param(0, "master_fx:link_audio_routing", config.link_audio_routing ? "1" : "0");
+            cachedLinkAudioRouting = !!config.link_audio_routing;
         }
 
         if (!config.master_fx_chain) return;
@@ -4663,6 +4686,10 @@ function getMasterFxSettingValue(setting) {
         const num = parseFloat(val);
         return isNaN(num) ? val : `${Math.round(num * 100)}%`;
     }
+    if (setting.key === "link_audio_routing") {
+        const val = shadow_get_param(0, "master_fx:link_audio_routing");
+        return (val === "1") ? "On" : "Off";
+    }
     if (setting.key === "resample_bridge") {
         const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
         const mode = parseResampleBridgeMode(modeRaw);
@@ -4718,6 +4745,14 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
 
+    if (setting.key === "link_audio_routing") {
+        const current = shadow_get_param(0, "master_fx:link_audio_routing");
+        const newVal = (current === "1") ? "0" : "1";
+        shadow_set_param(0, "master_fx:link_audio_routing", newVal);
+        cachedLinkAudioRouting = (newVal === "1");
+        saveMasterFxChainConfig();
+        return;
+    }
     if (setting.key === "resample_bridge") {
         const current = parseResampleBridgeMode(shadow_get_param(0, "master_fx:resample_bridge"));
         const values = (Array.isArray(setting.values) && setting.values.length > 0)
@@ -4727,6 +4762,7 @@ function adjustMasterFxSetting(setting, delta) {
         if (idx < 0) idx = 0;
         const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
         shadow_set_param(0, "master_fx:resample_bridge", String(values[nextIdx]));
+        cachedResampleBridgeMode = values[nextIdx];
         saveMasterFxChainConfig();
         return;
     }
@@ -5709,19 +5745,23 @@ function handleBack() {
                 /* Exit value editing mode */
                 editingSettingValue = false;
                 needsRedraw = true;
+                announce("Slot Settings");
             } else {
                 /* Return to slots list */
                 setView(VIEWS.SLOTS);
+                announce("Slots");
                 needsRedraw = true;
             }
             break;
         case VIEWS.PATCHES:
             /* Return to chain editor */
             setView(VIEWS.CHAIN_EDIT);
+            announce("Chain Editor");
             needsRedraw = true;
             break;
         case VIEWS.PATCH_DETAIL:
             setView(VIEWS.PATCHES);
+            announce("Patch Browser");
             needsRedraw = true;
             break;
         case VIEWS.COMPONENT_PARAMS:
@@ -5729,10 +5769,12 @@ function handleBack() {
                 /* Exit value editing mode */
                 editingValue = false;
                 needsRedraw = true;
+                announce("Parameters");
             } else {
                 /* Return to patch detail, refresh info */
                 fetchPatchDetail(selectedSlot);
                 setView(VIEWS.PATCH_DETAIL);
+                announce("Patch Detail");
                 needsRedraw = true;
             }
             break;
@@ -5741,26 +5783,32 @@ function handleBack() {
                 /* Cancel name preview */
                 masterShowingNamePreview = false;
                 needsRedraw = true;
+                announce("Master FX Settings");
             } else if (masterConfirmingOverwrite) {
                 /* Cancel overwrite - return to settings */
                 masterConfirmingOverwrite = false;
                 needsRedraw = true;
+                announce("Master FX Settings");
             } else if (masterConfirmingDelete) {
                 /* Cancel delete */
                 masterConfirmingDelete = false;
                 needsRedraw = true;
+                announce("Master FX Settings");
             } else if (inMasterPresetPicker) {
                 /* Exit preset picker, return to FX list */
                 exitMasterPresetPicker();
+                announce("Master FX");
             } else if (inMasterFxSettingsMenu) {
                 /* Exit settings menu */
                 inMasterFxSettingsMenu = false;
                 editingMasterFxSetting = false;
                 needsRedraw = true;
+                announce("Master FX");
             } else if (selectingMasterFxModule) {
                 /* Cancel module selection, return to chain view */
                 selectingMasterFxModule = false;
                 needsRedraw = true;
+                announce("Master FX");
             } else {
                 /* Exit shadow mode and return to Move */
                 if (typeof shadow_request_exit === "function") {
@@ -5777,6 +5825,7 @@ function handleBack() {
         case VIEWS.COMPONENT_SELECT:
             /* Return to chain edit */
             setView(VIEWS.CHAIN_EDIT);
+            announce("Chain Editor");
             needsRedraw = true;
             break;
         case VIEWS.STORE_PICKER_LIST:
@@ -5790,19 +5839,24 @@ function handleBack() {
                 showingNamePreview = false;
                 pendingSaveName = "";
                 needsRedraw = true;
+                announce("Chain Settings");
             } else if (confirmingOverwrite) {
                 confirmingOverwrite = false;
                 pendingSaveName = "";
                 overwriteTargetIndex = -1;
                 needsRedraw = true;
+                announce("Chain Settings");
             } else if (confirmingDelete) {
                 confirmingDelete = false;
                 needsRedraw = true;
+                announce("Chain Settings");
             } else if (editingChainSettingValue) {
                 editingChainSettingValue = false;
                 needsRedraw = true;
+                announce("Chain Settings");
             } else {
                 setView(VIEWS.CHAIN_EDIT);
+                announce("Chain Editor");
                 needsRedraw = true;
             }
             break;
@@ -5810,17 +5864,25 @@ function handleBack() {
             /* Unload module UI and return to chain edit */
             unloadModuleUi();
             setView(VIEWS.CHAIN_EDIT);
+            announce("Chain Editor");
             needsRedraw = true;
             break;
-        case VIEWS.HIERARCHY_EDITOR:
+        case VIEWS.HIERARCHY_EDITOR: {
+            /* Helper: announce current hierarchy level label after navigation */
+            const announceHierLevel = () => {
+                const ld = getHierarchyLevelDef();
+                announce(ld && ld.label ? ld.label : "Parameters");
+            };
             if (hierEditorEditMode) {
                 /* Exit param edit mode first */
                 hierEditorEditMode = false;
                 needsRedraw = true;
+                announceHierLevel();
             } else if (hierEditorPresetEditMode) {
                 /* Exit preset edit mode - return to preset browser */
                 hierEditorPresetEditMode = false;
                 needsRedraw = true;
+                announceHierLevel();
             } else if (hierEditorChildIndex >= 0) {
                 const levelDef = getHierarchyLevelDef();
                 if (levelDef && levelDef.child_prefix) {
@@ -5833,6 +5895,7 @@ function handleBack() {
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
                     needsRedraw = true;
+                    announceHierLevel();
                 }
             } else if (hierEditorPath.length > 0) {
                 /* Go back to parent level */
@@ -5844,6 +5907,7 @@ function handleBack() {
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
                     needsRedraw = true;
+                    announce("Mode Selection");
                 } else {
                     const levelDef = getHierarchyLevelDef();
                     if (levelDef && levelDef.child_prefix) {
@@ -5879,15 +5943,20 @@ function handleBack() {
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
                     needsRedraw = true;
+                    announceHierLevel();
                 }
             } else {
                 /* At root level - exit hierarchy editor */
+                const wasMasterFx = hierEditorIsMasterFx;
                 exitHierarchyEditor();
+                announce(wasMasterFx ? "Master FX" : "Chain Editor");
             }
             break;
+        }
         case VIEWS.KNOB_EDITOR:
             /* Return to chain settings */
             setView(VIEWS.CHAIN_SETTINGS);
+            announce("Chain Settings");
             needsRedraw = true;
             break;
         case VIEWS.KNOB_PARAM_PICKER:
@@ -5898,6 +5967,7 @@ function handleBack() {
                     knobParamPickerIndex = 0;
                     knobParamPickerParams = getKnobPickerLevelItems(knobParamPickerHierarchy, knobParamPickerLevel);
                     needsRedraw = true;
+                    announce("Knob Target");
                 } else {
                     /* At top of hierarchy or flat mode - return to target selection */
                     knobParamPickerFolder = null;
@@ -5907,10 +5977,12 @@ function handleBack() {
                     knobParamPickerLevel = null;
                     knobParamPickerPath = [];
                     needsRedraw = true;
+                    announce("Knob Target");
                 }
             } else {
                 /* Return to knob editor */
                 setView(VIEWS.KNOB_EDITOR);
+                announce("Knob Editor");
                 needsRedraw = true;
             }
             break;
