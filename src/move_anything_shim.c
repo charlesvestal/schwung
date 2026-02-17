@@ -123,9 +123,12 @@ static bool display_mirror_enabled = false; /* Display mirror off by default */
 
 /* Link Audio interception and publishing state */
 static link_audio_state_t link_audio;
+static uint32_t la_prev_intercepted = 0;  /* previous packets_intercepted (stale tracking) */
+static uint32_t la_stale_frames = 0;      /* blocks since last new packet */
 static int16_t shadow_slot_capture[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
 
 static void launch_shadow_ui(void);
+static void launch_link_subscriber(void);
 static void load_feature_config(void);
 
 static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
@@ -1249,6 +1252,10 @@ typedef enum {
 } native_resample_bridge_mode_t;
 static volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
 
+/* Link Audio routing: when enabled, per-track Link Audio streams are routed through
+ * shadow slot FX chains (zero-rebuild path).  Off by default — user enables in MFX settings. */
+static volatile int link_audio_routing_enabled = 0;
+
 /* Snapshot of final mixed output (AUDIO_OUT) at pre-master tap for native resample bridge. */
 static int16_t native_total_mix_snapshot[FRAMES_PER_BLOCK * 2];
 static volatile int native_total_mix_snapshot_valid = 0;
@@ -1405,41 +1412,52 @@ static void native_resample_bridge_load_mode_from_shadow_config(void)
     json[nread] = '\0';
 
     char *mode_key = strstr(json, "\"resample_bridge_mode\"");
-    if (!mode_key) {
-        free(json);
-        return;
-    }
-
-    char *colon = strchr(mode_key, ':');
-    if (!colon) {
-        free(json);
-        return;
-    }
-    colon++;
-    while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
-
-    char token[32];
-    size_t idx = 0;
-    while (*colon && idx + 1 < sizeof(token)) {
-        char c = *colon;
-        if (c == '"' || c == ',' || c == '}' || c == '\n' || c == '\r' || c == ' ' || c == '\t') {
-            break;
+    if (mode_key) {
+        char *colon = strchr(mode_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
+            char token[32];
+            size_t idx = 0;
+            while (*colon && idx + 1 < sizeof(token)) {
+                char c = *colon;
+                if (c == '"' || c == ',' || c == '}' || c == '\n' || c == '\r' || c == ' ' || c == '\t')
+                    break;
+                token[idx++] = c;
+                colon++;
+            }
+            token[idx] = '\0';
+            if (token[0]) {
+                native_resample_bridge_mode_t new_mode = native_resample_bridge_mode_from_text(token);
+                native_resample_bridge_mode = new_mode;
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Native resample bridge mode: %s (from config)",
+                         native_resample_bridge_mode_name(new_mode));
+                shadow_log(msg);
+            }
         }
-        token[idx++] = c;
-        colon++;
     }
-    token[idx] = '\0';
+
+    /* Load Link Audio routing setting */
+    char *la_key = strstr(json, "\"link_audio_routing\"");
+    if (la_key) {
+        char *colon = strchr(la_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0 || *colon == '1') {
+                link_audio_routing_enabled = 1;
+            } else {
+                link_audio_routing_enabled = 0;
+            }
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Link Audio routing: %s (from config)",
+                     link_audio_routing_enabled ? "ON" : "OFF");
+            shadow_log(msg);
+        }
+    }
+
     free(json);
-
-    if (!token[0]) return;
-
-    native_resample_bridge_mode_t new_mode = native_resample_bridge_mode_from_text(token);
-    native_resample_bridge_mode = new_mode;
-
-    char msg[128];
-    snprintf(msg, sizeof(msg), "Native resample bridge mode: %s (from config)",
-             native_resample_bridge_mode_name(new_mode));
-    shadow_log(msg);
 }
 
 static native_sampler_source_t native_sampler_source_from_text(const char *text)
@@ -3551,6 +3569,13 @@ static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
         strncpy(shift_knob_overlay_value, "Unmapped", sizeof(shift_knob_overlay_value) - 1);
         shift_knob_overlay_value[sizeof(shift_knob_overlay_value) - 1] = '\0';
     }
+
+    /* Screen reader: announce param and value */
+    {
+        char sr_buf[192];
+        snprintf(sr_buf, sizeof(sr_buf), "%s, %s", shift_knob_overlay_param, shift_knob_overlay_value);
+        send_screenreader_announcement(sr_buf);
+    }
 }
 
 /* ==========================================================================
@@ -3824,6 +3849,24 @@ static float sampler_get_bpm(tempo_source_t *source) {
     return 120.0f;
 }
 
+/* Build a screen reader string describing current sampler menu item */
+static void sampler_announce_menu_item(void) {
+    char sr_buf[128];
+    if (sampler_menu_cursor == SAMPLER_MENU_SOURCE) {
+        snprintf(sr_buf, sizeof(sr_buf), "Source, %s",
+                 sampler_source == SAMPLER_SOURCE_RESAMPLE ? "Resample" : "Move Input");
+    } else if (sampler_menu_cursor == SAMPLER_MENU_DURATION) {
+        int bars = sampler_duration_options[sampler_duration_index];
+        if (bars == 0)
+            snprintf(sr_buf, sizeof(sr_buf), "Duration, Until stop");
+        else
+            snprintf(sr_buf, sizeof(sr_buf), "Duration, %d bar%s", bars, bars > 1 ? "s" : "");
+    } else {
+        return;
+    }
+    send_screenreader_announcement(sr_buf);
+}
+
 static void sampler_start_recording(void) {
     if (sampler_writer_running) return;
 
@@ -3911,6 +3954,7 @@ static void sampler_start_recording(void) {
     sampler_state = SAMPLER_RECORDING;
     sampler_overlay_active = 1;
     sampler_overlay_timeout = 0;  /* Stay active while recording */
+    send_screenreader_announcement("Recording");
 
     char msg[256];
     if (bars > 0)
@@ -3958,6 +4002,8 @@ static void sampler_stop_recording(void) {
 
     sampler_current_recording[0] = '\0';
     sampler_state = SAMPLER_IDLE;
+
+    send_screenreader_announcement("Sample saved");
 
     /* Keep fullscreen active for "saved" message, then timeout */
     sampler_overlay_active = 1;
@@ -4180,6 +4226,7 @@ static void *skipback_writer_func(void *arg) {
     shadow_log(msg);
 
     skipback_overlay_timeout = SKIPBACK_OVERLAY_FRAMES;
+    send_screenreader_announcement("Skipback saved");
     __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
     return NULL;
 }
@@ -4555,6 +4602,7 @@ static void shadow_save_state(void)
     char master_fx_chain_buf[2048] = "";
     int overlay_knobs_mode = -1;
     int resample_bridge_mode = -1;
+    int link_audio_routing_saved = -1;
 
     if (f) {
         fseek(f, 0, SEEK_END);
@@ -4663,6 +4711,17 @@ static void shadow_save_state(void)
                     }
                 }
 
+                /* Extract link_audio_routing boolean */
+                char *lar = strstr(json, "\"link_audio_routing\":");
+                if (lar) {
+                    lar = strchr(lar, ':');
+                    if (lar) {
+                        lar++;
+                        while (*lar == ' ') lar++;
+                        link_audio_routing_saved = (strncmp(lar, "true", 4) == 0) ? 1 : 0;
+                    }
+                }
+
                 free(json);
             }
         }
@@ -4692,6 +4751,9 @@ static void shadow_save_state(void)
     }
     if (resample_bridge_mode >= 0) {
         fprintf(f, "  \"resample_bridge_mode\": %d,\n", resample_bridge_mode);
+    }
+    if (link_audio_routing_saved >= 0) {
+        fprintf(f, "  \"link_audio_routing\": %s,\n", link_audio_routing_saved ? "true" : "false");
     }
     fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f],\n",
             shadow_chain_slots[0].volume,
@@ -6013,6 +6075,17 @@ static void shadow_inprocess_handle_param_request(void) {
                 native_resample_bridge_mode = new_mode;
                 shadow_param->error = 0;
                 shadow_param->result_len = 0;
+            } else if (!has_slot_prefix && strcmp(param_key, "link_audio_routing") == 0) {
+                int val = atoi(shadow_param->value);
+                link_audio_routing_enabled = val ? 1 : 0;
+                {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "Link Audio routing: %s",
+                             link_audio_routing_enabled ? "ON" : "OFF");
+                    shadow_log(msg);
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
             } else if (strcmp(param_key, "module") == 0) {
                 /* Load or unload master FX slot */
                 int result = shadow_master_fx_slot_load(mfx_slot, shadow_param->value);
@@ -6044,6 +6117,10 @@ static void shadow_inprocess_handle_param_request(void) {
                 int mode = (int)native_resample_bridge_mode;
                 if (mode < 0 || mode > 2) mode = 0;
                 shadow_param->result_len = snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d", mode);
+                shadow_param->error = 0;
+            } else if (!has_slot_prefix && strcmp(param_key, "link_audio_routing") == 0) {
+                shadow_param->result_len = snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                                    link_audio_routing_enabled);
                 shadow_param->error = 0;
             } else if (strcmp(param_key, "module") == 0) {
                 strncpy(shadow_param->value, mfx->module_path, SHADOW_PARAM_VALUE_LEN - 1);
@@ -6607,7 +6684,8 @@ static void shadow_inprocess_mix_audio(void) {
             /* Inject Move track audio from Link Audio into chain before FX */
             int16_t move_track[FRAMES_PER_BLOCK * 2];
             int have_move_track = 0;
-            if (link_audio.enabled && shadow_chain_set_inject_audio &&
+            if (link_audio.enabled && link_audio_routing_enabled &&
+                shadow_chain_set_inject_audio &&
                 s < link_audio.move_channel_count) {
                 have_move_track = link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK);
                 if (have_move_track) {
@@ -6971,8 +7049,6 @@ static void shadow_inprocess_mix_from_buffer(void) {
      * Session announcements set move_channel_count but don't mean audio
      * is streaming.  Without a subscriber triggering ChannelRequests,
      * the ring buffers are empty and zeroing the mailbox kills all audio. */
-    static uint32_t la_prev_intercepted = 0;
-    static uint32_t la_stale_frames = 0;
     uint32_t la_cur = link_audio.packets_intercepted;
     if (la_cur > la_prev_intercepted) {
         la_stale_frames = 0;
@@ -6983,7 +7059,8 @@ static void shadow_inprocess_mix_from_buffer(void) {
     /* Consider Link Audio active if packets arrived within the last ~290ms */
     int la_receiving = (la_cur > 0 && la_stale_frames < 100);
 
-    int rebuild_from_la = (link_audio.enabled && shadow_chain_process_fx &&
+    int rebuild_from_la = (link_audio.enabled && link_audio_routing_enabled &&
+                           shadow_chain_process_fx &&
                            link_audio.move_channel_count >= 4 &&
                            la_receiving);
 
@@ -9011,6 +9088,10 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         if (shadow_control) {
             shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
         }
+        /* Launch Link Audio subscriber if feature is enabled */
+        if (link_audio.enabled) {
+            launch_link_subscriber();
+        }
         native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
@@ -9254,6 +9335,21 @@ static int shadow_ui_started = 0;
 static pid_t shadow_ui_pid = -1;
 static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.pid";
 
+/* Link Audio subscriber process management */
+static int link_sub_started = 0;
+static pid_t link_sub_pid = -1;
+static uint32_t link_sub_ever_received = 0;  /* high-water mark of packets_intercepted */
+static int link_sub_kill_pending = 0;        /* kill-wait-restart state machine */
+static int link_sub_wait_countdown = 0;
+static int link_sub_restart_cooldown = 0;    /* rate limiting countdown */
+static int link_sub_restart_count = 0;       /* total restarts for logging */
+
+/* Recovery constants (in ioctl blocks @ ~345/sec) */
+#define LINK_SUB_STALE_THRESHOLD  1725   /* ~5s of no new packets */
+#define LINK_SUB_WAIT_BLOCKS      1035   /* ~3s wait after kill for SDK cleanup */
+#define LINK_SUB_COOLDOWN_BLOCKS  3450   /* ~10s between restarts */
+#define LINK_SUB_ALIVE_CHECK      1725   /* ~5s between alive checks */
+
 static int shadow_ui_pid_alive(pid_t pid)
 {
     if (pid <= 0) return 0;
@@ -9343,6 +9439,94 @@ static void launch_shadow_ui(void)
     }
     shadow_ui_started = 1;
     shadow_ui_pid = pid;
+}
+
+/* --- Link Audio subscriber process management --- */
+
+static int link_sub_pid_alive(pid_t pid)
+{
+    if (pid <= 0) return 0;
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int rpid = 0;
+    char comm[64] = {0};
+    char state = 0;
+    int matched = fscanf(f, "%d %63s %c", &rpid, comm, &state);
+    fclose(f);
+    if (matched != 3) return 0;
+    if (rpid != (int)pid) return 0;
+    if (state == 'Z') return 0;
+    if (!strstr(comm, "link-sub")) return 0;
+    return 1;
+}
+
+static void link_sub_reap(void)
+{
+    if (link_sub_pid <= 0) return;
+    int status = 0;
+    pid_t res = waitpid(link_sub_pid, &status, WNOHANG);
+    if (res == link_sub_pid) {
+        link_sub_pid = -1;
+        link_sub_started = 0;
+    }
+}
+
+static void link_sub_kill(void)
+{
+    if (link_sub_pid > 0) {
+        kill(link_sub_pid, SIGTERM);
+    }
+}
+
+static void launch_link_subscriber(void)
+{
+    if (link_sub_started && link_sub_pid > 0) return;
+    link_sub_reap();
+    if (link_sub_started && link_sub_pid > 0) return;
+
+    const char *sub_path = "/data/UserData/move-anything/link-subscriber";
+    if (access(sub_path, X_OK) != 0) return;
+
+    int pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        setsid();
+        /* Redirect stdout/stderr to log file before closing fds */
+        freopen("/tmp/link-subscriber.log", "w", stdout);
+        freopen("/tmp/link-subscriber.log", "a", stderr);
+        int fdlimit = (int)sysconf(_SC_OPEN_MAX);
+        for (int i = STDERR_FILENO + 1; i < fdlimit; i++) {
+            close(i);
+        }
+        execl(sub_path, "link-subscriber", (char *)0);
+        _exit(1);
+    }
+    link_sub_started = 1;
+    link_sub_pid = pid;
+    unified_log("shim", LOG_LEVEL_INFO,
+                "Link subscriber launched: pid=%d", pid);
+}
+
+static void link_sub_reset_state(void)
+{
+    /* Reset Link Audio state so fresh subscriber can rediscover everything */
+    link_audio.packets_intercepted = 0;
+    link_audio.session_parsed = 0;
+    link_audio.move_channel_count = 0;
+    link_sub_ever_received = 0;
+    la_prev_intercepted = 0;
+    la_stale_frames = 0;
+
+    /* Clear ring buffers */
+    for (int i = 0; i < LINK_AUDIO_MOVE_CHANNELS; i++) {
+        link_audio.channels[i].write_pos = 0;
+        link_audio.channels[i].read_pos = 0;
+        link_audio.channels[i].active = 0;
+        link_audio.channels[i].pkt_count = 0;
+        link_audio.channels[i].peak = 0;
+    }
 }
 
 int (*real_ioctl)(int, unsigned long, ...) = NULL;
@@ -9652,11 +9836,82 @@ int ioctl(int fd, unsigned long request, ...)
 
                 int ui_alive = shadow_ui_pid_alive(shadow_ui_pid);
                 unified_log("shim", LOG_LEVEL_DEBUG,
-                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d la_pkts=%u la_ch=%d pin=%d/%d",
+                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d la_pkts=%u la_ch=%d la_stale=%u la_sub_pid=%d la_restarts=%d pin=%d/%d",
                     getpid(), rss_kb, consecutive_overruns,
                     (int)shadow_ui_pid, ui_alive, shadow_display_mode,
                     link_audio.packets_intercepted, link_audio.move_channel_count,
+                    la_stale_frames, (int)link_sub_pid, link_sub_restart_count,
                     shadow_control ? shadow_control->pin_challenge_active : -1, pin_state);
+            }
+        }
+    }
+
+    /* === LINK AUDIO SUBSCRIBER RECOVERY === */
+    if (link_audio.enabled) {
+        /* Track high-water mark of packets received */
+        uint32_t la_pkts_now = link_audio.packets_intercepted;
+        if (la_pkts_now > link_sub_ever_received) {
+            link_sub_ever_received = la_pkts_now;
+        }
+
+        /* Decrement cooldown */
+        if (link_sub_restart_cooldown > 0) {
+            link_sub_restart_cooldown--;
+        }
+
+        /* State machine: kill-wait-restart */
+        if (link_sub_kill_pending) {
+            link_sub_wait_countdown--;
+            if (link_sub_wait_countdown <= 0) {
+                /* Wait period over: reap zombie, reset state, launch fresh */
+                link_sub_reap();
+                /* Force-reap if still around */
+                if (link_sub_pid > 0) {
+                    kill(link_sub_pid, SIGKILL);
+                    waitpid(link_sub_pid, NULL, 0);
+                    link_sub_pid = -1;
+                    link_sub_started = 0;
+                }
+                link_sub_kill_pending = 0;
+                link_sub_reset_state();
+                launch_link_subscriber();
+                link_sub_restart_count++;
+                link_sub_restart_cooldown = LINK_SUB_COOLDOWN_BLOCKS;
+                unified_log("shim", LOG_LEVEL_INFO,
+                    "Link subscriber restarted after stale detection (restart #%d)",
+                    link_sub_restart_count);
+            }
+        } else if (link_sub_ever_received > 0 &&
+                   la_stale_frames > LINK_SUB_STALE_THRESHOLD &&
+                   link_sub_restart_cooldown == 0) {
+            /* Audio was flowing but stopped for ~5s — trigger recovery */
+            unified_log("shim", LOG_LEVEL_INFO,
+                "Link audio stale detected: la_stale=%u la_ever=%u, killing subscriber pid=%d",
+                la_stale_frames, link_sub_ever_received, (int)link_sub_pid);
+            link_sub_kill();
+            link_sub_kill_pending = 1;
+            link_sub_wait_countdown = LINK_SUB_WAIT_BLOCKS;
+        } else {
+            /* Periodic alive check (~every 5s) */
+            static uint32_t alive_check_counter = 0;
+            alive_check_counter++;
+            if (alive_check_counter >= LINK_SUB_ALIVE_CHECK) {
+                alive_check_counter = 0;
+                link_sub_reap();
+                if (link_sub_started && !link_sub_pid_alive(link_sub_pid)) {
+                    /* Subscriber crashed — restart if not in cooldown */
+                    if (link_sub_restart_cooldown == 0) {
+                        unified_log("shim", LOG_LEVEL_INFO,
+                            "Link subscriber died (pid=%d), restarting",
+                            (int)link_sub_pid);
+                        link_sub_pid = -1;
+                        link_sub_started = 0;
+                        link_sub_reset_state();
+                        launch_link_subscriber();
+                        link_sub_restart_count++;
+                        link_sub_restart_cooldown = LINK_SUB_COOLDOWN_BLOCKS;
+                    }
+                }
             }
         }
     }
@@ -10414,11 +10669,14 @@ do_ioctl:
                             sampler_fullscreen_active = 1;
                             sampler_menu_cursor = SAMPLER_MENU_SOURCE;
                             shadow_log("Sampler: ARMED");
+                            send_screenreader_announcement("Quantized Sampler");
+                            sampler_announce_menu_item();
                         } else if (sampler_state == SAMPLER_ARMED) {
                             sampler_state = SAMPLER_IDLE;
                             sampler_overlay_active = 0;
                             sampler_fullscreen_active = 0;
                             shadow_log("Sampler: cancelled");
+                            send_screenreader_announcement("Sampler cancelled");
                         } else if (sampler_state == SAMPLER_RECORDING) {
                             shadow_log("Sampler: force stop via Shift+Sample");
                             sampler_stop_recording();
@@ -10438,6 +10696,7 @@ do_ioctl:
                     sampler_overlay_active = 0;
                     sampler_fullscreen_active = 0;
                     shadow_log("Sampler: cancelled via Back");
+                    send_screenreader_announcement("Sampler cancelled");
                     src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                 }
 
@@ -10451,6 +10710,7 @@ do_ioctl:
                         if (sampler_menu_cursor > 0)
                             sampler_menu_cursor--;
                     }
+                    sampler_announce_menu_item();
                     /* Block jog from reaching Move/shadow UI */
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                 }
@@ -10463,6 +10723,7 @@ do_ioctl:
                     } else if (sampler_menu_cursor == SAMPLER_MENU_DURATION) {
                         sampler_duration_index = (sampler_duration_index + 1) % SAMPLER_DURATION_COUNT;
                     }
+                    sampler_announce_menu_item();
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                 }
             }
