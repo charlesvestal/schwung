@@ -1537,36 +1537,13 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
         native_bridge_makeup_applied_gain = native_gain;
         native_bridge_makeup_limited = limiter_hit;
     } else if (shadow_master_fx_chain_active()) {
-        /* MFX-active case: snapshot is already post-FX.
-         * Compensate by inverse master volume so playback through Move's
-         * master volume lands at live level, then cap by available headroom
-         * to avoid hard clipping. */
-        float applied_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
-        float peak = 0.0f;
-        for (size_t i = 0; i < samples; i++) {
-            float a = fabsf((float)src[i]);
-            if (a > peak) peak = a;
-        }
-
-        int limiter_hit = 0;
-        if (peak > 1.0f) {
-            float safe_gain = 32760.0f / peak;
-            if (applied_gain > safe_gain) {
-                applied_gain = safe_gain;
-                limiter_hit = 1;
-            }
-        }
-
-        for (size_t i = 0; i < samples; i++) {
-            float scaled = (float)src[i] * applied_gain;
-            if (scaled > 32767.0f) scaled = 32767.0f;
-            if (scaled < -32768.0f) scaled = -32768.0f;
-            dst[i] = (int16_t)lroundf(scaled);
-        }
-
-        native_bridge_makeup_desired_gain = inv_mv;
-        native_bridge_makeup_applied_gain = applied_gain;
-        native_bridge_makeup_limited = limiter_hit;
+        /* MFX-active case: snapshot is at unity level (MFX processes at unity,
+         * mv applied afterward).  Pass through as-is — Move applies master
+         * volume on the resampling path, landing at the correct live level. */
+        memcpy(dst, src, samples * sizeof(int16_t));
+        native_bridge_makeup_desired_gain = 1.0f;
+        native_bridge_makeup_applied_gain = 1.0f;
+        native_bridge_makeup_limited = 0;
     } else {
         /* Split not valid and no MFX path available — unity copy */
         memcpy(dst, src, samples * sizeof(int16_t));
@@ -6585,8 +6562,28 @@ static void shadow_inprocess_mix_audio(void) {
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
-    /* Use one gain topology for all cases: pre-scale ME input by current master factor. */
-    float me_input_scale = (mv < 1.0f) ? mv : 1.0f;
+    int mfx_active = shadow_master_fx_chain_active();
+
+    /* When MFX is active, build the mix at unity level so FX see a consistent
+     * signal regardless of master volume.  Apply mv AFTER MFX instead.
+     * When MFX is off, pre-scale ME by master volume (current behavior). */
+    float me_input_scale;
+    float move_prescale;
+    float link_sub_scale;
+    if (mfx_active) {
+        me_input_scale = 1.0f;
+        link_sub_scale = 1.0f;
+        if (mv > 0.001f) {
+            move_prescale = 1.0f / mv;
+            if (move_prescale > 20.0f) move_prescale = 20.0f;
+        } else {
+            move_prescale = 1.0f;
+        }
+    } else {
+        me_input_scale = (mv < 1.0f) ? mv : 1.0f;
+        move_prescale = 1.0f;
+        link_sub_scale = mv;
+    }
 
     /* Save Move's audio for bridge split component (before mixing ME). */
     memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
@@ -6594,7 +6591,7 @@ static void shadow_inprocess_mix_audio(void) {
     int32_t mix[FRAMES_PER_BLOCK * 2];
     int32_t me_full[FRAMES_PER_BLOCK * 2];  /* ME at full gain for bridge */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        mix[i] = mailbox_audio[i];
+        mix[i] = (int32_t)lroundf((float)mailbox_audio[i] * move_prescale);
         me_full[i] = 0;
     }
 
@@ -6651,10 +6648,11 @@ static void shadow_inprocess_mix_audio(void) {
 
     /* Subtract Move track audio from mix to avoid doubling.
      * Link Audio per-track streams are pre-fader; mailbox is post-fader.
-     * Scale subtraction by Move's volume so the levels match. */
+     * When MFX active: mailbox was prescaled to unity, subtract at unity.
+     * Otherwise: scale subtraction by Move's volume so the levels match. */
     if (any_injected) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
-            mix[i] -= (int32_t)lroundf((float)move_injected[i] * mv);
+            mix[i] -= (int32_t)lroundf((float)move_injected[i] * link_sub_scale);
     }
 
     /* Save ME full-gain component for bridge split */
@@ -6686,6 +6684,15 @@ static void shadow_inprocess_mix_audio(void) {
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
     native_capture_total_mix_snapshot_from_buffer(output_buffer);
+
+    /* Apply master volume AFTER MFX.  When MFX is active the mix was built
+     * at unity level; scale down now so the DAC output respects master volume.
+     * When MFX is off the mix is already at mv level — no extra scaling. */
+    if (mfx_active && mv < 0.9999f) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            output_buffer[i] = (int16_t)lroundf((float)output_buffer[i] * mv);
+        }
+    }
 
     /* Write final output to mailbox */
     memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
@@ -6944,8 +6951,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
-    /* Use one gain topology for all cases: pre-scale ME input by current master factor. */
-    float me_input_scale = (mv < 1.0f) ? mv : 1.0f;
+    int mfx_active = shadow_master_fx_chain_active();
+    /* When MFX is active, build the mix at unity level so FX see a consistent
+     * signal regardless of master volume.  Apply mv AFTER MFX instead. */
+    float me_input_scale = mfx_active ? 1.0f : ((mv < 1.0f) ? mv : 1.0f);
 
     /* Save Move's audio for bridge split (before zeroing) */
     memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
@@ -6977,6 +6986,19 @@ static void shadow_inprocess_mix_from_buffer(void) {
     int rebuild_from_la = (link_audio.enabled && shadow_chain_process_fx &&
                            link_audio.move_channel_count >= 4 &&
                            la_receiving);
+
+    /* When MFX active and NOT rebuilding from Link Audio, the mailbox has
+     * Move's audio at mv level.  Prescale to unity for consistent MFX input. */
+    if (mfx_active && !rebuild_from_la && mv > 0.001f) {
+        float inv = 1.0f / mv;
+        if (inv > 20.0f) inv = 20.0f;
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            float scaled = (float)mailbox_audio[i] * inv;
+            if (scaled > 32767.0f) scaled = 32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            mailbox_audio[i] = (int16_t)lroundf(scaled);
+        }
+    }
 
     if (rebuild_from_la) {
         /* Zero the mailbox — all audio reconstructed from Link Audio */
@@ -7028,9 +7050,12 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                 }
             } else if (have_move_track) {
-                /* Inactive slot: pass Link Audio through at Move's volume level */
+                /* Inactive slot: pass Link Audio through.
+                 * When MFX active: unity level (mv applied after MFX).
+                 * Otherwise: at Move's volume level. */
+                float la_scale = mfx_active ? 1.0f : mv;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    int32_t scaled = (int32_t)lroundf((float)move_track[i] * mv);
+                    int32_t scaled = (int32_t)lroundf((float)move_track[i] * la_scale);
                     int32_t mixed = (int32_t)mailbox_audio[i] + scaled;
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
@@ -7107,7 +7132,17 @@ static void shadow_inprocess_mix_from_buffer(void) {
         skipback_capture(mailbox_audio);
     }
 
-    /* No extra post-scale here: live path and bridge tap must share the same gain topology. */
+    /* Apply master volume AFTER MFX.  When MFX is active the mix was built
+     * at unity level; scale down now so the DAC output respects master volume.
+     * When MFX is off the mix is already at mv level — no extra scaling. */
+    if (mfx_active && mv < 0.9999f) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            float scaled = (float)mailbox_audio[i] * mv;
+            if (scaled > 32767.0f) scaled = 32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            mailbox_audio[i] = (int16_t)lroundf(scaled);
+        }
+    }
 }
 
 /* Shared memory segment names from shadow_constants.h */
