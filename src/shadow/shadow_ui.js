@@ -94,6 +94,8 @@ const SHADOW_UI_SLOTS = 4;
 const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
 const SHADOW_UI_FLAG_JUMP_TO_MASTER_FX = 0x02;
 const SHADOW_UI_FLAG_JUMP_TO_OVERTAKE = 0x04;
+const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
+const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -525,8 +527,11 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
       options: ["Off", "Replace"], values: [0, 2] },
     { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
       options: ["+Shift", "+Jog Touch", "Off"], values: [0, 1, 2] },
+    { key: "display_mirror", label: "Mirror Display", type: "bool" },
     { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
-    { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 2.0, step: 0.1 },
+    { key: "screen_reader_engine", label: "TTS Engine", type: "enum",
+      options: ["eSpeak-NG", "Flite"], values: ["espeak", "flite"] },
+    { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
     { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
     { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
     { key: "save", label: "[Save]", type: "action" },
@@ -562,6 +567,20 @@ let selectedMasterFxSetting = 0;
 let editingMasterFxSetting = false;
 let editMasterFxValue = "";
 let inMasterFxSettingsMenu = false;  /* True when in settings submenu */
+
+/* Screen Reader settings menu */
+const SCREENREADER_SETTINGS_ITEMS = [
+    { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
+    { key: "screen_reader_engine", label: "TTS Engine", type: "enum",
+      options: ["eSpeak-NG", "Flite"], values: ["espeak", "flite"] },
+    { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
+    { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
+    { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
+];
+let inScreenReaderSettingsMenu = false;
+let selectedScreenReaderSetting = 0;
+let editingScreenReaderSetting = false;
+let srAnnounceTimer = 0;
 
 /* Slot settings definitions */
 const SLOT_SETTINGS = [
@@ -2282,6 +2301,19 @@ function loadMasterPreset(index, presetName) {
                 if (opt) {
                     setMasterFxSlotModule(i, opt.dspPath || "");
                     masterFxConfig[key].module = opt.id;
+
+                    /* Restore plugin_id first (CLAP sub-plugin selection) */
+                    if (fxConfig.params && typeof shadow_set_param === "function") {
+                        if (fxConfig.params.plugin_id) {
+                            shadow_set_param(0, `master_fx:${key}:plugin_id`, fxConfig.params.plugin_id);
+                        }
+                        /* Restore remaining params */
+                        for (const [pkey, pval] of Object.entries(fxConfig.params)) {
+                            if (pkey !== "plugin_id") {
+                                shadow_set_param(0, `master_fx:${key}:${pkey}`, String(pval));
+                            }
+                        }
+                    }
                 } else {
                     /* Module not found - clear slot */
                     setMasterFxSlotModule(i, "");
@@ -2318,10 +2350,35 @@ function buildMasterPresetJson(name) {
         const key = `fx${i + 1}`;
         const moduleId = masterFxConfig[key]?.module;
         if (moduleId) {
-            preset[key] = {
+            const slotPreset = {
                 type: moduleId,
                 params: {}
             };
+
+            /* Capture plugin_id (for CLAP sub-plugin selection) */
+            if (typeof shadow_get_param === "function") {
+                try {
+                    const pluginId = shadow_get_param(0, `master_fx:${key}:plugin_id`);
+                    if (pluginId) {
+                        slotPreset.params["plugin_id"] = pluginId;
+                    }
+                } catch (e) {}
+
+                /* Capture individual params from chain_params */
+                try {
+                    const chainParams = getMasterFxChainParams(i);
+                    if (chainParams && chainParams.length > 0) {
+                        for (const p of chainParams) {
+                            const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                            if (val !== null && val !== undefined && val !== "") {
+                                slotPreset.params[p.key] = val;
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            preset[key] = slotPreset;
         }
     }
 
@@ -2529,20 +2586,83 @@ function saveMasterFxChainConfig() {
             if (content) config = JSON.parse(content);
         } catch (e) {}
 
-        /* Save master FX chain - store dspPaths for each slot */
+        /* Save master FX chain - store dspPaths and plugin state for each slot */
         config.master_fx_chain = {
             preset_name: currentMasterPresetName || ""
         };
         for (let i = 1; i <= 4; i++) {
             const key = `fx${i}`;
+            const slotIdx = i - 1;
             const moduleId = masterFxConfig[key]?.module || "";
-            if (moduleId) {
-                const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleId);
-                config.master_fx_chain[key] = {
-                    id: moduleId,
-                    path: opt?.dspPath || ""
-                };
+            const stateFilePath = SLOT_STATE_DIR + "/master_fx_" + slotIdx + ".json";
+
+            if (!moduleId) {
+                /* Empty slot - write empty marker */
+                host_write_file(stateFilePath, "{}\n");
+                continue;
             }
+
+            const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleId);
+            const dspPath = opt?.dspPath || "";
+            const slotConfig = {
+                id: moduleId,
+                path: dspPath
+            };
+
+            /* Snapshot plugin state if available */
+            let stateObj = null;
+            let paramsObj = null;
+            if (typeof shadow_get_param === "function") {
+                try {
+                    const stateJson = shadow_get_param(0, `master_fx:${key}:state`);
+                    if (stateJson) {
+                        stateObj = JSON.parse(stateJson);
+                        slotConfig.state = stateObj;
+                    }
+                } catch (e) {
+                    /* state not supported - fall back to chain_params */
+                }
+
+                /* If no state, save individual params from chain_params */
+                if (!stateObj) {
+                    try {
+                        paramsObj = {};
+                        /* Query plugin_id first (needed by CLAP and other host plugins) */
+                        try {
+                            const pluginId = shadow_get_param(0, `master_fx:${key}:plugin_id`);
+                            if (pluginId) {
+                                paramsObj["plugin_id"] = pluginId;
+                            }
+                        } catch (e2) {}
+                        const chainParams = getMasterFxChainParams(slotIdx);
+                        if (chainParams && chainParams.length > 0) {
+                            for (const p of chainParams) {
+                                const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                if (val !== null && val !== undefined && val !== "") {
+                                    paramsObj[p.key] = val;
+                                }
+                            }
+                        }
+                        if (Object.keys(paramsObj).length > 0) {
+                            slotConfig.params = paramsObj;
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            config.master_fx_chain[key] = slotConfig;
+
+            /* Write per-slot state file for shim-side restore at boot */
+            const stateFile = {
+                module_path: dspPath,
+                module_id: moduleId
+            };
+            if (stateObj) {
+                stateFile.state = stateObj;
+            } else if (paramsObj) {
+                stateFile.params = paramsObj;
+            }
+            host_write_file(stateFilePath, JSON.stringify(stateFile, null, 2) + "\n");
         }
 
         /* Save overlay knobs mode */
@@ -2560,7 +2680,10 @@ function saveMasterFxChainConfig() {
     }
 }
 
-/* Load master FX chain from config at startup */
+/* Load master FX chain from config at startup.
+ * The shim handles actual module loading + state restore from
+ * slot_state/master_fx_N.json files at boot. This function just
+ * syncs the JS-side masterFxConfig to reflect what the shim loaded. */
 function loadMasterFxChainFromConfig() {
     try {
         const configPath = "/data/UserData/move-anything/shadow_config.json";
@@ -2585,14 +2708,20 @@ function loadMasterFxChainFromConfig() {
             currentMasterPresetName = config.master_fx_chain.preset_name;
         }
 
-        /* Load each slot from config */
-        for (let i = 1; i <= 4; i++) {
-            const key = `fx${i}`;
-            const slotConfig = config.master_fx_chain[key];
-            if (slotConfig && slotConfig.path) {
-                setMasterFxSlotModule(i - 1, slotConfig.path);
-                masterFxConfig[key].module = slotConfig.id || "";
-            }
+        /* Sync masterFxConfig from state files (shim already loaded the modules) */
+        for (let i = 0; i < 4; i++) {
+            const key = `fx${i + 1}`;
+            const stateFilePath = SLOT_STATE_DIR + "/master_fx_" + i + ".json";
+            try {
+                const raw = host_read_file(stateFilePath);
+                if (raw) {
+                    const stateFile = JSON.parse(raw);
+                    if (stateFile.module_id) {
+                        masterFxConfig[key].module = stateFile.module_id;
+                        debugLog(`MFX sync ${key}: module=${stateFile.module_id} (loaded by shim)`);
+                    }
+                }
+            } catch (e) {}
         }
     } catch (e) {
         /* Ignore errors */
@@ -2802,6 +2931,10 @@ function handleStorePickerListJog(delta) {
         storePickerSelectedIndex = storePickerModules.length - 1;
     }
     if (storePickerSelectedIndex < 0) storePickerSelectedIndex = 0;
+    if (storePickerModules.length > 0) {
+        const mod = storePickerModules[storePickerSelectedIndex];
+        announceMenuItem("Store", mod.name || mod.id || "Module");
+    }
     needsRedraw = true;
 }
 
@@ -3075,7 +3208,7 @@ function getChainSettingValue(slot, setting) {
 
     if (setting.key === "slot:volume") {
         const pct = Math.round(parseFloat(val) * 100);
-        return `${pct}%`;
+        return pct === 0 ? "Muted" : `${pct}%`;
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
@@ -3352,7 +3485,12 @@ function applyKnobAssignment(target, param) {
     fetchKnobMappings(knobEditorSlot);
     invalidateKnobContextCache();
 
-    /* Return to knob editor */
+    /* Announce and return to knob editor */
+    if (target && param) {
+        announce(`Knob ${knobNum} assigned to ${param}`);
+    } else {
+        announce(`Knob ${knobNum} cleared`);
+    }
     setView(VIEWS.KNOB_EDITOR);
     needsRedraw = true;
 }
@@ -3562,7 +3700,13 @@ function loadHierarchyLevel() {
     }
 
     /* Determine if this is the top level (swap module only at top) */
-    const isTopLevel = hierEditorLevel === "root" && !hierEditorHierarchy.modes;
+    /* Also treat the direct child of root as top level when root has children,
+       since root's edit mode (where swap is injected) is never shown in that case */
+    const rootDef = levels["root"];
+    const isTopLevel = !hierEditorHierarchy.modes && (
+        hierEditorLevel === "root" ||
+        (rootDef && rootDef.children === hierEditorLevel)
+    );
 
     /* Child selector for levels that require child_prefix */
     if (levelDef.child_prefix && hierEditorChildCount > 0 && hierEditorChildIndex < 0) {
@@ -4472,7 +4616,8 @@ function getSlotSettingValue(slot, setting) {
 
     if (setting.key === "slot:volume") {
         const num = parseFloat(val);
-        return isNaN(num) ? val : `${Math.round(num * 100)}%`;
+        const pct = isNaN(num) ? 0 : Math.round(num * 100);
+        return pct === 0 ? "Muted" : `${pct}%`;
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
@@ -4527,8 +4672,18 @@ function getMasterFxSettingValue(setting) {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
         return ["+Shift", "+Jog Touch", "Off"][mode] || "+Shift";
     }
+    if (setting.key === "display_mirror") {
+        return (typeof display_mirror_get === "function" && display_mirror_get()) ? "On" : "Off";
+    }
     if (setting.key === "screen_reader_enabled") {
         return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
+    }
+    if (setting.key === "screen_reader_engine") {
+        if (typeof tts_get_engine === "function") {
+            const eng = tts_get_engine();
+            return eng === "flite" ? "Flite" : "eSpeak-NG";
+        }
+        return "eSpeak-NG";
     }
     if (setting.key === "screen_reader_speed") {
         if (typeof tts_get_speed === "function") {
@@ -4585,10 +4740,27 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
 
+    if (setting.key === "display_mirror" && typeof display_mirror_set === "function") {
+        /* Toggle boolean */
+        const current = typeof display_mirror_get === "function" ? display_mirror_get() : false;
+        display_mirror_set(!current ? 1 : 0);
+        return;
+    }
+
     if (setting.key === "screen_reader_enabled" && typeof tts_set_enabled === "function") {
         /* Toggle boolean */
         const current = typeof tts_get_enabled === "function" ? tts_get_enabled() : true;
         tts_set_enabled(!current);
+        return;
+    }
+
+    if (setting.key === "screen_reader_engine" && typeof tts_set_engine === "function") {
+        const current = typeof tts_get_engine === "function" ? tts_get_engine() : "espeak";
+        const values = setting.values;
+        let idx = values.indexOf(current);
+        if (idx < 0) idx = 0;
+        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
+        tts_set_engine(values[nextIdx]);
         return;
     }
 
@@ -4652,6 +4824,20 @@ function updateFocusedSlot(slot) {
 
 function handleJog(delta) {
     hideOverlay();
+    if (inScreenReaderSettingsMenu) {
+        if (editingScreenReaderSetting) {
+            const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+            adjustMasterFxSetting(item, delta);
+            srAnnounceTimer = 15;
+        } else {
+            selectedScreenReaderSetting = Math.max(0, Math.min(SCREENREADER_SETTINGS_ITEMS.length - 1, selectedScreenReaderSetting + delta));
+            const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+            const value = getMasterFxSettingValue(item);
+            announceMenuItem(item.label, value);
+        }
+        needsRedraw = true;
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             /* 5 items: 4 slots + Master FX */
@@ -4729,10 +4915,18 @@ function handleJog(delta) {
             break;
         case VIEWS.PATCHES:
             selectedPatch = Math.max(0, Math.min(patches.length - 1, selectedPatch + delta));
+            if (patches.length > 0) {
+                const p = patches[selectedPatch];
+                announceMenuItem("Patch", p.name || p);
+            }
             break;
         case VIEWS.PATCH_DETAIL:
             const detailItems = getDetailItems();
             selectedDetailItem = Math.max(0, Math.min(detailItems.length - 1, selectedDetailItem + delta));
+            if (detailItems.length > 0) {
+                const di = detailItems[selectedDetailItem];
+                announceMenuItem(di.label || di.component || "Item", di.value || "");
+            }
             break;
         case VIEWS.COMPONENT_PARAMS:
             if (editingValue && componentParams.length > 0) {
@@ -4742,9 +4936,14 @@ function handleJog(delta) {
                 param.value = newVal;
                 /* Apply immediately */
                 setSlotParam(selectedSlot, param.key, newVal);
+                announceParameter(param.name || param.key, newVal);
             } else {
                 /* Selecting param */
                 selectedParam = Math.max(0, Math.min(componentParams.length - 1, selectedParam + delta));
+                if (componentParams.length > 0) {
+                    const cp = componentParams[selectedParam];
+                    announceMenuItem(cp.name || cp.key, cp.value || "");
+                }
             }
             break;
         case VIEWS.CHAIN_EDIT:
@@ -4763,6 +4962,10 @@ function handleJog(delta) {
         case VIEWS.COMPONENT_SELECT:
             /* Navigate available modules list */
             selectedModuleIndex = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
+            if (availableModules.length > 0) {
+                const mod = availableModules[selectedModuleIndex];
+                announceMenuItem("Module", mod.name || mod.id || "Unknown");
+            }
             break;
         case VIEWS.STORE_PICKER_LIST:
             handleStorePickerListJog(delta);
@@ -4805,10 +5008,14 @@ function handleJog(delta) {
             } else if (hierEditorEditMode) {
                 /* Adjust selected param value */
                 adjustHierSelectedParam(delta);
-                /* Get current param and announce value */
+                /* Fetch fresh value and announce it */
                 if (hierEditorParams.length > 0 && hierEditorSelectedIdx >= 0 && hierEditorSelectedIdx < hierEditorParams.length) {
                     const param = hierEditorParams[hierEditorSelectedIdx];
-                    announceParameter(param.label || param.key, param.value || "");
+                    const key = typeof param === "string" ? param : param.key || param;
+                    const fullKey = buildHierarchyParamKey(key);
+                    const freshVal = getSlotParam(hierEditorSlot, fullKey);
+                    const displayVal = freshVal !== null ? formatHierDisplayValue(key, freshVal) : "";
+                    announceParameter(param.label || key, displayVal);
                 }
             } else {
                 /* Scroll param list (includes preset edit mode) */
@@ -4834,9 +5041,17 @@ function handleJog(delta) {
                 /* Navigate targets list */
                 const targets = getKnobTargets(knobEditorSlot);
                 knobParamPickerIndex = Math.max(0, Math.min(targets.length - 1, knobParamPickerIndex + delta));
+                if (targets.length > 0) {
+                    const t = targets[knobParamPickerIndex];
+                    announceMenuItem("Target", t.label || t.id || "None");
+                }
             } else {
                 /* Navigate params list */
                 knobParamPickerIndex = Math.max(0, Math.min(knobParamPickerParams.length - 1, knobParamPickerIndex + delta));
+                if (knobParamPickerParams.length > 0) {
+                    const kp = knobParamPickerParams[knobParamPickerIndex];
+                    announceMenuItem("Param", kp.label || kp.key || "Unknown");
+                }
             }
             break;
         case VIEWS.OVERTAKE_MENU:
@@ -4844,6 +5059,10 @@ function handleJog(delta) {
             if (selectedOvertakeModule < 0) selectedOvertakeModule = 0;
             if (selectedOvertakeModule >= overtakeModules.length) {
                 selectedOvertakeModule = Math.max(0, overtakeModules.length - 1);
+            }
+            if (overtakeModules.length > 0) {
+                const om = overtakeModules[selectedOvertakeModule];
+                announceMenuItem("Module", om.name || om.id || "Unknown");
             }
             break;
         case VIEWS.OVERTAKE_MODULE:
@@ -4855,6 +5074,18 @@ function handleJog(delta) {
 
 function handleSelect() {
     hideOverlay();
+    if (inScreenReaderSettingsMenu) {
+        const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+        if (item.type === "bool" || item.type === "enum") {
+            adjustMasterFxSetting(item, 1);
+            const newVal = getMasterFxSettingValue(item);
+            announceParameter(item.label, newVal);
+        } else if (item.type === "float" || item.type === "int") {
+            editingScreenReaderSetting = !editingScreenReaderSetting;
+        }
+        needsRedraw = true;
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             if (selectedSlot < slots.length) {
@@ -5037,6 +5268,7 @@ function handleSelect() {
                 /* Refresh chain config to show newly loaded synth/FX */
                 loadChainConfigFromSlot(selectedSlot);
                 setView(VIEWS.CHAIN_EDIT);
+                announce("Patch loaded");
                 needsRedraw = true;
             }
             break;
@@ -5044,6 +5276,12 @@ function handleSelect() {
             if (componentParams.length > 0) {
                 /* Toggle between selecting and editing */
                 editingValue = !editingValue;
+                const cp = componentParams[selectedParam];
+                if (editingValue) {
+                    announceParameter(cp.name || cp.key, cp.value || "");
+                } else {
+                    announce("Done editing");
+                }
             }
             break;
         case VIEWS.CHAIN_EDIT:
@@ -5074,6 +5312,10 @@ function handleSelect() {
             break;
         case VIEWS.COMPONENT_SELECT:
             /* Apply selected module to the component */
+            if (availableModules.length > 0) {
+                const selMod = availableModules[selectedModuleIndex];
+                announce(`Loading ${selMod.name || selMod.id || "module"}`);
+            }
             applyComponentSelection();
             break;
         case VIEWS.STORE_PICKER_LIST:
@@ -5429,6 +5671,7 @@ function handleSelect() {
                     /* Stay in overtake menu mode (1) so store picker receives input */
                     enterStorePicker('overtake');
                 } else {
+                    announce(`Loading ${selected.name || selected.id}`);
                     loadOvertakeModule(selected);
                 }
             }
@@ -5442,6 +5685,18 @@ function handleSelect() {
 
 function handleBack() {
     hideOverlay();
+    if (inScreenReaderSettingsMenu) {
+        if (editingScreenReaderSetting) {
+            editingScreenReaderSetting = false;
+        } else {
+            inScreenReaderSettingsMenu = false;
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+        }
+        needsRedraw = true;
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             /* At root level - exit shadow mode and return to Move */
@@ -6568,6 +6823,21 @@ function drawMasterFxSettingsMenu() {
 
 /* ========== End Master Preset Draw Functions ========== */
 
+function drawScreenReaderSettingsMenu() {
+    drawHeader("Screen Reader");
+
+    drawMenuList({
+        items: SCREENREADER_SETTINGS_ITEMS,
+        selectedIndex: selectedScreenReaderSetting,
+        getLabel: (item) => item.label,
+        getValue: (item) => getMasterFxSettingValue(item),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true
+    });
+
+    drawFooter("Back: exit");
+}
+
 function drawMasterFx() {
     clear_screen();
 
@@ -6801,6 +7071,38 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_OVERTAKE);
             }
         }
+        if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
+            debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
+            autosaveAllSlots();
+            saveMasterFxChainConfig();
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
+            }
+        }
+        if (flags & SHADOW_UI_FLAG_JUMP_TO_SCREENREADER) {
+            debugLog("SCREENREADER flag detected, entering screen reader settings");
+            inScreenReaderSettingsMenu = true;
+            selectedScreenReaderSetting = 0;
+            editingScreenReaderSetting = false;
+            needsRedraw = true;
+            /* Announce menu + initial selection */
+            const item = SCREENREADER_SETTINGS_ITEMS[0];
+            const value = getMasterFxSettingValue(item);
+            announce(`Screen Reader Settings, ${item.label}: ${value}`);
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SCREENREADER);
+            }
+        }
+    }
+
+    /* Screen reader settings debounce timer */
+    if (srAnnounceTimer > 0) {
+        srAnnounceTimer--;
+        if (srAnnounceTimer === 0) {
+            const item = SCREENREADER_SETTINGS_ITEMS[selectedScreenReaderSetting];
+            const value = getMasterFxSettingValue(item);
+            announceParameter(item.label, value);
+        }
     }
 
     refreshCounter++;
@@ -6813,6 +7115,7 @@ globalThis.tick = function() {
     if (autosaveCounter >= AUTOSAVE_INTERVAL) {
         autosaveCounter = 0;
         autosaveAllSlots();
+        saveMasterFxChainConfig();
     }
     /* Refresh dirty cache frequently for responsive UI */
     if (refreshCounter % 15 === 0) {
@@ -6870,6 +7173,11 @@ globalThis.tick = function() {
         return;
     }
     needsRedraw = false;
+    if (inScreenReaderSettingsMenu) {
+        clear_screen();
+        drawScreenReaderSettingsMenu();
+        return;
+    }
     switch (view) {
         case VIEWS.SLOTS:
             drawSlots();
@@ -7159,6 +7467,8 @@ globalThis.onMidiMessageInternal = function(data) {
             if (slotIndex >= 0 && slotIndex < SHADOW_UI_SLOTS) {
                 selectedSlot = slotIndex;
                 updateFocusedSlot(slotIndex);
+                const slotName = slots[slotIndex]?.name || `Slot ${slotIndex + 1}`;
+                announce(`Track ${slotIndex + 1}, ${slotName}`);
                 needsRedraw = true;
             }
             return;

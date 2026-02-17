@@ -1,5 +1,5 @@
 /*
- * TTS Engine - Flite wrapper for on-device text-to-speech
+ * TTS Engine - Dual-engine dispatcher (eSpeak-NG + Flite)
  */
 
 #ifndef TTS_ENGINE_H
@@ -14,7 +14,7 @@ bool tts_init(int sample_rate);
 /* Cleanup TTS engine */
 void tts_cleanup(void);
 
-/* Speak text (non-blocking, synthesis happens in callback) */
+/* Speak text (non-blocking, synthesis happens in background) */
 bool tts_speak(const char *text);
 
 /* Check if TTS is currently speaking */
@@ -50,5 +50,11 @@ float tts_get_speed(void);
 
 /* Get TTS pitch */
 float tts_get_pitch(void);
+
+/* Switch TTS engine: "espeak" or "flite" */
+void tts_set_engine(const char *engine_name);
+
+/* Get current TTS engine name */
+const char *tts_get_engine(void);
 
 #endif /* TTS_ENGINE_H */

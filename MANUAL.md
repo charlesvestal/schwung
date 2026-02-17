@@ -106,13 +106,63 @@ The last position in each slot contains settings:
 
 ---
 
+## Connecting to Move Tracks
+
+1. Set a Move track's **MIDI Out** to a channel (1-4)
+2. Set the corresponding slot's **Receive Ch** to match
+3. Play the Move track - its MIDI triggers the slot's synth
+
+Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
+
+---
+
 ## Master FX
 
 Access via **Shift+Vol + Menu**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
-### Native Sampler Bridge (Resample Src)
+---
 
-In **Master FX > Settings**, `Resample Src` controls whether Move Everything audio is fed into native Move sampling:
+## Routing Move Tracks Through Custom FX
+
+On Move firmware 2.0.0+, you can route Move's own track audio through Move Everything's audio effects using Link Audio. This lets you add effects like CloudSeed reverb, TapeDelay, or NAM amp models to your native Move tracks.
+
+### Setup
+
+1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
+2. **Install or update Move Everything** — the installer enables Link Audio automatically.
+
+### How It Works
+
+When Link Audio is enabled, Move streams each track's audio separately. Move Everything intercepts these streams and routes them through the audio FX in the corresponding slot:
+
+```
+Move Track 1 audio → Slot 1 Audio FX 1 → Audio FX 2 → mixed output
+Move Track 2 audio → Slot 2 Audio FX 1 → Audio FX 2 → mixed output
+...
+```
+
+This means you can set up a slot with just audio effects (no synth) and it will process that Move track's audio.
+
+### Example: Adding Reverb to a Move Track
+
+1. Open Slot 1 (**Shift+Vol + Track 1**)
+2. Navigate to **Audio FX 1** and load CloudSeed (or any audio effect)
+3. Optionally load a second effect in **Audio FX 2**
+4. Play Move Track 1 — you'll hear it processed through your effects
+
+### Notes
+
+- Move must be on firmware **2.0.0 or later** for Link Audio support
+- Each Move track maps to the matching slot number (Track 1 → Slot 1, etc.)
+- A slot can have both a synth (triggered by MIDI) and audio FX (processing Move's track audio) simultaneously
+
+---
+
+## Native Sampler Bridge
+
+Move Everything audio can be fed into Move's native sampler for resampling.
+
+In **Master FX > Settings**, `Resample Src` controls this:
 
 | Option | Behavior |
 |--------|----------|
@@ -128,25 +178,39 @@ If monitoring is on or routing is configured differently, audio feedback may occ
 
 ---
 
-## Connecting to Move Tracks
+## Recording
 
-1. Set a Move track's **MIDI Out** to a channel (1-4)
-2. Set the corresponding slot's **Receive Ch** to match
-3. Play the Move track - its MIDI triggers the slot's synth
+### Quantized Sampler
 
-Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
+Access via **Shift+Sample**. Records Move's audio output (including Move Everything synths) to WAV files, quantized to bars.
+
+**Options:**
+- **Source**: `Resample` (Move's mixed output including Move Everything) or `Move Input` (whatever is set in Move's sample input - line-in, mic, etc.)
+- **Duration**: Until stopped, 1, 2, 4, 8, or 16 bars
+
+**Usage:**
+1. Press **Shift+Sample** to open the sampler
+2. Use the jog wheel to select source and duration
+3. Recording starts on a note event or pressing Play
+4. Press **Shift+Sample** again to stop (or it stops automatically at the set duration)
+
+Recordings are saved to `Samples/Move Everything/`.
+
+Uses MIDI clock for accurate bar timing, falling back to project tempo if no clock is available. You can also use Move's built-in count-in for line-in recordings.
+
+### Skipback
+
+Press **Shift+Capture** to save the last 30 seconds of audio to disk.
+
+Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
+
+Files are saved to `Samples/Move Everything/Skipback/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
 
 ---
 
-## Overtake Modules
+## Available Modules
 
-Overtake modules take full control of Move's display and controls. Access via **Shift+Vol + Jog Click**.
-
-To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
-
----
-
-## Built-in Modules
+### Built-in
 
 These modules are included with Move Everything:
 
@@ -160,43 +224,9 @@ These modules are included with Move Everything:
 **Overtake:**
 - **MIDI Controller** - 16-bank MIDI controller with customizable knob/pad assignments
 
----
+### Module Store
 
-## Quantized Sampler
-
-Access via **Shift+Sample**. Records Move's audio output (including Move Everything synths) to WAV files, quantized to bars.
-
-### Options
-
-- **Source**: `Resample` (Move's mixed output including Move Everything) or `Move Input` (whatever is set in Move's sample input - line-in, mic, etc.)
-- **Duration**: Until stopped, 1, 2, 4, 8, or 16 bars
-
-### Usage
-
-1. Press **Shift+Sample** to open the sampler
-2. Use the jog wheel to select source and duration
-3. Recording starts on a note event or pressing Play
-4. Press **Shift+Sample** again to stop (or it stops automatically at the set duration)
-
-Recordings are saved to `Samples/Move Everything/`.
-
-Uses MIDI clock for accurate bar timing, falling back to project tempo if no clock is available. You can also use Move's built-in count-in for line-in recordings.
-
----
-
-## Skipback
-
-Press **Shift+Capture** to save the last 30 seconds of audio to disk.
-
-Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
-
-Files are saved to `Samples/Move Everything/Skipback/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
-
----
-
-## Module Store
-
-When selecting a module, "[Get more...]" opens the Module Store to download additional modules of that type. To update Move Everything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
+When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Move Everything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
 
 **Sound Generators:**
 - **Braids** - Mutable Instruments macro oscillator (47 algorithms)
@@ -219,12 +249,21 @@ When selecting a module, "[Get more...]" opens the Module Store to download addi
 - **Ducker** - MIDI-triggered sidechain ducker
 
 **Overtake/Utility:**
-- **MIDI Controller** - 16-bank MIDI controller (built-in)
 - **Four Track** - Four-track recorder
 - **M8 LPP** - Launchpad Pro emulator for Dirtywave M8
 - **SID Control** - Controller for SIDaster III
 
 **Note:** Some modules require additional files (ROMs, SoundFonts, .nam models). Check each module's documentation.
+
+---
+
+## Overtake Modules
+
+Overtake modules take full control of Move's display and controls. Access via **Shift+Vol + Jog Click**.
+
+To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
+
+**Note:** After exiting an overtake module, Move's pad and button LEDs won't refresh automatically. Change tracks or sets and they'll come back as they light back on.
 
 ---
 
@@ -243,14 +282,30 @@ Can be enabled during installation with `--enable-screen-reader`.
 
 ---
 
-## Standalone Mode
+## Display Mirror
 
-Access via **Shift+Vol + Knob 8**. Includes the full Module Store for downloading modules and updating Move Everything. Also lets you run modules without Move's audio.
+Stream Move's 128x64 OLED display to any browser on your network in real time. Useful for remote monitoring, screen capture, or development.
+
+### Setup
+
+1. Open **Master FX > Settings** (Shift+Vol + Menu, then scroll to Settings)
+2. Toggle **Mirror Display** to **On**
+3. Open `http://move.local:7681` in a browser
+
+The display updates at ~30 fps and shows whatever is on screen - both normal Move UI and Shadow UI.
+
+### Notes
+
+- Mirror Display is **off by default** and must be enabled via the settings toggle
+- The setting persists across reboots
+- The display server runs on port 7681 and starts automatically at boot
+- When mirroring is off, the server is running but idle (no overhead from the shim)
+- Multiple browsers can connect simultaneously (up to 8 clients)
 
 ---
 
 ## Tips
 
 - Slot settings persist between sessions
-- Use the Module Store (in Standalone Mode) to update Move Everything itself
+- Use **Standalone Mode** (**Shift+Vol + Knob 8**) to run modules without Move's audio, or to access the Module Store for updates
 - If something goes wrong, use Move's DFU restore mode to reset

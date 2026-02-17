@@ -119,6 +119,7 @@ static volatile float shadow_master_volume;  /* Defined later */
 /* Feature flags from config/features.json */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool standalone_enabled = true;     /* Standalone mode enabled by default */
+static bool display_mirror_enabled = false; /* Display mirror off by default */
 
 /* Link Audio interception and publishing state */
 static link_audio_state_t link_audio;
@@ -1072,6 +1073,8 @@ typedef struct shadow_chain_slot_t {
     int patch_index;
     int active;
     float volume;           /* 0.0 to 1.0, applied to audio output */
+    float pre_mute_volume;  /* saved volume before mute (0 = not muted) */
+    int muted;              /* 1 = muted by Move track mute sync */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
@@ -1134,10 +1137,41 @@ static volatile int shadow_held_track = -1;
 /* Selected slot for Shift+Knob routing: 0-3, persists even when shadow UI is off */
 static volatile int shadow_selected_slot = 0;
 
+/* Mute button hold state: 1 while CC 88 is held, 0 when released */
+static volatile int shadow_mute_held = 0;
+
 /* Set tempo detection (declared here for D-Bus handler access) */
 static float sampler_set_tempo = 0.0f;              /* 0 = not yet detected */
 static char sampler_current_set_name[128] = "";      /* e.g. "Set 3" from D-Bus */
 static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
+static void shadow_ui_state_update_slot(int slot);          /* forward decl */
+static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]);  /* forward decl */
+static void shadow_rebuild_set_name_cache(void);  /* forward decl */
+static int shadow_is_set_name(const char *text);  /* forward decl */
+
+/* Apply mute/unmute to a shadow slot */
+static void shadow_apply_mute(int slot, int is_muted) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (is_muted && !shadow_chain_slots[slot].muted) {
+        shadow_chain_slots[slot].pre_mute_volume = shadow_chain_slots[slot].volume;
+        shadow_chain_slots[slot].volume = 0.0f;
+        shadow_chain_slots[slot].muted = 1;
+        shadow_ui_state_update_slot(slot);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Mute sync: slot %d muted (saved vol=%.3f)",
+                 slot, shadow_chain_slots[slot].pre_mute_volume);
+        shadow_log(msg);
+    } else if (!is_muted && shadow_chain_slots[slot].muted) {
+        shadow_chain_slots[slot].volume = shadow_chain_slots[slot].pre_mute_volume;
+        shadow_chain_slots[slot].muted = 0;
+        shadow_ui_state_update_slot(slot);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Mute sync: slot %d unmuted (restored vol=%.3f)",
+                 slot, shadow_chain_slots[slot].volume);
+        shadow_log(msg);
+    }
+}
+
 
 #if ENABLE_SCREEN_READER
 /* D-Bus connection for monitoring */
@@ -1742,6 +1776,20 @@ static void shadow_dbus_handle_text(const char *text)
         shadow_log(msg);
     }
 
+    /* If Move is asking user to confirm shutdown, dismiss shadow UI so jog wheel
+     * press reaches Move's native firmware instead of being captured by us.
+     * Also signal the JS UI to save all state before power-off. */
+    if (shadow_control &&
+        strcasecmp(text, "Press wheel to shut down") == 0) {
+        shadow_log("Shutdown prompt detected — saving state and dismissing shadow UI");
+        shadow_control->ui_flags |= SHADOW_UI_FLAG_SAVE_STATE;
+        shadow_save_state();
+        if (shadow_display_mode) {
+            shadow_display_mode = 0;
+            shadow_control->display_mode = 0;
+        }
+    }
+
     /* Track native Move sampler source from stock announcements. */
     native_sampler_update_from_dbus_text(text);
 
@@ -1772,17 +1820,42 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Check if it's a Set name (e.g. "Set 1", "Set 28") - read tempo from Song.abl */
-    if (strncmp(text, "Set ", 4) == 0) {
-        /* Verify the rest is a number (Set names are "Set <N>") */
-        const char *num = text + 4;
-        if (*num >= '0' && *num <= '9') {
-            snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", text);
-            sampler_set_tempo = sampler_read_set_tempo(text);
-            char msg[128];
-            snprintf(msg, sizeof(msg), "Set detected: \"%s\" -> tempo=%.1f",
-                     text, sampler_set_tempo);
-            shadow_log(msg);
+    /* Check if it's a Set name - match against cached set names */
+    if (shadow_is_set_name(text)) {
+        snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", text);
+        sampler_set_tempo = sampler_read_set_tempo(text);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Set detected: \"%s\" -> tempo=%.1f",
+                 text, sampler_set_tempo);
+        shadow_log(msg);
+
+        /* Rebuild cache in case sets were added/renamed */
+        shadow_rebuild_set_name_cache();
+
+        /* Read initial mute states from Song.abl */
+        int muted[4];
+        int n = shadow_read_set_mute_states(text, muted);
+        for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
+            if (muted[i] && !shadow_chain_slots[i].muted) {
+                /* Track is muted in set: save volume and zero it */
+                shadow_chain_slots[i].pre_mute_volume = shadow_chain_slots[i].volume;
+                shadow_chain_slots[i].volume = 0.0f;
+                shadow_chain_slots[i].muted = 1;
+                shadow_ui_state_update_slot(i);
+                char m[64];
+                snprintf(m, sizeof(m), "Set load: slot %d muted (saved vol=%.3f)",
+                         i, shadow_chain_slots[i].pre_mute_volume);
+                shadow_log(m);
+            } else if (!muted[i] && shadow_chain_slots[i].muted) {
+                /* Track is unmuted in set: restore volume */
+                shadow_chain_slots[i].volume = shadow_chain_slots[i].pre_mute_volume;
+                shadow_chain_slots[i].muted = 0;
+                shadow_ui_state_update_slot(i);
+                char m[64];
+                snprintf(m, sizeof(m), "Set load: slot %d unmuted (restored vol=%.3f)",
+                         i, shadow_chain_slots[i].volume);
+                shadow_log(m);
+            }
         }
     }
 
@@ -1790,17 +1863,37 @@ static void shadow_dbus_handle_text(const char *text)
     if (strncmp(text, "Track Volume ", 13) == 0) {
         float volume = shadow_parse_volume_db(text);
         if (volume >= 0.0f && shadow_held_track >= 0 && shadow_held_track < SHADOW_CHAIN_INSTANCES) {
-            /* Update the held track's slot volume */
-            shadow_chain_slots[shadow_held_track].volume = volume;
+            if (!shadow_chain_slots[shadow_held_track].muted) {
+                /* Update the held track's slot volume (skip if muted) */
+                shadow_chain_slots[shadow_held_track].volume = volume;
 
-            /* Log the volume sync */
-            char msg[128];
-            snprintf(msg, sizeof(msg), "D-Bus volume sync: slot %d = %.3f (%s)",
-                     shadow_held_track, volume, text);
-            shadow_log(msg);
+                /* Log the volume sync */
+                char msg[128];
+                snprintf(msg, sizeof(msg), "D-Bus volume sync: slot %d = %.3f (%s)",
+                         shadow_held_track, volume, text);
+                shadow_log(msg);
 
-            /* Persist slot volumes */
-            shadow_save_state();
+                /* Persist slot volumes */
+                shadow_save_state();
+            }
+        }
+    }
+
+
+    /* Auto-correct mute state from D-Bus screen reader text.
+     * Move announces "<Instrument> muted" / "<Instrument> unmuted" on any
+     * mute state change. Apply to the selected slot so we stay in sync even
+     * when Move mutes/unmutes independently of our Mute+Track shortcut. */
+    {
+        int text_len = strlen(text);
+        int ends_with_unmuted = (text_len >= 8 && strcmp(text + text_len - 7, "unmuted") == 0
+                                 && text[text_len - 8] == ' ');
+        int ends_with_muted = !ends_with_unmuted &&
+                              (text_len >= 6 && strcmp(text + text_len - 5, "muted") == 0
+                               && text[text_len - 6] == ' ');
+
+        if (ends_with_muted || ends_with_unmuted) {
+            shadow_apply_mute(shadow_selected_slot, ends_with_muted);
         }
     }
 
@@ -2713,6 +2806,24 @@ static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn, DBusMessage *m
         const char *sender = dbus_message_get_sender(msg);
         int msg_type = dbus_message_get_type(msg);
 
+        /* Log WebServiceAuthentication method calls (challenge/PIN flow) */
+        if (msg_type == DBUS_MESSAGE_TYPE_METHOD_CALL &&
+            iface && strcmp(iface, "com.ableton.move.WebServiceAuthentication") == 0) {
+            char arg_preview[128] = "";
+            DBusMessageIter iter;
+            if (dbus_message_iter_init(msg, &iter) &&
+                dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
+                const char *s = NULL;
+                dbus_message_iter_get_basic(&iter, &s);
+                if (s) snprintf(arg_preview, sizeof(arg_preview), " arg0=\"%.60s\"", s);
+            }
+            char logbuf[512];
+            snprintf(logbuf, sizeof(logbuf), "D-Bus AUTH: %s.%s path=%s sender=%s%s",
+                     iface, member ? member : "?", path ? path : "?",
+                     sender ? sender : "?", arg_preview);
+            shadow_log(logbuf);
+        }
+
         if (msg_type == DBUS_MESSAGE_TYPE_SIGNAL) {
             /* Extract first string arg if present */
             char arg_preview[128] = "";
@@ -2838,6 +2949,19 @@ static void *shadow_dbus_thread_func(void *arg)
     const char *rule_all = "type='signal'";
     dbus_bus_add_match(shadow_dbus_conn, rule_all, &err);
     dbus_connection_flush(shadow_dbus_conn);
+
+    /* Also try to eavesdrop on WebServiceAuthentication method calls (PIN flow) */
+    if (!dbus_error_is_set(&err)) {
+        const char *rule_auth = "type='method_call',interface='com.ableton.move.WebServiceAuthentication'";
+        dbus_bus_add_match(shadow_dbus_conn, rule_auth, &err);
+        if (dbus_error_is_set(&err)) {
+            shadow_log("D-Bus: Auth eavesdrop match failed (expected - may need display-based PIN detection)");
+            dbus_error_free(&err);
+        } else {
+            shadow_log("D-Bus: Auth eavesdrop match added - will monitor setSecret calls");
+            dbus_connection_flush(shadow_dbus_conn);
+        }
+    }
 
     if (dbus_error_is_set(&err)) {
         shadow_log("D-Bus: Failed to add match rule");
@@ -3044,6 +3168,60 @@ static int sampler_settings_tempo = 0;       /* 0 = not yet read */
 
 /* Tempo detection: current Set's Song.abl (declared early for D-Bus handler access) */
 #define SAMPLER_SETS_DIR "/data/UserData/UserLibrary/Sets"
+
+/* Cached set names for fast D-Bus text matching */
+#define MAX_CACHED_SETS 64
+#define MAX_SET_NAME_LEN 128
+static char cached_set_names[MAX_CACHED_SETS][MAX_SET_NAME_LEN];
+static int cached_set_count = 0;
+
+/* Scan the Sets directory and cache all set names */
+static void shadow_rebuild_set_name_cache(void) {
+    cached_set_count = 0;
+
+    DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
+    if (!sets_dir) return;
+
+    struct dirent *uuid_entry;
+    while ((uuid_entry = readdir(sets_dir)) != NULL && cached_set_count < MAX_CACHED_SETS) {
+        if (uuid_entry->d_name[0] == '.') continue;
+
+        /* Each UUID dir contains set name subdirs */
+        char uuid_path[512];
+        snprintf(uuid_path, sizeof(uuid_path), "%s/%s", SAMPLER_SETS_DIR, uuid_entry->d_name);
+
+        DIR *uuid_dir = opendir(uuid_path);
+        if (!uuid_dir) continue;
+
+        struct dirent *set_entry;
+        while ((set_entry = readdir(uuid_dir)) != NULL && cached_set_count < MAX_CACHED_SETS) {
+            if (set_entry->d_name[0] == '.') continue;
+            /* Verify Song.abl exists */
+            char song_path[512];
+            snprintf(song_path, sizeof(song_path), "%s/%s/Song.abl", uuid_path, set_entry->d_name);
+            struct stat st;
+            if (stat(song_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                strncpy(cached_set_names[cached_set_count], set_entry->d_name, MAX_SET_NAME_LEN - 1);
+                cached_set_names[cached_set_count][MAX_SET_NAME_LEN - 1] = '\0';
+                cached_set_count++;
+            }
+        }
+        closedir(uuid_dir);
+    }
+    closedir(sets_dir);
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Set name cache: %d sets found", cached_set_count);
+    shadow_log(msg);
+}
+
+/* Check if text matches a cached set name */
+static int shadow_is_set_name(const char *text) {
+    for (int i = 0; i < cached_set_count; i++) {
+        if (strcmp(text, cached_set_names[i]) == 0) return 1;
+    }
+    return 0;
+}
 
 /* Tempo source tracking for display */
 typedef enum {
@@ -3528,6 +3706,81 @@ static float sampler_read_set_tempo(const char *set_name) {
     }
     fclose(f);
     return tempo;
+}
+
+/* Read track mute states from Song.abl for the given set name.
+ * Track-level "speakerOn" fields are at exactly 8-space indent.
+ * Results stored in muted_out[0..3]: 1=muted, 0=not muted.
+ * Returns number of tracks found (0 on failure). */
+static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]) {
+    memset(muted_out, 0, 4 * sizeof(int));
+    if (!set_name || !set_name[0]) return 0;
+
+    DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
+    if (!sets_dir) return 0;
+
+    char best_path[512] = "";
+    time_t best_mtime = 0;
+    struct dirent *entry;
+
+    while ((entry = readdir(sets_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s/%s/Song.abl",
+                 SAMPLER_SETS_DIR, entry->d_name, set_name);
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            if (st.st_mtime > best_mtime) {
+                best_mtime = st.st_mtime;
+                snprintf(best_path, sizeof(best_path), "%s", path);
+            }
+        }
+    }
+    closedir(sets_dir);
+
+    if (best_path[0] == '\0') return 0;
+
+    FILE *f = fopen(best_path, "r");
+    if (!f) return 0;
+
+    /* Parse by tracking brace/bracket depth.
+     * Track-level structure: "tracks": [ { ... "mixer": { "speakerOn": X } } ]
+     * Track-level mixer is at brace_depth=3 (root=1, track=2, mixer=3).
+     * Deeper mixers (drum cells, device chains) are at depth 5+. */
+    int track_count = 0;
+    int brace_depth = 0;
+    int in_tracks = 0;       /* 1 after seeing "tracks" key */
+    int bracket_depth = 0;   /* track [] nesting after "tracks" */
+    char line[512];
+    while (fgets(line, sizeof(line), f) && track_count < 4) {
+        /* Count braces and brackets on this line */
+        for (char *p = line; *p; p++) {
+            if (*p == '{') brace_depth++;
+            else if (*p == '}') brace_depth--;
+            else if (*p == '[') bracket_depth++;
+            else if (*p == ']') bracket_depth--;
+        }
+
+        /* Detect "tracks" key to know we're in the tracks array */
+        if (!in_tracks && strstr(line, "\"tracks\"")) {
+            in_tracks = 1;
+        }
+
+        /* Track-level speakerOn: inside tracks array, at brace depth 3 */
+        if (in_tracks && brace_depth == 3 && strstr(line, "\"speakerOn\"")) {
+            muted_out[track_count] = strstr(line, "false") ? 1 : 0;
+            track_count++;
+        }
+    }
+    fclose(f);
+
+    if (track_count > 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Set mute states from %s: [%d,%d,%d,%d]",
+                 set_name, muted_out[0], muted_out[1], muted_out[2], muted_out[3]);
+        shadow_log(msg);
+    }
+    return track_count;
 }
 
 /* Read tempo_bpm from Move Anything settings file */
@@ -4222,12 +4475,26 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse display_mirror_enabled (defaults to false) */
+    const char *display_mirror_key = strstr(config_buf, "\"display_mirror_enabled\"");
+    if (display_mirror_key) {
+        const char *colon = strchr(display_mirror_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                display_mirror_enabled = true;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, standalone=%s, link_audio=%s",
+             "Features: shadow_ui=%s, standalone=%s, link_audio=%s, display_mirror=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              standalone_enabled ? "enabled" : "disabled",
-             link_audio.enabled ? "enabled" : "disabled");
+             link_audio.enabled ? "enabled" : "disabled",
+             display_mirror_enabled ? "enabled" : "disabled");
     shadow_log(log_msg);
 }
 
@@ -4304,18 +4571,21 @@ static void shadow_read_initial_volume(void)
 
 static void shadow_save_state(void)
 {
-    /* Read existing config to preserve patches and master_fx fields */
+    /* Read existing config to preserve fields written by shadow_ui.js */
     FILE *f = fopen(SHADOW_CONFIG_PATH, "r");
     char patches_buf[4096] = "";
     char master_fx[256] = "";
     char master_fx_path[256] = "";
+    char master_fx_chain_buf[2048] = "";
+    int overlay_knobs_mode = -1;
+    int resample_bridge_mode = -1;
 
     if (f) {
         fseek(f, 0, SEEK_END);
         long size = ftell(f);
         fseek(f, 0, SEEK_SET);
 
-        if (size > 0 && size < 8192) {
+        if (size > 0 && size < 16384) {
             char *json = malloc(size + 1);
             if (json) {
                 size_t nread = fread(json, 1, size, f);
@@ -4341,7 +4611,7 @@ static void shadow_save_state(void)
                     }
                 }
 
-                /* Extract master_fx string */
+                /* Extract master_fx string (legacy single-slot) */
                 char *mfx = strstr(json, "\"master_fx\":");
                 if (mfx) {
                     mfx = strchr(mfx, ':');
@@ -4375,6 +4645,48 @@ static void shadow_save_state(void)
                     }
                 }
 
+                /* Extract master_fx_chain object (written by shadow_ui.js) */
+                char *mfc = strstr(json, "\"master_fx_chain\":");
+                if (mfc) {
+                    char *obj_start = strchr(mfc, '{');
+                    if (obj_start) {
+                        int depth = 1;
+                        char *obj_end = obj_start + 1;
+                        while (*obj_end && depth > 0) {
+                            if (*obj_end == '{') depth++;
+                            else if (*obj_end == '}') depth--;
+                            obj_end++;
+                        }
+                        int len = obj_end - obj_start;
+                        if (len < (int)sizeof(master_fx_chain_buf) - 1) {
+                            strncpy(master_fx_chain_buf, obj_start, len);
+                            master_fx_chain_buf[len] = '\0';
+                        }
+                    }
+                }
+
+                /* Extract overlay_knobs_mode integer */
+                char *okm = strstr(json, "\"overlay_knobs_mode\":");
+                if (okm) {
+                    okm = strchr(okm, ':');
+                    if (okm) {
+                        okm++;
+                        while (*okm == ' ') okm++;
+                        overlay_knobs_mode = atoi(okm);
+                    }
+                }
+
+                /* Extract resample_bridge_mode integer */
+                char *rbm = strstr(json, "\"resample_bridge_mode\":");
+                if (rbm) {
+                    rbm = strchr(rbm, ':');
+                    if (rbm) {
+                        rbm++;
+                        while (*rbm == ' ') rbm++;
+                        resample_bridge_mode = atoi(rbm);
+                    }
+                }
+
                 free(json);
             }
         }
@@ -4395,6 +4707,15 @@ static void shadow_save_state(void)
     fprintf(f, "  \"master_fx\": \"%s\",\n", master_fx);
     if (master_fx_path[0]) {
         fprintf(f, "  \"master_fx_path\": \"%s\",\n", master_fx_path);
+    }
+    if (master_fx_chain_buf[0]) {
+        fprintf(f, "  \"master_fx_chain\": %s,\n", master_fx_chain_buf);
+    }
+    if (overlay_knobs_mode >= 0) {
+        fprintf(f, "  \"overlay_knobs_mode\": %d,\n", overlay_knobs_mode);
+    }
+    if (resample_bridge_mode >= 0) {
+        fprintf(f, "  \"resample_bridge_mode\": %d,\n", resample_bridge_mode);
     }
     fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f],\n",
             shadow_chain_slots[0].volume,
@@ -4565,6 +4886,8 @@ static void shadow_chain_defaults(void) {
         shadow_chain_slots[i].patch_index = -1;
         shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
         shadow_chain_slots[i].volume = 1.0f;
+        shadow_chain_slots[i].pre_mute_volume = 0.0f;
+        shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].forward_channel = -1;
         capture_clear(&shadow_chain_slots[i].capture);
         strncpy(shadow_chain_slots[i].patch_name,
@@ -4745,7 +5068,13 @@ static void shadow_master_fx_unload_all(void) {
 
 /* Load a master FX module into a specific slot by full DSP path.
  * Returns 0 on success, -1 on failure. */
+static int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json);
+
 static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
+    return shadow_master_fx_slot_load_with_config(slot, dsp_path, NULL);
+}
+
+static int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json) {
     if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
     master_fx_slot_t *s = &shadow_master_fx_slots[slot];
 
@@ -4754,8 +5083,8 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
         return 0;  /* Empty = disable this slot */
     }
 
-    /* Already loaded? */
-    if (strcmp(s->module_path, dsp_path) == 0 && s->instance) {
+    /* Already loaded? (skip check if config_json provided - need fresh instance) */
+    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
         return 0;
     }
 
@@ -4795,7 +5124,7 @@ static int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
         *last_slash = '\0';
     }
 
-    s->instance = s->api->create_instance(module_dir, NULL);
+    s->instance = s->api->create_instance(module_dir, config_json);
     if (!s->instance) {
         fprintf(stderr, "Shadow master FX[%d]: create_instance failed for %s\n", slot, dsp_path);
         dlclose(s->handle);
@@ -4946,6 +5275,7 @@ static int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
 
     shadow_chain_load_config();
+    shadow_rebuild_set_name_cache();
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_chain_slots[i].instance = shadow_plugin_v2->create_instance(
             SHADOW_CHAIN_MODULE_DIR, NULL);
@@ -5074,6 +5404,194 @@ static int shadow_inprocess_load_chain(void) {
                      shadow_chain_slots[i].patch_name);
             shadow_log(msg);
         }
+    }
+
+    /* Load master FX slots from state files (written by shadow_ui.js autosave) */
+    for (int mfx = 0; mfx < MASTER_FX_SLOTS; mfx++) {
+        char mfx_path[256];
+        snprintf(mfx_path, sizeof(mfx_path), SLOT_STATE_DIR "/master_fx_%d.json", mfx);
+        FILE *mf = fopen(mfx_path, "r");
+        if (!mf) continue;
+
+        fseek(mf, 0, SEEK_END);
+        long msize = ftell(mf);
+        fseek(mf, 0, SEEK_SET);
+
+        if (msize <= 10) {  /* Empty marker "{}\n" */
+            fclose(mf);
+            continue;
+        }
+
+        char *mjson = malloc(msize + 1);
+        if (!mjson) { fclose(mf); continue; }
+        size_t mnread = fread(mjson, 1, msize, mf);
+        mjson[mnread] = '\0';
+        fclose(mf);
+
+        /* Extract module_path */
+        char dsp_path[256] = "";
+        {
+            char *mp = strstr(mjson, "\"module_path\":");
+            if (mp) {
+                mp = strchr(mp, ':');
+                if (mp) {
+                    mp++;
+                    while (*mp == ' ' || *mp == '"') mp++;
+                    char *end = mp;
+                    while (*end && *end != '"') end++;
+                    int len = end - mp;
+                    if (len > 0 && len < (int)sizeof(dsp_path) - 1) {
+                        strncpy(dsp_path, mp, len);
+                        dsp_path[len] = '\0';
+                    }
+                }
+            }
+        }
+
+        if (!dsp_path[0]) {
+            free(mjson);
+            continue;
+        }
+
+        /* Extract plugin_id from params BEFORE loading module.
+         * Pass it as config_json to create_instance so the CLAP host
+         * starts with the correct sub-plugin immediately (no default→switch). */
+        char config_json_buf[512] = "";
+        char *params_start = strstr(mjson, "\"params\":");
+        if (params_start) {
+            char *pid_key = strstr(params_start, "\"plugin_id\"");
+            if (pid_key) {
+                char *pc = strchr(pid_key + 11, ':');
+                if (pc) {
+                    pc++;
+                    while (*pc == ' ') pc++;
+                    if (*pc == '"') {
+                        pc++;
+                        char *pe = strchr(pc, '"');
+                        if (pe) {
+                            int plen = pe - pc;
+                            if (plen > 0 && plen < 256) {
+                                char pid_val[256];
+                                strncpy(pid_val, pc, plen);
+                                pid_val[plen] = '\0';
+                                snprintf(config_json_buf, sizeof(config_json_buf),
+                                         "{\"plugin_id\":\"%s\"}", pid_val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Load the module (with plugin_id config if available) */
+        int load_result = shadow_master_fx_slot_load_with_config(mfx, dsp_path,
+            config_json_buf[0] ? config_json_buf : NULL);
+        if (load_result != 0) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "MFX boot: slot %d failed to load %s", mfx, dsp_path);
+            shadow_log(msg);
+            free(mjson);
+            continue;
+        }
+
+        master_fx_slot_t *s = &shadow_master_fx_slots[mfx];
+
+        /* Restore state if available */
+        char *state_start = strstr(mjson, "\"state\":");
+        if (state_start && s->api && s->instance && s->api->set_param) {
+            char *obj_start = strchr(state_start, '{');
+            if (obj_start) {
+                int depth = 1;
+                char *obj_end = obj_start + 1;
+                while (*obj_end && depth > 0) {
+                    if (*obj_end == '{') depth++;
+                    else if (*obj_end == '}') depth--;
+                    obj_end++;
+                }
+                int slen = obj_end - obj_start;
+                char *state_buf = malloc(slen + 1);
+                if (state_buf) {
+                    memcpy(state_buf, obj_start, slen);
+                    state_buf[slen] = '\0';
+                    s->api->set_param(s->instance, "state", state_buf);
+                    free(state_buf);
+                }
+            }
+        } else if (params_start && s->api && s->instance && s->api->set_param) {
+            /* Fall back to individual params */
+            char *obj_start = strchr(params_start, '{');
+            if (obj_start) {
+                int depth = 1;
+                char *obj_end = obj_start + 1;
+                while (*obj_end && depth > 0) {
+                    if (*obj_end == '{') depth++;
+                    else if (*obj_end == '}') depth--;
+                    obj_end++;
+                }
+                /* Parse individual key:value pairs from the params object */
+                char *p = obj_start + 1;
+                while (p < obj_end - 1) {
+                    /* Find key */
+                    char *kstart = strchr(p, '"');
+                    if (!kstart || kstart >= obj_end) break;
+                    kstart++;
+                    char *kend = strchr(kstart, '"');
+                    if (!kend || kend >= obj_end) break;
+
+                    char param_key[128];
+                    int klen = kend - kstart;
+                    if (klen >= (int)sizeof(param_key)) { p = kend + 1; continue; }
+                    strncpy(param_key, kstart, klen);
+                    param_key[klen] = '\0';
+
+                    /* Find value (after colon) */
+                    char *colon = strchr(kend, ':');
+                    if (!colon || colon >= obj_end) break;
+                    colon++;
+                    while (*colon == ' ') colon++;
+
+                    char param_val[256];
+                    if (*colon == '"') {
+                        /* String value */
+                        colon++;
+                        char *vend = strchr(colon, '"');
+                        if (!vend || vend >= obj_end) break;
+                        int vlen = vend - colon;
+                        if (vlen >= (int)sizeof(param_val)) { p = vend + 1; continue; }
+                        strncpy(param_val, colon, vlen);
+                        param_val[vlen] = '\0';
+                        p = vend + 1;
+                    } else {
+                        /* Numeric value */
+                        char *vend = colon;
+                        while (*vend && *vend != ',' && *vend != '}' && *vend != '\n') vend++;
+                        int vlen = vend - colon;
+                        if (vlen >= (int)sizeof(param_val)) { p = vend; continue; }
+                        strncpy(param_val, colon, vlen);
+                        param_val[vlen] = '\0';
+                        /* Trim trailing whitespace */
+                        while (vlen > 0 && (param_val[vlen-1] == ' ' || param_val[vlen-1] == '\r')) {
+                            param_val[--vlen] = '\0';
+                        }
+                        p = vend;
+                    }
+
+                    /* Skip plugin_id - already applied via config_json */
+                    if (strcmp(param_key, "plugin_id") != 0) {
+                        s->api->set_param(s->instance, param_key, param_val);
+                    }
+                }
+            }
+        }
+
+        {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "MFX boot: slot %d loaded %s%s",
+                     mfx, s->module_id,
+                     state_start ? " (with state)" : (strstr(mjson, "\"params\":") ? " (with params)" : ""));
+            shadow_log(msg);
+        }
+        free(mjson);
     }
 
     shadow_ui_state_refresh();
@@ -6675,6 +7193,7 @@ static int16_t *shadow_movein_shm = NULL;   /* Move's audio for shadow to read *
 static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
+static uint8_t *display_live_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
@@ -6857,6 +7376,23 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create display shm\n");
     }
 
+    /* Create/open live display shared memory (for remote display server) */
+    int shm_display_live_fd = shm_open(SHM_DISPLAY_LIVE, O_CREAT | O_RDWR, 0666);
+    if (shm_display_live_fd >= 0) {
+        ftruncate(shm_display_live_fd, DISPLAY_BUFFER_SIZE);
+        display_live_shm = (uint8_t *)mmap(NULL, DISPLAY_BUFFER_SIZE,
+                                            PROT_READ | PROT_WRITE,
+                                            MAP_SHARED, shm_display_live_fd, 0);
+        if (display_live_shm == MAP_FAILED) {
+            display_live_shm = NULL;
+            printf("Shadow: Failed to mmap live display shm\n");
+        } else {
+            memset(display_live_shm, 0, DISPLAY_BUFFER_SIZE);
+        }
+    } else {
+        printf("Shadow: Failed to create live display shm\n");
+    }
+
     /* Create/open control shared memory - DON'T zero it, shadow_poc owns the state */
     shm_control_fd = shm_open(SHM_SHADOW_CONTROL, O_CREAT | O_RDWR, 0666);
     if (shm_control_fd >= 0) {
@@ -6885,6 +7421,7 @@ static void init_shadow_shm(void)
             shadow_control->tts_volume = 70;    /* 70% volume */
             shadow_control->tts_pitch = 110;    /* 110 Hz */
             shadow_control->tts_speed = 1.0f;   /* Normal speed */
+            shadow_control->tts_engine = 0;     /* 0=espeak-ng, 1=flite */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -7094,6 +7631,13 @@ static void shadow_check_screenreader(void)
     if (has_pending_message && (now_ms - last_message_time_ms >= TTS_DEBOUNCE_MS)) {
         /* Apply TTS settings from shared memory before speaking */
         if (shadow_control) {
+            /* Check for engine switch (must happen before other settings) */
+            const char *current_engine = tts_get_engine();
+            const char *requested_engine = shadow_control->tts_engine == 1 ? "flite" : "espeak";
+            if (strcmp(current_engine, requested_engine) != 0) {
+                tts_set_engine(requested_engine);
+            }
+
             tts_set_enabled(shadow_control->tts_enabled != 0);
             tts_set_volume(shadow_control->tts_volume);
             tts_set_speed(shadow_control->tts_speed);
@@ -7107,6 +7651,340 @@ static void shadow_check_screenreader(void)
         }
         has_pending_message = false;
         pending_tts_message[0] = '\0';
+    }
+}
+
+/* ==========================================================================
+ * PIN Challenge Display Scanner
+ *
+ * Monitors the pin_challenge_active flag set by the web shim when a browser
+ * connects to move.local and triggers a PIN challenge. When detected, we
+ * wait for the PIN to render on the display, extract the 6 digits, and
+ * speak them via TTS.
+ *
+ * Display format: 128x64 @ 1bpp, column-major (8 pages of 128 bytes).
+ * PIN digits appear on pages 3-4 only, all other pages are blank.
+ * ========================================================================== */
+
+/* PIN scanner state machine */
+#define PIN_STATE_IDLE     0
+#define PIN_STATE_WAITING  1  /* Waiting for PIN to render (~500ms) */
+#define PIN_STATE_SCANNING 2  /* Scanning display for digits */
+#define PIN_STATE_COOLDOWN 3  /* PIN spoken, cooling down before accepting new */
+
+static int pin_state = PIN_STATE_IDLE;
+static uint64_t pin_state_entered_ms = 0;
+static char pin_last_spoken[8] = {0};  /* Last PIN we spoke, to avoid repeats */
+
+/* File-scope display buffer for PIN scanning, accumulated from slices */
+static uint8_t pin_display_buf[DISPLAY_BUFFER_SIZE];
+static int pin_display_slices_seen[6] = {0};
+static int pin_display_complete = 0;
+
+/* Shift+Menu double-click detection state */
+static uint64_t shift_menu_pending_ms = 0;
+static int shift_menu_pending = 0;
+
+/* Accumulate a display slice into the PIN display buffer.
+ * Called from the ioctl handler's slice capture section. */
+static void pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
+{
+    if (idx < 0 || idx >= 6) return;
+    memcpy(pin_display_buf + idx * 172, data, bytes);
+    pin_display_slices_seen[idx] = 1;
+
+    /* Check if all slices received */
+    int all = 1;
+    for (int i = 0; i < 6; i++) {
+        if (!pin_display_slices_seen[i]) { all = 0; break; }
+    }
+    if (all) {
+        pin_display_complete = 1;
+        memset(pin_display_slices_seen, 0, sizeof(pin_display_slices_seen));
+
+        /* File-triggered display dump: touch /tmp/dump_display to capture */
+        if (access("/tmp/dump_display", F_OK) == 0) {
+            unlink("/tmp/dump_display");
+            FILE *f = fopen("/tmp/pin_display.bin", "w");
+            if (f) {
+                fwrite(pin_display_buf, 1, 1024, f);
+                fclose(f);
+                shadow_log("PIN: display buffer dumped to /tmp/pin_display.bin");
+            }
+        }
+    }
+}
+
+/* Digit template hash table.
+ * Each digit (0-9) maps to a polynomial hash of its column bytes in pages 3-4.
+ * These are populated from actual display captures during testing.
+ * A value of 0 means "not yet captured". */
+static uint32_t pin_digit_hashes[10] = {
+    0x8abc24d1,   /* 0 */
+    0xa8721e5e,   /* 1 */
+    0x3eeaf9a2,   /* 2 */
+    0xb680019e,   /* 3 */
+    0xc751c4ad,   /* 4 */
+    0xf7a9c384,   /* 5 */
+    0xc9805ffb,   /* 6 */
+    0x538e156e,   /* 7 */
+    0xf35f5d11,   /* 8 */
+    0xa061c01d,   /* 9 */
+};
+
+/* Compute hash for a digit group spanning columns [start, end) in pages 3-4 */
+static uint32_t pin_digit_hash(const uint8_t *display, int start, int end)
+{
+    uint32_t hash = 5381;
+    for (int c = start; c < end; c++) {
+        hash = hash * 33 + display[3 * 128 + c];
+        hash = hash * 33 + display[4 * 128 + c];
+    }
+    return hash;
+}
+
+/* Check if the display looks like a PIN screen:
+ * Pages 3-4 have content, other pages are mostly blank. */
+static int pin_display_is_pin_screen(const uint8_t *display)
+{
+    /* Count non-zero bytes in pages 3-4 */
+    int active = 0;
+    for (int i = 3 * 128; i < 5 * 128; i++) {
+        if (display[i]) active++;
+    }
+    if (active < 10) return 0;  /* Too few lit pixels */
+
+    /* Check that other pages are mostly blank */
+    int other = 0;
+    for (int page = 0; page < 8; page++) {
+        if (page == 3 || page == 4) continue;
+        for (int col = 0; col < 128; col++) {
+            if (display[page * 128 + col]) other++;
+        }
+    }
+    return other < 20;  /* Allow a few stray pixels */
+}
+
+/* Extract digits from display and build TTS string.
+ * Returns 1 on success with pin_text and raw_digits filled, 0 on failure.
+ * raw_digits must be at least 7 bytes (6 digits + NUL). */
+static int pin_extract_digits(const uint8_t *display, char *pin_text, int text_len, char *raw_digits)
+{
+    char logbuf[512];
+
+    if (!pin_display_is_pin_screen(display)) {
+        shadow_log("PIN: display doesn't look like PIN screen");
+        return 0;
+    }
+
+    /* Segment digits: find groups of consecutive non-zero columns in pages 3-4 */
+    typedef struct { int start; int end; } digit_span_t;
+    digit_span_t spans[8];
+    int span_count = 0;
+    int in_digit = 0;
+    int digit_start = 0;
+
+    for (int col = 0; col < 128; col++) {
+        int has_content = display[3 * 128 + col] || display[4 * 128 + col];
+        if (has_content && !in_digit) {
+            digit_start = col;
+            in_digit = 1;
+        } else if (!has_content && in_digit) {
+            if (span_count < 8) {
+                spans[span_count].start = digit_start;
+                spans[span_count].end = col;
+                span_count++;
+            }
+            in_digit = 0;
+        }
+    }
+    if (in_digit && span_count < 8) {
+        spans[span_count].start = digit_start;
+        spans[span_count].end = 128;
+        span_count++;
+    }
+
+    /* Expect exactly 6 digit groups */
+    if (span_count != 6) {
+        snprintf(logbuf, sizeof(logbuf), "PIN: expected 6 digit groups, found %d", span_count);
+        shadow_log(logbuf);
+        /* Log digit group info for debugging */
+        for (int i = 0; i < span_count; i++) {
+            snprintf(logbuf, sizeof(logbuf), "PIN: group %d: cols %d-%d (width %d)",
+                     i, spans[i].start, spans[i].end,
+                     spans[i].end - spans[i].start);
+            shadow_log(logbuf);
+        }
+        return 0;
+    }
+
+    /* Match each digit group */
+    char digits[7] = {0};
+    int all_matched = 1;
+
+    for (int i = 0; i < 6; i++) {
+        uint32_t hash = pin_digit_hash(display, spans[i].start, spans[i].end);
+        int matched = -1;
+
+        /* Look up in hash table */
+        for (int d = 0; d < 10; d++) {
+            if (pin_digit_hashes[d] != 0 && pin_digit_hashes[d] == hash) {
+                matched = d;
+                break;
+            }
+        }
+
+        if (matched >= 0) {
+            digits[i] = '0' + matched;
+        } else {
+            digits[i] = '?';
+            all_matched = 0;
+
+            /* Log the hash and raw column data for template creation */
+            snprintf(logbuf, sizeof(logbuf), "PIN: digit %d (cols %d-%d) hash=0x%08x UNMATCHED",
+                     i, spans[i].start, spans[i].end, hash);
+            shadow_log(logbuf);
+
+            /* Dump column bytes for pages 3-4 */
+            int pos = 0;
+            pos += snprintf(logbuf + pos, sizeof(logbuf) - pos, "PIN: digit %d p3:", i);
+            for (int c = spans[i].start; c < spans[i].end && pos < 300; c++) {
+                pos += snprintf(logbuf + pos, sizeof(logbuf) - pos,
+                               " %02x", display[3 * 128 + c]);
+            }
+            pos += snprintf(logbuf + pos, sizeof(logbuf) - pos, " p4:");
+            for (int c = spans[i].start; c < spans[i].end && pos < 480; c++) {
+                pos += snprintf(logbuf + pos, sizeof(logbuf) - pos,
+                               " %02x", display[4 * 128 + c]);
+            }
+            shadow_log(logbuf);
+        }
+    }
+    digits[6] = '\0';
+
+    /* Copy raw digits to output parameter for dedup */
+    memcpy(raw_digits, digits, 7);
+
+    if (!all_matched) {
+        snprintf(logbuf, sizeof(logbuf), "PIN: some digits unmatched, raw string: %s", digits);
+        shadow_log(logbuf);
+        /* Still try to speak what we have - the user may recognize partial info */
+    }
+
+    /* Build TTS string: repeat 2 times with a pause.
+     * "Pairing pin displayed: 1, 2, 3, 4, 5, 6. (pause) (repeat)"
+     * Keep under 12 seconds of audio to fit in ring buffer. */
+    int n = 0;
+    for (int rep = 0; rep < 2; rep++) {
+        if (rep > 0) n += snprintf(pin_text + n, text_len - n, ".... ");
+        n += snprintf(pin_text + n, text_len - n, "Pairing pin displayed: ");
+        for (int i = 0; i < 6 && n < text_len - 4; i++) {
+            if (i > 0) n += snprintf(pin_text + n, text_len - n, ", ");
+            n += snprintf(pin_text + n, text_len - n, "%c", digits[i]);
+        }
+        n += snprintf(pin_text + n, text_len - n, ". ");
+    }
+
+    snprintf(logbuf, sizeof(logbuf), "PIN: extracted digits: %s", digits);
+    shadow_log(logbuf);
+    return 1;
+}
+
+/* Main PIN scanner - called from the display section of the tick loop.
+ *
+ * State machine: IDLE → WAITING → SCANNING → COOLDOWN → IDLE
+ *
+ * Key design: we never clear pin_challenge_active from the shim side because
+ * the web shim will immediately re-set it on the browser's next HTTP poll.
+ * Instead, after speaking we enter COOLDOWN which ignores the flag until it
+ * naturally clears (user enters PIN or navigates away) or a timeout expires. */
+static void pin_check_and_speak(void)
+{
+    if (!shadow_control) return;
+
+    /* Get current time */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+
+    uint8_t challenge = shadow_control->pin_challenge_active;
+
+    /* If challenge-response submitted (2), cancel any active scan */
+    if (challenge == 2 && pin_state != PIN_STATE_IDLE && pin_state != PIN_STATE_COOLDOWN) {
+        shadow_log("PIN: challenge-response submitted, cancelling scan");
+        pin_state = PIN_STATE_COOLDOWN;
+        pin_state_entered_ms = now_ms;
+        return;
+    }
+
+    /* State machine */
+    switch (pin_state) {
+    case PIN_STATE_IDLE:
+        /* Only trigger on challenge=1 from IDLE */
+        if (challenge == 1) {
+            pin_state = PIN_STATE_WAITING;
+            pin_state_entered_ms = now_ms;
+            pin_display_complete = 0;
+            memset(pin_display_slices_seen, 0, sizeof(pin_display_slices_seen));
+            shadow_log("PIN: challenge detected, waiting for display render");
+        }
+        break;
+
+    case PIN_STATE_WAITING:
+        /* Wait 500ms for the PIN to render on the display */
+        if (now_ms - pin_state_entered_ms > 500) {
+            pin_state = PIN_STATE_SCANNING;
+            pin_display_complete = 0;
+            memset(pin_display_slices_seen, 0, sizeof(pin_display_slices_seen));
+            shadow_log("PIN: entering scan mode");
+        }
+        break;
+
+    case PIN_STATE_SCANNING:
+        if (pin_display_complete) {
+            char pin_text[512];
+            char raw_digits[8] = {0};
+            if (pin_extract_digits(pin_display_buf, pin_text, sizeof(pin_text), raw_digits)) {
+                if (strcmp(raw_digits, pin_last_spoken) == 0) {
+                    /* Same PIN as last time — skip to avoid repeating */
+                    pin_state = PIN_STATE_COOLDOWN;
+                    pin_state_entered_ms = now_ms;
+                } else {
+                    { char lb[128]; snprintf(lb, sizeof(lb), "PIN: speaking '%s'", pin_text); shadow_log(lb); }
+                    tts_speak(pin_text);
+                    strncpy(pin_last_spoken, raw_digits, sizeof(pin_last_spoken) - 1);
+                    pin_state = PIN_STATE_COOLDOWN;
+                    pin_state_entered_ms = now_ms;
+                }
+            } else {
+                /* Try again on next full frame */
+                pin_display_complete = 0;
+            }
+        }
+        /* Timeout after 10 seconds of scanning */
+        if (now_ms - pin_state_entered_ms > 10000) {
+            shadow_log("PIN: scan timeout");
+            pin_state = PIN_STATE_COOLDOWN;
+            pin_state_entered_ms = now_ms;
+        }
+        break;
+
+    case PIN_STATE_COOLDOWN:
+        /* Wait for the challenge flag to clear naturally (user entered PIN
+         * or browser navigated away), then return to IDLE.
+         * Safety timeout after 60s to avoid being stuck forever. */
+        if (challenge == 0 || challenge == 2) {
+            pin_state = PIN_STATE_IDLE;
+            pin_last_spoken[0] = '\0';  /* Clear dedup so new session can repeat */
+            shadow_log("PIN: challenge cleared, returning to idle");
+        } else if (now_ms - pin_state_entered_ms > 5000) {
+            pin_state = PIN_STATE_IDLE;
+            shadow_log("PIN: cooldown timeout, returning to idle");
+        }
+        break;
+
+    default:
+        break;
     }
 }
 
@@ -7129,6 +8007,13 @@ static void shadow_mix_audio(void)
         if (tts_test_frame_count == 1035) {  /* ~3 seconds at 44.1kHz, 128 frames/block */
             printf("TTS test: Speaking test phrase...\n");
             /* Apply TTS settings before test phrase */
+            {
+                const char *current_engine = tts_get_engine();
+                const char *requested_engine = shadow_control->tts_engine == 1 ? "flite" : "espeak";
+                if (strcmp(current_engine, requested_engine) != 0) {
+                    tts_set_engine(requested_engine);
+                }
+            }
             tts_set_enabled(shadow_control->tts_enabled != 0);
             tts_set_volume(shadow_control->tts_volume);
             tts_set_speed(shadow_control->tts_speed);
@@ -7177,19 +8062,32 @@ static void shadow_mix_audio(void)
     }
     #endif
 
-    /* Mix TTS audio on top */
-    if (tts_is_speaking()) {
-        static int16_t tts_buffer[FRAMES_PER_BLOCK * 2];  /* Stereo interleaved */
-        int frames_read = tts_get_audio(tts_buffer, FRAMES_PER_BLOCK);
+    /* NOTE: TTS mixing moved to shadow_mix_tts() which runs AFTER
+     * shadow_inprocess_mix_from_buffer(). That function zeros the mailbox
+     * when Link Audio is active, so TTS must be mixed in afterward. */
+}
 
-        if (frames_read > 0) {
-            for (int i = 0; i < frames_read * 2; i++) {
-                int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)tts_buffer[i];
-                /* Clip to int16 range */
-                if (mixed > 32767) mixed = 32767;
-                if (mixed < -32768) mixed = -32768;
-                mailbox_audio[i] = (int16_t)mixed;
-            }
+/* Mix TTS audio into mailbox.  Called AFTER shadow_inprocess_mix_from_buffer()
+ * because that function may zero-and-rebuild the mailbox when Link Audio is
+ * active.  Mixing TTS here ensures it is never wiped by the rebuild. */
+static void shadow_mix_tts(void)
+{
+    if (!global_mmap_addr) return;
+    if (!tts_is_speaking()) return;
+
+    int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+    static int16_t tts_buffer[FRAMES_PER_BLOCK * 2];  /* Stereo interleaved */
+    int frames_read = tts_get_audio(tts_buffer, FRAMES_PER_BLOCK);
+
+    if (frames_read > 0) {
+        float mv = shadow_master_volume;
+        for (int i = 0; i < frames_read * 2; i++) {
+            int32_t scaled_tts = (int32_t)lroundf((float)tts_buffer[i] * mv);
+            int32_t mixed = (int32_t)mailbox_audio[i] + scaled_tts;
+            /* Clip to int16 range */
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            mailbox_audio[i] = (int16_t)mixed;
         }
     }
 }
@@ -8170,6 +9068,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         /* Initialize shadow shared memory when we detect the SPI mailbox */
         init_shadow_shm();
         load_feature_config();  /* Load feature flags from config */
+        if (shadow_control) {
+            shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
+        }
         native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
 #if SHADOW_INPROCESS_POC
         shadow_inprocess_load_chain();
@@ -8184,6 +9085,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
             shadow_control->tts_volume = tts_get_volume();
             shadow_control->tts_speed = tts_get_speed();
             shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
+            shadow_control->tts_engine = (strcmp(tts_get_engine(), "flite") == 0) ? 1 : 0;
             unified_log("shim", LOG_LEVEL_INFO,
                        "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
                        shadow_control->tts_enabled ? "ON" : "OFF",
@@ -8476,9 +9378,12 @@ static void shadow_ui_reap(void)
 
 static void launch_shadow_ui(void)
 {
+    /* Quick check before reap/refresh — if we just forked, trust the state
+     * even if /proc hasn't appeared yet (avoids double-fork race). */
+    if (shadow_ui_started && shadow_ui_pid > 0) return;
     shadow_ui_reap();
     shadow_ui_refresh_pid();
-    if (shadow_ui_started && shadow_ui_pid_alive(shadow_ui_pid)) return;
+    if (shadow_ui_started && shadow_ui_pid > 0) return;
     if (access("/data/UserData/move-anything/shadow/shadow_ui", X_OK) != 0) {
         return;
     }
@@ -8807,10 +9712,11 @@ int ioctl(int fd, unsigned long request, ...)
 
                 int ui_alive = shadow_ui_pid_alive(shadow_ui_pid);
                 unified_log("shim", LOG_LEVEL_DEBUG,
-                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d la_pkts=%u la_ch=%d",
+                    "Heartbeat: pid=%d rss=%ldKB overruns=%d shadow_ui_pid=%d(alive=%d) display_mode=%d la_pkts=%u la_ch=%d pin=%d/%d",
                     getpid(), rss_kb, consecutive_overruns,
                     (int)shadow_ui_pid, ui_alive, shadow_display_mode,
-                    link_audio.packets_intercepted, link_audio.move_channel_count);
+                    link_audio.packets_intercepted, link_audio.move_channel_count,
+                    shadow_control ? shadow_control->pin_challenge_active : -1, pin_state);
             }
         }
     }
@@ -8948,6 +9854,9 @@ int ioctl(int fd, unsigned long request, ...)
         shadow_pub_audio_shm->num_slots = la_flowing ? LINK_AUDIO_PUB_SLOT_COUNT : 0;
     }
 
+    /* Mix TTS audio AFTER inprocess mix (which may zero-rebuild mailbox for Link Audio) */
+    shadow_mix_tts();
+
     /* Signal Link Audio publisher thread to drain accumulated audio */
     if (link_audio.publisher_running) {
         link_audio.publisher_tick = 1;
@@ -8994,8 +9903,12 @@ int ioctl(int fd, unsigned long request, ...)
         /* Always capture incoming slices */
         if (slice_num >= 1 && slice_num <= 6) {
             int idx = slice_num - 1;
+            int bytes = (idx == 5) ? 164 : 172;
             memcpy(captured_slices[idx], mem + 84, 172);
             slice_fresh[idx] = 1;
+
+            /* Always accumulate into PIN display buffer for dump trigger */
+            pin_accumulate_slice(idx, mem + 84, bytes);
         }
 
         /* When volume knob touched (and no track held), start capturing */
@@ -9182,6 +10095,38 @@ int ioctl(int fd, unsigned long request, ...)
     shadow_swap_display();
     TIME_SECTION_END(display_sum, display_max);  /* End timing display section */
 
+    /* Capture final display to live shm for remote viewer.
+     * Shadow mode: copy from shadow display shm (full composited frame).
+     * Native mode: reconstruct from captured slices (written above). */
+    if (display_live_shm && shadow_control && shadow_control->display_mirror) {
+        if (shadow_display_mode && shadow_display_shm) {
+            memcpy(display_live_shm, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+        } else {
+            static uint8_t live_native[DISPLAY_BUFFER_SIZE];
+            static int live_slice_seen[6] = {0};
+            uint8_t cur_slice = global_mmap_addr ? ((uint8_t *)global_mmap_addr)[80] : 0;
+            if (cur_slice >= 1 && cur_slice <= 6) {
+                int idx = cur_slice - 1;
+                int bytes = (idx == 5) ? 164 : 172;
+                memcpy(live_native + idx * 172, (uint8_t *)global_mmap_addr + 84, bytes);
+                live_slice_seen[idx] = 1;
+                /* On last slice, push full frame */
+                if (cur_slice == 6) {
+                    int all = 1;
+                    for (int i = 0; i < 6; i++) { if (!live_slice_seen[i]) all = 0; }
+                    if (all) {
+                        memcpy(display_live_shm, live_native, DISPLAY_BUFFER_SIZE);
+                        memset(live_slice_seen, 0, sizeof(live_slice_seen));
+                    }
+                }
+            }
+        }
+    }
+
+    /* === PIN CHALLENGE SCANNER ===
+     * Check if a web PIN challenge is active and speak the digits. */
+    pin_check_and_speak();
+
     /* Mark end of pre-ioctl processing */
     clock_gettime(CLOCK_MONOTONIC, &pre_end);
 
@@ -9327,57 +10272,29 @@ do_ioctl:
                 uint8_t d1 = hw_midi[j + 2];
                 uint8_t d2 = hw_midi[j + 3];
 
-                /* Shift + Menu = jump to Master FX view (or toggle screen reader if shadow UI disabled) */
+                /* Shift + Menu: single press = Master FX / screen reader settings
+                 *                double press = toggle screen reader on/off
+                 * First press is deferred 400ms to detect double-click. */
                 /* Block Menu CC entirely when Shift is held (both press and release) */
                 if (d1 == CC_MENU && shadow_shift_held) {
-                    /* Only process action on button press (d2 > 0), but block both press and release */
                     if (d2 > 0 && shadow_control) {
-                        char log_msg[128];
-                        snprintf(log_msg, sizeof(log_msg), "Shift+Menu detected (POST-IOCTL), shadow_ui_enabled=%s",
-                                 shadow_ui_enabled ? "true" : "false");
-                        shadow_log(log_msg);
+                        struct timespec sm_ts;
+                        clock_gettime(CLOCK_MONOTONIC, &sm_ts);
+                        uint64_t sm_now = (uint64_t)(sm_ts.tv_sec * 1000) + (sm_ts.tv_nsec / 1000000);
 
-                        if (shadow_ui_enabled) {
-                            /* Shadow UI enabled: launch/navigate to Master FX */
-                            snprintf(log_msg, sizeof(log_msg), "Shadow UI enabled path: shadow_display_mode=%d", shadow_display_mode);
-                            shadow_log(log_msg);
-                            if (!shadow_display_mode) {
-                                /* From Move mode: launch shadow UI and jump to Master FX */
-                                shadow_log("Setting jump flag and launching shadow UI");
-                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                                shadow_display_mode = 1;
-                                shadow_control->display_mode = 1;
-                                shadow_log("Calling launch_shadow_ui()...");
-                                launch_shadow_ui();
-                                shadow_log("launch_shadow_ui() returned");
-                            } else {
-                                /* Already in shadow mode: set flag */
-                                shadow_log("Already in shadow mode, setting jump flag");
-                                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                            }
+                        if (shift_menu_pending && (sm_now - shift_menu_pending_ms) < 300) {
+                            /* Double-click: toggle screen reader */
+                            shift_menu_pending = 0;
+                            uint8_t was_on = shadow_control->tts_enabled;
+                            shadow_control->tts_enabled = was_on ? 0 : 1;
+                            tts_set_enabled(!was_on);
+                            tts_speak(was_on ? "Screen reader off" : "Screen reader on");
+                            shadow_log(was_on ? "Shift+Menu double-click: screen reader OFF"
+                                              : "Shift+Menu double-click: screen reader ON");
                         } else {
-                            /* Shadow UI disabled: toggle screen reader */
-                            bool current_state = tts_get_enabled();
-                            snprintf(log_msg, sizeof(log_msg), "Toggling screen reader: %s -> %s",
-                                     current_state ? "ON" : "OFF",
-                                     !current_state ? "ON" : "OFF");
-                            shadow_log(log_msg);
-
-                            /* Set priority flag to block D-Bus messages during toggle announcement */
-                            struct timespec ts;
-                            clock_gettime(CLOCK_MONOTONIC, &ts);
-                            tts_priority_announcement_time_ms = (uint64_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
-                            tts_priority_announcement_active = true;
-
-                            tts_set_enabled(!current_state);
-                            /* Update shared memory so D-Bus handler doesn't re-sync stale value */
-                            if (shadow_control) {
-                                shadow_control->tts_enabled = !current_state ? 1 : 0;
-                            }
-                            if (!current_state) {
-                                /* Just enabled - announce it */
-                                tts_speak("screen reader on");
-                            }
+                            /* First press: defer action */
+                            shift_menu_pending = 1;
+                            shift_menu_pending_ms = sm_now;
                         }
                     }
                     /* Block Menu CC from reaching Move by zeroing in shadow buffer */
@@ -9392,6 +10309,36 @@ do_ioctl:
             }
         }
         skip_shift_menu:
+
+        /* Deferred Shift+Menu single-press action (fires 400ms after first press if no double-click) */
+        if (shift_menu_pending && shadow_control) {
+            struct timespec sm_ts2;
+            clock_gettime(CLOCK_MONOTONIC, &sm_ts2);
+            uint64_t sm_now2 = (uint64_t)(sm_ts2.tv_sec * 1000) + (sm_ts2.tv_nsec / 1000000);
+            if (sm_now2 - shift_menu_pending_ms >= 300) {
+                shift_menu_pending = 0;
+                char log_msg[128];
+                snprintf(log_msg, sizeof(log_msg), "Shift+Menu single-press (deferred), shadow_ui_enabled=%s",
+                         shadow_ui_enabled ? "true" : "false");
+                shadow_log(log_msg);
+
+                if (shadow_ui_enabled) {
+                    if (!shadow_display_mode) {
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui();
+                    } else {
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                    }
+                } else {
+                    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SCREENREADER;
+                    shadow_display_mode = 1;
+                    shadow_control->display_mode = 1;
+                    launch_shadow_ui();
+                }
+            }
+        }
 
         /* === SAMPLER MIDI FILTERING ===
          * Block events from reaching Move for sampler use.
@@ -9485,6 +10432,11 @@ do_ioctl:
                             shadow_log(msg);
                         }
 
+                        /* Mute + Track = toggle shadow slot mute */
+                        if (shadow_mute_held) {
+                            shadow_apply_mute(new_slot, !shadow_chain_slots[new_slot].muted);
+                        }
+
                         /* Shift + Volume + Track = jump to that slot's edit screen (if shadow UI enabled) */
                         if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                             shadow_block_plain_volume_hide_until_release = 1;
@@ -9499,6 +10451,11 @@ do_ioctl:
                             /* If already in shadow mode, flag will be picked up by tick() */
                         }
                     }
+                }
+
+                /* Mute button (CC 88): track held state */
+                if (d1 == CC_MUTE) {
+                    shadow_mute_held = (d2 > 0) ? 1 : 0;
                 }
 
                 /* Shift + Volume + Jog Click = toggle overtake module menu (if shadow UI enabled) */
