@@ -166,8 +166,8 @@ ME Slot 2 (synth → FX) ────────────────│
 ### Setup
 
 1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
-2. **Install or update Move Everything** — the installer enables Link Audio automatically.
-3. **Toggle routing**: In Master FX Settings, toggle **Link Audio** on or off. This controls whether Move's per-track audio is routed through ME's slot FX.
+2. **Install or update Move Everything** — the installer enables Link Audio support, but routing is off by default.
+3. **Enable routing**: In Master FX Settings (**Shift+Vol + Menu**, scroll to Settings), toggle **Link Audio** on. This routes Move's per-track audio through ME's slot FX.
 
 ### Example: Adding Reverb to a Move Track
 
