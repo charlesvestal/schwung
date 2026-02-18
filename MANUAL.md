@@ -76,7 +76,8 @@ MIDI FX → Sound Generator → Audio FX 1 → Audio FX 2
 
 1. Navigate to an empty position and click the jog wheel
 2. Choose from installed modules of that type
-3. To change an existing module: hold **Shift** and click the jog wheel
+
+**Tip:** To swap a module that's already loaded, highlight it in the slot editor and hold **Shift + Jog Click**. This opens the module picker so you can replace it without clearing the slot first.
 
 ### Using Modules
 
