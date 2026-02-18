@@ -6,10 +6,10 @@
  * Uses frame counting instead of wall clock for reliability.
  */
 
-/* Frame-based timing (assuming ~60fps tick rate) */
-const DEFAULT_DELAY_FRAMES = 120;      /* ~2 seconds before scrolling */
-const DEFAULT_SCROLL_INTERVAL = 6;     /* Frames between scroll steps (~100ms) */
-const DEFAULT_PAUSE_FRAMES = 120;      /* ~2 seconds pause at end */
+/* Frame-based timing (~24fps shadow UI tick rate) */
+const DEFAULT_DELAY_FRAMES = 48;       /* ~2 seconds before scrolling */
+const DEFAULT_SCROLL_INTERVAL = 2;     /* Frames between scroll steps (~80ms) */
+const DEFAULT_PAUSE_FRAMES = 48;       /* ~2 seconds pause at end */
 const DEFAULT_SCROLL_SPEED = 1;        /* Characters per scroll step */
 
 /**

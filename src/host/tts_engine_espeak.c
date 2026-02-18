@@ -29,12 +29,20 @@ static void espeak_load_state(void);
 static void espeak_save_state(void);
 static int espeak_synth_callback(short *wav, int numsamples, espeak_EVENT *events);
 
-/* Ring buffer for synthesized audio */
-#define RING_BUFFER_SIZE (44100 * 24)  /* 12 seconds at 44.1kHz stereo (24 = 12sec * 2ch) */
+/* Circular ring buffer for synthesized audio */
+#define RING_BUFFER_SIZE (44100 * 4)  /* 2 seconds at 44.1kHz stereo — backpressure keeps it small */
 static int16_t ring_buffer[RING_BUFFER_SIZE];
-static int ring_write_pos = 0;
-static int ring_read_pos = 0;
-static pthread_mutex_t ring_mutex = PTHREAD_MUTEX_INITIALIZER;
+static volatile int ring_write_pos = 0;  /* Written by synth callback */
+static volatile int ring_read_pos = 0;   /* Written by audio reader */
+
+static inline int ring_available(void) {
+    int w = ring_write_pos, r = ring_read_pos;
+    return (w >= r) ? (w - r) : (RING_BUFFER_SIZE - r + w);
+}
+
+static inline int ring_free(void) {
+    return RING_BUFFER_SIZE - 1 - ring_available();  /* -1 to distinguish full from empty */
+}
 
 static bool initialized = false;
 static volatile bool tts_enabled = false;  /* Screen Reader on/off toggle - default OFF */
@@ -50,7 +58,8 @@ static int espeak_sample_rate = 22050;  /* Returned by espeak_Initialize() */
 static pthread_t synth_thread;
 static pthread_mutex_t synth_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t synth_cond = PTHREAD_COND_INITIALIZER;
-static char synth_text[256] = {0};
+static char *synth_text = NULL;
+static size_t synth_text_size = 0;
 static bool synth_requested = false;
 static volatile bool synth_thread_running = false;
 static volatile bool synth_cancel = false;  /* Signal callback to abort current synthesis */
@@ -62,48 +71,41 @@ static volatile bool synth_cancel = false;  /* Signal callback to abort current 
  * eSpeak-NG synthesis callback - called from within espeak_Synth().
  * Receives audio chunks progressively, writes directly to ring buffer.
  */
+static inline void ring_write_sample(int16_t sample) {
+    ring_buffer[ring_write_pos] = sample;
+    ring_write_pos = (ring_write_pos + 1) % RING_BUFFER_SIZE;
+}
+
 static int espeak_synth_callback(short *wav, int numsamples, espeak_EVENT *events) {
     (void)events;
 
-    if (synth_cancel) {
-        return 1;  /* Abort synthesis */
-    }
-
-    if (!wav || numsamples <= 0) {
-        return 0;
-    }
+    if (synth_cancel) return 1;
+    if (!wav || numsamples <= 0) return 0;
 
     float upsample_ratio = 44100.0f / (float)espeak_sample_rate;
+    int repeats = (int)(upsample_ratio + 0.5f);
+    int samples_needed = repeats * 2;  /* stereo pairs per input sample */
 
-    pthread_mutex_lock(&ring_mutex);
+    for (int i = 0; i < numsamples; i++) {
+        if (synth_cancel) return 1;
 
-    for (int i = 0; i < numsamples - 1; i++) {
+        /* Backpressure: wait for reader to free space */
+        while (ring_free() < samples_needed) {
+            if (synth_cancel) return 1;
+            usleep(2000);  /* 2ms — ~88 stereo samples consumed per ms at 44.1kHz */
+        }
+
         int16_t sample_curr = wav[i];
-        int16_t sample_next = wav[i + 1];
+        int16_t sample_next = (i + 1 < numsamples) ? wav[i + 1] : sample_curr;
 
-        int repeats = (int)(upsample_ratio + 0.5f);
         for (int r = 0; r < repeats; r++) {
-            if (ring_write_pos + 1 >= RING_BUFFER_SIZE) goto done;
             float alpha = (float)r / (float)repeats;
             int16_t sample = (int16_t)(sample_curr * (1.0f - alpha) + sample_next * alpha);
-
-            ring_buffer[ring_write_pos++] = sample;  /* Left */
-            ring_buffer[ring_write_pos++] = sample;  /* Right */
+            ring_write_sample(sample);  /* Left */
+            ring_write_sample(sample);  /* Right */
         }
     }
 
-    if (numsamples > 0) {
-        int16_t last_sample = wav[numsamples - 1];
-        int repeats = (int)(upsample_ratio + 0.5f);
-        for (int r = 0; r < repeats; r++) {
-            if (ring_write_pos + 1 >= RING_BUFFER_SIZE) break;
-            ring_buffer[ring_write_pos++] = last_sample;
-            ring_buffer[ring_write_pos++] = last_sample;
-        }
-    }
-
-done:
-    pthread_mutex_unlock(&ring_mutex);
     return 0;
 }
 
@@ -122,19 +124,17 @@ static void* espeak_synthesis_thread(void *arg) {
             break;
         }
 
-        char text[256];
-        strncpy(text, synth_text, sizeof(text) - 1);
-        text[sizeof(text) - 1] = '\0';
+        char *text = strdup(synth_text);
         synth_requested = false;
 
         pthread_mutex_unlock(&synth_mutex);
 
+        if (!text) continue;
+
         synth_cancel = false;
 
-        pthread_mutex_lock(&ring_mutex);
         ring_write_pos = 0;
         ring_read_pos = 0;
-        pthread_mutex_unlock(&ring_mutex);
 
         int wpm = (int)(175.0f * tts_speed);
         if (wpm < 80) wpm = 80;
@@ -151,14 +151,17 @@ static void* espeak_synthesis_thread(void *arg) {
                                          espeakCHARS_AUTO, NULL, NULL);
         if (err != EE_OK) {
             unified_log("tts_engine", LOG_LEVEL_ERROR,
-                       "eSpeak synthesis failed (err=%d) for: '%s'", err, text);
+                       "eSpeak synthesis failed (err=%d) for: '%.100s...'", err, text);
+            free(text);
             continue;
         }
 
         espeak_Synchronize();
 
         unified_log("tts_engine", LOG_LEVEL_DEBUG,
-                   "Synthesized %d samples for: '%s'", ring_write_pos, text);
+                   "Synthesized %d samples for: '%.100s%s'",
+                   ring_write_pos, text, strlen(text) > 100 ? "..." : "");
+        free(text);
     }
 
     return NULL;
@@ -350,11 +353,12 @@ void espeak_tts_cleanup(void) {
     espeak_Terminate();
     initialized = false;
 
-    pthread_mutex_lock(&ring_mutex);
     ring_write_pos = 0;
     ring_read_pos = 0;
-    memset(ring_buffer, 0, sizeof(ring_buffer));
-    pthread_mutex_unlock(&ring_mutex);
+
+    free(synth_text);
+    synth_text = NULL;
+    synth_text_size = 0;
 }
 
 bool espeak_tts_speak(const char *text) {
@@ -369,9 +373,14 @@ bool espeak_tts_speak(const char *text) {
 
     synth_cancel = true;
 
+    size_t len = strlen(text) + 1;
     pthread_mutex_lock(&synth_mutex);
-    strncpy(synth_text, text, sizeof(synth_text) - 1);
-    synth_text[sizeof(synth_text) - 1] = '\0';
+    if (len > synth_text_size) {
+        free(synth_text);
+        synth_text = malloc(len);
+        synth_text_size = len;
+    }
+    memcpy(synth_text, text, len);
     synth_requested = true;
     pthread_cond_signal(&synth_cond);
     pthread_mutex_unlock(&synth_mutex);
@@ -380,10 +389,7 @@ bool espeak_tts_speak(const char *text) {
 }
 
 bool espeak_tts_is_speaking(void) {
-    pthread_mutex_lock(&ring_mutex);
-    bool has_audio = (ring_read_pos != ring_write_pos);
-    pthread_mutex_unlock(&ring_mutex);
-    return has_audio || tts_disabling;
+    return (ring_read_pos != ring_write_pos) || tts_disabling;
 }
 
 int espeak_tts_get_audio(int16_t *out_buffer, int max_frames) {
@@ -391,14 +397,13 @@ int espeak_tts_get_audio(int16_t *out_buffer, int max_frames) {
 
     if (!tts_enabled && !tts_disabling) return 0;
 
-    pthread_mutex_lock(&ring_mutex);
+    int avail = ring_available();
 
-    if (tts_disabling && ring_read_pos != ring_write_pos) {
+    if (tts_disabling && avail > 0) {
         tts_disabling_had_audio = true;
     }
 
-    if (tts_disabling && tts_disabling_had_audio && ring_read_pos == ring_write_pos) {
-        pthread_mutex_unlock(&ring_mutex);
+    if (tts_disabling && tts_disabling_had_audio && avail == 0) {
         tts_enabled = false;
         tts_disabling = false;
         tts_disabling_had_audio = false;
@@ -408,22 +413,20 @@ int espeak_tts_get_audio(int16_t *out_buffer, int max_frames) {
         return 0;
     }
 
-    int frames_available = (ring_write_pos - ring_read_pos) / 2;
+    int frames_available = avail / 2;
     int frames_to_read = (frames_available < max_frames) ? frames_available : max_frames;
-    int samples_to_read = frames_to_read * 2;
 
     float volume_scale = tts_volume / 100.0f;
 
-    for (int i = 0; i < samples_to_read; i++) {
+    for (int i = 0; i < frames_to_read * 2; i++) {
         int32_t sample = ring_buffer[ring_read_pos];
         sample = (int32_t)(sample * volume_scale);
         if (sample > 32767) sample = 32767;
         if (sample < -32768) sample = -32768;
         out_buffer[i] = (int16_t)sample;
-        ring_read_pos++;
+        ring_read_pos = (ring_read_pos + 1) % RING_BUFFER_SIZE;
     }
 
-    pthread_mutex_unlock(&ring_mutex);
     return frames_to_read;
 }
 
@@ -463,10 +466,7 @@ void espeak_tts_set_pitch(float pitch_hz) {
 }
 
 static void espeak_clear_buffer(void) {
-    pthread_mutex_lock(&ring_mutex);
-    ring_read_pos = 0;
-    ring_write_pos = 0;
-    pthread_mutex_unlock(&ring_mutex);
+    ring_read_pos = ring_write_pos;  /* Atomic on ARM — just skip all unread */
 }
 
 void espeak_tts_set_enabled(bool enabled) {
