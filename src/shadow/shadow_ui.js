@@ -96,6 +96,7 @@ const SHADOW_UI_FLAG_JUMP_TO_MASTER_FX = 0x02;
 const SHADOW_UI_FLAG_JUMP_TO_OVERTAKE = 0x04;
 const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
 const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
+const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -104,7 +105,8 @@ const NUM_KNOBS = 8;
 
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/patches";
-const SLOT_STATE_DIR = "/data/UserData/move-anything/slot_state";
+const SLOT_STATE_DIR_DEFAULT = "/data/UserData/move-anything/slot_state";
+let activeSlotStateDir = SLOT_STATE_DIR_DEFAULT;
 const AUTOSAVE_INTERVAL = 300;  /* ~10 seconds at 30fps */
 const DEFAULT_SLOTS = [
     { channel: 1, name: "" },
@@ -181,6 +183,9 @@ let needsRedraw = true;
 let refreshCounter = 0;
 let autosaveCounter = 0;
 let slotDirtyCache = [false, false, false, false];
+
+/* FX display_name cache for change-based announcements (e.g. key detection) */
+let fxDisplayNameCache = {};  /* key: "slot:component" -> last display_name string */
 
 /* View names for screen reader announcements */
 const VIEW_NAMES = {
@@ -1000,10 +1005,19 @@ function loadChainConfigFromSlot(slotIndex) {
     const fx1Module = getSlotParam(slotIndex, "fx1_module");
     const fx2Module = getSlotParam(slotIndex, "fx2_module");
 
+    const oldFx1 = cfg.fx1 ? cfg.fx1.module : null;
+    const oldFx2 = cfg.fx2 ? cfg.fx2.module : null;
+
     cfg.synth = synthModule && synthModule !== "" ? { module: synthModule.toLowerCase(), params: {} } : null;
     cfg.midiFx = midiFxModule && midiFxModule !== "" ? { module: midiFxModule.toLowerCase(), params: {} } : null;
     cfg.fx1 = fx1Module && fx1Module !== "" ? { module: fx1Module.toLowerCase(), params: {} } : null;
     cfg.fx2 = fx2Module && fx2Module !== "" ? { module: fx2Module.toLowerCase(), params: {} } : null;
+
+    /* Clear display_name cache when FX modules change (prevents stale announcement on swap) */
+    const newFx1 = cfg.fx1 ? cfg.fx1.module : null;
+    const newFx2 = cfg.fx2 ? cfg.fx2.module : null;
+    if (newFx1 !== oldFx1) delete fxDisplayNameCache[`${slotIndex}:fx1`];
+    if (newFx2 !== oldFx2) delete fxDisplayNameCache[`${slotIndex}:fx2`];
 
     chainConfigs[slotIndex] = cfg;
     return cfg;
@@ -2113,7 +2127,7 @@ function autosaveAllSlots() {
         if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
             /* Empty slot - write empty marker to clear autosave */
             host_write_file(
-                SLOT_STATE_DIR + "/slot_" + i + ".json",
+                activeSlotStateDir + "/slot_" + i + ".json",
                 "{}\n"
             );
             slotDirtyCache[i] = false;
@@ -2135,7 +2149,7 @@ function autosaveAllSlots() {
         };
 
         host_write_file(
-            SLOT_STATE_DIR + "/slot_" + i + ".json",
+            activeSlotStateDir + "/slot_" + i + ".json",
             JSON.stringify(wrapper, null, 2) + "\n"
         );
     }
@@ -2672,7 +2686,7 @@ function saveMasterFxChainConfig() {
             const key = `fx${i}`;
             const slotIdx = i - 1;
             const moduleId = masterFxConfig[key]?.module || "";
-            const stateFilePath = SLOT_STATE_DIR + "/master_fx_" + slotIdx + ".json";
+            const stateFilePath = activeSlotStateDir + "/master_fx_" + slotIdx + ".json";
 
             if (!moduleId) {
                 /* Empty slot - write empty marker */
@@ -2795,7 +2809,7 @@ function loadMasterFxChainFromConfig() {
         /* Sync masterFxConfig from state files (shim already loaded the modules) */
         for (let i = 0; i < 4; i++) {
             const key = `fx${i + 1}`;
-            const stateFilePath = SLOT_STATE_DIR + "/master_fx_" + i + ".json";
+            const stateFilePath = activeSlotStateDir + "/master_fx_" + i + ".json";
             try {
                 const raw = host_read_file(stateFilePath);
                 if (raw) {
@@ -6350,6 +6364,12 @@ function drawPatchDetail() {
 function drawComponentParams() {
     clear_screen();
 
+    /* Live-refresh read-only param values (e.g. detected_key) from DSP */
+    for (const param of componentParams) {
+        const freshVal = getSlotParam(selectedSlot, param.key);
+        if (freshVal !== null) param.value = freshVal;
+    }
+
     /* Header shows component name */
     const componentTitle = editingComponent.charAt(0).toUpperCase() + editingComponent.slice(1);
     drawHeader(`Edit ${componentTitle}`);
@@ -7245,12 +7265,24 @@ globalThis.init = function() {
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
 
+    /* Read active set UUID to point autosave at the correct per-set directory */
+    {
+        const uuid = host_read_file("/data/UserData/move-anything/active_set.txt");
+        if (uuid && uuid.trim()) {
+            const setDir = "/data/UserData/move-anything/set_state/" + uuid.trim();
+            if (host_file_exists(setDir + "/slot_0.json") || host_file_exists(setDir + "/shadow_chain_config.json")) {
+                activeSlotStateDir = setDir;
+                debugLog("Init: using per-set state dir " + setDir);
+            }
+        }
+    }
+
     /* Sync dirty cache and slot names from autosave files (shim loaded them on startup) */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
         /* Sync slot names from autosave if present */
-        const path = SLOT_STATE_DIR + "/slot_" + i + ".json";
+        const path = activeSlotStateDir + "/slot_" + i + ".json";
         if (host_file_exists(path)) {
             const raw = host_read_file(path);
             if (raw) {
@@ -7320,6 +7352,119 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
             }
         }
+        if (flags & SHADOW_UI_FLAG_SET_CHANGED) {
+            debugLog("SET_CHANGED flag detected — switching slot state directory");
+
+            /* 1. Save current state to outgoing directory */
+            autosaveAllSlots();
+            saveMasterFxChainConfig();
+
+            /* 2. Read new UUID from active_set.txt */
+            const uuid = host_read_file("/data/UserData/move-anything/active_set.txt");
+
+            /* 3. Determine new directory */
+            const newDir = uuid && uuid.trim()
+                ? "/data/UserData/move-anything/set_state/" + uuid.trim()
+                : SLOT_STATE_DIR_DEFAULT;
+
+            /* 4. Copy-on-first-use: if set dir has no slot files yet, copy from source */
+            if (uuid && uuid.trim() && !host_file_exists(newDir + "/slot_0.json")) {
+                /* Check if shim detected a copy source (written to copy_source.txt) */
+                let copySourceDir = activeSlotStateDir;  /* default: copy from outgoing set */
+                const copySourceUuid = host_read_file(newDir + "/copy_source.txt");
+                if (copySourceUuid && copySourceUuid.trim()) {
+                    const srcDir = "/data/UserData/move-anything/set_state/" + copySourceUuid.trim();
+                    if (host_file_exists(srcDir + "/slot_0.json")) {
+                        copySourceDir = srcDir;
+                        debugLog("SET_CHANGED: copy source detected: " + copySourceUuid.trim());
+                    }
+                }
+                debugLog("SET_CHANGED: copy-on-first-use from " + copySourceDir + " to " + newDir);
+                for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                    const src = host_read_file(copySourceDir + "/slot_" + i + ".json");
+                    if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
+                    const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
+                    if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
+                }
+            }
+
+            /* 5. Switch directory */
+            const oldDir = activeSlotStateDir;
+            activeSlotStateDir = newDir;
+            debugLog("SET_CHANGED: " + oldDir + " -> " + newDir);
+
+            /* 6. Reload all chain slots from new directory */
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                const path = activeSlotStateDir + "/slot_" + i + ".json";
+                if (host_file_exists(path)) {
+                    const raw = host_read_file(path);
+                    /* Only load if file has content beyond empty marker */
+                    if (raw && raw.length > 10) {
+                        setSlotParam(i, "load_file", path);
+                    } else {
+                        setSlotParam(i, "unload", "1");
+                    }
+                } else {
+                    setSlotParam(i, "unload", "1");
+                }
+            }
+
+            /* 7. Reload master FX modules from per-set state files */
+            for (let mfxi = 0; mfxi < 4; mfxi++) {
+                const mfxPath = activeSlotStateDir + "/master_fx_" + mfxi + ".json";
+                let mfxDspPath = "";
+                let mfxModuleId = "";
+                if (host_file_exists(mfxPath)) {
+                    try {
+                        const mfxRaw = host_read_file(mfxPath);
+                        if (mfxRaw && mfxRaw.length > 10) {
+                            const mfxData = JSON.parse(mfxRaw);
+                            mfxDspPath = mfxData.module_path || "";
+                            mfxModuleId = mfxData.module_id || "";
+                        }
+                    } catch (e) {}
+                }
+                /* Load or unload the module */
+                setMasterFxSlotModule(mfxi, mfxDspPath);
+                const key = `fx${mfxi + 1}`;
+                masterFxConfig[key].module = mfxModuleId;
+
+                /* Restore plugin state/params if available */
+                if (mfxDspPath && host_file_exists(mfxPath)) {
+                    try {
+                        const mfxRaw = host_read_file(mfxPath);
+                        const mfxData = JSON.parse(mfxRaw);
+                        if (mfxData.state) {
+                            shadow_set_param(0, `master_fx:fx${mfxi + 1}:state`, JSON.stringify(mfxData.state));
+                        }
+                        if (mfxData.params) {
+                            for (const [pk, pv] of Object.entries(mfxData.params)) {
+                                shadow_set_param(0, `master_fx:fx${mfxi + 1}:${pk}`, String(pv));
+                            }
+                        }
+                    } catch (e) {}
+                }
+                debugLog("SET_CHANGED: MFX " + mfxi + " -> " + (mfxModuleId || "(none)"));
+            }
+
+            /* 8. Refresh slot names from new autosave files */
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                slots[i].name = "";
+                const raw = host_read_file(activeSlotStateDir + "/slot_" + i + ".json");
+                if (raw) {
+                    const m = raw.match(/"name"\s*:\s*"([^"]+)"/);
+                    if (m && m[1]) slots[i].name = m[1];
+                }
+            }
+            saveSlotsToConfig(slots);
+            needsRedraw = true;
+
+            /* 9. Clear flag */
+            if (typeof shadow_clear_ui_flags === "function") {
+                shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
+            }
+            debugLog("SET_CHANGED: reload complete");
+        }
         if (flags & SHADOW_UI_FLAG_JUMP_TO_SCREENREADER) {
             debugLog("SCREENREADER flag detected, entering screen reader settings");
             inScreenReaderSettingsMenu = true;
@@ -7366,6 +7511,45 @@ globalThis.tick = function() {
             if (slotDirtyCache[i] !== isDirty) {
                 slotDirtyCache[i] = isDirty;
                 needsRedraw = true;
+            }
+        }
+    }
+
+    /* Poll FX display_name for change-based announcements (e.g. key detection).
+     * Check every ~1 second (30 ticks at 30fps). Only poll slots that have FX loaded. */
+    if (refreshCounter % 30 === 0) {
+        const fxComponents = ["fx1", "fx2"];
+        /* Per-slot FX */
+        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+            const cfg = chainConfigs[i];
+            if (!cfg) continue;
+            for (const comp of fxComponents) {
+                if (!cfg[comp] || !cfg[comp].module) continue;
+                const cacheKey = `${i}:${comp}`;
+                const name = getSlotParam(i, `${comp}:display_name`);
+                if (name && name !== fxDisplayNameCache[cacheKey]) {
+                    const prev = fxDisplayNameCache[cacheKey];
+                    fxDisplayNameCache[cacheKey] = name;
+                    if (prev) {
+                        announce(name);
+                        needsRedraw = true;
+                    }
+                }
+            }
+        }
+        /* Master FX */
+        const masterFxKeys = ["fx1", "fx2", "fx3", "fx4"];
+        for (const key of masterFxKeys) {
+            if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
+            const cacheKey = `master:${key}`;
+            const name = getSlotParam(0, `master_fx:${key}:display_name`);
+            if (name && name !== fxDisplayNameCache[cacheKey]) {
+                const prev = fxDisplayNameCache[cacheKey];
+                fxDisplayNameCache[cacheKey] = name;
+                if (prev) {
+                    announce(name);
+                    needsRedraw = true;
+                }
             }
         }
     }
