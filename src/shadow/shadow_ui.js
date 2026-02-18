@@ -3583,10 +3583,14 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     setView(VIEWS.COMPONENT_EDIT);
     needsRedraw = true;
 
-    /* Announce menu title + initial selection */
+    /* Announce menu title + initial selection - name first, then position */
     const moduleName = getSlotParam(slotIndex, `${prefix}:name`) || componentKey;
     const presetName = editComponentPresetName || `Preset ${editComponentPreset + 1}`;
-    announce(`${moduleName}, ${presetName}`);
+    if (editComponentPresetCount > 0) {
+        announce(`${moduleName}, ${presetName}, Preset ${editComponentPreset + 1} of ${editComponentPresetCount}`);
+    } else {
+        announce(`${moduleName}, No presets`);
+    }
 }
 
 /* ============================================================
@@ -3641,7 +3645,11 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     const prefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
     const moduleName = getSlotParam(slotIndex, `${prefix}:name`) || componentKey;
 
-    if (hierEditorParams.length > 0) {
+    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
+        /* Preset browser level - announce preset name first, then position */
+        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
+        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
+    } else if (hierEditorParams.length > 0) {
         const param = hierEditorParams[0];
         const label = param.label || param.key;
         const value = param.value || "";
@@ -3697,7 +3705,11 @@ function enterMasterFxHierarchyEditor(fxSlot) {
 
     /* Announce menu title + initial selection */
     const moduleName = getSlotParam(0, `master_fx:${fxKey}:name`) || `FX ${fxSlot + 1}`;
-    if (hierEditorParams.length > 0) {
+    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
+        /* Preset browser level - announce preset name first, then position */
+        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
+        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
+    } else if (hierEditorParams.length > 0) {
         const param = hierEditorParams[0];
         const label = param.label || param.key;
         const value = param.value || "";
@@ -3834,9 +3846,9 @@ function changeHierPreset(delta) {
     const nameParam = levelDef.name_param || "preset_name";
     hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
 
-    /* Announce preset change */
-    const presetLabel = `Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`;
-    announceMenuItem(presetLabel, hierEditorPresetName);
+    /* Announce preset change - name first for easier scrolling */
+    const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
+    announce(`${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
 
     /* Re-fetch chain_params for new preset/plugin and invalidate knob cache */
     if (hierEditorIsMasterFx) {
@@ -4627,6 +4639,10 @@ function changeComponentPreset(delta) {
 
     /* Fetch new preset name */
     editComponentPresetName = getSlotParam(selectedSlot, `${prefix}:preset_name`) || "";
+
+    /* Announce preset change - name first for easier scrolling */
+    const presetName = editComponentPresetName || `Preset ${editComponentPreset + 1}`;
+    announce(`${presetName}, Preset ${editComponentPreset + 1} of ${editComponentPresetCount}`);
 }
 
 /* Get current value for a slot setting */
