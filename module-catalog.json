@@ -288,6 +288,17 @@
       "default_branch": "main",
       "asset_name": "chiptune-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "keydetect",
+      "name": "Key Detect",
+      "description": "Detects the musical key of audio passing through it",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-keydetect",
+      "default_branch": "main",
+      "asset_name": "keydetect-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
