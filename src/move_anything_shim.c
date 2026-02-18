@@ -20,6 +20,7 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <math.h>
 #include <linux/spi/spidev.h>
 #include <pthread.h>
@@ -1152,14 +1153,16 @@ static volatile int shadow_selected_slot = 0;
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
 
-/* Set tempo detection (declared here for D-Bus handler access) */
+/* Set detection via Settings.json polling + xattr matching */
 static float sampler_set_tempo = 0.0f;              /* 0 = not yet detected */
-static char sampler_current_set_name[128] = "";      /* e.g. "Set 3" from D-Bus */
+static char sampler_current_set_name[128] = "";      /* current set name */
+static char sampler_current_set_uuid[64] = "";       /* UUID from Sets/<UUID>/<Name>/ path */
+static int sampler_last_song_index = -1;             /* last seen currentSongIndex */
 static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
 static void shadow_ui_state_update_slot(int slot);          /* forward decl */
 static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]);  /* forward decl */
-static void shadow_rebuild_set_name_cache(void);  /* forward decl */
-static int shadow_is_set_name(const char *text);  /* forward decl */
+static void shadow_handle_set_loaded(const char *set_name, const char *uuid);  /* forward decl */
+static void shadow_poll_current_set(void);  /* forward decl */
 
 /* Apply mute/unmute to a shadow slot */
 static void shadow_apply_mute(int slot, int is_muted) {
@@ -1823,44 +1826,7 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Check if it's a Set name - match against cached set names */
-    if (shadow_is_set_name(text)) {
-        snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", text);
-        sampler_set_tempo = sampler_read_set_tempo(text);
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Set detected: \"%s\" -> tempo=%.1f",
-                 text, sampler_set_tempo);
-        shadow_log(msg);
-
-        /* Rebuild cache in case sets were added/renamed */
-        shadow_rebuild_set_name_cache();
-
-        /* Read initial mute states from Song.abl */
-        int muted[4];
-        int n = shadow_read_set_mute_states(text, muted);
-        for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
-            if (muted[i] && !shadow_chain_slots[i].muted) {
-                /* Track is muted in set: save volume and zero it */
-                shadow_chain_slots[i].pre_mute_volume = shadow_chain_slots[i].volume;
-                shadow_chain_slots[i].volume = 0.0f;
-                shadow_chain_slots[i].muted = 1;
-                shadow_ui_state_update_slot(i);
-                char m[64];
-                snprintf(m, sizeof(m), "Set load: slot %d muted (saved vol=%.3f)",
-                         i, shadow_chain_slots[i].pre_mute_volume);
-                shadow_log(m);
-            } else if (!muted[i] && shadow_chain_slots[i].muted) {
-                /* Track is unmuted in set: restore volume */
-                shadow_chain_slots[i].volume = shadow_chain_slots[i].pre_mute_volume;
-                shadow_chain_slots[i].muted = 0;
-                shadow_ui_state_update_slot(i);
-                char m[64];
-                snprintf(m, sizeof(m), "Set load: slot %d unmuted (restored vol=%.3f)",
-                         i, shadow_chain_slots[i].volume);
-                shadow_log(m);
-            }
-        }
-    }
+    /* Set detection handled by Settings.json polling (shadow_poll_current_set) */
 
     /* Check if it's a track volume message */
     if (strncmp(text, "Track Volume ", 13) == 0) {
@@ -3115,58 +3081,115 @@ static int sampler_settings_tempo = 0;       /* 0 = not yet read */
 /* Tempo detection: current Set's Song.abl (declared early for D-Bus handler access) */
 #define SAMPLER_SETS_DIR "/data/UserData/UserLibrary/Sets"
 
-/* Cached set names for fast D-Bus text matching */
-#define MAX_CACHED_SETS 64
-#define MAX_SET_NAME_LEN 128
-static char cached_set_names[MAX_CACHED_SETS][MAX_SET_NAME_LEN];
-static int cached_set_count = 0;
+/* Handle a Set being loaded — called from Settings.json poll.
+ * set_name: human-readable name (e.g. "My Song")
+ * uuid: UUID directory name from Sets/<UUID>/<Name>/ path */
+static void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
+    if (!set_name || !set_name[0]) return;
 
-/* Scan the Sets directory and cache all set names */
-static void shadow_rebuild_set_name_cache(void) {
-    cached_set_count = 0;
+    /* Avoid re-triggering for the same set */
+    if (strcmp(sampler_current_set_name, set_name) == 0 &&
+        (uuid == NULL || strcmp(sampler_current_set_uuid, uuid) == 0)) {
+        return;
+    }
 
+    snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", set_name);
+    if (uuid) {
+        snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
+    }
+
+    sampler_set_tempo = sampler_read_set_tempo(set_name);
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s tempo=%.1f",
+             set_name, uuid ? uuid : "?", sampler_set_tempo);
+    shadow_log(msg);
+
+    /* Read initial mute states from Song.abl */
+    int muted[4];
+    int n = shadow_read_set_mute_states(set_name, muted);
+    for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (muted[i] && !shadow_chain_slots[i].muted) {
+            shadow_chain_slots[i].pre_mute_volume = shadow_chain_slots[i].volume;
+            shadow_chain_slots[i].volume = 0.0f;
+            shadow_chain_slots[i].muted = 1;
+            shadow_ui_state_update_slot(i);
+            char m[64];
+            snprintf(m, sizeof(m), "Set load: slot %d muted (saved vol=%.3f)",
+                     i, shadow_chain_slots[i].pre_mute_volume);
+            shadow_log(m);
+        } else if (!muted[i] && shadow_chain_slots[i].muted) {
+            shadow_chain_slots[i].volume = shadow_chain_slots[i].pre_mute_volume;
+            shadow_chain_slots[i].muted = 0;
+            shadow_ui_state_update_slot(i);
+            char m[64];
+            snprintf(m, sizeof(m), "Set load: slot %d unmuted (restored vol=%.3f)",
+                     i, shadow_chain_slots[i].volume);
+            shadow_log(m);
+        }
+    }
+}
+
+/* Poll Settings.json for currentSongIndex changes, then match via xattr.
+ * Called periodically from ioctl tick (~every 5 seconds). */
+static void shadow_poll_current_set(void)
+{
+    static const char settings_path[] = "/data/UserData/settings/Settings.json";
+
+    /* Read currentSongIndex from Settings.json */
+    FILE *f = fopen(settings_path, "r");
+    if (!f) return;
+
+    int song_index = -1;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        char *p = strstr(line, "\"currentSongIndex\":");
+        if (p) {
+            p += 19;  /* skip past "currentSongIndex": */
+            while (*p == ' ') p++;
+            song_index = atoi(p);
+            break;
+        }
+    }
+    fclose(f);
+
+    if (song_index < 0 || song_index == sampler_last_song_index) return;
+    sampler_last_song_index = song_index;
+
+    /* Scan Sets directories for matching user.song-index xattr */
     DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
     if (!sets_dir) return;
 
-    struct dirent *uuid_entry;
-    while ((uuid_entry = readdir(sets_dir)) != NULL && cached_set_count < MAX_CACHED_SETS) {
-        if (uuid_entry->d_name[0] == '.') continue;
+    struct dirent *entry;
+    while ((entry = readdir(sets_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
 
-        /* Each UUID dir contains set name subdirs */
         char uuid_path[512];
-        snprintf(uuid_path, sizeof(uuid_path), "%s/%s", SAMPLER_SETS_DIR, uuid_entry->d_name);
+        snprintf(uuid_path, sizeof(uuid_path), "%s/%s", SAMPLER_SETS_DIR, entry->d_name);
 
+        /* Read user.song-index xattr from UUID directory */
+        char xattr_val[32] = "";
+        ssize_t xlen = getxattr(uuid_path, "user.song-index", xattr_val, sizeof(xattr_val) - 1);
+        if (xlen <= 0) continue;
+        xattr_val[xlen] = '\0';
+
+        int idx = atoi(xattr_val);
+        if (idx != song_index) continue;
+
+        /* Found matching UUID dir — get set name from subdirectory */
         DIR *uuid_dir = opendir(uuid_path);
         if (!uuid_dir) continue;
 
-        struct dirent *set_entry;
-        while ((set_entry = readdir(uuid_dir)) != NULL && cached_set_count < MAX_CACHED_SETS) {
-            if (set_entry->d_name[0] == '.') continue;
-            /* Verify Song.abl exists */
-            char song_path[512];
-            snprintf(song_path, sizeof(song_path), "%s/%s/Song.abl", uuid_path, set_entry->d_name);
-            struct stat st;
-            if (stat(song_path, &st) == 0 && S_ISREG(st.st_mode)) {
-                strncpy(cached_set_names[cached_set_count], set_entry->d_name, MAX_SET_NAME_LEN - 1);
-                cached_set_names[cached_set_count][MAX_SET_NAME_LEN - 1] = '\0';
-                cached_set_count++;
-            }
+        struct dirent *sub;
+        while ((sub = readdir(uuid_dir)) != NULL) {
+            if (sub->d_name[0] == '.') continue;
+            /* This subdirectory name is the set name */
+            shadow_handle_set_loaded(sub->d_name, entry->d_name);
+            break;
         }
         closedir(uuid_dir);
+        break;
     }
     closedir(sets_dir);
-
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Set name cache: %d sets found", cached_set_count);
-    shadow_log(msg);
-}
-
-/* Check if text matches a cached set name */
-static int shadow_is_set_name(const char *text) {
-    for (int i = 0; i < cached_set_count; i++) {
-        if (strcmp(text, cached_set_names[i]) == 0) return 1;
-    }
-    return 0;
 }
 
 /* Tempo source tracking for display */
@@ -5265,7 +5288,6 @@ static int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
 
     shadow_chain_load_config();
-    shadow_rebuild_set_name_cache();
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_chain_slots[i].instance = shadow_plugin_v2->create_instance(
             SHADOW_CHAIN_MODULE_DIR, NULL);
@@ -9124,6 +9146,8 @@ static int open_common(const char *pathname, int flags, va_list ap, int use_open
         fd = real_open ? real_open(pathname, flags, mode) : -1;
     }
 
+
+
     if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
         track_fd(fd, pathname);
         if (path_matches_midi(pathname) && trace_midi_fd_enabled()) {
@@ -9167,6 +9191,7 @@ int open64(const char *pathname, int flags, ...)
     }
     int fd = real_open64 ? real_open64(pathname, flags, mode) : -1;
     va_end(ap);
+
     if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
         track_fd(fd, pathname);
         if (path_matches_midi(pathname) && trace_midi_fd_enabled()) {
@@ -9209,6 +9234,7 @@ int openat64(int dirfd, const char *pathname, int flags, ...)
     }
     int fd = real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
     va_end(ap);
+
     if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
         track_fd(fd, pathname);
         if (path_matches_midi(pathname) && trace_midi_fd_enabled()) {
@@ -9821,6 +9847,16 @@ int ioctl(int fd, unsigned long request, ...)
                     la_stale_frames, (int)link_sub_pid, link_sub_restart_count,
                     shadow_control ? shadow_control->pin_challenge_active : -1, pin_state);
             }
+        }
+    }
+
+    /* === SET DETECTION (poll every ~3s / ~1000 frames) === */
+    {
+        static uint32_t set_poll_counter = 0;
+        set_poll_counter++;
+        if (set_poll_counter >= 1000) {
+            set_poll_counter = 0;
+            shadow_poll_current_set();
         }
     }
 
