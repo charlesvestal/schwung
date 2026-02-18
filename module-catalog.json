@@ -277,6 +277,17 @@
       "default_branch": "main",
       "asset_name": "control-module.tar.gz",
       "min_host_version": "0.3.6"
+    },
+    {
+      "id": "chiptune",
+      "name": "Chiptune",
+      "description": "NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets",
+      "author": "blargg (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-chiptune",
+      "default_branch": "main",
+      "asset_name": "chiptune-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
