@@ -807,6 +807,18 @@ static int shadow_deferred_dsp_valid = 0;
 static int16_t shadow_slot_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
 static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
+/* Per-slot idle detection: skip render_block when output has been silent.
+ * Wakes on MIDI dispatch with one-frame latency (2.9ms, inaudible). */
+#define DSP_IDLE_THRESHOLD 344       /* ~1 second of silence before sleeping */
+#define DSP_SILENCE_LEVEL 4          /* abs(sample) below this = silence */
+static int shadow_slot_silence_frames[SHADOW_CHAIN_INSTANCES];
+static int shadow_slot_idle[SHADOW_CHAIN_INSTANCES];
+/* Phase 2: track FX output silence to skip FX processing too.
+ * FX keeps running while reverb/delay tails decay (synth idle, FX active).
+ * Once FX output is also silent, skip FX entirely. */
+static int shadow_slot_fx_silence_frames[SHADOW_CHAIN_INSTANCES];
+static int shadow_slot_fx_idle[SHADOW_CHAIN_INSTANCES];
+
 /* ==========================================================================
  * Shadow Capture Rules - Allow slots to capture specific MIDI controls
  * ========================================================================== */
@@ -5683,6 +5695,14 @@ static void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, 
             if (!shadow_chain_slots[i].active) continue;
         }
 
+        /* Wake slot from idle on any MIDI dispatch */
+        if (shadow_slot_idle[i] || shadow_slot_fx_idle[i]) {
+            shadow_slot_idle[i] = 0;
+            shadow_slot_silence_frames[i] = 0;
+            shadow_slot_fx_idle[i] = 0;
+            shadow_slot_fx_silence_frames[i] = 0;
+        }
+
         /* Send MIDI to this slot */
         if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
             uint8_t msg[3] = { shadow_chain_remap_channel(i, pkt[1]), pkt[2], pkt[3] };
@@ -6907,6 +6927,20 @@ static void shadow_inprocess_render_to_buffer(void) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
+            /* Idle gate: skip render_block if synth output has been silent.
+             * Buffer is already zeroed, so FX chain in mix_from_buffer still runs
+             * on zeros to let reverb/delay tails decay naturally.
+             * Probe every ~0.5s to detect self-generating audio (LFOs, arps). */
+            if (shadow_slot_idle[s]) {
+                shadow_slot_silence_frames[s]++;
+                if (shadow_slot_silence_frames[s] % 172 != 0) {
+                    /* Not a probe frame — skip render, mark valid so FX still runs */
+                    shadow_slot_deferred_valid[s] = 1;
+                    continue;
+                }
+                /* Probe frame: fall through to render and check output */
+            }
+
             if (same_frame_fx) {
                 /* New path: synth only → per-slot buffer. FX in mix_from_buffer. */
                 shadow_chain_set_external_fx_mode(shadow_chain_slots[s].instance, 1);
@@ -6933,6 +6967,26 @@ static void shadow_inprocess_render_to_buffer(void) {
                     if (mixed < -32768) mixed = -32768;
                     shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
                 }
+            }
+
+            /* Check if synth render output is silent */
+            int16_t *slot_out = same_frame_fx ? shadow_slot_deferred[s] : shadow_deferred_dsp_buffer;
+            int is_silent = 1;
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                if (slot_out[i] > DSP_SILENCE_LEVEL || slot_out[i] < -DSP_SILENCE_LEVEL) {
+                    is_silent = 0;
+                    break;
+                }
+            }
+
+            if (is_silent) {
+                shadow_slot_silence_frames[s]++;
+                if (shadow_slot_silence_frames[s] >= DSP_IDLE_THRESHOLD) {
+                    shadow_slot_idle[s] = 1;
+                }
+            } else {
+                shadow_slot_silence_frames[s] = 0;
+                shadow_slot_idle[s] = 0;
             }
         }
     }
@@ -7032,6 +7086,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
                                shadow_slot_deferred_valid[s]);
 
             if (slot_active) {
+                /* Phase 2 idle gate: skip FX when synth AND FX output are silent
+                 * AND no Link Audio track data is flowing for this slot */
+                if (shadow_slot_fx_idle[s] && shadow_slot_idle[s] && !have_move_track) continue;
+
                 /* Active slot: combine synth + Link Audio, run through FX */
                 int16_t fx_buf[FRAMES_PER_BLOCK * 2];
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -7046,6 +7104,24 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 /* Run FX chain */
                 shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                         fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                /* Track FX output silence for phase 2 idle */
+                int fx_silent = 1;
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    if (fx_buf[i] > DSP_SILENCE_LEVEL || fx_buf[i] < -DSP_SILENCE_LEVEL) {
+                        fx_silent = 0;
+                        break;
+                    }
+                }
+                if (fx_silent) {
+                    shadow_slot_fx_silence_frames[s]++;
+                    if (shadow_slot_fx_silence_frames[s] >= DSP_IDLE_THRESHOLD) {
+                        shadow_slot_fx_idle[s] = 1;
+                    }
+                } else {
+                    shadow_slot_fx_silence_frames[s] = 0;
+                    shadow_slot_fx_idle[s] = 0;
+                }
 
                 /* Capture for Link Audio publisher */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS) {
@@ -7083,10 +7159,31 @@ static void shadow_inprocess_mix_from_buffer(void) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_slot_deferred_valid[s] || !shadow_chain_slots[s].instance) continue;
 
+            /* Phase 2 idle gate: skip FX when both synth AND FX output are silent */
+            if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) continue;
+
             int16_t fx_buf[FRAMES_PER_BLOCK * 2];
             memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
             shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                     fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+            /* Track FX output silence for phase 2 idle */
+            int fx_silent = 1;
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                if (fx_buf[i] > DSP_SILENCE_LEVEL || fx_buf[i] < -DSP_SILENCE_LEVEL) {
+                    fx_silent = 0;
+                    break;
+                }
+            }
+            if (fx_silent) {
+                shadow_slot_fx_silence_frames[s]++;
+                if (shadow_slot_fx_silence_frames[s] >= DSP_IDLE_THRESHOLD) {
+                    shadow_slot_fx_idle[s] = 1;
+                }
+            } else {
+                shadow_slot_fx_silence_frames[s] = 0;
+                shadow_slot_fx_idle[s] = 0;
+            }
 
             float vol = shadow_chain_slots[s].volume;
             float gain = vol * me_input_scale;
