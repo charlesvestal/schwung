@@ -62,7 +62,8 @@ fi
         for dep in \
             /usr/include/dbus-1.0/dbus/dbus.h \
             /usr/lib/aarch64-linux-gnu/dbus-1.0/include/dbus/dbus-arch-deps.h \
-        /usr/include/flite/flite.h; do
+            /usr/include/espeak-ng/speak_lib.h \
+            /usr/include/flite/flite.h; do
         if [ ! -f "$dep" ]; then
             echo "Missing screen reader dependency: $dep"
             missing_deps=1
@@ -102,11 +103,11 @@ mkdir -p ./build/shared/
 # External modules (sf2, dexed, m8, minijv, obxd, clap) are in separate repos
 
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
-    echo "Screen reader build: enabled"
-    SHIM_TTS_SRC="src/host/tts_engine_flite.c"
+    echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
+    SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c"
     SHIM_DEFINES="-DENABLE_SCREEN_READER=1"
-    SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include"
-    SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
+    SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include -I/usr/include/flite"
+    SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
 else
     echo "Screen reader build: disabled"
     SHIM_TTS_SRC="src/host/tts_engine_stub.c"
@@ -135,10 +136,18 @@ echo "Building host..."
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
     src/host/unified_log.c \
-    "$SHIM_TTS_SRC" \
+    $SHIM_TTS_SRC \
     $SHIM_DEFINES \
     $SHIM_INCLUDES \
     $SHIM_LIBS
+
+# Build web shim (tiny LD_PRELOAD for MoveWebService PIN challenge detection)
+echo "Building web shim..."
+"${CROSS_PREFIX}gcc" -g -shared -fPIC \
+    -o build/move-anything-web-shim.so \
+    src/host/web_shim.c \
+    -Isrc \
+    -ldl -lrt
 
 echo "Building Shadow POC..."
 
@@ -192,31 +201,69 @@ mkdir -p ./build/test/
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Building TTS test program..."
 
-    # Build Flite test program for testing TTS - using dynamic linking
+    # Build eSpeak-NG test program for testing TTS - using dynamic linking
     "${CROSS_PREFIX}gcc" -g -O3 \
-        test/test_flite.c \
-        -o build/test/test_flite \
+        test/test_espeak.c \
+        -o build/test/test_espeak \
         -I/usr/include \
         -L/usr/lib/aarch64-linux-gnu \
-        -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex \
+        -lespeak-ng \
         -lm -lpthread || echo "Warning: TTS test build failed"
-
-    echo "Copying Flite libraries for deployment..."
-
-    # Copy Flite .so files to build/lib/ for deployment to Move
-    mkdir -p ./build/lib/
-    cp -L /usr/lib/aarch64-linux-gnu/libflite.so.* ./build/lib/ 2>/dev/null || true
-    cp -L /usr/lib/aarch64-linux-gnu/libflite_cmu_us_kal.so.* ./build/lib/ 2>/dev/null || true
-    cp -L /usr/lib/aarch64-linux-gnu/libflite_usenglish.so.* ./build/lib/ 2>/dev/null || true
-    cp -L /usr/lib/aarch64-linux-gnu/libflite_cmulex.so.* ./build/lib/ 2>/dev/null || true
-    ./scripts/verify-flite-bundle.sh ./build/lib
-
-    # Copy Flite copyright notice (required by BSD-style license)
-    mkdir -p ./build/licenses/
-    cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || echo "Warning: Flite license file not found"
-else
-    echo "Skipping TTS/Flite artifacts (screen reader disabled)"
 fi
+
+# Always bundle TTS runtime libraries and data (even when screen reader is compiled
+# as disabled) so the screen reader can be enabled at runtime without rebuilding.
+echo "Bundling TTS runtime libraries..."
+mkdir -p ./build/lib/
+
+# eSpeak-NG libraries
+cp -L /usr/lib/aarch64-linux-gnu/libespeak-ng.so.* ./build/lib/ 2>/dev/null || true
+# libsonic (needed by eSpeak-NG for time-stretching/pitch-shifting)
+cp -L /usr/lib/aarch64-linux-gnu/libsonic.so.* ./build/lib/ 2>/dev/null || true
+# pcaudio stub (satisfies eSpeak-NG's libpcaudio symbols without pulling in
+# the full libpcaudio→libpulse→libX11 dependency chain)
+if command -v "${CROSS_PREFIX}gcc" >/dev/null 2>&1; then
+    echo "Building pcaudio stub library..."
+    "${CROSS_PREFIX}gcc" -shared -fPIC -o ./build/lib/libpcaudio.so.0 src/host/pcaudio_stub.c
+fi
+
+# Flite libraries
+cp -L /usr/lib/aarch64-linux-gnu/libflite.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_cmu_us_kal.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_usenglish.so.* ./build/lib/ 2>/dev/null || true
+cp -L /usr/lib/aarch64-linux-gnu/libflite_cmulex.so.* ./build/lib/ 2>/dev/null || true
+
+# eSpeak-NG data (English only, ~1.6MB instead of ~13MB)
+echo "Bundling eSpeak-NG data files..."
+ESPEAK_SRC=""
+if [ -d /usr/lib/aarch64-linux-gnu/espeak-ng-data ]; then
+    ESPEAK_SRC=/usr/lib/aarch64-linux-gnu/espeak-ng-data
+elif [ -d /usr/share/espeak-ng-data ]; then
+    ESPEAK_SRC=/usr/share/espeak-ng-data
+fi
+
+if [ -n "$ESPEAK_SRC" ]; then
+    mkdir -p ./build/espeak-ng-data/
+    cp "$ESPEAK_SRC"/phontab "$ESPEAK_SRC"/phonindex "$ESPEAK_SRC"/phondata ./build/espeak-ng-data/
+    cp "$ESPEAK_SRC"/phondata-manifest ./build/espeak-ng-data/ 2>/dev/null || true
+    cp "$ESPEAK_SRC"/intonations ./build/espeak-ng-data/
+    cp "$ESPEAK_SRC"/en_dict ./build/espeak-ng-data/
+    cp -r "$ESPEAK_SRC"/voices ./build/espeak-ng-data/
+    mkdir -p ./build/espeak-ng-data/lang/gmw/
+    cp "$ESPEAK_SRC"/lang/gmw/en* ./build/espeak-ng-data/lang/gmw/ 2>/dev/null || true
+else
+    echo "Warning: eSpeak-NG data directory not found"
+fi
+
+# Verify eSpeak-NG bundle if script is available
+if [ -f ./scripts/verify-espeak-bundle.sh ]; then
+    ./scripts/verify-espeak-bundle.sh ./build/lib ./build/espeak-ng-data || true
+fi
+
+# License files
+mkdir -p ./build/licenses/
+cp /usr/share/doc/libespeak-ng1/copyright ./build/licenses/ESPEAK_NG_LICENSE.txt 2>/dev/null || true
+cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || true
 
 echo "Building Signal Chain module..."
 
@@ -267,11 +314,18 @@ mkdir -p ./build/modules/sound_generators/linein/
 
 # Copy shared utilities
 cp ./src/shared/*.mjs ./build/shared/
+cp ./src/shared/*.json ./build/shared/ 2>/dev/null || true
 
 # Copy host files
 cp ./src/host/menu_ui.js ./build/host/
 cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
 cp ./src/host/version.txt ./build/host/
+# Build display server (live display SSE streaming to browser)
+echo "Building display server..."
+"${CROSS_PREFIX}gcc" -g -O3 \
+    src/host/display_server.c \
+    -o build/display-server \
+    -lrt
 
 # Copy shadow UI files
 cp ./src/shadow/shadow_ui.js ./build/shadow/
@@ -306,7 +360,7 @@ else
     echo "Warning: libs/curl/curl not found - store module will not work without it"
 fi
 
-# Flite voice data is built into the Flite libraries - no separate data directory needed
+# eSpeak-NG data directory is copied to build/espeak-ng-data/ above
 
 echo "Build complete!"
 echo "Host binary: build/move-anything"

@@ -1870,18 +1870,28 @@ static int parse_level_params(const char *level_json, chain_param_info_t *out_pa
     const char *params = strstr(level_json, "\"params\"");
     if (!params) return 0;
 
-    params = strchr(params, '[');
-    if (!params) return 0;
-    params++;
+    const char *arr_open = strchr(params, '[');
+    if (!arr_open) return 0;
 
-    /* Iterate through params array */
-    const char *param_start = params;
-    while (*param_count < max_params) {
+    /* Find matching ] for the params array using bracket-depth tracking.
+     * This prevents iteration from escaping into knobs or other fields. */
+    const char *arr_end = arr_open + 1;
+    int bracket_depth = 1;
+    while (*arr_end && bracket_depth > 0) {
+        if (*arr_end == '[') bracket_depth++;
+        else if (*arr_end == ']') bracket_depth--;
+        if (bracket_depth > 0) arr_end++;
+    }
+    /* arr_end now points at the matching ] */
+
+    /* Iterate through params array, bounded by arr_end */
+    const char *param_start = arr_open + 1;
+    while (*param_count < max_params && param_start < arr_end) {
         /* Skip whitespace */
-        while (*param_start == ' ' || *param_start == '\t' || *param_start == '\n') param_start++;
+        while (param_start < arr_end && (*param_start == ' ' || *param_start == '\t' || *param_start == '\n' || *param_start == '\r')) param_start++;
 
         /* Check for end of array */
-        if (*param_start == ']') break;
+        if (param_start >= arr_end || *param_start == ']') break;
 
         /* Check if this is an object */
         if (*param_start == '{') {
@@ -1894,11 +1904,13 @@ static int parse_level_params(const char *level_json, chain_param_info_t *out_pa
                 param_end++;
             } while (brace_depth > 0 && *param_end);
 
-            /* Check if this is a navigation item (has "level" key) or param definition (has "type" key) */
-            if (json_object_has_key(param_start, "type")) {
-                /* This is a param definition - parse it */
-                if (parse_param_object(param_start, &out_params[*param_count]) == 0) {
-                    (*param_count)++;
+            /* Only parse if object is within the params array */
+            if (param_end <= arr_end + 1) {
+                /* Check if this is a param definition (has "type" key within this object) */
+                if (bounded_strstr(param_start, param_end, "\"type\"")) {
+                    if (parse_param_object(param_start, &out_params[*param_count]) == 0) {
+                        (*param_count)++;
+                    }
                 }
             }
             /* Skip navigation items (they don't define params) */
@@ -1906,13 +1918,20 @@ static int parse_level_params(const char *level_json, chain_param_info_t *out_pa
             param_start = param_end;
         } else if (*param_start == '"') {
             /* String reference - skip (already defined elsewhere) */
-            param_start = strchr(param_start + 1, '"');
-            if (param_start) param_start++;
+            const char *close_quote = strchr(param_start + 1, '"');
+            if (close_quote && close_quote < arr_end) {
+                param_start = close_quote + 1;
+            } else {
+                break;
+            }
+        } else {
+            param_start++;
+            continue;
         }
 
-        /* Skip comma */
-        param_start = strchr(param_start, ',');
-        if (!param_start) break;
+        /* Skip comma (bounded) */
+        while (param_start < arr_end && *param_start != ',' && *param_start != ']') param_start++;
+        if (param_start >= arr_end || *param_start == ']') break;
         param_start++;
     }
 
@@ -5925,11 +5944,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else {
-            /* Check if this is a smoothable float param */
+            /* Only smooth float params — int/enum values must not be interpolated */
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                /* Store target for smoothing - will be applied in render_block */
-                smoother_set_target(&inst->synth_smoother, subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->synth_params, inst->synth_param_count, subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->synth_smoother, subkey, fval);
+                }
             }
             /* Always forward immediately (smoother will override with interpolated values) */
             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
@@ -5951,7 +5972,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         } else if (inst->fx_count > 0) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                }
             }
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
                 inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
@@ -5972,7 +5996,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         } else if (inst->fx_count > 1) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+                }
             }
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
@@ -6662,8 +6689,14 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             return -1;
         }
-        /* For chain_params: return parsed module.json data */
+        /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 0) {
+            /* Try plugin's own chain_params handler first */
+            if (inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->get_param) {
+                int result = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], subkey, buf, buf_len);
+                if (result > 0) return result;
+            }
+            /* Fall back to parsed module.json data */
             if (inst->midi_fx_param_counts[0] > 0) {
                 int written = snprintf(buf, buf_len, "[");
                 for (int i = 0; i < inst->midi_fx_param_counts[0] && written < buf_len - 10; i++) {
@@ -6720,8 +6753,14 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             return -1;
         }
-        /* For chain_params: return parsed module.json data */
+        /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 1) {
+            /* Try plugin's own chain_params handler first */
+            if (inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->get_param) {
+                int result = inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], subkey, buf, buf_len);
+                if (result > 0) return result;
+            }
+            /* Fall back to parsed module.json data */
             if (inst->midi_fx_param_counts[1] > 0) {
                 int written = snprintf(buf, buf_len, "[");
                 for (int i = 0; i < inst->midi_fx_param_counts[1] && written < buf_len - 10; i++) {

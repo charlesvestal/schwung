@@ -4,8 +4,8 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.4.1",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.4.1/move-anything.tar.gz",
+    "latest_version": "0.4.10",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.4.10/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -16,6 +16,7 @@
       "author": "Move Anything",
       "component_type": "utility",
       "github_repo": "charlesvestal/move-anything-fourtrack",
+      "default_branch": "main",
       "asset_name": "fourtrack-module.tar.gz",
       "min_host_version": "0.3.6"
     },
@@ -26,6 +27,7 @@
       "author": "Dexed/MSFA by google/asb2m10 (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-dx7",
+      "default_branch": "main",
       "asset_name": "dexed-module.tar.gz",
       "min_host_version": "0.3.0",
       "requires": "Optional additional .syx patch banks (place in module's banks/ folder)"
@@ -37,6 +39,7 @@
       "author": "FluidLite by Robin Lobel (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-sf2",
+      "default_branch": "main",
       "asset_name": "sf2-module.tar.gz",
       "min_host_version": "0.3.0",
       "requires": ".sf2 soundfont files (place in module's soundfonts/ folder)"
@@ -48,6 +51,7 @@
       "author": "bobbydigitales",
       "component_type": "overtake",
       "github_repo": "charlesvestal/move-anything-m8",
+      "default_branch": "main",
       "asset_name": "m8-module.tar.gz",
       "min_host_version": "0.3.6"
     },
@@ -58,6 +62,7 @@
       "author": "nukeykt/giulioz",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-jv880",
+      "default_branch": "main",
       "asset_name": "minijv-module.tar.gz",
       "min_host_version": "0.3.0",
       "requires": "ROM files (place in module's roms/ folder)"
@@ -69,6 +74,7 @@
       "author": "reales",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-obxd",
+      "default_branch": "main",
       "asset_name": "obxd-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -79,6 +85,7 @@
       "author": "Ghost Note Audio",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-cloudseed",
+      "default_branch": "main",
       "asset_name": "cloudseed-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -89,6 +96,7 @@
       "author": "Charles Vestal",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-tapescam",
+      "default_branch": "main",
       "asset_name": "tapescam-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -99,6 +107,7 @@
       "author": "Charles Vestal",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-psxverb",
+      "default_branch": "main",
       "asset_name": "psxverb-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -109,6 +118,7 @@
       "author": "Charles Vestal",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-space-delay",
+      "default_branch": "main",
       "asset_name": "tapedelay-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -119,6 +129,7 @@
       "author": "Peter Allwin (port: charlesvestal)",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-junologue-chorus",
+      "default_branch": "main",
       "asset_name": "junologue-chorus-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -129,6 +140,7 @@
       "author": "charlesvestal",
       "component_type": "overtake",
       "github_repo": "charlesvestal/move-anything-sidcontrol",
+      "default_branch": "main",
       "asset_name": "sidcontrol-module.tar.gz",
       "min_host_version": "0.3.6"
     },
@@ -139,6 +151,7 @@
       "author": "Emilie Gillet (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-braids",
+      "default_branch": "main",
       "asset_name": "braids-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -149,6 +162,7 @@
       "author": "jpcima (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-hera",
+      "default_branch": "main",
       "asset_name": "hera-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -159,6 +173,7 @@
       "author": "Surge Synth Team (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-surge",
+      "default_branch": "main",
       "asset_name": "surge-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -169,6 +184,7 @@
       "author": "Nicolas Roulet, Julian Palladino (port: charlesvestal)",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-moog",
+      "default_branch": "main",
       "asset_name": "moog-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -179,6 +195,7 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-webstream",
+      "default_branch": "main",
       "asset_name": "webstream-module.tar.gz",
       "min_host_version": "0.3.11"
     },
@@ -189,6 +206,7 @@
       "author": "NeuralAudio by Mike Oliphant (port: charlesvestal)",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-nam",
+      "default_branch": "main",
       "asset_name": "nam-module.tar.gz",
       "min_host_version": "0.3.0",
       "requires": ".nam model files (free models at tonehunt.org and tone3000.com)"
@@ -200,6 +218,7 @@
       "author": "charlesvestal",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/move-anything-ducker",
+      "default_branch": "main",
       "asset_name": "ducker-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -210,6 +229,7 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-radiogarden",
+      "default_branch": "main",
       "asset_name": "radiogarden-module.tar.gz",
       "min_host_version": "0.3.0"
     },
@@ -220,7 +240,53 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "github_repo": "charlesvestal/move-anything-airplay",
+      "default_branch": "main",
       "asset_name": "airplay-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "clap",
+      "name": "CLAP FX",
+      "description": "Host for CLAP audio effect plugins",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-clap",
+      "default_branch": "main",
+      "asset_name": "clap-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": ".clap plugin files (place in module's plugins/ folder)"
+    },
+    {
+      "id": "gate",
+      "name": "Gate",
+      "description": "Noise gate and downward expander",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-gate",
+      "default_branch": "main",
+      "asset_name": "gate-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "control",
+      "name": "Custom MIDI Control",
+      "description": "Custom MIDI controller with 16 banks of configurable pads/knobs/buttons",
+      "author": "chaolue",
+      "component_type": "overtake",
+      "github_repo": "chaolue/move-anything-control",
+      "default_branch": "main",
+      "asset_name": "control-module.tar.gz",
+      "min_host_version": "0.3.6"
+    },
+    {
+      "id": "chiptune",
+      "name": "Chiptune",
+      "description": "NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets",
+      "author": "blargg (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-chiptune",
+      "default_branch": "main",
+      "asset_name": "chiptune-module.tar.gz",
       "min_host_version": "0.3.0"
     }
   ]

@@ -286,18 +286,23 @@ Modules expose parameters to the Shadow UI via `ui_hierarchy` in their get_param
 
 ### Chain Parameters
 
-Modules expose knob mappings via `chain_params` in their get_param response:
+Modules expose parameter metadata via `chain_params` in their get_param response. This is **required** for the Shadow UI to properly edit parameters (with correct step sizes, ranges, and enum options):
 
-```json
-{
-  "chain_params": [
-    { "label": "Cutoff", "cc": 71, "value": 64 },
-    { "label": "Resonance", "cc": 72, "value": 32 }
-  ]
+```c
+if (strcmp(key, "chain_params") == 0) {
+    const char *json = "["
+        "{\"key\":\"cutoff\",\"name\":\"Cutoff\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01},"
+        "{\"key\":\"mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"LP\",\"HP\",\"BP\"]}"
+    "]";
+    strcpy(buf, json);
+    return strlen(json);
 }
 ```
 
-These map to knobs 1-8 in the Shadow UI for quick parameter access.
+Parameter types: `float` (with `min`, `max`, `step`), `int` (with `min`, `max`), `enum` (with `options` array).
+Optional fields: `default`, `unit`, `display_format`.
+
+These provide metadata for the Shadow UI parameter editor alongside `ui_hierarchy` (which defines menu structure and knob mappings).
 
 ### Chain Architecture
 

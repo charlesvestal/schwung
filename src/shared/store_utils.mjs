@@ -70,10 +70,10 @@ function ensureTmpDir() {
  *   - Single module: { version, download_url, ... }
  *   - Multi-module:  { modules: { module_id: { version, download_url, ... }, ... } }
  */
-export function fetchReleaseJson(github_repo, module_id) {
+export function fetchReleaseJson(github_repo, module_id, branch) {
     ensureTmpDir();
     const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
-    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
+    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/${branch || 'main'}/release.json`;
 
     const success = globalThis.host_http_download(releaseUrl, cacheFile);
     if (!success) {
@@ -187,7 +187,7 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
                     if (onProgress) onProgress('Loading Catalog', mod.name, i + 1, moduleCount);
 
                     /* Pass module id for multi-module repo support */
-                    const release = fetchReleaseJson(mod.github_repo, mod.id);
+                    const release = fetchReleaseJson(mod.github_repo, mod.id, mod.default_branch);
                     if (release) {
                         mod.latest_version = release.version;
                         mod.download_url = release.download_url;

@@ -28,6 +28,7 @@
 #define SHM_SHADOW_MIDI_OUT   "/move-shadow-midi-out"   /* MIDI output from shadow UI */
 #define SHM_SHADOW_MIDI_DSP   "/move-shadow-midi-dsp"   /* MIDI from shadow UI to DSP slots */
 #define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader announcements */
+#define SHM_DISPLAY_LIVE    "/move-display-live"    /* Live display for remote viewer */
 
 /* ============================================================================
  * Buffer Sizes
@@ -40,7 +41,7 @@
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
-#define SHADOW_SCREENREADER_BUFFER_SIZE 512  /* Screen reader message buffer */
+#define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
 
 /* ============================================================================
  * Slot Configuration
@@ -51,7 +52,7 @@
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
 #define SHADOW_PARAM_VALUE_LEN 65536  /* 64KB for large ui_hierarchy and state */
-#define SHADOW_SCREENREADER_TEXT_LEN 256  /* Max text length for screen reader messages */
+#define SHADOW_SCREENREADER_TEXT_LEN 8192  /* Max text length for screen reader messages */
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)
@@ -60,6 +61,8 @@
 #define SHADOW_UI_FLAG_JUMP_TO_SLOT 0x01      /* Jump to slot settings on open */
 #define SHADOW_UI_FLAG_JUMP_TO_MASTER_FX 0x02 /* Jump to Master FX on open */
 #define SHADOW_UI_FLAG_JUMP_TO_OVERTAKE 0x04  /* Jump to overtake module menu */
+#define SHADOW_UI_FLAG_SAVE_STATE 0x08        /* Save all state (shutdown imminent) */
+#define SHADOW_UI_FLAG_JUMP_TO_SCREENREADER 0x10 /* Jump to screen reader settings */
 
 /* ============================================================================
  * Special Values
@@ -94,9 +97,12 @@ typedef struct shadow_control_t {
     volatile uint8_t tts_enabled;     /* Screen Reader on/off (1=on, 0=off) */
     volatile uint8_t tts_volume;      /* TTS volume (0-100) */
     volatile uint16_t tts_pitch;      /* TTS pitch in Hz (80-180) */
-    volatile float tts_speed;         /* TTS speed multiplier (0.5-2.0) */
+    volatile float tts_speed;         /* TTS speed multiplier (0.5-6.0) */
     volatile uint8_t overlay_knobs_mode; /* 0=shift, 1=jog_touch, 2=off */
-    volatile uint8_t reserved[31];
+    volatile uint8_t display_mirror;     /* 0=off, 1=on (stream display to browser) */
+    volatile uint8_t tts_engine;         /* 0=espeak-ng, 1=flite */
+    volatile uint8_t pin_challenge_active; /* 0=none, 1=challenge detected, 2=submitted */
+    volatile uint8_t reserved[28];
 } shadow_control_t;
 
 /*
