@@ -45,7 +45,11 @@ main() {
 
     log "Removing shim and files..."
     ssh_with_retry "root" 'rm -f /usr/lib/move-anything-shim.so' || true
+    ssh_with_retry "root" 'rm -f /usr/lib/move-anything-web-shim.so' || true
     ssh_with_retry "ableton" 'rm -rf ~/move-anything ~/move-anything.tar.gz' || true
+
+    log "Restoring MoveWebService..."
+    ssh_with_retry "root" 'for svc in /opt/move/MoveWebServiceOriginal /opt/move-web-service/MoveWebServiceOriginal; do if [ -f "$svc" ]; then dir=$(dirname "$svc"); base=$(basename "$svc" Original); mv "$svc" "$dir/$base"; fi; done' || true
 
     log "Rebooting Move..."
     ssh_with_retry "root" "reboot" || true

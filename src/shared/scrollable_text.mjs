@@ -51,13 +51,14 @@ export function wrapText(text, maxChars = MAX_CHARS_PER_LINE) {
  * @param {number} options.visibleLines - Number of visible lines (default 4)
  * @returns {Object} State object
  */
-export function createScrollableText({ lines, actionLabel, visibleLines = 4 }) {
+export function createScrollableText({ lines, actionLabel, visibleLines = 4, onActionSelected }) {
     return {
         lines: lines || [],
         actionLabel: actionLabel || 'OK',
         visibleLines,
         scrollOffset: 0,
-        actionSelected: false
+        actionSelected: false,
+        onActionSelected: onActionSelected || null
     };
 }
 
@@ -78,6 +79,9 @@ export function handleScrollableTextJog(state, delta) {
         if (state.scrollOffset >= maxScroll) {
             /* At end of text, select action */
             state.actionSelected = true;
+            if (state.onActionSelected) {
+                state.onActionSelected(state.actionLabel);
+            }
             return true;
         }
         state.scrollOffset++;
