@@ -41,7 +41,7 @@
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
-#define SHADOW_SCREENREADER_BUFFER_SIZE 512  /* Screen reader message buffer */
+#define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
 
 /* ============================================================================
  * Slot Configuration
@@ -52,7 +52,7 @@
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
 #define SHADOW_PARAM_VALUE_LEN 65536  /* 64KB for large ui_hierarchy and state */
-#define SHADOW_SCREENREADER_TEXT_LEN 256  /* Max text length for screen reader messages */
+#define SHADOW_SCREENREADER_TEXT_LEN 8192  /* Max text length for screen reader messages */
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)

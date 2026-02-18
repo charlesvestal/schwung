@@ -1188,8 +1188,8 @@ static DBusConnection *shadow_dbus_conn_old = NULL; /* Old libdbus listener (kee
 static pthread_mutex_t move_dbus_conn_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Shadow buffer for pending screen reader announcements */
-#define MAX_PENDING_ANNOUNCEMENTS 16
-#define MAX_ANNOUNCEMENT_LEN 256
+#define MAX_PENDING_ANNOUNCEMENTS 4
+#define MAX_ANNOUNCEMENT_LEN 8192
 static char pending_announcements[MAX_PENDING_ANNOUNCEMENTS][MAX_ANNOUNCEMENT_LEN];
 static int pending_announcement_count = 0;
 static pthread_mutex_t pending_announcements_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -7616,7 +7616,7 @@ static void debug_audio_offset(void) {
 
 /* Monitor screen reader messages and speak them with TTS (debounced) */
 #define TTS_DEBOUNCE_MS 300  /* Wait 300ms of silence before speaking */
-static char pending_tts_message[256] = {0};
+static char pending_tts_message[SHADOW_SCREENREADER_TEXT_LEN] = {0};
 static uint64_t last_message_time_ms = 0;
 static bool has_pending_message = false;
 

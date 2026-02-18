@@ -51,7 +51,7 @@ static cst_voice *voice = NULL;
 static pthread_t synth_thread;
 static pthread_mutex_t synth_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t synth_cond = PTHREAD_COND_INITIALIZER;
-static char synth_text[256] = {0};
+static char synth_text[2048] = {0};
 static bool synth_requested = false;
 static volatile bool synth_thread_running = false;
 
@@ -70,7 +70,7 @@ static void* flite_synthesis_thread(void *arg) {
             break;
         }
 
-        char text[256];
+        char text[2048];
         strncpy(text, synth_text, sizeof(text) - 1);
         text[sizeof(text) - 1] = '\0';
         synth_requested = false;

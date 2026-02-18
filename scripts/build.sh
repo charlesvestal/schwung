@@ -314,6 +314,7 @@ mkdir -p ./build/modules/sound_generators/linein/
 
 # Copy shared utilities
 cp ./src/shared/*.mjs ./build/shared/
+cp ./src/shared/*.json ./build/shared/ 2>/dev/null || true
 
 # Copy host files
 cp ./src/host/menu_ui.js ./build/host/

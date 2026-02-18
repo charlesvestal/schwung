@@ -535,7 +535,8 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
     { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
     { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
-    { key: "save", label: "[Save]", type: "action" },
+    { key: "help", label: "[Help...]", type: "action" },
+    { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
 ];
@@ -568,6 +569,12 @@ let selectedMasterFxSetting = 0;
 let editingMasterFxSetting = false;
 let editMasterFxValue = "";
 let inMasterFxSettingsMenu = false;  /* True when in settings submenu */
+
+/* Help viewer state - stack-based for arbitrary depth */
+let helpContent = null;
+let helpNavStack = [];            /* [{ items, selectedIndex, title }] */
+let helpDetailScrollState = null;
+
 
 /* Screen Reader settings menu */
 const SCREENREADER_SETTINGS_ITEMS = [
@@ -2429,6 +2436,58 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "help") {
+        if (!helpContent) {
+            try {
+                const raw = host_read_file("/data/UserData/move-anything/shared/help_content.json");
+                if (raw) {
+                    helpContent = JSON.parse(raw);
+                }
+            } catch (e) {
+                debugLog("Failed to load help content: " + e);
+            }
+        }
+        /* Try to load parsed Move Manual (from cache, if not already loaded) */
+        if (helpContent && !helpContent._manualLoaded) {
+            try {
+                const manualRaw = host_read_file("/data/UserData/move-anything/cache/move_manual.json");
+                if (manualRaw) {
+                    const manualData = JSON.parse(manualRaw);
+                    if (manualData && manualData.sections && manualData.sections.length > 0) {
+                        /* Find the Move Manual section and replace its children */
+                        for (let i = 0; i < helpContent.sections.length; i++) {
+                            if (helpContent.sections[i].title === "Move Manual") {
+                                helpContent.sections[i].children = manualData.sections;
+                                break;
+                            }
+                        }
+                        helpContent._manualLoaded = true;
+                        debugLog("Loaded Move Manual: " + manualData.sections.length + " chapters");
+                    }
+                }
+            } catch (e) {
+                debugLog("Move Manual cache not available: " + e);
+            }
+        }
+        if (helpContent && helpContent.sections && helpContent.sections.length > 0) {
+            /* If only Move Everything section has real content, skip straight to it */
+            const meSection = helpContent.sections.find(s => s.title === "Move Everything");
+            const hasManual = helpContent._manualLoaded;
+            if (meSection && meSection.children && !hasManual) {
+                /* Skip section list, go directly to ME topics */
+                helpNavStack = [
+                    { items: meSection.children, selectedIndex: 0, title: meSection.title }
+                ];
+                needsRedraw = true;
+                announce(meSection.title + ", " + meSection.children[0].title);
+            } else {
+                helpNavStack = [{ items: helpContent.sections, selectedIndex: 0, title: "Help" }];
+                needsRedraw = true;
+                announce("Help, " + helpContent.sections[0].title);
+            }
+        }
+        return;
+    }
     if (key === "save") {
         if (currentMasterPresetName) {
             /* Existing preset - confirm overwrite */
@@ -4906,6 +4965,12 @@ function handleJog(delta) {
                 /* Navigate No/Yes */
                 masterConfirmIndex = masterConfirmIndex === 0 ? 1 : 0;
                 announce(masterConfirmIndex === 0 ? "No" : "Yes");
+            } else if (helpDetailScrollState) {
+                handleScrollableTextJog(helpDetailScrollState, delta);
+            } else if (helpNavStack.length > 0) {
+                const frame = helpNavStack[helpNavStack.length - 1];
+                frame.selectedIndex = Math.max(0, Math.min(frame.items.length - 1, frame.selectedIndex + delta));
+                announce(frame.items[frame.selectedIndex].title);
             } else if (inMasterPresetPicker) {
                 /* Navigate preset picker */
                 const totalItems = 1 + masterPresets.length;  /* [New] + presets */
@@ -5226,6 +5291,32 @@ function handleSelect() {
                     const preset = masterPresets[selectedMasterPresetIndex - 1];
                     loadMasterPreset(preset.index, preset.name);
                     exitMasterPresetPicker();
+                }
+            } else if (helpDetailScrollState) {
+                if (isActionSelected(helpDetailScrollState)) {
+                    helpDetailScrollState = null;
+                    needsRedraw = true;
+                    const frame = helpNavStack[helpNavStack.length - 1];
+                    announce(frame.title + ", " + frame.items[frame.selectedIndex].title);
+                }
+            } else if (helpNavStack.length > 0) {
+                const frame = helpNavStack[helpNavStack.length - 1];
+                const item = frame.items[frame.selectedIndex];
+                if (item.children && item.children.length > 0) {
+                    /* Branch node - push children onto stack */
+                    helpNavStack.push({ items: item.children, selectedIndex: 0, title: item.title });
+                    needsRedraw = true;
+                    announce(item.title + ", " + item.children[0].title);
+                } else if (item.lines && item.lines.length > 0) {
+                    /* Leaf node - show scrollable text */
+                    helpDetailScrollState = createScrollableText({
+                        lines: item.lines,
+                        actionLabel: "Back",
+                        visibleLines: 3,
+                        onActionSelected: (label) => announce(label)
+                    });
+                    needsRedraw = true;
+                    announce(item.title + ". " + item.lines.join(". "));
                 }
             } else if (inMasterFxSettingsMenu) {
                 /* Settings menu click */
@@ -5810,6 +5901,20 @@ function handleBack() {
                 masterConfirmingDelete = false;
                 needsRedraw = true;
                 announce("Master FX Settings");
+            } else if (helpDetailScrollState) {
+                helpDetailScrollState = null;
+                needsRedraw = true;
+                const frame = helpNavStack[helpNavStack.length - 1];
+                announce(frame.title + ", " + frame.items[frame.selectedIndex].title);
+            } else if (helpNavStack.length > 0) {
+                helpNavStack.pop();
+                needsRedraw = true;
+                if (helpNavStack.length > 0) {
+                    const frame = helpNavStack[helpNavStack.length - 1];
+                    announce(frame.title + ", " + frame.items[frame.selectedIndex].title);
+                } else {
+                    announce("Master FX Settings");
+                }
             } else if (inMasterPresetPicker) {
                 /* Exit preset picker, return to FX list */
                 exitMasterPresetPicker();
@@ -6909,6 +7014,42 @@ function drawMasterFxSettingsMenu() {
     drawFooter("Back: FX chain");
 }
 
+/* ========== Help Viewer Draw Functions ========== */
+
+function drawHelpList() {
+    const frame = helpNavStack[helpNavStack.length - 1];
+    drawHeader(truncateText(frame.title, 18));
+
+    drawMenuList({
+        items: frame.items,
+        selectedIndex: frame.selectedIndex,
+        getLabel: (item) => item.title,
+        getValue: () => "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true
+    });
+
+    const backTarget = helpNavStack.length > 1
+        ? helpNavStack[helpNavStack.length - 2].title
+        : "Settings";
+    drawFooter("Back: " + backTarget);
+}
+
+function drawHelpDetail() {
+    const frame = helpNavStack[helpNavStack.length - 1];
+    const item = frame.items[frame.selectedIndex];
+    drawHeader(truncateText(item.title, 18));
+
+    if (helpDetailScrollState) {
+        drawScrollableText({
+            state: helpDetailScrollState,
+            topY: 16,
+            bottomY: 43,
+            actionY: 52
+        });
+    }
+}
+
 /* ========== End Master Preset Draw Functions ========== */
 
 function drawScreenReaderSettingsMenu() {
@@ -6950,6 +7091,16 @@ function drawMasterFx() {
     /* Check if we're confirming delete */
     if (masterConfirmingDelete) {
         drawMasterConfirmDelete();
+        return;
+    }
+
+    /* Check if we're in help viewer */
+    if (helpDetailScrollState) {
+        drawHelpDetail();
+        return;
+    }
+    if (helpNavStack.length > 0) {
+        drawHelpList();
         return;
     }
 
