@@ -373,13 +373,14 @@ let pendingKnobDelta = 0;        // Accumulated delta for global slot knob adjus
 let pendingHierKnobIndex = -1;   // Which knob is being turned (-1 = none)
 let pendingHierKnobDelta = 0;    // Accumulated delta to apply
 
-/* Knob acceleration settings - match chain_host.c for consistency */
+/* Knob acceleration settings */
 const KNOB_ACCEL_MIN_MULT = 1;     // Multiplier for slow turns
-const KNOB_ACCEL_MAX_MULT = 8;     // Multiplier for fast turns (floats)
-const KNOB_ACCEL_MAX_MULT_INT = 3; // Multiplier for fast turns (ints - smaller to avoid jumps)
-const KNOB_ACCEL_SLOW_MS = 150;    // Slower than this = min multiplier
-const KNOB_ACCEL_FAST_MS = 25;     // Faster than this = max multiplier
-const KNOB_BASE_STEP_FLOAT = 0.005; // Base step for floats (acceleration multiplies this)
+const KNOB_ACCEL_MAX_MULT = 4;     // Multiplier for fast turns (floats)
+const KNOB_ACCEL_MAX_MULT_INT = 2; // Multiplier for fast turns (ints)
+const KNOB_ACCEL_ENUM_MULT = 1;    // Enums: always step by 1 (no acceleration)
+const KNOB_ACCEL_SLOW_MS = 250;    // Slower than this = min multiplier
+const KNOB_ACCEL_FAST_MS = 50;     // Faster than this = max multiplier
+const KNOB_BASE_STEP_FLOAT = 0.002; // Base step for floats (acceleration multiplies this)
 const KNOB_BASE_STEP_INT = 1;       // Base step for ints
 const TRIGGER_ENUM_TURN_THRESHOLD = 1;  // Positive detents required before firing trigger action
 const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new trigger gesture
@@ -1687,7 +1688,8 @@ function adjustParamValue(param, delta) {
     let val;
     if (param.type === "float") {
         val = parseFloat(param.value) || 0;
-        val += delta * 0.05;  // 5% step for floats
+        const step = (param.step > 0) ? param.step : KNOB_BASE_STEP_FLOAT;
+        val += delta * step;
     } else {
         val = parseInt(param.value) || 0;
         val += delta;
@@ -1697,7 +1699,7 @@ function adjustParamValue(param, delta) {
     val = Math.max(param.min, Math.min(param.max, val));
 
     if (param.type === "float") {
-        return val.toFixed(2);
+        return val.toFixed(4);
     }
     return String(Math.round(val));
 }

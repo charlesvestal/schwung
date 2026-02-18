@@ -105,10 +105,11 @@ typedef enum {
 
 /* Knob acceleration settings */
 #define KNOB_ACCEL_MIN_MULT 1    /* Multiplier for slow turns */
-#define KNOB_ACCEL_MAX_MULT 8    /* Multiplier for fast turns (floats) */
-#define KNOB_ACCEL_MAX_MULT_INT 3 /* Multiplier for fast turns (ints - smaller to avoid jumps) */
-#define KNOB_ACCEL_SLOW_MS 150   /* Slower than this = min multiplier */
-#define KNOB_ACCEL_FAST_MS 25    /* Faster than this = max multiplier */
+#define KNOB_ACCEL_MAX_MULT 4    /* Multiplier for fast turns (floats) */
+#define KNOB_ACCEL_MAX_MULT_INT 2 /* Multiplier for fast turns (ints) */
+#define KNOB_ACCEL_ENUM_MULT 1   /* Enums: always step by 1 (no acceleration) */
+#define KNOB_ACCEL_SLOW_MS 250   /* Slower than this = min multiplier */
+#define KNOB_ACCEL_FAST_MS 50    /* Faster than this = max multiplier */
 
 /* Knob mapping types */
 typedef enum {
@@ -3206,8 +3207,10 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
                     int accel = calc_knob_accel(i);
                     int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
 
-                    /* Cap acceleration for ints/enums to avoid jumping too far */
-                    if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                    /* Cap acceleration: enums never accelerate, ints limited */
+                    if (pinfo->type == KNOB_TYPE_ENUM) {
+                        accel = KNOB_ACCEL_ENUM_MULT;
+                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                         accel = KNOB_ACCEL_MAX_MULT_INT;
                     }
 
@@ -5763,8 +5766,15 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                         }
                     }
 
-                    /* Relative encoder: apply acceleration to base step */
+                    /* Cap acceleration: enums never accelerate, ints limited */
                     int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
+                    if (pinfo->type == KNOB_TYPE_ENUM) {
+                        accel = KNOB_ACCEL_ENUM_MULT;
+                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                        accel = KNOB_ACCEL_MAX_MULT_INT;
+                    }
+
+                    /* Relative encoder: apply acceleration to base step */
                     float base_step = (pinfo->step > 0) ? pinfo->step
                         : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
                     float delta = 0.0f;
@@ -6162,15 +6172,20 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         int accel = KNOB_ACCEL_MIN_MULT;
                         if (last > 0) {
                             uint64_t elapsed = now - last;
-                            if (elapsed < 50) accel = KNOB_ACCEL_MAX_MULT;
-                            else if (elapsed < 100) accel = 4;
-                            else if (elapsed < 200) accel = 2;
+                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
+                                accel = KNOB_ACCEL_MAX_MULT;
+                            } else if (elapsed < KNOB_ACCEL_SLOW_MS) {
+                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
+                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
+                            }
                         }
 
-                        /* Calculate step based on type, with acceleration */
+                        /* Cap acceleration: enums never accelerate, ints limited */
                         int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                        /* Cap acceleration for ints to avoid jumping too far */
-                        if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                        if (pinfo->type == KNOB_TYPE_ENUM) {
+                            accel = KNOB_ACCEL_ENUM_MULT;
+                        } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                             accel = KNOB_ACCEL_MAX_MULT_INT;
                         }
                         /* Use step from param metadata, or 0.01 default for shadow adjust */
