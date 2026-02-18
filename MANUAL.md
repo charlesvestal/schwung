@@ -127,39 +127,61 @@ Access via **Shift+Vol + Menu**. Contains four audio effect slots that process t
 
 ---
 
-## Routing Move Tracks Through Custom FX
+## Link Audio (Move 2.0+)
 
-On Move firmware 2.0.0+, you can route Move's own track audio through Move Everything's audio effects using Link Audio. This lets you add effects like CloudSeed reverb, TapeDelay, or NAM amp models to your native Move tracks.
+On Move firmware 2.0.0+, Link Audio lets you route Move's own track audio through Move Everything's effects. This gives you access to effects like CloudSeed reverb, TapeDelay, or NAM amp models on your native Move tracks — but it changes how audio is mixed. Understanding the tradeoffs helps you decide when to use it.
+
+### Link Audio On vs Off
+
+| | **Link Audio On** | **Link Audio Off** |
+|---|---|---|
+| **ME synths** | Processed through slot FX and Master FX | Processed through slot FX and Master FX |
+| **Native Move tracks** | Routed through ME slot FX per track | Stay on Move's native path |
+| **Move's native Master FX** | Bypassed — ME rebuilds the mix from per-track streams | Active — applied to Move tracks normally |
+| **ME Master FX** | Processes everything (Move tracks + ME synths) | Processes everything (Move post-native-FX + ME synths) |
+| **Play delay** | Brief delay when pressing Play (Link quantum sync) | No delay |
+
+### How It Works
+
+**Link Audio On:** Move streams each track's audio separately via the Link protocol. Move Everything intercepts these per-track streams, runs them through the corresponding slot's audio FX (combined with any ME synth in that slot), and reconstructs the final mix. Because ME is working with pre-mix audio, Move's native Master FX is bypassed entirely.
+
+```
+Move Track 1 → Slot 1 FX → ┐
+Move Track 2 → Slot 2 FX → ├→ ME Master FX → Output
+Move Track 3 → Slot 3 FX → │
+Move Track 4 → Slot 4 FX → ┘
+(+ ME synths mixed in per slot)
+```
+
+**Link Audio Off:** Move's audio goes through its normal path including native Master FX. ME synths are processed through their slot FX and mixed in. Everything combined runs through ME Master FX.
+
+```
+Move (all tracks + native Master FX) → ┐
+ME Slot 1 (synth → FX) ────────────────├→ ME Master FX → Output
+ME Slot 2 (synth → FX) ────────────────│
+...                                     ┘
+```
 
 ### Setup
 
 1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
 2. **Install or update Move Everything** — the installer enables Link Audio automatically.
-
-### How It Works
-
-When Link Audio is enabled, Move streams each track's audio separately. Move Everything intercepts these streams and routes them through the audio FX in the corresponding slot:
-
-```
-Move Track 1 audio → Slot 1 Audio FX 1 → Audio FX 2 → mixed output
-Move Track 2 audio → Slot 2 Audio FX 1 → Audio FX 2 → mixed output
-...
-```
-
-This means you can set up a slot with just audio effects (no synth) and it will process that Move track's audio.
+3. **Toggle routing**: In Master FX Settings, toggle **Link Audio** on or off. This controls whether Move's per-track audio is routed through ME's slot FX.
 
 ### Example: Adding Reverb to a Move Track
 
-1. Open Slot 1 (**Shift+Vol + Track 1**)
-2. Navigate to **Audio FX 1** and load CloudSeed (or any audio effect)
-3. Optionally load a second effect in **Audio FX 2**
-4. Play Move Track 1 — you'll hear it processed through your effects
+1. Make sure Link Audio is enabled (see Setup above)
+2. Open Slot 1 (**Shift+Vol + Track 1**)
+3. Navigate to **Audio FX 1** and load CloudSeed (or any audio effect)
+4. Optionally load a second effect in **Audio FX 2**
+5. Play Move Track 1 — you'll hear it processed through your effects
 
 ### Notes
 
 - Move must be on firmware **2.0.0 or later** for Link Audio support
 - Each Move track maps to the matching slot number (Track 1 → Slot 1, etc.)
 - A slot can have both a synth (triggered by MIDI) and audio FX (processing Move's track audio) simultaneously
+- When pressing Play, Move syncs to the Link quantum, which introduces a brief delay before playback starts
 
 ---
 
