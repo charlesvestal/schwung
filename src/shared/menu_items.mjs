@@ -212,7 +212,7 @@ export function isBack(item) {
     return item && item.type === MenuItemType.BACK;
 }
 
-function capitalize(s) {
+export function capitalize(s) {
     if (!s) return '';
     return s.charAt(0).toUpperCase() + s.slice(1);
 }

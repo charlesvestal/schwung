@@ -6,6 +6,8 @@
  * past all text.
  */
 
+import { drawArrowUp, drawArrowDown } from './menu_layout.mjs';
+
 const SCREEN_WIDTH = 128;
 const CHAR_WIDTH = 6;
 const LINE_HEIGHT = 10;
@@ -153,17 +155,3 @@ export function drawScrollableText({ state, topY, bottomY, actionY }) {
     }
 }
 
-/* Arrow drawing helpers */
-function drawArrowUp(x, y) {
-    set_pixel(x + 2, y, 1);
-    set_pixel(x + 1, y + 1, 1);
-    set_pixel(x + 3, y + 1, 1);
-    for (let i = 0; i < 5; i++) set_pixel(x + i, y + 2, 1);
-}
-
-function drawArrowDown(x, y) {
-    for (let i = 0; i < 5; i++) set_pixel(x + i, y, 1);
-    set_pixel(x + 1, y + 1, 1);
-    set_pixel(x + 3, y + 1, 1);
-    set_pixel(x + 2, y + 2, 1);
-}

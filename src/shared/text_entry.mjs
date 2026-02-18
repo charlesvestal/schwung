@@ -19,6 +19,7 @@
  */
 
 import { decodeDelta } from './input_filter.mjs';
+import { drawRect } from './menu_layout.mjs';
 
 /* Constants */
 const SCREEN_WIDTH = 128;
@@ -389,22 +390,12 @@ function drawSpecialButtons(charCount) {
             print(x + 2, specialY + 1, btn.label, 0);
         } else {
             /* Draw button outline */
-            draw_rect(x, specialY + 2, btn.width, btnHeight, 1);
+            drawRect(x, specialY + 2, btn.width, btnHeight, 1);
             print(x + 2, specialY + 1, btn.label, 1);
         }
 
         x += btn.width + 2;
     }
-}
-
-/**
- * Draw outlined rectangle
- */
-function draw_rect(x, y, w, h, color) {
-    fill_rect(x, y, w, 1, color);           /* Top */
-    fill_rect(x, y + h - 1, w, 1, color);   /* Bottom */
-    fill_rect(x, y, 1, h, color);           /* Left */
-    fill_rect(x + w - 1, y, 1, h, color);   /* Right */
 }
 
 /**
