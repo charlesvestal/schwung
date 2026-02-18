@@ -175,15 +175,3 @@ export function getMenuLabelScroller() {
     }
     return menuLabelScroller;
 }
-
-/**
- * Singleton scroller for menu values
- */
-let menuValueScroller = null;
-
-export function getMenuValueScroller() {
-    if (!menuValueScroller) {
-        menuValueScroller = createTextScroller();
-    }
-    return menuValueScroller;
-}

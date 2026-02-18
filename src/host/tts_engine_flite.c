@@ -395,6 +395,7 @@ void flite_tts_set_speed(float speed) {
 
     bool changed = (tts_speed != speed);
     unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS speed to %.2f (was %.2f)", speed, tts_speed);
+    if (!changed) return;
     tts_speed = speed;
 
     if (initialized && voice) {
@@ -402,8 +403,7 @@ void flite_tts_set_speed(float speed) {
     }
 
     flite_clear_buffer();
-
-    if (changed) flite_save_config();
+    tts_save_config();
 }
 
 void flite_tts_set_pitch(float pitch_hz) {
@@ -412,6 +412,7 @@ void flite_tts_set_pitch(float pitch_hz) {
 
     bool changed = (tts_pitch != pitch_hz);
     unified_log("tts_engine", LOG_LEVEL_INFO, "Setting TTS pitch to %.1f Hz (was %.1f Hz)", pitch_hz, tts_pitch);
+    if (!changed) return;
     tts_pitch = pitch_hz;
 
     if (initialized && voice) {
@@ -419,8 +420,7 @@ void flite_tts_set_pitch(float pitch_hz) {
     }
 
     flite_clear_buffer();
-
-    if (changed) flite_save_config();
+    tts_save_config();
 }
 
 static void flite_clear_buffer(void) {
