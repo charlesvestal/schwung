@@ -1383,6 +1383,24 @@ static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val
     return obj;
 }
 
+static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_val,
+                                              int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control) return JS_UNDEFINED;
+    int mode = 0, x = 0, y = 0, w = 0, h = 0;
+    if (argc >= 1) JS_ToInt32(ctx, &mode, argv[0]);
+    if (argc >= 2) JS_ToInt32(ctx, &x, argv[1]);
+    if (argc >= 3) JS_ToInt32(ctx, &y, argv[2]);
+    if (argc >= 4) JS_ToInt32(ctx, &w, argv[3]);
+    if (argc >= 5) JS_ToInt32(ctx, &h, argv[4]);
+    shadow_control->display_overlay = (uint8_t)mode;
+    shadow_control->overlay_rect_x = (uint8_t)x;
+    shadow_control->overlay_rect_y = (uint8_t)y;
+    shadow_control->overlay_rect_w = (uint8_t)w;
+    shadow_control->overlay_rect_h = (uint8_t)h;
+    return JS_UNDEFINED;
+}
+
 /* === End host functions === */
 
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -1470,6 +1488,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register overlay state functions (sampler/skipback state from shim) */
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_sequence", JS_NewCFunction(ctx, js_shadow_get_overlay_sequence, "shadow_get_overlay_sequence", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_state", JS_NewCFunction(ctx, js_shadow_get_overlay_state, "shadow_get_overlay_state", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_display_overlay", JS_NewCFunction(ctx, js_shadow_set_display_overlay, "shadow_set_display_overlay", 5));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
