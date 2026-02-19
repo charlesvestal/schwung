@@ -299,6 +299,17 @@
       "default_branch": "main",
       "asset_name": "keydetect-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "vocoder",
+      "name": "Vocoder",
+      "description": "Channel vocoder - uses mic/line-in as modulator to shape synth carrier",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-vocoder",
+      "default_branch": "main",
+      "asset_name": "vocoder-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
