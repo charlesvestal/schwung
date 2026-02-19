@@ -105,7 +105,12 @@ typedef struct shadow_control_t {
     volatile uint8_t display_mirror;     /* 0=off, 1=on (stream display to browser) */
     volatile uint8_t tts_engine;         /* 0=espeak-ng, 1=flite */
     volatile uint8_t pin_challenge_active; /* 0=none, 1=challenge detected, 2=submitted */
-    volatile uint8_t reserved[28];
+    volatile uint8_t display_overlay;     /* 0=off, 1=rect overlay on native, 2=fullscreen */
+    volatile uint8_t overlay_rect_x;      /* Overlay rect left edge (pixels, 0-127) */
+    volatile uint8_t overlay_rect_y;      /* Overlay rect top edge (pixels, 0-63) */
+    volatile uint8_t overlay_rect_w;      /* Overlay rect width (pixels) */
+    volatile uint8_t overlay_rect_h;      /* Overlay rect height (pixels) */
+    volatile uint8_t reserved[23];
 } shadow_control_t;
 
 /*

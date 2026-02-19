@@ -116,8 +116,7 @@ static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declar
 static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
 
 /* Display mode save/restore for overlay forcing */
-static uint8_t overlay_saved_display_mode = 0;
-static int overlay_display_mode_forced = 0;
+/* display_overlay in shadow_control_t replaces the old display_mode forcing */
 
 /* Forward declaration - defined after sampler variables */
 static void shadow_overlay_sync(void);
@@ -3660,7 +3659,7 @@ static volatile int skipback_buffer_full = 0;   /* Has wrapped at least once */
 static int skipback_saving = 0;                  /* Writer thread active (accessed atomically) */
 static pthread_t skipback_writer_thread;
 static volatile int skipback_overlay_timeout = 0;  /* Frames remaining for "saved" overlay */
-#define SKIPBACK_OVERLAY_FRAMES 114  /* ~2 seconds at 57Hz */
+#define SKIPBACK_OVERLAY_FRAMES 171  /* ~3 seconds at ~57Hz */
 
 /* Minimal 5x7 font for overlay text (ASCII 32-127) */
 static const uint8_t overlay_font_5x7[96][7] = {
@@ -4592,14 +4591,6 @@ static void skipback_trigger_save(void) {
 
     send_screenreader_announcement("Saving skipback");
 
-    /* Force shadow display mode so JS can render the skipback toast */
-    if (!shadow_display_mode && !overlay_display_mode_forced) {
-        overlay_saved_display_mode = shadow_display_mode;
-        overlay_display_mode_forced = 1;
-        shadow_display_mode = 1;
-        if (shadow_control) shadow_control->display_mode = 1;
-    }
-
     pthread_t t;
     if (pthread_create(&t, NULL, skipback_writer_func, NULL) != 0) {
         shadow_log("Skipback: failed to create writer thread");
@@ -4659,6 +4650,32 @@ static void overlay_draw_skipback(uint8_t *buf) {
     overlay_fill_rect(buf, box_x + box_w - 1, box_y, 1, box_h, 1);
 
     overlay_draw_string(buf, box_x + 8, box_y + 7, "Skipback saved!", 1);
+}
+
+/* Blit a rectangular region from src (shadow display) onto dst (native display).
+ * Both buffers are 128x64 1bpp (1024 bytes) in SSD1306 page format:
+ *   byte_index = page * 128 + x,  where page = y / 8
+ *   bit = y % 8  (LSB = top pixel in page)
+ * Pixels within the rect are replaced; pixels outside are untouched. */
+static void overlay_blit_rect(uint8_t *dst, const uint8_t *src,
+                               int rx, int ry, int rw, int rh) {
+    int x_end = rx + rw;
+    int y_end = ry + rh;
+    if (x_end > 128) x_end = 128;
+    if (y_end > 64) y_end = 64;
+    if (rx < 0) rx = 0;
+    if (ry < 0) ry = 0;
+
+    for (int y = ry; y < y_end; y++) {
+        int page = y / 8;
+        int bit  = y % 8;
+        uint8_t mask = (uint8_t)(1 << bit);
+
+        for (int x = rx; x < x_end; x++) {
+            int idx = page * 128 + x;
+            dst[idx] = (dst[idx] & ~mask) | (src[idx] & mask);
+        }
+    }
 }
 
 /* Sampler overlay drawing */
@@ -9520,14 +9537,8 @@ static void shadow_swap_display(void)
     const uint8_t *display_src = shadow_display_shm;
 
     if (skipback_overlay_timeout > 0) {
-        /* JS renders the skipback toast now; just decrement the timeout */
         skipback_overlay_timeout--;
         shadow_overlay_sync();
-        if (skipback_overlay_timeout <= 0 && overlay_display_mode_forced) {
-            shadow_display_mode = overlay_saved_display_mode;
-            if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
-            overlay_display_mode_forced = 0;
-        }
     }
 
     /* Write full display to DISPLAY_OFFSET (768) */
@@ -10747,18 +10758,27 @@ int ioctl(int fd, unsigned long request, ...)
         if (volume_capture_cooldown > 0) volume_capture_cooldown--;
 
         /* === OVERLAY COMPOSITING ===
-         * When any overlay is active, draw it onto Move's display BEFORE ioctl sends it */
+         * JS sets display_overlay in shadow_control_t:
+         *   0 = off (normal native display)
+         *   1 = rect overlay (blit rect from shadow display onto native)
+         *   2 = fullscreen (replace native display with shadow display)
+         * C-rendered overlays (shift+knob) still use the old path. */
         int shift_knob_overlay_on = (shift_knob_overlay_active && shift_knob_overlay_timeout > 0);
         int sampler_overlay_on = (sampler_overlay_active &&
                                   (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
         int sampler_fullscreen_on = (sampler_fullscreen_active &&
                                      (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
         int skipback_overlay_on = (skipback_overlay_timeout > 0);
-        if ((shift_knob_overlay_on || sampler_overlay_on || sampler_fullscreen_on || skipback_overlay_on) && slice_num >= 1 && slice_num <= 6) {
+
+        /* Read JS display_overlay request */
+        uint8_t disp_overlay = shadow_control ? shadow_control->display_overlay : 0;
+
+        int any_overlay = shift_knob_overlay_on || sampler_overlay_on ||
+                          sampler_fullscreen_on || skipback_overlay_on || disp_overlay;
+        if (any_overlay && slice_num >= 1 && slice_num <= 6) {
             static uint8_t overlay_display[1024];
             static int overlay_frame_ready = 0;
 
-            /* When slice 1 arrives, build the overlay display */
             if (slice_num == 1) {
                 /* Track MIDI clock staleness (once per frame) */
                 if (sampler_clock_active) {
@@ -10769,81 +10789,99 @@ int ioctl(int fd, unsigned long request, ...)
                     }
                 }
 
-                if (sampler_fullscreen_on) {
-                    /* Full-screen mode: update state for JS rendering */
+                /* Update VU / sync for sampler when active */
+                if (sampler_fullscreen_on || sampler_overlay_on) {
                     sampler_update_vu();
                     shadow_overlay_sync();
-                    /* JS renders the sampler overlay; C rendering is skipped */
-                    if (!shadow_overlay_shm) {
-                        overlay_draw_sampler(overlay_display);
-                        overlay_frame_ready = 1;
-                    }
-                } else {
-                    /* Normal overlay: reconstruct from captured slices */
+                }
+
+                if (disp_overlay == 2 && shadow_display_shm) {
+                    /* JS fullscreen: replace native display with shadow display */
+                    memcpy(overlay_display, shadow_display_shm, 1024);
+                    overlay_frame_ready = 1;
+                } else if (disp_overlay == 1 && shadow_display_shm && shadow_control) {
+                    /* JS rect overlay: reconstruct native, blit shadow rect on top */
                     int all_present = 1;
                     for (int i = 0; i < 6; i++) {
                         if (!slice_fresh[i]) all_present = 0;
                     }
-
                     if (all_present) {
                         for (int s = 0; s < 6; s++) {
                             int offset = s * 172;
                             int bytes = (s == 5) ? 164 : 172;
                             memcpy(overlay_display + offset, captured_slices[s], bytes);
                         }
-
-                        /* JS handles sampler/skipback overlays when SHM is mapped */
-                        if (sampler_overlay_on && !shadow_overlay_shm) {
-                            overlay_draw_sampler(overlay_display);
-                            overlay_frame_ready = 1;
-                        } else if (skipback_overlay_on && !shadow_overlay_shm) {
-                            overlay_draw_skipback(overlay_display);
-                            overlay_frame_ready = 1;
-                        } else if (shift_knob_overlay_on) {
-                            overlay_draw_shift_knob(overlay_display);
-                            overlay_frame_ready = 1;
+                        overlay_blit_rect(overlay_display, shadow_display_shm,
+                                          shadow_control->overlay_rect_x,
+                                          shadow_control->overlay_rect_y,
+                                          shadow_control->overlay_rect_w,
+                                          shadow_control->overlay_rect_h);
+                        overlay_frame_ready = 1;
+                    }
+                } else if (shift_knob_overlay_on) {
+                    /* C-rendered shift+knob overlay */
+                    int all_present = 1;
+                    for (int i = 0; i < 6; i++) {
+                        if (!slice_fresh[i]) all_present = 0;
+                    }
+                    if (all_present) {
+                        for (int s = 0; s < 6; s++) {
+                            int offset = s * 172;
+                            int bytes = (s == 5) ? 164 : 172;
+                            memcpy(overlay_display + offset, captured_slices[s], bytes);
+                        }
+                        overlay_draw_shift_knob(overlay_display);
+                        overlay_frame_ready = 1;
+                    }
+                } else if (!disp_overlay) {
+                    /* C fallback for sampler/skipback when SHM not mapped */
+                    if (sampler_fullscreen_on && !shadow_overlay_shm) {
+                        overlay_draw_sampler(overlay_display);
+                        overlay_frame_ready = 1;
+                    } else {
+                        int all_present = 1;
+                        for (int i = 0; i < 6; i++) {
+                            if (!slice_fresh[i]) all_present = 0;
+                        }
+                        if (all_present) {
+                            for (int s = 0; s < 6; s++) {
+                                int offset = s * 172;
+                                int bytes = (s == 5) ? 164 : 172;
+                                memcpy(overlay_display + offset, captured_slices[s], bytes);
+                            }
+                            if (sampler_overlay_on && !shadow_overlay_shm) {
+                                overlay_draw_sampler(overlay_display);
+                                overlay_frame_ready = 1;
+                            } else if (skipback_overlay_on && !shadow_overlay_shm) {
+                                overlay_draw_skipback(overlay_display);
+                                overlay_frame_ready = 1;
+                            }
                         }
                     }
                 }
 
-                /* Decrement timeouts once per frame (when slice 1 arrives) */
+                /* Decrement timeouts once per frame */
                 if (shift_knob_overlay_on) {
                     shift_knob_overlay_timeout--;
-                    if (shift_knob_overlay_timeout <= 0) {
+                    if (shift_knob_overlay_timeout <= 0)
                         shift_knob_overlay_active = 0;
-                    }
                 }
                 if ((sampler_overlay_on || sampler_fullscreen_on) && sampler_state == SAMPLER_IDLE) {
-                    /* "Sample saved!" overlay timeout */
                     sampler_overlay_timeout--;
                     if (sampler_overlay_timeout <= 0) {
                         sampler_overlay_active = 0;
                         sampler_fullscreen_active = 0;
-                        /* Restore display mode when sampler overlay finishes */
-                        if (overlay_display_mode_forced) {
-                            shadow_display_mode = overlay_saved_display_mode;
-                            if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
-                            overlay_display_mode_forced = 0;
-                        }
                         shadow_overlay_sync();
                     }
                 }
                 if (skipback_overlay_on) {
                     skipback_overlay_timeout--;
-                    if (skipback_overlay_timeout <= 0) {
-                        /* Restore display mode when skipback overlay finishes */
-                        if (overlay_display_mode_forced) {
-                            shadow_display_mode = overlay_saved_display_mode;
-                            if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
-                            overlay_display_mode_forced = 0;
-                        }
+                    if (skipback_overlay_timeout <= 0)
                         shadow_overlay_sync();
-                    }
                 }
 
-                if (!shift_knob_overlay_on && !sampler_overlay_on && !sampler_fullscreen_on && !skipback_overlay_on) {
+                if (!any_overlay)
                     overlay_frame_ready = 0;
-                }
             }
 
             /* Copy overlay-composited slice back to mailbox */
@@ -11257,11 +11295,6 @@ do_ioctl:
                             sampler_overlay_timeout = 0;
                             sampler_fullscreen_active = 1;
                             sampler_menu_cursor = SAMPLER_MENU_SOURCE;
-                            /* Force shadow display mode so JS overlay is visible */
-                            overlay_saved_display_mode = shadow_display_mode;
-                            overlay_display_mode_forced = 1;
-                            shadow_display_mode = 1;
-                            if (shadow_control) shadow_control->display_mode = 1;
                             shadow_overlay_sync();
                             shadow_log("Sampler: ARMED");
                             send_screenreader_announcement("Quantized Sampler");
@@ -11270,12 +11303,6 @@ do_ioctl:
                             sampler_state = SAMPLER_IDLE;
                             sampler_overlay_active = 0;
                             sampler_fullscreen_active = 0;
-                            /* Restore display mode */
-                            if (overlay_display_mode_forced) {
-                                shadow_display_mode = overlay_saved_display_mode;
-                                if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
-                                overlay_display_mode_forced = 0;
-                            }
                             shadow_overlay_sync();
                             shadow_log("Sampler: cancelled");
                             send_screenreader_announcement("Sampler cancelled");
@@ -11297,12 +11324,6 @@ do_ioctl:
                     sampler_state = SAMPLER_IDLE;
                     sampler_overlay_active = 0;
                     sampler_fullscreen_active = 0;
-                    /* Restore display mode */
-                    if (overlay_display_mode_forced) {
-                        shadow_display_mode = overlay_saved_display_mode;
-                        if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
-                        overlay_display_mode_forced = 0;
-                    }
                     shadow_overlay_sync();
                     shadow_log("Sampler: cancelled via Back");
                     send_screenreader_announcement("Sampler cancelled");

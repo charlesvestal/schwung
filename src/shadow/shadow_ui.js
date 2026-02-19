@@ -7704,7 +7704,26 @@ globalThis.tick = function() {
 
     /* Fullscreen sampler overlay takes over the entire display */
     if (overlayState && drawSamplerOverlay(overlayState)) {
-        return;  /* Sampler owns the screen, skip normal view dispatch */
+        if (typeof shadow_set_display_overlay === "function") {
+            shadow_set_display_overlay(2, 0, 0, 0, 0);
+        }
+        return;
+    }
+
+    /* Skipback toast - render to shadow display, request rect overlay on native */
+    if (overlayState && overlayState.type === OVERLAY_SKIPBACK &&
+        overlayState.skipbackActive && overlayState.skipbackOverlayTimeout > 0) {
+        clear_screen();
+        drawSkipbackToast();
+        if (typeof shadow_set_display_overlay === "function") {
+            shadow_set_display_overlay(1, 9, 22, 110, 20);
+        }
+        return;
+    }
+
+    /* No overlay active - clear overlay display mode */
+    if (typeof shadow_set_display_overlay === "function") {
+        shadow_set_display_overlay(0, 0, 0, 0, 0);
     }
 
     if (inScreenReaderSettingsMenu) {
@@ -7856,12 +7875,6 @@ globalThis.tick = function() {
     /* Draw asset warning overlay if active */
     if (assetWarningActive) {
         drawMessageOverlay(assetWarningTitle, assetWarningLines);
-    }
-
-    /* Draw skipback toast on top of normal view */
-    if (overlayState && overlayState.type === OVERLAY_SKIPBACK &&
-        overlayState.skipbackActive && overlayState.skipbackOverlayTimeout > 0) {
-        drawSkipbackToast();
     }
 
     /* Draw overlay on top of main view (uses shared overlay system) */
