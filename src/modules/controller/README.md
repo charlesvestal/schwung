@@ -30,8 +30,8 @@ Turn your Ableton Move into a customizable MIDI controller with 16 banks.
 3. Select **MIDI Controller**
 4. Exit anytime: **Shift + Vol + Jog Click**
 
-### From Standalone Move Anything
-1. Launch Move Anything: **Shift + Vol + Knob 8**
+### From Standalone Move Everything
+1. Launch Move Everything: **Shift + Vol + Knob 8**
 2. Select **MIDI Controller** from the menu
 3. Exit: **Shift + Jog Click**
 
@@ -57,3 +57,10 @@ Connect keyboards, synths, or other MIDI devices to the Move's USB-A port. The c
 - Bank 10 is traditionally used for drums (General MIDI convention)
 - Combine with a USB MIDI hub to control multiple devices
 - C notes are brighter - use octave shift to align with your scale
+
+## AI Assistance Disclaimer
+
+This module is part of Move Everything and was developed with AI assistance, including Claude, Codex, and other AI assistants.
+
+All architecture, implementation, and release decisions are reviewed by human maintainers.  
+AI-assisted content may still contain errors, so please validate functionality, security, and license compatibility before production use.
