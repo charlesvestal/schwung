@@ -135,6 +135,8 @@ Each Move Set maintains its own independent slot configurations. When you switch
 2. Set the corresponding slot's **Receive Ch** to match
 3. Play the Move track - its MIDI triggers the slot's synth
 
+**Tip:** To prevent the native Move synth from playing on top of your ME synth, load an empty Drum Rack or Sampler preset on the Move track. This silences the native sound while still sending MIDI to Move Everything.
+
 Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
 
 ---
