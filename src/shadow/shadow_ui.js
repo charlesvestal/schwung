@@ -7430,6 +7430,7 @@ globalThis.tick = function() {
                 if (!loaded) {
                     /* Clear the slot synchronously by unloading each component */
                     setSlotParam(i, "synth:module", "");
+                    setSlotParam(i, "midi_fx1:module", "");
                     setSlotParam(i, "fx1:module", "");
                     setSlotParam(i, "fx2:module", "");
                 }
