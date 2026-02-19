@@ -911,6 +911,7 @@ if [ "$skip_modules" = false ]; then
     echo "  - SF2: SoundFont files (.sf2)"
     echo "  - Dexed: Additional .syx patch banks (optional - defaults included)"
     echo "  - NAM: .nam model files (free models at tonehunt.org and tone3000.com)"
+    echo "  - REX Player: .rx2/.rex loop files (created with Propellerhead ReCycle)"
     echo
     printf "Would you like to copy assets to your Move now? (y/N): "
     read -r copy_assets </dev/tty
@@ -1050,6 +1051,40 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             fi
         else
             echo "  Directory not found: $syx_path"
+        fi
+    fi
+
+    # REX loops
+    echo
+    echo "REX Player: Enter the folder containing your .rx2/.rex loop files."
+    echo "Free loops available at: https://rhythm-lab.com/breakbeats/"
+    echo "(Press ENTER to skip)"
+    printf "Enter or drag folder path: "
+    read -r rex_path </dev/tty
+
+    if [ -n "$rex_path" ]; then
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        rex_path=$(echo "$rex_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
+        if [ -d "$rex_path" ]; then
+            rex_count=0
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/rex/loops" || true
+            for rex in "$rex_path"/*.rx2 "$rex_path"/*.RX2 "$rex_path"/*.rex "$rex_path"/*.REX "$rex_path"/*.rcy "$rex_path"/*.RCY; do
+                if [ -f "$rex" ]; then
+                    echo "  Copying $(basename "$rex")..."
+                    if scp_with_retry "$rex" "$username@$hostname:./move-anything/modules/sound_generators/rex/loops/"; then
+                        rex_count=$((rex_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
+                fi
+            done
+            if [ $rex_count -gt 0 ]; then
+                echo "  Copied $rex_count REX loop(s)"
+            else
+                echo "  No .rx2/.rex files found in $rex_path"
+            fi
+        else
+            echo "  Directory not found: $rex_path"
         fi
     fi
 
