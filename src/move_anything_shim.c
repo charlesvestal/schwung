@@ -3095,6 +3095,103 @@ static void shadow_ensure_dir(const char *dir) {
     }
 }
 
+/* Copy a single file from src_path to dst_path. Returns 1 on success. */
+static int shadow_copy_file(const char *src_path, const char *dst_path) {
+    FILE *sf = fopen(src_path, "r");
+    if (!sf) return 0;
+    fseek(sf, 0, SEEK_END);
+    long sz = ftell(sf);
+    fseek(sf, 0, SEEK_SET);
+    if (sz <= 0 || sz > 1024 * 1024) { fclose(sf); return 0; }
+    char *buf = malloc(sz);
+    if (!buf) { fclose(sf); return 0; }
+    size_t nr = fread(buf, 1, sz, sf);
+    fclose(sf);
+    if (nr == 0) { free(buf); return 0; }
+    FILE *df = fopen(dst_path, "w");
+    if (!df) { free(buf); return 0; }
+    size_t nw = fwrite(buf, 1, nr, df);
+    fclose(df);
+    free(buf);
+    if (nw != nr) { unlink(dst_path); return 0; }
+    return 1;
+}
+
+/* Batch migration: copy default slot_state/ to set_state/<UUID>/ for ALL
+ * existing sets. Called once at boot if .migrated marker doesn't exist.
+ * This ensures all existing sets inherit the user's current slot config
+ * when per-set state is first introduced. */
+static void shadow_batch_migrate_sets(void) {
+    char migrated_path[256];
+    snprintf(migrated_path, sizeof(migrated_path), SET_STATE_DIR "/.migrated");
+    struct stat mst;
+    if (stat(migrated_path, &mst) == 0) return;  /* Already migrated */
+
+    shadow_log("Batch migration: seeding per-set state for all existing sets");
+    shadow_ensure_dir(SET_STATE_DIR);
+
+    DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
+    if (!sets_dir) {
+        shadow_log("Batch migration: cannot open Sets dir, writing .migrated anyway");
+        goto write_marker;
+    }
+
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(sets_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+
+        /* Each entry under Sets/ is a UUID directory */
+        const char *uuid = entry->d_name;
+        char set_dir[512];
+        snprintf(set_dir, sizeof(set_dir), SET_STATE_DIR "/%s", uuid);
+
+        /* Skip if already has state files */
+        char test_path[768];
+        snprintf(test_path, sizeof(test_path), "%s/slot_0.json", set_dir);
+        struct stat tst;
+        if (stat(test_path, &tst) == 0) continue;
+
+        shadow_ensure_dir(set_dir);
+
+        /* Copy slot state files from default dir */
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+            char src[512], dst[512];
+            snprintf(src, sizeof(src), SLOT_STATE_DIR "/slot_%d.json", i);
+            snprintf(dst, sizeof(dst), "%s/slot_%d.json", set_dir, i);
+            shadow_copy_file(src, dst);
+
+            snprintf(src, sizeof(src), SLOT_STATE_DIR "/master_fx_%d.json", i);
+            snprintf(dst, sizeof(dst), "%s/master_fx_%d.json", set_dir, i);
+            shadow_copy_file(src, dst);
+        }
+
+        /* Also copy shadow_chain_config.json if it exists */
+        {
+            char src[512], dst[512];
+            snprintf(src, sizeof(src), "%s", SHADOW_CHAIN_CONFIG_PATH);
+            snprintf(dst, sizeof(dst), "%s/shadow_chain_config.json", set_dir);
+            shadow_copy_file(src, dst);
+        }
+
+        count++;
+    }
+    closedir(sets_dir);
+
+    char m[128];
+    snprintf(m, sizeof(m), "Batch migration: seeded %d sets from default slot_state", count);
+    shadow_log(m);
+
+write_marker:
+    {
+        FILE *mf = fopen(migrated_path, "w");
+        if (mf) {
+            fputs("1\n", mf);
+            fclose(mf);
+        }
+    }
+}
+
 /* Save shadow_chain_config.json to a specific directory.
  * Writes current slot volumes, channels, forward channels, names. */
 static void shadow_save_config_to_dir(const char *dir) {
@@ -3329,28 +3426,13 @@ static void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
                         fclose(csf);
                     }
                     /* Also copy the source's chain config to the new dir */
-                    char source_dir[512];
-                    snprintf(source_dir, sizeof(source_dir), SET_STATE_DIR "/%s", source_uuid);
-                    char src_cfg[512], dst_cfg[512];
-                    snprintf(src_cfg, sizeof(src_cfg), "%s/shadow_chain_config.json", source_dir);
-                    snprintf(dst_cfg, sizeof(dst_cfg), "%s/shadow_chain_config.json", incoming_dir);
-                    FILE *sf = fopen(src_cfg, "r");
-                    if (sf) {
-                        fseek(sf, 0, SEEK_END);
-                        long sz = ftell(sf);
-                        fseek(sf, 0, SEEK_SET);
-                        if (sz > 0 && sz < 8192) {
-                            char *buf = malloc(sz);
-                            if (buf) {
-                                size_t nr = fread(buf, 1, sz, sf);
-                                if (nr > 0) {
-                                    FILE *df = fopen(dst_cfg, "w");
-                                    if (df) { fwrite(buf, 1, nr, df); fclose(df); }
-                                }
-                                free(buf);
-                            }
-                        }
-                        fclose(sf);
+                    {
+                        char source_dir[512];
+                        snprintf(source_dir, sizeof(source_dir), SET_STATE_DIR "/%s", source_uuid);
+                        char src_cfg[512], dst_cfg[512];
+                        snprintf(src_cfg, sizeof(src_cfg), "%s/shadow_chain_config.json", source_dir);
+                        snprintf(dst_cfg, sizeof(dst_cfg), "%s/shadow_chain_config.json", incoming_dir);
+                        shadow_copy_file(src_cfg, dst_cfg);
                     }
                     char m[256];
                     snprintf(m, sizeof(m), "Set copy detected: source=%s -> new=%s", source_uuid, uuid);
@@ -5556,6 +5638,10 @@ static int shadow_inprocess_load_chain(void) {
             (void*)shadow_chain_set_external_fx_mode,
             (void*)shadow_chain_process_fx,
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
+
+    /* Run batch migration if this is the first boot with per-set state support.
+     * Copies default slot_state/ to set_state/<UUID>/ for all existing sets. */
+    shadow_batch_migrate_sets();
 
     /* Determine boot state directory: per-set if active_set.txt exists, else default */
     char boot_state_dir[512];

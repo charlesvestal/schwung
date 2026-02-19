@@ -2954,6 +2954,7 @@ function enterStorePicker(componentKey) {
         setView(VIEWS.STORE_PICKER_LOADING);
         storePickerLoadingTitle = 'Module Store';
         storePickerLoadingMessage = 'Loading catalog...';
+        announce("Loading catalog");
         needsRedraw = true;
 
         /* Fetch catalog (blocking) */
@@ -2965,10 +2966,11 @@ function enterStorePicker(componentKey) {
         storePickerModules = getModulesForCategory(storeCatalog, categoryId);
         setView(VIEWS.STORE_PICKER_LIST);
         needsRedraw = true;
-        /* Announce menu title + initial selection */
+        /* Announce menu title + initial selection with status */
         if (storePickerModules.length > 0) {
             const module = storePickerModules[0];
-            announce(`Module Store, ${module.name}`);
+            const statusLabel = getStoreModuleStatusLabel(module);
+            announce(`Module Store, ${module.name}` + (statusLabel ? `, ${statusLabel}` : ""));
         } else {
             announce("Module Store, No modules available");
         }
@@ -3008,18 +3010,28 @@ function fetchStoreCatalogSync() {
          * Use the standalone Module Store to update the core.
          * This avoids the complexity of updating while running. */
         setView(VIEWS.STORE_PICKER_LIST);
-        /* Announce menu title + initial selection */
+        /* Announce menu title + initial selection with status */
         if (storePickerModules.length > 0) {
             const module = storePickerModules[0];
-            announce(`Module Store, ${module.name}`);
+            const statusLabel = getStoreModuleStatusLabel(module);
+            announce(`Module Store, ${module.name}` + (statusLabel ? `, ${statusLabel}` : ""));
         } else {
             announce("Module Store, No modules available");
         }
     } else {
         storePickerMessage = result.error || 'Failed to load catalog';
         setView(VIEWS.STORE_PICKER_RESULT);
+        announce(storePickerMessage);
     }
     needsRedraw = true;
+}
+
+/* Get accessible status label for a store module */
+function getStoreModuleStatusLabel(mod) {
+    if (mod._isHostUpdate) return "Update available";
+    const status = getModuleStatus(mod, storeInstalledModules);
+    if (!status.installed) return "";
+    return status.hasUpdate ? "Update available" : "Installed";
 }
 
 /* Handle jog wheel in store picker list */
@@ -3032,7 +3044,8 @@ function handleStorePickerListJog(delta) {
     if (storePickerSelectedIndex < 0) storePickerSelectedIndex = 0;
     if (storePickerModules.length > 0) {
         const mod = storePickerModules[storePickerSelectedIndex];
-        announceMenuItem("Store", mod.name || mod.id || "Module");
+        const statusLabel = getStoreModuleStatusLabel(mod);
+        announceMenuItem("Store", (mod.name || mod.id || "Module") + (statusLabel ? ", " + statusLabel : ""));
     }
     needsRedraw = true;
 }
@@ -3054,8 +3067,23 @@ function handleStorePickerListSelect() {
     setView(VIEWS.STORE_PICKER_DETAIL);
     needsRedraw = true;
 
-    /* Announce menu title + initial selection (first action) */
-    announce(`${storePickerCurrentModule.name}, Install`);
+    /* Announce module details: name, version, status, description */
+    const mod = storePickerCurrentModule;
+    let detailAnnounce = mod.name;
+    if (mod._isHostUpdate) {
+        detailAnnounce += `, version ${storeHostVersion} to ${mod.latest_version}`;
+        detailAnnounce += ". Update Move Anything core framework. Restart required after update.";
+    } else {
+        const detailStatus = getModuleStatus(mod, storeInstalledModules);
+        if (detailStatus.installed && detailStatus.hasUpdate) {
+            detailAnnounce += `, version ${detailStatus.installedVersion} to ${mod.latest_version}`;
+        } else if (mod.latest_version) {
+            detailAnnounce += `, version ${mod.latest_version}`;
+        }
+        if (mod.description) detailAnnounce += ". " + mod.description;
+        if (mod.author) detailAnnounce += ". By " + mod.author;
+    }
+    announce(detailAnnounce);
 }
 
 /* Handle selection in store picker detail */
@@ -3073,6 +3101,7 @@ function handleStorePickerDetailSelect() {
     setView(VIEWS.STORE_PICKER_LOADING);
     storePickerLoadingTitle = 'Installing';
     storePickerLoadingMessage = mod.name;
+    announce("Installing " + mod.name);
 
     /* Show loading screen before blocking operation */
     drawStorePickerLoading();
@@ -3111,13 +3140,16 @@ function handleStorePickerDetailSelect() {
         if (mod.post_install) {
             storePostInstallLines = wrapText(mod.post_install, 18);
             setView(VIEWS.STORE_PICKER_POST_INSTALL);
+            announce("Install complete. " + mod.post_install);
         } else {
             storePickerMessage = `Installed ${mod.name}`;
             setView(VIEWS.STORE_PICKER_RESULT);
+            announce(storePickerMessage);
         }
     } else {
         storePickerMessage = result.error || 'Install failed';
         setView(VIEWS.STORE_PICKER_RESULT);
+        announce(storePickerMessage);
     }
 
     needsRedraw = true;
@@ -3171,6 +3203,7 @@ function handleStorePickerBack() {
             /* Dismiss post-install, go to result */
             storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
             setView(VIEWS.STORE_PICKER_RESULT);
+            announce(storePickerMessage);
             break;
         case VIEWS.STORE_PICKER_LOADING:
             /* Allow cancel during loading - return to where we came from */
@@ -5491,6 +5524,7 @@ function handleSelect() {
             /* Dismiss post-install, go to result */
             storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
             setView(VIEWS.STORE_PICKER_RESULT);
+            announce(storePickerMessage);
             needsRedraw = true;
             break;
         case VIEWS.CHAIN_SETTINGS:
@@ -6622,7 +6656,8 @@ function drawStorePickerDetail() {
             storeDetailScrollState = createScrollableText({
                 lines: descLines,
                 actionLabel: 'Update',
-                visibleLines: 3
+                visibleLines: 3,
+                onActionSelected: (label) => announce(label)
             });
             storeDetailScrollState.moduleId = mod.id;
         }
@@ -6676,7 +6711,8 @@ function drawStorePickerDetail() {
         storeDetailScrollState = createScrollableText({
             lines: descLines,
             actionLabel,
-            visibleLines: 3
+            visibleLines: 3,
+            onActionSelected: (label) => announce(label)
         });
         storeDetailScrollState.moduleId = mod.id;
     }
@@ -7378,8 +7414,8 @@ globalThis.tick = function() {
                 : SLOT_STATE_DIR_DEFAULT;
 
             /* 4. First visit to this set: seed its state directory.
-             *    Priority: (a) copy from duplicated source set, (b) copy from default slot_state/.
-             *    This handles migration: existing sets inherit the user's current config. */
+             *    Batch migration (shim boot) already copied default state to all existing sets.
+             *    Here we only handle: (a) duplicated sets, (b) newly created sets (start clean). */
             if (uuid && !host_file_exists(newDir + "/slot_0.json")) {
                 const copySourceUuid = host_read_file(newDir + "/copy_source.txt");
                 if (copySourceUuid && copySourceUuid.trim()) {
@@ -7395,25 +7431,11 @@ globalThis.tick = function() {
                         }
                     }
                 } else {
-                    const migrated = host_file_exists("/data/UserData/move-anything/set_state/.migrated");
-                    if (!migrated) {
-                        /* First-ever set switch: seed from default slot_state/ so users
-                         * keep their existing config when per-set state is introduced. */
-                        debugLog("SET_CHANGED: migration — seeding from default slot_state");
-                        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-                            const src = host_read_file(SLOT_STATE_DIR_DEFAULT + "/slot_" + i + ".json");
-                            host_write_file(newDir + "/slot_" + i + ".json", src || "{}\n");
-                            const mfx = host_read_file(SLOT_STATE_DIR_DEFAULT + "/master_fx_" + i + ".json");
-                            host_write_file(newDir + "/master_fx_" + i + ".json", mfx || "{}\n");
-                        }
-                        host_write_file("/data/UserData/move-anything/set_state/.migrated", "1\n");
-                    } else {
-                        /* Post-migration new set — start with empty slots */
-                        debugLog("SET_CHANGED: new set, starting with empty slots");
-                        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-                            host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
-                            host_write_file(newDir + "/master_fx_" + i + ".json", "{}\n");
-                        }
+                    /* New set created after migration — start with empty slots */
+                    debugLog("SET_CHANGED: new set, starting with empty slots");
+                    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                        host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
+                        host_write_file(newDir + "/master_fx_" + i + ".json", "{}\n");
                     }
                 }
             }
