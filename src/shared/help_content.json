@@ -89,6 +89,33 @@
           ]
         },
         {
+          "title": "Sets & Slots",
+          "lines": [
+            "Each Move Set keeps",
+            "its own slots.",
+            "",
+            "Switching Sets saves",
+            "your current slots",
+            "and loads the new",
+            "Set's slots.",
+            "",
+            "Changes are local to",
+            "the Set. Editing a",
+            "synth in one Set",
+            "won't affect others.",
+            "",
+            "Presets are separate:",
+            "loading a preset",
+            "copies it into the",
+            "Set. Tweaks stay in",
+            "the Set, not the",
+            "preset.",
+            "",
+            "New Sets start with",
+            "empty slots."
+          ]
+        },
+        {
           "title": "Master FX",
           "lines": [
             "Open: Shift+Vol+Menu",
