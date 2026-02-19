@@ -356,6 +356,7 @@ ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=acc
 use_local=false
 skip_modules=false
 skip_confirmation=false
+use_reenable=false
 enable_screen_reader=false
 disable_shadow_ui=false
 disable_standalone=false
@@ -363,6 +364,7 @@ screen_reader_runtime_available=true
 for arg in "$@"; do
   case "$arg" in
     local) use_local=true ;;
+    reenable) use_reenable=true ;;
     -skip-modules|--skip-modules) skip_modules=true ;;
     -skip-confirmation|--skip-confirmation) skip_confirmation=true ;;
     --enable-screen-reader) enable_screen_reader=true ;;
@@ -373,6 +375,7 @@ for arg in "$@"; do
       echo ""
       echo "Options:"
       echo "  local                    Use local build instead of GitHub release"
+      echo "  reenable                 Re-enable after firmware update (root partition only)"
       echo "  --skip-modules           Skip module installation prompt"
       echo "  --skip-confirmation      Skip unsupported/liability confirmation prompt"
       echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
@@ -492,6 +495,109 @@ if [ -n "$ssh_result" ]; then
 else
   qecho "✓ SSH connection OK"
   iecho "Installing Move Everything..."
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Re-enable mode: root partition operations only (after firmware update)
+# ═══════════════════════════════════════════════════════════════════════════════
+if [ "$use_reenable" = true ]; then
+  echo
+  echo "Re-enable mode: restoring root partition hooks..."
+  echo
+
+  # Verify data partition payload is intact
+  if ! $ssh_ableton "test -f /data/UserData/move-anything/move-anything-shim.so" 2>/dev/null; then
+    fail "Shim not found on data partition. Run a full install instead."
+  fi
+  if ! $ssh_ableton "test -f /data/UserData/move-anything/shim-entrypoint.sh" 2>/dev/null; then
+    fail "Entrypoint not found on data partition. Run a full install instead."
+  fi
+
+  # Clean stale ld.so.preload entries
+  ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
+
+  # Symlink shim to /usr/lib/ + setuid
+  ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim"
+  ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
+  ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing"
+
+  # Web shim symlink if present
+  if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+    qecho "Restoring web shim symlink..."
+    ssh_root_with_retry "rm -f /usr/lib/move-anything-web-shim.so && ln -s /data/UserData/move-anything/move-anything-web-shim.so /usr/lib/move-anything-web-shim.so" || echo "Warning: Failed to restore web shim"
+  fi
+
+  # TTS library symlinks if present
+  if $ssh_ableton "test -d /data/UserData/move-anything/lib" 2>/dev/null; then
+    qecho "Restoring TTS library symlinks..."
+    ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in *.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || echo "Warning: Failed to restore TTS libraries"
+  fi
+
+  # Ensure entrypoint is executable
+  ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+
+  # Backup original Move binary if MoveOriginal doesn't exist yet
+  if $ssh_root "test ! -f /opt/move/MoveOriginal" 2>/dev/null; then
+    ssh_root_with_retry "test -f /opt/move/Move" || fail "Missing /opt/move/Move"
+    ssh_root_with_retry "mv /opt/move/Move /opt/move/MoveOriginal" || fail "Failed to backup original Move"
+    ssh_ableton_with_retry "cp /opt/move/MoveOriginal ~/" || true
+  fi
+
+  # Install shimmed entrypoint
+  ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
+
+  # MoveWebService wrapper if web shim present
+  if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+    web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+    if [ -n "$web_svc_path" ]; then
+      if ! $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+        ssh_root_with_retry "mv $web_svc_path ${web_svc_path}Original" || echo "Warning: Failed to backup MoveWebService"
+      fi
+      if $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+        ssh_root_with_retry "cat > $web_svc_path << 'WEOF'
+#!/bin/sh
+export LD_LIBRARY_PATH=/data/UserData/move-anything/lib:\$LD_LIBRARY_PATH
+export LD_PRELOAD=/usr/lib/move-anything-web-shim.so
+exec ${web_svc_path}Original \"\$@\"
+WEOF
+chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
+      fi
+    fi
+  fi
+
+  # Stop and restart Move service
+  iecho "Restarting Move..."
+  ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
+  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+  ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
+  ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
+  ssh_ableton_with_retry "sleep 2" || true
+
+  # Restart MoveWebService if wrapped
+  if $ssh_root "test -f /etc/init.d/move-web-service" 2>/dev/null; then
+    web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+    if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+      ssh_root_with_retry "killall MoveWebServiceOriginal MoveWebService 2>/dev/null; sleep 1; /etc/init.d/move-web-service start >/dev/null 2>&1 || true" || true
+    fi
+  fi
+
+  ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to restart Move service"
+
+  # Verify shim is loaded
+  shim_ok=false
+  for i in $(seq 1 15); do
+    ssh_ableton_with_retry "sleep 1" || true
+    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so' && grep -q 'move-anything-shim.so' /proc/\$pid/maps" 2>/dev/null; then
+      shim_ok=true
+      break
+    fi
+  done
+  $shim_ok || fail "Move started without active shim (LD_PRELOAD check failed)"
+
+  iecho ""
+  iecho "Move Everything has been re-enabled!"
+  iecho "All your modules, patches, and settings are intact."
+  exit 0
 fi
 
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
@@ -647,7 +753,7 @@ if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
   echo "Cleaning up any stale backup files..."
   $ssh_root "rm -f /opt/move/Move.bak /opt/move/Move.shim /opt/move/Move.orig 2>/dev/null || true"
   root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || echo "0")
-  if [ "$root_avail" -lt 5120 ] 2>/dev/null; then
+  if [ "$root_avail" -lt 1024 ] 2>/dev/null; then
     fail "Root partition critically low (${root_avail}KB free). Cannot safely proceed."
   fi
   echo "Root partition now has ${root_avail}KB free"

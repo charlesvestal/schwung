@@ -11335,7 +11335,7 @@ do_ioctl:
                 }
             }
 
-            /* Note On/Off messages (CIN 0x09/0x08) for knob touches */
+            /* Note On/Off messages (CIN 0x09/0x08) for knob touches and step buttons */
             if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
                 int touched = (type == 0x90 && d2 > 0);
 
@@ -11374,6 +11374,19 @@ do_ioctl:
                     shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
                     link_sub_kill();
                     launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
+                }
+
+                /* Shift + Volume + Step 2 (note 17) = jump to Global Settings */
+                if (d1 == 17 && type == 0x90 && d2 > 0) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                        shadow_block_plain_volume_hide_until_release = 1;
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SETTINGS;
+                        /* Always ensure display shows shadow UI */
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui();  /* No-op if already running */
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
                 }
 
                 /* Pad note-on while sampler armed = trigger recording */
