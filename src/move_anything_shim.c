@@ -5579,9 +5579,19 @@ static int shadow_inprocess_load_chain(void) {
                     struct stat st;
                     if (stat(test_slot, &st) == 0 || stat(test_cfg, &st) == 0) {
                         snprintf(boot_state_dir, sizeof(boot_state_dir), "%s", set_dir);
-                        /* Store UUID so set-change detection works */
+                        /* Store UUID + name so set-change detection doesn't re-trigger */
                         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid),
                                  "%s", boot_uuid);
+                        /* Read set name from line 2 */
+                        char boot_name[128] = "";
+                        if (fgets(boot_name, sizeof(boot_name), asf)) {
+                            char *ne = boot_name + strlen(boot_name) - 1;
+                            while (ne > boot_name && (*ne == '\n' || *ne == '\r' || *ne == ' ')) *ne-- = '\0';
+                            if (boot_name[0]) {
+                                snprintf(sampler_current_set_name, sizeof(sampler_current_set_name),
+                                         "%s", boot_name);
+                            }
+                        }
                         char m[256];
                         snprintf(m, sizeof(m), "Boot: using per-set state dir %s", set_dir);
                         shadow_log(m);
