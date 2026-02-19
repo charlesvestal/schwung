@@ -4297,7 +4297,6 @@ static void sampler_start_recording(void) {
     sampler_overlay_active = 1;
     sampler_overlay_timeout = 0;  /* Stay active while recording */
     shadow_overlay_sync();
-    send_screenreader_announcement("Recording");
 
     char msg[256];
     if (bars > 0)
@@ -11272,8 +11271,16 @@ do_ioctl:
                             sampler_menu_cursor = SAMPLER_MENU_SOURCE;
                             shadow_overlay_sync();
                             shadow_log("Sampler: ARMED");
-                            send_screenreader_announcement("Quantized Sampler");
-                            sampler_announce_menu_item();
+                            {
+                                char sr_buf[256];
+                                const char *src = (sampler_source == SAMPLER_SOURCE_RESAMPLE)
+                                    ? "Resample" : "Move Input";
+                                snprintf(sr_buf, sizeof(sr_buf),
+                                    "Quantized Sampler. Source: %s. "
+                                    "Press play or a pad to begin recording.",
+                                    src);
+                                send_screenreader_announcement(sr_buf);
+                            }
                         } else if (sampler_state == SAMPLER_ARMED) {
                             sampler_state = SAMPLER_IDLE;
                             sampler_overlay_active = 0;
