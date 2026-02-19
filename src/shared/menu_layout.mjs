@@ -207,13 +207,14 @@ let overlayTimeout = 0;
  * Show the parameter overlay with a name and value
  * @param {string} name - Parameter name to display
  * @param {string} value - Value to display (e.g., "50%" or "3")
+ * @param {number} [durationTicks] - Optional custom duration in ticks
  */
-export function showOverlay(name, value) {
+export function showOverlay(name, value, durationTicks) {
     const sameContent = overlayActive && overlayName === name && overlayValue === value;
     overlayActive = true;
     overlayName = name;
     overlayValue = value;
-    overlayTimeout = OVERLAY_DURATION_TICKS;
+    overlayTimeout = durationTicks || OVERLAY_DURATION_TICKS;
     /* Announce only when content changes to avoid per-frame D-Bus spam. */
     if (!sameContent) {
         announceParameter(name, value);

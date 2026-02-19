@@ -182,6 +182,7 @@ let view = VIEWS.SLOTS;
 let needsRedraw = true;
 let refreshCounter = 0;
 let autosaveCounter = 0;
+let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
 
 /* FX display_name cache for change-based announcements (e.g. key detection) */
@@ -7265,14 +7266,19 @@ globalThis.init = function() {
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
 
-    /* Read active set UUID to point autosave at the correct per-set directory */
+    /* Read active set UUID to point autosave at the correct per-set directory.
+     * File format: line 1 = UUID, line 2 = set name */
     {
-        const uuid = host_read_file("/data/UserData/move-anything/active_set.txt");
-        if (uuid && uuid.trim()) {
-            const setDir = "/data/UserData/move-anything/set_state/" + uuid.trim();
-            if (host_file_exists(setDir + "/slot_0.json") || host_file_exists(setDir + "/shadow_chain_config.json")) {
-                activeSlotStateDir = setDir;
-                debugLog("Init: using per-set state dir " + setDir);
+        const raw = host_read_file("/data/UserData/move-anything/active_set.txt");
+        if (raw) {
+            const lines = raw.split("\n");
+            const uuid = lines[0] ? lines[0].trim() : "";
+            if (uuid) {
+                const setDir = "/data/UserData/move-anything/set_state/" + uuid;
+                if (host_file_exists(setDir + "/slot_0.json") || host_file_exists(setDir + "/shadow_chain_config.json")) {
+                    activeSlotStateDir = setDir;
+                    debugLog("Init: using per-set state dir " + setDir);
+                }
             }
         }
     }
@@ -7359,32 +7365,45 @@ globalThis.tick = function() {
             autosaveAllSlots();
             saveMasterFxChainConfig();
 
-            /* 2. Read new UUID from active_set.txt */
-            const uuid = host_read_file("/data/UserData/move-anything/active_set.txt");
+            /* 2. Read new UUID and set name from active_set.txt
+             *    Format: line 1 = UUID, line 2 = set name */
+            const activeSetRaw = host_read_file("/data/UserData/move-anything/active_set.txt");
+            const activeSetLines = activeSetRaw ? activeSetRaw.split("\n") : [];
+            const uuid = activeSetLines[0] ? activeSetLines[0].trim() : "";
+            const setName = activeSetLines[1] ? activeSetLines[1].trim() : "";
 
             /* 3. Determine new directory */
-            const newDir = uuid && uuid.trim()
-                ? "/data/UserData/move-anything/set_state/" + uuid.trim()
+            const newDir = uuid
+                ? "/data/UserData/move-anything/set_state/" + uuid
                 : SLOT_STATE_DIR_DEFAULT;
 
-            /* 4. Copy-on-first-use: if set dir has no slot files yet, copy from source */
-            if (uuid && uuid.trim() && !host_file_exists(newDir + "/slot_0.json")) {
-                /* Check if shim detected a copy source (written to copy_source.txt) */
-                let copySourceDir = activeSlotStateDir;  /* default: copy from outgoing set */
+            /* 4. First visit to this set: seed its state directory.
+             *    Priority: (a) copy from duplicated source set, (b) copy from default slot_state/.
+             *    This handles migration: existing sets inherit the user's current config. */
+            if (uuid && !host_file_exists(newDir + "/slot_0.json")) {
                 const copySourceUuid = host_read_file(newDir + "/copy_source.txt");
                 if (copySourceUuid && copySourceUuid.trim()) {
+                    /* Set was duplicated — copy from the source set */
                     const srcDir = "/data/UserData/move-anything/set_state/" + copySourceUuid.trim();
                     if (host_file_exists(srcDir + "/slot_0.json")) {
-                        copySourceDir = srcDir;
-                        debugLog("SET_CHANGED: copy source detected: " + copySourceUuid.trim());
+                        debugLog("SET_CHANGED: duplicated set, copying from " + srcDir);
+                        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                            const src = host_read_file(srcDir + "/slot_" + i + ".json");
+                            if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
+                            const mfx = host_read_file(srcDir + "/master_fx_" + i + ".json");
+                            if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
+                        }
                     }
-                }
-                debugLog("SET_CHANGED: copy-on-first-use from " + copySourceDir + " to " + newDir);
-                for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-                    const src = host_read_file(copySourceDir + "/slot_" + i + ".json");
-                    if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
-                    const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
-                    if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
+                } else {
+                    /* New/migrating set — seed from default slot_state/ so users keep
+                     * their existing config when per-set state is first introduced. */
+                    debugLog("SET_CHANGED: new set, seeding from default slot_state");
+                    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                        const src = host_read_file(SLOT_STATE_DIR_DEFAULT + "/slot_" + i + ".json");
+                        host_write_file(newDir + "/slot_" + i + ".json", src || "{}\n");
+                        const mfx = host_read_file(SLOT_STATE_DIR_DEFAULT + "/master_fx_" + i + ".json");
+                        host_write_file(newDir + "/master_fx_" + i + ".json", mfx || "{}\n");
+                    }
                 }
             }
 
@@ -7393,21 +7412,38 @@ globalThis.tick = function() {
             activeSlotStateDir = newDir;
             debugLog("SET_CHANGED: " + oldDir + " -> " + newDir);
 
-            /* 6. Reload all chain slots from new directory */
+            /* 6. Reload all chain slots from new directory.
+             *    IMPORTANT: We use setSlotParam (synchronous) to clear slots,
+             *    NOT shadow_request_patch which is a single-item queue and
+             *    can only process one slot per tick. */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 const path = activeSlotStateDir + "/slot_" + i + ".json";
+                let loaded = false;
                 if (host_file_exists(path)) {
                     const raw = host_read_file(path);
                     /* Only load if file has content beyond empty marker */
                     if (raw && raw.length > 10) {
                         setSlotParam(i, "load_file", path);
-                    } else {
-                        setSlotParam(i, "unload", "1");
+                        loaded = true;
                     }
-                } else {
-                    setSlotParam(i, "unload", "1");
+                }
+                if (!loaded) {
+                    /* Clear the slot synchronously by unloading each component */
+                    setSlotParam(i, "synth:module", "");
+                    setSlotParam(i, "fx1:module", "");
+                    setSlotParam(i, "fx2:module", "");
                 }
             }
+
+            /* Refresh UI state immediately so display reflects new slot contents */
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                lastSlotModuleSignatures[i] = "";  /* force refresh */
+                refreshSlotModuleSignature(i);
+            }
+
+            /* Suppress autosave briefly so async DSP settling doesn't
+             * overwrite the freshly-written slot files */
+            autosaveSuppressUntil = 150; /* ~5 seconds at 30fps */
 
             /* 7. Reload master FX modules from per-set state files */
             for (let mfxi = 0; mfxi < 4; mfxi++) {
@@ -7459,7 +7495,12 @@ globalThis.tick = function() {
             saveSlotsToConfig(slots);
             needsRedraw = true;
 
-            /* 9. Clear flag */
+            /* 9. Show overlay notification (~2 seconds) */
+            if (setName) {
+                showOverlay("Set Loaded", setName, 60);
+            }
+
+            /* 10. Clear flag */
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
             }
@@ -7496,12 +7537,17 @@ globalThis.tick = function() {
         refreshSlots();
     }
 
-    /* Periodic autosave */
-    autosaveCounter++;
-    if (autosaveCounter >= AUTOSAVE_INTERVAL) {
+    /* Periodic autosave (suppressed briefly after set change) */
+    if (autosaveSuppressUntil > 0) {
+        autosaveSuppressUntil--;
         autosaveCounter = 0;
-        autosaveAllSlots();
-        saveMasterFxChainConfig();
+    } else {
+        autosaveCounter++;
+        if (autosaveCounter >= AUTOSAVE_INTERVAL) {
+            autosaveCounter = 0;
+            autosaveAllSlots();
+            saveMasterFxChainConfig();
+        }
     }
     /* Refresh dirty cache frequently for responsive UI */
     if (refreshCounter % 15 === 0) {
