@@ -9992,11 +9992,56 @@ static void link_sub_kill(void)
     }
 }
 
+/* Kill any orphaned link-subscriber processes left from a previous shim instance.
+ * This happens when the shim exits (e.g. entering standalone mode) but the
+ * detached link-subscriber survives.  On restart, static state is reset so
+ * the shim doesn't know about the orphan and would spawn a duplicate. */
+static void link_sub_kill_orphans(void)
+{
+    DIR *dp = opendir("/proc");
+    if (!dp) return;
+    struct dirent *ent;
+    pid_t my_pid = getpid();
+    while ((ent = readdir(dp)) != NULL) {
+        /* Only look at numeric directory names (PIDs) */
+        int pid = atoi(ent->d_name);
+        if (pid <= 1) continue;
+        if (pid == my_pid) continue;
+        if (pid == link_sub_pid) continue;  /* Already tracked */
+
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        int rpid = 0;
+        char comm[64] = {0};
+        char state = 0;
+        int matched = fscanf(f, "%d %63s %c", &rpid, comm, &state);
+        fclose(f);
+        if (matched != 3) continue;
+        if (state == 'Z') continue;
+        if (!strstr(comm, "link-sub")) continue;
+
+        /* Found an orphaned link-subscriber */
+        unified_log("shim", LOG_LEVEL_INFO,
+                    "Killing orphaned link-subscriber pid=%d", pid);
+        kill(pid, SIGTERM);
+        /* Give it a moment, then force-kill if still alive */
+        usleep(50000);  /* 50ms */
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, WNOHANG);
+    }
+    closedir(dp);
+}
+
 static void launch_link_subscriber(void)
 {
     if (link_sub_started && link_sub_pid > 0) return;
     link_sub_reap();
     if (link_sub_started && link_sub_pid > 0) return;
+
+    /* Kill any orphans from a previous shim instance before spawning */
+    link_sub_kill_orphans();
 
     const char *sub_path = "/data/UserData/move-anything/link-subscriber";
     if (access(sub_path, X_OK) != 0) return;
@@ -10239,6 +10284,7 @@ void midi_monitor()
         {
             alreadyLaunched = 1;
             printf("Launching Move Anything!\n");
+            link_sub_kill();
             launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
         }
 
@@ -11330,6 +11376,7 @@ do_ioctl:
                 if (shadow_shift_held && shadow_volume_knob_touched && knob8touched && !alreadyLaunched && standalone_enabled) {
                     alreadyLaunched = 1;
                     shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
+                    link_sub_kill();
                     launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
                 }
 
