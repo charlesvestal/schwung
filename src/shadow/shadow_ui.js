@@ -699,6 +699,7 @@ let storePickerSelectedIndex = 0;      // Selection in list
 let storePickerCurrentModule = null;   // Module being viewed in detail
 let storePickerActionIndex = 0;        // Selected action in detail view (0=Install/Update, 1=Remove)
 let storePickerMessage = '';           // Result/error message
+let storePickerResultTitle = '';       // Result screen header (empty = 'Module Store')
 let storePickerLoadingTitle = '';      // Loading screen title
 let storePickerLoadingMessage = '';    // Loading screen message
 let storeFetchPending = false;         // True while catalog fetch in progress
@@ -876,7 +877,10 @@ function checkForUpdatesInBackground() {
 
     debugLog("checkForUpdatesInBackground: checking modules");
     const installed = scanInstalledModules();
-    const catalogResult = fetchCatalog(() => {});
+    const catalogResult = fetchCatalog((title, name, idx, total) => {
+        drawStatusOverlay('Checking', idx + '/' + total + ': ' + name);
+        host_flush_display();
+    });
     debugLog("checkForUpdatesInBackground: catalog success=" + catalogResult.success);
     if (catalogResult.success) {
         for (const mod of catalogResult.catalog.modules || []) {
@@ -911,16 +915,27 @@ function processAllUpdates() {
     let coreFrom = '';
     let coreTo = '';
     let moduleCount = 0;
+    const total = pendingUpdates.length;
 
-    for (const upd of pendingUpdates) {
+    for (let i = 0; i < pendingUpdates.length; i++) {
+        const upd = pendingUpdates[i];
+
+        /* Show progress overlay */
+        const progressLabel = (i + 1) + '/' + total + ': ' + (upd.name || upd.id || 'update');
+        drawStatusOverlay('Updating', progressLabel);
+        host_flush_display();
+
         if (upd._isHostUpdate) {
             const result = performCoreUpdate(upd);
             if (result.success) {
                 coreUpdated = true;
                 coreFrom = upd.from;
                 coreTo = upd.to;
+                /* Refresh host version so module min_host_version checks pass */
+                storeHostVersion = coreTo;
             } else {
                 /* Show error and stop */
+                storePickerResultTitle = 'Updates';
                 storePickerMessage = result.error || 'Core update failed';
                 view = VIEWS.STORE_PICKER_RESULT;
                 needsRedraw = true;
@@ -944,6 +959,7 @@ function processAllUpdates() {
         announce("Core updated to " + coreTo + ". Click to restart now, Back to restart later");
     } else if (moduleCount > 0) {
         storeInstalledModules = scanInstalledModules();
+        storePickerResultTitle = 'Updates';
         storePickerMessage = 'Updated ' + moduleCount + ' module' + (moduleCount > 1 ? 's' : '');
         view = VIEWS.STORE_PICKER_RESULT;
         needsRedraw = true;
@@ -2823,7 +2839,8 @@ function handleMasterFxSettingsAction(key) {
         checkForUpdatesInBackground();
         if (pendingUpdates.length === 0) {
             /* No updates found — show a brief message via store result view */
-            storePickerMessage = 'Everything is up to date';
+            storePickerResultTitle = 'Updates';
+            storePickerMessage = 'No updates available';
             view = VIEWS.STORE_PICKER_RESULT;
             needsRedraw = true;
         }
@@ -2897,10 +2914,11 @@ function handleGlobalSettingsAction(key) {
         announce("Checking for updates");
         checkForUpdatesInBackground();
         if (pendingUpdates.length === 0) {
-            storePickerMessage = 'Everything is up to date';
+            storePickerResultTitle = 'Updates';
+            storePickerMessage = 'No updates available';
             view = VIEWS.STORE_PICKER_RESULT;
             needsRedraw = true;
-            announce("Everything is up to date");
+            announce("No updates available");
         }
         /* If updates found, checkForUpdatesInBackground already announced */
         return;
@@ -3332,6 +3350,7 @@ function enterStorePicker(componentKey) {
     storePickerSelectedIndex = 0;
     storePickerCurrentModule = null;
     storePickerActionIndex = 0;
+    storePickerResultTitle = '';  /* Reset to default 'Module Store' */
     storePickerFromOvertake = (componentKey === 'overtake');
     storePickerFromMasterFx = (componentKey === 'master_fx');
 
@@ -6541,6 +6560,7 @@ function handleSelect() {
                         view = VIEWS.UPDATE_RESTART;
                         announce("Core updated to " + upd.to + ". Click to restart now, Back to restart later");
                     } else {
+                        storePickerResultTitle = 'Updates';
                         storePickerMessage = result.error || 'Core update failed';
                         view = VIEWS.STORE_PICKER_RESULT;
                         announce(storePickerMessage);
@@ -6552,6 +6572,7 @@ function handleSelect() {
                         pendingUpdateIndex = Math.max(0, pendingUpdates.length - 1);
                     }
                     storeInstalledModules = scanInstalledModules();
+                    storePickerResultTitle = 'Updates';
                     if (result.success) {
                         storePickerMessage = 'Updated ' + upd.name;
                     } else {
@@ -6564,7 +6585,10 @@ function handleSelect() {
             }
             break;
         case VIEWS.UPDATE_RESTART:
-            /* Restart now */
+            /* Show restarting screen, then restart */
+            clear_screen();
+            drawStatusOverlay('Restarting', 'Please wait...');
+            host_flush_display();
             if (typeof shadow_control_restart === "function") {
                 shadow_control_restart();
             }
@@ -7491,7 +7515,7 @@ function drawStorePickerLoading() {
 /* Draw store picker result screen */
 function drawStorePickerResult() {
     clear_screen();
-    drawHeader('Module Store');
+    drawHeader(storePickerResultTitle || 'Module Store');
 
     /* Message centered vertically */
     const msg = storePickerMessage || 'Done';

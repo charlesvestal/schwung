@@ -302,6 +302,13 @@ mkdir -p ./build/modules/midi_fx/arp/
     -o build/modules/midi_fx/arp/dsp.so \
     -Isrc
 
+# Build Velocity Scale MIDI FX
+mkdir -p ./build/modules/midi_fx/velocity_scale/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/midi_fx/velocity_scale/dsp/velocity_scale.c \
+    -o build/modules/midi_fx/velocity_scale/dsp.so \
+    -Isrc
+
 echo "Building Sound Generator plugins..."
 
 # Build Line In sound generator
