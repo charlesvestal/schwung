@@ -85,6 +85,14 @@ import {
     announceView
 } from '/data/UserData/move-anything/shared/screen_reader.mjs';
 
+import {
+    OVERLAY_NONE,
+    OVERLAY_SAMPLER,
+    OVERLAY_SKIPBACK,
+    drawSamplerOverlay,
+    drawSkipbackToast
+} from '/data/UserData/move-anything/shared/sampler_overlay.mjs';
+
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
 const TRACK_CC_END = MoveRow1;    // CC 43
@@ -184,6 +192,10 @@ let refreshCounter = 0;
 let autosaveCounter = 0;
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
+
+/* Overlay state (sampler/skipback from shim via SHM) */
+let lastOverlaySeq = 0;
+let overlayState = null;
 
 /* FX display_name cache for change-based announcements (e.g. key detection) */
 let fxDisplayNameCache = {};  /* key: "slot:component" -> last display_name string */
@@ -7673,11 +7685,28 @@ globalThis.tick = function() {
         }
     }
 
+    /* Poll overlay state from shim (sampler/skipback) */
+    if (typeof shadow_get_overlay_sequence === "function") {
+        const seq = shadow_get_overlay_sequence();
+        if (seq !== lastOverlaySeq) {
+            lastOverlaySeq = seq;
+            overlayState = shadow_get_overlay_state();
+        }
+    }
+
     redrawCounter++;
-    if (!needsRedraw && (redrawCounter % REDRAW_INTERVAL !== 0)) {
+    /* Force redraw every frame when overlay is active (for VU meter + flash) */
+    const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
+    if (!needsRedraw && !overlayActive && (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
     }
     needsRedraw = false;
+
+    /* Fullscreen sampler overlay takes over the entire display */
+    if (overlayState && drawSamplerOverlay(overlayState)) {
+        return;  /* Sampler owns the screen, skip normal view dispatch */
+    }
+
     if (inScreenReaderSettingsMenu) {
         clear_screen();
         drawScreenReaderSettingsMenu();
@@ -7827,6 +7856,12 @@ globalThis.tick = function() {
     /* Draw asset warning overlay if active */
     if (assetWarningActive) {
         drawMessageOverlay(assetWarningTitle, assetWarningLines);
+    }
+
+    /* Draw skipback toast on top of normal view */
+    if (overlayState && overlayState.type === OVERLAY_SKIPBACK &&
+        overlayState.skipbackActive && overlayState.skipbackOverlayTimeout > 0) {
+        drawSkipbackToast();
     }
 
     /* Draw overlay on top of main view (uses shared overlay system) */

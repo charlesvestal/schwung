@@ -28,6 +28,7 @@
 #define SHM_SHADOW_MIDI_OUT   "/move-shadow-midi-out"   /* MIDI output from shadow UI */
 #define SHM_SHADOW_MIDI_DSP   "/move-shadow-midi-dsp"   /* MIDI from shadow UI to DSP slots */
 #define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader announcements */
+#define SHM_SHADOW_OVERLAY  "/move-shadow-overlay"  /* Overlay state (sampler/skipback) */
 #define SHM_DISPLAY_LIVE    "/move-display-live"    /* Live display for remote viewer */
 
 /* ============================================================================
@@ -42,6 +43,7 @@
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
 #define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
+#define SHADOW_OVERLAY_BUFFER_SIZE 256        /* Overlay state buffer */
 
 /* ============================================================================
  * Slot Configuration
@@ -169,10 +171,56 @@ typedef struct shadow_screenreader_t {
     char text[SHADOW_SCREENREADER_TEXT_LEN];
 } shadow_screenreader_t;
 
+/* ============================================================================
+ * Overlay State (sampler/skipback, shared from shim to shadow UI)
+ * ============================================================================ */
+
+#define SHADOW_OVERLAY_NONE     0
+#define SHADOW_OVERLAY_SAMPLER  1
+#define SHADOW_OVERLAY_SKIPBACK 2
+
+#define SHADOW_SAMPLER_IDLE       0
+#define SHADOW_SAMPLER_ARMED      1
+#define SHADOW_SAMPLER_RECORDING  2
+
+/*
+ * Overlay state structure for communication from shim to shadow UI.
+ * The shim publishes sampler/skipback state here; JS reads it to render overlays.
+ * Must fit within SHADOW_OVERLAY_BUFFER_SIZE bytes.
+ */
+typedef struct shadow_overlay_state_t {
+    volatile uint32_t sequence;             /* Incremented on state change; JS polls cheaply */
+
+    volatile uint8_t  overlay_type;         /* NONE / SAMPLER / SKIPBACK */
+    volatile uint8_t  sampler_state;        /* IDLE / ARMED / RECORDING */
+    volatile uint8_t  sampler_source;       /* 0=Resample, 1=Move Input */
+    volatile uint8_t  sampler_cursor;       /* 0=Source menu, 1=Duration menu */
+
+    volatile uint8_t  sampler_fullscreen;   /* 1 = fullscreen takeover */
+    volatile uint8_t  skipback_active;      /* 1 = show toast */
+    volatile uint16_t sampler_duration_bars; /* 0=until stop, 1/2/4/8/16 */
+
+    volatile int16_t  sampler_vu_peak;      /* Raw peak (0-32767), updated at audio rate */
+    volatile uint16_t sampler_bars_completed;
+    volatile uint16_t sampler_target_bars;
+    volatile uint16_t sampler_overlay_timeout;  /* Frames left for "saved" msg */
+    volatile uint16_t skipback_overlay_timeout; /* Frames left for toast */
+
+    volatile uint32_t sampler_samples_written;
+    volatile uint32_t sampler_clock_count;
+    volatile uint32_t sampler_target_pulses;
+    volatile uint32_t sampler_fallback_blocks;
+    volatile uint32_t sampler_fallback_target;
+    volatile uint8_t  sampler_clock_received;
+
+    volatile uint8_t  reserved[256 - 45];   /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
+} shadow_overlay_state_t;
+
 /* Compile-time size checks */
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
+typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) == SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */

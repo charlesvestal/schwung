@@ -113,6 +113,14 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
+static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
+
+/* Display mode save/restore for overlay forcing */
+static uint8_t overlay_saved_display_mode = 0;
+static int overlay_display_mode_forced = 0;
+
+/* Forward declaration - defined after sampler variables */
+static void shadow_overlay_sync(void);
 static volatile float shadow_master_volume;  /* Defined later */
 
 /* Feature flags from config/features.json */
@@ -4287,6 +4295,7 @@ static void sampler_start_recording(void) {
     sampler_state = SAMPLER_RECORDING;
     sampler_overlay_active = 1;
     sampler_overlay_timeout = 0;  /* Stay active while recording */
+    shadow_overlay_sync();
     send_screenreader_announcement("Recording");
 
     char msg[256];
@@ -4341,6 +4350,7 @@ static void sampler_stop_recording(void) {
     /* Keep fullscreen active for "saved" message, then timeout */
     sampler_overlay_active = 1;
     sampler_overlay_timeout = SAMPLER_OVERLAY_DONE_FRAMES;
+    shadow_overlay_sync();
 }
 
 static void sampler_capture_audio(void) {
@@ -4561,6 +4571,7 @@ static void *skipback_writer_func(void *arg) {
     shadow_log(msg);
 
     skipback_overlay_timeout = SKIPBACK_OVERLAY_FRAMES;
+    shadow_overlay_sync();
     send_screenreader_announcement("Skipback saved");
     __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
     return NULL;
@@ -4580,6 +4591,14 @@ static void skipback_trigger_save(void) {
     __sync_synchronize();
 
     send_screenreader_announcement("Saving skipback");
+
+    /* Force shadow display mode so JS can render the skipback toast */
+    if (!shadow_display_mode && !overlay_display_mode_forced) {
+        overlay_saved_display_mode = shadow_display_mode;
+        overlay_display_mode_forced = 1;
+        shadow_display_mode = 1;
+        if (shadow_control) shadow_control->display_mode = 1;
+    }
 
     pthread_t t;
     if (pthread_create(&t, NULL, skipback_writer_func, NULL) != 0) {
@@ -4777,6 +4796,45 @@ static void overlay_draw_sampler(uint8_t *buf) {
         /* IDLE with fullscreen still showing = just finished */
         overlay_draw_string(buf, 16, 24, "Sample saved!", 1);
     }
+}
+
+/* Sync overlay state to shared memory for JS rendering */
+static void shadow_overlay_sync(void) {
+    if (!shadow_overlay_shm) return;
+
+    /* Determine overlay type */
+    if (sampler_fullscreen_active &&
+        (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0)) {
+        shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SAMPLER;
+    } else if (skipback_overlay_timeout > 0) {
+        shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SKIPBACK;
+    } else {
+        shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_NONE;
+    }
+
+    /* Sampler state */
+    shadow_overlay_shm->sampler_state = (uint8_t)sampler_state;
+    shadow_overlay_shm->sampler_source = (uint8_t)sampler_source;
+    shadow_overlay_shm->sampler_cursor = (uint8_t)sampler_menu_cursor;
+    shadow_overlay_shm->sampler_fullscreen = sampler_fullscreen_active ? 1 : 0;
+    shadow_overlay_shm->sampler_duration_bars = (uint16_t)sampler_duration_options[sampler_duration_index];
+    shadow_overlay_shm->sampler_vu_peak = sampler_vu_peak;
+    shadow_overlay_shm->sampler_bars_completed = (uint16_t)sampler_bars_completed;
+    shadow_overlay_shm->sampler_target_bars = (uint16_t)sampler_duration_options[sampler_duration_index];
+    shadow_overlay_shm->sampler_overlay_timeout = (uint16_t)sampler_overlay_timeout;
+    shadow_overlay_shm->sampler_samples_written = sampler_samples_written;
+    shadow_overlay_shm->sampler_clock_count = (uint32_t)sampler_clock_count;
+    shadow_overlay_shm->sampler_target_pulses = (uint32_t)sampler_target_pulses;
+    shadow_overlay_shm->sampler_fallback_blocks = (uint32_t)sampler_fallback_blocks;
+    shadow_overlay_shm->sampler_fallback_target = (uint32_t)sampler_fallback_target;
+    shadow_overlay_shm->sampler_clock_received = sampler_clock_received ? 1 : 0;
+
+    /* Skipback state */
+    shadow_overlay_shm->skipback_active = (skipback_overlay_timeout > 0) ? 1 : 0;
+    shadow_overlay_shm->skipback_overlay_timeout = (uint16_t)skipback_overlay_timeout;
+
+    /* Increment sequence to notify JS of state change */
+    shadow_overlay_shm->sequence++;
 }
 
 /* Load feature configuration from config/features.json */
@@ -7759,6 +7817,7 @@ static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
 static int shm_midi_dsp_fd = -1;
 static int shm_screenreader_fd = -1;
+static int shm_overlay_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -8037,6 +8096,23 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create screenreader shm\n");
     }
 
+    /* Create/open overlay state shared memory (sampler/skipback state for JS rendering) */
+    shm_overlay_fd = shm_open(SHM_SHADOW_OVERLAY, O_CREAT | O_RDWR, 0666);
+    if (shm_overlay_fd >= 0) {
+        ftruncate(shm_overlay_fd, SHADOW_OVERLAY_BUFFER_SIZE);
+        shadow_overlay_shm = (shadow_overlay_state_t *)mmap(NULL, SHADOW_OVERLAY_BUFFER_SIZE,
+                                                             PROT_READ | PROT_WRITE,
+                                                             MAP_SHARED, shm_overlay_fd, 0);
+        if (shadow_overlay_shm == MAP_FAILED) {
+            shadow_overlay_shm = NULL;
+            printf("Shadow: Failed to mmap overlay shm\n");
+        } else {
+            memset(shadow_overlay_shm, 0, SHADOW_OVERLAY_BUFFER_SIZE);
+        }
+    } else {
+        printf("Shadow: Failed to create overlay shm\n");
+    }
+
     /* TTS engine uses lazy initialization - will init on first speak */
     tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
     printf("Shadow: TTS engine configured (will init on first use)\n");
@@ -8048,9 +8124,9 @@ static void init_shadow_shm(void)
     memset(shadow_slot_capture, 0, sizeof(shadow_slot_capture));
 
     shadow_shm_initialized = 1;
-    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p)\n",
+    printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p, overlay=%p)\n",
            shadow_audio_shm, shadow_midi_shm, shadow_ui_midi_shm,
-           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_midi_dsp_shm, shadow_screenreader_shm);
+           shadow_display_shm, shadow_control, shadow_ui_state, shadow_param, shadow_midi_out_shm, shadow_midi_dsp_shm, shadow_screenreader_shm, shadow_overlay_shm);
 }
 
 #if SHADOW_DEBUG
@@ -9444,10 +9520,14 @@ static void shadow_swap_display(void)
     const uint8_t *display_src = shadow_display_shm;
 
     if (skipback_overlay_timeout > 0) {
-        memcpy(shadow_composited, shadow_display_shm, DISPLAY_BUFFER_SIZE);
-        overlay_draw_skipback(shadow_composited);
+        /* JS renders the skipback toast now; just decrement the timeout */
         skipback_overlay_timeout--;
-        display_src = shadow_composited;
+        shadow_overlay_sync();
+        if (skipback_overlay_timeout <= 0 && overlay_display_mode_forced) {
+            shadow_display_mode = overlay_saved_display_mode;
+            if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
+            overlay_display_mode_forced = 0;
+        }
     }
 
     /* Write full display to DISPLAY_OFFSET (768) */
@@ -10644,10 +10724,14 @@ int ioctl(int fd, unsigned long request, ...)
                 }
 
                 if (sampler_fullscreen_on) {
-                    /* Full-screen mode: render from scratch, skip slice capture */
+                    /* Full-screen mode: update state for JS rendering */
                     sampler_update_vu();
-                    overlay_draw_sampler(overlay_display);
-                    overlay_frame_ready = 1;
+                    shadow_overlay_sync();
+                    /* JS renders the sampler overlay; C rendering is skipped */
+                    if (!shadow_overlay_shm) {
+                        overlay_draw_sampler(overlay_display);
+                        overlay_frame_ready = 1;
+                    }
                 } else {
                     /* Normal overlay: reconstruct from captured slices */
                     int all_present = 1;
@@ -10662,13 +10746,17 @@ int ioctl(int fd, unsigned long request, ...)
                             memcpy(overlay_display + offset, captured_slices[s], bytes);
                         }
 
-                        if (sampler_overlay_on)
+                        /* JS handles sampler/skipback overlays when SHM is mapped */
+                        if (sampler_overlay_on && !shadow_overlay_shm) {
                             overlay_draw_sampler(overlay_display);
-                        else if (skipback_overlay_on)
+                            overlay_frame_ready = 1;
+                        } else if (skipback_overlay_on && !shadow_overlay_shm) {
                             overlay_draw_skipback(overlay_display);
-                        else if (shift_knob_overlay_on)
+                            overlay_frame_ready = 1;
+                        } else if (shift_knob_overlay_on) {
                             overlay_draw_shift_knob(overlay_display);
-                        overlay_frame_ready = 1;
+                            overlay_frame_ready = 1;
+                        }
                     }
                 }
 
@@ -10685,10 +10773,26 @@ int ioctl(int fd, unsigned long request, ...)
                     if (sampler_overlay_timeout <= 0) {
                         sampler_overlay_active = 0;
                         sampler_fullscreen_active = 0;
+                        /* Restore display mode when sampler overlay finishes */
+                        if (overlay_display_mode_forced) {
+                            shadow_display_mode = overlay_saved_display_mode;
+                            if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
+                            overlay_display_mode_forced = 0;
+                        }
+                        shadow_overlay_sync();
                     }
                 }
                 if (skipback_overlay_on) {
                     skipback_overlay_timeout--;
+                    if (skipback_overlay_timeout <= 0) {
+                        /* Restore display mode when skipback overlay finishes */
+                        if (overlay_display_mode_forced) {
+                            shadow_display_mode = overlay_saved_display_mode;
+                            if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
+                            overlay_display_mode_forced = 0;
+                        }
+                        shadow_overlay_sync();
+                    }
                 }
 
                 if (!shift_knob_overlay_on && !sampler_overlay_on && !sampler_fullscreen_on && !skipback_overlay_on) {
@@ -11107,6 +11211,12 @@ do_ioctl:
                             sampler_overlay_timeout = 0;
                             sampler_fullscreen_active = 1;
                             sampler_menu_cursor = SAMPLER_MENU_SOURCE;
+                            /* Force shadow display mode so JS overlay is visible */
+                            overlay_saved_display_mode = shadow_display_mode;
+                            overlay_display_mode_forced = 1;
+                            shadow_display_mode = 1;
+                            if (shadow_control) shadow_control->display_mode = 1;
+                            shadow_overlay_sync();
                             shadow_log("Sampler: ARMED");
                             send_screenreader_announcement("Quantized Sampler");
                             sampler_announce_menu_item();
@@ -11114,6 +11224,13 @@ do_ioctl:
                             sampler_state = SAMPLER_IDLE;
                             sampler_overlay_active = 0;
                             sampler_fullscreen_active = 0;
+                            /* Restore display mode */
+                            if (overlay_display_mode_forced) {
+                                shadow_display_mode = overlay_saved_display_mode;
+                                if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
+                                overlay_display_mode_forced = 0;
+                            }
+                            shadow_overlay_sync();
                             shadow_log("Sampler: cancelled");
                             send_screenreader_announcement("Sampler cancelled");
                         } else if (sampler_state == SAMPLER_RECORDING) {
@@ -11134,6 +11251,13 @@ do_ioctl:
                     sampler_state = SAMPLER_IDLE;
                     sampler_overlay_active = 0;
                     sampler_fullscreen_active = 0;
+                    /* Restore display mode */
+                    if (overlay_display_mode_forced) {
+                        shadow_display_mode = overlay_saved_display_mode;
+                        if (shadow_control) shadow_control->display_mode = overlay_saved_display_mode;
+                        overlay_display_mode_forced = 0;
+                    }
+                    shadow_overlay_sync();
                     shadow_log("Sampler: cancelled via Back");
                     send_screenreader_announcement("Sampler cancelled");
                     src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
@@ -11149,6 +11273,7 @@ do_ioctl:
                         if (sampler_menu_cursor > 0)
                             sampler_menu_cursor--;
                     }
+                    shadow_overlay_sync();
                     sampler_announce_menu_item();
                     /* Block jog from reaching Move/shadow UI */
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
@@ -11162,6 +11287,7 @@ do_ioctl:
                     } else if (sampler_menu_cursor == SAMPLER_MENU_DURATION) {
                         sampler_duration_index = (sampler_duration_index + 1) % SAMPLER_DURATION_COUNT;
                     }
+                    shadow_overlay_sync();
                     sampler_announce_menu_item();
                     src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
                 }
