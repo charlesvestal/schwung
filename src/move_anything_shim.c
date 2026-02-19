@@ -655,6 +655,8 @@ static void spi_trace_ioctl(unsigned long request, char *argp)
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/move-anything/modules/chain/dsp.so"
 #define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
 #define SLOT_STATE_DIR "/data/UserData/move-anything/slot_state"
+#define SET_STATE_DIR "/data/UserData/move-anything/set_state"
+#define ACTIVE_SET_PATH "/data/UserData/move-anything/active_set.txt"
 /* SHADOW_CHAIN_INSTANCES from shadow_constants.h */
 
 /* System volume - for now just a placeholder, we'll find the real source */
@@ -1163,6 +1165,9 @@ static void shadow_ui_state_update_slot(int slot);          /* forward decl */
 static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]);  /* forward decl */
 static void shadow_handle_set_loaded(const char *set_name, const char *uuid);  /* forward decl */
 static void shadow_poll_current_set(void);  /* forward decl */
+static int shim_run_command(const char *const argv[]);  /* forward decl */
+static int shadow_chain_parse_channel(int ch);  /* forward decl */
+static void shadow_ui_state_refresh(void);  /* forward decl */
 
 /* Apply mute/unmute to a shadow slot */
 static void shadow_apply_mute(int slot, int is_muted) {
@@ -3081,6 +3086,187 @@ static int sampler_settings_tempo = 0;       /* 0 = not yet read */
 /* Tempo detection: current Set's Song.abl (declared early for D-Bus handler access) */
 #define SAMPLER_SETS_DIR "/data/UserData/UserLibrary/Sets"
 
+/* Ensure a directory exists, creating it if needed (like mkdir -p) */
+static void shadow_ensure_dir(const char *dir) {
+    struct stat st;
+    if (stat(dir, &st) != 0) {
+        const char *mkdir_argv[] = { "mkdir", "-p", dir, NULL };
+        shim_run_command(mkdir_argv);
+    }
+}
+
+/* Save shadow_chain_config.json to a specific directory.
+ * Writes current slot volumes, channels, forward channels, names. */
+static void shadow_save_config_to_dir(const char *dir) {
+    shadow_ensure_dir(dir);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/shadow_chain_config.json", dir);
+
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "{\n  \"slots\": [\n");
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        int display_ch = shadow_chain_slots[i].channel < 0
+            ? 0 : shadow_chain_slots[i].channel + 1;
+        int display_fwd = shadow_chain_slots[i].forward_channel >= 0
+            ? shadow_chain_slots[i].forward_channel + 1
+            : shadow_chain_slots[i].forward_channel;
+        fprintf(f, "    {\"name\": \"%s\", \"channel\": %d, \"volume\": %.3f, \"forward_channel\": %d}%s\n",
+                shadow_chain_slots[i].patch_name, display_ch,
+                shadow_chain_slots[i].volume, display_fwd,
+                i < SHADOW_CHAIN_INSTANCES - 1 ? "," : "");
+    }
+    fprintf(f, "  ]\n}\n");
+    fclose(f);
+}
+
+/* Load shadow_chain_config.json from a specific directory into shadow_chain_slots[].
+ * Returns 1 if file was loaded, 0 if not found or error. */
+static int shadow_load_config_from_dir(const char *dir) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/shadow_chain_config.json", dir);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 4096) { fclose(f); return 0; }
+
+    char *json = malloc(size + 1);
+    if (!json) { fclose(f); return 0; }
+    size_t nread = fread(json, 1, size, f);
+    json[nread] = '\0';
+    fclose(f);
+
+    /* Parse slots - same logic as shadow_chain_load_config */
+    char *cursor = json;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        char *name_pos = strstr(cursor, "\"name\"");
+        if (!name_pos) break;
+        char *colon = strchr(name_pos, ':');
+        if (colon) {
+            char *q1 = strchr(colon, '"');
+            if (q1) {
+                q1++;
+                char *q2 = strchr(q1, '"');
+                if (q2 && q2 > q1) {
+                    size_t len = (size_t)(q2 - q1);
+                    if (len < sizeof(shadow_chain_slots[i].patch_name)) {
+                        memcpy(shadow_chain_slots[i].patch_name, q1, len);
+                        shadow_chain_slots[i].patch_name[len] = '\0';
+                    }
+                }
+            }
+        }
+        char *chan_pos = strstr(name_pos, "\"channel\"");
+        if (chan_pos) {
+            char *chan_colon = strchr(chan_pos, ':');
+            if (chan_colon) {
+                int ch = atoi(chan_colon + 1);
+                if (ch >= 0 && ch <= 16)
+                    shadow_chain_slots[i].channel = shadow_chain_parse_channel(ch);
+            }
+            cursor = chan_pos + 8;
+        } else {
+            cursor = name_pos + 6;
+        }
+        char *vol_pos = strstr(name_pos, "\"volume\"");
+        if (vol_pos) {
+            char *vol_colon = strchr(vol_pos, ':');
+            if (vol_colon) {
+                float vol = atof(vol_colon + 1);
+                if (vol >= 0.0f && vol <= 1.0f)
+                    shadow_chain_slots[i].volume = vol;
+            }
+        }
+        char *fwd_pos = strstr(name_pos, "\"forward_channel\"");
+        if (fwd_pos) {
+            char *fwd_colon = strchr(fwd_pos, ':');
+            if (fwd_colon) {
+                int ch = atoi(fwd_colon + 1);
+                if (ch >= -2 && ch <= 16)
+                    shadow_chain_slots[i].forward_channel = (ch > 0) ? ch - 1 : ch;
+            }
+        }
+    }
+    free(json);
+    shadow_ui_state_refresh();
+    return 1;
+}
+
+/* Find Song.abl size for a given UUID by scanning its subdirectory.
+ * Returns file size, or -1 if not found. */
+static long shadow_get_song_abl_size(const char *uuid) {
+    char uuid_path[512];
+    snprintf(uuid_path, sizeof(uuid_path), "%s/%s", SAMPLER_SETS_DIR, uuid);
+    DIR *d = opendir(uuid_path);
+    if (!d) return -1;
+    struct dirent *sub;
+    long result = -1;
+    while ((sub = readdir(d)) != NULL) {
+        if (sub->d_name[0] == '.') continue;
+        char song_path[768];
+        snprintf(song_path, sizeof(song_path), "%s/%s/Song.abl", uuid_path, sub->d_name);
+        struct stat st;
+        if (stat(song_path, &st) == 0 && S_ISREG(st.st_mode)) {
+            result = (long)st.st_size;
+            break;
+        }
+    }
+    closedir(d);
+    return result;
+}
+
+/* Detect if a new set is a copy of an existing tracked set.
+ * Compares Song.abl file sizes between the new set and all sets
+ * that have per-set state directories.
+ * Returns 1 and fills copy_source_uuid if a likely source is found. */
+static int shadow_detect_copy_source(const char *new_uuid, char *copy_source_uuid, int buf_len) {
+    copy_source_uuid[0] = '\0';
+
+    /* Get new set's Song.abl size */
+    long new_size = shadow_get_song_abl_size(new_uuid);
+    if (new_size <= 0) return 0;
+
+    /* Scan set_state/ for existing tracked sets */
+    DIR *state_dir = opendir(SET_STATE_DIR);
+    if (!state_dir) return 0;
+
+    int match_count = 0;
+    char best_uuid[64] = "";
+    struct dirent *entry;
+    while ((entry = readdir(state_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        if (strcmp(entry->d_name, new_uuid) == 0) continue;  /* Skip self */
+
+        /* Check if this tracked set's Song.abl matches */
+        long existing_size = shadow_get_song_abl_size(entry->d_name);
+        if (existing_size == new_size) {
+            snprintf(best_uuid, sizeof(best_uuid), "%s", entry->d_name);
+            match_count++;
+        }
+    }
+    closedir(state_dir);
+
+    if (match_count == 1) {
+        snprintf(copy_source_uuid, buf_len, "%s", best_uuid);
+        return 1;
+    }
+
+    /* Multiple matches (ambiguous) or no match — try current set as fallback */
+    if (match_count > 1 && sampler_current_set_uuid[0]) {
+        long current_size = shadow_get_song_abl_size(sampler_current_set_uuid);
+        if (current_size == new_size) {
+            snprintf(copy_source_uuid, buf_len, "%s", sampler_current_set_uuid);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 /* Handle a Set being loaded — called from Settings.json poll.
  * set_name: human-readable name (e.g. "My Song")
  * uuid: UUID directory name from Sets/<UUID>/<Name>/ path */
@@ -3093,9 +3279,93 @@ static void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
         return;
     }
 
+    /* Save outgoing set's config before switching */
+    if (uuid && sampler_current_set_uuid[0]) {
+        char outgoing_dir[512];
+        snprintf(outgoing_dir, sizeof(outgoing_dir), SET_STATE_DIR "/%s",
+                 sampler_current_set_uuid);
+        shadow_save_config_to_dir(outgoing_dir);
+        char m[256];
+        snprintf(m, sizeof(m), "Set switch: saved config to %s", outgoing_dir);
+        shadow_log(m);
+    }
+
     snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", set_name);
     if (uuid) {
         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
+    }
+
+    /* Write active set UUID + name to file for shadow UI and boot persistence.
+     * Format: line 1 = UUID, line 2 = set name */
+    if (uuid && uuid[0]) {
+        FILE *af = fopen(ACTIVE_SET_PATH, "w");
+        if (af) {
+            fputs(uuid, af);
+            fputc('\n', af);
+            fputs(set_name ? set_name : "", af);
+            fclose(af);
+        }
+        /* Ensure per-set state directory exists */
+        char incoming_dir[512];
+        snprintf(incoming_dir, sizeof(incoming_dir), SET_STATE_DIR "/%s", uuid);
+        shadow_ensure_dir(incoming_dir);
+
+        /* Detect if this is a copied set — write source UUID for JS copy-on-first-use */
+        char copy_source_path[512];
+        snprintf(copy_source_path, sizeof(copy_source_path), "%s/copy_source.txt", incoming_dir);
+        {
+            /* Only detect copy for sets that don't already have state */
+            char test_path[512];
+            snprintf(test_path, sizeof(test_path), "%s/slot_0.json", incoming_dir);
+            struct stat tst;
+            if (stat(test_path, &tst) != 0) {
+                /* No existing state — check if this is a copy */
+                char source_uuid[64];
+                if (shadow_detect_copy_source(uuid, source_uuid, sizeof(source_uuid))) {
+                    /* Write copy source UUID so JS can copy from the right dir */
+                    FILE *csf = fopen(copy_source_path, "w");
+                    if (csf) {
+                        fputs(source_uuid, csf);
+                        fclose(csf);
+                    }
+                    /* Also copy the source's chain config to the new dir */
+                    char source_dir[512];
+                    snprintf(source_dir, sizeof(source_dir), SET_STATE_DIR "/%s", source_uuid);
+                    char src_cfg[512], dst_cfg[512];
+                    snprintf(src_cfg, sizeof(src_cfg), "%s/shadow_chain_config.json", source_dir);
+                    snprintf(dst_cfg, sizeof(dst_cfg), "%s/shadow_chain_config.json", incoming_dir);
+                    FILE *sf = fopen(src_cfg, "r");
+                    if (sf) {
+                        fseek(sf, 0, SEEK_END);
+                        long sz = ftell(sf);
+                        fseek(sf, 0, SEEK_SET);
+                        if (sz > 0 && sz < 8192) {
+                            char *buf = malloc(sz);
+                            if (buf) {
+                                size_t nr = fread(buf, 1, sz, sf);
+                                if (nr > 0) {
+                                    FILE *df = fopen(dst_cfg, "w");
+                                    if (df) { fwrite(buf, 1, nr, df); fclose(df); }
+                                }
+                                free(buf);
+                            }
+                        }
+                        fclose(sf);
+                    }
+                    char m[256];
+                    snprintf(m, sizeof(m), "Set copy detected: source=%s -> new=%s", source_uuid, uuid);
+                    shadow_log(m);
+                }
+            }
+        }
+
+        /* Load incoming set's config (volumes, channels) */
+        shadow_load_config_from_dir(incoming_dir);
+    }
+
+    /* Signal shadow UI to save outgoing state and reload from new set dir */
+    if (shadow_control) {
+        shadow_control->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
     }
 
     sampler_set_tempo = sampler_read_set_tempo(set_name);
@@ -5287,7 +5557,47 @@ static int shadow_inprocess_load_chain(void) {
             (void*)shadow_chain_process_fx,
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
 
+    /* Determine boot state directory: per-set if active_set.txt exists, else default */
+    char boot_state_dir[512];
+    snprintf(boot_state_dir, sizeof(boot_state_dir), "%s", SLOT_STATE_DIR);
+    {
+        FILE *asf = fopen(ACTIVE_SET_PATH, "r");
+        if (asf) {
+            char boot_uuid[128] = "";
+            if (fgets(boot_uuid, sizeof(boot_uuid), asf)) {
+                /* Trim whitespace */
+                char *end = boot_uuid + strlen(boot_uuid) - 1;
+                while (end > boot_uuid && (*end == '\n' || *end == '\r' || *end == ' ')) *end-- = '\0';
+                if (boot_uuid[0]) {
+                    char set_dir[512];
+                    snprintf(set_dir, sizeof(set_dir), SET_STATE_DIR "/%s", boot_uuid);
+                    /* Only adopt per-set dir if it has actual state files */
+                    char test_slot[768];
+                    snprintf(test_slot, sizeof(test_slot), "%s/slot_0.json", set_dir);
+                    char test_cfg[768];
+                    snprintf(test_cfg, sizeof(test_cfg), "%s/shadow_chain_config.json", set_dir);
+                    struct stat st;
+                    if (stat(test_slot, &st) == 0 || stat(test_cfg, &st) == 0) {
+                        snprintf(boot_state_dir, sizeof(boot_state_dir), "%s", set_dir);
+                        /* Store UUID so set-change detection works */
+                        snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid),
+                                 "%s", boot_uuid);
+                        char m[256];
+                        snprintf(m, sizeof(m), "Boot: using per-set state dir %s", set_dir);
+                        shadow_log(m);
+                    }
+                }
+            }
+            fclose(asf);
+        }
+    }
+
     shadow_chain_load_config();
+    /* If per-set config was loaded, it overrides the global config values */
+    if (strcmp(boot_state_dir, SLOT_STATE_DIR) != 0) {
+        shadow_load_config_from_dir(boot_state_dir);
+    }
+
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_chain_slots[i].instance = shadow_plugin_v2->create_instance(
             SHADOW_CHAIN_MODULE_DIR, NULL);
@@ -5298,7 +5608,7 @@ static int shadow_inprocess_load_chain(void) {
         /* Check for autosave file first (preserves unsaved work across reboots) */
         char autosave_path[256];
         snprintf(autosave_path, sizeof(autosave_path),
-                 SLOT_STATE_DIR "/slot_%d.json", i);
+                 "%s/slot_%d.json", boot_state_dir, i);
         FILE *af = fopen(autosave_path, "r");
         if (af) {
             /* Check if autosave has content (not just "{}") */
@@ -5421,7 +5731,7 @@ static int shadow_inprocess_load_chain(void) {
     /* Load master FX slots from state files (written by shadow_ui.js autosave) */
     for (int mfx = 0; mfx < MASTER_FX_SLOTS; mfx++) {
         char mfx_path[256];
-        snprintf(mfx_path, sizeof(mfx_path), SLOT_STATE_DIR "/master_fx_%d.json", mfx);
+        snprintf(mfx_path, sizeof(mfx_path), "%s/master_fx_%d.json", boot_state_dir, mfx);
         FILE *mf = fopen(mfx_path, "r");
         if (!mf) continue;
 
@@ -5621,6 +5931,10 @@ static int shadow_inprocess_load_chain(void) {
         }
         if (stat(SLOT_STATE_DIR, &st) != 0) {
             const char *mkdir_argv[] = { "mkdir", "-p", SLOT_STATE_DIR, NULL };
+            shim_run_command(mkdir_argv);
+        }
+        if (stat(SET_STATE_DIR, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", SET_STATE_DIR, NULL };
             shim_run_command(mkdir_argv);
         }
     }
@@ -9854,7 +10168,7 @@ int ioctl(int fd, unsigned long request, ...)
     {
         static uint32_t set_poll_counter = 0;
         set_poll_counter++;
-        if (set_poll_counter >= 1000) {
+        if (set_poll_counter >= 500) {  /* ~1.5s at 44100/128 */
             set_poll_counter = 0;
             shadow_poll_current_set();
         }

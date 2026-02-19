@@ -63,6 +63,7 @@
 #define SHADOW_UI_FLAG_JUMP_TO_OVERTAKE 0x04  /* Jump to overtake module menu */
 #define SHADOW_UI_FLAG_SAVE_STATE 0x08        /* Save all state (shutdown imminent) */
 #define SHADOW_UI_FLAG_JUMP_TO_SCREENREADER 0x10 /* Jump to screen reader settings */
+#define SHADOW_UI_FLAG_SET_CHANGED 0x20           /* Set changed - reload slot state */
 
 /* ============================================================================
  * Special Values
