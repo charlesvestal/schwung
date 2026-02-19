@@ -312,6 +312,18 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "virus",
+      "name": "Virus",
+      "description": "Access Virus DSP56300 emulator via Gearmulator JIT engine",
+      "author": "dsp56300/gearmulator (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-virus",
+      "default_branch": "main",
+      "asset_name": "virus-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": "Virus ROM file (place in module's roms/ folder)"
+    },
+    {
       "id": "rex",
       "name": "REX Player",
       "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
