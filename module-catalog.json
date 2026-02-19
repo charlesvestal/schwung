@@ -310,6 +310,18 @@
       "default_branch": "main",
       "asset_name": "vocoder-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "rex",
+      "name": "REX Player",
+      "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-rex",
+      "default_branch": "main",
+      "asset_name": "rex-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": ".rx2/.rex loop files (created with Propellerhead ReCycle)"
     }
   ]
 }
