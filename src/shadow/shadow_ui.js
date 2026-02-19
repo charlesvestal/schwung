@@ -7395,14 +7395,25 @@ globalThis.tick = function() {
                         }
                     }
                 } else {
-                    /* New/migrating set — seed from default slot_state/ so users keep
-                     * their existing config when per-set state is first introduced. */
-                    debugLog("SET_CHANGED: new set, seeding from default slot_state");
-                    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-                        const src = host_read_file(SLOT_STATE_DIR_DEFAULT + "/slot_" + i + ".json");
-                        host_write_file(newDir + "/slot_" + i + ".json", src || "{}\n");
-                        const mfx = host_read_file(SLOT_STATE_DIR_DEFAULT + "/master_fx_" + i + ".json");
-                        host_write_file(newDir + "/master_fx_" + i + ".json", mfx || "{}\n");
+                    const migrated = host_file_exists("/data/UserData/move-anything/set_state/.migrated");
+                    if (!migrated) {
+                        /* First-ever set switch: seed from default slot_state/ so users
+                         * keep their existing config when per-set state is introduced. */
+                        debugLog("SET_CHANGED: migration — seeding from default slot_state");
+                        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                            const src = host_read_file(SLOT_STATE_DIR_DEFAULT + "/slot_" + i + ".json");
+                            host_write_file(newDir + "/slot_" + i + ".json", src || "{}\n");
+                            const mfx = host_read_file(SLOT_STATE_DIR_DEFAULT + "/master_fx_" + i + ".json");
+                            host_write_file(newDir + "/master_fx_" + i + ".json", mfx || "{}\n");
+                        }
+                        host_write_file("/data/UserData/move-anything/set_state/.migrated", "1\n");
+                    } else {
+                        /* Post-migration new set — start with empty slots */
+                        debugLog("SET_CHANGED: new set, starting with empty slots");
+                        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                            host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
+                            host_write_file(newDir + "/master_fx_" + i + ".json", "{}\n");
+                        }
                     }
                 }
             }
