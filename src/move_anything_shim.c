@@ -2707,6 +2707,9 @@ static void send_screenreader_announcement(const char *text)
         shadow_log("Screen reader: Queue full, dropping announcement");
     }
     pthread_mutex_unlock(&pending_announcements_mutex);
+
+    /* Flush immediately so announcements aren't delayed until next D-Bus activity */
+    shadow_inject_pending_announcements();
 }
 
 /* D-Bus filter function to receive signals */
@@ -4219,6 +4222,7 @@ static void sampler_start_recording(void) {
     sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
     if (!sampler_ring_buffer) {
         shadow_log("Sampler: failed to allocate ring buffer");
+        send_screenreader_announcement("Recording failed");
         return;
     }
 
@@ -4226,6 +4230,7 @@ static void sampler_start_recording(void) {
     sampler_wav_file = fopen(sampler_current_recording, "wb");
     if (!sampler_wav_file) {
         shadow_log("Sampler: failed to open WAV file");
+        send_screenreader_announcement("Recording failed");
         free(sampler_ring_buffer);
         sampler_ring_buffer = NULL;
         return;
@@ -4270,6 +4275,7 @@ static void sampler_start_recording(void) {
     /* Start writer thread */
     if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
         shadow_log("Sampler: failed to create writer thread");
+        send_screenreader_announcement("Recording failed");
         fclose(sampler_wav_file);
         sampler_wav_file = NULL;
         free(sampler_ring_buffer);
@@ -4487,6 +4493,7 @@ static void *skipback_writer_func(void *arg) {
     FILE *f = fopen(path, "wb");
     if (!f) {
         shadow_log("Skipback: failed to open WAV file");
+        send_screenreader_announcement("Skipback failed");
         __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return NULL;
     }
@@ -4509,6 +4516,7 @@ static void *skipback_writer_func(void *arg) {
 
     if (data_samples == 0) {
         shadow_log("Skipback: no audio captured yet");
+        send_screenreader_announcement("No audio captured yet");
         fclose(f);
         __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return NULL;
@@ -4560,13 +4568,23 @@ static void *skipback_writer_func(void *arg) {
 
 /* Skipback: trigger save from main thread */
 static void skipback_trigger_save(void) {
-    if (__atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE) || !skipback_buffer) return;
+    if (__atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE)) {
+        send_screenreader_announcement("Skipback already saving");
+        return;
+    }
+    if (!skipback_buffer) {
+        send_screenreader_announcement("Skipback not available");
+        return;
+    }
     __atomic_store_n(&skipback_saving, 1, __ATOMIC_RELEASE);
     __sync_synchronize();
+
+    send_screenreader_announcement("Saving skipback");
 
     pthread_t t;
     if (pthread_create(&t, NULL, skipback_writer_func, NULL) != 0) {
         shadow_log("Skipback: failed to create writer thread");
+        send_screenreader_announcement("Skipback failed");
         __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
         return;
     }
