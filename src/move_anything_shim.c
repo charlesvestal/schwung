@@ -3913,6 +3913,8 @@ static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
         snprintf(sr_buf, sizeof(sr_buf), "%s, %s", shift_knob_overlay_param, shift_knob_overlay_value);
         send_screenreader_announcement(sr_buf);
     }
+
+    shadow_overlay_sync();
 }
 
 /* ==========================================================================
@@ -4819,12 +4821,14 @@ static void overlay_draw_sampler(uint8_t *buf) {
 static void shadow_overlay_sync(void) {
     if (!shadow_overlay_shm) return;
 
-    /* Determine overlay type */
+    /* Determine overlay type (priority: sampler > skipback > shift+knob) */
     if (sampler_fullscreen_active &&
         (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0)) {
         shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SAMPLER;
     } else if (skipback_overlay_timeout > 0) {
         shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SKIPBACK;
+    } else if (shift_knob_overlay_active && shift_knob_overlay_timeout > 0) {
+        shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SHIFT_KNOB;
     } else {
         shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_NONE;
     }
@@ -4849,6 +4853,13 @@ static void shadow_overlay_sync(void) {
     /* Skipback state */
     shadow_overlay_shm->skipback_active = (skipback_overlay_timeout > 0) ? 1 : 0;
     shadow_overlay_shm->skipback_overlay_timeout = (uint16_t)skipback_overlay_timeout;
+
+    /* Shift+knob state */
+    shadow_overlay_shm->shift_knob_active = (shift_knob_overlay_active && shift_knob_overlay_timeout > 0) ? 1 : 0;
+    shadow_overlay_shm->shift_knob_timeout = (uint16_t)shift_knob_overlay_timeout;
+    memcpy((char *)shadow_overlay_shm->shift_knob_patch, shift_knob_overlay_patch, 64);
+    memcpy((char *)shadow_overlay_shm->shift_knob_param, shift_knob_overlay_param, 64);
+    memcpy((char *)shadow_overlay_shm->shift_knob_value, shift_knob_overlay_value, 32);
 
     /* Increment sequence to notify JS of state change */
     shadow_overlay_shm->sequence++;
@@ -10762,7 +10773,7 @@ int ioctl(int fd, unsigned long request, ...)
          *   0 = off (normal native display)
          *   1 = rect overlay (blit rect from shadow display onto native)
          *   2 = fullscreen (replace native display with shadow display)
-         * C-rendered overlays (shift+knob) still use the old path. */
+         * All overlays (sampler, skipback, shift+knob) are JS-rendered. */
         int shift_knob_overlay_on = (shift_knob_overlay_active && shift_knob_overlay_timeout > 0);
         int sampler_overlay_on = (sampler_overlay_active &&
                                   (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
@@ -10818,53 +10829,17 @@ int ioctl(int fd, unsigned long request, ...)
                                           shadow_control->overlay_rect_h);
                         overlay_frame_ready = 1;
                     }
-                } else if (shift_knob_overlay_on) {
-                    /* C-rendered shift+knob overlay */
-                    int all_present = 1;
-                    for (int i = 0; i < 6; i++) {
-                        if (!slice_fresh[i]) all_present = 0;
-                    }
-                    if (all_present) {
-                        for (int s = 0; s < 6; s++) {
-                            int offset = s * 172;
-                            int bytes = (s == 5) ? 164 : 172;
-                            memcpy(overlay_display + offset, captured_slices[s], bytes);
-                        }
-                        overlay_draw_shift_knob(overlay_display);
-                        overlay_frame_ready = 1;
-                    }
                 } else if (!disp_overlay) {
-                    /* C fallback for sampler/skipback when SHM not mapped */
-                    if (sampler_fullscreen_on && !shadow_overlay_shm) {
-                        overlay_draw_sampler(overlay_display);
-                        overlay_frame_ready = 1;
-                    } else {
-                        int all_present = 1;
-                        for (int i = 0; i < 6; i++) {
-                            if (!slice_fresh[i]) all_present = 0;
-                        }
-                        if (all_present) {
-                            for (int s = 0; s < 6; s++) {
-                                int offset = s * 172;
-                                int bytes = (s == 5) ? 164 : 172;
-                                memcpy(overlay_display + offset, captured_slices[s], bytes);
-                            }
-                            if (sampler_overlay_on && !shadow_overlay_shm) {
-                                overlay_draw_sampler(overlay_display);
-                                overlay_frame_ready = 1;
-                            } else if (skipback_overlay_on && !shadow_overlay_shm) {
-                                overlay_draw_skipback(overlay_display);
-                                overlay_frame_ready = 1;
-                            }
-                        }
-                    }
+                    overlay_frame_ready = 0;
                 }
 
                 /* Decrement timeouts once per frame */
                 if (shift_knob_overlay_on) {
                     shift_knob_overlay_timeout--;
-                    if (shift_knob_overlay_timeout <= 0)
+                    if (shift_knob_overlay_timeout <= 0) {
                         shift_knob_overlay_active = 0;
+                        shadow_overlay_sync();
+                    }
                 }
                 if ((sampler_overlay_on || sampler_fullscreen_on) && sampler_state == SAMPLER_IDLE) {
                     sampler_overlay_timeout--;
@@ -11472,6 +11447,7 @@ do_ioctl:
                     /* Only fade if this is the knob that's currently shown */
                     if (shift_knob_overlay_active && shift_knob_overlay_knob == knob_num) {
                         shift_knob_overlay_timeout = SHIFT_KNOB_OVERLAY_FRAMES;
+                        shadow_overlay_sync();
                     }
                 }
                 /* Block touch note from reaching Move */

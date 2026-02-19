@@ -1380,6 +1380,13 @@ static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val
     JS_SetPropertyStr(ctx, obj, "samplerFallbackTarget", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_target));
     JS_SetPropertyStr(ctx, obj, "samplerClockReceived", JS_NewInt32(ctx, shadow_overlay->sampler_clock_received));
 
+    /* Shift+knob overlay */
+    JS_SetPropertyStr(ctx, obj, "shiftKnobActive", JS_NewInt32(ctx, shadow_overlay->shift_knob_active));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobTimeout", JS_NewInt32(ctx, shadow_overlay->shift_knob_timeout));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobPatch", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_patch));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobParam", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_param));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobValue", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_value));
+
     return obj;
 }
 

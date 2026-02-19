@@ -16,6 +16,7 @@ const SAMPLE_RATE = 44100;
 export const OVERLAY_NONE = 0;
 export const OVERLAY_SAMPLER = 1;
 export const OVERLAY_SKIPBACK = 2;
+export const OVERLAY_SHIFT_KNOB = 3;
 
 /* Sampler state constants */
 const SAMPLER_IDLE = 0;
@@ -79,10 +80,10 @@ export function drawSamplerArmed(state) {
     }
 
     /* VU meter */
-    drawVuMeter(4, 48, 120, 5, state.samplerVuPeak);
+    drawVuMeter(4, 44, 120, 5, state.samplerVuPeak);
 
     /* Instructions */
-    print(0, 56, "Play/Note to record", 1);
+    print(0, 52, "Play/Note to record", 1);
 }
 
 /**
@@ -132,10 +133,10 @@ export function drawSamplerRecording(state) {
     }
 
     /* VU meter */
-    drawVuMeter(4, 48, 120, 5, state.samplerVuPeak);
+    drawVuMeter(4, 44, 120, 5, state.samplerVuPeak);
 
     /* Instructions */
-    print(0, 56, "Sample to stop", 1);
+    print(0, 52, "Sample to stop", 1);
 }
 
 /**
@@ -165,6 +166,34 @@ export function drawSkipbackToast() {
     const msg = "Skipback saved!";
     const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
     print(msgX, boxY + 7, msg, 1);
+}
+
+/**
+ * Shift+knob overlay box dimensions (exported for rect blit coordinates).
+ */
+export const SHIFT_KNOB_BOX_W = 110;
+export const SHIFT_KNOB_BOX_H = 38;
+export const SHIFT_KNOB_BOX_X = Math.floor((SCREEN_WIDTH - SHIFT_KNOB_BOX_W) / 2);
+export const SHIFT_KNOB_BOX_Y = Math.floor((SCREEN_HEIGHT - SHIFT_KNOB_BOX_H) / 2);
+
+/**
+ * Draw the shift+knob parameter overlay (patch, param name, value).
+ */
+export function drawShiftKnobOverlay(state) {
+    const bx = SHIFT_KNOB_BOX_X;
+    const by = SHIFT_KNOB_BOX_Y;
+    const bw = SHIFT_KNOB_BOX_W;
+    const bh = SHIFT_KNOB_BOX_H;
+
+    /* Background and border */
+    fill_rect(bx, by, bw, bh, 0);
+    drawRect(bx, by, bw, bh, 1);
+
+    /* Three lines of text */
+    const tx = bx + 4;
+    print(tx, by + 3, state.shiftKnobPatch || "", 1);
+    print(tx, by + 14, state.shiftKnobParam || "", 1);
+    print(tx, by + 25, state.shiftKnobValue || "", 1);
 }
 
 /**
