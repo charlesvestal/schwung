@@ -112,6 +112,23 @@ The last position in each slot contains settings:
 
 ---
 
+## Per-Set Slot State
+
+Each Move Set maintains its own independent slot configurations. When you switch Sets, Move Everything automatically saves the current slots and loads the slots associated with the new Set. A brief "Set Loaded" overlay confirms the switch.
+
+**How it works:**
+- Each Set remembers which synths, effects, and settings are loaded in each slot, plus Master FX
+- Switching Sets saves the outgoing state and restores the incoming Set's state
+- Changes you make to a slot are local to the current Set — they don't affect other Sets
+
+**Presets vs Set State:**
+- **Set State** is automatic: whatever you have loaded in your slots is saved when you leave a Set and restored when you come back
+- **Slot Presets** are separate: loading a preset copies it into the Set's state. If you tweak it afterwards, the tweaks live in the Set, not back in the preset. Loading the same preset in another Set gives you a fresh copy.
+
+**New Sets** start with empty slots. To carry a configuration to a new Set, save it as a slot preset first, then load it in the new Set.
+
+---
+
 ## Connecting to Move Tracks
 
 1. Set a Move track's **MIDI Out** to a channel (1-4)
@@ -334,8 +351,16 @@ The display updates at ~30 fps and shows whatever is on screen - both normal Mov
 
 ---
 
+## In-App Help
+
+Move Everything includes a built-in help viewer accessible from **Master FX > Settings > Help**. It contains a quick reference for shortcuts, slot setup, recording, and other features — readable directly on Move's display.
+
+If the screen reader is enabled, help pages are read aloud automatically when opened.
+
+---
+
 ## Tips
 
-- Slot settings persist between sessions
+- Each Move Set has its own slot configurations — switch Sets to switch between different instrument setups
 - Use **Standalone Mode** (**Shift+Vol + Knob 8**) to run modules without Move's audio, or to access the Module Store for updates
 - If something goes wrong, use Move's DFU restore mode to reset
