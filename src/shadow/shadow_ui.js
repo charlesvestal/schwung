@@ -89,8 +89,14 @@ import {
     OVERLAY_NONE,
     OVERLAY_SAMPLER,
     OVERLAY_SKIPBACK,
+    OVERLAY_SHIFT_KNOB,
     drawSamplerOverlay,
-    drawSkipbackToast
+    drawSkipbackToast,
+    drawShiftKnobOverlay,
+    SHIFT_KNOB_BOX_X,
+    SHIFT_KNOB_BOX_Y,
+    SHIFT_KNOB_BOX_W,
+    SHIFT_KNOB_BOX_H
 } from '/data/UserData/move-anything/shared/sampler_overlay.mjs';
 
 /* Track buttons - derive from imported constants */
@@ -7717,6 +7723,19 @@ globalThis.tick = function() {
         drawSkipbackToast();
         if (typeof shadow_set_display_overlay === "function") {
             shadow_set_display_overlay(1, 9, 22, 110, 20);
+        }
+        return;
+    }
+
+    /* Shift+knob overlay - render to shadow display, request rect overlay on native */
+    if (overlayState && overlayState.type === OVERLAY_SHIFT_KNOB &&
+        overlayState.shiftKnobActive && overlayState.shiftKnobTimeout > 0) {
+        clear_screen();
+        drawShiftKnobOverlay(overlayState);
+        if (typeof shadow_set_display_overlay === "function") {
+            shadow_set_display_overlay(1,
+                SHIFT_KNOB_BOX_X, SHIFT_KNOB_BOX_Y,
+                SHIFT_KNOB_BOX_W, SHIFT_KNOB_BOX_H);
         }
         return;
     }

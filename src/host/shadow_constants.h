@@ -180,9 +180,10 @@ typedef struct shadow_screenreader_t {
  * Overlay State (sampler/skipback, shared from shim to shadow UI)
  * ============================================================================ */
 
-#define SHADOW_OVERLAY_NONE     0
-#define SHADOW_OVERLAY_SAMPLER  1
-#define SHADOW_OVERLAY_SKIPBACK 2
+#define SHADOW_OVERLAY_NONE       0
+#define SHADOW_OVERLAY_SAMPLER    1
+#define SHADOW_OVERLAY_SKIPBACK   2
+#define SHADOW_OVERLAY_SHIFT_KNOB 3
 
 #define SHADOW_SAMPLER_IDLE       0
 #define SHADOW_SAMPLER_ARMED      1
@@ -218,7 +219,14 @@ typedef struct shadow_overlay_state_t {
     volatile uint32_t sampler_fallback_target;
     volatile uint8_t  sampler_clock_received;
 
-    volatile uint8_t  reserved[256 - 45];   /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
+    /* Shift+knob overlay */
+    volatile uint8_t  shift_knob_active;        /* 1 = showing shift+knob overlay */
+    volatile uint16_t shift_knob_timeout;       /* Frames remaining */
+    char shift_knob_patch[64];                  /* Patch/slot name */
+    char shift_knob_param[64];                  /* Parameter name */
+    char shift_knob_value[32];                  /* Parameter value */
+
+    volatile uint8_t  reserved[256 - 208];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
 } shadow_overlay_state_t;
 
 /* Compile-time size checks */
