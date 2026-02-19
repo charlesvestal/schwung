@@ -36,6 +36,7 @@ static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
 static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
+static shadow_overlay_state_t *shadow_overlay = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -108,6 +109,17 @@ static int open_shadow_shm(void) {
             shadow_screenreader = NULL;
         } else {
             unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow screen reader shm mapped: %p", shadow_screenreader);
+        }
+    }
+
+    fd = shm_open(SHM_SHADOW_OVERLAY, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_overlay = (shadow_overlay_state_t *)mmap(NULL, SHADOW_OVERLAY_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_overlay == MAP_FAILED) {
+            shadow_overlay = NULL;
+        } else {
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow overlay shm mapped: %p", shadow_overlay);
         }
     }
 
@@ -1331,6 +1343,46 @@ static JSValue js_overlay_knobs_get_mode(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, shadow_control->overlay_knobs_mode);
 }
 
+/* === Overlay state bridge functions === */
+
+static JSValue js_shadow_get_overlay_sequence(JSContext *ctx, JSValueConst this_val,
+                                               int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_overlay) return JS_NewUint32(ctx, 0);
+    return JS_NewUint32(ctx, shadow_overlay->sequence);
+}
+
+static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    JSValue obj = JS_NewObject(ctx);
+    if (!shadow_overlay) {
+        JS_SetPropertyStr(ctx, obj, "type", JS_NewInt32(ctx, 0));
+        return obj;
+    }
+
+    JS_SetPropertyStr(ctx, obj, "type", JS_NewInt32(ctx, shadow_overlay->overlay_type));
+    JS_SetPropertyStr(ctx, obj, "samplerState", JS_NewInt32(ctx, shadow_overlay->sampler_state));
+    JS_SetPropertyStr(ctx, obj, "samplerSource", JS_NewInt32(ctx, shadow_overlay->sampler_source));
+    JS_SetPropertyStr(ctx, obj, "samplerCursor", JS_NewInt32(ctx, shadow_overlay->sampler_cursor));
+    JS_SetPropertyStr(ctx, obj, "samplerFullscreen", JS_NewInt32(ctx, shadow_overlay->sampler_fullscreen));
+    JS_SetPropertyStr(ctx, obj, "skipbackActive", JS_NewInt32(ctx, shadow_overlay->skipback_active));
+    JS_SetPropertyStr(ctx, obj, "samplerDurationBars", JS_NewInt32(ctx, shadow_overlay->sampler_duration_bars));
+    JS_SetPropertyStr(ctx, obj, "samplerVuPeak", JS_NewInt32(ctx, shadow_overlay->sampler_vu_peak));
+    JS_SetPropertyStr(ctx, obj, "samplerBarsCompleted", JS_NewInt32(ctx, shadow_overlay->sampler_bars_completed));
+    JS_SetPropertyStr(ctx, obj, "samplerTargetBars", JS_NewInt32(ctx, shadow_overlay->sampler_target_bars));
+    JS_SetPropertyStr(ctx, obj, "samplerOverlayTimeout", JS_NewInt32(ctx, shadow_overlay->sampler_overlay_timeout));
+    JS_SetPropertyStr(ctx, obj, "skipbackOverlayTimeout", JS_NewInt32(ctx, shadow_overlay->skipback_overlay_timeout));
+    JS_SetPropertyStr(ctx, obj, "samplerSamplesWritten", JS_NewUint32(ctx, shadow_overlay->sampler_samples_written));
+    JS_SetPropertyStr(ctx, obj, "samplerClockCount", JS_NewUint32(ctx, shadow_overlay->sampler_clock_count));
+    JS_SetPropertyStr(ctx, obj, "samplerTargetPulses", JS_NewUint32(ctx, shadow_overlay->sampler_target_pulses));
+    JS_SetPropertyStr(ctx, obj, "samplerFallbackBlocks", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_blocks));
+    JS_SetPropertyStr(ctx, obj, "samplerFallbackTarget", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_target));
+    JS_SetPropertyStr(ctx, obj, "samplerClockReceived", JS_NewInt32(ctx, shadow_overlay->sampler_clock_received));
+
+    return obj;
+}
+
 /* === End host functions === */
 
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -1414,6 +1466,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register display mirror functions */
     JS_SetPropertyStr(ctx, global_obj, "display_mirror_set", JS_NewCFunction(ctx, js_display_mirror_set, "display_mirror_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "display_mirror_get", JS_NewCFunction(ctx, js_display_mirror_get, "display_mirror_get", 0));
+
+    /* Register overlay state functions (sampler/skipback state from shim) */
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_sequence", JS_NewCFunction(ctx, js_shadow_get_overlay_sequence, "shadow_get_overlay_sequence", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_state", JS_NewCFunction(ctx, js_shadow_get_overlay_state, "shadow_get_overlay_state", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
