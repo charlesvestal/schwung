@@ -286,18 +286,23 @@ Modules expose parameters to the Shadow UI via `ui_hierarchy` in their get_param
 
 ### Chain Parameters
 
-Modules expose knob mappings via `chain_params` in their get_param response:
+Modules expose parameter metadata via `chain_params` in their get_param response. This is **required** for the Shadow UI to properly edit parameters (with correct step sizes, ranges, and enum options):
 
-```json
-{
-  "chain_params": [
-    { "label": "Cutoff", "cc": 71, "value": 64 },
-    { "label": "Resonance", "cc": 72, "value": 32 }
-  ]
+```c
+if (strcmp(key, "chain_params") == 0) {
+    const char *json = "["
+        "{\"key\":\"cutoff\",\"name\":\"Cutoff\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01},"
+        "{\"key\":\"mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"LP\",\"HP\",\"BP\"]}"
+    "]";
+    strcpy(buf, json);
+    return strlen(json);
 }
 ```
 
-These map to knobs 1-8 in the Shadow UI for quick parameter access.
+Parameter types: `float` (with `min`, `max`, `step`), `int` (with `min`, `max`), `enum` (with `options` array).
+Optional fields: `default`, `unit`, `display_format`.
+
+These provide metadata for the Shadow UI parameter editor alongside `ui_hierarchy` (which defines menu structure and knob mappings).
 
 ### Chain Architecture
 
@@ -471,9 +476,37 @@ If your overtake module communicates with an external USB device that expects an
 The Module Store (`store` module) downloads and installs external modules from GitHub releases. The catalog is fetched from:
 `https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json`
 
+### Catalog Format (v2)
+
+```json
+{
+  "catalog_version": 2,
+  "host": {
+    "name": "Move Anything",
+    "github_repo": "charlesvestal/move-anything",
+    "asset_name": "move-anything.tar.gz",
+    "latest_version": "0.3.11",
+    "download_url": "https://github.com/.../move-anything.tar.gz",
+    "min_host_version": "0.1.0"
+  },
+  "modules": [
+    {
+      "id": "mymodule",
+      "name": "My Module",
+      "description": "What it does",
+      "author": "Your Name",
+      "component_type": "sound_generator",
+      "github_repo": "username/move-anything-mymodule",
+      "asset_name": "mymodule-module.tar.gz",
+      "min_host_version": "0.1.0"
+    }
+  ]
+}
+```
+
 ### How the Store Works
 
-1. Fetches `module-catalog.json` for list of available modules
+1. Fetches `module-catalog.json` and extracts `catalog.modules` array
 2. For each module, queries GitHub API for latest release
 3. Looks for asset matching `<module-id>-module.tar.gz`
 4. Compares release version to installed version
@@ -481,19 +514,7 @@ The Module Store (`store` module) downloads and installs external modules from G
 
 ### Adding a Module to the Catalog
 
-Edit `module-catalog.json` and add an entry:
-```json
-{
-  "id": "mymodule",
-  "name": "My Module",
-  "description": "What it does",
-  "author": "Your Name",
-  "component_type": "sound_generator",
-  "github_repo": "username/move-anything-mymodule",
-  "asset_name": "mymodule-module.tar.gz",
-  "min_host_version": "0.1.0"
-}
-```
+Edit `module-catalog.json` and add an entry to the `modules` array (see format above).
 
 ## External Module Development
 

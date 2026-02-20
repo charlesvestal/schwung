@@ -70,10 +70,10 @@ function ensureTmpDir() {
  *   - Single module: { version, download_url, ... }
  *   - Multi-module:  { modules: { module_id: { version, download_url, ... }, ... } }
  */
-export function fetchReleaseJson(github_repo, module_id) {
+export function fetchReleaseJson(github_repo, module_id, branch) {
     ensureTmpDir();
     const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release.json`;
-    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
+    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/${branch || 'main'}/release.json`;
 
     const success = globalThis.host_http_download(releaseUrl, cacheFile);
     if (!success) {
@@ -181,34 +181,37 @@ export function fetchReleaseNotes(githubRepo) {
 
 /* Fetch catalog from network, returns { success, catalog, error } */
 export function fetchCatalog(onProgress) {
-    if (onProgress) onProgress('Loading Catalog', 'Fetching...');
+    if (onProgress) onProgress('Loading Catalog', 'Fetching...', 0, 0);
 
     let success = false;
+    let networkAvailable = false;
     try {
         const fn = globalThis.host_http_download;
         if (!fn) {
             return { success: false, catalog: null, error: 'host_http_download not available' };
         }
         success = fn(CATALOG_URL, CATALOG_CACHE_PATH);
+        networkAvailable = success;
     } catch (e) {
         return { success: false, catalog: null, error: 'Download error: ' + String(e) };
     }
 
     if (success) {
-        return loadCatalogFromCache(onProgress);
+        return loadCatalogFromCache(onProgress, networkAvailable);
     } else {
         /* Try cached version */
         if (globalThis.host_file_exists(CATALOG_CACHE_PATH)) {
             console.log('Using cached catalog (network unavailable)');
-            return loadCatalogFromCache(onProgress);
+            return loadCatalogFromCache(onProgress, false);
         } else {
-            return { success: false, catalog: null, error: 'Could not fetch catalog' };
+            return { success: false, catalog: null, error: 'No internet connection' };
         }
     }
 }
 
-/* Load catalog from cache file, returns { success, catalog, error } */
-export function loadCatalogFromCache(onProgress) {
+/* Load catalog from cache file, returns { success, catalog, error }
+ * networkAvailable: if false, skip all release.json fetches (use cached data only) */
+export function loadCatalogFromCache(onProgress, networkAvailable) {
     try {
         const jsonStr = std.loadFile(CATALOG_CACHE_PATH);
         if (!jsonStr) {
@@ -216,17 +219,25 @@ export function loadCatalogFromCache(onProgress) {
         }
 
         const catalog = JSON.parse(jsonStr);
-        console.log(`Loaded catalog with ${catalog.modules ? catalog.modules.length : 0} modules`);
+        const moduleCount = catalog.modules ? catalog.modules.length : 0;
+        console.log(`Loaded catalog with ${moduleCount} modules (network: ${networkAvailable ? 'yes' : 'no'})`);
 
-        /* For catalog v2+, fetch release info from release.json files */
-        if (catalog.catalog_version >= 2 && catalog.modules) {
+        /* For catalog v2+, fetch release info — but skip if network is down */
+        if (catalog.catalog_version >= 2 && catalog.modules && networkAvailable) {
+            let consecutiveFailures = 0;
             for (let i = 0; i < catalog.modules.length; i++) {
                 const mod = catalog.modules[i];
                 if (mod.github_repo) {
-                    if (onProgress) onProgress('Loading Catalog', mod.name);
+                    if (consecutiveFailures >= 2) {
+                        /* Network likely down — skip remaining fetches */
+                        mod.latest_version = mod.latest_version || '?';
+                        mod.download_url = mod.download_url || null;
+                        continue;
+                    }
+                    if (onProgress) onProgress('Loading Catalog', mod.name, i + 1, moduleCount);
 
                     /* Pass module id for multi-module repo support */
-                    const release = fetchReleaseJson(mod.github_repo, mod.id);
+                    const release = fetchReleaseJson(mod.github_repo, mod.id, mod.default_branch);
                     if (release) {
                         mod.latest_version = release.version;
                         mod.download_url = release.download_url;
@@ -237,17 +248,31 @@ export function loadCatalogFromCache(onProgress) {
                         mod.requires = release.requires;
                         mod.post_install = release.post_install;
                         mod.repo_url = release.repo_url;
+                        consecutiveFailures = 0;
                     } else {
-                        mod.latest_version = '0.0.0';
+                        mod.latest_version = '?';
                         mod.download_url = null;
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= 2) {
+                            console.log('Two consecutive release fetch failures, skipping remaining modules');
+                        }
                     }
+                }
+            }
+        } else if (catalog.catalog_version >= 2 && catalog.modules && !networkAvailable) {
+            /* Network down — construct download URLs from catalog fields as fallback */
+            for (let i = 0; i < catalog.modules.length; i++) {
+                const mod = catalog.modules[i];
+                mod.latest_version = mod.latest_version || '?';
+                if (!mod.download_url && mod.github_repo && mod.asset_name) {
+                    mod.download_url = `https://github.com/${mod.github_repo}/releases/latest/download/${mod.asset_name}`;
                 }
             }
         }
 
-        /* Also fetch host release.json for core update info */
-        if (catalog.catalog_version >= 2 && catalog.host && catalog.host.github_repo) {
-            if (onProgress) onProgress('Loading Catalog', 'Core');
+        /* Also fetch host release.json — only if network available */
+        if (catalog.catalog_version >= 2 && catalog.host && catalog.host.github_repo && networkAvailable) {
+            if (onProgress) onProgress('Loading Catalog', 'Core', moduleCount, moduleCount);
             const hostRelease = fetchReleaseJson(catalog.host.github_repo);
             if (hostRelease) {
                 catalog.host.latest_version = hostRelease.version;
@@ -299,7 +324,7 @@ function isValidModuleId(id) {
 }
 
 /* Install a module, returns { success, error } */
-export function installModule(mod, hostVersion) {
+export function installModule(mod, hostVersion, onProgress) {
     if (!isValidModuleId(mod.id)) {
         return { success: false, error: 'Invalid module ID' };
     }
@@ -319,6 +344,7 @@ export function installModule(mod, hostVersion) {
     const tarPath = `${TMP_DIR}/${mod.id}-module.tar.gz`;
 
     /* Download the module tarball */
+    if (onProgress) onProgress('Downloading', mod.name);
     const downloadOk = globalThis.host_http_download(mod.download_url, tarPath);
     if (!downloadOk) {
         return { success: false, error: 'Download failed' };
@@ -334,6 +360,7 @@ export function installModule(mod, hostVersion) {
     }
 
     /* Extract to appropriate directory */
+    if (onProgress) onProgress('Extracting', mod.name);
     const extractOk = globalThis.host_extract_tar(tarPath, extractDir);
     if (!extractOk) {
         return { success: false, error: 'Extract failed' };

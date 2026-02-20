@@ -18,6 +18,12 @@ Also: this code is heavily written by coding agents, with human supervision. If 
 
 ## Installation
 
+### Desktop Installer (Recommended)
+
+Download the [Move Everything Installer](https://github.com/charlesvestal/move-everything-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface.
+
+### Command Line
+
 **Prerequisites:**
 - Move connected to WiFi
 - A computer on the same network
@@ -53,7 +59,6 @@ The installer will:
 ./scripts/install.sh --skip-modules
 ```
 
-
 For managing files on your Move, you can also use [Cyberduck](https://cyberduck.io) (SFTP to `move.local`, select your SSH private key).
 
 For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).
@@ -64,14 +69,16 @@ For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).
 curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
 ```
 
-## Modes (Background)
+## Modes
 
 - **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. Use Shift+Vol+Track (and +Menu) to access these signal chain slots.
 - **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps). Use Shift+Vol+Jog click to access overtake modules.
+- **Quantized Sampler**: Shift+Sample opens a sampler that records to `Samples/Move Everything/`. Choose resample (including Move Everything synths) or Move Input, set duration in bars, and recording starts on a note event or pressing play.
+- **Skipback**: Shift+Capture writes the last 30 seconds of audio to `Samples/Move Everything/Skipback/`.
 - **Screen Reader**: Optional TTS announcements for accessibility. Toggle via Shadow UI settings, or Shift+Menu when Shadow UI is disabled.
-- **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode. (To be deprecated, soon)
+- **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode.
 
-Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md) (primarily standalone-focused).
+Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md).
 
 ## Native Sampler Bridge
 
@@ -100,23 +107,33 @@ If monitoring is on (or source/routing is configured differently), audio feedbac
 
 ## Related Repositories
 
-- [move-anything-braids](https://github.com/charlesvestal/move-anything-braids)
-- [move-anything-clap](https://github.com/charlesvestal/move-anything-clap)
-- [move-anything-cloudseed](https://github.com/charlesvestal/move-anything-cloudseed)
-- [move-anything-dx7](https://github.com/charlesvestal/move-anything-dx7)
-- [move-anything-fourtrack](https://github.com/charlesvestal/move-anything-fourtrack)
-- [move-anything-hera](https://github.com/charlesvestal/move-anything-hera)
-- [move-anything-junologue-chorus](https://github.com/charlesvestal/move-anything-junologue-chorus)
-- [move-anything-jv880](https://github.com/charlesvestal/move-anything-jv880)
-- [move-anything-m8](https://github.com/charlesvestal/move-anything-m8)
-- [move-anything-moog](https://github.com/charlesvestal/move-anything-moog)
-- [move-anything-obxd](https://github.com/charlesvestal/move-anything-obxd)
-- [move-anything-psxverb](https://github.com/charlesvestal/move-anything-psxverb)
-- [move-anything-sf2](https://github.com/charlesvestal/move-anything-sf2)
-- [move-anything-sidcontrol](https://github.com/charlesvestal/move-anything-sidcontrol)
-- [move-anything-space-delay](https://github.com/charlesvestal/move-anything-space-delay)
-- [move-anything-surge](https://github.com/charlesvestal/move-anything-surge)
-- [move-anything-tapescam](https://github.com/charlesvestal/move-anything-tapescam)
+**Installer:**
+- [move-everything-installer](https://github.com/charlesvestal/move-everything-installer) - Cross-platform desktop installer (macOS, Windows, Linux)
+
+**Sound Generators:**
+- [move-anything-braids](https://github.com/charlesvestal/move-anything-braids) - Mutable Instruments macro oscillator
+- [move-anything-clap](https://github.com/charlesvestal/move-anything-clap) - CLAP plugin host
+- [move-anything-dx7](https://github.com/charlesvestal/move-anything-dx7) - Yamaha DX7 FM synthesizer
+- [move-anything-hera](https://github.com/charlesvestal/move-anything-hera) - Juno-60 emulation
+- [move-anything-jv880](https://github.com/charlesvestal/move-anything-jv880) - Roland JV-880 emulator
+- [move-anything-moog](https://github.com/charlesvestal/move-anything-moog) - RaffoSynth (Moog ladder filter)
+- [move-anything-obxd](https://github.com/charlesvestal/move-anything-obxd) - Oberheim OB-X emulator
+- [move-anything-sf2](https://github.com/charlesvestal/move-anything-sf2) - SoundFont synthesizer
+- [move-anything-surge](https://github.com/charlesvestal/move-anything-surge) - Surge XT hybrid synthesizer
+
+**Audio FX:**
+- [move-anything-cloudseed](https://github.com/charlesvestal/move-anything-cloudseed) - Algorithmic reverb
+- [move-anything-ducker](https://github.com/charlesvestal/move-anything-ducker) - MIDI-triggered sidechain ducker
+- [move-anything-junologue-chorus](https://github.com/charlesvestal/move-anything-junologue-chorus) - Juno-60 chorus
+- [move-anything-nam](https://github.com/charlesvestal/move-anything-nam) - Neural Amp Modeler
+- [move-anything-psxverb](https://github.com/charlesvestal/move-anything-psxverb) - PlayStation SPU reverb
+- [move-anything-space-delay](https://github.com/charlesvestal/move-anything-space-delay) - RE-201 tape delay
+- [move-anything-tapescam](https://github.com/charlesvestal/move-anything-tapescam) - Tape saturation
+
+**Overtake/Utilities:**
+- [move-anything-fourtrack](https://github.com/charlesvestal/move-anything-fourtrack) - Four-track recorder
+- [move-anything-m8](https://github.com/charlesvestal/move-anything-m8) - Dirtywave M8 Launchpad Pro emulator
+- [move-anything-sidcontrol](https://github.com/charlesvestal/move-anything-sidcontrol) - SIDaster III controller
 
 ## Community
 

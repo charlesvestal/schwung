@@ -11,42 +11,41 @@
       "levels": {
         "root": {
           "name": "Arpeggiator",
-          "params": ["mode", "bpm", "division", "sync"],
+          "params": [
+            {
+              "key": "mode",
+              "name": "Mode",
+              "type": "enum",
+              "options": ["off", "up", "down", "up_down", "random"],
+              "default": 1
+            },
+            {
+              "key": "bpm",
+              "name": "BPM",
+              "type": "int",
+              "min": 40,
+              "max": 240,
+              "default": 120,
+              "step": 1
+            },
+            {
+              "key": "division",
+              "name": "Division",
+              "type": "enum",
+              "options": ["1/4.", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32"],
+              "default": 7
+            },
+            {
+              "key": "sync",
+              "name": "Sync",
+              "type": "enum",
+              "options": ["internal", "clock"],
+              "default": 0
+            }
+          ],
           "knobs": ["mode", "bpm", "division", "sync"]
         }
       }
-    },
-    "chain_params": [
-      {
-        "key": "mode",
-        "name": "Mode",
-        "type": "enum",
-        "options": ["off", "up", "down", "up_down", "random"],
-        "default": "up"
-      },
-      {
-        "key": "bpm",
-        "name": "BPM",
-        "type": "int",
-        "min": 40,
-        "max": 240,
-        "default": 120,
-        "step": 1
-      },
-      {
-        "key": "division",
-        "name": "Division",
-        "type": "enum",
-        "options": ["1/4.", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32"],
-        "default": "1/16"
-      },
-      {
-        "key": "sync",
-        "name": "Sync",
-        "type": "enum",
-        "options": ["internal", "clock"],
-        "default": "internal"
-      }
-    ]
+    }
   }
 }

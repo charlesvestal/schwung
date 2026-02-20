@@ -1,0 +1,264 @@
+{
+  "sections": [
+    {
+      "title": "Move Everything",
+      "children": [
+        {
+          "title": "Shortcuts",
+          "lines": [
+            "Shift+Vol is the",
+            "modifier for all ME",
+            "shortcuts.",
+            "",
+            "+Track 1-4: jump to",
+            " slot settings",
+            "+Menu: Master FX",
+            "+Jog Click: overtake",
+            " module menu",
+            "+Knob 8: toggle",
+            " standalone mode",
+            "",
+            "Shift+Sample:",
+            " quantized sampler",
+            "Shift+Capture:",
+            " skipback last 30s"
+          ]
+        },
+        {
+          "title": "Connecting Tracks",
+          "lines": [
+            "Set each Move track",
+            "MIDI Out to ch 1-4.",
+            "",
+            "Set each slot Recv",
+            "Ch to match (1-4).",
+            "",
+            "Play the track to",
+            "trigger the slot",
+            "synth.",
+            "",
+            "Tip: load an empty",
+            "Drum Rack or Sampler",
+            "preset on the Move",
+            "track to silence the",
+            "native sound.",
+            "",
+            "Pitch bend, mod",
+            "wheel, sustain, and",
+            "CCs are forwarded",
+            "from external MIDI."
+          ]
+        },
+        {
+          "title": "Instrument Slots",
+          "lines": [
+            "4 slots, each with:",
+            "MIDI FX > Synth >",
+            "Audio FX 1 > FX 2",
+            "",
+            "Jog wheel scrolls,",
+            "click enters, back",
+            "goes up a level.",
+            "",
+            "Navigate to an empty",
+            "position and click",
+            "to pick a module.",
+            "",
+            "Shift+Jog Click on",
+            "a loaded module to",
+            "swap it."
+          ]
+        },
+        {
+          "title": "Slot Settings",
+          "lines": [
+            "Last position in",
+            "each slot's menu.",
+            "",
+            "Knobs 1-8: assign",
+            "params from loaded",
+            "modules.",
+            "",
+            "Volume: per-slot",
+            "output level.",
+            "",
+            "Recv Ch: MIDI ch",
+            "this slot listens.",
+            "",
+            "Fwd Ch modes:",
+            " Auto: remap to recv",
+            " Thru: passthrough",
+            " 1-16: force channel",
+            "",
+            "Save/Load slot",
+            "presets from here."
+          ]
+        },
+        {
+          "title": "Sets & Slots",
+          "lines": [
+            "Each Move Set keeps",
+            "its own slots.",
+            "",
+            "Switching Sets saves",
+            "your current slots",
+            "and loads the new",
+            "Set's slots.",
+            "",
+            "Changes are local to",
+            "the Set. Editing a",
+            "synth in one Set",
+            "won't affect others.",
+            "",
+            "Presets are separate:",
+            "loading a preset",
+            "copies it into the",
+            "Set. Tweaks stay in",
+            "the Set, not the",
+            "preset.",
+            "",
+            "New Sets start with",
+            "empty slots."
+          ]
+        },
+        {
+          "title": "Master FX",
+          "lines": [
+            "Open: Shift+Vol+Menu",
+            "",
+            "4 audio FX slots",
+            "that process the",
+            "mixed output of all",
+            "instrument slots.",
+            "",
+            "Settings (last item)",
+            "has: volume, Link",
+            "Audio toggle,",
+            "resample source,",
+            "display mirror, and",
+            "screen reader."
+          ]
+        },
+        {
+          "title": "Link Audio",
+          "lines": [
+            "Requires Move 2.0+.",
+            "",
+            "Routes Move track",
+            "audio through ME FX.",
+            "",
+            "Setup:",
+            "1.Enable Link in",
+            "  Move Settings",
+            "2.Toggle Link Audio",
+            "  On in MFX Settings",
+            "",
+            "Track N maps to",
+            "Slot N audio input.",
+            "",
+            "When on, Move native",
+            "Master FX bypassed.",
+            "",
+            "Brief play delay",
+            "from Link quantum."
+          ]
+        },
+        {
+          "title": "Recording",
+          "lines": [
+            "Quantized Sampler",
+            "(Shift+Sample):",
+            "",
+            "Choose source:",
+            " Resample or",
+            " Move Input",
+            "Choose duration in",
+            "bars, or until stop.",
+            "Starts on note",
+            "event or Play.",
+            "Saved to Samples/",
+            "Move Everything/.",
+            "",
+            "Skipback",
+            "(Shift+Capture):",
+            "",
+            "Saves last 30s of",
+            "audio. Uses same",
+            "source setting as",
+            "the sampler."
+          ]
+        },
+        {
+          "title": "Overtake Modules",
+          "lines": [
+            "Full-screen apps",
+            "that take over the",
+            "display & controls.",
+            "",
+            "Open overtake menu:",
+            " Shift+Vol+Jog Click",
+            "",
+            "Exit overtake:",
+            " Shift+Vol+Jog Click",
+            "",
+            "After exiting, pad",
+            "LEDs may not refresh",
+            "- change tracks to",
+            "restore them."
+          ]
+        },
+        {
+          "title": "Display Mirror",
+          "lines": [
+            "Stream the OLED to",
+            "a web browser.",
+            "",
+            "Enable in Master FX",
+            "> Settings > Mirror",
+            "Display On.",
+            "",
+            "Then open:",
+            " move.local:7681",
+            "",
+            "~30 fps, supports",
+            "up to 8 clients.",
+            "",
+            "Off by default.",
+            "Persists on reboot."
+          ]
+        },
+        {
+          "title": "Screen Reader",
+          "lines": [
+            "Text-to-speech for",
+            "accessibility.",
+            "",
+            "Toggle on/off:",
+            " MFX Settings >",
+            " Screen Reader",
+            " or Shift+Menu",
+            "",
+            "Settings:",
+            " Speed: 0.5x - 2x",
+            " Pitch: low - high",
+            " Volume: 0 - 100"
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Move Manual",
+      "children": [
+        {
+          "title": "Coming Soon",
+          "lines": [
+            "The Ableton Move",
+            "manual will be",
+            "available in a",
+            "future update."
+          ]
+        }
+      ]
+    }
+  ]
+}

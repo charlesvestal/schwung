@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y \
     file \
     libdbus-1-dev:arm64 \
     libsystemd-dev:arm64 \
+    libespeak-ng1:arm64 \
+    libespeak-ng-dev:arm64 \
+    espeak-ng-data \
     libflite1:arm64 \
     flite1-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*

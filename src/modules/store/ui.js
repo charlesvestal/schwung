@@ -34,6 +34,10 @@ import {
 } from '/data/UserData/move-anything/shared/scrollable_text.mjs';
 
 import {
+    announce
+} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+
+import {
     CATALOG_URL, CATALOG_CACHE_PATH, MODULES_DIR, BASE_DIR, TMP_DIR, HOST_VERSION_FILE,
     CATEGORIES,
     compareVersions, isNewerVersion, getInstallSubdir,
@@ -356,7 +360,12 @@ function installModule(mod) {
     draw();
     host_flush_display();
 
-    const result = sharedInstallModule(mod, hostVersion);
+    const result = sharedInstallModule(mod, hostVersion, (phase, name) => {
+        loadingTitle = phase;
+        loadingMessage = name;
+        draw();
+        host_flush_display();
+    });
 
     scanInstalledModules();
 
@@ -821,9 +830,13 @@ function drawModuleDetail() {
         detailScrollState = createScrollableText({
             lines: descLines,
             actionLabel,
-            visibleLines: 3
+            visibleLines: 3,
+            onActionSelected: (label) => announce(label)
         });
         detailScrollState.moduleId = currentModule.id;
+
+        /* Announce module detail for screen reader */
+        announce(currentModule.name + ". " + descLines.join(". "));
     }
 
     /* Draw scrollable content */

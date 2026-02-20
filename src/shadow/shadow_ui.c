@@ -34,7 +34,9 @@ static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
+static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
+static shadow_overlay_state_t *shadow_overlay = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -92,6 +94,13 @@ static int open_shadow_shm(void) {
         if (shadow_midi_out == MAP_FAILED) shadow_midi_out = NULL;
     }
 
+    fd = shm_open(SHM_SHADOW_MIDI_DSP, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_midi_dsp = (shadow_midi_dsp_t *)mmap(NULL, sizeof(shadow_midi_dsp_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_midi_dsp == MAP_FAILED) shadow_midi_dsp = NULL;
+    }
+
     fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
     if (fd >= 0) {
         shadow_screenreader = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -100,6 +109,17 @@ static int open_shadow_shm(void) {
             shadow_screenreader = NULL;
         } else {
             unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow screen reader shm mapped: %p", shadow_screenreader);
+        }
+    }
+
+    fd = shm_open(SHM_SHADOW_OVERLAY, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_overlay = (shadow_overlay_state_t *)mmap(NULL, SHADOW_OVERLAY_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_overlay == MAP_FAILED) {
+            shadow_overlay = NULL;
+        } else {
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow overlay shm mapped: %p", shadow_overlay);
         }
     }
 
@@ -362,7 +382,14 @@ static JSValue js_shadow_control_restart(JSContext *ctx, JSValueConst this_val,
  * Loads and evaluates a JS file (typically ui_chain.js) in the current context.
  * The loaded module can set globalThis.chain_ui to provide init/tick/onMidi functions.
  * Returns true on success, false on error.
+ *
+ * Uses a unique module name (path#N) for each load to bypass QuickJS's module
+ * cache. This ensures overtake modules get fresh code on every launch and
+ * picks up on-disk changes without restarting shadow_ui.
+ * Relative imports still resolve correctly since QuickJS uses the dirname.
  */
+static int shadow_ui_module_load_counter = 0;
+
 static JSValue js_shadow_load_ui_module(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1) return JS_FALSE;
@@ -373,8 +400,23 @@ static JSValue js_shadow_load_ui_module(JSContext *ctx, JSValueConst this_val, i
     shadow_ui_log_line("Loading UI module:");
     shadow_ui_log_line(path);
 
-    int ret = eval_file(ctx, path, 1);  /* Load as ES module */
+    /* Read the file from disk */
+    size_t buf_len;
+    uint8_t *buf = js_load_file(ctx, &buf_len, path);
+    if (!buf) {
+        perror(path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    /* Create a unique module name to bypass QuickJS module cache */
+    char module_name[512];
+    snprintf(module_name, sizeof(module_name), "%s#%d", path, ++shadow_ui_module_load_counter);
     JS_FreeCString(ctx, path);
+
+    int eval_flags = JS_EVAL_FLAG_STRICT | JS_EVAL_TYPE_MODULE;
+    int ret = eval_buf(ctx, buf, buf_len, module_name, eval_flags);
+    js_free(ctx, buf);
 
     return ret == 0 ? JS_TRUE : JS_FALSE;
 }
@@ -414,10 +456,22 @@ static JSValue js_shadow_set_param(JSContext *ctx, JSValueConst this_val, int ar
     shadow_param->error = 0;
     shadow_param->request_type = 1;  /* SET */
 
-    /* Wait for response with timeout */
-    int timeout = 100;  /* ~100ms */
+    /* In overtake mode, fire-and-forget: don't block waiting for the shim
+     * to acknowledge.  The shim will process the SET on its next ioctl.
+     * This prevents rapid knob turns (many CCs → many setParams) from
+     * stalling the UI thread.  If another setParam overwrites the SHM
+     * before the shim processes it, last-writer-wins — correct for knobs. */
+    if (shadow_control && shadow_control->overtake_mode >= 2) {
+        return JS_TRUE;
+    }
+
+    /* Normal mode: wait for response with timeout.
+     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
+     * Use 200 µs sleep for tighter polling — reduces per-call latency
+     * while keeping CPU low. */
+    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
     while (!shadow_param->response_ready && timeout > 0) {
-        usleep(1000);
+        usleep(200);
         timeout--;
     }
 
@@ -457,10 +511,13 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     shadow_param->error = 0;
     shadow_param->request_type = 2;  /* GET */
 
-    /* Wait for response with timeout */
-    int timeout = 100;  /* ~100ms */
+    /* Wait for response with timeout.
+     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
+     * Use 200 µs sleep for tighter polling — reduces per-call latency
+     * while keeping CPU low. */
+    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
     while (!shadow_param->response_ready && timeout > 0) {
-        usleep(1000);
+        usleep(200);
         timeout--;
     }
 
@@ -531,6 +588,51 @@ static JSValue js_move_midi_external_send(JSContext *ctx, JSValueConst this_val,
 static JSValue js_move_midi_internal_send(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
     return js_shadow_midi_send(0, ctx, this_val, argc, argv);
+}
+
+/* shadow_send_midi_to_dsp([status, d1, d2]) -> bool
+ * Routes raw 3-byte MIDI to shadow chain DSP slots via shared memory.
+ * Channel in status byte determines which slot(s) receive the message.
+ */
+static JSValue js_shadow_send_midi_to_dsp(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_midi_dsp) return JS_FALSE;
+    if (argc < 1) return JS_FALSE;
+
+    JSValueConst arr = argv[0];
+    if (!JS_IsArray(ctx, arr)) return JS_FALSE;
+
+    JSValue len_val = JS_GetPropertyStr(ctx, arr, "length");
+    int32_t len = 0;
+    JS_ToInt32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+
+    if (len < 3) return JS_FALSE;
+
+    uint8_t msg[3];
+    for (int j = 0; j < 3; j++) {
+        JSValue elem = JS_GetPropertyUint32(ctx, arr, j);
+        int32_t val = 0;
+        JS_ToInt32(ctx, &val, elem);
+        JS_FreeValue(ctx, elem);
+        msg[j] = (uint8_t)(val & 0xFF);
+    }
+
+    /* Write 4-byte aligned: [status, d1, d2, 0] */
+    int write_offset = shadow_midi_dsp->write_idx;
+    if (write_offset + 4 <= SHADOW_MIDI_DSP_BUFFER_SIZE) {
+        shadow_midi_dsp->buffer[write_offset] = msg[0];
+        shadow_midi_dsp->buffer[write_offset + 1] = msg[1];
+        shadow_midi_dsp->buffer[write_offset + 2] = msg[2];
+        shadow_midi_dsp->buffer[write_offset + 3] = 0;
+        shadow_midi_dsp->write_idx = write_offset + 4;
+    }
+
+    /* Signal shim that data is ready */
+    shadow_midi_dsp->ready++;
+
+    return JS_TRUE;
 }
 
 /* shadow_log(message) - Log to shadow_ui.log from JS */
@@ -686,7 +788,7 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     shadow_ui_log_line("host_http_download: path validated, running curl");
 
     const char *argv_cmd[] = {
-        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "15",
+        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "600",
         "-o", dest_path, url, NULL
     };
     int result = run_command(argv_cmd);
@@ -1093,14 +1195,18 @@ static JSValue js_host_rescan_modules(JSContext *ctx, JSValueConst this_val,
 }
 
 /* host_flush_display() -> void
- * In shadow UI context, just mark display as dirty.
- * The main loop handles copying to shared memory.
+ * Immediately pack and copy display to shared memory.
+ * This is critical for showing progress during blocking operations
+ * (e.g. catalog fetch) where the main loop can't run.
  */
 static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
-    /* Mark display as dirty - main loop will copy to shared memory */
-    js_display_screen_dirty = 1;
+    if (shadow_display_shm) {
+        js_display_pack(packed_buffer);
+        memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
+    }
+    js_display_screen_dirty = 0;
     return JS_UNDEFINED;
 }
 
@@ -1153,6 +1259,72 @@ static JSValue js_tts_get_enabled(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->tts_enabled != 0);
 }
 
+/* display_mirror_set(enabled) - Write to shared memory + persist to features.json */
+static JSValue js_display_mirror_set(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->display_mirror = enabled ? 1 : 0;
+
+    /* Persist to features.json */
+    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    char buf[512];
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        len = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    buf[len] = '\0';
+
+    /* Check if key already exists */
+    char *key = strstr(buf, "\"display_mirror_enabled\"");
+    if (key) {
+        /* Replace the value */
+        char *colon = strchr(key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            /* Build new file content */
+            char newbuf[512];
+            int prefix_len = (int)(colon - buf);
+            int suffix_start = (int)(val_end - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
+                     prefix_len, buf,
+                     enabled ? "true" : "false",
+                     buf + suffix_start);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else if (len > 0) {
+        /* Append before closing brace */
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            char newbuf[512];
+            int prefix_len = (int)(brace - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"display_mirror_enabled\": %s\n}",
+                     prefix_len, buf, enabled ? "true" : "false");
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* display_mirror_get() -> bool - Read from shared memory */
+static JSValue js_display_mirror_get(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 0);
+    return JS_NewBool(ctx, shadow_control->display_mirror != 0);
+}
+
 /* tts_set_speed(speed) - Write to shared memory */
 static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -1164,7 +1336,7 @@ static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
 
     /* Clamp to valid range */
     if (speed < 0.5) speed = 0.5;
-    if (speed > 2.0) speed = 2.0;
+    if (speed > 6.0) speed = 6.0;
 
     shadow_control->tts_speed = (float)speed;
 
@@ -1231,6 +1403,33 @@ static JSValue js_tts_get_volume(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, shadow_control->tts_volume);
 }
 
+/* tts_set_engine(name) - Write engine choice to shared memory (0=espeak, 1=flite) */
+static JSValue js_tts_set_engine(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_UNDEFINED;
+
+    if (strcmp(name, "flite") == 0) {
+        shadow_control->tts_engine = 1;
+    } else {
+        shadow_control->tts_engine = 0;  /* default: espeak */
+    }
+
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
+}
+
+/* tts_get_engine() -> string - Read engine choice from shared memory */
+static JSValue js_tts_get_engine(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewString(ctx, "espeak");
+    return JS_NewString(ctx, shadow_control->tts_engine == 1 ? "flite" : "espeak");
+}
+
 /* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off) */
 static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
@@ -1252,6 +1451,71 @@ static JSValue js_overlay_knobs_get_mode(JSContext *ctx, JSValueConst this_val,
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
     return JS_NewInt32(ctx, shadow_control->overlay_knobs_mode);
+}
+
+/* === Overlay state bridge functions === */
+
+static JSValue js_shadow_get_overlay_sequence(JSContext *ctx, JSValueConst this_val,
+                                               int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_overlay) return JS_NewUint32(ctx, 0);
+    return JS_NewUint32(ctx, shadow_overlay->sequence);
+}
+
+static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    JSValue obj = JS_NewObject(ctx);
+    if (!shadow_overlay) {
+        JS_SetPropertyStr(ctx, obj, "type", JS_NewInt32(ctx, 0));
+        return obj;
+    }
+
+    JS_SetPropertyStr(ctx, obj, "type", JS_NewInt32(ctx, shadow_overlay->overlay_type));
+    JS_SetPropertyStr(ctx, obj, "samplerState", JS_NewInt32(ctx, shadow_overlay->sampler_state));
+    JS_SetPropertyStr(ctx, obj, "samplerSource", JS_NewInt32(ctx, shadow_overlay->sampler_source));
+    JS_SetPropertyStr(ctx, obj, "samplerCursor", JS_NewInt32(ctx, shadow_overlay->sampler_cursor));
+    JS_SetPropertyStr(ctx, obj, "samplerFullscreen", JS_NewInt32(ctx, shadow_overlay->sampler_fullscreen));
+    JS_SetPropertyStr(ctx, obj, "skipbackActive", JS_NewInt32(ctx, shadow_overlay->skipback_active));
+    JS_SetPropertyStr(ctx, obj, "samplerDurationBars", JS_NewInt32(ctx, shadow_overlay->sampler_duration_bars));
+    JS_SetPropertyStr(ctx, obj, "samplerVuPeak", JS_NewInt32(ctx, shadow_overlay->sampler_vu_peak));
+    JS_SetPropertyStr(ctx, obj, "samplerBarsCompleted", JS_NewInt32(ctx, shadow_overlay->sampler_bars_completed));
+    JS_SetPropertyStr(ctx, obj, "samplerTargetBars", JS_NewInt32(ctx, shadow_overlay->sampler_target_bars));
+    JS_SetPropertyStr(ctx, obj, "samplerOverlayTimeout", JS_NewInt32(ctx, shadow_overlay->sampler_overlay_timeout));
+    JS_SetPropertyStr(ctx, obj, "skipbackOverlayTimeout", JS_NewInt32(ctx, shadow_overlay->skipback_overlay_timeout));
+    JS_SetPropertyStr(ctx, obj, "samplerSamplesWritten", JS_NewUint32(ctx, shadow_overlay->sampler_samples_written));
+    JS_SetPropertyStr(ctx, obj, "samplerClockCount", JS_NewUint32(ctx, shadow_overlay->sampler_clock_count));
+    JS_SetPropertyStr(ctx, obj, "samplerTargetPulses", JS_NewUint32(ctx, shadow_overlay->sampler_target_pulses));
+    JS_SetPropertyStr(ctx, obj, "samplerFallbackBlocks", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_blocks));
+    JS_SetPropertyStr(ctx, obj, "samplerFallbackTarget", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_target));
+    JS_SetPropertyStr(ctx, obj, "samplerClockReceived", JS_NewInt32(ctx, shadow_overlay->sampler_clock_received));
+
+    /* Shift+knob overlay */
+    JS_SetPropertyStr(ctx, obj, "shiftKnobActive", JS_NewInt32(ctx, shadow_overlay->shift_knob_active));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobTimeout", JS_NewInt32(ctx, shadow_overlay->shift_knob_timeout));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobPatch", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_patch));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobParam", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_param));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobValue", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_value));
+
+    return obj;
+}
+
+static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_val,
+                                              int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control) return JS_UNDEFINED;
+    int mode = 0, x = 0, y = 0, w = 0, h = 0;
+    if (argc >= 1) JS_ToInt32(ctx, &mode, argv[0]);
+    if (argc >= 2) JS_ToInt32(ctx, &x, argv[1]);
+    if (argc >= 3) JS_ToInt32(ctx, &y, argv[2]);
+    if (argc >= 4) JS_ToInt32(ctx, &w, argv[3]);
+    if (argc >= 5) JS_ToInt32(ctx, &h, argv[4]);
+    shadow_control->display_overlay = (uint8_t)mode;
+    shadow_control->overlay_rect_x = (uint8_t)x;
+    shadow_control->overlay_rect_y = (uint8_t)y;
+    shadow_control->overlay_rect_w = (uint8_t)w;
+    shadow_control->overlay_rect_h = (uint8_t)h;
+    return JS_UNDEFINED;
 }
 
 /* === End host functions === */
@@ -1299,6 +1563,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register MIDI output functions for overtake modules */
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_send_midi_to_dsp", JS_NewCFunction(ctx, js_shadow_send_midi_to_dsp, "shadow_send_midi_to_dsp", 1));
 
     /* Register logging function for JS modules */
     JS_SetPropertyStr(ctx, global_obj, "shadow_log", JS_NewCFunction(ctx, js_shadow_log, "shadow_log", 1));
@@ -1329,10 +1594,21 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "tts_get_pitch", JS_NewCFunction(ctx, js_tts_get_pitch, "tts_get_pitch", 0));
     JS_SetPropertyStr(ctx, global_obj, "tts_set_volume", JS_NewCFunction(ctx, js_tts_set_volume, "tts_set_volume", 1));
     JS_SetPropertyStr(ctx, global_obj, "tts_get_volume", JS_NewCFunction(ctx, js_tts_get_volume, "tts_get_volume", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_engine", JS_NewCFunction(ctx, js_tts_set_engine, "tts_set_engine", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_engine", JS_NewCFunction(ctx, js_tts_get_engine, "tts_get_engine", 0));
 
     /* Register overlay knobs mode functions */
     JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_set_mode", JS_NewCFunction(ctx, js_overlay_knobs_set_mode, "overlay_knobs_set_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_get_mode", JS_NewCFunction(ctx, js_overlay_knobs_get_mode, "overlay_knobs_get_mode", 0));
+
+    /* Register display mirror functions */
+    JS_SetPropertyStr(ctx, global_obj, "display_mirror_set", JS_NewCFunction(ctx, js_display_mirror_set, "display_mirror_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "display_mirror_get", JS_NewCFunction(ctx, js_display_mirror_get, "display_mirror_get", 0));
+
+    /* Register overlay state functions (sampler/skipback state from shim) */
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_sequence", JS_NewCFunction(ctx, js_shadow_get_overlay_sequence, "shadow_get_overlay_sequence", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_state", JS_NewCFunction(ctx, js_shadow_get_overlay_state, "shadow_get_overlay_state", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_display_overlay", JS_NewCFunction(ctx, js_shadow_set_display_overlay, "shadow_set_display_overlay", 5));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
@@ -1422,10 +1698,9 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        if (jsTickIsDefined) {
-            callGlobalFunction(ctx, &JSTick, 0);
-        }
-
+        /* Process incoming MIDI BEFORE tick() so that the current frame's
+         * drawUI() reflects the latest input (knob CCs, button presses).
+         * This eliminates one full loop iteration of display latency. */
         if (shadow_control && shadow_control->midi_ready != last_midi_ready) {
             last_midi_ready = shadow_control->midi_ready;
             process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
@@ -1437,6 +1712,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        if (jsTickIsDefined) {
+            callGlobalFunction(ctx, &JSTick, 0);
+        }
 
         refresh_counter++;
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
@@ -1445,7 +1723,13 @@ int main(int argc, char *argv[]) {
             js_display_screen_dirty = 0;
         }
 
-        usleep(16000);
+        /* Overtake modules need a faster tick rate for responsive display/LED
+         * updates.  Normal shadow UI (slot management) is fine at ~60 Hz. */
+        if (shadow_control && shadow_control->overtake_mode >= 2) {
+            usleep(2000);   /* ~500 Hz effective (minus tick work) */
+        } else {
+            usleep(16000);  /* ~60 Hz for normal shadow UI */
+        }
     }
 
     js_std_free_handlers(rt);

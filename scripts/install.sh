@@ -421,8 +421,15 @@ if [ "$use_local" = true ]; then
     fail "Local build not found. Run ./scripts/build.sh first."
   fi
 else
-  url=https://github.com/charlesvestal/move-anything/releases/latest/download/
-  qecho "Downloading latest release from $url$remote_filename"
+  # Find latest binary release (v* tag, not installer-v*)
+  tag=$(curl -fsSL https://api.github.com/repos/charlesvestal/move-anything/releases \
+    | grep '"tag_name"' | grep -v installer | head -1 | sed 's/.*"tag_name": "//;s/".*//' ) \
+    || fail "Failed to query GitHub releases API"
+  if [ -z "$tag" ]; then
+    fail "Could not find a binary release. Check https://github.com/charlesvestal/move-anything/releases"
+  fi
+  url="https://github.com/charlesvestal/move-anything/releases/download/${tag}/"
+  qecho "Downloading release $tag from $url$remote_filename"
   # Use silent curl in quiet mode (screen reader friendly)
   if [ "$quiet_mode" = true ]; then
     curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
@@ -457,9 +464,15 @@ if [ -n "$ssh_result" ]; then
     fail "Network connection to Move failed"
   fi
 
-  # SSH failed for auth/key reasons - offer wizard
+  # SSH failed for auth/key reasons - offer wizard (interactive only)
   echo
   echo "SSH connection failed."
+
+  if [ "$skip_confirmation" = true ]; then
+    # Non-interactive mode (GUI installer) - fail immediately
+    fail "SSH connection to $hostname failed (non-interactive mode)"
+  fi
+
   printf "Would you like help setting up SSH access? (y/N): "
   read -r run_wizard </dev/tty
 
@@ -574,8 +587,12 @@ if [ -n "$old_modules" ] || [ "$old_patches" = true ] || [ -n "$old_chain_module
   echo
   echo "After migration, reinstall modules via the Module Store."
   echo
-  printf "Proceed with migration? [Y/n] "
-  read -r do_migrate </dev/tty
+  if [ "$skip_confirmation" = true ]; then
+    do_migrate="y"
+  else
+    printf "Proceed with migration? [Y/n] "
+    read -r do_migrate </dev/tty
+  fi
 
   if [ "$do_migrate" != "n" ] && [ "$do_migrate" != "N" ]; then
     echo "Migrating..."
@@ -617,6 +634,11 @@ else
   echo "No migration needed."
 fi
 
+# Preflight: clean stale debug/tmp artifacts that can fill root on dev-heavy setups.
+# Keep runtime sockets and only remove known one-off files/directories.
+ssh_root_with_retry "rm -rf /var/volatile/tmp/_MEI* 2>/dev/null || true; rm -f /var/volatile/tmp/*.pcm /var/volatile/tmp/*.out /var/volatile/tmp/*.err /var/volatile/tmp/yt* /var/volatile/tmp/ytdlp* /var/volatile/tmp/ytmod* /var/volatile/tmp/ytsearch* /var/volatile/tmp/clap_* /var/volatile/tmp/chain_* /var/volatile/tmp/lddebug_* /var/volatile/tmp/preload_* /var/volatile/tmp/verify-* /var/volatile/tmp/auxv_* /var/volatile/tmp/test_shadow.js /var/volatile/tmp/trigger /var/volatile/tmp/surge_debug.log 2>/dev/null || true" || true
+
+
 # Safety: check root partition has enough free space (< 10MB free = danger zone)
 root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || echo "0")
 if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
@@ -639,19 +661,31 @@ ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserDat
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
 ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing after install"
 
-# Deploy Flite libraries (for TTS support) from /data to /usr/lib via symlink.
-# Root partition is nearly full, so symlink instead of copying.
+# Symlink web shim to /usr/lib/ (for MoveWebService PIN challenge detection)
+if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+  qecho "Installing web shim for PIN readout..."
+  ssh_root_with_retry "rm -f /usr/lib/move-anything-web-shim.so && ln -s /data/UserData/move-anything/move-anything-web-shim.so /usr/lib/move-anything-web-shim.so" || echo "Warning: Failed to install web shim"
+fi
+
+# Deploy TTS libraries (eSpeak-NG + Flite) from /data to /usr/lib via symlink.
+# Root partition is nearly full, so symlink libraries instead of copying.
 # Use direct predicate checks so expected test failures don't print misleading
 # "Connection retry" messages from the retry wrapper.
 if $ssh_ableton "test ! -d /data/UserData/move-anything/lib" 2>/dev/null; then
   screen_reader_runtime_available=false
-  iecho "Screen reader runtime not bundled; skipping Flite deployment."
+  iecho "Screen reader runtime not bundled; skipping TTS library deployment."
 elif $ssh_ableton "test -d /data/UserData/move-anything/lib" 2>/dev/null; then
-  ssh_ableton_with_retry "for lib in libflite.so.1 libflite_cmu_us_kal.so.1 libflite_usenglish.so.1 libflite_cmulex.so.1; do test -e /data/UserData/move-anything/lib/\$lib || exit 1; done" || fail "Payload missing required Flite libraries (screen reader dependency)"
-  qecho "Deploying Flite libraries..."
-  ssh_root_with_retry "cd /data/UserData/move-anything/lib && set -- libflite*.so.* && [ \"\$1\" != 'libflite*.so.*' ] || exit 1; for lib in \"\$@\"; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install Flite libraries"
+  qecho "Deploying TTS libraries (eSpeak-NG + Flite)..."
+  # Symlink all bundled TTS libraries to /usr/lib
+  ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in *.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install TTS libraries"
+  # eSpeak-NG data directory
+  if $ssh_ableton "test -d /data/UserData/move-anything/espeak-ng-data" 2>/dev/null; then
+    qecho "eSpeak-NG data directory present"
+  else
+    qecho "Warning: eSpeak-NG data directory not found (eSpeak engine may not work)"
+  fi
 else
-  fail "Failed to check screen reader runtime payload on device (SSH error)"
+  fail "Failed to check TTS runtime payload on device (SSH error)"
 fi
 
 # Ensure the replacement Move script exists and is executable
@@ -671,16 +705,79 @@ fi
 # Install the shimmed Move entrypoint
 ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
+# Wrap MoveWebService with web shim (same pattern as Move → MoveOriginal + shim-entrypoint)
+# This enables PIN TTS readout when a browser connects to move.local
+if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+  qecho "Installing web shim for PIN readout..."
+  # Find the MoveWebService binary path from init script (may be in a variable assignment or inline)
+  web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+  if [ -n "$web_svc_path" ]; then
+    # Backup original only once (skip if already backed up)
+    if ! $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+      ssh_root_with_retry "mv $web_svc_path ${web_svc_path}Original" || echo "Warning: Failed to backup MoveWebService"
+    fi
+    # Create wrapper script that loads the web shim
+    if $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+      ssh_root_with_retry "cat > $web_svc_path << 'WEOF'
+#!/bin/sh
+export LD_LIBRARY_PATH=/data/UserData/move-anything/lib:\$LD_LIBRARY_PATH
+export LD_PRELOAD=/usr/lib/move-anything-web-shim.so
+exec ${web_svc_path}Original \"\$@\"
+WEOF
+chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
+    fi
+  else
+    echo "Warning: Could not find MoveWebService path, skipping web shim wrapper"
+  fi
+fi
 
 # Create feature configuration file
 qecho ""
 qecho "Configuring features..."
 ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
 
+# Link Audio enabled by default (harmless on 1.x, activates on 2.0+ with Link)
+link_audio_val="true"
+
+# Read existing features.json from device (if any) to preserve user settings
+existing_features=$(ssh_ableton_with_retry "cat /data/UserData/move-anything/config/features.json 2>/dev/null" || echo "")
+
+# Helper: extract a JSON bool value from existing config, with fallback
+get_existing_feature() {
+    local key="$1"
+    local fallback="$2"
+    if [ -n "$existing_features" ]; then
+        local val=$(echo "$existing_features" | grep "\"$key\"" | grep -o 'true\|false' | head -1)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$fallback"
+}
+
+# Determine feature values: CLI flags override, otherwise preserve existing, otherwise default
+if [ "$disable_shadow_ui" = true ]; then
+    shadow_ui_val="false"
+else
+    shadow_ui_val=$(get_existing_feature "shadow_ui_enabled" "true")
+fi
+
+if [ "$disable_standalone" = true ]; then
+    standalone_val="false"
+else
+    standalone_val=$(get_existing_feature "standalone_enabled" "true")
+fi
+
+existing_link_audio=$(get_existing_feature "link_audio_enabled" "$link_audio_val")
+existing_display_mirror=$(get_existing_feature "display_mirror_enabled" "false")
+
 # Build features.json content
 features_json="{
-  \"shadow_ui_enabled\": $([ "$disable_shadow_ui" = false ] && echo "true" || echo "false"),
-  \"standalone_enabled\": $([ "$disable_standalone" = false ] && echo "true" || echo "false")
+  \"shadow_ui_enabled\": $shadow_ui_val,
+  \"standalone_enabled\": $standalone_val,
+  \"link_audio_enabled\": $existing_link_audio,
+  \"display_mirror_enabled\": $existing_display_mirror
 }"
 
 # Write features.json
@@ -701,8 +798,8 @@ fi
 
 if [ "$quiet_mode" = false ]; then
     echo "Features configured:"
-    echo "  Shadow UI: $([ "$disable_shadow_ui" = false ] && echo "enabled" || echo "disabled")"
-    echo "  Standalone: $([ "$disable_standalone" = false ] && echo "enabled" || echo "disabled")"
+    echo "  Shadow UI: $([ "$shadow_ui_val" = "true" ] && echo "enabled" || echo "disabled")"
+    echo "  Standalone: $([ "$standalone_val" = "true" ] && echo "enabled" || echo "disabled")"
     echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
 fi
 
@@ -813,6 +910,8 @@ if [ "$skip_modules" = false ]; then
     echo "  - Mini-JV: ROM files + optional SR-JV80 expansions"
     echo "  - SF2: SoundFont files (.sf2)"
     echo "  - Dexed: Additional .syx patch banks (optional - defaults included)"
+    echo "  - NAM: .nam model files (free models at tonehunt.org and tone3000.com)"
+    echo "  - REX Player: .rx2/.rex loop files (created with Propellerhead ReCycle)"
     echo
     printf "Would you like to copy assets to your Move now? (y/N): "
     read -r copy_assets </dev/tty
@@ -846,8 +945,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r rom_path </dev/tty
 
     if [ -n "$rom_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rom_path" ]; then
             rom_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms" || true
@@ -897,8 +996,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r sf2_path </dev/tty
 
     if [ -n "$sf2_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts" || true
@@ -930,8 +1029,8 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     read -r syx_path </dev/tty
 
     if [ -n "$syx_path" ]; then
-        # Expand ~ to home directory and handle escaped spaces
-        syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed 's/\\ / /g' | sed "s/^['\"]//;s/['\"]$//")
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$syx_path" ]; then
             syx_count=0
             ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/dexed/banks" || true
@@ -955,6 +1054,74 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         fi
     fi
 
+    # REX loops
+    echo
+    echo "REX Player: Enter the folder containing your .rx2/.rex loop files."
+    echo "Free loops available at: https://rhythm-lab.com/breakbeats/"
+    echo "(Press ENTER to skip)"
+    printf "Enter or drag folder path: "
+    read -r rex_path </dev/tty
+
+    if [ -n "$rex_path" ]; then
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        rex_path=$(echo "$rex_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
+        if [ -d "$rex_path" ]; then
+            rex_count=0
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/rex/loops" || true
+            for rex in "$rex_path"/*.rx2 "$rex_path"/*.RX2 "$rex_path"/*.rex "$rex_path"/*.REX "$rex_path"/*.rcy "$rex_path"/*.RCY; do
+                if [ -f "$rex" ]; then
+                    echo "  Copying $(basename "$rex")..."
+                    if scp_with_retry "$rex" "$username@$hostname:./move-anything/modules/sound_generators/rex/loops/"; then
+                        rex_count=$((rex_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
+                fi
+            done
+            if [ $rex_count -gt 0 ]; then
+                echo "  Copied $rex_count REX loop(s)"
+            else
+                echo "  No .rx2/.rex files found in $rex_path"
+            fi
+        else
+            echo "  Directory not found: $rex_path"
+        fi
+    fi
+
+    # NAM models
+    echo
+    echo "NAM: Enter the folder containing your .nam model files."
+    echo "Free models available at: https://tonehunt.org and https://tone3000.com"
+    echo "(Press ENTER to skip)"
+    printf "Enter or drag folder path: "
+    read -r nam_path </dev/tty
+
+    if [ -n "$nam_path" ]; then
+        # Expand ~ to home directory and handle escaped spaces/quotes from drag-and-drop
+        nam_path=$(echo "$nam_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
+        if [ -d "$nam_path" ]; then
+            nam_count=0
+            ssh_ableton_with_retry "mkdir -p move-anything/modules/audio_fx/nam/models" || true
+            for nam in "$nam_path"/*.nam "$nam_path"/*.NAM; do
+                if [ -f "$nam" ]; then
+                    echo "  Copying $(basename "$nam")..."
+                    if scp_with_retry "$nam" "$username@$hostname:./move-anything/modules/audio_fx/nam/models/"; then
+                        nam_count=$((nam_count + 1))
+                    else
+                        asset_copy_failed=true
+                    fi
+                fi
+            done
+            if [ $nam_count -gt 0 ]; then
+                echo "  Copied $nam_count NAM model(s)"
+            else
+                echo "  No .nam files found in $nam_path"
+            fi
+        else
+            echo "  Directory not found: $nam_path"
+        fi
+    fi
+
     echo
     if [ "$asset_copy_failed" = true ]; then
         echo "Asset copy completed with some errors. You may need to copy failed files manually."
@@ -966,20 +1133,38 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     fi
 fi
 
+# Deploy Move Manual cache if available locally (generated by fetch_move_manual.sh)
+MANUAL_CACHE="$(cd "$(dirname "$0")/.." && pwd)/.cache/move_manual.json"
+if [ -f "$MANUAL_CACHE" ]; then
+    $ssh_root "mkdir -p /data/UserData/move-anything/cache && chown ableton:users /data/UserData/move-anything/cache" || true
+    scp_with_retry "$MANUAL_CACHE" "$username@$hostname:/data/UserData/move-anything/cache/"
+    qecho "Deployed Move Manual cache"
+fi
+
 qecho ""
 iecho "Restarting Move..."
 
 # Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
 # Use retry wrappers because Windows mDNS resolution can be flaky.
 ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
 # Clean up stale shared memory so it's recreated with correct permissions
-ssh_root_with_retry "rm -f /dev/shm/move-shadow-*" || true
+ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
 # Free the SPI device if anything still holds it (prevents "communication error" on restart)
 ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
 ssh_ableton_with_retry "sleep 2" || true
 
 ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
+
+# Restart MoveWebService to pick up web shim wrapper
+if $ssh_root "test -f /etc/init.d/move-web-service" 2>/dev/null; then
+    web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+    if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+        qecho "Restarting MoveWebService with PIN readout shim..."
+        # Kill both wrapper name and original binary name (init script stop only matches MoveWebService)
+        ssh_root_with_retry "killall MoveWebServiceOriginal MoveWebService 2>/dev/null; sleep 1; /etc/init.d/move-web-service start >/dev/null 2>&1 || true" || true
+    fi
+fi
 
 # Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
 ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to restart Move service"

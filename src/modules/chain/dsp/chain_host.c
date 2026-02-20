@@ -59,6 +59,10 @@ typedef struct {
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
+/* Optional file-based debug tracing for chain parsing/preset save diagnostics. */
+#define CHAIN_DEBUG_FLAG_PATH "/data/UserData/move-anything/chain_debug_on"
+#define CHAIN_DEBUG_LOG_PATH "/data/UserData/move-anything/chain_debug.log"
+
 /* Chord types */
 typedef enum {
     CHORD_NONE = 0,
@@ -101,41 +105,42 @@ typedef enum {
 
 /* Knob acceleration settings */
 #define KNOB_ACCEL_MIN_MULT 1    /* Multiplier for slow turns */
-#define KNOB_ACCEL_MAX_MULT 8    /* Multiplier for fast turns (floats) */
-#define KNOB_ACCEL_MAX_MULT_INT 3 /* Multiplier for fast turns (ints - smaller to avoid jumps) */
-#define KNOB_ACCEL_SLOW_MS 150   /* Slower than this = min multiplier */
-#define KNOB_ACCEL_FAST_MS 25    /* Faster than this = max multiplier */
+#define KNOB_ACCEL_MAX_MULT 4    /* Multiplier for fast turns (floats) */
+#define KNOB_ACCEL_MAX_MULT_INT 2 /* Multiplier for fast turns (ints) */
+#define KNOB_ACCEL_ENUM_MULT 1   /* Enums: always step by 1 (no acceleration) */
+#define KNOB_ACCEL_SLOW_MS 250   /* Slower than this = min multiplier */
+#define KNOB_ACCEL_FAST_MS 50    /* Faster than this = max multiplier */
 
 /* Knob mapping types */
 typedef enum {
     KNOB_TYPE_FLOAT = 0,
-    KNOB_TYPE_INT = 1
+    KNOB_TYPE_INT = 1,
+    KNOB_TYPE_ENUM = 2
 } knob_type_t;
 
 /* Knob mapping structure */
 typedef struct {
-    int cc;              /* CC number (71-78) */
-    char target[16];     /* "synth", "fx1", "fx2", "midi_fx" */
-    char param[32];      /* Parameter key */
-    knob_type_t type;    /* Parameter type (float or int) */
-    float min_val;       /* Minimum value */
-    float max_val;       /* Maximum value */
-    float current_value; /* Current parameter value */
+    int cc;              /* CC number (71-78 for knobs 1-8) */
+    char target[16];     /* Component: "synth", "fx1", "fx2", "midi_fx" */
+    char param[32];      /* Parameter key (lookup metadata in chain_params) */
+    float current_value; /* Current value only */
 } knob_mapping_t;
 
 /* Chain parameter info from module.json */
-#define MAX_CHAIN_PARAMS 16
-#define MAX_ENUM_OPTIONS 16
+#define MAX_CHAIN_PARAMS 32
+#define MAX_ENUM_OPTIONS 64
 typedef struct {
     char key[32];           /* Parameter key (e.g., "preset", "decay") */
-    char name[32];          /* Display name */
-    knob_type_t type;       /* float or int (for numeric types) */
-    char type_str[16];      /* Type as string ("float", "int", "enum") */
+    char name[64];          /* Display name */
+    knob_type_t type;       /* Parameter type: FLOAT, INT, or ENUM */
     float min_val;          /* Minimum value */
     float max_val;          /* Maximum value (or -1 if dynamic via max_param) */
     float default_val;      /* Default value */
     char max_param[32];     /* Dynamic max param key (e.g., "preset_count") */
-    char options[MAX_ENUM_OPTIONS][32];  /* Enum options (if type is "enum") */
+    char unit[16];          /* Unit suffix (e.g., "Hz", "dB", "%") */
+    char display_format[16]; /* Display format hint (e.g., "%.2f", "%d") */
+    float step;             /* Step size for UI increments */
+    char options[MAX_ENUM_OPTIONS][32];  /* Enum options (if type is ENUM) */
     int option_count;       /* Number of enum options */
 } chain_param_info_t;
 
@@ -150,6 +155,58 @@ typedef struct {
 
 /* State storage size for FX plugins */
 #define MAX_FX_STATE_LEN 2048
+
+/*
+ * Format a parameter value for display based on its metadata.
+ * Returns length of formatted string, or -1 on error.
+ */
+static int format_param_value(chain_param_info_t *param, float value, char *buf, int buf_len) {
+    if (!param || !buf || buf_len < 2) return -1;
+
+    if (param->type == KNOB_TYPE_ENUM) {
+        /* Use option label for enums */
+        int idx = (int)value;
+        if (idx >= 0 && idx < param->option_count) {
+            int len = strlen(param->options[idx]);
+            if (len >= buf_len) len = buf_len - 1;
+            memcpy(buf, param->options[idx], len);
+            buf[len] = '\0';
+            return len;
+        }
+        /* Fallback for out-of-range enum */
+        snprintf(buf, buf_len, "%d", idx);
+        return strlen(buf);
+    }
+
+    /* Scale 0-1 values to 0-100 for percentage display */
+    float display_value = value;
+    if (strcmp(param->unit, "%") == 0 && param->max_val <= 1.0f) {
+        display_value = value * 100.0f;
+    }
+
+    /* Format numeric value */
+    char val_str[32];
+    if (param->display_format[0]) {
+        /* Use custom format */
+        snprintf(val_str, sizeof(val_str), param->display_format, display_value);
+    } else {
+        /* Use defaults based on type */
+        if (param->type == KNOB_TYPE_FLOAT) {
+            snprintf(val_str, sizeof(val_str), "%.2f", display_value);
+        } else {
+            snprintf(val_str, sizeof(val_str), "%d", (int)display_value);
+        }
+    }
+
+    /* Add unit suffix if present */
+    if (param->unit[0]) {
+        snprintf(buf, buf_len, "%s %s", val_str, param->unit);
+    } else {
+        snprintf(buf, buf_len, "%s", val_str);
+    }
+
+    return strlen(buf);
+}
 
 /* MIDI FX configuration (module + params + state) */
 typedef struct {
@@ -235,10 +292,13 @@ static smooth_param_t* smoother_get_param(param_smoother_t *smoother, const char
 static void smoother_set_target(param_smoother_t *smoother, const char *key, float value) {
     smooth_param_t *p = smoother_get_param(smoother, key);
     if (p) {
-        if (!p->active) {
-            /* First time setting - initialize current to target (no smoothing on first set) */
-            p->current = value;
-        }
+        /* Always jump current to new value.  The hierarchy editor uses a
+         * read-modify-write cycle: it reads the plugin's current value,
+         * applies a delta, and writes back.  If current lags behind target
+         * (as it does with interpolation), render_block overwrites the
+         * plugin value with the lagged current, and the next UI read sees
+         * that lagged value — making the parameter appear stuck near 0. */
+        p->current = value;
         p->target = value;
         p->active = 1;
     }
@@ -327,6 +387,9 @@ typedef struct chain_instance {
     int fx_count;
     char current_fx_modules[MAX_AUDIO_FX][MAX_NAME_LEN];  /* Track loaded FX names */
 
+    /* Optional MIDI handler for audio FX (discovered via dlsym) */
+    void (*fx_on_midi[MAX_AUDIO_FX])(void *instance, const uint8_t *msg, int len, int source);
+
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
     int synth_param_count;
@@ -392,6 +455,18 @@ typedef struct chain_instance {
     /* Parameter smoothing for synth and FX */
     param_smoother_t synth_smoother;
     param_smoother_t fx_smoothers[MAX_AUDIO_FX];
+
+    /* Dirty flag: 1 = modified since last load/save */
+    int dirty;
+
+    /* External audio injection (e.g. Move track audio from Link Audio).
+     * Set by host before render_block; mixed after synth, before FX. */
+    int16_t *inject_audio;
+    int inject_audio_frames;
+
+    /* When set, render_block outputs raw synth only (no inject mix, no FX).
+     * The shim calls chain_process_fx() separately for same-frame FX. */
+    int external_fx_mode;
 } chain_instance_t;
 
 /* ============================================================================
@@ -533,6 +608,8 @@ static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
+static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char *target, const char *key);
+static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
 
@@ -959,7 +1036,16 @@ static int load_synth(const char *module_path, const char *config_json) {
     chain_log("Synth loaded with V2 API");
 
     /* Parse chain_params from module.json */
-    parse_chain_params(module_path, g_synth_params, &g_synth_param_count);
+    if (parse_chain_params(module_path, g_synth_params, &g_synth_param_count) < 0) {
+        chain_log("ERROR: Failed to parse synth parameters");
+        g_synth_plugin_v2->destroy_instance(g_synth_instance);
+        dlclose(g_synth_handle);
+        g_synth_handle = NULL;
+        g_synth_plugin_v2 = NULL;
+        g_synth_instance = NULL;
+        g_synth_is_v2 = 0;
+        return -1;
+    }
     snprintf(msg, sizeof(msg), "Synth loaded successfully (%d params)", g_synth_param_count);
     chain_log(msg);
     return 0;
@@ -1143,7 +1229,16 @@ static int load_audio_fx(const char *fx_name) {
     g_fx_instances[slot] = instance;
     g_fx_is_v2[slot] = 1;
 
-    parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, g_fx_params[slot], &g_fx_param_counts[slot]) < 0) {
+        chain_log("ERROR: Failed to parse audio FX parameters");
+        fx_v2->destroy_instance(instance);
+        dlclose(handle);
+        g_fx_handles[slot] = NULL;
+        g_fx_plugins_v2[slot] = NULL;
+        g_fx_instances[slot] = NULL;
+        g_fx_is_v2[slot] = 0;
+        return -1;
+    }
     g_fx_count++;
 
     snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)",
@@ -1243,7 +1338,16 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
     inst->current_midi_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(fx_dir, inst->midi_fx_params[slot], &inst->midi_fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, inst->midi_fx_params[slot], &inst->midi_fx_param_counts[slot]) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse MIDI FX parameters");
+        api->destroy_instance(instance);
+        dlclose(handle);
+        inst->midi_fx_handles[slot] = NULL;
+        inst->midi_fx_plugins[slot] = NULL;
+        inst->midi_fx_instances[slot] = NULL;
+        inst->current_midi_fx_modules[slot][0] = '\0';
+        return -1;
+    }
 
     /* Parse ui_hierarchy from module.json */
     {
@@ -1523,7 +1627,433 @@ static int json_get_int_in_section(const char *json, const char *section_key,
     return ret;
 }
 
-/* Parse chain_params from module.json */
+/*
+ * Check if a JSON value is an object (starts with '{') vs string/primitive
+ */
+static int json_value_is_object(const char *val) {
+    while (*val == ' ' || *val == '\t' || *val == '\n') val++;
+    return *val == '{';
+}
+
+/*
+ * Check if JSON object has a specific key
+ */
+static int json_object_has_key(const char *obj, const char *key) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    return strstr(obj, search) != NULL;
+}
+
+/*
+ * Parse a single parameter definition object into chain_param_info_t.
+ * Returns 0 on success, -1 on error.
+ */
+/* Helper: bounded strstr - search for needle within [start, end) */
+static const char *bounded_strstr(const char *start, const char *end, const char *needle) {
+    const char *result = strstr(start, needle);
+    return (result && result < end) ? result : NULL;
+}
+
+static int parse_param_object(const char *param_json, chain_param_info_t *param) {
+    memset(param, 0, sizeof(chain_param_info_t));
+
+    /* Find end of this JSON object (brace-depth tracking) */
+    int brace_depth = 0;
+    const char *param_obj_end = param_json;
+    do {
+        if (*param_obj_end == '{') brace_depth++;
+        if (*param_obj_end == '}') brace_depth--;
+        param_obj_end++;
+    } while (brace_depth > 0 && *param_obj_end);
+
+    /* Extract key (required) */
+    const char *key_start = bounded_strstr(param_json, param_obj_end, "\"key\"");
+    if (!key_start) return -1;
+    key_start = strchr(key_start, ':');
+    if (!key_start) return -1;
+    key_start = strchr(key_start, '"');
+    if (!key_start) return -1;
+    key_start++;
+    const char *key_end = strchr(key_start, '"');
+    if (!key_end) return -1;
+    int key_len = key_end - key_start;
+    if (key_len >= sizeof(param->key)) key_len = sizeof(param->key) - 1;
+    memcpy(param->key, key_start, key_len);
+    param->key[key_len] = '\0';
+
+    /* Extract label/name (required) */
+    const char *label_start = bounded_strstr(param_json, param_obj_end, "\"label\"");
+    if (!label_start) label_start = bounded_strstr(param_json, param_obj_end, "\"name\"");
+    if (label_start) {
+        label_start = strchr(label_start, ':');
+        if (label_start) {
+            label_start = strchr(label_start, '"');
+            if (label_start) {
+                label_start++;
+                const char *label_end = strchr(label_start, '"');
+                if (label_end) {
+                    int len = label_end - label_start;
+                    if (len >= sizeof(param->name)) len = sizeof(param->name) - 1;
+                    memcpy(param->name, label_start, len);
+                    param->name[len] = '\0';
+                }
+            }
+        }
+    }
+
+    /* Extract type (required) */
+    const char *type_start = bounded_strstr(param_json, param_obj_end, "\"type\"");
+    if (!type_start) return -1;
+    type_start = strchr(type_start, ':');
+    if (!type_start) return -1;
+    type_start = strchr(type_start, '"');
+    if (!type_start) return -1;
+    type_start++;
+
+    if (strncmp(type_start, "float", 5) == 0) {
+        param->type = KNOB_TYPE_FLOAT;
+    } else if (strncmp(type_start, "int", 3) == 0) {
+        param->type = KNOB_TYPE_INT;
+    } else if (strncmp(type_start, "enum", 4) == 0) {
+        param->type = KNOB_TYPE_ENUM;
+    } else {
+        return -1;
+    }
+
+    /* Extract min (optional for enum) */
+    const char *min_start = bounded_strstr(param_json, param_obj_end, "\"min\"");
+    if (min_start) {
+        min_start = strchr(min_start, ':');
+        if (min_start) {
+            param->min_val = atof(min_start + 1);
+        }
+    }
+
+    /* Extract max (optional for enum) */
+    const char *max_start = bounded_strstr(param_json, param_obj_end, "\"max\"");
+    if (max_start) {
+        max_start = strchr(max_start, ':');
+        if (max_start) {
+            param->max_val = atof(max_start + 1);
+        }
+    }
+
+    /* Extract default (optional) */
+    const char *default_start = bounded_strstr(param_json, param_obj_end, "\"default\"");
+    if (default_start) {
+        default_start = strchr(default_start, ':');
+        if (default_start) {
+            param->default_val = atof(default_start + 1);
+        }
+    } else {
+        /* Default to min for numeric, 0 for enum */
+        param->default_val = (param->type == KNOB_TYPE_ENUM) ? 0 : param->min_val;
+    }
+
+    /* Extract step (optional) */
+    const char *step_start = bounded_strstr(param_json, param_obj_end, "\"step\"");
+    if (step_start) {
+        step_start = strchr(step_start, ':');
+        if (step_start) {
+            param->step = atof(step_start + 1);
+        }
+    } else {
+        /* Default step values */
+        if (param->type == KNOB_TYPE_FLOAT) {
+            param->step = 0.0015f;
+        } else {
+            param->step = 1.0f;
+        }
+    }
+
+    /* Extract unit (optional) */
+    const char *unit_start = bounded_strstr(param_json, param_obj_end, "\"unit\"");
+    if (unit_start) {
+        unit_start = strchr(unit_start, ':');
+        if (unit_start) {
+            unit_start = strchr(unit_start, '"');
+            if (unit_start) {
+                unit_start++;
+                const char *unit_end = strchr(unit_start, '"');
+                if (unit_end) {
+                    int len = unit_end - unit_start;
+                    if (len >= sizeof(param->unit)) len = sizeof(param->unit) - 1;
+                    memcpy(param->unit, unit_start, len);
+                    param->unit[len] = '\0';
+                }
+            }
+        }
+    }
+
+    /* Extract display_format (optional) */
+    const char *format_start = bounded_strstr(param_json, param_obj_end, "\"display_format\"");
+    if (format_start) {
+        format_start = strchr(format_start, ':');
+        if (format_start) {
+            format_start = strchr(format_start, '"');
+            if (format_start) {
+                format_start++;
+                const char *format_end = strchr(format_start, '"');
+                if (format_end) {
+                    int len = format_end - format_start;
+                    if (len >= sizeof(param->display_format)) len = sizeof(param->display_format) - 1;
+                    memcpy(param->display_format, format_start, len);
+                    param->display_format[len] = '\0';
+                }
+            }
+        }
+    }
+
+    /* Extract options array (for enums) */
+    if (param->type == KNOB_TYPE_ENUM) {
+        const char *options_start = bounded_strstr(param_json, param_obj_end, "\"options\"");
+        if (options_start) {
+            options_start = strchr(options_start, '[');
+            if (options_start) {
+                options_start++;
+                param->option_count = 0;
+
+                /* Parse each option string */
+                const char *opt = options_start;
+                while (param->option_count < MAX_ENUM_OPTIONS) {
+                    opt = strchr(opt, '"');
+                    if (!opt || opt > strstr(options_start, "]")) break;
+                    opt++;
+                    const char *opt_end = strchr(opt, '"');
+                    if (!opt_end) break;
+
+                    int len = opt_end - opt;
+                    if (len >= 32) len = 31;
+                    memcpy(param->options[param->option_count], opt, len);
+                    param->options[param->option_count][len] = '\0';
+                    param->option_count++;
+
+                    opt = opt_end + 1;
+                }
+            }
+        }
+
+        /* Set max_val for enums to option_count - 1 */
+        if (param->option_count > 0) {
+            param->max_val = (float)(param->option_count - 1);
+        }
+    }
+
+    /* Extract max_param (dynamic max reference) */
+    const char *max_param_start = bounded_strstr(param_json, param_obj_end, "\"max_param\"");
+    if (max_param_start) {
+        max_param_start = strchr(max_param_start, ':');
+        if (max_param_start) {
+            max_param_start = strchr(max_param_start, '"');
+            if (max_param_start) {
+                max_param_start++;
+                const char *max_param_end = strchr(max_param_start, '"');
+                if (max_param_end) {
+                    int len = max_param_end - max_param_start;
+                    if (len >= sizeof(param->max_param)) len = sizeof(param->max_param) - 1;
+                    memcpy(param->max_param, max_param_start, len);
+                    param->max_param[len] = '\0';
+                    param->max_val = -1; /* Marker for dynamic max */
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Parse params array from a single level.
+ * Recursively processes nested levels if needed.
+ */
+static int parse_level_params(const char *level_json, chain_param_info_t *out_params, int *param_count, int max_params) {
+    /* Find params array in this level */
+    const char *params = strstr(level_json, "\"params\"");
+    if (!params) return 0;
+
+    const char *arr_open = strchr(params, '[');
+    if (!arr_open) return 0;
+
+    /* Find matching ] for the params array using bracket-depth tracking.
+     * This prevents iteration from escaping into knobs or other fields. */
+    const char *arr_end = arr_open + 1;
+    int bracket_depth = 1;
+    while (*arr_end && bracket_depth > 0) {
+        if (*arr_end == '[') bracket_depth++;
+        else if (*arr_end == ']') bracket_depth--;
+        if (bracket_depth > 0) arr_end++;
+    }
+    /* arr_end now points at the matching ] */
+
+    /* Iterate through params array, bounded by arr_end */
+    const char *param_start = arr_open + 1;
+    while (*param_count < max_params && param_start < arr_end) {
+        /* Skip whitespace */
+        while (param_start < arr_end && (*param_start == ' ' || *param_start == '\t' || *param_start == '\n' || *param_start == '\r')) param_start++;
+
+        /* Check for end of array */
+        if (param_start >= arr_end || *param_start == ']') break;
+
+        /* Check if this is an object */
+        if (*param_start == '{') {
+            /* Find end of this object */
+            int brace_depth = 0;
+            const char *param_end = param_start;
+            do {
+                if (*param_end == '{') brace_depth++;
+                if (*param_end == '}') brace_depth--;
+                param_end++;
+            } while (brace_depth > 0 && *param_end);
+
+            /* Only parse if object is within the params array */
+            if (param_end <= arr_end + 1) {
+                /* Check if this is a param definition (has "type" key within this object) */
+                if (bounded_strstr(param_start, param_end, "\"type\"")) {
+                    if (parse_param_object(param_start, &out_params[*param_count]) == 0) {
+                        (*param_count)++;
+                    }
+                }
+            }
+            /* Skip navigation items (they don't define params) */
+
+            param_start = param_end;
+        } else if (*param_start == '"') {
+            /* String reference - skip (already defined elsewhere) */
+            const char *close_quote = strchr(param_start + 1, '"');
+            if (close_quote && close_quote < arr_end) {
+                param_start = close_quote + 1;
+            } else {
+                break;
+            }
+        } else {
+            param_start++;
+            continue;
+        }
+
+        /* Skip comma (bounded) */
+        while (param_start < arr_end && *param_start != ',' && *param_start != ']') param_start++;
+        if (param_start >= arr_end || *param_start == ']') break;
+        param_start++;
+    }
+
+    return 0;
+}
+
+/*
+ * Parse parameters from ui_hierarchy structure.
+ * Extracts param definitions from shared_params and all levels.
+ */
+static int parse_hierarchy_params(const char *json, chain_param_info_t *out_params, int max_params) {
+    int param_count = 0;
+
+    /* Find ui_hierarchy section */
+    const char *hierarchy = strstr(json, "\"ui_hierarchy\"");
+    if (!hierarchy) return 0;
+
+    /* Parse shared_params if present */
+    const char *shared = strstr(hierarchy, "\"shared_params\"");
+    if (shared) {
+        shared = strchr(shared, '[');
+        if (shared) {
+            shared++;
+
+            /* Iterate through shared_params array */
+            const char *param_start = shared;
+            while (param_count < max_params) {
+                /* Skip whitespace */
+                while (*param_start == ' ' || *param_start == '\t' || *param_start == '\n') param_start++;
+
+                /* Check for end of array */
+                if (*param_start == ']') break;
+
+                /* Check if this is an object (not a string reference) */
+                if (*param_start == '{') {
+                    /* Find end of this object */
+                    int brace_depth = 0;
+                    const char *param_end = param_start;
+                    do {
+                        if (*param_end == '{') brace_depth++;
+                        if (*param_end == '}') brace_depth--;
+                        param_end++;
+                    } while (brace_depth > 0 && *param_end);
+
+                    /* Parse this param object */
+                    if (parse_param_object(param_start, &out_params[param_count]) == 0) {
+                        param_count++;
+                    }
+
+                    param_start = param_end;
+                } else if (*param_start == '"') {
+                    /* String reference - skip for now (just advance past it) */
+                    param_start = strchr(param_start + 1, '"');
+                    if (param_start) param_start++;
+                }
+
+                /* Skip comma */
+                param_start = strchr(param_start, ',');
+                if (!param_start) break;
+                param_start++;
+            }
+        }
+    }
+
+    /* Parse params from all levels */
+    const char *levels = strstr(hierarchy, "\"levels\"");
+    if (levels) {
+        const char *levels_open = strchr(levels, '{');
+        if (levels_open) {
+            /* Find end of levels object using brace-depth tracking */
+            int levels_depth = 0;
+            const char *levels_end = levels_open;
+            do {
+                if (*levels_end == '{') levels_depth++;
+                if (*levels_end == '}') levels_depth--;
+                levels_end++;
+            } while (levels_depth > 0 && *levels_end);
+
+            /* Iterate through each level object, bounded by levels_end */
+            const char *level_start = levels_open + 1;
+            while (param_count < max_params && level_start < levels_end) {
+                /* Skip to next level definition */
+                level_start = strchr(level_start, '{');
+                if (!level_start || level_start >= levels_end) break;
+
+                /* Find end of this level */
+                int brace_depth = 0;
+                const char *level_end = level_start;
+                do {
+                    if (*level_end == '{') brace_depth++;
+                    if (*level_end == '}') brace_depth--;
+                    level_end++;
+                } while (brace_depth > 0 && *level_end);
+
+                /* Parse params from this level */
+                parse_level_params(level_start, out_params, &param_count, max_params);
+
+                level_start = level_end;
+            }
+        }
+    }
+
+    /* Validate no duplicate keys */
+    for (int i = 0; i < param_count; i++) {
+        for (int j = i + 1; j < param_count; j++) {
+            if (strcmp(out_params[i].key, out_params[j].key) == 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "ERROR: Duplicate parameter key '%s' in ui_hierarchy", out_params[i].key);
+                chain_log(msg);
+                return -1; /* Signal error */
+            }
+        }
+    }
+
+    return param_count;
+}
+
+/*
+ * Parse parameter definitions from module.json.
+ * First tries ui_hierarchy (new format), falls back to chain_params (legacy).
+ */
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count) {
     char json_path[MAX_PATH_LEN];
     snprintf(json_path, sizeof(json_path), "%s/module.json", module_path);
@@ -1535,7 +2065,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 8192) {
+    if (size <= 0 || size > 16384) {
         fclose(f);
         return -1;
     }
@@ -1549,16 +2079,38 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
     { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
     fclose(f);
 
+    /* Try ui_hierarchy first */
+    const char *hierarchy = strstr(json, "\"ui_hierarchy\"");
+    if (hierarchy) {
+        *count = parse_hierarchy_params(json, params, MAX_CHAIN_PARAMS);
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "Parsed ui_hierarchy params: count=%d", *count);
+        chain_log(log_msg);
+        for (int i = 0; i < *count && i < 10; i++) {
+            snprintf(log_msg, sizeof(log_msg), "  Param[%d]: key=%s, name=%s, type=%d",
+                     i, params[i].key, params[i].name, params[i].type);
+            chain_log(log_msg);
+        }
+        if (*count > 0) {
+            free(json);
+            return 0;
+        }
+        /* count == 0: hierarchy had no inline params (string refs only).
+         * Fall through to chain_params for metadata. */
+        chain_log("No inline params in ui_hierarchy, falling through to chain_params");
+    }
+
+    /* Fall back to legacy chain_params */
     *count = 0;
 
     /* Find chain_params array */
-    const char *chain_params = strstr(json, "\"chain_params\"");
-    if (!chain_params) {
+    const char *chain_params_str = strstr(json, "\"chain_params\"");
+    if (!chain_params_str) {
         free(json);
         return 0;  /* No params is OK */
     }
 
-    const char *arr_start = strchr(chain_params, '[');
+    const char *arr_start = strchr(chain_params_str, '[');
     if (!arr_start) {
         free(json);
         return 0;
@@ -1573,7 +2125,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
         arr_end++;
     }
 
-    /* Parse each parameter object */
+    /* Parse each parameter object (legacy chain_params format) */
     const char *pos = arr_start + 1;
     while (pos < arr_end && *count < MAX_CHAIN_PARAMS) {
         const char *obj_start = strchr(pos, '{');
@@ -1585,7 +2137,6 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
         chain_param_info_t *p = &params[*count];
         memset(p, 0, sizeof(*p));
         p->type = KNOB_TYPE_FLOAT;  /* Default */
-        strcpy(p->type_str, "float");  /* Default type string */
         p->min_val = 0.0f;
         p->max_val = 1.0f;
 
@@ -1625,18 +2176,11 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
             const char *q1 = strchr(type_pos + 7, '"');
             if (q1 && q1 < obj_end) {
                 q1++;
-                const char *q2 = strchr(q1, '"');
-                if (q2 && q2 < obj_end) {
-                    int len = (int)(q2 - q1);
-                    if (len > 15) len = 15;
-                    strncpy(p->type_str, q1, len);
-                    p->type_str[len] = '\0';
-                }
                 if (strncmp(q1, "int", 3) == 0) {
                     p->type = KNOB_TYPE_INT;
                     p->max_val = 9999.0f;  /* Default for int */
                 } else if (strncmp(q1, "enum", 4) == 0) {
-                    p->type = KNOB_TYPE_INT;  /* Enums treated as int indices */
+                    p->type = KNOB_TYPE_ENUM;
                 }
             }
         }
@@ -1933,38 +2477,7 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
                     }
                 }
 
-                /* Parse type (optional, default "float") */
-                knob_type_t type = KNOB_TYPE_FLOAT;
-                const char *type_pos = strstr(obj_start, "\"type\"");
-                if (type_pos && type_pos < obj_end) {
-                    const char *q1 = strchr(type_pos + 6, '"');
-                    if (q1 && q1 < obj_end) {
-                        q1++;
-                        if (strncmp(q1, "int", 3) == 0) {
-                            type = KNOB_TYPE_INT;
-                        }
-                    }
-                }
-
-                /* Parse min (optional) */
-                float min_val = (type == KNOB_TYPE_INT) ? 0.0f : 0.0f;
-                const char *min_pos = strstr(obj_start, "\"min\"");
-                if (min_pos && min_pos < obj_end) {
-                    const char *colon = strchr(min_pos, ':');
-                    if (colon && colon < obj_end) {
-                        min_val = (float)atof(colon + 1);
-                    }
-                }
-
-                /* Parse max (optional) */
-                float max_val = (type == KNOB_TYPE_INT) ? 9999.0f : 1.0f;
-                const char *max_pos = strstr(obj_start, "\"max\"");
-                if (max_pos && max_pos < obj_end) {
-                    const char *colon = strchr(max_pos, ':');
-                    if (colon && colon < obj_end) {
-                        max_val = (float)atof(colon + 1);
-                    }
-                }
+                /* Type/min/max now come from chain_params - not parsed from JSON */
 
                 /* Parse saved value (optional) - used for "save current state" */
                 float saved_value = -999999.0f;  /* Sentinel for "not set" */
@@ -1981,9 +2494,6 @@ static int parse_patch_file(const char *path, patch_info_t *patch) {
                     patch->knob_mappings[patch->knob_mapping_count].cc = cc;
                     strncpy(patch->knob_mappings[patch->knob_mapping_count].target, target, 15);
                     strncpy(patch->knob_mappings[patch->knob_mapping_count].param, param, 31);
-                    patch->knob_mappings[patch->knob_mapping_count].type = type;
-                    patch->knob_mappings[patch->knob_mapping_count].min_val = min_val;
-                    patch->knob_mappings[patch->knob_mapping_count].max_val = max_val;
                     patch->knob_mappings[patch->knob_mapping_count].current_value = saved_value;
                     patch->knob_mapping_count++;
                 }
@@ -2493,7 +3003,7 @@ static int load_patch(int index) {
     for (int i = 0; i < patch->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
         g_knob_mappings[i] = patch->knob_mappings[i];
 
-        /* Look up param info from module to fill in missing type/min/max */
+        /* Look up param info to initialize current value */
         const char *target = g_knob_mappings[i].target;
         const char *param = g_knob_mappings[i].param;
         chain_param_info_t *pinfo = NULL;
@@ -2506,49 +3016,21 @@ static int load_patch(int index) {
             pinfo = find_param_info(g_fx_params[1], g_fx_param_counts[1], param);
         }
 
-        if (pinfo) {
-            /* Use module's param info (unless patch explicitly overrides) */
-            /* Check if patch had defaults - if so, use module's values */
-            if (patch->knob_mappings[i].type == KNOB_TYPE_FLOAT &&
-                patch->knob_mappings[i].min_val == 0.0f &&
-                patch->knob_mappings[i].max_val == 1.0f) {
-                g_knob_mappings[i].type = pinfo->type;
-                g_knob_mappings[i].min_val = pinfo->min_val;
-                /* Handle dynamic max (max_param like "preset_count") */
-                if (pinfo->max_val < 0 && pinfo->max_param[0]) {
-                    /* Query the module for the actual max value */
-                    char max_buf[32];
-                    int got_max = 0;
-                    if (strcmp(target, "synth") == 0 && synth_loaded()) {
-                        if (synth_get_param(pinfo->max_param, max_buf, sizeof(max_buf)) >= 0) {
-                            g_knob_mappings[i].max_val = (float)(atoi(max_buf) - 1);
-                            got_max = 1;
-                        }
-                    }
-                    if (!got_max) {
-                        g_knob_mappings[i].max_val = 9999.0f;  /* Fallback */
-                    }
-                } else {
-                    g_knob_mappings[i].max_val = pinfo->max_val;
-                }
-            }
-        }
-
         /* Use saved value if present, otherwise initialize to middle of range */
         float saved = patch->knob_mappings[i].current_value;
-        if (saved > -999998.0f) {
+        if (saved > -999998.0f && pinfo) {
             /* Has saved value - use it (clamp to valid range) */
-            if (saved < g_knob_mappings[i].min_val) saved = g_knob_mappings[i].min_val;
-            if (saved > g_knob_mappings[i].max_val) saved = g_knob_mappings[i].max_val;
-            if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
+            if (saved < pinfo->min_val) saved = pinfo->min_val;
+            if (saved > pinfo->max_val) saved = pinfo->max_val;
+            if (pinfo->type == KNOB_TYPE_INT) {
                 g_knob_mappings[i].current_value = (float)((int)saved);
             } else {
                 g_knob_mappings[i].current_value = saved;
             }
-        } else {
+        } else if (pinfo) {
             /* No saved value - initialize to middle of min/max range */
-            float mid = (g_knob_mappings[i].min_val + g_knob_mappings[i].max_val) / 2.0f;
-            if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
+            float mid = (pinfo->min_val + pinfo->max_val) / 2.0f;
+            if (pinfo->type == KNOB_TYPE_INT) {
                 g_knob_mappings[i].current_value = (float)((int)mid);  /* Round to int */
             } else {
                 g_knob_mappings[i].current_value = mid;
@@ -2562,9 +3044,19 @@ static int load_patch(int index) {
         const char *param = g_knob_mappings[i].param;
         float value = g_knob_mappings[i].current_value;
 
+        /* Look up param info for type */
+        chain_param_info_t *pinfo = NULL;
+        if (strcmp(target, "synth") == 0) {
+            pinfo = find_param_info(g_synth_params, g_synth_param_count, param);
+        } else if (strcmp(target, "fx1") == 0 && g_fx_count > 0) {
+            pinfo = find_param_info(g_fx_params[0], g_fx_param_counts[0], param);
+        } else if (strcmp(target, "fx2") == 0 && g_fx_count > 1) {
+            pinfo = find_param_info(g_fx_params[1], g_fx_param_counts[1], param);
+        }
+
         /* Format value string */
         char val_str[32];
-        if (g_knob_mappings[i].type == KNOB_TYPE_INT) {
+        if (pinfo && pinfo->type == KNOB_TYPE_INT) {
             snprintf(val_str, sizeof(val_str), "%d", (int)value);
         } else {
             snprintf(val_str, sizeof(val_str), "%.3f", value);
@@ -2696,18 +3188,36 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < g_knob_mapping_count; i++) {
                 if (g_knob_mappings[i].cc == cc) {
+                    /* Look up parameter metadata dynamically */
+                    const char *target = g_knob_mappings[i].target;
+                    const char *param = g_knob_mappings[i].param;
+                    chain_param_info_t *pinfo = NULL;
+
+                    if (strcmp(target, "synth") == 0) {
+                        pinfo = find_param_info(g_synth_params, g_synth_param_count, param);
+                    } else if (strcmp(target, "fx1") == 0 && g_fx_count > 0) {
+                        pinfo = find_param_info(g_fx_params[0], g_fx_param_counts[0], param);
+                    } else if (strcmp(target, "fx2") == 0 && g_fx_count > 1) {
+                        pinfo = find_param_info(g_fx_params[1], g_fx_param_counts[1], param);
+                    }
+
+                    if (!pinfo) continue;  /* Skip if param not found */
+
                     /* Calculate acceleration multiplier based on turn speed */
                     int accel = calc_knob_accel(i);
-                    int is_int = (g_knob_mappings[i].type == KNOB_TYPE_INT);
+                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
 
-                    /* Cap acceleration for ints to avoid jumping too far */
-                    if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                    /* Cap acceleration: enums never accelerate, ints limited */
+                    if (pinfo->type == KNOB_TYPE_ENUM) {
+                        accel = KNOB_ACCEL_ENUM_MULT;
+                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                         accel = KNOB_ACCEL_MAX_MULT_INT;
                     }
 
                     /* Relative encoder: 1 = increment, 127 = decrement */
-                    /* Apply acceleration to base step size */
-                    float base_step = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
+                    /* Use step from param metadata (defaults: 0.0015 float, 1 int) */
+                    float base_step = (pinfo->step > 0) ? pinfo->step
+                        : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
                     float delta = 0.0f;
                     if (msg[2] == 1) {
                         delta = base_step * accel;
@@ -2719,8 +3229,8 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
 
                     /* Update current value with min/max clamping */
                     float new_val = g_knob_mappings[i].current_value + delta;
-                    if (new_val < g_knob_mappings[i].min_val) new_val = g_knob_mappings[i].min_val;
-                    if (new_val > g_knob_mappings[i].max_val) new_val = g_knob_mappings[i].max_val;
+                    if (new_val < pinfo->min_val) new_val = pinfo->min_val;
+                    if (new_val > pinfo->max_val) new_val = pinfo->max_val;
                     if (is_int) new_val = (float)((int)new_val);  /* Round to int */
                     g_knob_mappings[i].current_value = new_val;
 
@@ -2731,9 +3241,6 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
                     } else {
                         snprintf(val_str, sizeof(val_str), "%.3f", new_val);
                     }
-
-                    const char *target = g_knob_mappings[i].target;
-                    const char *param = g_knob_mappings[i].param;
 
                     if (strcmp(target, "synth") == 0) {
                         /* Route to synth */
@@ -3032,11 +3539,26 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             }
             strcat(fx_json, "]");
 
-            /* Build knob_mappings JSON array with type/min/max */
+            /* Build knob_mappings JSON array - look up type/min/max from param info */
             char knob_json[2048] = "[";
             int knob_off = 1;
             for (int i = 0; i < p->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
-                const char *type_str = (p->knob_mappings[i].type == KNOB_TYPE_INT) ? "int" : "float";
+                /* Look up param metadata from V1 globals */
+                const char *km_target = p->knob_mappings[i].target;
+                const char *km_param = p->knob_mappings[i].param;
+                chain_param_info_t *ki = NULL;
+                if (strcmp(km_target, "synth") == 0) {
+                    ki = find_param_info(g_synth_params, g_synth_param_count, km_param);
+                } else if (strcmp(km_target, "fx1") == 0) {
+                    ki = find_param_info(g_fx_params[0], g_fx_param_counts[0], km_param);
+                } else if (strcmp(km_target, "fx2") == 0) {
+                    ki = find_param_info(g_fx_params[1], g_fx_param_counts[1], km_param);
+                } else if (strcmp(km_target, "fx3") == 0) {
+                    ki = find_param_info(g_fx_params[2], g_fx_param_counts[2], km_param);
+                }
+                const char *type_str = (ki && (ki->type == KNOB_TYPE_INT || ki->type == KNOB_TYPE_ENUM)) ? "int" : "float";
+                float min_v = ki ? ki->min_val : 0.0f;
+                float max_v = ki ? ki->max_val : 1.0f;
                 int written = snprintf(knob_json + knob_off, sizeof(knob_json) - knob_off,
                     "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"type\":\"%s\",\"min\":%.3f,\"max\":%.3f}",
                     (i > 0) ? "," : "",
@@ -3044,8 +3566,7 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
                     p->knob_mappings[i].target,
                     p->knob_mappings[i].param,
                     type_str,
-                    p->knob_mappings[i].min_val,
-                    p->knob_mappings[i].max_val);
+                    min_v, max_v);
                 if (written > 0 && knob_off + written < (int)sizeof(knob_json) - 1) {
                     knob_off += written;
                 } else {
@@ -3157,20 +3678,16 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
         }
         strcat(fx_json, "]");
 
-        /* Build knob_mappings JSON array with CURRENT values */
+        /* Build knob_mappings JSON array with CURRENT values (type/min/max from chain_params) */
         char knob_json[2048] = "[";
         for (int i = 0; i < g_knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
             if (i > 0) strcat(knob_json, ",");
             char knob_item[256];
-            const char *type_str = (g_knob_mappings[i].type == KNOB_TYPE_INT) ? "int" : "float";
             snprintf(knob_item, sizeof(knob_item),
-                "{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"type\":\"%s\",\"min\":%.3f,\"max\":%.3f,\"value\":%.3f}",
+                "{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f}",
                 g_knob_mappings[i].cc,
                 g_knob_mappings[i].target,
                 g_knob_mappings[i].param,
-                type_str,
-                g_knob_mappings[i].min_val,
-                g_knob_mappings[i].max_val,
                 g_knob_mappings[i].current_value);
             strcat(knob_json, knob_item);
         }
@@ -3312,6 +3829,7 @@ static void v2_unload_midi_source(chain_instance_t *inst);
 static int v2_load_synth(chain_instance_t *inst, const char *module_name);
 static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name);
 static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch);
+static int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch);
 static int v2_scan_patches(chain_instance_t *inst);
 static int v2_load_patch(chain_instance_t *inst, int patch_idx);
 
@@ -3462,6 +3980,7 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
         inst->fx_plugins_v2[i] = NULL;
         inst->fx_instances[i] = NULL;
         inst->fx_is_v2[i] = 0;
+        inst->fx_on_midi[i] = NULL;
         inst->fx_param_counts[i] = 0;
         inst->current_fx_modules[i][0] = '\0';
     }
@@ -3491,6 +4010,7 @@ static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     inst->fx_plugins_v2[slot] = NULL;
     inst->fx_instances[slot] = NULL;
     inst->fx_is_v2[slot] = 0;
+    inst->fx_on_midi[slot] = NULL;
     inst->fx_param_counts[slot] = 0;
     inst->current_fx_modules[slot][0] = '\0';
 }
@@ -3564,12 +4084,29 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
     inst->fx_instances[slot] = fx_inst;
     inst->fx_is_v2[slot] = 1;
 
+    /* Check for optional MIDI handler (e.g. ducker) */
+    {
+        typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
+        inst->fx_on_midi[slot] = (fx_on_midi_fn)dlsym(handle, "move_audio_fx_on_midi");
+    }
+
     /* Track the loaded module name */
     strncpy(inst->current_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
     inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse audio FX parameters");
+        api->destroy_instance(fx_inst);
+        dlclose(handle);
+        inst->fx_handles[slot] = NULL;
+        inst->fx_plugins_v2[slot] = NULL;
+        inst->fx_instances[slot] = NULL;
+        inst->fx_is_v2[slot] = 0;
+        inst->fx_on_midi[slot] = NULL;
+        inst->current_fx_modules[slot][0] = '\0';
+        return -1;
+    }
 
     /* Update fx_count to include this slot */
     if (slot >= inst->fx_count) {
@@ -3616,10 +4153,6 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     strncpy(module_name_copy, module_name, MAX_NAME_LEN - 1);
     module_name_copy[MAX_NAME_LEN - 1] = '\0';
     module_name = module_name_copy;  /* Use local copy from now on */
-
-    /* Debug: log input module_name at entry */
-    snprintf(msg, sizeof(msg), "v2_load_synth ENTRY: module_name='%s'", module_name);
-    v2_chain_log(inst, msg);
 
     /* Build path to synth module - all sound generators in modules/sound_generators/ */
     snprintf(synth_path, sizeof(synth_path), "%s/../sound_generators/%s",
@@ -3671,7 +4204,16 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
+    if (parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse synth parameters");
+        api->destroy_instance(synth_inst);
+        dlclose(handle);
+        inst->synth_handle = NULL;
+        inst->synth_plugin_v2 = NULL;
+        inst->synth_instance = NULL;
+        inst->current_synth_module[0] = '\0';
+        return -1;
+    }
 
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
@@ -3760,12 +4302,29 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
     inst->fx_instances[slot] = fx_inst;
     inst->fx_is_v2[slot] = 1;
 
+    /* Check for optional MIDI handler (e.g. ducker) */
+    {
+        typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
+        inst->fx_on_midi[slot] = (fx_on_midi_fn)dlsym(handle, "move_audio_fx_on_midi");
+    }
+
     /* Track the loaded module name */
     strncpy(inst->current_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
     inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
     /* Parse chain_params from module.json for type info */
-    parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]);
+    if (parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]) < 0) {
+        v2_chain_log(inst, "ERROR: Failed to parse audio FX parameters");
+        api->destroy_instance(fx_inst);
+        dlclose(handle);
+        inst->fx_handles[slot] = NULL;
+        inst->fx_plugins_v2[slot] = NULL;
+        inst->fx_instances[slot] = NULL;
+        inst->fx_is_v2[slot] = 0;
+        inst->fx_on_midi[slot] = NULL;
+        inst->current_fx_modules[slot][0] = '\0';
+        return -1;
+    }
 
     inst->fx_count++;
 
@@ -4117,11 +4676,14 @@ static int save_master_preset(const char *json_str) {
 
     /* Debug: log incoming JSON and extracted name */
     {
-        FILE *dbg = fopen("/tmp/save_preset_debug.log", "a");
-        if (dbg) {
-            fprintf(dbg, "json_str='%.200s'\n", json_str);
-            fprintf(dbg, "extracted name='%s' len=%zu\n", name, strlen(name));
-            fclose(dbg);
+        struct stat st;
+        if (stat(CHAIN_DEBUG_FLAG_PATH, &st) == 0) {
+            FILE *dbg = fopen(CHAIN_DEBUG_LOG_PATH, "a");
+            if (dbg) {
+                fprintf(dbg, "save_master_preset json='%.200s'\n", json_str);
+                fprintf(dbg, "save_master_preset name='%s' len=%zu\n", name, strlen(name));
+                fclose(dbg);
+            }
         }
     }
 
@@ -4288,7 +4850,9 @@ static int load_master_preset_json(int index, char *buf, int buf_len) {
 
 /* Debug logging helper for parsing */
 static void parse_debug_log(const char *msg) {
-    FILE *dbg = fopen("/tmp/chain_parse_debug.txt", "a");
+    struct stat st;
+    if (stat(CHAIN_DEBUG_FLAG_PATH, &st) != 0) return;
+    FILE *dbg = fopen(CHAIN_DEBUG_LOG_PATH, "a");
     if (dbg) {
         fprintf(dbg, "%s\n", msg);
         fclose(dbg);
@@ -4310,7 +4874,7 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 8192) {
+    if (size <= 0 || size > 16384) {
         fclose(f);
         return -1;
     }
@@ -4866,10 +5430,13 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                     }
                 }
 
-                /* Defaults */
-                m->min_val = 0.0f;
-                m->max_val = 1.0f;
-                m->current_value = 0.5f;
+                /* Parse saved value if present */
+                m->current_value = -999999.0f;  /* Sentinel: no saved value */
+                const char *val_pos = strstr(obj_start, "\"value\"");
+                if (val_pos && val_pos < obj_end) {
+                    const char *colon = strchr(val_pos, ':');
+                    if (colon) m->current_value = strtof(colon + 1, NULL);
+                }
 
                 if (m->cc >= KNOB_CC_START && m->cc <= KNOB_CC_END && m->param[0]) {
                     patch->knob_mapping_count++;
@@ -4889,14 +5456,12 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
 }
 
 /* V2 load patch */
-static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
+static int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
     char msg[256];
 
-    if (!inst || patch_idx < 0 || patch_idx >= inst->patch_count) {
+    if (!inst || !patch) {
         return -1;
     }
-
-    patch_info_t *patch = &inst->patches[patch_idx];
 
     snprintf(msg, sizeof(msg), "Loading patch: %s (synth=%s, %d FX)",
              patch->name, patch->synth_module, patch->audio_fx_count);
@@ -4923,6 +5488,22 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
             inst->synth_plugin_v2->set_param(inst->synth_instance, "preset", preset_str);
         } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
             inst->synth_plugin->set_param("preset", preset_str);
+        }
+
+        /* Reset mod wheel (CC 1) to 0 BEFORE state restore.
+         * This clears stale mod wheel values from Move's track state,
+         * but must happen before state restore so saved param values
+         * (e.g. Braids FM which is mapped to CC 1) are not clobbered. */
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+            for (int ch = 0; ch < 16; ch++) {
+                uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};
+                inst->synth_plugin_v2->on_midi(inst->synth_instance, mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
+            }
+        } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
+            for (int ch = 0; ch < 16; ch++) {
+                uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};
+                inst->synth_plugin->on_midi(mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
+            }
         }
 
         /* Apply saved state if present */
@@ -5027,78 +5608,77 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
         }
     }
 
-    /* Copy knob mappings to instance */
+    /* Copy knob mappings to instance and initialize current values */
     inst->knob_mapping_count = patch->knob_mapping_count;
     memcpy(inst->knob_mappings, patch->knob_mappings,
            sizeof(knob_mapping_t) * patch->knob_mapping_count);
 
-    /* Look up param info for each knob mapping to get correct type/min/max */
+    /* Sync knob current_value from actual DSP state.
+     * The saved value may be stale if params were changed via module UI,
+     * so always read the real value from the plugin after state restore. */
     for (int i = 0; i < inst->knob_mapping_count; i++) {
         const char *target = inst->knob_mappings[i].target;
         const char *param = inst->knob_mappings[i].param;
-        chain_param_info_t *pinfo = NULL;
 
-        if (strcmp(target, "synth") == 0) {
-            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+        char val_buf[64];
+        int got = -1;
+        if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
+            got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0 &&
+                   inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
+            got = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1 &&
+                   inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
+            got = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0 &&
+                   inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
+            got = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], param, val_buf, sizeof(val_buf));
+        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1 &&
+                   inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
+            got = inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], param, val_buf, sizeof(val_buf));
         }
 
-        if (pinfo) {
-            inst->knob_mappings[i].type = pinfo->type;
-            inst->knob_mappings[i].min_val = pinfo->min_val;
-            /* Handle dynamic max (e.g., preset_count) */
-            if (pinfo->max_val < 0 && pinfo->max_param[0]) {
-                char max_buf[32];
-                if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
-                    if (inst->synth_plugin_v2->get_param(inst->synth_instance, pinfo->max_param, max_buf, sizeof(max_buf)) >= 0) {
-                        inst->knob_mappings[i].max_val = (float)(atoi(max_buf) - 1);
-                    } else {
-                        inst->knob_mappings[i].max_val = 9999.0f;
-                    }
-                } else {
-                    inst->knob_mappings[i].max_val = 9999.0f;
-                }
+        chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+        if (got > 0) {
+            inst->knob_mappings[i].current_value = dsp_value_to_float(
+                val_buf, pinfo, pinfo ? (pinfo->min_val + pinfo->max_val) / 2.0f : 0.5f);
+        } else if (pinfo) {
+            /* No DSP read — use saved value or midpoint */
+            float saved = patch->knob_mappings[i].current_value;
+            if (saved > -999998.0f) {
+                if (saved < pinfo->min_val) saved = pinfo->min_val;
+                if (saved > pinfo->max_val) saved = pinfo->max_val;
+                inst->knob_mappings[i].current_value = saved;
             } else {
-                inst->knob_mappings[i].max_val = pinfo->max_val;
+                inst->knob_mappings[i].current_value = (pinfo->min_val + pinfo->max_val) / 2.0f;
             }
-            /* Initialize to middle of range */
-            float mid = (inst->knob_mappings[i].min_val + inst->knob_mappings[i].max_val) / 2.0f;
-            if (pinfo->type == KNOB_TYPE_INT) {
-                inst->knob_mappings[i].current_value = (float)((int)mid);
-            } else {
-                inst->knob_mappings[i].current_value = mid;
-            }
+        } else {
+            inst->knob_mappings[i].current_value = 0.5f;
         }
     }
 
     /* Copy other settings */
     inst->midi_input = patch->midi_input;
 
-    inst->current_patch = patch_idx;
     inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
     snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
     v2_chain_log(inst, msg);
 
-    /* Reset mod wheel (CC 1) to 0 on all channels after patch load.
-     * This prevents stale mod wheel values from Move's track state
-     * causing unwanted vibrato on startup. */
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
-        for (int ch = 0; ch < 16; ch++) {
-            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};  /* CC 1 = mod wheel */
-            inst->synth_plugin_v2->on_midi(inst->synth_instance, mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
-        }
-    } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
-        for (int ch = 0; ch < 16; ch++) {
-            uint8_t mod_reset[3] = {(uint8_t)(0xB0 | ch), 1, 0};  /* CC 1 = mod wheel */
-            inst->synth_plugin->on_midi(mod_reset, 3, MOVE_MIDI_SOURCE_HOST);
-        }
+    return 0;
+}
+
+static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
+    if (!inst || patch_idx < 0 || patch_idx >= inst->patch_count) {
+        return -1;
     }
 
-    return 0;
+    int rc = v2_load_from_patch_info(inst, &inst->patches[patch_idx]);
+    if (rc == 0) {
+        inst->current_patch = patch_idx;
+        inst->dirty = 0;
+    }
+    return rc;
 }
 
 /* ==========================================================================
@@ -5129,12 +5709,45 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || len < 1) return;
 
+    /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
+     * Skip synth, MIDI FX, and knob handling - this MIDI is from a
+     * different channel than the slot's target. */
+    if (source == MOVE_MIDI_SOURCE_FX_BROADCAST) {
+        for (int f = 0; f < inst->fx_count; f++) {
+            if (inst->fx_on_midi[f] && inst->fx_instances[f]) {
+                inst->fx_on_midi[f](inst->fx_instances[f], msg, len, source);
+            }
+        }
+        return;
+    }
+
     /* Handle knob CC mappings */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
         uint8_t cc = msg[1];
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
+                    /* Look up parameter metadata dynamically */
+                    const char *target = inst->knob_mappings[i].target;
+                    const char *param = inst->knob_mappings[i].param;
+                    chain_param_info_t *pinfo = NULL;
+
+                    if (strcmp(target, "synth") == 0) {
+                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
+                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
+                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
+                    }
+
+                    if (!pinfo) continue;  /* Skip if param not found */
+
                     /* Calculate acceleration based on time between events */
                     uint64_t now = get_time_ms();
                     uint64_t last = inst->knob_last_time_ms[i];
@@ -5153,9 +5766,17 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                         }
                     }
 
+                    /* Cap acceleration: enums never accelerate, ints limited */
+                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
+                    if (pinfo->type == KNOB_TYPE_ENUM) {
+                        accel = KNOB_ACCEL_ENUM_MULT;
+                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                        accel = KNOB_ACCEL_MAX_MULT_INT;
+                    }
+
                     /* Relative encoder: apply acceleration to base step */
-                    int is_int = (inst->knob_mappings[i].type == KNOB_TYPE_INT);
-                    float base_step = is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT;
+                    float base_step = (pinfo->step > 0) ? pinfo->step
+                        : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
                     float delta = 0.0f;
                     if (msg[2] == 1) {
                         delta = base_step * accel;
@@ -5166,8 +5787,8 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                     }
 
                     float new_val = inst->knob_mappings[i].current_value + delta;
-                    if (new_val < inst->knob_mappings[i].min_val) new_val = inst->knob_mappings[i].min_val;
-                    if (new_val > inst->knob_mappings[i].max_val) new_val = inst->knob_mappings[i].max_val;
+                    if (new_val < pinfo->min_val) new_val = pinfo->min_val;
+                    if (new_val > pinfo->max_val) new_val = pinfo->max_val;
                     if (is_int) new_val = (float)((int)new_val);  /* Round to int */
                     inst->knob_mappings[i].current_value = new_val;
 
@@ -5178,10 +5799,6 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                     } else {
                         snprintf(val_str, sizeof(val_str), "%.3f", new_val);
                     }
-
-                    /* Route to target */
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
 
                     if (strcmp(target, "synth") == 0) {
                         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
@@ -5227,6 +5844,15 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             inst->synth_plugin->on_midi(out_msgs[i], out_lens[i], source);
         }
     }
+
+    /* Forward MIDI to audio FX that have on_midi (e.g. ducker) */
+    for (int f = 0; f < inst->fx_count; f++) {
+        if (inst->fx_on_midi[f] && inst->fx_instances[f]) {
+            for (int j = 0; j < out_count; j++) {
+                inst->fx_on_midi[f](inst->fx_instances[f], out_msgs[j], out_lens[j], source);
+            }
+        }
+    }
 }
 
 /* V2 set_param handler */
@@ -5257,6 +5883,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         /* Save new patch to disk, then rescan this instance's patch list */
         v2_save_patch(inst, val);
         v2_scan_patches(inst);
+        inst->dirty = 0;
     }
     else if (strcmp(key, "delete_patch") == 0) {
         int index = atoi(val);
@@ -5270,6 +5897,29 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             int index = atoi(val);
             v2_update_patch(inst, index, colon + 1);
             v2_scan_patches(inst);
+            inst->dirty = 0;
+        }
+    }
+    else if (strcmp(key, "load_file") == 0) {
+        /* Load patch from arbitrary file path (used for autosave restore) */
+        patch_info_t temp_patch;
+        memset(&temp_patch, 0, sizeof(temp_patch));
+        if (v2_parse_patch_file(inst, val, &temp_patch) == 0) {
+            v2_load_from_patch_info(inst, &temp_patch);
+            inst->current_patch = -1;  /* Not from library */
+            /* Check for "modified" field to restore dirty state */
+            FILE *mf = fopen(val, "r");
+            if (mf) {
+                char mbuf[256];
+                inst->dirty = 0;
+                while (fgets(mbuf, sizeof(mbuf), mf)) {
+                    if (strstr(mbuf, "\"modified\"") && strstr(mbuf, "true")) {
+                        inst->dirty = 1;
+                        break;
+                    }
+                }
+                fclose(mf);
+            }
         }
     }
     /* Master preset commands */
@@ -5302,12 +5952,15 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 /* Clearing synth - also clear knob mappings */
                 inst->knob_mapping_count = 0;
             }
+            inst->dirty = 1;
         } else {
-            /* Check if this is a smoothable float param */
+            /* Only smooth float params — int/enum values must not be interpolated */
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                /* Store target for smoothing - will be applied in render_block */
-                smoother_set_target(&inst->synth_smoother, subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->synth_params, inst->synth_param_count, subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->synth_smoother, subkey, fval);
+                }
             }
             /* Always forward immediately (smoother will override with interpolated values) */
             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
@@ -5315,6 +5968,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
                 inst->synth_plugin->set_param(subkey, val);
             }
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "fx1:", 4) == 0) {
@@ -5324,16 +5978,21 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 0, val);
             smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
+            inst->dirty = 1;
         } else if (inst->fx_count > 0) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                }
             }
             if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
                 inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
             } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
                 inst->fx_plugins[0]->set_param(subkey, val);
             }
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "fx2:", 4) == 0) {
@@ -5343,16 +6002,21 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 1, val);
             smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
+            inst->dirty = 1;
         } else if (inst->fx_count > 1) {
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], subkey);
+                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
+                    smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
+                }
             }
             if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
                 inst->fx_plugins[1]->set_param(subkey, val);
             }
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "midi_fx1:", 9) == 0) {
@@ -5366,8 +6030,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_midi_fx(inst, val);
             }
+            inst->dirty = 1;
         } else if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
             inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], subkey, val);
+            inst->dirty = 1;
         }
     }
     else if (strncmp(key, "midi_fx2:", 9) == 0) {
@@ -5378,8 +6044,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_midi_fx(inst, val);
             }
+            inst->dirty = 1;
         } else if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
             inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], subkey, val);
+            inst->dirty = 1;
         }
     }
     /* Knob mapping set: knob_N_set with value "target:param" */
@@ -5432,16 +6100,11 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 
                     /* Set mapping */
                     if (found >= 0) {
-                        /* Update existing - also update type/range from param info */
+                        /* Update existing (type/min/max looked up dynamically from pinfo) */
                         strncpy(inst->knob_mappings[found].target, target, sizeof(inst->knob_mappings[found].target) - 1);
                         inst->knob_mappings[found].target[sizeof(inst->knob_mappings[found].target) - 1] = '\0';
                         strncpy(inst->knob_mappings[found].param, param, sizeof(inst->knob_mappings[found].param) - 1);
                         inst->knob_mappings[found].param[sizeof(inst->knob_mappings[found].param) - 1] = '\0';
-                        if (pinfo) {
-                            inst->knob_mappings[found].type = pinfo->type;
-                            inst->knob_mappings[found].min_val = pinfo->min_val;
-                            inst->knob_mappings[found].max_val = pinfo->max_val;
-                        }
                     } else if (inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
                         /* Add new */
                         int i = inst->knob_mapping_count++;
@@ -5451,20 +6114,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         strncpy(inst->knob_mappings[i].param, param, sizeof(inst->knob_mappings[i].param) - 1);
                         inst->knob_mappings[i].param[sizeof(inst->knob_mappings[i].param) - 1] = '\0';
                         if (pinfo) {
-                            /* Use actual param type and range */
-                            inst->knob_mappings[i].type = pinfo->type;
-                            inst->knob_mappings[i].min_val = pinfo->min_val;
-                            inst->knob_mappings[i].max_val = pinfo->max_val;
                             inst->knob_mappings[i].current_value = pinfo->default_val;
                         } else {
-                            /* Fallback to defaults if param not found */
-                            inst->knob_mappings[i].type = KNOB_TYPE_FLOAT;
-                            inst->knob_mappings[i].min_val = 0.0f;
-                            inst->knob_mappings[i].max_val = 1.0f;
                             inst->knob_mappings[i].current_value = 0.5f;
                         }
                     }
                 }
+                inst->dirty = 1;
             }
             else if (strcmp(action, "clear") == 0) {
                 /* Remove mapping for this CC */
@@ -5475,6 +6131,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                             inst->knob_mappings[j] = inst->knob_mappings[j + 1];
                         }
                         inst->knob_mapping_count--;
+                        inst->dirty = 1;
                         break;
                     }
                 }
@@ -5487,6 +6144,27 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 /* Find mapping for this CC */
                 for (int i = 0; i < inst->knob_mapping_count; i++) {
                     if (inst->knob_mappings[i].cc == cc) {
+                        /* Look up parameter metadata */
+                        const char *target = inst->knob_mappings[i].target;
+                        const char *param = inst->knob_mappings[i].param;
+                        chain_param_info_t *pinfo = NULL;
+
+                        if (strcmp(target, "synth") == 0) {
+                            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
+                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                        } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
+                            pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+                        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+                            pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+                        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+                            pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
+                        }
+
+                        if (!pinfo) continue;  /* Skip if param not found */
+
                         /* Calculate acceleration based on time between events */
                         uint64_t now = get_time_ms();
                         uint64_t last = inst->knob_last_time_ms[i];
@@ -5494,25 +6172,31 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         int accel = KNOB_ACCEL_MIN_MULT;
                         if (last > 0) {
                             uint64_t elapsed = now - last;
-                            if (elapsed < 50) accel = KNOB_ACCEL_MAX_MULT;
-                            else if (elapsed < 100) accel = 4;
-                            else if (elapsed < 200) accel = 2;
+                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
+                                accel = KNOB_ACCEL_MAX_MULT;
+                            } else if (elapsed < KNOB_ACCEL_SLOW_MS) {
+                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
+                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
+                            }
                         }
 
-                        /* Calculate step based on type, with acceleration */
-                        int is_int = (inst->knob_mappings[i].type == KNOB_TYPE_INT);
-                        /* Cap acceleration for ints to avoid jumping too far */
-                        if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                        /* Cap acceleration: enums never accelerate, ints limited */
+                        int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
+                        if (pinfo->type == KNOB_TYPE_ENUM) {
+                            accel = KNOB_ACCEL_ENUM_MULT;
+                        } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                             accel = KNOB_ACCEL_MAX_MULT_INT;
                         }
-                        /* Use larger step for adjust (0.01 = 1% per click) vs tiny KNOB_STEP_FLOAT */
-                        float base_step = is_int ? (float)KNOB_STEP_INT : 0.01f;
+                        /* Use step from param metadata, or 0.01 default for shadow adjust */
+                        float base_step = (pinfo->step > 0) ? pinfo->step
+                            : (is_int ? (float)KNOB_STEP_INT : 0.01f);
                         float delta = base_step * accel * (delta_int > 0 ? 1 : -1);
 
                         /* Apply delta with clamping */
                         float new_val = inst->knob_mappings[i].current_value + delta;
-                        if (new_val < inst->knob_mappings[i].min_val) new_val = inst->knob_mappings[i].min_val;
-                        if (new_val > inst->knob_mappings[i].max_val) new_val = inst->knob_mappings[i].max_val;
+                        if (new_val < pinfo->min_val) new_val = pinfo->min_val;
+                        if (new_val > pinfo->max_val) new_val = pinfo->max_val;
                         if (is_int) new_val = (float)((int)new_val);  /* Round to int */
                         inst->knob_mappings[i].current_value = new_val;
 
@@ -5523,10 +6207,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         } else {
                             snprintf(val_str, sizeof(val_str), "%.3f", new_val);
                         }
-
-                        /* Route to target */
-                        const char *target = inst->knob_mappings[i].target;
-                        const char *param = inst->knob_mappings[i].param;
 
                         if (strcmp(target, "synth") == 0) {
                             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
@@ -5547,6 +6227,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                                 inst->fx_plugins[1]->set_param(param, val_str);
                             }
                         }
+                        inst->dirty = 1;
                         break;
                     }
                 }
@@ -5562,11 +6243,73 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     }
 }
 
+/*
+ * Convert a DSP get_param return string to a float value.
+ * Handles numeric strings directly. For non-numeric strings (enum labels),
+ * looks up the index in the param's options list.
+ * Returns the float value, or fallback if conversion fails.
+ */
+static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback) {
+    char *endptr;
+    float v = strtof(val_str, &endptr);
+    if (endptr != val_str) {
+        return v;  /* Parsed a number */
+    }
+    /* Non-numeric — try enum option lookup */
+    if (pinfo && pinfo->type == KNOB_TYPE_ENUM) {
+        for (int j = 0; j < pinfo->option_count; j++) {
+            if (strcmp(val_str, pinfo->options[j]) == 0) {
+                return (float)j;
+            }
+        }
+    }
+    return fallback;
+}
+
+/*
+ * Find parameter metadata by target and key.
+ */
+static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target, const char *key) {
+    if (strcmp(target, "synth") == 0) {
+        for (int i = 0; i < inst->synth_param_count; i++) {
+            if (strcmp(inst->synth_params[i].key, key) == 0) {
+                return &inst->synth_params[i];
+            }
+        }
+    } else if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
+            for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
+                if (strcmp(inst->fx_params[fx_slot][i].key, key) == 0) {
+                    return &inst->fx_params[fx_slot][i];
+                }
+            }
+        }
+    } else if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;  /* Default to slot 0 */
+        if (target[7] != '\0') {
+            /* Parse midi_fx1, midi_fx2, etc. */
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
+            for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
+                if (strcmp(inst->midi_fx_params[midi_fx_slot][i].key, key) == 0) {
+                    return &inst->midi_fx_params[midi_fx_slot][i];
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
 /* V2 get_param handler */
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return -1;
 
+    if (strcmp(key, "dirty") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->dirty);
+    }
     if (strcmp(key, "patch_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->patch_count);
     }
@@ -5641,6 +6384,47 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
 
     /* Knob mapping info */
+    if (strcmp(key, "knob_mappings") == 0) {
+        /* Return full knob mappings array as JSON for patch saving.
+         * Read ACTUAL current values from DSP plugins, not the knob
+         * tracking value which may be stale if params were changed
+         * via module UI or state restore. */
+        int off = 0;
+        off += snprintf(buf + off, buf_len - off, "[");
+        for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
+            const char *target = inst->knob_mappings[i].target;
+            const char *param = inst->knob_mappings[i].param;
+            float value = inst->knob_mappings[i].current_value;
+
+            /* Try to read actual value from DSP plugin */
+            char val_buf[64];
+            int got = -1;
+            if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
+                got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
+            } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0 &&
+                       inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
+                got = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], param, val_buf, sizeof(val_buf));
+            } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1 &&
+                       inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
+                got = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], param, val_buf, sizeof(val_buf));
+            } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0 &&
+                       inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
+                got = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], param, val_buf, sizeof(val_buf));
+            }
+            if (got > 0) {
+                chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+                value = dsp_value_to_float(val_buf, pinfo, value);
+            }
+
+            off += snprintf(buf + off, buf_len - off,
+                "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f}",
+                (i > 0) ? "," : "",
+                inst->knob_mappings[i].cc, target, param, value);
+            if (off >= buf_len - 1) break;
+        }
+        off += snprintf(buf + off, buf_len - off, "]");
+        return off;
+    }
     if (strcmp(key, "knob_mapping_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->knob_mapping_count);
     }
@@ -5653,66 +6437,62 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             int cc = 70 + knob_num;
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
+                    /* Look up param info for all queries */
+                    const char *target = inst->knob_mappings[i].target;
+                    const char *param = inst->knob_mappings[i].param;
+                    chain_param_info_t *pinfo = NULL;
+
+                    if (strcmp(target, "synth") == 0) {
+                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
+                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
+                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
+                    }
+
                     if (strcmp(query_param, "name") == 0) {
                         /* Construct display name from target and param */
-                        return snprintf(buf, buf_len, "%s: %s",
-                                        inst->knob_mappings[i].target,
-                                        inst->knob_mappings[i].param);
+                        return snprintf(buf, buf_len, "%s: %s", target, param);
                     }
                     else if (strcmp(query_param, "target") == 0) {
-                        return snprintf(buf, buf_len, "%s", inst->knob_mappings[i].target);
+                        return snprintf(buf, buf_len, "%s", target);
                     }
                     else if (strcmp(query_param, "param") == 0) {
-                        return snprintf(buf, buf_len, "%s", inst->knob_mappings[i].param);
+                        return snprintf(buf, buf_len, "%s", param);
                     }
                     else if (strcmp(query_param, "value") == 0) {
-                        /* Look up param info to check for enum type */
-                        const char *target = inst->knob_mappings[i].target;
-                        const char *param = inst->knob_mappings[i].param;
-                        chain_param_info_t *pinfo = NULL;
-                        if (strcmp(target, "synth") == 0) {
-                            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                        /* Look up param metadata */
+                        chain_param_info_t *param_info = find_param_by_key(inst, target, param);
+                        if (param_info) {
+                            /* Use centralized formatting */
+                            return format_param_value(param_info, inst->knob_mappings[i].current_value, buf, buf_len);
                         }
-                        /* If enum, return option label */
-                        if (pinfo && strcmp(pinfo->type_str, "enum") == 0 && pinfo->option_count > 0) {
-                            int idx = (int)(inst->knob_mappings[i].current_value + 0.5f);
-                            if (idx < 0) idx = 0;
-                            if (idx >= pinfo->option_count) idx = pinfo->option_count - 1;
-                            return snprintf(buf, buf_len, "%s", pinfo->options[idx]);
-                        }
-                        if (inst->knob_mappings[i].type == KNOB_TYPE_INT) {
+                        /* Fallback for params without metadata */
+                        if (pinfo && pinfo->type == KNOB_TYPE_INT) {
                             return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].current_value);
                         } else {
                             return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].current_value);
                         }
                     }
                     else if (strcmp(query_param, "min") == 0) {
-                        return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].min_val);
+                        return snprintf(buf, buf_len, "%.2f", pinfo ? pinfo->min_val : 0.0f);
                     }
                     else if (strcmp(query_param, "max") == 0) {
-                        return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].max_val);
+                        return snprintf(buf, buf_len, "%.2f", pinfo ? pinfo->max_val : 1.0f);
                     }
                     else if (strcmp(query_param, "type") == 0) {
-                        /* Look up param info to check for enum type */
-                        const char *target = inst->knob_mappings[i].target;
-                        const char *param = inst->knob_mappings[i].param;
-                        chain_param_info_t *pinfo = NULL;
-                        if (strcmp(target, "synth") == 0) {
-                            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+                        if (pinfo) {
+                            const char *type_str = (pinfo->type == KNOB_TYPE_INT) ? "int" :
+                                                   (pinfo->type == KNOB_TYPE_ENUM) ? "enum" : "float";
+                            return snprintf(buf, buf_len, "%s", type_str);
                         }
-                        if (pinfo && pinfo->type_str[0]) {
-                            return snprintf(buf, buf_len, "%s", pinfo->type_str);
-                        }
-                        return snprintf(buf, buf_len, "%s",
-                                        inst->knob_mappings[i].type == KNOB_TYPE_INT ? "int" : "float");
+                        return snprintf(buf, buf_len, "float");  /* Fallback */
                     }
                     break;
                 }
@@ -5724,16 +6504,6 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route synth: prefixed params to synth (strip prefix) */
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
-
-        /* Debug: log ui_hierarchy queries */
-        if (strcmp(subkey, "ui_hierarchy") == 0) {
-            char dbg[512];
-            snprintf(dbg, sizeof(dbg), "ui_hierarchy query: synth_plugin_v2=%p synth_instance=%p get_param=%p current_synth_module='%s'",
-                     (void*)inst->synth_plugin_v2, (void*)inst->synth_instance,
-                     inst->synth_plugin_v2 ? (void*)inst->synth_plugin_v2->get_param : NULL,
-                     inst->current_synth_module);
-            v2_chain_log(inst, dbg);
-        }
 
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {
@@ -5757,19 +6527,28 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->synth_param_count && offset < buf_len - 100; i++) {
                     chain_param_info_t *p = &inst->synth_params[i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     offset += snprintf(buf + offset, buf_len - offset,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
+                        type_str,
                         p->min_val, p->max_val);
                     /* Add options array for enum types */
-                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
                         for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
                             if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                             offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
                         }
                         offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
@@ -5808,19 +6587,28 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->fx_param_counts[0] && offset < buf_len - 100; i++) {
                     chain_param_info_t *p = &inst->fx_params[0][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     offset += snprintf(buf + offset, buf_len - offset,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
+                        type_str,
                         p->min_val, p->max_val);
                     /* Add options array for enum types */
-                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
                         for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
                             if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                             offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
                         }
                         offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
@@ -5861,19 +6649,28 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 for (int i = 0; i < inst->fx_param_counts[1] && offset < buf_len - 100; i++) {
                     chain_param_info_t *p = &inst->fx_params[1][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     offset += snprintf(buf + offset, buf_len - offset,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
                         p->key, p->name[0] ? p->name : p->key,
-                        p->type_str[0] ? p->type_str : (p->type == KNOB_TYPE_INT ? "int" : "float"),
+                        type_str,
                         p->min_val, p->max_val);
                     /* Add options array for enum types */
-                    if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
                         for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
                             if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                             offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
                         }
                         offset += snprintf(buf + offset, buf_len - offset, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     offset += snprintf(buf + offset, buf_len - offset, "}");
                 }
@@ -5907,27 +6704,42 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             return -1;
         }
-        /* For chain_params: return parsed module.json data */
+        /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 0) {
+            /* Try plugin's own chain_params handler first */
+            if (inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->get_param) {
+                int result = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], subkey, buf, buf_len);
+                if (result > 0) return result;
+            }
+            /* Fall back to parsed module.json data */
             if (inst->midi_fx_param_counts[0] > 0) {
                 int written = snprintf(buf, buf_len, "[");
                 for (int i = 0; i < inst->midi_fx_param_counts[0] && written < buf_len - 10; i++) {
                     chain_param_info_t *p = &inst->midi_fx_params[0][i];
                     if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     written += snprintf(buf + written, buf_len - written,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
-                        p->key, p->name, p->type_str);
-                    if (strcmp(p->type_str, "float") == 0 || strcmp(p->type_str, "int") == 0) {
+                        p->key, p->name, type_str);
+                    if (p->type == KNOB_TYPE_FLOAT || p->type == KNOB_TYPE_INT) {
                         written += snprintf(buf + written, buf_len - written,
                             ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
                             p->min_val, p->max_val, p->default_val);
-                    } else if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    } else if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         written += snprintf(buf + written, buf_len - written, ",\"options\":[");
                         for (int j = 0; j < p->option_count; j++) {
                             if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
                             written += snprintf(buf + written, buf_len - written, "\"%s\"", p->options[j]);
                         }
                         written += snprintf(buf + written, buf_len - written, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     written += snprintf(buf + written, buf_len - written, "}");
                 }
@@ -5956,27 +6768,42 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             return -1;
         }
-        /* For chain_params: return parsed module.json data */
+        /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 1) {
+            /* Try plugin's own chain_params handler first */
+            if (inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->get_param) {
+                int result = inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], subkey, buf, buf_len);
+                if (result > 0) return result;
+            }
+            /* Fall back to parsed module.json data */
             if (inst->midi_fx_param_counts[1] > 0) {
                 int written = snprintf(buf, buf_len, "[");
                 for (int i = 0; i < inst->midi_fx_param_counts[1] && written < buf_len - 10; i++) {
                     chain_param_info_t *p = &inst->midi_fx_params[1][i];
                     if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
+                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
                     written += snprintf(buf + written, buf_len - written,
                         "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
-                        p->key, p->name, p->type_str);
-                    if (strcmp(p->type_str, "float") == 0 || strcmp(p->type_str, "int") == 0) {
+                        p->key, p->name, type_str);
+                    if (p->type == KNOB_TYPE_FLOAT || p->type == KNOB_TYPE_INT) {
                         written += snprintf(buf + written, buf_len - written,
                             ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
                             p->min_val, p->max_val, p->default_val);
-                    } else if (strcmp(p->type_str, "enum") == 0 && p->option_count > 0) {
+                    } else if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
                         written += snprintf(buf + written, buf_len - written, ",\"options\":[");
                         for (int j = 0; j < p->option_count; j++) {
                             if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
                             written += snprintf(buf + written, buf_len - written, "\"%s\"", p->options[j]);
                         }
                         written += snprintf(buf + written, buf_len - written, "]");
+                    }
+                    /* Add unit and display_format if present */
+                    if (p->unit[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"unit\":\"%s\"", p->unit);
+                    }
+                    if (p->display_format[0]) {
+                        written += snprintf(buf + written, buf_len - written, ",\"display_format\":\"%s\"", p->display_format);
                     }
                     written += snprintf(buf + written, buf_len - written, "}");
                 }
@@ -6065,6 +6892,25 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
     }
 
+    /* In external_fx_mode, output raw synth only — skip inject and FX.
+     * The shim reads Link Audio in the same frame as the mailbox,
+     * combines with this raw synth, and calls chain_process_fx(). */
+    if (inst->external_fx_mode) return;
+
+    /* Mix in external audio (e.g. Move track from Link Audio) before FX.
+     * This lets the FX chain process both synth and Move audio together. */
+    if (inst->inject_audio && inst->inject_audio_frames > 0) {
+        int samples = (inst->inject_audio_frames < frames ? inst->inject_audio_frames : frames) * 2;
+        for (int i = 0; i < samples; i++) {
+            int32_t mixed = (int32_t)out_interleaved_lr[i] + (int32_t)inst->inject_audio[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            out_interleaved_lr[i] = (int16_t)mixed;
+        }
+        inst->inject_audio = NULL;
+        inst->inject_audio_frames = 0;
+    }
+
     /* Process through audio FX chain */
     for (int i = 0; i < inst->fx_count; i++) {
         if (inst->fx_is_v2[i]) {
@@ -6106,3 +6952,42 @@ plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
 
     return &g_plugin_api_v2;
 }
+
+/* Exported: set external audio buffer to mix before FX processing.
+ * Called by shim to inject Move track audio from Link Audio ring buffers.
+ * The buffer is consumed (mixed + cleared) during the next render_block call. */
+void chain_set_inject_audio(void *instance, int16_t *buf, int frames) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->inject_audio = buf;
+    inst->inject_audio_frames = frames;
+}
+
+/* Exported: enable/disable external FX mode.
+ * When enabled, render_block outputs raw synth only (no inject, no FX).
+ * The caller is responsible for running chain_process_fx() separately. */
+void chain_set_external_fx_mode(void *instance, int mode) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->external_fx_mode = mode;
+}
+
+/* Exported: run only the audio FX chain on the provided buffer.
+ * Used by the shim for same-frame FX processing when external_fx_mode is set. */
+void chain_process_fx(void *instance, int16_t *buf, int frames) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    for (int i = 0; i < inst->fx_count; i++) {
+        if (inst->fx_is_v2[i]) {
+            if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
+                inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], buf, frames);
+            }
+        } else {
+            if (inst->fx_plugins[i] && inst->fx_plugins[i]->process_block) {
+                inst->fx_plugins[i]->process_block(buf, frames);
+            }
+        }
+    }
+}
+
+

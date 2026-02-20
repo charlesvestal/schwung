@@ -4,6 +4,7 @@
 
 import { getMenuLabelScroller } from './text_scroll.mjs';
 import { announceMenuItem, announceParameter } from './screen_reader.mjs';
+import { truncateText } from './chain_ui_views.mjs';
 
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
@@ -47,7 +48,7 @@ export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
     }
 }
 
-function drawArrowUp(x, y) {
+export function drawArrowUp(x, y) {
     set_pixel(x + 2, y, 1);
     set_pixel(x + 1, y + 1, 1);
     set_pixel(x + 3, y + 1, 1);
@@ -56,7 +57,7 @@ function drawArrowUp(x, y) {
     }
 }
 
-function drawArrowDown(x, y) {
+export function drawArrowDown(x, y) {
     for (let i = 0; i < 5; i++) {
         set_pixel(x + i, y, 1);
     }
@@ -202,11 +203,6 @@ export const menuLayoutDefaults = {
     listBottomNoFooter: LIST_INDICATOR_BOTTOM_Y
 };
 
-function truncateText(text, maxChars) {
-    if (text.length <= maxChars) return text;
-    if (maxChars <= 3) return text.slice(0, maxChars);
-    return `${text.slice(0, maxChars - 3)}...`;
-}
 
 /* === Parameter Overlay === */
 /* A centered overlay for showing parameter name and value feedback */
@@ -224,13 +220,14 @@ let overlayTimeout = 0;
  * Show the parameter overlay with a name and value
  * @param {string} name - Parameter name to display
  * @param {string} value - Value to display (e.g., "50%" or "3")
+ * @param {number} [durationTicks] - Optional custom duration in ticks
  */
-export function showOverlay(name, value) {
+export function showOverlay(name, value, durationTicks) {
     const sameContent = overlayActive && overlayName === name && overlayValue === value;
     overlayActive = true;
     overlayName = name;
     overlayValue = value;
-    overlayTimeout = OVERLAY_DURATION_TICKS;
+    overlayTimeout = durationTicks || OVERLAY_DURATION_TICKS;
     /* Announce only when content changes to avoid per-frame D-Bus spam. */
     if (!sameContent) {
         announceParameter(name, value);
@@ -322,7 +319,7 @@ const STATUS_OVERLAY_WIDTH = 120;
 const STATUS_OVERLAY_HEIGHT = 40;
 
 /* Helper to draw rectangle outline using fill_rect */
-function drawRect(x, y, w, h, color) {
+export function drawRect(x, y, w, h, color) {
     fill_rect(x, y, w, 1, color);           /* Top */
     fill_rect(x, y + h - 1, w, 1, color);   /* Bottom */
     fill_rect(x, y, 1, h, color);           /* Left */

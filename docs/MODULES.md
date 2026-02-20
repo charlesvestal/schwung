@@ -1162,12 +1162,17 @@ External modules can be distributed via the built-in Module Store. Users can bro
    - Creates `<id>-module.tar.gz`
    - Attaches it to the GitHub release
 
-4. **Update the catalog** in `move-anything/module-catalog.json`:
+4. **Update the catalog** in `move-anything/module-catalog.json` (if not already listed):
    ```json
    {
      "id": "your-module",
-     "latest_version": "0.2.0",
-     "download_url": "https://github.com/user/repo/releases/download/v0.2.0/your-module.tar.gz"
+     "name": "Your Module",
+     "description": "What it does",
+     "author": "Your Name",
+     "component_type": "sound_generator",
+     "github_repo": "username/move-anything-yourmodule",
+     "asset_name": "your-module-module.tar.gz",
+     "min_host_version": "0.3.0"
    }
    ```
 
@@ -1217,7 +1222,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### Catalog Entry Schema
+### Catalog Entry Schema (v2)
 
 Each module in `module-catalog.json`:
 
@@ -1227,12 +1232,14 @@ Each module in `module-catalog.json`:
   "name": "Display Name",
   "description": "Short description",
   "author": "Author Name",
-  "component_type": "sound_generator|audio_fx|midi_fx|midi_source",
-  "latest_version": "1.0.0",
-  "min_host_version": "1.0.0",
-  "download_url": "https://github.com/user/repo/releases/download/v1.0.0/module.tar.gz"
+  "component_type": "sound_generator|audio_fx|overtake|utility",
+  "github_repo": "username/repo-name",
+  "asset_name": "module-id-module.tar.gz",
+  "min_host_version": "0.3.0"
 }
 ```
+
+The Module Store fetches the latest release from the GitHub repo and looks for an asset matching `asset_name`.
 
 ### Component Types
 
@@ -1241,7 +1248,8 @@ Each module in `module-catalog.json`:
 | `sound_generator` | Synthesizers and samplers that produce audio |
 | `audio_fx` | Audio effects that process audio |
 | `midi_fx` | MIDI effects that transform MIDI |
-| `midi_source` | Sequencers and generators that produce MIDI |
+| `overtake` | Overtake modules (full UI control) |
+| `utility` | Utility modules |
 
 ## Host Updates
 
@@ -1269,9 +1277,10 @@ The Move Anything host can also be updated via the Module Store. When an update 
    {
      "host": {
        "name": "Move Anything",
+       "github_repo": "charlesvestal/move-anything",
+       "asset_name": "move-anything.tar.gz",
        "latest_version": "1.0.1",
-       "min_host_version": "1.0.0",
-       "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v1.0.1/move-anything.tar.gz"
+       "min_host_version": "1.0.0"
      }
    }
    ```
