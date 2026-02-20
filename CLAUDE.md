@@ -356,9 +356,9 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 
 ### Shadow Mode Shortcuts
 
-- **Shift+Vol+Knob1**: Toggle shadow mode on/off
-- **Shift+Vol+Track 1-4**: Jump directly to slot settings (works from Move or Shadow UI)
+- **Shift+Vol+Track 1-4**: Open shadow mode / jump to slot settings (works from Move or Shadow UI)
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
+- **Shift+Vol+Step2**: Open Global Settings
 - **Shift+Vol+Jog Click**: Exit overtake module (when in overtake mode)
 
 ### Quantized Sampler

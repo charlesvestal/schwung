@@ -6,6 +6,8 @@ An unofficial framework for running custom instruments, effects, and controllers
 
 Move Everything adds a Shadow UI that runs alongside stock Move, enabling additional Synths, FX, and other tools to run in parallel to the usual UI. 
 
+Move Everything is based on the original Move Anything project by Bobby Digitales.
+
 ## Important Notice
 
 This project is in no way approved, endorsed or supported by Ableton.
@@ -143,3 +145,10 @@ If monitoring is on (or source/routing is configured differently), audio feedbac
 ## License
 
 CC BY-NC-SA 4.0 - See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
+
+## AI Assistance Disclaimer
+
+This module is part of Move Everything and was developed with AI assistance, including Claude, Codex, and other AI assistants.
+
+All architecture, implementation, and release decisions are reviewed by human maintainers.  
+AI-assisted content may still contain errors, so please validate functionality, security, and license compatibility before production use.

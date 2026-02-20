@@ -41,7 +41,7 @@ import {
     CATALOG_URL, CATALOG_CACHE_PATH, MODULES_DIR, BASE_DIR, TMP_DIR, HOST_VERSION_FILE,
     CATEGORIES,
     compareVersions, isNewerVersion, getInstallSubdir,
-    fetchReleaseJson,
+    fetchReleaseJson, fetchReleaseNotes,
     installModule as sharedInstallModule,
     removeModule as sharedRemoveModule,
     scanInstalledModules as sharedScanInstalledModules,
@@ -756,6 +756,25 @@ function drawModuleList() {
     drawMenuFooter('Back:categories');
 }
 
+/* Build scrollable lines from release notes text */
+function buildReleaseNoteLines(notesText) {
+    const lines = [];
+    const noteLines = notesText.split('\n');
+    for (const line of noteLines) {
+        if (line.trim() === '') {
+            lines.push('');
+        } else {
+            const cleaned = line.trim()
+                .replace(/^#+\s*/, '')
+                .replace(/\*\*/g, '')
+                .replace(/\*/g, '');
+            const wrapped = wrapText(cleaned, 20);
+            lines.push(...wrapped);
+        }
+    }
+    return lines;
+}
+
 /* Draw module detail screen with scrollable description */
 function drawModuleDetail() {
     clear_screen();
@@ -788,6 +807,16 @@ function drawModuleDetail() {
             descLines.push('Requires:');
             const reqLines = wrapText(currentModule.requires, 18);
             descLines.push(...reqLines);
+        }
+
+        /* Fetch and append release notes */
+        if (currentModule.github_repo) {
+            const notes = fetchReleaseNotes(currentModule.github_repo);
+            if (notes) {
+                descLines.push('');
+                descLines.push('What\'s New:');
+                descLines.push(...buildReleaseNoteLines(notes));
+            }
         }
 
         /* Determine action label */

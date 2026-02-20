@@ -4297,7 +4297,6 @@ static void sampler_start_recording(void) {
     sampler_overlay_active = 1;
     sampler_overlay_timeout = 0;  /* Stay active while recording */
     shadow_overlay_sync();
-    send_screenreader_announcement("Recording");
 
     char msg[256];
     if (bars > 0)
@@ -11272,8 +11271,16 @@ do_ioctl:
                             sampler_menu_cursor = SAMPLER_MENU_SOURCE;
                             shadow_overlay_sync();
                             shadow_log("Sampler: ARMED");
-                            send_screenreader_announcement("Quantized Sampler");
-                            sampler_announce_menu_item();
+                            {
+                                char sr_buf[256];
+                                const char *src = (sampler_source == SAMPLER_SOURCE_RESAMPLE)
+                                    ? "Resample" : "Move Input";
+                                snprintf(sr_buf, sizeof(sr_buf),
+                                    "Quantized Sampler. Source: %s. "
+                                    "Press play or a pad to begin recording.",
+                                    src);
+                                send_screenreader_announcement(sr_buf);
+                            }
                         } else if (sampler_state == SAMPLER_ARMED) {
                             sampler_state = SAMPLER_IDLE;
                             sampler_overlay_active = 0;
@@ -11335,7 +11342,7 @@ do_ioctl:
                 }
             }
 
-            /* Note On/Off messages (CIN 0x09/0x08) for knob touches */
+            /* Note On/Off messages (CIN 0x09/0x08) for knob touches and step buttons */
             if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
                 int touched = (type == 0x90 && d2 > 0);
 
@@ -11374,6 +11381,19 @@ do_ioctl:
                     shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
                     link_sub_kill();
                     launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
+                }
+
+                /* Shift + Volume + Step 2 (note 17) = jump to Global Settings */
+                if (d1 == 17 && type == 0x90 && d2 > 0) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                        shadow_block_plain_volume_hide_until_release = 1;
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SETTINGS;
+                        /* Always ensure display shows shadow UI */
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui();  /* No-op if already running */
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
                 }
 
                 /* Pad note-on while sampler armed = trigger recording */
@@ -11744,6 +11764,19 @@ do_ioctl:
         }
     }
 #endif
+
+    /* === POST-IOCTL: CHECK FOR RESTART REQUEST === */
+    /* Shadow UI can request a Move restart (e.g. after core update) */
+    if (shadow_control && shadow_control->restart_move) {
+        shadow_control->restart_move = 0;
+        shadow_control->should_exit = 1;  /* Tell shadow_ui to exit */
+        shadow_log("Restart requested by shadow UI — restarting Move");
+        /* Use restart script for clean restart (kill as root, start fresh).
+         * launchChildAndKillThisProcess won't work because MoveOriginal has
+         * file capabilities that trigger AT_SECURE, blocking LD_PRELOAD
+         * when forked from a non-root process. */
+        system("/data/UserData/move-anything/restart-move.sh");
+    }
 
 do_timing:
     /* === COMPREHENSIVE IOCTL TIMING CALCULATIONS === */

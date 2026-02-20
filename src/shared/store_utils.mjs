@@ -129,6 +129,56 @@ export function fetchReleaseJson(github_repo, module_id, branch) {
     }
 }
 
+/* Quick fetch of release.json for core version check.
+ * Returns { version, download_url } or null on failure. */
+export function fetchReleaseJsonQuick(github_repo) {
+    const cacheFile = `${TMP_DIR}/${github_repo.replace('/', '_')}_release_quick.json`;
+    const releaseUrl = `https://raw.githubusercontent.com/${github_repo}/main/release.json`;
+
+    const success = globalThis.host_http_download(releaseUrl, cacheFile);
+    if (!success) return null;
+
+    try {
+        const jsonStr = std.loadFile(cacheFile);
+        if (!jsonStr) return null;
+        const release = JSON.parse(jsonStr);
+        if (!release.version || !release.download_url) return null;
+        return { version: release.version, download_url: release.download_url };
+    } catch (e) {
+        return null;
+    }
+}
+
+/* Fetch release notes from GitHub Atom feed, returns text or null */
+export function fetchReleaseNotes(githubRepo) {
+    const cacheFile = `${TMP_DIR}/${githubRepo.replace('/', '_')}_releases.atom`;
+    const atomUrl = `https://github.com/${githubRepo}/releases.atom`;
+    const success = globalThis.host_http_download(atomUrl, cacheFile);
+    if (!success) return null;
+    try {
+        const raw = std.loadFile(cacheFile);
+        if (!raw) return null;
+        /* Extract content from first <entry> */
+        const match = raw.match(/<entry>[\s\S]*?<content[^>]*>([\s\S]*?)<\/content>/);
+        if (!match) return null;
+        /* Unescape HTML entities and strip tags */
+        let html = match[1]
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+        /* Strip HTML tags, convert <li> to "- " bullets */
+        let text = html
+            .replace(/<li>/gi, '- ')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/p>/gi, '\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+        return text || null;
+    } catch (e) {
+        return null;
+    }
+}
+
 /* Fetch catalog from network, returns { success, catalog, error } */
 export function fetchCatalog(onProgress) {
     if (onProgress) onProgress('Loading Catalog', 'Fetching...', 0, 0);

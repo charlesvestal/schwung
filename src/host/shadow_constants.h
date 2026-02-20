@@ -66,6 +66,7 @@
 #define SHADOW_UI_FLAG_SAVE_STATE 0x08        /* Save all state (shutdown imminent) */
 #define SHADOW_UI_FLAG_JUMP_TO_SCREENREADER 0x10 /* Jump to screen reader settings */
 #define SHADOW_UI_FLAG_SET_CHANGED 0x20           /* Set changed - reload slot state */
+#define SHADOW_UI_FLAG_JUMP_TO_SETTINGS 0x40     /* Jump to Global Settings */
 
 /* ============================================================================
  * Special Values
@@ -97,6 +98,7 @@ typedef struct shadow_control_t {
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
     volatile uint8_t shift_held;      /* Is shift button currently held? */
     volatile uint8_t overtake_mode;   /* 0=normal, 1=menu (UI events only), 2=module (all events) */
+    volatile uint8_t restart_move;    /* Signal shim to restart Move (0=no, 1=restart) */
     volatile uint8_t tts_enabled;     /* Screen Reader on/off (1=on, 0=off) */
     volatile uint8_t tts_volume;      /* TTS volume (0-100) */
     volatile uint16_t tts_pitch;      /* TTS pitch in Hz (80-180) */
