@@ -10,17 +10,6 @@
   },
   "modules": [
     {
-      "id": "fourtrack",
-      "name": "Four Track",
-      "description": "Four-track recorder with signal chain integration",
-      "author": "Move Anything",
-      "component_type": "utility",
-      "github_repo": "charlesvestal/move-anything-fourtrack",
-      "default_branch": "main",
-      "asset_name": "fourtrack-module.tar.gz",
-      "min_host_version": "0.3.6"
-    },
-    {
       "id": "dexed",
       "name": "Dexed",
       "description": "6-operator FM synthesizer (Dexed/MSFA) with .syx patch support",
@@ -156,6 +145,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "rings",
+      "name": "Rings",
+      "description": "Resonator synthesizer based on Mutable Instruments Rings",
+      "author": "Emilie Gillet (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-rings",
+      "default_branch": "main",
+      "asset_name": "rings-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "hera",
       "name": "Hera",
       "description": "Juno-60 emulation synthesizer with BBD chorus",
@@ -186,6 +186,17 @@
       "github_repo": "charlesvestal/move-anything-moog",
       "default_branch": "main",
       "asset_name": "moog-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "sh101",
+      "name": "SH-101",
+      "description": "Believable SH-101 style monophonic subtractive synthesizer",
+      "author": "Move Everything Community",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-sh101",
+      "default_branch": "main",
+      "asset_name": "sh101-module.tar.gz",
       "min_host_version": "0.3.0"
     },
     {

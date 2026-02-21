@@ -330,6 +330,7 @@ External modules are maintained in separate repositories and available via Modul
 
 **Sound Generators:**
 - `braids` - Mutable Instruments macro oscillator (47 algorithms)
+- `rings` - Mutable Instruments resonator
 - `sf2` - SoundFont synthesizer (TinySoundFont)
 - `dexed` - 6-operator FM synthesizer (Dexed/MSFA)
 - `minijv` - ROM-based PCM rompler emulator
@@ -343,7 +344,6 @@ External modules are maintained in separate repositories and available via Modul
 - `tapedelay` - Tape delay with flutter and saturation
 
 **Utilities/Overtake:**
-- `fourtrack` - Four-track recorder
 - `m8` - Dirtywave M8 Launchpad Pro emulator
 - `sidcontrol` - SID Control for SIDaster III
 - `controller` - MIDI Controller with 16 banks (built-in)
