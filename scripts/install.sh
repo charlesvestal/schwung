@@ -415,37 +415,39 @@ if [ "$skip_confirmation" = false ]; then
   fi
 fi
 
-if [ "$use_local" = true ]; then
-  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-  REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-  local_file="$REPO_ROOT/$remote_filename"
-  echo "Using local build: $local_file"
-  if [ ! -f "$local_file" ]; then
-    fail "Local build not found. Run ./scripts/build.sh first."
-  fi
-else
-  # Find latest binary release (v* tag, not installer-v*)
-  tag=$(curl -fsSL https://api.github.com/repos/charlesvestal/move-anything/releases \
-    | grep '"tag_name"' | grep -v installer | head -1 | sed 's/.*"tag_name": "//;s/".*//' ) \
-    || fail "Failed to query GitHub releases API"
-  if [ -z "$tag" ]; then
-    fail "Could not find a binary release. Check https://github.com/charlesvestal/move-anything/releases"
-  fi
-  url="https://github.com/charlesvestal/move-anything/releases/download/${tag}/"
-  qecho "Downloading release $tag from $url$remote_filename"
-  # Use silent curl in quiet mode (screen reader friendly)
-  if [ "$quiet_mode" = true ]; then
-    curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+if [ "$use_reenable" = false ]; then
+  if [ "$use_local" = true ]; then
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+    local_file="$REPO_ROOT/$remote_filename"
+    echo "Using local build: $local_file"
+    if [ ! -f "$local_file" ]; then
+      fail "Local build not found. Run ./scripts/build.sh first."
+    fi
   else
-    curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+    # Find latest binary release (v* tag, not installer-v*)
+    tag=$(curl -fsSL https://api.github.com/repos/charlesvestal/move-anything/releases \
+      | grep '"tag_name"' | grep -v installer | head -1 | sed 's/.*"tag_name": "//;s/".*//' ) \
+      || fail "Failed to query GitHub releases API"
+    if [ -z "$tag" ]; then
+      fail "Could not find a binary release. Check https://github.com/charlesvestal/move-anything/releases"
+    fi
+    url="https://github.com/charlesvestal/move-anything/releases/download/${tag}/"
+    qecho "Downloading release $tag from $url$remote_filename"
+    # Use silent curl in quiet mode (screen reader friendly)
+    if [ "$quiet_mode" = true ]; then
+      curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+    else
+      curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-anything/releases"
+    fi
+    local_file="$remote_filename"
   fi
-  local_file="$remote_filename"
-fi
-if [ "$quiet_mode" = false ]; then
-  if command -v md5sum >/dev/null 2>&1; then
-    echo "Build MD5: $(md5sum "$local_file")"
-  elif command -v md5 >/dev/null 2>&1; then
-    echo "Build MD5: $(md5 -q "$local_file")"
+  if [ "$quiet_mode" = false ]; then
+    if command -v md5sum >/dev/null 2>&1; then
+      echo "Build MD5: $(md5sum "$local_file")"
+    elif command -v md5 >/dev/null 2>&1; then
+      echo "Build MD5: $(md5 -q "$local_file")"
+    fi
   fi
 fi
 
@@ -494,7 +496,11 @@ if [ -n "$ssh_result" ]; then
   fi
 else
   qecho "✓ SSH connection OK"
-  iecho "Installing Move Everything..."
+  if [ "$use_reenable" = true ]; then
+    iecho "Re-enabling Move Everything..."
+  else
+    iecho "Installing Move Everything..."
+  fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════

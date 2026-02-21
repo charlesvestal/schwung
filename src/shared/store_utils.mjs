@@ -250,8 +250,12 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
                         mod.repo_url = release.repo_url;
                         consecutiveFailures = 0;
                     } else {
-                        mod.latest_version = '?';
-                        mod.download_url = null;
+                        mod.latest_version = mod.latest_version || '?';
+                        if (mod.github_repo && mod.asset_name) {
+                            mod.download_url = `https://github.com/${mod.github_repo}/releases/latest/download/${mod.asset_name}`;
+                        } else {
+                            mod.download_url = null;
+                        }
                         consecutiveFailures++;
                         if (consecutiveFailures >= 2) {
                             console.log('Two consecutive release fetch failures, skipping remaining modules');
