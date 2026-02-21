@@ -49,6 +49,7 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 |----------|--------|
 | **Shift+Vol + Track 1-4** | Open that slot's editor |
 | **Shift+Vol + Menu** | Open Master FX |
+| **Shift+Vol + Step 2** | Open Global Settings |
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
 | **Shift+Vol + Knob 8** | Open Standalone Mode |
 | **Shift+Sample** | Open Quantized Sampler |
@@ -145,6 +146,8 @@ Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from
 
 Access via **Shift+Vol + Menu**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
+Global settings (Link Audio, Resample Src, Mirror Display, Screen Reader, Help, Updates) are accessed via **Shift+Vol + Step 2**.
+
 ---
 
 ## Link Audio (Move 2.0+)
@@ -186,7 +189,7 @@ ME Slot 2 (synth → FX) ────────────────│
 
 1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
 2. **Install or update Move Everything** — the installer enables Link Audio support, but routing is off by default.
-3. **Enable routing**: In Master FX Settings (**Shift+Vol + Menu**, scroll to Settings), toggle **Link Audio** on. This routes Move's per-track audio through ME's slot FX.
+3. **Enable routing**: In **Global Settings > Audio** (**Shift+Vol + Step 2**), toggle **Link Audio** on. This routes Move's per-track audio through ME's slot FX.
 
 **Note:** A restart of Move is sometimes required for the Link Audio subscriber to begin capturing audio. If you don't hear Move tracks being processed after enabling routing, restart Move.
 
@@ -211,7 +214,7 @@ ME Slot 2 (synth → FX) ────────────────│
 
 Move Everything audio can be fed into Move's native sampler for resampling.
 
-In **Master FX > Settings**, `Resample Src` controls this:
+In **Global Settings > Audio**, `Resample Src` controls this:
 
 | Option | Behavior |
 |--------|----------|
@@ -320,7 +323,7 @@ To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
 
 Move Everything includes an optional screen reader for accessibility, using text-to-speech to announce UI elements.
 
-Toggle via **Shadow UI > Settings > Screen Reader**, or **Shift+Menu** when Shadow UI is disabled.
+Toggle via **Global Settings > Screen Reader** (**Shift+Vol + Step 2**), or **Shift+Menu** when Shadow UI is disabled.
 
 Settings:
 - **Speed**: 0.5x to 2.0x
@@ -337,7 +340,7 @@ Stream Move's 128x64 OLED display to any browser on your network in real time. U
 
 ### Setup
 
-1. Open **Master FX > Settings** (Shift+Vol + Menu, then scroll to Settings)
+1. Open **Global Settings > Display** (**Shift+Vol + Step 2**)
 2. Toggle **Mirror Display** to **On**
 3. Open `http://move.local:7681` in a browser
 
@@ -355,7 +358,7 @@ The display updates at ~30 fps and shows whatever is on screen - both normal Mov
 
 ## In-App Help
 
-Move Everything includes a built-in help viewer accessible from **Master FX > Settings > Help**. It contains a quick reference for shortcuts, slot setup, recording, and other features — readable directly on Move's display.
+Move Everything includes a built-in help viewer accessible from **Global Settings > [Help...]** (**Shift+Vol + Step 2**). It contains a quick reference for shortcuts, slot setup, recording, and other features — readable directly on Move's display.
 
 If the screen reader is enabled, help pages are read aloud automatically when opened.
 
