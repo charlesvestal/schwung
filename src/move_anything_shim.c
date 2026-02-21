@@ -135,6 +135,8 @@ static int16_t shadow_slot_capture[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2]
 
 static void launch_shadow_ui(void);
 static void launch_link_subscriber(void);
+static void start_link_sub_monitor(void);
+static void link_sub_reset_state(void);
 static void load_feature_config(void);
 
 static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
@@ -9620,6 +9622,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         /* Launch Link Audio subscriber if feature is enabled */
         if (link_audio.enabled) {
             launch_link_subscriber();
+            start_link_sub_monitor();
         }
         native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
 #if SHADOW_INPROCESS_POC
@@ -9869,19 +9872,20 @@ static pid_t shadow_ui_pid = -1;
 static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.pid";
 
 /* Link Audio subscriber process management */
-static int link_sub_started = 0;
-static pid_t link_sub_pid = -1;
-static uint32_t link_sub_ever_received = 0;  /* high-water mark of packets_intercepted */
-static int link_sub_kill_pending = 0;        /* kill-wait-restart state machine */
-static int link_sub_wait_countdown = 0;
-static int link_sub_restart_cooldown = 0;    /* rate limiting countdown */
-static int link_sub_restart_count = 0;       /* total restarts for logging */
+static volatile int link_sub_started = 0;
+static volatile pid_t link_sub_pid = -1;
+static volatile uint32_t link_sub_ever_received = 0;  /* high-water mark of packets_intercepted */
+static volatile int link_sub_restart_count = 0;       /* total restarts for logging */
+static volatile int link_sub_monitor_started = 0;
+static volatile int link_sub_monitor_running = 0;
+static pthread_t link_sub_monitor_thread;
 
-/* Recovery constants (in ioctl blocks @ ~345/sec) */
-#define LINK_SUB_STALE_THRESHOLD  1725   /* ~5s of no new packets */
-#define LINK_SUB_WAIT_BLOCKS      1035   /* ~3s wait after kill for SDK cleanup */
-#define LINK_SUB_COOLDOWN_BLOCKS  3450   /* ~10s between restarts */
-#define LINK_SUB_ALIVE_CHECK      1725   /* ~5s between alive checks */
+/* Recovery constants for background monitor thread */
+#define LINK_SUB_STALE_THRESHOLD_MS 5000
+#define LINK_SUB_WAIT_MS            3000
+#define LINK_SUB_COOLDOWN_MS        10000
+#define LINK_SUB_ALIVE_CHECK_MS     5000
+#define LINK_SUB_MONITOR_POLL_US    100000
 
 static int shadow_ui_pid_alive(pid_t pid)
 {
@@ -10085,6 +10089,133 @@ static void launch_link_subscriber(void)
     link_sub_pid = pid;
     unified_log("shim", LOG_LEVEL_INFO,
                 "Link subscriber launched: pid=%d", pid);
+}
+
+static uint64_t link_sub_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
+}
+
+static void *link_sub_monitor_main(void *arg)
+{
+    (void)arg;
+
+    uint32_t last_packets = link_audio.packets_intercepted;
+    uint64_t last_packet_ms = link_sub_now_ms();
+    uint64_t cooldown_until_ms = 0;
+    uint64_t kill_deadline_ms = 0;
+    uint64_t next_alive_check_ms = last_packet_ms + LINK_SUB_ALIVE_CHECK_MS;
+    int kill_pending = 0;
+
+    if (last_packets > link_sub_ever_received) {
+        link_sub_ever_received = last_packets;
+    }
+
+    while (link_sub_monitor_running) {
+        uint64_t now_ms = link_sub_now_ms();
+
+        if (!link_audio.enabled) {
+            usleep(LINK_SUB_MONITOR_POLL_US);
+            continue;
+        }
+
+        uint32_t packets_now = link_audio.packets_intercepted;
+        if (packets_now != last_packets) {
+            last_packets = packets_now;
+            last_packet_ms = now_ms;
+            if (packets_now > link_sub_ever_received) {
+                link_sub_ever_received = packets_now;
+            }
+        }
+
+        if (kill_pending) {
+            if (now_ms >= kill_deadline_ms) {
+                /* Wait period over: reap zombie, reset state, launch fresh */
+                link_sub_reap();
+                pid_t pid = link_sub_pid;
+                if (pid > 0) {
+                    kill(pid, SIGKILL);
+                    waitpid(pid, NULL, 0);
+                    link_sub_pid = -1;
+                    link_sub_started = 0;
+                }
+                kill_pending = 0;
+                link_sub_reset_state();
+                launch_link_subscriber();
+                link_sub_restart_count++;
+                cooldown_until_ms = now_ms + LINK_SUB_COOLDOWN_MS;
+                last_packets = link_audio.packets_intercepted;
+                last_packet_ms = now_ms;
+                next_alive_check_ms = now_ms + LINK_SUB_ALIVE_CHECK_MS;
+                unified_log("shim", LOG_LEVEL_INFO,
+                            "Link subscriber restarted after stale detection (restart #%d)",
+                            (int)link_sub_restart_count);
+            }
+            usleep(LINK_SUB_MONITOR_POLL_US);
+            continue;
+        }
+
+        if (link_sub_ever_received > 0 &&
+            now_ms > last_packet_ms + LINK_SUB_STALE_THRESHOLD_MS &&
+            now_ms >= cooldown_until_ms) {
+            /* Audio was flowing but stopped for ~5s — trigger recovery */
+            pid_t pid = link_sub_pid;
+            unified_log("shim", LOG_LEVEL_INFO,
+                        "Link audio stale detected: la_stale=%u la_ever=%u, killing subscriber pid=%d",
+                        la_stale_frames, link_sub_ever_received, (int)pid);
+            link_sub_kill();
+            kill_pending = 1;
+            kill_deadline_ms = now_ms + LINK_SUB_WAIT_MS;
+            usleep(LINK_SUB_MONITOR_POLL_US);
+            continue;
+        }
+
+        if (now_ms >= next_alive_check_ms) {
+            next_alive_check_ms = now_ms + LINK_SUB_ALIVE_CHECK_MS;
+            link_sub_reap();
+            pid_t pid = link_sub_pid;
+            if (link_sub_started && !link_sub_pid_alive(pid) &&
+                now_ms >= cooldown_until_ms) {
+                /* Subscriber crashed — restart */
+                unified_log("shim", LOG_LEVEL_INFO,
+                            "Link subscriber died (pid=%d), restarting",
+                            (int)pid);
+                link_sub_pid = -1;
+                link_sub_started = 0;
+                link_sub_reset_state();
+                launch_link_subscriber();
+                link_sub_restart_count++;
+                cooldown_until_ms = now_ms + LINK_SUB_COOLDOWN_MS;
+                last_packets = link_audio.packets_intercepted;
+                last_packet_ms = now_ms;
+            }
+        }
+
+        usleep(LINK_SUB_MONITOR_POLL_US);
+    }
+
+    return NULL;
+}
+
+static void start_link_sub_monitor(void)
+{
+    if (link_sub_monitor_started) return;
+
+    link_sub_monitor_running = 1;
+    int rc = pthread_create(&link_sub_monitor_thread, NULL, link_sub_monitor_main, NULL);
+    if (rc != 0) {
+        link_sub_monitor_running = 0;
+        unified_log("shim", LOG_LEVEL_WARN,
+                    "Link subscriber monitor start failed: %s",
+                    strerror(rc));
+        return;
+    }
+
+    pthread_detach(link_sub_monitor_thread);
+    link_sub_monitor_started = 1;
+    unified_log("shim", LOG_LEVEL_INFO, "Link subscriber monitor started");
 }
 
 static void link_sub_reset_state(void)
@@ -10435,73 +10566,12 @@ int ioctl(int fd, unsigned long request, ...)
         }
     }
 
-    /* === LINK AUDIO SUBSCRIBER RECOVERY === */
+    /* Link subscriber stale/restart recovery runs in a background monitor thread
+     * to keep process management and waitpid() out of this real-time path. */
     if (link_audio.enabled) {
-        /* Track high-water mark of packets received */
         uint32_t la_pkts_now = link_audio.packets_intercepted;
         if (la_pkts_now > link_sub_ever_received) {
             link_sub_ever_received = la_pkts_now;
-        }
-
-        /* Decrement cooldown */
-        if (link_sub_restart_cooldown > 0) {
-            link_sub_restart_cooldown--;
-        }
-
-        /* State machine: kill-wait-restart */
-        if (link_sub_kill_pending) {
-            link_sub_wait_countdown--;
-            if (link_sub_wait_countdown <= 0) {
-                /* Wait period over: reap zombie, reset state, launch fresh */
-                link_sub_reap();
-                /* Force-reap if still around */
-                if (link_sub_pid > 0) {
-                    kill(link_sub_pid, SIGKILL);
-                    waitpid(link_sub_pid, NULL, 0);
-                    link_sub_pid = -1;
-                    link_sub_started = 0;
-                }
-                link_sub_kill_pending = 0;
-                link_sub_reset_state();
-                launch_link_subscriber();
-                link_sub_restart_count++;
-                link_sub_restart_cooldown = LINK_SUB_COOLDOWN_BLOCKS;
-                unified_log("shim", LOG_LEVEL_INFO,
-                    "Link subscriber restarted after stale detection (restart #%d)",
-                    link_sub_restart_count);
-            }
-        } else if (link_sub_ever_received > 0 &&
-                   la_stale_frames > LINK_SUB_STALE_THRESHOLD &&
-                   link_sub_restart_cooldown == 0) {
-            /* Audio was flowing but stopped for ~5s — trigger recovery */
-            unified_log("shim", LOG_LEVEL_INFO,
-                "Link audio stale detected: la_stale=%u la_ever=%u, killing subscriber pid=%d",
-                la_stale_frames, link_sub_ever_received, (int)link_sub_pid);
-            link_sub_kill();
-            link_sub_kill_pending = 1;
-            link_sub_wait_countdown = LINK_SUB_WAIT_BLOCKS;
-        } else {
-            /* Periodic alive check (~every 5s) */
-            static uint32_t alive_check_counter = 0;
-            alive_check_counter++;
-            if (alive_check_counter >= LINK_SUB_ALIVE_CHECK) {
-                alive_check_counter = 0;
-                link_sub_reap();
-                if (link_sub_started && !link_sub_pid_alive(link_sub_pid)) {
-                    /* Subscriber crashed — restart if not in cooldown */
-                    if (link_sub_restart_cooldown == 0) {
-                        unified_log("shim", LOG_LEVEL_INFO,
-                            "Link subscriber died (pid=%d), restarting",
-                            (int)link_sub_pid);
-                        link_sub_pid = -1;
-                        link_sub_started = 0;
-                        link_sub_reset_state();
-                        launch_link_subscriber();
-                        link_sub_restart_count++;
-                        link_sub_restart_cooldown = LINK_SUB_COOLDOWN_BLOCKS;
-                    }
-                }
-            }
         }
     }
 

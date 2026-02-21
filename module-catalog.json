@@ -4,8 +4,8 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.5.0",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.5.0/move-anything.tar.gz",
+    "latest_version": "0.5.2",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.5.2/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
