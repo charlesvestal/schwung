@@ -323,6 +323,17 @@
       "asset_name": "rex-module.tar.gz",
       "min_host_version": "0.3.0",
       "requires": ".rx2/.rex loop files (created with Propellerhead ReCycle)"
+    },
+    {
+      "id": "hush1",
+      "name": "HUSH ONE",
+      "description": "Monophonic subtractive synthesizer emulating the Roland SH-101",
+      "author": "Move Everything Community",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-hush1",
+      "default_branch": "main",
+      "asset_name": "hush1-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
