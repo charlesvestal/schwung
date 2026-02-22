@@ -89,8 +89,25 @@ int main()
 
     printf("link-subscriber: starting\n");
 
+    /* Read initial tempo from file written by shim (falls back to 120) */
+    double initial_tempo = 120.0;
+    {
+        FILE *fp = fopen("/tmp/link-tempo", "r");
+        if (fp) {
+            double t = 0.0;
+            if (fscanf(fp, "%lf", &t) == 1 && t >= 20.0 && t <= 999.0) {
+                initial_tempo = t;
+                printf("link-subscriber: using set tempo %.1f BPM\n", t);
+            }
+            fclose(fp);
+        }
+        if (initial_tempo == 120.0) {
+            printf("link-subscriber: using default tempo 120.0 BPM\n");
+        }
+    }
+
     /* Join Link session and enable audio */
-    ableton::LinkAudio link(120.0, "ME-Sub");
+    ableton::LinkAudio link(initial_tempo, "ME-Sub");
     link.enable(true);
     link.enableLinkAudio(true);
 

@@ -4768,7 +4768,7 @@ function buildKnobContextForKnob(knobIndex) {
             meta,
             pluginName,
             displayName,
-            title: `${pluginName} ${displayName}`
+            title: `S${hierEditorSlot + 1}: ${pluginName} ${displayName}`
         };
     }
 
@@ -4826,7 +4826,7 @@ function buildKnobContextForKnob(knobIndex) {
                         meta,
                         pluginName,
                         displayName,
-                        title: `${pluginName} ${displayName}`
+                        title: `S${selectedSlot + 1}: ${pluginName} ${displayName}`
                     };
                 }
                 debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex}, levelDef.knobs=${levelDef?.knobs ? JSON.stringify(levelDef.knobs) : 'undefined'}`);
@@ -4849,7 +4849,7 @@ function buildKnobContextForKnob(knobIndex) {
                         meta: param,
                         pluginName,
                         displayName,
-                        title: `${pluginName} ${displayName}`
+                        title: `S${selectedSlot + 1}: ${pluginName} ${displayName}`
                     };
                 }
             }

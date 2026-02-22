@@ -10115,6 +10115,16 @@ static void launch_link_subscriber(void)
     const char *sub_path = "/data/UserData/move-anything/link-subscriber";
     if (access(sub_path, X_OK) != 0) return;
 
+    /* Write current tempo to file so subscriber uses it instead of 120 */
+    {
+        float bpm = sampler_get_bpm(NULL);
+        FILE *fp = fopen("/tmp/link-tempo", "w");
+        if (fp) {
+            fprintf(fp, "%.1f\n", bpm);
+            fclose(fp);
+        }
+    }
+
     int pid = fork();
     if (pid < 0) return;
     if (pid == 0) {
@@ -10126,6 +10136,8 @@ static void launch_link_subscriber(void)
         for (int i = STDERR_FILENO + 1; i < fdlimit; i++) {
             close(i);
         }
+        /* Clear LD_PRELOAD so shim hooks don't apply to subscriber */
+        unsetenv("LD_PRELOAD");
         execl(sub_path, "link-subscriber", (char *)0);
         _exit(1);
     }
