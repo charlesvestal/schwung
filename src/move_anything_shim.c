@@ -7602,10 +7602,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
-    int mfx_active = shadow_master_fx_chain_active();
-    /* When MFX is active, build the mix at unity level so FX see a consistent
-     * signal regardless of master volume.  Apply mv AFTER MFX instead. */
-    float me_input_scale = mfx_active ? 1.0f : ((mv < 1.0f) ? mv : 1.0f);
+    (void)shadow_master_fx_chain_active();  /* MFX slots processed unconditionally below */
+    /* Always build the mix at unity level so sampler/skipback capture audio
+     * at full gain (independent of master volume).  Apply mv at the end. */
 
     /* Save Move's audio for bridge split (before zeroing) */
     memcpy(native_bridge_move_component, mailbox_audio, sizeof(native_bridge_move_component));
@@ -7637,9 +7636,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
                            link_audio.move_channel_count >= 4 &&
                            la_receiving);
 
-    /* When MFX active and NOT rebuilding from Link Audio, the mailbox has
-     * Move's audio at mv level.  Prescale to unity for consistent MFX input. */
-    if (mfx_active && !rebuild_from_la && mv > 0.001f) {
+    /* When NOT rebuilding from Link Audio, the mailbox has Move's audio at
+     * mv level.  Prescale to unity so the mix (and capture) is at full gain. */
+    if (!rebuild_from_la && mv > 0.001f && mv < 0.9999f) {
         float inv = 1.0f / mv;
         if (inv > 20.0f) inv = 20.0f;
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -7713,7 +7712,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
                 /* Add FX output to mailbox */
                 float vol = shadow_chain_slots[s].volume;
-                float gain = vol * me_input_scale;
+                float gain = vol;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                     if (mixed > 32767) mixed = 32767;
@@ -7722,13 +7721,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                 }
             } else if (have_move_track) {
-                /* Inactive slot: pass Link Audio through.
-                 * When MFX active: unity level (mv applied after MFX).
-                 * Otherwise: at Move's volume level. */
-                float la_scale = mfx_active ? 1.0f : mv;
+                /* Inactive slot: pass Link Audio through at unity level.
+                 * Master volume is applied after capture at the end. */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    int32_t scaled = (int32_t)lroundf((float)move_track[i] * la_scale);
-                    int32_t mixed = (int32_t)mailbox_audio[i] + scaled;
+                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)move_track[i];
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
@@ -7767,7 +7763,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
             }
 
             float vol = shadow_chain_slots[s].volume;
-            float gain = vol * me_input_scale;
+            float gain = vol;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                 int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                 if (mixed > 32767) mixed = 32767;
@@ -7778,12 +7774,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
-    /* Mix overtake DSP buffer */
+    /* Mix overtake DSP buffer (at unity — master volume applied after capture) */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t ov = (int32_t)shadow_deferred_dsp_buffer[i];
-        if (me_input_scale < 0.9999f)
-            ov = (int32_t)lroundf((float)ov * me_input_scale);
-        int32_t mixed = (int32_t)mailbox_audio[i] + ov;
+        int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)shadow_deferred_dsp_buffer[i];
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
@@ -7825,10 +7818,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
         skipback_capture(mailbox_audio);
     }
 
-    /* Apply master volume AFTER MFX.  When MFX is active the mix was built
-     * at unity level; scale down now so the DAC output respects master volume.
-     * When MFX is off the mix is already at mv level — no extra scaling. */
-    if (mfx_active && mv < 0.9999f) {
+    /* Apply master volume after capture.  The mix is always built at unity
+     * level so that sampler/skipback capture full-gain audio.  Scale down
+     * now so the DAC output respects master volume. */
+    if (mv < 0.9999f) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
             float scaled = (float)mailbox_audio[i] * mv;
             if (scaled > 32767.0f) scaled = 32767.0f;
