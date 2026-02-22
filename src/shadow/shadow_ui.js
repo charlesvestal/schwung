@@ -8578,44 +8578,39 @@ globalThis.tick = function() {
             activeSlotStateDir = newDir;
             debugLog("SET_CHANGED: " + oldDir + " -> " + newDir);
 
-            /* 6. Reload all chain slots from new directory.
-             *    IMPORTANT: We use setSlotParam (synchronous) to clear slots,
-             *    NOT shadow_request_patch which is a single-item queue and
-             *    can only process one slot per tick. */
+            /* 6. Two-pass reload: clear ALL old slots first (freeing memory),
+             *    then load new slots. This reduces peak memory when switching
+             *    between sets with heavy synths. */
+
+            /* Pass 1: Clear all slots to free memory before loading anything new */
+            debugLog("SET_CHANGED: pass 1 — clearing all slots");
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                setSlotParamWithTimeout(i, "clear", "", 1500);
+            }
+
+            /* Pass 2: Load new state for non-empty slots */
+            debugLog("SET_CHANGED: pass 2 — loading new slot states");
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 const path = activeSlotStateDir + "/slot_" + i + ".json";
-                let loaded = false;
-                let shouldClear = false;
-                let preserveCurrent = false;
                 if (host_file_exists(path)) {
                     const raw = host_read_file(path);
                     /* Non-empty state: try load_file with extended timeout + retry. */
                     if (raw && raw.length > 10) {
-                        let loadOk = false;
-                        loadOk = setSlotParamWithTimeout(i, "load_file", path, 1500);
+                        let loadOk = setSlotParamWithTimeout(i, "load_file", path, 1500);
                         if (!loadOk) {
                             debugLog("SET_CHANGED: load_file timeout slot " + (i + 1) + " path " + path + " (retry)");
                             loadOk = setSlotParamWithTimeout(i, "load_file", path, 3000);
                         }
-                        loaded = loadOk;
-                        if (!loadOk) {
-                            preserveCurrent = true;
+                        if (loadOk) {
+                            debugLog("SET_CHANGED: slot " + (i + 1) + " loaded");
+                        } else {
+                            debugLog("SET_CHANGED: slot " + (i + 1) + " not restored (load timeout)");
                         }
-                    } else if (raw) {
-                        /* Explicit empty marker ("{}") means this set intentionally has no slot content. */
-                        shouldClear = true;
                     } else {
-                        preserveCurrent = true;
+                        debugLog("SET_CHANGED: slot " + (i + 1) + " empty state (already cleared)");
                     }
                 } else {
-                    /* Missing file is treated as empty slot state. */
-                    shouldClear = true;
-                }
-                if (shouldClear) {
-                    debugLog("SET_CHANGED: clearing slot " + (i + 1) + " from empty set state");
-                    clearSlotForEmptySetState(i);
-                } else if (!loaded && preserveCurrent) {
-                    debugLog("SET_CHANGED: slot " + (i + 1) + " not restored (load timeout), preserving current DSP state");
+                    debugLog("SET_CHANGED: slot " + (i + 1) + " no state file (already cleared)");
                 }
             }
 

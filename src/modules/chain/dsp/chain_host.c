@@ -14,6 +14,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <malloc.h>
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v1.h"
@@ -5921,6 +5922,17 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 fclose(mf);
             }
         }
+    }
+    else if (strcmp(key, "clear") == 0) {
+        /* Clear all DSP (synth + FX) without loading anything new.
+         * Used by two-pass set switching to free memory before loading. */
+        v2_synth_panic(inst);
+        v2_unload_all_midi_fx(inst);
+        v2_unload_all_audio_fx(inst);
+        v2_unload_synth(inst);
+        inst->current_patch = -1;
+        inst->dirty = 0;
+        malloc_trim(0);
     }
     /* Master preset commands */
     else if (strcmp(key, "save_master_preset") == 0) {
