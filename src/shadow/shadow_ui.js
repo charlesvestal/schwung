@@ -661,6 +661,8 @@ const SLOT_SETTINGS = [
     { key: "patch", label: "Patch", type: "action" },  // Opens patch browser
     { key: "chain", label: "Edit Chain", type: "action" },  // Opens chain editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
 ];
@@ -971,6 +973,8 @@ function processAllUpdates() {
 const CHAIN_SETTINGS_ITEMS = [
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
@@ -3992,7 +3996,13 @@ function getChainSettingValue(slot, setting) {
 
     if (setting.key === "slot:volume") {
         const pct = Math.round(parseFloat(val) * 100);
-        return pct === 0 ? "Muted" : `${pct}%`;
+        return `${pct}%`;
+    }
+    if (setting.key === "slot:muted") {
+        return parseInt(val) ? "Yes" : "No";
+    }
+    if (setting.key === "slot:soloed") {
+        return parseInt(val) ? "Yes" : "No";
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
@@ -5417,7 +5427,13 @@ function getSlotSettingValue(slot, setting) {
     if (setting.key === "slot:volume") {
         const num = parseFloat(val);
         const pct = isNaN(num) ? 0 : Math.round(num * 100);
-        return pct === 0 ? "Muted" : `${pct}%`;
+        return `${pct}%`;
+    }
+    if (setting.key === "slot:muted") {
+        return parseInt(val) ? "Yes" : "No";
+    }
+    if (setting.key === "slot:soloed") {
+        return parseInt(val) ? "Yes" : "No";
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
@@ -7144,11 +7160,17 @@ function drawSlots() {
      * Show asterisk (*) before patch name for track-selected slot (playing/knob control)
      * Use leading space for non-selected to maintain alignment */
     const items = [
-        ...slots.map((s, i) => ({
-            label: (i === trackSelectedSlot ? "*" : " ") + (slotDirtyCache[i] ? "*" : "") + (s.name || "Unknown Patch"),
-            value: s.channel === 0 ? "All" : `Ch${s.channel}`,
-            isSlot: true
-        })),
+        ...slots.map((s, i) => {
+            const muted = getSlotParam(i, "slot:muted") === "1";
+            const soloed = getSlotParam(i, "slot:soloed") === "1";
+            const flags = (muted ? "M" : "") + (soloed ? "S" : "");
+            const prefix = (i === trackSelectedSlot ? "*" : " ") + (slotDirtyCache[i] ? "*" : "");
+            return {
+                label: prefix + (s.name || "Unknown Patch"),
+                value: flags || (s.channel === 0 ? "All" : `Ch${s.channel}`),
+                isSlot: true
+            };
+        }),
         { label: " Master FX", value: getMasterFxDisplayName(), isSlot: false }
     ];
 

@@ -1096,15 +1096,29 @@ typedef struct shadow_chain_slot_t {
     int channel;
     int patch_index;
     int active;
-    float volume;           /* 0.0 to 1.0, applied to audio output */
-    float pre_mute_volume;  /* saved volume before mute (0 = not muted) */
-    int muted;              /* 1 = muted by Move track mute sync */
+    float volume;           /* 0.0 to 1.0, user-set level (never modified by mute/solo) */
+    int muted;              /* 1 = muted (Mute+Track or Move speakerOn sync) */
+    int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
 } shadow_chain_slot_t;
 
 static shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
+
+/* Solo count: number of slots with soloed=1.  When >0, non-soloed slots are silenced. */
+static volatile int shadow_solo_count = 0;
+
+/* Effective volume for audio mixing: combines volume, mute, and solo.
+ * Solo wins over mute (matching Ableton/Move behavior).
+ * When any slot is soloed, only soloed slots are audible regardless of mute. */
+static inline float shadow_effective_volume(int slot) {
+    if (shadow_solo_count > 0) {
+        return shadow_chain_slots[slot].soloed ? shadow_chain_slots[slot].volume : 0.0f;
+    }
+    if (shadow_chain_slots[slot].muted) return 0.0f;
+    return shadow_chain_slots[slot].volume;
+}
 
 static const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
     "",  /* No default patch - user must select */
@@ -1173,7 +1187,7 @@ static int sampler_pending_song_index = -1;          /* unresolved currentSongIn
 static uint32_t sampler_pending_set_seq = 0;         /* synthetic pending-set UUID sequence */
 static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
 static void shadow_ui_state_update_slot(int slot);          /* forward decl */
-static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]);  /* forward decl */
+static int shadow_read_set_mute_states(const char *set_name, int muted_out[4], int soloed_out[4]);  /* forward decl */
 static void shadow_handle_set_loaded(const char *set_name, const char *uuid);  /* forward decl */
 static void shadow_poll_current_set(void);  /* forward decl */
 static int shim_run_command(const char *const argv[]);  /* forward decl */
@@ -1183,23 +1197,39 @@ static void shadow_ui_state_refresh(void);  /* forward decl */
 /* Apply mute/unmute to a shadow slot */
 static void shadow_apply_mute(int slot, int is_muted) {
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
-    if (is_muted && !shadow_chain_slots[slot].muted) {
-        shadow_chain_slots[slot].pre_mute_volume = shadow_chain_slots[slot].volume;
-        shadow_chain_slots[slot].volume = 0.0f;
-        shadow_chain_slots[slot].muted = 1;
-        shadow_ui_state_update_slot(slot);
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Mute sync: slot %d muted (saved vol=%.3f)",
-                 slot, shadow_chain_slots[slot].pre_mute_volume);
+    if (is_muted == shadow_chain_slots[slot].muted) return;
+    shadow_chain_slots[slot].muted = is_muted;
+    shadow_ui_state_update_slot(slot);
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Mute: slot %d %s", slot, is_muted ? "muted" : "unmuted");
+    shadow_log(msg);
+}
+
+/* Toggle solo on a shadow slot.  Solo is exclusive — only one slot at a time.
+ * Soloing an already-soloed slot unsolos it. */
+static void shadow_toggle_solo(int slot) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+
+    if (shadow_chain_slots[slot].soloed) {
+        /* Unsolo */
+        shadow_chain_slots[slot].soloed = 0;
+        shadow_solo_count = 0;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Solo off: slot %d", slot);
         shadow_log(msg);
-    } else if (!is_muted && shadow_chain_slots[slot].muted) {
-        shadow_chain_slots[slot].volume = shadow_chain_slots[slot].pre_mute_volume;
-        shadow_chain_slots[slot].muted = 0;
-        shadow_ui_state_update_slot(slot);
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Mute sync: slot %d unmuted (restored vol=%.3f)",
-                 slot, shadow_chain_slots[slot].volume);
+    } else {
+        /* Solo this slot, unsolo all others */
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            shadow_chain_slots[i].soloed = 0;
+        shadow_chain_slots[slot].soloed = 1;
+        shadow_solo_count = 1;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Solo on: slot %d", slot);
         shadow_log(msg);
+    }
+    /* Update UI state for all slots since solo affects effective volume display */
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        shadow_ui_state_update_slot(i);
     }
 }
 
@@ -1879,6 +1909,41 @@ static void shadow_dbus_handle_text(const char *text)
 
         if (ends_with_muted || ends_with_unmuted) {
             shadow_apply_mute(shadow_selected_slot, ends_with_muted);
+        }
+    }
+
+    /* Auto-correct solo state from D-Bus screen reader text.
+     * Move announces "<Instrument> soloed" / "<Instrument> unsoloed". */
+    {
+        int text_len = strlen(text);
+        int ends_with_unsoloed = (text_len >= 9 && strcmp(text + text_len - 8, "unsoloed") == 0
+                                  && text[text_len - 9] == ' ');
+        int ends_with_soloed = !ends_with_unsoloed &&
+                               (text_len >= 7 && strcmp(text + text_len - 6, "soloed") == 0
+                                && text[text_len - 7] == ' ');
+
+        if (ends_with_soloed) {
+            /* Solo is exclusive — unsolo all, then solo this slot */
+            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+                shadow_chain_slots[i].soloed = 0;
+            shadow_chain_slots[shadow_selected_slot].soloed = 1;
+            shadow_solo_count = 1;
+            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+                shadow_ui_state_update_slot(i);
+            char msg[64];
+            snprintf(msg, sizeof(msg), "D-Bus solo sync: slot %d soloed", shadow_selected_slot);
+            shadow_log(msg);
+        } else if (ends_with_unsoloed) {
+            shadow_chain_slots[shadow_selected_slot].soloed = 0;
+            shadow_solo_count = 0;
+            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+                if (shadow_chain_slots[i].soloed) shadow_solo_count++;
+            }
+            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+                shadow_ui_state_update_slot(i);
+            char msg[64];
+            snprintf(msg, sizeof(msg), "D-Bus solo sync: slot %d unsoloed", shadow_selected_slot);
+            shadow_log(msg);
         }
     }
 
@@ -3222,9 +3287,10 @@ static void shadow_save_config_to_dir(const char *dir) {
         int display_fwd = shadow_chain_slots[i].forward_channel >= 0
             ? shadow_chain_slots[i].forward_channel + 1
             : shadow_chain_slots[i].forward_channel;
-        fprintf(f, "    {\"name\": \"%s\", \"channel\": %d, \"volume\": %.3f, \"forward_channel\": %d}%s\n",
+        fprintf(f, "    {\"name\": \"%s\", \"channel\": %d, \"volume\": %.3f, \"forward_channel\": %d, \"muted\": %d, \"soloed\": %d}%s\n",
                 shadow_chain_slots[i].patch_name, display_ch,
                 shadow_chain_slots[i].volume, display_fwd,
+                shadow_chain_slots[i].muted, shadow_chain_slots[i].soloed,
                 i < SHADOW_CHAIN_INSTANCES - 1 ? "," : "");
     }
     fprintf(f, "  ]\n}\n");
@@ -3253,6 +3319,7 @@ static int shadow_load_config_from_dir(const char *dir) {
 
     /* Parse slots - same logic as shadow_chain_load_config */
     char *cursor = json;
+    shadow_solo_count = 0;
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         char *name_pos = strstr(cursor, "\"name\"");
         if (!name_pos) break;
@@ -3299,6 +3366,21 @@ static int shadow_load_config_from_dir(const char *dir) {
                 int ch = atoi(fwd_colon + 1);
                 if (ch >= -2 && ch <= 16)
                     shadow_chain_slots[i].forward_channel = (ch > 0) ? ch - 1 : ch;
+            }
+        }
+        char *muted_pos = strstr(name_pos, "\"muted\"");
+        if (muted_pos) {
+            char *muted_colon = strchr(muted_pos, ':');
+            if (muted_colon) {
+                shadow_chain_slots[i].muted = atoi(muted_colon + 1);
+            }
+        }
+        char *soloed_pos = strstr(name_pos, "\"soloed\"");
+        if (soloed_pos) {
+            char *soloed_colon = strchr(soloed_pos, ':');
+            if (soloed_colon) {
+                shadow_chain_slots[i].soloed = atoi(soloed_colon + 1);
+                if (shadow_chain_slots[i].soloed) shadow_solo_count++;
             }
         }
     }
@@ -3474,28 +3556,22 @@ static void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
              set_name, uuid ? uuid : "?", sampler_set_tempo);
     shadow_log(msg);
 
-    /* Read initial mute states from Song.abl */
-    int muted[4];
-    int n = shadow_read_set_mute_states(set_name, muted);
+    /* Read initial mute and solo states from Song.abl */
+    int muted[4], soloed[4];
+    int n = shadow_read_set_mute_states(set_name, muted, soloed);
+    shadow_solo_count = 0;
     for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
-        if (muted[i] && !shadow_chain_slots[i].muted) {
-            shadow_chain_slots[i].pre_mute_volume = shadow_chain_slots[i].volume;
-            shadow_chain_slots[i].volume = 0.0f;
-            shadow_chain_slots[i].muted = 1;
-            shadow_ui_state_update_slot(i);
-            char m[64];
-            snprintf(m, sizeof(m), "Set load: slot %d muted (saved vol=%.3f)",
-                     i, shadow_chain_slots[i].pre_mute_volume);
-            shadow_log(m);
-        } else if (!muted[i] && shadow_chain_slots[i].muted) {
-            shadow_chain_slots[i].volume = shadow_chain_slots[i].pre_mute_volume;
-            shadow_chain_slots[i].muted = 0;
-            shadow_ui_state_update_slot(i);
-            char m[64];
-            snprintf(m, sizeof(m), "Set load: slot %d unmuted (restored vol=%.3f)",
-                     i, shadow_chain_slots[i].volume);
-            shadow_log(m);
-        }
+        shadow_chain_slots[i].muted = muted[i];
+        shadow_chain_slots[i].soloed = soloed[i];
+        if (soloed[i]) shadow_solo_count++;
+        shadow_ui_state_update_slot(i);
+    }
+    {
+        char m[128];
+        snprintf(m, sizeof(m), "Set load: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+                 muted[0], muted[1], muted[2], muted[3],
+                 soloed[0], soloed[1], soloed[2], soloed[3]);
+        shadow_log(m);
     }
 }
 
@@ -4097,8 +4173,9 @@ static float sampler_read_set_tempo(const char *set_name) {
  * Track-level "speakerOn" fields are at exactly 8-space indent.
  * Results stored in muted_out[0..3]: 1=muted, 0=not muted.
  * Returns number of tracks found (0 on failure). */
-static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]) {
+static int shadow_read_set_mute_states(const char *set_name, int muted_out[4], int soloed_out[4]) {
     memset(muted_out, 0, 4 * sizeof(int));
+    memset(soloed_out, 0, 4 * sizeof(int));
     if (!set_name || !set_name[0]) return 0;
 
     DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
@@ -4128,44 +4205,61 @@ static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]) {
     FILE *f = fopen(best_path, "r");
     if (!f) return 0;
 
-    /* Parse by tracking brace/bracket depth.
-     * Track-level structure: "tracks": [ { ... "mixer": { "speakerOn": X } } ]
+    /* Parse by tracking brace depth CHARACTER-BY-CHARACTER so that keywords
+     * on the same line as { or } are checked at the correct depth.
      * Track-level mixer is at brace_depth=3 (root=1, track=2, mixer=3).
      * Deeper mixers (drum cells, device chains) are at depth 5+. */
-    int track_count = 0;
+    int mute_count = 0;
+    int solo_count = 0;
     int brace_depth = 0;
-    int in_tracks = 0;       /* 1 after seeing "tracks" key */
-    int bracket_depth = 0;   /* track [] nesting after "tracks" */
-    char line[512];
-    while (fgets(line, sizeof(line), f) && track_count < 4) {
-        /* Count braces and brackets on this line */
+    int in_tracks = 0;       /* 1 after seeing "tracks" key at depth 1 */
+    char line[8192];
+    while (fgets(line, sizeof(line), f) && (mute_count < 4 || solo_count < 4)) {
         for (char *p = line; *p; p++) {
-            if (*p == '{') brace_depth++;
-            else if (*p == '}') brace_depth--;
-            else if (*p == '[') bracket_depth++;
-            else if (*p == ']') bracket_depth--;
-        }
-
-        /* Detect "tracks" key to know we're in the tracks array */
-        if (!in_tracks && strstr(line, "\"tracks\"")) {
-            in_tracks = 1;
-        }
-
-        /* Track-level speakerOn: inside tracks array, at brace depth 3 */
-        if (in_tracks && brace_depth == 3 && strstr(line, "\"speakerOn\"")) {
-            muted_out[track_count] = strstr(line, "false") ? 1 : 0;
-            track_count++;
+            if (*p == '{') {
+                brace_depth++;
+            } else if (*p == '}') {
+                brace_depth--;
+            } else if (*p == '"') {
+                /* Check for "tracks" at depth 1 (top-level tracks array) */
+                if (!in_tracks && brace_depth == 1 && strncmp(p, "\"tracks\"", 8) == 0) {
+                    in_tracks = 1;
+                    p += 7; /* skip past "tracks" */
+                    continue;
+                }
+                /* Track-level speakerOn at brace depth 3 */
+                if (in_tracks && brace_depth == 3 && strncmp(p, "\"speakerOn\"", 11) == 0 && mute_count < 4) {
+                    char *val = strchr(p + 11, ':');
+                    if (val) {
+                        muted_out[mute_count] = strstr(val, "false") ? 1 : 0;
+                        mute_count++;
+                    }
+                    p += 10;
+                    continue;
+                }
+                /* Track-level solo-cue at brace depth 3 */
+                if (in_tracks && brace_depth == 3 && strncmp(p, "\"solo-cue\"", 10) == 0 && solo_count < 4) {
+                    char *val = strchr(p + 10, ':');
+                    if (val) {
+                        soloed_out[solo_count] = strstr(val, "true") ? 1 : 0;
+                        solo_count++;
+                    }
+                    p += 9;
+                    continue;
+                }
+            }
         }
     }
     fclose(f);
 
-    if (track_count > 0) {
+    if (mute_count > 0) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "Set mute states from %s: [%d,%d,%d,%d]",
-                 set_name, muted_out[0], muted_out[1], muted_out[2], muted_out[3]);
+        snprintf(msg, sizeof(msg), "Set states from %s: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+                 set_name, muted_out[0], muted_out[1], muted_out[2], muted_out[3],
+                 soloed_out[0], soloed_out[1], soloed_out[2], soloed_out[3]);
         shadow_log(msg);
     }
-    return track_count;
+    return mute_count;
 }
 
 /* Read tempo_bpm from Move Anything settings file */
@@ -5230,29 +5324,38 @@ static void shadow_save_state(void)
     if (link_audio_routing_saved >= 0) {
         fprintf(f, "  \"link_audio_routing\": %s,\n", link_audio_routing_saved ? "true" : "false");
     }
+    /* Volume is always the real user-set level; mute/solo are separate flags */
     fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f],\n",
             shadow_chain_slots[0].volume,
             shadow_chain_slots[1].volume,
             shadow_chain_slots[2].volume,
             shadow_chain_slots[3].volume);
-    fprintf(f, "  \"slot_forward_channels\": [%d, %d, %d, %d]\n",
+    fprintf(f, "  \"slot_forward_channels\": [%d, %d, %d, %d],\n",
             shadow_chain_slots[0].forward_channel,
             shadow_chain_slots[1].forward_channel,
             shadow_chain_slots[2].forward_channel,
             shadow_chain_slots[3].forward_channel);
+    fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d],\n",
+            shadow_chain_slots[0].muted,
+            shadow_chain_slots[1].muted,
+            shadow_chain_slots[2].muted,
+            shadow_chain_slots[3].muted);
+    fprintf(f, "  \"slot_soloed\": [%d, %d, %d, %d]\n",
+            shadow_chain_slots[0].soloed,
+            shadow_chain_slots[1].soloed,
+            shadow_chain_slots[2].soloed,
+            shadow_chain_slots[3].soloed);
     fprintf(f, "}\n");
     fclose(f);
 
     char msg[256];
-    snprintf(msg, sizeof(msg), "Saved slot volumes: [%.2f, %.2f, %.2f, %.2f] fwd: [%d, %d, %d, %d]",
-             shadow_chain_slots[0].volume,
-             shadow_chain_slots[1].volume,
-             shadow_chain_slots[2].volume,
-             shadow_chain_slots[3].volume,
-             shadow_chain_slots[0].forward_channel,
-             shadow_chain_slots[1].forward_channel,
-             shadow_chain_slots[2].forward_channel,
-             shadow_chain_slots[3].forward_channel);
+    snprintf(msg, sizeof(msg), "Saved slots: vol=[%.2f,%.2f,%.2f,%.2f] muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+             shadow_chain_slots[0].volume, shadow_chain_slots[1].volume,
+             shadow_chain_slots[2].volume, shadow_chain_slots[3].volume,
+             shadow_chain_slots[0].muted, shadow_chain_slots[1].muted,
+             shadow_chain_slots[2].muted, shadow_chain_slots[3].muted,
+             shadow_chain_slots[0].soloed, shadow_chain_slots[1].soloed,
+             shadow_chain_slots[2].soloed, shadow_chain_slots[3].soloed);
     shadow_log(msg);
 }
 
@@ -5319,6 +5422,48 @@ static void shadow_load_state(void)
                 char msg[128];
                 snprintf(msg, sizeof(msg), "Loaded slot fwd channels: [%d, %d, %d, %d]",
                          f0, f1, f2, f3);
+                shadow_log(msg);
+            }
+        }
+    }
+
+    /* Parse slot_muted array */
+    const char *muted_key = "\"slot_muted\":";
+    char *muted_pos = strstr(json, muted_key);
+    if (muted_pos) {
+        muted_pos = strchr(muted_pos, '[');
+        if (muted_pos) {
+            int m0, m1, m2, m3;
+            if (sscanf(muted_pos, "[%d, %d, %d, %d]", &m0, &m1, &m2, &m3) == 4) {
+                shadow_chain_slots[0].muted = m0;
+                shadow_chain_slots[1].muted = m1;
+                shadow_chain_slots[2].muted = m2;
+                shadow_chain_slots[3].muted = m3;
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Loaded slot muted: [%d, %d, %d, %d]",
+                         m0, m1, m2, m3);
+                shadow_log(msg);
+            }
+        }
+    }
+
+    /* Parse slot_soloed array */
+    const char *soloed_key = "\"slot_soloed\":";
+    char *soloed_pos = strstr(json, soloed_key);
+    shadow_solo_count = 0;
+    if (soloed_pos) {
+        soloed_pos = strchr(soloed_pos, '[');
+        if (soloed_pos) {
+            int s0, s1, s2, s3;
+            if (sscanf(soloed_pos, "[%d, %d, %d, %d]", &s0, &s1, &s2, &s3) == 4) {
+                int sol[4] = {s0, s1, s2, s3};
+                for (int i = 0; i < 4; i++) {
+                    shadow_chain_slots[i].soloed = sol[i];
+                    if (sol[i]) shadow_solo_count++;
+                }
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Loaded slot soloed: [%d, %d, %d, %d]",
+                         s0, s1, s2, s3);
                 shadow_log(msg);
             }
         }
@@ -5399,8 +5544,8 @@ static void shadow_chain_defaults(void) {
         shadow_chain_slots[i].patch_index = -1;
         shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
         shadow_chain_slots[i].volume = 1.0f;
-        shadow_chain_slots[i].pre_mute_volume = 0.0f;
         shadow_chain_slots[i].muted = 0;
+        shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
         capture_clear(&shadow_chain_slots[i].capture);
         strncpy(shadow_chain_slots[i].patch_name,
@@ -5408,6 +5553,7 @@ static void shadow_chain_defaults(void) {
                 sizeof(shadow_chain_slots[i].patch_name) - 1);
         shadow_chain_slots[i].patch_name[sizeof(shadow_chain_slots[i].patch_name) - 1] = '\0';
     }
+    shadow_solo_count = 0;
     /* Clear all master FX slots */
     for (int i = 0; i < MASTER_FX_SLOTS; i++) {
         memset(&shadow_master_fx_slots[i], 0, sizeof(master_fx_slot_t));
@@ -6543,6 +6689,26 @@ static int shadow_handle_slot_param_set(int slot, const char *key, const char *v
         shadow_ui_state_update_slot(slot);
         return 1;
     }
+    if (strcmp(key, "slot:muted") == 0) {
+        shadow_apply_mute(slot, atoi(value));
+        return 1;
+    }
+    if (strcmp(key, "slot:soloed") == 0) {
+        int val = atoi(value);
+        if (val && !shadow_chain_slots[slot].soloed) {
+            /* Solo this slot, unsolo all others */
+            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+                shadow_chain_slots[i].soloed = 0;
+            shadow_chain_slots[slot].soloed = 1;
+            shadow_solo_count = 1;
+        } else if (!val && shadow_chain_slots[slot].soloed) {
+            shadow_chain_slots[slot].soloed = 0;
+            shadow_solo_count = 0;
+        }
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            shadow_ui_state_update_slot(i);
+        return 1;
+    }
     if (strcmp(key, "slot:forward_channel") == 0) {
         int ch = atoi(value);
         if (ch < -2) ch = -2;
@@ -6569,6 +6735,12 @@ static int shadow_handle_slot_param_set(int slot, const char *key, const char *v
 static int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "slot:volume") == 0) {
         return snprintf(buf, buf_len, "%.2f", shadow_chain_slots[slot].volume);
+    }
+    if (strcmp(key, "slot:muted") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].muted);
+    }
+    if (strcmp(key, "slot:soloed") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].soloed);
     }
     if (strcmp(key, "slot:forward_channel") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].forward_channel);
@@ -7241,7 +7413,7 @@ static void shadow_inprocess_mix_audio(void) {
                                            MOVE_FRAMES_PER_BLOCK);
             /* Capture per-slot audio for Link Audio publisher (with slot volume) */
             if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                float cap_vol = shadow_chain_slots[s].volume;
+                float cap_vol = shadow_effective_volume(s);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
                 }
@@ -7254,7 +7426,7 @@ static void shadow_inprocess_mix_audio(void) {
                 any_injected = 1;
             }
 
-            float vol = shadow_chain_slots[s].volume;
+            float vol = shadow_effective_volume(s);
             float gain = vol * me_input_scale;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                 mix[i] += (int32_t)lroundf((float)render_buffer[i] * gain);
@@ -7537,11 +7709,11 @@ static void shadow_inprocess_render_to_buffer(void) {
                 shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                                render_buffer, MOVE_FRAMES_PER_BLOCK);
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                    float cap_vol = shadow_chain_slots[s].volume;
+                    float cap_vol = shadow_effective_volume(s);
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
                 }
-                float vol = shadow_chain_slots[s].volume;
+                float vol = shadow_effective_volume(s);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
                     if (mixed > 32767) mixed = 32767;
@@ -7705,13 +7877,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
                 /* Capture for Link Audio publisher */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS) {
-                    float cap_vol = shadow_chain_slots[s].volume;
+                    float cap_vol = shadow_effective_volume(s);
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
                 }
 
                 /* Add FX output to mailbox */
-                float vol = shadow_chain_slots[s].volume;
+                float vol = shadow_effective_volume(s);
                 float gain = vol;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
@@ -7762,7 +7934,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 shadow_slot_fx_idle[s] = 0;
             }
 
-            float vol = shadow_chain_slots[s].volume;
+            float vol = shadow_effective_volume(s);
             float gain = vol;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                 int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
@@ -9668,6 +9840,27 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         shadow_read_initial_volume();  /* Read initial master volume from settings */
         shadow_load_state();  /* Load saved slot volumes */
 
+        /* Sync mute/solo from Song.abl at boot — the saved state may be stale
+         * if the user changed mute/solo in Move's native UI after our last save. */
+        if (sampler_current_set_name[0]) {
+            int boot_muted[4], boot_soloed[4];
+            int n = shadow_read_set_mute_states(sampler_current_set_name, boot_muted, boot_soloed);
+            if (n > 0) {
+                shadow_solo_count = 0;
+                for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
+                    shadow_chain_slots[i].muted = boot_muted[i];
+                    shadow_chain_slots[i].soloed = boot_soloed[i];
+                    if (boot_soloed[i]) shadow_solo_count++;
+                    shadow_ui_state_update_slot(i);
+                }
+                char m[128];
+                snprintf(m, sizeof(m), "Boot Song.abl sync: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+                         boot_muted[0], boot_muted[1], boot_muted[2], boot_muted[3],
+                         boot_soloed[0], boot_soloed[1], boot_soloed[2], boot_soloed[3]);
+                shadow_log(m);
+            }
+        }
+
         /* Initialize TTS and sync loaded state to shared memory */
         tts_init(44100);
         if (shadow_control) {
@@ -11328,9 +11521,13 @@ do_ioctl:
                             shadow_log(msg);
                         }
 
-                        /* Mute + Track = toggle shadow slot mute */
+                        /* Shift + Mute + Track = toggle solo; Mute + Track = toggle mute */
                         if (shadow_mute_held) {
-                            shadow_apply_mute(new_slot, !shadow_chain_slots[new_slot].muted);
+                            if (shadow_shift_held) {
+                                shadow_toggle_solo(new_slot);
+                            } else {
+                                shadow_apply_mute(new_slot, !shadow_chain_slots[new_slot].muted);
+                            }
                         }
 
                         /* Shift + Volume + Track = jump to that slot's edit screen (if shadow UI enabled) */
