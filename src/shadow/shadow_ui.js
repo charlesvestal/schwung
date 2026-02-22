@@ -1382,6 +1382,40 @@ function setSlotParam(slot, key, value) {
     }
 }
 
+function setSlotParamWithTimeout(slot, key, value, timeoutMs) {
+    const timeout = Number.isFinite(timeoutMs) ? Math.max(1, Math.floor(timeoutMs)) : 100;
+    if (typeof shadow_set_param_timeout === "function") {
+        try {
+            return shadow_set_param_timeout(slot, key, String(value), timeout);
+        } catch (e) {
+            return false;
+        }
+    }
+    return setSlotParam(slot, key, value);
+}
+
+function setSlotParamWithRetry(slot, key, value, timeoutMs, retryTimeoutMs, logLabel) {
+    let ok = setSlotParamWithTimeout(slot, key, value, timeoutMs);
+    if (!ok) {
+        debugLog(`${logLabel} timeout slot ${slot + 1} key ${key} (retry)`);
+        ok = setSlotParamWithTimeout(slot, key, value, retryTimeoutMs);
+    }
+    if (!ok) {
+        debugLog(`${logLabel} timeout slot ${slot + 1} key ${key} (final)`);
+    }
+    return ok;
+}
+
+function clearSlotForEmptySetState(slot) {
+    const keys = ["synth:module", "midi_fx1:module", "fx1:module", "fx2:module"];
+    let allOk = true;
+    for (const key of keys) {
+        const ok = setSlotParamWithRetry(slot, key, "", 1500, 3000, "SET_CHANGED: clear");
+        if (!ok) allOk = false;
+    }
+    return allOk;
+}
+
 /* Scan modules directory for audio_fx modules */
 function scanForAudioFxModules() {
     const MODULES_DIR = "/data/UserData/move-anything/modules";
@@ -8377,6 +8411,15 @@ globalThis.init = function() {
     announce(`Slots Menu, S${selectedSlot + 1} ${slotName}`);
 };
 
+/* Called by shadow_ui.c during controlled exits (restart/shutdown paths)
+ * to guarantee one final persistence flush before process termination. */
+globalThis.shadow_save_state_now = function() {
+    autosaveAllSlots();
+    saveMasterFxChainConfig();
+    debugLog("shadow_save_state_now: flushed set state before exit");
+    return true;
+};
+
 globalThis.tick = function() {
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
@@ -8476,6 +8519,11 @@ globalThis.tick = function() {
                 ? "/data/UserData/move-anything/set_state/" + uuid
                 : SLOT_STATE_DIR_DEFAULT;
 
+            if (uuid && typeof host_ensure_dir === "function") {
+                host_ensure_dir("/data/UserData/move-anything/set_state");
+                host_ensure_dir(newDir);
+            }
+
             /* 4. First visit to this set: seed its state directory.
              *    Batch migration (shim boot) already copied default state to all existing sets.
              *    Here we only handle: (a) duplicated sets, (b) newly created sets (start clean). */
@@ -8515,20 +8563,37 @@ globalThis.tick = function() {
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 const path = activeSlotStateDir + "/slot_" + i + ".json";
                 let loaded = false;
+                let shouldClear = false;
+                let preserveCurrent = false;
                 if (host_file_exists(path)) {
                     const raw = host_read_file(path);
-                    /* Only load if file has content beyond empty marker */
+                    /* Non-empty state: try load_file with extended timeout + retry. */
                     if (raw && raw.length > 10) {
-                        setSlotParam(i, "load_file", path);
-                        loaded = true;
+                        let loadOk = false;
+                        loadOk = setSlotParamWithTimeout(i, "load_file", path, 1500);
+                        if (!loadOk) {
+                            debugLog("SET_CHANGED: load_file timeout slot " + (i + 1) + " path " + path + " (retry)");
+                            loadOk = setSlotParamWithTimeout(i, "load_file", path, 3000);
+                        }
+                        loaded = loadOk;
+                        if (!loadOk) {
+                            preserveCurrent = true;
+                        }
+                    } else if (raw) {
+                        /* Explicit empty marker ("{}") means this set intentionally has no slot content. */
+                        shouldClear = true;
+                    } else {
+                        preserveCurrent = true;
                     }
+                } else {
+                    /* Missing file is treated as empty slot state. */
+                    shouldClear = true;
                 }
-                if (!loaded) {
-                    /* Clear the slot synchronously by unloading each component */
-                    setSlotParam(i, "synth:module", "");
-                    setSlotParam(i, "midi_fx1:module", "");
-                    setSlotParam(i, "fx1:module", "");
-                    setSlotParam(i, "fx2:module", "");
+                if (shouldClear) {
+                    debugLog("SET_CHANGED: clearing slot " + (i + 1) + " from empty set state");
+                    clearSlotForEmptySetState(i);
+                } else if (!loaded && preserveCurrent) {
+                    debugLog("SET_CHANGED: slot " + (i + 1) + " not restored (load timeout), preserving current DSP state");
                 }
             }
 

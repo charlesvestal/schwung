@@ -421,6 +421,82 @@ static JSValue js_shadow_load_ui_module(JSContext *ctx, JSValueConst this_val, i
     return ret == 0 ? JS_TRUE : JS_FALSE;
 }
 
+#define SHADOW_PARAM_POLL_US 200
+#define SHADOW_PARAM_DEFAULT_TIMEOUT_MS 100
+
+static uint32_t shadow_param_request_seq = 0;
+
+static int shadow_param_timeout_to_polls(int timeout_ms) {
+    if (timeout_ms <= 0) timeout_ms = SHADOW_PARAM_DEFAULT_TIMEOUT_MS;
+    long total_us = (long)timeout_ms * 1000L;
+    int polls = (int)(total_us / SHADOW_PARAM_POLL_US);
+    if (polls < 1) polls = 1;
+    return polls;
+}
+
+static uint32_t shadow_param_next_request_id(void) {
+    shadow_param_request_seq++;
+    if (shadow_param_request_seq == 0) {
+        shadow_param_request_seq = 1;
+    }
+    return shadow_param_request_seq;
+}
+
+static int shadow_param_wait_idle(int timeout_ms) {
+    int timeout = shadow_param_timeout_to_polls(timeout_ms);
+    while (shadow_param->request_type != 0 && timeout > 0) {
+        usleep(SHADOW_PARAM_POLL_US);
+        timeout--;
+    }
+    return shadow_param->request_type == 0;
+}
+
+static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
+    int timeout = shadow_param_timeout_to_polls(timeout_ms);
+    while (timeout > 0) {
+        if (shadow_param->response_ready && shadow_param->response_id == req_id) {
+            return shadow_param->error ? -1 : 1;
+        }
+        usleep(SHADOW_PARAM_POLL_US);
+        timeout--;
+    }
+    return 0;
+}
+
+static int shadow_set_param_common(int slot, const char *key, const char *value, int timeout_ms) {
+    const int overtake_fire_and_forget = (shadow_control && shadow_control->overtake_mode >= 2);
+
+    if (!overtake_fire_and_forget) {
+        if (!shadow_param_wait_idle(timeout_ms)) {
+            return 0;
+        }
+    }
+
+    uint32_t req_id = shadow_param_next_request_id();
+
+    /* Copy key and value to shared memory */
+    strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
+    shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
+    strncpy(shadow_param->value, value, SHADOW_PARAM_VALUE_LEN - 1);
+    shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+
+    /* Set up request */
+    shadow_param->slot = (uint8_t)slot;
+    shadow_param->response_ready = 0;
+    shadow_param->error = 0;
+    shadow_param->response_id = 0;
+    shadow_param->request_id = req_id;
+    shadow_param->request_type = 1;  /* SET */
+
+    /* In overtake module mode, keep this fire-and-forget so rapid encoder
+     * streams do not block UI rendering. */
+    if (overtake_fire_and_forget) {
+        return 1;
+    }
+
+    return shadow_param_wait_response(req_id, timeout_ms) > 0;
+}
+
 /* shadow_set_param(slot, key, value) -> bool
  * Sets a parameter on the chain instance for the given slot.
  * Returns true on success, false on error.
@@ -441,45 +517,43 @@ static JSValue js_shadow_set_param(JSContext *ctx, JSValueConst this_val, int ar
         return JS_FALSE;
     }
 
-    /* Copy key and value to shared memory */
-    strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
-    shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
-    strncpy(shadow_param->value, value, SHADOW_PARAM_VALUE_LEN - 1);
-    shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+    int ok = shadow_set_param_common(slot, key, value, SHADOW_PARAM_DEFAULT_TIMEOUT_MS);
 
     JS_FreeCString(ctx, key);
     JS_FreeCString(ctx, value);
 
-    /* Set up request */
-    shadow_param->slot = (uint8_t)slot;
-    shadow_param->response_ready = 0;
-    shadow_param->error = 0;
-    shadow_param->request_type = 1;  /* SET */
+    return ok ? JS_TRUE : JS_FALSE;
+}
 
-    /* In overtake mode, fire-and-forget: don't block waiting for the shim
-     * to acknowledge.  The shim will process the SET on its next ioctl.
-     * This prevents rapid knob turns (many CCs → many setParams) from
-     * stalling the UI thread.  If another setParam overwrites the SHM
-     * before the shim processes it, last-writer-wins — correct for knobs. */
-    if (shadow_control && shadow_control->overtake_mode >= 2) {
-        return JS_TRUE;
-    }
+/* shadow_set_param_timeout(slot, key, value, timeout_ms) -> bool
+ * Timeout-aware variant used by slower operations like load_file.
+ */
+static JSValue js_shadow_set_param_timeout(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_param || argc < 4) return JS_FALSE;
 
-    /* Normal mode: wait for response with timeout.
-     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
-     * Use 200 µs sleep for tighter polling — reduces per-call latency
-     * while keeping CPU low. */
-    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
-    while (!shadow_param->response_ready && timeout > 0) {
-        usleep(200);
-        timeout--;
-    }
+    int slot = 0;
+    if (JS_ToInt32(ctx, &slot, argv[0])) return JS_FALSE;
+    if (slot < 0 || slot >= SHADOW_UI_SLOTS) return JS_FALSE;
 
-    if (!shadow_param->response_ready || shadow_param->error) {
+    int32_t timeout_ms = SHADOW_PARAM_DEFAULT_TIMEOUT_MS;
+    if (JS_ToInt32(ctx, &timeout_ms, argv[3])) return JS_FALSE;
+    if (timeout_ms <= 0) timeout_ms = SHADOW_PARAM_DEFAULT_TIMEOUT_MS;
+
+    const char *key = JS_ToCString(ctx, argv[1]);
+    if (!key) return JS_FALSE;
+    const char *value = JS_ToCString(ctx, argv[2]);
+    if (!value) {
+        JS_FreeCString(ctx, key);
         return JS_FALSE;
     }
 
-    return JS_TRUE;
+    int ok = shadow_set_param_common(slot, key, value, (int)timeout_ms);
+
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, value);
+
+    return ok ? JS_TRUE : JS_FALSE;
 }
 
 /* shadow_get_param(slot, key) -> string or null
@@ -497,6 +571,13 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     const char *key = JS_ToCString(ctx, argv[1]);
     if (!key) return JS_NULL;
 
+    if (!shadow_param_wait_idle(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
+        JS_FreeCString(ctx, key);
+        return JS_NULL;
+    }
+
+    uint32_t req_id = shadow_param_next_request_id();
+
     /* Copy key to shared memory */
     strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
     shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
@@ -509,19 +590,11 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     shadow_param->slot = (uint8_t)slot;
     shadow_param->response_ready = 0;
     shadow_param->error = 0;
+    shadow_param->response_id = 0;
+    shadow_param->request_id = req_id;
     shadow_param->request_type = 2;  /* GET */
 
-    /* Wait for response with timeout.
-     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
-     * Use 200 µs sleep for tighter polling — reduces per-call latency
-     * while keeping CPU low. */
-    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
-    while (!shadow_param->response_ready && timeout > 0) {
-        usleep(200);
-        timeout--;
-    }
-
-    if (!shadow_param->response_ready || shadow_param->error) {
+    if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0) {
         return JS_NULL;
     }
 
@@ -1558,6 +1631,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_control_restart", JS_NewCFunction(ctx, js_shadow_control_restart, "shadow_control_restart", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_param_timeout", JS_NewCFunction(ctx, js_shadow_set_param_timeout, "shadow_set_param_timeout", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
 
     /* Register MIDI output functions for overtake modules */
@@ -1673,6 +1747,7 @@ int main(int argc, char *argv[]) {
     JSValue JSonMidiMessageExternal = JS_UNDEFINED;
     JSValue JSinit = JS_UNDEFINED;
     JSValue JSTick = JS_UNDEFINED;
+    JSValue JSSaveState = JS_UNDEFINED;
 
     if (!getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal)) {
         shadow_ui_log_line("shadow_ui: onMidiMessageInternal missing");
@@ -1688,6 +1763,10 @@ int main(int argc, char *argv[]) {
     if (!jsTickIsDefined) {
         shadow_ui_log_line("shadow_ui: tick missing");
     }
+    int jsSaveStateIsDefined = getGlobalFunction(ctx, "shadow_save_state_now", &JSSaveState);
+    if (!jsSaveStateIsDefined) {
+        shadow_ui_log_line("shadow_ui: shadow_save_state_now missing");
+    }
 
     if (jsInitIsDefined) callGlobalFunction(ctx, &JSinit, 0);
     shadow_ui_log_line("shadow_ui: init called");
@@ -1695,6 +1774,9 @@ int main(int argc, char *argv[]) {
     int refresh_counter = 0;
     while (!global_exit_flag) {
         if (shadow_control && shadow_control->should_exit) {
+            if (jsSaveStateIsDefined) {
+                callGlobalFunction(ctx, &JSSaveState, 0);
+            }
             break;
         }
 

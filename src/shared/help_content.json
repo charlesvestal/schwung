@@ -17,13 +17,21 @@
             " settings menu",
             "+Jog Click: overtake",
             " module menu",
-            "+Knob 8: toggle",
-            " standalone mode",
             "",
             "Shift+Sample:",
             " quantized sampler",
             "Shift+Capture:",
-            " skipback last 30s"
+            " skipback last 30s",
+            "",
+            "Overlay Knobs:",
+            " Global Settings >",
+            " Display > Overlay",
+            " Knobs: +Shift,",
+            " +Jog Touch, Off",
+            "",
+            "Use +Jog Touch or",
+            "Off to avoid Shift+",
+            "Knob conflicts."
           ]
         },
         {

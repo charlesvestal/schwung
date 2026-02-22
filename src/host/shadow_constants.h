@@ -138,6 +138,8 @@ typedef struct shadow_param_t {
     volatile uint8_t slot;           /* Which chain slot (0-3) */
     volatile uint8_t response_ready; /* Set by shim when response is ready */
     volatile uint8_t error;          /* Non-zero on error */
+    volatile uint32_t request_id;    /* Monotonic request ID assigned by shadow UI */
+    volatile uint32_t response_id;   /* Request ID this response corresponds to */
     volatile int32_t result_len;     /* Length of result, -1 on error */
     char key[SHADOW_PARAM_KEY_LEN];
     char value[SHADOW_PARAM_VALUE_LEN];

@@ -1169,6 +1169,8 @@ static float sampler_set_tempo = 0.0f;              /* 0 = not yet detected */
 static char sampler_current_set_name[128] = "";      /* current set name */
 static char sampler_current_set_uuid[64] = "";       /* UUID from Sets/<UUID>/<Name>/ path */
 static int sampler_last_song_index = -1;             /* last seen currentSongIndex */
+static int sampler_pending_song_index = -1;          /* unresolved currentSongIndex without UUID dir yet */
+static uint32_t sampler_pending_set_seq = 0;         /* synthetic pending-set UUID sequence */
 static float sampler_read_set_tempo(const char *set_name);  /* forward decl */
 static void shadow_ui_state_update_slot(int slot);          /* forward decl */
 static int shadow_read_set_mute_states(const char *set_name, int muted_out[4]);  /* forward decl */
@@ -3328,12 +3330,25 @@ static long shadow_get_song_abl_size(const char *uuid) {
     return result;
 }
 
+/* Returns non-zero if set name indicates user asked for duplication.
+ * This avoids false-positive copy detection for ordinary "new set" creation. */
+static int shadow_set_name_looks_like_copy(const char *set_name) {
+    if (!set_name || !set_name[0]) return 0;
+    if (strcasestr(set_name, "copy")) return 1;
+    if (strcasestr(set_name, "duplicate")) return 1;
+    return 0;
+}
+
 /* Detect if a new set is a copy of an existing tracked set.
  * Compares Song.abl file sizes between the new set and all sets
  * that have per-set state directories.
  * Returns 1 and fills copy_source_uuid if a likely source is found. */
-static int shadow_detect_copy_source(const char *new_uuid, char *copy_source_uuid, int buf_len) {
+static int shadow_detect_copy_source(const char *set_name, const char *new_uuid,
+                                     char *copy_source_uuid, int buf_len) {
     copy_source_uuid[0] = '\0';
+    if (!shadow_set_name_looks_like_copy(set_name)) {
+        return 0;
+    }
 
     /* Get new set's Song.abl size */
     long new_size = shadow_get_song_abl_size(new_uuid);
@@ -3362,15 +3377,6 @@ static int shadow_detect_copy_source(const char *new_uuid, char *copy_source_uui
     if (match_count == 1) {
         snprintf(copy_source_uuid, buf_len, "%s", best_uuid);
         return 1;
-    }
-
-    /* Multiple matches (ambiguous) or no match — try current set as fallback */
-    if (match_count > 1 && sampler_current_set_uuid[0]) {
-        long current_size = shadow_get_song_abl_size(sampler_current_set_uuid);
-        if (current_size == new_size) {
-            snprintf(copy_source_uuid, buf_len, "%s", sampler_current_set_uuid);
-            return 1;
-        }
     }
 
     return 0;
@@ -3430,7 +3436,7 @@ static void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
             if (stat(test_path, &tst) != 0) {
                 /* No existing state — check if this is a copy */
                 char source_uuid[64];
-                if (shadow_detect_copy_source(uuid, source_uuid, sizeof(source_uuid))) {
+                if (shadow_detect_copy_source(set_name, uuid, source_uuid, sizeof(source_uuid))) {
                     /* Write copy source UUID so JS can copy from the right dir */
                     FILE *csf = fopen(copy_source_path, "w");
                     if (csf) {
@@ -3516,13 +3522,25 @@ static void shadow_poll_current_set(void)
     }
     fclose(f);
 
-    if (song_index < 0 || song_index == sampler_last_song_index) return;
-    sampler_last_song_index = song_index;
+    if (song_index < 0) return;
+
+    /* Normal path: react when index changes.
+     * Pending path: keep retrying the same unresolved index until a UUID appears. */
+    if (song_index == sampler_last_song_index &&
+        song_index != sampler_pending_song_index) {
+        return;
+    }
+
+    int song_index_changed = (song_index != sampler_last_song_index);
+    if (song_index_changed) {
+        sampler_last_song_index = song_index;
+    }
 
     /* Scan Sets directories for matching user.song-index xattr */
     DIR *sets_dir = opendir(SAMPLER_SETS_DIR);
     if (!sets_dir) return;
 
+    int matched = 0;
     struct dirent *entry;
     while ((entry = readdir(sets_dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
@@ -3543,17 +3561,42 @@ static void shadow_poll_current_set(void)
         DIR *uuid_dir = opendir(uuid_path);
         if (!uuid_dir) continue;
 
+        int handled = 0;
         struct dirent *sub;
         while ((sub = readdir(uuid_dir)) != NULL) {
             if (sub->d_name[0] == '.') continue;
             /* This subdirectory name is the set name */
             shadow_handle_set_loaded(sub->d_name, entry->d_name);
+            handled = 1;
             break;
         }
         closedir(uuid_dir);
-        break;
+        if (handled) {
+            matched = 1;
+            break;
+        }
     }
     closedir(sets_dir);
+
+    if (matched) {
+        sampler_pending_song_index = -1;
+        return;
+    }
+
+    /* currentSongIndex changed, but the Sets/<UUID>/ folder is not materialized yet.
+     * Present an immediate blank working state in a synthetic pending namespace. */
+    if (song_index_changed || song_index != sampler_pending_song_index) {
+        sampler_pending_set_seq++;
+        if (sampler_pending_set_seq == 0) sampler_pending_set_seq = 1;
+    }
+    sampler_pending_song_index = song_index;
+
+    char pending_name[128];
+    char pending_uuid[64];
+    snprintf(pending_name, sizeof(pending_name), "New Set %d", song_index + 1);
+    snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%u",
+             song_index, (unsigned)sampler_pending_set_seq);
+    shadow_handle_set_loaded(pending_name, pending_uuid);
 }
 
 /* Tempo source tracking for display */
@@ -6537,11 +6580,23 @@ static int shadow_handle_slot_param_get(int slot, const char *key, char *buf, in
     return -1;  /* Not a slot param */
 }
 
+static int shadow_param_publish_response(uint32_t req_id) {
+    if (!shadow_param) return 0;
+    if (shadow_param->request_id != req_id) {
+        return 0;
+    }
+    shadow_param->response_id = req_id;
+    shadow_param->response_ready = 1;
+    shadow_param->request_type = 0;
+    return 1;
+}
+
 static void shadow_inprocess_handle_param_request(void) {
     if (!shadow_param) return;
 
     uint8_t req_type = shadow_param->request_type;
     if (req_type == 0) return;  /* No pending request */
+    uint32_t req_id = shadow_param->request_id;
 
     /* Handle master FX chain params: master_fx:fx1:module, master_fx:fx2:wet, etc. */
     if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
@@ -6650,8 +6705,7 @@ static void shadow_inprocess_handle_param_request(void) {
                     if (len > 2) {  /* More than empty "[]" */
                         shadow_param->error = 0;
                         shadow_param->result_len = len;
-                        shadow_param->response_ready = 1;
-                        shadow_param->request_type = 0;
+                        shadow_param_publish_response(req_id);
                         return;
                     }
                 }
@@ -6663,8 +6717,7 @@ static void shadow_inprocess_handle_param_request(void) {
                         memcpy(shadow_param->value, mfx->chain_params_cache, len + 1);
                         shadow_param->error = 0;
                         shadow_param->result_len = len;
-                        shadow_param->response_ready = 1;
-                        shadow_param->request_type = 0;
+                        shadow_param_publish_response(req_id);
                         return;
                     }
                 }
@@ -6682,8 +6735,7 @@ static void shadow_inprocess_handle_param_request(void) {
                     if (len > 2) {
                         shadow_param->error = 0;
                         shadow_param->result_len = len;
-                        shadow_param->response_ready = 1;
-                        shadow_param->request_type = 0;
+                        shadow_param_publish_response(req_id);
                         return;
                     }
                 }
@@ -6729,8 +6781,7 @@ static void shadow_inprocess_handle_param_request(void) {
                                         shadow_param->result_len = len;
                                         free(json);
                                         fclose(f);
-                                        shadow_param->response_ready = 1;
-                                        shadow_param->request_type = 0;
+                                        shadow_param_publish_response(req_id);
                                         return;
                                     }
                                 }
@@ -6762,8 +6813,7 @@ static void shadow_inprocess_handle_param_request(void) {
             shadow_param->error = 6;
             shadow_param->result_len = -1;
         }
-        shadow_param->response_ready = 1;
-        shadow_param->request_type = 0;
+        shadow_param_publish_response(req_id);
         return;
     }
 
@@ -6808,8 +6858,7 @@ static void shadow_inprocess_handle_param_request(void) {
                 shadow_param->result_len = -1;
             }
         }
-        shadow_param->response_ready = 1;
-        shadow_param->request_type = 0;
+        shadow_param_publish_response(req_id);
         return;
     }
 
@@ -6817,8 +6866,7 @@ static void shadow_inprocess_handle_param_request(void) {
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) {
         shadow_param->error = 1;
         shadow_param->result_len = -1;
-        shadow_param->response_ready = 1;
-        shadow_param->request_type = 0;
+        shadow_param_publish_response(req_id);
         return;
     }
 
@@ -6827,8 +6875,7 @@ static void shadow_inprocess_handle_param_request(void) {
         if (shadow_handle_slot_param_set(slot, shadow_param->key, shadow_param->value)) {
             shadow_param->error = 0;
             shadow_param->result_len = 0;
-            shadow_param->response_ready = 1;
-            shadow_param->request_type = 0;
+            shadow_param_publish_response(req_id);
             return;
         }
     }
@@ -6838,8 +6885,7 @@ static void shadow_inprocess_handle_param_request(void) {
         if (len >= 0) {
             shadow_param->error = 0;
             shadow_param->result_len = len;
-            shadow_param->response_ready = 1;
-            shadow_param->request_type = 0;
+            shadow_param_publish_response(req_id);
             return;
         }
     }
@@ -6848,8 +6894,7 @@ static void shadow_inprocess_handle_param_request(void) {
     if (!shadow_plugin_v2 || !shadow_chain_slots[slot].instance) {
         shadow_param->error = 2;
         shadow_param->result_len = -1;
-        shadow_param->response_ready = 1;
-        shadow_param->request_type = 0;
+        shadow_param_publish_response(req_id);
         return;
     }
 
@@ -6979,8 +7024,7 @@ static void shadow_inprocess_handle_param_request(void) {
         shadow_param->result_len = -1;
     }
 
-    shadow_param->response_ready = 1;
-    shadow_param->request_type = 0;
+    shadow_param_publish_response(req_id);
 }
 
 /* Forward CC, pitch bend, aftertouch from external MIDI (MIDI_IN cable 2) to MIDI_OUT.
