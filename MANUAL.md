@@ -51,11 +51,18 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 | **Shift+Vol + Menu** | Open Master FX |
 | **Shift+Vol + Step 2** | Open Global Settings |
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
-| **Shift+Vol + Knob 8** | Open Standalone Mode |
 | **Shift+Sample** | Open Quantized Sampler |
 | **Shift+Capture** | Skipback (save last 30 seconds) |
 
 **Tip:** You can access slots directly from normal Move mode - you don't need to be in shadow mode first.
+
+### Overlay Knob Shortcut
+
+The knob parameter overlay shown in native Move mode has a separate trigger setting:
+
+- Go to **Global Settings > Display > Overlay Knobs**
+- Choose **+Shift** (default), **+Jog Touch**, or **Off**
+- If native Move's **Shift+Knob** actions (like fine control) are getting blocked, switch this to **+Jog Touch** or **Off**
 
 ---
 
@@ -278,7 +285,7 @@ These modules are included with Move Everything:
 
 ### Module Store
 
-When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Move Everything itself, access Module Store via Standalone Mode (**Shift+Vol + Knob 8**), then select Module Store.
+When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Move Everything itself, access Module Store via Settings (**Shift+Vol + Knob 2**), then select Updates -> Module Store.
 
 **Sound Generators:**
 - **Braids** - Mutable Instruments macro oscillator (47 algorithms)
@@ -367,5 +374,4 @@ If the screen reader is enabled, help pages are read aloud automatically when op
 ## Tips
 
 - Each Move Set has its own slot configurations — switch Sets to switch between different instrument setups
-- Use **Standalone Mode** (**Shift+Vol + Knob 8**) to run modules without Move's audio, or to access the Module Store for updates
 - If something goes wrong, use Move's DFU restore mode to reset

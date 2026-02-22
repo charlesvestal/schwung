@@ -80,6 +80,8 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 - **Screen Reader**: Optional TTS announcements for accessibility. Toggle via Shadow UI settings, or Shift+Menu when Shadow UI is disabled.
 - **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode.
 
+In **Global Settings > Display > Overlay Knobs**, you can change the knob overlay trigger between `+Shift` (default), `+Jog Touch`, or `Off`. If `Shift+Knob` interferes with native Move actions (like fine control), use `+Jog Touch` or `Off`.
+
 Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md).
 
 ## Native Sampler Bridge
