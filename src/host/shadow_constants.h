@@ -112,7 +112,8 @@ typedef struct shadow_control_t {
     volatile uint8_t overlay_rect_y;      /* Overlay rect top edge (pixels, 0-63) */
     volatile uint8_t overlay_rect_w;      /* Overlay rect width (pixels) */
     volatile uint8_t overlay_rect_h;      /* Overlay rect height (pixels) */
-    volatile uint8_t reserved[23];
+    volatile uint16_t tts_debounce_ms;   /* Screen reader debounce in ms (0-1000, default 300) */
+    volatile uint8_t reserved[20];
 } shadow_control_t;
 
 /*

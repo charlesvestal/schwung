@@ -597,7 +597,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
               options: ["eSpeak-NG", "Flite"], values: ["espeak", "flite"] },
             { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
             { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
-            { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 }
+            { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
+            { key: "screen_reader_debounce", label: "Debounce", type: "int", min: 0, max: 1000, step: 50 }
         ]
     },
     {
@@ -3173,6 +3174,10 @@ function saveMasterFxChainConfig() {
         if (typeof overlay_knobs_get_mode === "function") {
             config.overlay_knobs_mode = overlay_knobs_get_mode();
         }
+        /* Save TTS debounce */
+        if (typeof tts_get_debounce === "function") {
+            config.tts_debounce_ms = tts_get_debounce();
+        }
         /* Use JS-cached values instead of reading from shim to avoid
          * race condition where periodic autosave reads shim defaults
          * before loadMasterFxChainFromConfig() has restored them. */
@@ -3231,6 +3236,10 @@ function loadMasterFxChainFromConfig() {
         /* Restore overlay knobs mode */
         if (typeof config.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
             overlay_knobs_set_mode(config.overlay_knobs_mode);
+        }
+        /* Restore TTS debounce */
+        if (typeof config.tts_debounce_ms === "number" && typeof tts_set_debounce === "function") {
+            tts_set_debounce(config.tts_debounce_ms);
         }
         if (config.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
             const mode = parseResampleBridgeMode(config.resample_bridge_mode);
@@ -5523,6 +5532,12 @@ function getMasterFxSettingValue(setting) {
         }
         return "70%";
     }
+    if (setting.key === "screen_reader_debounce") {
+        if (typeof tts_get_debounce === "function") {
+            return tts_get_debounce() + "ms";
+        }
+        return "300ms";
+    }
     if (setting.key === "auto_update_check") {
         return autoUpdateCheckEnabled ? "On" : "Off";
     }
@@ -5617,6 +5632,14 @@ function adjustMasterFxSetting(setting, delta) {
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));
         tts_set_volume(Math.round(val));
+        return;
+    }
+
+    if (setting.key === "screen_reader_debounce" && typeof tts_set_debounce === "function") {
+        let val = typeof tts_get_debounce === "function" ? tts_get_debounce() : 300;
+        val += delta * setting.step;
+        val = Math.max(setting.min, Math.min(setting.max, val));
+        tts_set_debounce(Math.round(val));
         return;
     }
 

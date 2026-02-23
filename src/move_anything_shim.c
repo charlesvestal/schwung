@@ -8270,6 +8270,7 @@ static void init_shadow_shm(void)
             shadow_control->tts_speed = 1.0f;   /* Normal speed */
             shadow_control->tts_engine = 0;     /* 0=espeak-ng, 1=flite */
             shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
+            shadow_control->tts_debounce_ms = 300; /* default debounce ms */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -8442,7 +8443,7 @@ static void debug_audio_offset(void) {
 #endif /* SHADOW_DEBUG */
 
 /* Monitor screen reader messages and speak them with TTS (debounced) */
-#define TTS_DEBOUNCE_MS 300  /* Wait 300ms of silence before speaking */
+#define TTS_DEBOUNCE_MS_DEFAULT 300  /* Default debounce: 300ms of silence before speaking */
 static char pending_tts_message[SHADOW_SCREENREADER_TEXT_LEN] = {0};
 static uint64_t last_message_time_ms = 0;
 static bool has_pending_message = false;
@@ -8472,7 +8473,8 @@ static void shadow_check_screenreader(void)
     }
 
     /* Check if debounce period has elapsed and we have a pending message */
-    if (has_pending_message && (now_ms - last_message_time_ms >= TTS_DEBOUNCE_MS)) {
+    uint16_t debounce_ms = shadow_control ? shadow_control->tts_debounce_ms : TTS_DEBOUNCE_MS_DEFAULT;
+    if (has_pending_message && (now_ms - last_message_time_ms >= debounce_ms)) {
         /* Apply TTS settings from shared memory before speaking */
         if (shadow_control) {
             /* Check for engine switch (must happen before other settings) */

@@ -1503,6 +1503,30 @@ static JSValue js_tts_get_engine(JSContext *ctx, JSValueConst this_val,
     return JS_NewString(ctx, shadow_control->tts_engine == 1 ? "flite" : "espeak");
 }
 
+/* tts_set_debounce(ms) - Write debounce time to shared memory */
+static JSValue js_tts_set_debounce(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int ms = 0;
+    JS_ToInt32(ctx, &ms, argv[0]);
+    if (ms < 0) ms = 0;
+    if (ms > 1000) ms = 1000;
+
+    shadow_control->tts_debounce_ms = (uint16_t)ms;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_debounce() -> int - Read debounce time from shared memory */
+static JSValue js_tts_get_debounce(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 300);
+    return JS_NewInt32(ctx, shadow_control->tts_debounce_ms);
+}
+
 /* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off, 3=native) */
 static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
@@ -1670,6 +1694,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "tts_get_volume", JS_NewCFunction(ctx, js_tts_get_volume, "tts_get_volume", 0));
     JS_SetPropertyStr(ctx, global_obj, "tts_set_engine", JS_NewCFunction(ctx, js_tts_set_engine, "tts_set_engine", 1));
     JS_SetPropertyStr(ctx, global_obj, "tts_get_engine", JS_NewCFunction(ctx, js_tts_get_engine, "tts_get_engine", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_debounce", JS_NewCFunction(ctx, js_tts_set_debounce, "tts_set_debounce", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_debounce", JS_NewCFunction(ctx, js_tts_get_debounce, "tts_get_debounce", 0));
 
     /* Register overlay knobs mode functions */
     JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_set_mode", JS_NewCFunction(ctx, js_overlay_knobs_set_mode, "overlay_knobs_set_mode", 1));
