@@ -360,7 +360,10 @@ echo "Copying patches..."
 mkdir -p ./build/patches
 cp -r ./src/patches/*.json ./build/patches/ 2>/dev/null || true
 
-# Copy master presets directory
+# Copy track presets (ME Slot templates for Move's preset browser)
+echo "Copying track presets..."
+mkdir -p ./build/presets/track_presets
+cp ./src/presets/track_presets/*.json ./build/presets/track_presets/ 2>/dev/null || true
 
 # Copy curl binary for store module (if present)
 if [ -f "./libs/curl/curl" ]; then

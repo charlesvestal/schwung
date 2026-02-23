@@ -1,0 +1,207 @@
+{
+  "$schema": "http://tech.ableton.com/schema/song/1.8.2/devicePreset.json",
+  "kind": "instrumentRack",
+  "name": "ME Slot 3",
+  "parameters": {
+    "Enabled": true,
+    "Macro0": 0.0,
+    "Macro1": 0.0,
+    "Macro2": 0.0,
+    "Macro3": 0.0,
+    "Macro4": 0.0,
+    "Macro5": 0.0,
+    "Macro6": 0.0,
+    "Macro7": 0.0
+  },
+  "chains": [
+    {
+      "name": "",
+      "color": 0,
+      "devices": [
+        {
+          "presetUri": null,
+          "kind": "instrumentRack",
+          "name": "ME Slot 3",
+          "parameters": {
+            "Enabled": true,
+            "Macro0": {
+              "value": 0.0,
+              "customName": "ME S3 Knob1"
+            },
+            "Macro1": {
+              "value": 0.0,
+              "customName": "ME S3 Knob2"
+            },
+            "Macro2": {
+              "value": 0.0,
+              "customName": "ME S3 Knob3"
+            },
+            "Macro3": {
+              "value": 0.0,
+              "customName": "ME S3 Knob4"
+            },
+            "Macro4": {
+              "value": 0.0,
+              "customName": "ME S3 Knob5"
+            },
+            "Macro5": {
+              "value": 0.0,
+              "customName": "ME S3 Knob6"
+            },
+            "Macro6": {
+              "value": 0.0,
+              "customName": "ME S3 Knob7"
+            },
+            "Macro7": {
+              "value": 0.0,
+              "customName": "ME S3 Knob8"
+            }
+          },
+          "chains": [
+            {
+              "name": "",
+              "color": 0,
+              "devices": [
+                {
+                  "presetUri": null,
+                  "kind": "melodicSampler",
+                  "name": "",
+                  "parameters": {
+                    "Enabled": true,
+                    "Voice_AmplitudeEnvelope_Attack": 0.00010000000149011613,
+                    "Voice_AmplitudeEnvelope_Decay": 60.0,
+                    "Voice_AmplitudeEnvelope_Release": 0.05,
+                    "Voice_AmplitudeEnvelope_Sustain": 0.25118863582611084,
+                    "Voice_AmplitudeEnvelope_SustainMode": "Gate",
+                    "Voice_Detune": 0.0,
+                    "Voice_FilterEnvelope_Attack": 0.00010000000149011613,
+                    "Voice_FilterEnvelope_Decay": 0.6,
+                    "Voice_FilterEnvelope_On": true,
+                    "Voice_FilterEnvelope_Release": 0.05,
+                    "Voice_FilterEnvelope_Sustain": 0.0,
+                    "Voice_Filter_Frequency": 22000.0,
+                    "Voice_Filter_FrequencyModulationAmounts_EnvelopeAmount": 0,
+                    "Voice_Filter_FrequencyModulationAmounts_LfoAmount": 0.0,
+                    "Voice_Filter_On": true,
+                    "Voice_Filter_Resonance": 0.0,
+                    "Voice_Filter_Slope": "12",
+                    "Voice_Filter_Type": "Lowpass",
+                    "Voice_Gain": 1.0,
+                    "Voice_Lfo_On": true,
+                    "Voice_Lfo_Rate": 1.0,
+                    "Voice_Lfo_Type": "Sine",
+                    "Voice_PlaybackLength": 1.0,
+                    "Voice_PlaybackStart": 0.0,
+                    "Voice_Transpose": 0,
+                    "Voice_VelocityToVolume": 0.3499999940395355,
+                    "Volume": -13.800000190734863
+                  },
+                  "deviceData": {
+                    "sampleUri": null
+                  }
+                },
+                {
+                  "presetUri": null,
+                  "kind": "delay",
+                  "name": "Delay",
+                  "parameters": {
+                    "DelayLine_CompatibilityMode": "D",
+                    "DelayLine_Link": true,
+                    "DelayLine_OffsetL": 0.0,
+                    "DelayLine_OffsetR": 0.0,
+                    "DelayLine_PingPong": false,
+                    "DelayLine_PingPongDelayTimeL": 1.0,
+                    "DelayLine_PingPongDelayTimeR": 1.0,
+                    "DelayLine_SimpleDelayTimeL": 100.0,
+                    "DelayLine_SimpleDelayTimeR": 100.0,
+                    "DelayLine_SmoothingMode": "Repitch",
+                    "DelayLine_SyncL": true,
+                    "DelayLine_SyncR": true,
+                    "DelayLine_SyncedSixteenthL": "3",
+                    "DelayLine_SyncedSixteenthR": "3",
+                    "DelayLine_TimeL": 0.375,
+                    "DelayLine_TimeR": 0.375,
+                    "DryWet": 0.0,
+                    "DryWetMode": "Linear",
+                    "EcoProcessing": true,
+                    "Enabled": true,
+                    "Feedback": 0.5,
+                    "Filter_Bandwidth": 8.0,
+                    "Filter_Frequency": 1000.0,
+                    "Filter_On": true,
+                    "Freeze": false,
+                    "Modulation_AmountFilter": 0.0,
+                    "Modulation_AmountTime": 0.0,
+                    "Modulation_Frequency": 2.0,
+                    "Modulation_Morph": 0.0,
+                    "Modulation_Sixteenth": 16,
+                    "Modulation_SyncedRate": 4,
+                    "Modulation_Time": 1.0,
+                    "Modulation_TimeMode": "Rate",
+                    "Modulation_Waveform": "Triangle"
+                  },
+                  "deviceData": {}
+                },
+                {
+                  "presetUri": null,
+                  "kind": "reverb",
+                  "name": "",
+                  "parameters": {
+                    "AllPassGain": 0.6,
+                    "AllPassSize": 0.4,
+                    "BandFreq": 830.0,
+                    "BandHighOn": false,
+                    "BandLowOn": true,
+                    "BandWidth": 5.85,
+                    "ChorusOn": false,
+                    "CutOn": false,
+                    "DecayTime": 5000.0,
+                    "DiffuseDelay": 0.5,
+                    "EarlyReflectModDepth": 2.0,
+                    "EarlyReflectModFreq": 0.17,
+                    "Enabled": true,
+                    "FlatOn": true,
+                    "FreezeOn": false,
+                    "HighFilterType": "Shelf",
+                    "MixDiffuse": 1.0,
+                    "MixDirect": 0.0,
+                    "MixReflect": 1.0,
+                    "PreDelay": 2.5,
+                    "RoomSize": 100.0,
+                    "RoomType": "SuperEco",
+                    "ShelfHiFreq": 4500.0,
+                    "ShelfHiGain": 0.7,
+                    "ShelfHighOn": true,
+                    "ShelfLoFreq": 90.0,
+                    "ShelfLoGain": 1.0,
+                    "ShelfLowOn": true,
+                    "SizeModDepth": 0.02,
+                    "SizeModFreq": 0.02,
+                    "SizeSmoothing": "Fast",
+                    "SpinOn": false,
+                    "StereoSeparation": 100.0
+                  },
+                  "deviceData": {}
+                }
+              ],
+              "mixer": {
+                "pan": 0.0,
+                "solo-cue": false,
+                "speakerOn": true,
+                "volume": 0.0,
+                "sends": []
+              }
+            }
+          ]
+        }
+      ],
+      "mixer": {
+        "pan": 0.0,
+        "solo-cue": false,
+        "speakerOn": true,
+        "volume": 0.0,
+        "sends": []
+      }
+    }
+  ]
+}
