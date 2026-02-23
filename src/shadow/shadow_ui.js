@@ -578,7 +578,7 @@ const GLOBAL_SETTINGS_SECTIONS = [
         items: [
             { key: "display_mirror", label: "Mirror Display", type: "bool" },
             { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
-              options: ["+Shift", "+Jog Touch", "Off"], values: [0, 1, 2] }
+              options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] }
         ]
     },
     {
@@ -5490,7 +5490,7 @@ function getMasterFxSettingValue(setting) {
     }
     if (setting.key === "overlay_knobs") {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
-        return ["+Shift", "+Jog Touch", "Off"][mode] || "+Shift";
+        return ["+Shift", "+Jog Touch", "Off", "Native"][mode] || "+Shift";
     }
     if (setting.key === "display_mirror") {
         return (typeof display_mirror_get === "function" && display_mirror_get()) ? "On" : "Off";

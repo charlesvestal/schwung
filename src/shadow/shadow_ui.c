@@ -1503,7 +1503,7 @@ static JSValue js_tts_get_engine(JSContext *ctx, JSValueConst this_val,
     return JS_NewString(ctx, shadow_control->tts_engine == 1 ? "flite" : "espeak");
 }
 
-/* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off) */
+/* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off, 3=native) */
 static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
     (void)this_val;
@@ -1512,7 +1512,7 @@ static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
     int mode = 0;
     JS_ToInt32(ctx, &mode, argv[0]);
     if (mode < 0) mode = 0;
-    if (mode > 2) mode = 2;
+    if (mode > 3) mode = 3;
     shadow_control->overlay_knobs_mode = (uint8_t)mode;
 
     return JS_UNDEFINED;

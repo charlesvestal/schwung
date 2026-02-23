@@ -1816,6 +1816,13 @@ static void shadow_inject_pending_announcements(void)
     pthread_mutex_unlock(&pending_announcements_mutex);
 }
 
+/* Native overlay knobs mode constant and state (used by D-Bus handler and ioctl) */
+#define OVERLAY_KNOBS_NATIVE    3
+static volatile int8_t  native_knob_slot[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
+static volatile uint8_t native_knob_touched[8] = {0};
+static volatile int     native_knob_any_touched = 0;
+static volatile uint8_t native_knob_mapped[8] = {0};  /* 1 = D-Bus text parsed, mapping active */
+
 /* Handle a screenreader text signal */
 static void shadow_dbus_handle_text(const char *text)
 {
@@ -1844,6 +1851,25 @@ static void shadow_dbus_handle_text(const char *text)
 
     /* Track native Move sampler source from stock announcements. */
     native_sampler_update_from_dbus_text(text);
+
+    /* Native overlay knobs: parse "ME S<slot> Knob<n> <value>" from screen reader */
+    if (shadow_control &&
+        shadow_control->overlay_knobs_mode == OVERLAY_KNOBS_NATIVE &&
+        native_knob_any_touched) {
+        int me_slot = 0, me_knob = 0;
+        if (sscanf(text, "ME S%d Knob%d", &me_slot, &me_knob) == 2 &&
+            me_slot >= 1 && me_slot <= 4 && me_knob >= 1 && me_knob <= 8) {
+            int idx = me_knob - 1;
+            native_knob_slot[idx] = (int8_t)(me_slot - 1);
+            native_knob_mapped[idx] = 1;
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Native knob: mapped knob %d -> slot %d", me_knob, me_slot - 1);
+                shadow_log(msg);
+            }
+            return;  /* Suppress TTS for ME knob macro text */
+        }
+    }
 
     /* Block D-Bus messages while priority announcement is playing */
     if (tts_priority_announcement_active) {
@@ -3118,6 +3144,7 @@ static char shift_knob_overlay_value[32] = "";   /* Parameter value */
 #define OVERLAY_KNOBS_SHIFT     0
 #define OVERLAY_KNOBS_JOG_TOUCH 1
 #define OVERLAY_KNOBS_OFF       2
+/* OVERLAY_KNOBS_NATIVE (3) defined earlier, before shadow_dbus_handle_text */
 
 #define SHIFT_KNOB_OVERLAY_FRAMES 60  /* ~1 second at 60fps */
 
@@ -3973,7 +4000,7 @@ static void overlay_draw_shift_knob(uint8_t *buf)
 static void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
 {
     (void)cc_value;  /* No longer used - we show "Unmapped" instead */
-    uint8_t okm = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_SHIFT;
+    uint8_t okm = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_NATIVE;
     if (okm == OVERLAY_KNOBS_OFF) return;
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
 
@@ -8242,6 +8269,7 @@ static void init_shadow_shm(void)
             shadow_control->tts_pitch = 110;    /* 110 Hz */
             shadow_control->tts_speed = 1.0f;   /* Normal speed */
             shadow_control->tts_engine = 0;     /* 0=espeak-ng, 1=flite */
+            shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -11745,8 +11773,8 @@ do_ioctl:
      * When in Move mode (not shadow mode) and the overlay activation condition is met,
      * intercept knob CCs (71-78) and route to shadow chain DSP.
      * Also block knob touch notes (0-7) to prevent them reaching Move.
-     * Activation depends on overlay_knobs_mode: Shift (0), Jog Touch (1), or Off (2). */
-    uint8_t overlay_knobs_mode = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_SHIFT;
+     * Activation depends on overlay_knobs_mode: Shift (0), Jog Touch (1), Off (2), or Native (3). */
+    uint8_t overlay_knobs_mode = shadow_control ? shadow_control->overlay_knobs_mode : OVERLAY_KNOBS_NATIVE;
     int overlay_active = 0;
     if (overlay_knobs_mode == OVERLAY_KNOBS_SHIFT) overlay_active = shiftHeld;
     else if (overlay_knobs_mode == OVERLAY_KNOBS_JOG_TOUCH) overlay_active = shadow_jog_touched;
@@ -11832,6 +11860,89 @@ do_ioctl:
 
                 /* Block CC from reaching Move when shift held */
                 src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+            }
+        }
+    }
+
+    /* === POST-IOCTL: NATIVE OVERLAY KNOB INTERCEPTION (MOVE MODE) ===
+     * In Native mode, knob touches pass through to Move so the ME Slot preset
+     * macros fire and produce D-Bus screen reader text ("ME S1 Knob3 57.42").
+     * The D-Bus handler parses the text and maps knob -> shadow slot.
+     * Once mapped, subsequent CCs are intercepted and routed to shadow DSP. */
+    if (!shadow_display_mode && overlay_knobs_mode == OVERLAY_KNOBS_NATIVE &&
+        shadow_ui_enabled && shadow_inprocess_ready && global_mmap_addr) {
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t cin = src[j] & 0x0F;
+            uint8_t cable = (src[j] >> 4) & 0x0F;
+            if (cable != 0x00) continue;  /* Only internal cable */
+
+            uint8_t status = src[j + 1];
+            uint8_t type = status & 0xF0;
+            uint8_t d1 = src[j + 2];
+            uint8_t d2 = src[j + 3];
+
+            /* Handle knob touch notes 0-7 - let pass through to Move, track touch state */
+            if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80) && d1 <= 7) {
+                int idx = d1;  /* Note 0 = knob index 0 */
+
+                if (type == 0x90 && d2 > 0) {
+                    /* Touch start - flag as touched, clear any stale mapping */
+                    native_knob_touched[idx] = 1;
+                    native_knob_mapped[idx] = 0;
+                    native_knob_slot[idx] = -1;
+                    native_knob_any_touched = 1;
+                } else if (type == 0x80 || (type == 0x90 && d2 == 0)) {
+                    /* Touch release - clear mapping and touch state */
+                    native_knob_touched[idx] = 0;
+                    native_knob_mapped[idx] = 0;
+                    native_knob_slot[idx] = -1;
+                    /* Recompute any_touched */
+                    int any = 0;
+                    for (int k = 0; k < 8; k++) {
+                        if (native_knob_touched[k]) { any = 1; break; }
+                    }
+                    native_knob_any_touched = any;
+                    /* Start overlay fade timeout */
+                    int knob_num = idx + 1;
+                    if (shift_knob_overlay_active && shift_knob_overlay_knob == knob_num) {
+                        shift_knob_overlay_timeout = SHIFT_KNOB_OVERLAY_FRAMES;
+                        shadow_overlay_sync();
+                    }
+                }
+                /* DO NOT block - let touch note pass through to Move */
+                continue;
+            }
+
+            /* Handle knob CC messages (71-78) */
+            if (cin == 0x0B && type == 0xB0 && d1 >= 71 && d1 <= 78) {
+                int idx = d1 - 71;     /* 0-7 */
+                int knob_num = idx + 1; /* 1-8 */
+
+                if (native_knob_mapped[idx] && native_knob_slot[idx] >= 0) {
+                    /* Mapped: intercept CC and route to shadow slot */
+                    int slot = native_knob_slot[idx];
+                    if (slot < SHADOW_CHAIN_INSTANCES &&
+                        shadow_chain_slots[slot].active &&
+                        shadow_plugin_v2 && shadow_plugin_v2->set_param) {
+                        int delta = 0;
+                        if (d2 >= 1 && d2 <= 63) delta = d2;
+                        else if (d2 >= 65 && d2 <= 127) delta = d2 - 128;
+
+                        if (delta != 0) {
+                            char key[32];
+                            char val[16];
+                            snprintf(key, sizeof(key), "knob_%d_adjust", knob_num);
+                            snprintf(val, sizeof(val), "%d", delta);
+                            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, val);
+                        }
+                    }
+                    /* Show overlay */
+                    shift_knob_update_overlay(native_knob_slot[idx], knob_num, d2);
+                    /* Block CC from reaching Move */
+                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                }
+                /* else: not yet mapped - let CC pass through to Move so macro fires D-Bus text */
             }
         }
     }

@@ -1,7 +1,7 @@
 {
   "$schema": "http://tech.ableton.com/schema/song/1.8.2/devicePreset.json",
   "kind": "instrumentRack",
-  "name": "ME Slot 3",
+  "name": "ME Slot 2",
   "parameters": {
     "Enabled": true,
     "Macro0": 0.0,
@@ -21,42 +21,52 @@
         {
           "presetUri": null,
           "kind": "instrumentRack",
-          "name": "ME Slot 3",
+          "name": "ME Slot 2",
           "parameters": {
             "Enabled": true,
             "Macro0": {
               "value": 0.0,
-              "customName": "ME S3 Knob1"
+              "customName": "ME S2 Knob1"
             },
             "Macro1": {
               "value": 0.0,
-              "customName": "ME S3 Knob2"
+              "customName": "ME S2 Knob2"
             },
             "Macro2": {
               "value": 0.0,
-              "customName": "ME S3 Knob3"
+              "customName": "ME S2 Knob3"
             },
             "Macro3": {
               "value": 0.0,
-              "customName": "ME S3 Knob4"
+              "customName": "ME S2 Knob4"
             },
             "Macro4": {
               "value": 0.0,
-              "customName": "ME S3 Knob5"
+              "customName": "ME S2 Knob5"
             },
             "Macro5": {
               "value": 0.0,
-              "customName": "ME S3 Knob6"
+              "customName": "ME S2 Knob6"
             },
             "Macro6": {
               "value": 0.0,
-              "customName": "ME S3 Knob7"
+              "customName": "ME S2 Knob7"
             },
             "Macro7": {
               "value": 0.0,
-              "customName": "ME S3 Knob8"
+              "customName": "ME S2 Knob8"
             }
           },
+          "macroMappings": [
+            {"macroIndex": 0, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0},
+            {"macroIndex": 1, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0},
+            {"macroIndex": 2, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0},
+            {"macroIndex": 3, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0},
+            {"macroIndex": 4, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0},
+            {"macroIndex": 5, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0},
+            {"macroIndex": 6, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0},
+            {"macroIndex": 7, "path": "parameters/ChainSelector", "min": 0.0, "max": 0.0}
+          ],
           "chains": [
             {
               "name": "",
