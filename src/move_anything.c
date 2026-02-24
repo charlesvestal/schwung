@@ -78,7 +78,7 @@ typedef struct FontChar {
 
 typedef struct Font {
   int charSpacing;
-  FontChar charData[128];
+  FontChar charData[256];
   /* TTF font data */
   int is_ttf;
   stbtt_fontinfo ttf_info;
@@ -279,105 +279,111 @@ Font* load_font(char* filename, int charSpacing) {
     return NULL;
   }
 
-  char charList[256];
-  fgets(charList, 256, charListFP);
+  /* Read UTF-8 character list — each character may be multi-byte */
+  char charListRaw[1024];
+  if(!fgets(charListRaw, sizeof(charListRaw), charListFP)) {
+    fclose(charListFP);
+    return NULL;
+  }
   fclose(charListFP);
 
-  int numChars = strlen(charList);
+  /* Strip trailing newline */
+  size_t rawLen = strlen(charListRaw);
+  if (rawLen > 0 && charListRaw[rawLen - 1] == '\n') {
+    charListRaw[--rawLen] = '\0';
+  }
 
-  uint32_t* data = (uint32_t*)stbi_load(filename, &width, &height, &comp, 4);
-  if(data == NULL) {
+  /* Decode UTF-8 into Unicode codepoints */
+  int codepoints[512];
+  int numChars = 0;
+  const unsigned char *p = (const unsigned char *)charListRaw;
+  while (*p && numChars < 512) {
+    unsigned int cp = 0;
+    if (*p < 0x80) {
+      cp = *p++;
+    } else if ((*p & 0xE0) == 0xC0) {
+      cp = (*p++ & 0x1F) << 6;
+      if (*p) cp |= (*p++ & 0x3F);
+    } else if ((*p & 0xF0) == 0xE0) {
+      cp = (*p++ & 0x0F) << 12;
+      if (*p) cp |= (*p++ & 0x3F) << 6;
+      if (*p) cp |= (*p++ & 0x3F);
+    } else {
+      p++; /* skip invalid byte */
+      continue;
+    }
+    codepoints[numChars++] = (int)cp;
+  }
+
+  if (numChars == 0) {
+    printf("ERROR: empty char list in %s\n", charListFilename);
+    return NULL;
+  }
+
+  unsigned char *image = stbi_load(filename, &width, &height, &comp, 4);
+  if(image == NULL) {
     printf("ERROR loading font: %s\n", filename);
     return NULL;
   }
 
-  Font* font = calloc(1, sizeof(Font));
+  /* Horizontal-strip atlas: each char occupies charW columns */
+  int charW = width / numChars;
+  if (charW <= 0) {
+    printf("ERROR: font atlas width %d < numChars %d\n", width, numChars);
+    stbi_image_free(image);
+    return NULL;
+  }
 
+  Font* font = calloc(1, sizeof(Font));
   font->charSpacing = charSpacing;
 
-  comp = 4;
-  int x = 0;
-  int y = 0;
-
-  uint32_t borderColor = data[0];
-  uint32_t emptyColor = data[(height-1) * width];
-
-  printf("FONT DEBUG: file=%s, size=%dx%d, numChars=%d\n", filename, width, height, numChars);
-  printf("FONT DEBUG: borderColor=0x%08x, emptyColor=0x%08x\n", borderColor, emptyColor);
-
-  if (borderColor == emptyColor) {
-    printf("FONT ERROR: borderColor == emptyColor, font will not load correctly!\n");
-  }
-
-  x = 0;
-
   for(int i = 0; i < numChars; i++) {
-    FontChar fc;
-    fc.width = 0;
-    fc.height = 0;
+    int cp = codepoints[i];
+    if (cp < 0 || cp >= 256) continue;
 
-    while(x < width && data[x] == borderColor) {
-      x++;
-    }
+    int x0 = i * charW;
 
-    if(x >= width) {
-      break;
-    }
-
-    int bx = x;
-    int by = y;
-    for(int by = 0; by < height; by++) {
-        uint32_t color = data[by * width + x];
-        if(color == borderColor) {
-          fc.height = by;
+    /* Find actual pixel extent within this cell (auto-trim whitespace) */
+    int startX = -1, endX = -1;
+    for (int x = 0; x < charW; x++) {
+      for (int y = 0; y < height; y++) {
+        int idx = (y * width + x0 + x) * 4;
+        if (image[idx + 3] > 0) {
+          if (startX == -1) startX = x;
+          endX = x;
           break;
         }
-    }
-    for(int bx = x; bx < width; bx++) {
-        uint32_t color = data[bx];
-        if(color == borderColor) {
-          fc.width = bx - x;
-          break;
-        }
-    }
-
-    if(fc.width == 0 || fc.height == 0) {
-      printf("FONT ERROR [%d/%d] char '%c' (0x%02x) has zero dimension: %d x %d at x=%d\n",
-             i, numChars, charList[i], (unsigned char)charList[i], fc.width, fc.height, x);
-      printf("FONT DEBUG: x position may have exceeded width (%d)\n", width);
-      break;
-    }
-
-    if (i < 5 || i == numChars - 1) {
-      printf("FONT DEBUG [%d] char '%c': %dx%d at x=%d\n", i, charList[i], fc.width, fc.height, x);
-    }
-
-    fc.data = malloc(fc.width * fc.height);
-
-    int setPixels = 0;
-
-    for(int yi = 0; yi < fc.height; yi++) {
-      for(int xi = 0; xi < fc.width; xi++) {
-        uint32_t color = data[(y + yi) * width + (x + xi)];
-        int set = (color != borderColor && color != emptyColor);
-        if(set) {
-          setPixels++;
-        }
-        fc.data[yi * fc.width + xi] = set;
       }
     }
-
-    font->charData[(unsigned char)charList[i]] = fc;
-
-    x += fc.width+1;
-    if(x >= width) {
-      break;
+    if (startX == -1) {
+      /* Blank glyph — insert a space-width entry so cursor advances */
+      FontChar fc = {0};
+      fc.width = charW;
+      fc.height = height;
+      fc.data = calloc(charW * height, 1);
+      font->charData[cp] = fc;
+      continue;
     }
+    int glyphW = endX - startX + 1;
+
+    FontChar fc = {0};
+    fc.width = glyphW;
+    fc.height = height;
+    fc.data = malloc(glyphW * height);
+    if (!fc.data) continue;
+
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < glyphW; x++) {
+        int idx = (y * width + x0 + startX + x) * 4;
+        fc.data[y * glyphW + x] = image[idx + 3] > 0 ? 1 : 0;
+      }
+    }
+    font->charData[cp] = fc;
   }
 
-  stbi_image_free(data);
+  stbi_image_free(image);
 
-  printf("Loaded bitmap font: %s (%d chars)\n", filename, numChars);
+  printf("Loaded bitmap font: %s (%d chars, cell %dx%d)\n", filename, numChars, charW, height);
   return font;
 }
 
@@ -488,12 +494,8 @@ void print(int sx, int sy, const char* string, int color) {
   int y = sy;
 
   if(font == NULL) {
-    /* Try TTF font first (unifont from Move's fonts directory) */
-    font = load_ttf_font("/opt/move/Fonts/unifont_jp-14.0.01.ttf", 12);
-    if(font == NULL) {
-      /* Fall back to bitmap font */
-      font = load_font("font.png", 1);
-    }
+    /* Bitmap font generated by scripts/generate_font.py — single source of truth */
+    font = load_font("font.png", 1);
   }
 
   if(font == NULL) {

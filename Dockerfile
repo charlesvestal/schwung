@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     binutils-aarch64-linux-gnu \
     make \
     file \
+    python3 \
+    python3-pillow \
     libdbus-1-dev:arm64 \
     libsystemd-dev:arm64 \
     libespeak-ng1:arm64 \
@@ -36,7 +38,7 @@ CMD set -e && \
     echo "Building QuickJS..." && \
     cd /build/libs/quickjs/quickjs-2025-04-26 && \
     make clean 2>/dev/null || true && \
-    CC=aarch64-linux-gnu-gcc make libquickjs.a && \
+    CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar make libquickjs.a && \
     echo "QuickJS built successfully" && \
     echo "" && \
     echo "Building Move Anything..." && \

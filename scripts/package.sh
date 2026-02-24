@@ -50,6 +50,12 @@ if [ -f "./move-anything-web-shim.so" ]; then
     ITEMS="$ITEMS ./move-anything-web-shim.so"
 fi
 
-tar -czvf ../move-anything.tar.gz \
-    --transform 's,^\.,move-anything,' \
-    $ITEMS
+if tar --version 2>/dev/null | grep -q GNU; then
+    tar -czvf ../move-anything.tar.gz \
+        --transform 's,^\.,move-anything,' \
+        $ITEMS
+else
+    tar -czvf ../move-anything.tar.gz \
+        -s ',^\.,move-anything,' \
+        $ITEMS
+fi

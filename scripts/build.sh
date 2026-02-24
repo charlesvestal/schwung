@@ -91,7 +91,7 @@ fi
 if [ ! -f "./libs/quickjs/quickjs-2025-04-26/libquickjs.a" ]; then
     echo "QuickJS static library not found, building it..."
     make -C ./libs/quickjs/quickjs-2025-04-26 clean >/dev/null 2>&1 || true
-    CC="${CROSS_PREFIX}gcc" make -C ./libs/quickjs/quickjs-2025-04-26 libquickjs.a
+    CC="${CROSS_PREFIX}gcc" AR="${CROSS_PREFIX}ar" make -C ./libs/quickjs/quickjs-2025-04-26 libquickjs.a
 fi
 
 # Clean and prepare
@@ -101,6 +101,10 @@ mkdir -p ./build/host/
 mkdir -p ./build/shared/
 # Module directories are created automatically when copying files
 # External modules (sf2, dexed, m8, minijv, obxd, clap) are in separate repos
+
+# Generate bitmap font for host display (single source of truth: scripts/generate_font.py)
+echo "Generating host bitmap font..."
+python3 scripts/generate_font.py --deploy-png build/host/font.png
 
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
@@ -128,7 +132,7 @@ echo "Building host..."
     -Isrc -Isrc/lib \
     -Ilibs/quickjs/quickjs-2025-04-26 \
     -Llibs/quickjs/quickjs-2025-04-26 \
-    -lquickjs -lm -ldl
+    -lquickjs -lm -ldl -lrt -lpthread
 
 # Build shim (with shared memory support for shadow instrument)
 # D-Bus/TTS are optional and can be disabled with DISABLE_SCREEN_READER=1
@@ -184,7 +188,7 @@ echo "Building Shadow UI..."
     -Isrc -Isrc/lib \
     -Ilibs/quickjs/quickjs-2025-04-26 \
     -Llibs/quickjs/quickjs-2025-04-26 \
-    -lquickjs -lm -ldl -lrt
+    -lquickjs -lm -ldl -lrt -lpthread
 
 # Build Link Audio subscriber (C++17, requires Link SDK)
 if [ -d "./libs/link/include/ableton" ]; then

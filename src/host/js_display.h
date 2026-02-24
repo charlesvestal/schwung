@@ -28,7 +28,7 @@ typedef struct FontChar {
 /* Font structure (bitmap or TTF) */
 typedef struct Font {
     int charSpacing;
-    FontChar charData[128];
+    FontChar charData[256];
     int is_ttf;
     stbtt_fontinfo ttf_info;
     unsigned char *ttf_buffer;
