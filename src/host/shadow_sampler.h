@@ -22,7 +22,8 @@
 typedef enum {
     SAMPLER_IDLE = 0,
     SAMPLER_ARMED,
-    SAMPLER_RECORDING
+    SAMPLER_RECORDING,
+    SAMPLER_PREROLL
 } sampler_state_t;
 
 typedef enum {
@@ -41,6 +42,7 @@ typedef enum {
 typedef enum {
     SAMPLER_MENU_SOURCE = 0,
     SAMPLER_MENU_DURATION,
+    SAMPLER_MENU_PREROLL,
     SAMPLER_MENU_COUNT
 } sampler_menu_item_t;
 
@@ -133,6 +135,12 @@ extern int sampler_fullscreen_active;
 
 extern uint32_t sampler_samples_written;
 
+extern int sampler_preroll_enabled;
+extern int sampler_preroll_clock_count;
+extern int sampler_preroll_target_pulses;
+extern int sampler_preroll_fallback_blocks;
+extern int sampler_preroll_fallback_target;
+
 extern volatile int skipback_overlay_timeout;
 
 /* ============================================================================
@@ -156,6 +164,10 @@ void sampler_announce_menu_item(void);
 /* Start/stop recording */
 void sampler_start_recording(void);
 void sampler_stop_recording(void);
+
+/* Pre-roll: countdown before recording */
+void sampler_start_preroll(void);
+void sampler_tick_preroll(void);
 
 /* Capture one audio block during recording */
 void sampler_capture_audio(void);

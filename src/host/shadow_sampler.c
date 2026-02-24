@@ -45,6 +45,13 @@ int sampler_fallback_blocks = 0;
 int sampler_fallback_target = 0;
 int sampler_clock_received = 0;
 
+/* Pre-roll state */
+int sampler_preroll_enabled = 0;
+int sampler_preroll_clock_count = 0;
+int sampler_preroll_target_pulses = 0;
+int sampler_preroll_fallback_blocks = 0;
+int sampler_preroll_fallback_target = 0;
+
 /* Tempo detection: MIDI clock BPM measurement */
 struct timespec sampler_clock_last_beat = {0, 0};
 int sampler_clock_beat_ticks = 0;
@@ -302,10 +309,45 @@ void sampler_announce_menu_item(void) {
             snprintf(sr_buf, sizeof(sr_buf), "Duration, Until stop");
         else
             snprintf(sr_buf, sizeof(sr_buf), "Duration, %d bar%s", bars, bars > 1 ? "s" : "");
+    } else if (sampler_menu_cursor == SAMPLER_MENU_PREROLL) {
+        snprintf(sr_buf, sizeof(sr_buf), "Pre-roll, %s",
+                 sampler_preroll_enabled ? "On" : "Off");
     } else {
         return;
     }
     s_host.announce(sr_buf);
+}
+
+void sampler_start_preroll(void) {
+    sampler_preroll_clock_count = 0;
+    sampler_preroll_fallback_blocks = 0;
+
+    int bars = sampler_duration_options[sampler_duration_index];
+    sampler_preroll_target_pulses = bars * 4 * 24;
+
+    tempo_source_t src;
+    float bpm = sampler_get_bpm(&src);
+    float seconds = bars * 4.0f * 60.0f / bpm;
+    sampler_preroll_fallback_target = (int)(seconds * 44100.0f / 128.0f);
+
+    sampler_state = SAMPLER_PREROLL;
+    sampler_fullscreen_active = 1;
+    sampler_overlay_active = 1;
+    s_host.overlay_sync();
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Sampler: preroll started (%d bars, %.1f BPM)", bars, bpm);
+    s_host.log(msg);
+}
+
+void sampler_tick_preroll(void) {
+    if (sampler_state != SAMPLER_PREROLL) return;
+
+    sampler_preroll_fallback_blocks++;
+    if (sampler_preroll_fallback_target > 0 && sampler_preroll_fallback_blocks >= sampler_preroll_fallback_target) {
+        s_host.log("Sampler: preroll complete (fallback timer)");
+        sampler_start_recording();
+    }
 }
 
 void sampler_start_recording(void) {
@@ -408,6 +450,14 @@ void sampler_start_recording(void) {
 }
 
 void sampler_stop_recording(void) {
+    /* If in preroll, just cancel back to armed (no WAV to finalize) */
+    if (sampler_state == SAMPLER_PREROLL) {
+        s_host.log("Sampler: preroll cancelled");
+        sampler_state = SAMPLER_ARMED;
+        s_host.overlay_sync();
+        return;
+    }
+
     if (!sampler_writer_running) return;
 
     s_host.log("Sampler: stopping recording");
@@ -517,6 +567,15 @@ void sampler_on_clock(uint8_t status) {
             sampler_clock_beat_ticks = 0;
         }
 
+        /* Preroll-specific: count pulses for preroll countdown */
+        if (sampler_state == SAMPLER_PREROLL) {
+            sampler_preroll_clock_count++;
+            if (sampler_preroll_target_pulses > 0 && sampler_preroll_clock_count >= sampler_preroll_target_pulses) {
+                s_host.log("Sampler: preroll complete via MIDI clock");
+                sampler_start_recording();
+            }
+        }
+
         /* Recording-specific: count pulses for auto-stop */
         if (sampler_state == SAMPLER_RECORDING) {
             sampler_clock_received = 1;
@@ -532,7 +591,11 @@ void sampler_on_clock(uint8_t status) {
         /* MIDI Start */
         if (sampler_state == SAMPLER_ARMED) {
             s_host.log("Sampler: triggered by MIDI Start");
-            sampler_start_recording();
+            if (sampler_preroll_enabled && sampler_duration_options[sampler_duration_index] > 0) {
+                sampler_start_preroll();
+            } else {
+                sampler_start_recording();
+            }
         }
     }
     else if (status == 0xFC) {
@@ -540,6 +603,10 @@ void sampler_on_clock(uint8_t status) {
         if (sampler_state == SAMPLER_RECORDING) {
             s_host.log("Sampler: stopped by MIDI Stop");
             sampler_stop_recording();
+        } else if (sampler_state == SAMPLER_PREROLL) {
+            s_host.log("Sampler: preroll cancelled by MIDI Stop");
+            sampler_state = SAMPLER_ARMED;
+            s_host.overlay_sync();
         }
     }
 }

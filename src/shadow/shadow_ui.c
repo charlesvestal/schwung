@@ -1663,6 +1663,11 @@ static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val
     JS_SetPropertyStr(ctx, obj, "setPageTimeout", JS_NewInt32(ctx, shadow_overlay->set_page_timeout));
     JS_SetPropertyStr(ctx, obj, "setPageLoading", JS_NewInt32(ctx, shadow_overlay->set_page_loading));
 
+    /* Preroll state */
+    JS_SetPropertyStr(ctx, obj, "samplerPrerollEnabled", JS_NewInt32(ctx, shadow_overlay->sampler_preroll_enabled));
+    JS_SetPropertyStr(ctx, obj, "samplerPrerollActive", JS_NewInt32(ctx, shadow_overlay->sampler_preroll_active));
+    JS_SetPropertyStr(ctx, obj, "samplerPrerollBarsDone", JS_NewInt32(ctx, shadow_overlay->sampler_preroll_bars_done));
+
     return obj;
 }
 

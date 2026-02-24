@@ -446,9 +446,20 @@ void shadow_overlay_sync(void) {
     ov->sampler_samples_written = sampler_samples_written;
     ov->sampler_clock_count = (uint32_t)sampler_clock_count;
     ov->sampler_target_pulses = (uint32_t)sampler_target_pulses;
-    ov->sampler_fallback_blocks = (uint32_t)sampler_fallback_blocks;
-    ov->sampler_fallback_target = (uint32_t)sampler_fallback_target;
+    if (sampler_state == SAMPLER_PREROLL) {
+        ov->sampler_fallback_blocks = (uint32_t)sampler_preroll_fallback_blocks;
+        ov->sampler_fallback_target = (uint32_t)sampler_preroll_fallback_target;
+    } else {
+        ov->sampler_fallback_blocks = (uint32_t)sampler_fallback_blocks;
+        ov->sampler_fallback_target = (uint32_t)sampler_fallback_target;
+    }
     ov->sampler_clock_received = sampler_clock_received ? 1 : 0;
+
+    /* Preroll state */
+    ov->sampler_preroll_enabled = sampler_preroll_enabled ? 1 : 0;
+    ov->sampler_preroll_active = (sampler_state == SAMPLER_PREROLL) ? 1 : 0;
+    ov->sampler_preroll_bars_done = (sampler_state == SAMPLER_PREROLL) ?
+        (uint16_t)(sampler_preroll_clock_count / 96) : 0;
 
     /* Skipback state */
     ov->skipback_active = (skipback_overlay_timeout > 0) ? 1 : 0;

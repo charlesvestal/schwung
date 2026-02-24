@@ -201,6 +201,7 @@ typedef struct shadow_screenreader_t {
 #define SHADOW_SAMPLER_IDLE       0
 #define SHADOW_SAMPLER_ARMED      1
 #define SHADOW_SAMPLER_RECORDING  2
+#define SHADOW_SAMPLER_PREROLL    3
 
 /*
  * Overlay state structure for communication from shim to shadow UI.
@@ -246,7 +247,12 @@ typedef struct shadow_overlay_state_t {
     volatile uint8_t  set_page_loading;           /* 1 = loading (pre-restart), 0 = loaded */
     volatile uint16_t set_page_timeout;           /* Frames remaining for toast */
 
-    volatile uint8_t  reserved[256 - 214];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
+    /* Preroll state */
+    volatile uint8_t  sampler_preroll_enabled;    /* 0=off, 1=on */
+    volatile uint8_t  sampler_preroll_active;     /* 1 = currently in preroll countdown */
+    volatile uint16_t sampler_preroll_bars_done;  /* Bars completed in preroll */
+
+    volatile uint8_t  reserved[256 - 218];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
 } shadow_overlay_state_t;
 
 /* Compile-time size checks */

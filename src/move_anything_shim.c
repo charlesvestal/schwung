@@ -1371,6 +1371,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
     /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
         sampler_capture_audio();
+        sampler_tick_preroll();
         /* Skipback: always capture Resample source into rolling buffer */
         skipback_init();
         skipback_capture(mailbox_audio);
@@ -3286,6 +3287,7 @@ do_ioctl:
         /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
         if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {
             sampler_capture_audio();
+            sampler_tick_preroll();
             /* Skipback: always capture Move Input source into rolling buffer */
             skipback_init();
             skipback_capture((int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET));
@@ -3652,11 +3654,19 @@ do_ioctl:
                         } else if (sampler_state == SAMPLER_RECORDING) {
                             shadow_log("Sampler: force stop via Shift+Sample");
                             sampler_stop_recording();
+                        } else if (sampler_state == SAMPLER_PREROLL) {
+                            shadow_log("Sampler: preroll cancelled via Shift+Sample");
+                            sampler_stop_recording();
                         }
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     } else if (sampler_state == SAMPLER_RECORDING) {
                         /* Bare Sample while recording: stop */
                         shadow_log("Sampler: stopped via Sample button");
+                        sampler_stop_recording();
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    } else if (sampler_state == SAMPLER_PREROLL) {
+                        /* Bare Sample while preroll: cancel back to armed */
+                        shadow_log("Sampler: preroll cancelled via Sample button");
                         sampler_stop_recording();
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     }
@@ -3696,6 +3706,8 @@ do_ioctl:
                             ? SAMPLER_SOURCE_MOVE_INPUT : SAMPLER_SOURCE_RESAMPLE;
                     } else if (sampler_menu_cursor == SAMPLER_MENU_DURATION) {
                         sampler_duration_index = (sampler_duration_index + 1) % SAMPLER_DURATION_COUNT;
+                    } else if (sampler_menu_cursor == SAMPLER_MENU_PREROLL) {
+                        sampler_preroll_enabled = !sampler_preroll_enabled;
                     }
                     shadow_overlay_sync();
                     sampler_announce_menu_item();
@@ -3771,11 +3783,16 @@ do_ioctl:
                     shadow_log("Shift+Step: dismissing shadow UI");
                 }
 
-                /* Pad note-on while sampler armed = trigger recording */
+                /* Pad note-on while sampler armed = trigger recording (or preroll) */
                 if (type == 0x90 && d2 > 0 && d1 >= 68 && d1 <= 99 &&
                     sampler_state == SAMPLER_ARMED) {
-                    shadow_log("Sampler: triggered by pad note-on");
-                    sampler_start_recording();
+                    if (sampler_preroll_enabled && sampler_duration_options[sampler_duration_index] > 0) {
+                        shadow_log("Sampler: triggered preroll by pad note-on");
+                        sampler_start_preroll();
+                    } else {
+                        shadow_log("Sampler: triggered by pad note-on");
+                        sampler_start_recording();
+                    }
                     /* Do NOT block the note - it must play so it gets recorded */
                 }
             }
@@ -3790,8 +3807,13 @@ do_ioctl:
                 if (cin == 0x09) {  /* Note-on */
                     uint8_t vel = src[j + 3];
                     if (vel > 0) {
-                        shadow_log("Sampler: triggered by external MIDI (cable 2)");
-                        sampler_start_recording();
+                        if (sampler_preroll_enabled && sampler_duration_options[sampler_duration_index] > 0) {
+                            shadow_log("Sampler: triggered preroll by external MIDI (cable 2)");
+                            sampler_start_preroll();
+                        } else {
+                            shadow_log("Sampler: triggered by external MIDI (cable 2)");
+                            sampler_start_recording();
+                        }
                         /* Do NOT block - let note pass through for playback/recording */
                         break;
                     }

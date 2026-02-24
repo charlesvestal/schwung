@@ -23,6 +23,7 @@ export const OVERLAY_SET_PAGE = 4;
 const SAMPLER_IDLE = 0;
 const SAMPLER_ARMED = 1;
 const SAMPLER_RECORDING = 2;
+const SAMPLER_PREROLL = 3;
 
 /* Recording title flash state */
 let recordingFlashCounter = 0;
@@ -78,6 +79,13 @@ export function drawSamplerArmed(state) {
         print(0, 24, durPrefix + "Dur: Until stop", 1);
     } else {
         print(0, 24, durPrefix + "Dur: " + bars + " bar" + (bars > 1 ? "s" : ""), 1);
+    }
+
+    /* Pre-roll line (only shown when bars > 0) */
+    if (bars > 0) {
+        const prePrefix = cursor === 2 ? ">" : " ";
+        const preLabel = state.samplerPrerollEnabled ? "On" : "Off";
+        print(0, 32, prePrefix + "Pre-roll: " + preLabel, 1);
     }
 
     /* VU meter */
@@ -138,6 +146,56 @@ export function drawSamplerRecording(state) {
 
     /* Instructions */
     print(0, 52, "Sample to stop", 1);
+}
+
+/**
+ * Draw the sampler pre-roll countdown screen.
+ */
+export function drawSamplerPreroll(state) {
+    clear_screen();
+
+    /* Flashing title (~4Hz at ~57fps = toggle every 14 frames) */
+    recordingFlashCounter = (recordingFlashCounter + 1) % 28;
+    if (Math.floor(recordingFlashCounter / 14) === 0) {
+        const title = "** PRE-ROLL **";
+        const titleX = Math.floor((SCREEN_WIDTH - title.length * 6) / 2);
+        print(titleX, 0, title, 1);
+    }
+
+    /* Source (locked, no cursor) */
+    const sourceLabel = state.samplerSource === 0 ? "Resample" : "Move Input";
+    print(0, 16, " Source: " + sourceLabel, 1);
+
+    /* Pre-roll progress */
+    const bars = state.samplerTargetBars;
+    const barsDone = state.samplerPrerollBarsDone || 0;
+    let currentBar = barsDone + 1;
+    if (currentBar > bars) currentBar = bars;
+    print(0, 24, " Pre-roll: Bar " + currentBar + " / " + bars, 1);
+
+    /* Progress bar */
+    const progX = 4, progY = 32, progW = 120, progH = 5;
+    drawRect(progX, progY, progW, progH, 1);
+    let progress = 0;
+    if (bars > 0) {
+        if (state.samplerClockReceived && state.samplerTargetPulses > 0) {
+            /* Use preroll bars done for clock-synced progress */
+            progress = barsDone / bars;
+        } else if (state.samplerFallbackTarget > 0) {
+            progress = state.samplerFallbackBlocks / state.samplerFallbackTarget;
+        }
+    }
+    if (progress > 1) progress = 1;
+    const fillW = Math.floor((progW - 2) * progress);
+    if (fillW > 0) {
+        fill_rect(progX + 1, progY + 1, fillW, progH - 2, 1);
+    }
+
+    /* VU meter */
+    drawVuMeter(4, 44, 120, 5, state.samplerVuPeak);
+
+    /* Instructions */
+    print(0, 52, "Sample to cancel", 1);
 }
 
 /**
@@ -241,6 +299,8 @@ export function drawSamplerOverlay(state) {
     if (state.samplerFullscreen) {
         if (state.samplerState === SAMPLER_ARMED) {
             drawSamplerArmed(state);
+        } else if (state.samplerState === SAMPLER_PREROLL) {
+            drawSamplerPreroll(state);
         } else if (state.samplerState === SAMPLER_RECORDING) {
             drawSamplerRecording(state);
         } else {
