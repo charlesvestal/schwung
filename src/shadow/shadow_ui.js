@@ -91,13 +91,19 @@ import {
     OVERLAY_SAMPLER,
     OVERLAY_SKIPBACK,
     OVERLAY_SHIFT_KNOB,
+    OVERLAY_SET_PAGE,
     drawSamplerOverlay,
     drawSkipbackToast,
     drawShiftKnobOverlay,
+    drawSetPageToast,
     SHIFT_KNOB_BOX_X,
     SHIFT_KNOB_BOX_Y,
     SHIFT_KNOB_BOX_W,
-    SHIFT_KNOB_BOX_H
+    SHIFT_KNOB_BOX_H,
+    SET_PAGE_BOX_X,
+    SET_PAGE_BOX_Y,
+    SET_PAGE_BOX_W,
+    SET_PAGE_BOX_H
 } from '/data/UserData/move-anything/shared/sampler_overlay.mjs';
 
 /* Track buttons - derive from imported constants */
@@ -8857,6 +8863,19 @@ globalThis.tick = function() {
         drawSkipbackToast();
         if (typeof shadow_set_display_overlay === "function") {
             shadow_set_display_overlay(1, 9, 22, 110, 20);
+        }
+        return;
+    }
+
+    /* Set page toast - render to shadow display, request rect overlay on native */
+    if (overlayState && overlayState.type === OVERLAY_SET_PAGE &&
+        overlayState.setPageActive && overlayState.setPageTimeout > 0) {
+        clear_screen();
+        drawSetPageToast(overlayState);
+        if (typeof shadow_set_display_overlay === "function") {
+            shadow_set_display_overlay(1,
+                SET_PAGE_BOX_X, SET_PAGE_BOX_Y,
+                SET_PAGE_BOX_W, SET_PAGE_BOX_H);
         }
         return;
     }

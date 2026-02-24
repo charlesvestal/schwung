@@ -1594,6 +1594,13 @@ static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val
     JS_SetPropertyStr(ctx, obj, "shiftKnobParam", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_param));
     JS_SetPropertyStr(ctx, obj, "shiftKnobValue", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_value));
 
+    /* Set page overlay */
+    JS_SetPropertyStr(ctx, obj, "setPageActive", JS_NewInt32(ctx, shadow_overlay->set_page_active));
+    JS_SetPropertyStr(ctx, obj, "setPageCurrent", JS_NewInt32(ctx, shadow_overlay->set_page_current));
+    JS_SetPropertyStr(ctx, obj, "setPageTotal", JS_NewInt32(ctx, shadow_overlay->set_page_total));
+    JS_SetPropertyStr(ctx, obj, "setPageTimeout", JS_NewInt32(ctx, shadow_overlay->set_page_timeout));
+    JS_SetPropertyStr(ctx, obj, "setPageLoading", JS_NewInt32(ctx, shadow_overlay->set_page_loading));
+
     return obj;
 }
 

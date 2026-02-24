@@ -17,6 +17,7 @@ export const OVERLAY_NONE = 0;
 export const OVERLAY_SAMPLER = 1;
 export const OVERLAY_SKIPBACK = 2;
 export const OVERLAY_SHIFT_KNOB = 3;
+export const OVERLAY_SET_PAGE = 4;
 
 /* Sampler state constants */
 const SAMPLER_IDLE = 0;
@@ -194,6 +195,37 @@ export function drawShiftKnobOverlay(state) {
     print(tx, by + 3, state.shiftKnobPatch || "", 1);
     print(tx, by + 14, state.shiftKnobParam || "", 1);
     print(tx, by + 25, state.shiftKnobValue || "", 1);
+}
+
+/**
+ * Set page toast overlay box dimensions (exported for rect blit coordinates).
+ */
+export const SET_PAGE_BOX_W = 110;
+export const SET_PAGE_BOX_H = 20;
+export const SET_PAGE_BOX_X = Math.floor((SCREEN_WIDTH - SET_PAGE_BOX_W) / 2);
+export const SET_PAGE_BOX_Y = Math.floor((SCREEN_HEIGHT - SET_PAGE_BOX_H) / 2);
+
+/**
+ * Draw the "Page N / 8" set page toast overlay.
+ * Draws on top of the current display content.
+ */
+export function drawSetPageToast(state) {
+    const boxW = SET_PAGE_BOX_W;
+    const boxH = SET_PAGE_BOX_H;
+    const boxX = SET_PAGE_BOX_X;
+    const boxY = SET_PAGE_BOX_Y;
+
+    /* Background and border */
+    fill_rect(boxX, boxY, boxW, boxH, 0);
+    drawRect(boxX, boxY, boxW, boxH, 1);
+
+    const page = (state.setPageCurrent || 0) + 1;
+    const total = state.setPageTotal || 8;
+    const msg = state.setPageLoading
+        ? "Loading Page " + page + "/" + total + "..."
+        : "Page " + page + "/" + total;
+    const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
+    print(msgX, boxY + 7, msg, 1);
 }
 
 /**

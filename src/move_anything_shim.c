@@ -1262,6 +1262,9 @@ static bool tts_priority_announcement_active = false;
 static uint64_t tts_priority_announcement_time_ms = 0;
 #define TTS_PRIORITY_BLOCK_MS 1000  /* Block D-Bus for 1 second after priority announcement */
 
+/* Set page: track whether Move is showing the Set Overview screen (declared early for D-Bus handler) */
+static volatile int in_set_overview = 0;
+
 /* Parse dB value from "Track Volume X dB" string and convert to linear */
 static float shadow_parse_volume_db(const char *text)
 {
@@ -1851,6 +1854,16 @@ static void shadow_dbus_handle_text(const char *text)
 
     /* Track native Move sampler source from stock announcements. */
     native_sampler_update_from_dbus_text(text);
+
+    /* Set page: detect Set Overview screen for Shift+Left/Right interception */
+    if (strcasecmp(text, "Set Overview") == 0 || strcasecmp(text, "Sets") == 0) {
+        in_set_overview = 1;
+    } else if (text[0] && strcasecmp(text, "Set Overview") != 0 &&
+               strcasecmp(text, "Sets") != 0 &&
+               strncmp(text, "Page ", 5) != 0) {
+        /* Clear when navigating away (but not on our own "Page N of M" announcements) */
+        in_set_overview = 0;
+    }
 
     /* Native overlay knobs: parse "ME S<slot> Knob<n> <value>" from screen reader */
     if (shadow_control &&
@@ -3147,6 +3160,32 @@ static char shift_knob_overlay_value[32] = "";   /* Parameter value */
 /* OVERLAY_KNOBS_NATIVE (3) defined earlier, before shadow_dbus_handle_text */
 
 #define SHIFT_KNOB_OVERLAY_FRAMES 60  /* ~1 second at 60fps */
+
+/* ==========================================================================
+ * Set Pages - Organize sets into 8 switchable pages
+ * ========================================================================== */
+
+#define SET_PAGES_DIR "/data/UserData/move-anything/set_pages"
+#define SET_PAGES_CURRENT_PATH SET_PAGES_DIR "/current_page.txt"
+#define SET_PAGES_TOTAL 8
+#define SET_PAGE_OVERLAY_FRAMES 120  /* ~2 seconds at 60fps */
+
+static int set_page_current = 0;            /* 0-7 */
+static int set_page_overlay_active = 0;
+static int set_page_overlay_timeout = 0;    /* Frames remaining for toast */
+static int set_page_loading = 0;            /* 1 = pre-restart "Loading...", 0 = post-boot */
+static volatile int set_page_change_in_flight = 0;  /* Guard against double-press */
+/* in_set_overview declared near D-Bus globals (before shadow_dbus_handle_text) */
+
+/* Xattr names to preserve when stashing/restoring set UUID dirs */
+static const char *set_page_xattr_names[] = {
+    "user.song-index",
+    "user.song-color",
+    "user.last-modified-time",
+    "user.was-externally-modified",
+    "user.local-cloud-state",
+    NULL
+};
 
 /* ==========================================================================
  * Shadow Sampler - Record final mixed audio output to WAV
@@ -4992,6 +5031,8 @@ static void shadow_overlay_sync(void) {
         shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SAMPLER;
     } else if (skipback_overlay_timeout > 0) {
         shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SKIPBACK;
+    } else if (set_page_overlay_active && set_page_overlay_timeout > 0) {
+        shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SET_PAGE;
     } else if (shift_knob_overlay_active && shift_knob_overlay_timeout > 0) {
         shadow_overlay_shm->overlay_type = SHADOW_OVERLAY_SHIFT_KNOB;
     } else {
@@ -5026,8 +5067,300 @@ static void shadow_overlay_sync(void) {
     memcpy((char *)shadow_overlay_shm->shift_knob_param, shift_knob_overlay_param, 64);
     memcpy((char *)shadow_overlay_shm->shift_knob_value, shift_knob_overlay_value, 32);
 
+    /* Set page state */
+    shadow_overlay_shm->set_page_active = (set_page_overlay_active && set_page_overlay_timeout > 0) ? 1 : 0;
+    shadow_overlay_shm->set_page_current = (uint8_t)set_page_current;
+    shadow_overlay_shm->set_page_total = SET_PAGES_TOTAL;
+    shadow_overlay_shm->set_page_timeout = (uint16_t)set_page_overlay_timeout;
+    shadow_overlay_shm->set_page_loading = (uint8_t)set_page_loading;
+
     /* Increment sequence to notify JS of state change */
     shadow_overlay_shm->sequence++;
+}
+
+/* ==========================================================================
+ * Set Pages - Helper functions for stashing/restoring UUID directories
+ * ========================================================================== */
+
+/* Save xattrs for all UUID dirs in Sets/ to stash_dir/xattrs.txt */
+static void set_page_save_xattrs(const char *sets_dir, const char *stash_dir)
+{
+    char xattrs_path[512];
+    snprintf(xattrs_path, sizeof(xattrs_path), "%s/xattrs.txt", stash_dir);
+
+    FILE *xf = fopen(xattrs_path, "w");
+    if (!xf) return;
+
+    DIR *d = opendir(sets_dir);
+    if (!d) { fclose(xf); return; }
+
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char uuid_path[512];
+        snprintf(uuid_path, sizeof(uuid_path), "%s/%s", sets_dir, entry->d_name);
+
+        for (int i = 0; set_page_xattr_names[i]; i++) {
+            char val[256] = "";
+            ssize_t xlen = getxattr(uuid_path, set_page_xattr_names[i], val, sizeof(val) - 1);
+            if (xlen > 0) {
+                val[xlen] = '\0';
+                fprintf(xf, "%s %s %s\n", entry->d_name, set_page_xattr_names[i], val);
+            }
+        }
+    }
+    closedir(d);
+    fclose(xf);
+}
+
+/* Restore xattrs from stash_dir/xattrs.txt to UUID dirs in sets_dir */
+static void set_page_restore_xattrs(const char *sets_dir, const char *stash_dir)
+{
+    char xattrs_path[512];
+    snprintf(xattrs_path, sizeof(xattrs_path), "%s/xattrs.txt", stash_dir);
+
+    FILE *xf = fopen(xattrs_path, "r");
+    if (!xf) return;
+
+    char line[512];
+    while (fgets(line, sizeof(line), xf)) {
+        /* Parse: "UUID attr_name attr_value\n" */
+        char uuid[128], attr[128], val[256];
+        if (sscanf(line, "%127s %127s %255[^\n]", uuid, attr, val) == 3) {
+            char uuid_path[512];
+            snprintf(uuid_path, sizeof(uuid_path), "%s/%s", sets_dir, uuid);
+            struct stat st;
+            if (stat(uuid_path, &st) == 0) {
+                setxattr(uuid_path, attr, val, strlen(val), 0);
+            }
+        }
+    }
+    fclose(xf);
+}
+
+/* Move all UUID directories from src_dir to dst_dir */
+static int set_page_move_dirs(const char *src_dir, const char *dst_dir)
+{
+    DIR *d = opendir(src_dir);
+    if (!d) return 0;
+
+    int moved = 0;
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        /* Only move directories (UUID dirs) */
+        char src_path[512], dst_path[512];
+        snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, entry->d_name);
+        /* Skip non-directories and xattrs.txt */
+        struct stat st;
+        if (stat(src_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+        snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, entry->d_name);
+        if (rename(src_path, dst_path) == 0) {
+            moved++;
+        } else {
+            char msg[512];
+            snprintf(msg, sizeof(msg), "SetPage: rename failed %s -> %s: %s",
+                     src_path, dst_path, strerror(errno));
+            shadow_log(msg);
+        }
+    }
+    closedir(d);
+    return moved;
+}
+
+/* Persist current page number to disk */
+static void set_page_persist(int page)
+{
+    shadow_ensure_dir(SET_PAGES_DIR);
+    FILE *f = fopen(SET_PAGES_CURRENT_PATH, "w");
+    if (f) {
+        fprintf(f, "%d\n", page);
+        fclose(f);
+    }
+}
+
+/* Read current page from disk (returns 0 if not found) */
+static int set_page_read_persisted(void)
+{
+    FILE *f = fopen(SET_PAGES_CURRENT_PATH, "r");
+    if (!f) return 0;
+    int page = 0;
+    if (fscanf(f, "%d", &page) != 1) page = 0;
+    fclose(f);
+    if (page < 0 || page >= SET_PAGES_TOTAL) page = 0;
+    return page;
+}
+
+/* Background thread args for set page change */
+typedef struct {
+    int old_page;
+    int new_page;
+} set_page_change_args_t;
+
+/* Fire-and-forget dbus-send (fork without waitpid) */
+static void set_page_dbus_fire_and_forget(const char *const argv[])
+{
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: redirect stderr to /dev/null, exec */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    /* Parent: don't wait - child will be reaped by init */
+}
+
+/* Update currentSongIndex in Settings.json (simple sed-like in-place edit) */
+static void set_page_update_song_index(int index)
+{
+    const char *path = "/data/UserData/settings/Settings.json";
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    /* Read entire file */
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0 || len > 8192) { fclose(f); return; }
+
+    char *buf = malloc(len + 1);
+    if (!buf) { fclose(f); return; }
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+
+    /* Find and replace currentSongIndex value */
+    char *p = strstr(buf, "\"currentSongIndex\":");
+    if (p) {
+        char *val_start = p + 19;  /* skip "currentSongIndex": */
+        while (*val_start == ' ') val_start++;
+        char *val_end = val_start;
+        if (*val_end == '-') val_end++;  /* skip negative sign */
+        while (*val_end >= '0' && *val_end <= '9') val_end++;
+
+        /* Build new file content */
+        char new_val[16];
+        snprintf(new_val, sizeof(new_val), "%d", index);
+
+        FILE *out = fopen(path, "w");
+        if (out) {
+            fwrite(buf, 1, val_start - buf, out);
+            fputs(new_val, out);
+            fputs(val_end, out);
+            fclose(out);
+        }
+    }
+    free(buf);
+}
+
+/* Background thread: does the heavy I/O for page change, then restarts Move */
+static void *set_page_change_thread(void *arg)
+{
+    set_page_change_args_t *a = (set_page_change_args_t *)arg;
+    int old_page = a->old_page;
+    int new_page = a->new_page;
+    free(a);
+
+    /* 1. Save song if dirty via dbus (blocking - we're on a background thread) */
+    {
+        const char *argv[] = {
+            "dbus-send", "--system", "--print-reply",
+            "--dest=com.ableton.move",
+            "/com/ableton/move/browser",
+            "com.ableton.move.Browser.saveSongIfDirty",
+            "string:",
+            NULL
+        };
+        shim_run_command(argv);
+    }
+
+    /* 2. Save xattrs for current sets */
+    char current_stash[512];
+    snprintf(current_stash, sizeof(current_stash), SET_PAGES_DIR "/page_%d", old_page);
+    shadow_ensure_dir(current_stash);
+    set_page_save_xattrs(SAMPLER_SETS_DIR, current_stash);
+
+    /* 3. Move current sets to stash */
+    set_page_move_dirs(SAMPLER_SETS_DIR, current_stash);
+
+    /* 4. Move target page sets from stash to Sets/ */
+    char target_stash[512];
+    snprintf(target_stash, sizeof(target_stash), SET_PAGES_DIR "/page_%d", new_page);
+    shadow_ensure_dir(target_stash);
+    int restored = set_page_move_dirs(target_stash, SAMPLER_SETS_DIR);
+
+    /* 5. Restore xattrs for target page */
+    set_page_restore_xattrs(SAMPLER_SETS_DIR, target_stash);
+
+    /* 6. Update currentSongIndex to 0 so Move loads the first set on new page */
+    set_page_update_song_index(0);
+
+    /* 7. Persist page number */
+    set_page_persist(new_page);
+
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "SetPage: now on page %d (%d sets restored), restarting Move",
+                 new_page + 1, restored);
+        shadow_log(msg);
+    }
+
+    /* 8. Save shadow state before restart */
+    shadow_save_state();
+
+    /* 9. Trigger restart via the existing mechanism */
+    shadow_log("SetPage: triggering restart");
+    system("/data/UserData/move-anything/restart-move.sh");
+
+    return NULL;
+}
+
+/* Change to a new set page (non-blocking: spawns background thread for I/O) */
+static void shadow_change_set_page(int new_page)
+{
+    if (new_page < 0 || new_page >= SET_PAGES_TOTAL) return;
+    if (new_page == set_page_current) return;
+    if (set_page_change_in_flight) return;
+
+    int old_page = set_page_current;
+
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "SetPage: switching from page %d to page %d",
+                 old_page + 1, new_page + 1);
+        shadow_log(msg);
+    }
+
+    /* Update state and show "Loading..." toast immediately (before I/O) */
+    set_page_current = new_page;
+    set_page_loading = 1;
+    set_page_overlay_active = 1;
+    set_page_overlay_timeout = SET_PAGE_OVERLAY_FRAMES;
+    shadow_overlay_sync();
+
+    /* TTS announcement */
+    {
+        char sr_buf[128];
+        snprintf(sr_buf, sizeof(sr_buf), "Page %d of %d", new_page + 1, SET_PAGES_TOTAL);
+        send_screenreader_announcement(sr_buf);
+    }
+
+    /* Spawn background thread for heavy I/O */
+    set_page_change_in_flight = 1;
+    set_page_change_args_t *args = malloc(sizeof(set_page_change_args_t));
+    if (!args) return;
+    args->old_page = old_page;
+    args->new_page = new_page;
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, set_page_change_thread, args) == 0) {
+        pthread_detach(tid);
+    } else {
+        free(args);
+        shadow_log("SetPage: failed to create background thread");
+    }
 }
 
 /* Load feature configuration from config/features.json */
@@ -5959,6 +6292,19 @@ static int shadow_inprocess_load_chain(void) {
             (void*)shadow_chain_set_external_fx_mode,
             (void*)shadow_chain_process_fx,
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
+
+    /* Set pages: read persisted page on boot */
+    set_page_current = set_page_read_persisted();
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "SetPage: boot page = %d", set_page_current + 1);
+        shadow_log(msg);
+    }
+
+    /* Show page toast on boot so user knows which page they're on */
+    set_page_overlay_active = 1;
+    set_page_overlay_timeout = SET_PAGE_OVERLAY_FRAMES;
+    shadow_overlay_sync();
 
     /* Run batch migration if this is the first boot with per-set state support.
      * Copies default slot_state/ to set_state/<UUID>/ for all existing sets. */
@@ -11121,12 +11467,14 @@ int ioctl(int fd, unsigned long request, ...)
         int sampler_fullscreen_on = (sampler_fullscreen_active &&
                                      (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
         int skipback_overlay_on = (skipback_overlay_timeout > 0);
+        int set_page_overlay_on = (set_page_overlay_active && set_page_overlay_timeout > 0);
 
         /* Read JS display_overlay request */
         uint8_t disp_overlay = shadow_control ? shadow_control->display_overlay : 0;
 
         int any_overlay = shift_knob_overlay_on || sampler_overlay_on ||
-                          sampler_fullscreen_on || skipback_overlay_on || disp_overlay;
+                          sampler_fullscreen_on || skipback_overlay_on ||
+                          set_page_overlay_on || disp_overlay;
         if (any_overlay && slice_num >= 1 && slice_num <= 6) {
             static uint8_t overlay_display[1024];
             static int overlay_frame_ready = 0;
@@ -11194,6 +11542,13 @@ int ioctl(int fd, unsigned long request, ...)
                     skipback_overlay_timeout--;
                     if (skipback_overlay_timeout <= 0)
                         shadow_overlay_sync();
+                }
+                if (set_page_overlay_on) {
+                    set_page_overlay_timeout--;
+                    if (set_page_overlay_timeout <= 0) {
+                        set_page_overlay_active = 0;
+                        shadow_overlay_sync();
+                    }
                 }
 
                 if (!any_overlay)
@@ -11603,6 +11958,17 @@ do_ioctl:
                 if (d1 == CC_CAPTURE && d2 > 0 && shadow_shift_held) {
                     skipback_trigger_save();
                     src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                }
+
+                /* Shift+Left/Right: set page navigation (always active) */
+                if (shadow_shift_held && d2 > 0) {
+                    if (d1 == CC_LEFT && set_page_current > 0) {
+                        shadow_change_set_page(set_page_current - 1);
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    } else if (d1 == CC_RIGHT && set_page_current < SET_PAGES_TOTAL - 1) {
+                        shadow_change_set_page(set_page_current + 1);
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
                 }
 
                 /* Sample/Record button (CC 118) - sampler intercept */

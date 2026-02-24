@@ -189,6 +189,7 @@ typedef struct shadow_screenreader_t {
 #define SHADOW_OVERLAY_SAMPLER    1
 #define SHADOW_OVERLAY_SKIPBACK   2
 #define SHADOW_OVERLAY_SHIFT_KNOB 3
+#define SHADOW_OVERLAY_SET_PAGE   4
 
 #define SHADOW_SAMPLER_IDLE       0
 #define SHADOW_SAMPLER_ARMED      1
@@ -231,7 +232,14 @@ typedef struct shadow_overlay_state_t {
     char shift_knob_param[64];                  /* Parameter name */
     char shift_knob_value[32];                  /* Parameter value */
 
-    volatile uint8_t  reserved[256 - 208];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
+    /* Set page overlay */
+    volatile uint8_t  set_page_active;            /* 1 = showing set page toast */
+    volatile uint8_t  set_page_current;           /* Current page (0-7) */
+    volatile uint8_t  set_page_total;             /* Total pages (8) */
+    volatile uint8_t  set_page_loading;           /* 1 = loading (pre-restart), 0 = loaded */
+    volatile uint16_t set_page_timeout;           /* Frames remaining for toast */
+
+    volatile uint8_t  reserved[256 - 214];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
 } shadow_overlay_state_t;
 
 /* Compile-time size checks */
