@@ -512,6 +512,32 @@ void print(int sx, int sy, const char* string, int color) {
   }
 }
 
+/* Compute the rendered pixel width of a string using the current font */
+static JSValue js_text_width(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  (void)this_val;
+  if (argc < 1) return JS_NewInt32(ctx, 0);
+  const char *str = JS_ToCString(ctx, argv[0]);
+  if (!str) return JS_NewInt32(ctx, 0);
+
+  if (font == NULL) {
+    font = load_font("font.png", 1);
+  }
+  int width = 0;
+  if (font) {
+    for (int i = 0; i < (int)strlen(str); i++) {
+      unsigned char c = (unsigned char)str[i];
+      FontChar fc = font->charData[c];
+      if (fc.data) {
+        width += fc.width + font->charSpacing;
+      } else {
+        width += font->charSpacing;
+      }
+    }
+  }
+  JS_FreeCString(ctx, str);
+  return JS_NewInt32(ctx, width);
+}
+
 /* Process host-level MIDI for system shortcuts and input transforms
  * Takes pointer to MIDI bytes (status, data1, data2) for in-place modification
  * Returns 1 if message was consumed by host, 0 if should pass to module */
@@ -2159,6 +2185,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue print_func = JS_NewCFunction(ctx, js_print, "print", 1);
     JS_SetPropertyStr(ctx, global_obj, "print", print_func);
+
+    JS_SetPropertyStr(ctx, global_obj, "text_width",
+        JS_NewCFunction(ctx, js_text_width, "text_width", 1));
 
     JSValue draw_line_func = JS_NewCFunction(ctx, js_draw_line, "draw_line", 5);
     JS_SetPropertyStr(ctx, global_obj, "draw_line", draw_line_func);

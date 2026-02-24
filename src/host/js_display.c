@@ -346,6 +346,33 @@ void js_display_print(int x, int y, const char *string, int color) {
     }
 }
 
+int js_display_text_width(const char *string) {
+    if (!string) return 0;
+
+    if (!g_font) {
+        g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
+    }
+    if (!g_font) return 0;
+
+    int width = 0;
+    for (size_t i = 0; i < strlen(string); i++) {
+        unsigned char c = (unsigned char)string[i];
+        if (g_font->is_ttf) {
+            int advance = 0, lsb = 0;
+            stbtt_GetCodepointHMetrics(&g_font->ttf_info, c, &advance, &lsb);
+            width += (int)(advance * g_font->ttf_scale);
+        } else {
+            FontChar fc = g_font->charData[c];
+            if (fc.data) {
+                width += fc.width + g_font->charSpacing;
+            } else {
+                width += g_font->charSpacing;
+            }
+        }
+    }
+    return width;
+}
+
 /* ============================================================================
  * QuickJS Bindings
  * ============================================================================ */
@@ -410,6 +437,16 @@ JSValue js_display_bind_print(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
+JSValue js_display_bind_text_width(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NewInt32(ctx, 0);
+    const char *str = JS_ToCString(ctx, argv[0]);
+    if (!str) return JS_NewInt32(ctx, 0);
+    int w = js_display_text_width(str);
+    JS_FreeCString(ctx, str);
+    return JS_NewInt32(ctx, w);
+}
+
 void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
     JS_SetPropertyStr(ctx, global_obj, "set_pixel",
         JS_NewCFunction(ctx, js_display_bind_set_pixel, "set_pixel", 3));
@@ -421,4 +458,6 @@ void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
         JS_NewCFunction(ctx, js_display_bind_clear_screen, "clear_screen", 0));
     JS_SetPropertyStr(ctx, global_obj, "print",
         JS_NewCFunction(ctx, js_display_bind_print, "print", 4));
+    JS_SetPropertyStr(ctx, global_obj, "text_width",
+        JS_NewCFunction(ctx, js_display_bind_text_width, "text_width", 1));
 }

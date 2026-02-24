@@ -41,7 +41,8 @@ export function drawMenuHeader(title, titleRight = "") {
     print(2, TITLE_Y, title, 1);
 
     if (titleRight) {
-        const rightX = SCREEN_WIDTH - (titleRight.length * DEFAULT_CHAR_WIDTH) - 2;
+        const rightW = (typeof text_width === 'function') ? text_width(titleRight) : (titleRight.length * DEFAULT_CHAR_WIDTH);
+        const rightX = SCREEN_WIDTH - rightW - 2;
         print(Math.max(2, rightX), TITLE_Y, titleRight, 1);
     }
 
@@ -55,8 +56,8 @@ export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
         /* { left: "Back: exit", right: "Jog: browse" } */
         print(2, y, text.left, 1);
         if (text.right) {
-            const rightX = SCREEN_WIDTH - (text.right.length * DEFAULT_CHAR_WIDTH) - 2;
-            print(rightX, y, text.right, 1);
+            const rightW = (typeof text_width === 'function') ? text_width(text.right) : (text.right.length * DEFAULT_CHAR_WIDTH);
+            print(SCREEN_WIDTH - rightW - 2, y, text.right, 1);
         }
     } else {
         print(2, y, text, 1);
