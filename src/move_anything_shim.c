@@ -137,6 +137,7 @@ static volatile float shadow_master_volume;  /* Defined later */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool standalone_enabled = true;     /* Standalone mode enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
+static bool set_pages_enabled = true;      /* Set pages enabled by default */
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
@@ -522,13 +523,27 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse set_pages_enabled (defaults to true) */
+    const char *set_pages_key = strstr(config_buf, "\"set_pages_enabled\"");
+    if (set_pages_key) {
+        const char *colon = strchr(set_pages_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "false", 5) == 0) {
+                set_pages_enabled = false;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, standalone=%s, link_audio=%s, display_mirror=%s",
+             "Features: shadow_ui=%s, standalone=%s, link_audio=%s, display_mirror=%s, set_pages=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              standalone_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
-             display_mirror_enabled ? "enabled" : "disabled");
+             display_mirror_enabled ? "enabled" : "disabled",
+             set_pages_enabled ? "enabled" : "disabled");
     shadow_log(log_msg);
 }
 
@@ -2205,6 +2220,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         }
         if (shadow_control) {
             shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
+            shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
         }
         /* Initialize process management subsystem */
         {
@@ -3558,6 +3574,10 @@ do_ioctl:
                                 launch_shadow_ui();
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
+                            /* Block Track CC from reaching Move */
+                            uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
+                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                         }
                     }
                 }
@@ -3591,8 +3611,8 @@ do_ioctl:
                     src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                 }
 
-                /* Shift+Left/Right: set page navigation (always active) */
-                if (shadow_shift_held && d2 > 0) {
+                /* Shift+Left/Right: set page navigation (when enabled) */
+                if (shadow_control && shadow_control->set_pages_enabled && shadow_shift_held && d2 > 0) {
                     if (d1 == CC_LEFT && set_page_current > 0) {
                         shadow_change_set_page(set_page_current - 1);
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
@@ -3735,8 +3755,22 @@ do_ioctl:
                         shadow_display_mode = 1;
                         shadow_control->display_mode = 1;
                         launch_shadow_ui();  /* No-op if already running */
+                        /* Block Step note from reaching Move */
+                        uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     }
+                }
+
+                /* Shift + Step button while shadow UI is displayed = dismiss shadow UI
+                 * (user is loading a native Move component to edit) */
+                if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
+                    type == 0x90 && d2 > 0 &&
+                    d1 >= CC_STEP_UI_FIRST && d1 <= CC_STEP_UI_LAST &&
+                    shadow_control) {
+                    shadow_display_mode = 0;
+                    shadow_control->display_mode = 0;
+                    shadow_log("Shift+Step: dismissing shadow UI");
                 }
 
                 /* Pad note-on while sampler armed = trigger recording */

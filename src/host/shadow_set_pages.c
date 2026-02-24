@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <pthread.h>
+#include <time.h>
 
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"  /* for SAMPLER_SETS_DIR, sampler_read_set_tempo */
@@ -634,12 +635,63 @@ static void set_page_restore_xattrs(const char *sets_dir, const char *stash_dir)
 }
 
 /* Move all UUID directories from src_dir to dst_dir */
-static int set_page_move_dirs(const char *src_dir, const char *dst_dir)
+/* Count non-dot directory entries (UUID dirs) in a path */
+static int count_uuid_dirs(const char *path)
 {
-    DIR *d = opendir(src_dir);
+    DIR *d = opendir(path);
     if (!d) return 0;
 
-    int moved = 0;
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char full[512];
+        snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode))
+            count++;
+    }
+    closedir(d);
+    return count;
+}
+
+/* Write a recovery manifest listing UUID dirs in a page stash directory */
+static void write_manifest(const char *stash_dir, int page_num)
+{
+    char manifest_path[512];
+    snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.txt", stash_dir);
+
+    FILE *f = fopen(manifest_path, "w");
+    if (!f) return;
+
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char timestamp[64];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm);
+    fprintf(f, "# Set page manifest - page %d - %s\n", page_num, timestamp);
+
+    DIR *d = opendir(stash_dir);
+    if (d) {
+        struct dirent *entry;
+        while ((entry = readdir(d)) != NULL) {
+            if (entry->d_name[0] == '.') continue;
+            char full[512];
+            snprintf(full, sizeof(full), "%s/%s", stash_dir, entry->d_name);
+            struct stat st;
+            if (stat(full, &st) == 0 && S_ISDIR(st.st_mode))
+                fprintf(f, "%s\n", entry->d_name);
+        }
+        closedir(d);
+    }
+    fclose(f);
+}
+
+static int set_page_move_dirs(const char *src_dir, const char *dst_dir, int *out_skipped)
+{
+    DIR *d = opendir(src_dir);
+    if (!d) { if (out_skipped) *out_skipped = 0; return 0; }
+
+    int moved = 0, skipped = 0;
     struct dirent *entry;
     while ((entry = readdir(d)) != NULL) {
         if (entry->d_name[0] == '.') continue;
@@ -651,6 +703,18 @@ static int set_page_move_dirs(const char *src_dir, const char *dst_dir)
         if (stat(src_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
 
         snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, entry->d_name);
+
+        /* Collision check: skip if destination already exists as a directory */
+        struct stat dst_st;
+        if (stat(dst_path, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) {
+            char msg[512];
+            snprintf(msg, sizeof(msg), "SetPage: SKIP collision %s (already exists at dest)",
+                     entry->d_name);
+            host.log(msg);
+            skipped++;
+            continue;
+        }
+
         if (rename(src_path, dst_path) == 0) {
             moved++;
         } else {
@@ -661,6 +725,7 @@ static int set_page_move_dirs(const char *src_dir, const char *dst_dir)
         }
     }
     closedir(d);
+    if (out_skipped) *out_skipped = skipped;
     return moved;
 }
 
@@ -771,20 +836,70 @@ static void *set_page_change_thread(void *arg)
         host.run_command(argv);
     }
 
+    /* 1b. Sync + poll: wait for save to materialize on disk */
+    {
+        sync();
+        int prev_count = count_uuid_dirs(SAMPLER_SETS_DIR);
+        for (int attempt = 0; attempt < 6; attempt++) {
+            usleep(500000); /* 500ms */
+            sync();
+            int cur = count_uuid_dirs(SAMPLER_SETS_DIR);
+            if (cur == prev_count) break; /* stable */
+            prev_count = cur;
+        }
+        char msg[128];
+        snprintf(msg, sizeof(msg), "SetPage: post-save sync: %d sets in Sets/", prev_count);
+        host.log(msg);
+    }
+
     /* 2. Save xattrs for current sets */
     char current_stash[512];
     snprintf(current_stash, sizeof(current_stash), SET_PAGES_DIR "/page_%d", old_page);
     shadow_ensure_dir(current_stash);
     set_page_save_xattrs(SAMPLER_SETS_DIR, current_stash);
 
+    /* Pre-flight inventory */
+    int pre_count = count_uuid_dirs(SAMPLER_SETS_DIR);
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "SetPage: pre-flight: %d sets in Sets/", pre_count);
+        host.log(msg);
+    }
+
     /* 3. Move current sets to stash */
-    set_page_move_dirs(SAMPLER_SETS_DIR, current_stash);
+    int stash_skipped = 0;
+    int stashed = set_page_move_dirs(SAMPLER_SETS_DIR, current_stash, &stash_skipped);
+
+    /* Post-stash inventory */
+    {
+        int remaining = count_uuid_dirs(SAMPLER_SETS_DIR);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "SetPage: stashed %d (skipped %d), %d remaining in Sets/",
+                 stashed, stash_skipped, remaining);
+        host.log(msg);
+        if (remaining > 0) {
+            host.log("SetPage: WARNING - sets still in Sets/ after stash!");
+        }
+    }
+
+    /* Write recovery manifest for the stash */
+    write_manifest(current_stash, old_page);
 
     /* 4. Move target page sets from stash to Sets/ */
     char target_stash[512];
     snprintf(target_stash, sizeof(target_stash), SET_PAGES_DIR "/page_%d", new_page);
     shadow_ensure_dir(target_stash);
-    int restored = set_page_move_dirs(target_stash, SAMPLER_SETS_DIR);
+    int restore_skipped = 0;
+    int restored = set_page_move_dirs(target_stash, SAMPLER_SETS_DIR, &restore_skipped);
+
+    /* Post-restore inventory */
+    {
+        int now_in_sets = count_uuid_dirs(SAMPLER_SETS_DIR);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "SetPage: restored %d from page_%d (skipped %d), %d now in Sets/",
+                 restored, new_page, restore_skipped, now_in_sets);
+        host.log(msg);
+    }
 
     /* 5. Restore xattrs for target page */
     set_page_restore_xattrs(SAMPLER_SETS_DIR, target_stash);

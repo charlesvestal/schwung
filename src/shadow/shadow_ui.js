@@ -608,6 +608,12 @@ const GLOBAL_SETTINGS_SECTIONS = [
         ]
     },
     {
+        id: "set_pages", label: "Set Pages",
+        items: [
+            { key: "set_pages_enabled", label: "Set Pages", type: "bool" }
+        ]
+    },
+    {
         id: "updates", label: "Updates",
         items: [
             { key: "check_updates", label: "[Check Updates]", type: "action" },
@@ -5550,6 +5556,9 @@ function getMasterFxSettingValue(setting) {
         }
         return "300ms";
     }
+    if (setting.key === "set_pages_enabled") {
+        return (typeof set_pages_get === "function" && set_pages_get()) ? "On" : "Off";
+    }
     if (setting.key === "auto_update_check") {
         return autoUpdateCheckEnabled ? "On" : "Off";
     }
@@ -5652,6 +5661,12 @@ function adjustMasterFxSetting(setting, delta) {
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));
         tts_set_debounce(Math.round(val));
+        return;
+    }
+
+    if (setting.key === "set_pages_enabled" && typeof set_pages_set === "function") {
+        const current = typeof set_pages_get === "function" ? set_pages_get() : true;
+        set_pages_set(!current ? 1 : 0);
         return;
     }
 
