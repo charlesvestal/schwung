@@ -1760,7 +1760,6 @@ static void shadow_check_screenreader(void)
             pending_tts_message[sizeof(pending_tts_message) - 1] = '\0';
             last_message_time_ms = now_ms;
             has_pending_message = true;
-            unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Buffered: '%s'", pending_tts_message);
         }
         last_screenreader_sequence = current_sequence;
         return;
@@ -1785,7 +1784,6 @@ static void shadow_check_screenreader(void)
         }
 
         /* Speak the buffered message */
-        unified_log("tts_monitor", LOG_LEVEL_DEBUG, "Speaking (debounced): '%s'", pending_tts_message);
         if (tts_speak(pending_tts_message)) {
             last_speech_time_ms = now_ms;
         }
@@ -2811,20 +2809,11 @@ int ioctl(int fd, unsigned long request, ...)
         if (heartbeat_counter >= 5700) {
             heartbeat_counter = 0;
             if (unified_log_enabled()) {
-                /* Read VmRSS from /proc/self/statm */
-                long rss_pages = 0;
-                FILE *statm = fopen("/proc/self/statm", "r");
-                if (statm) {
-                    long size;
-                    if (fscanf(statm, "%ld %ld", &size, &rss_pages) != 2)
-                        rss_pages = 0;
-                    fclose(statm);
-                }
-                long rss_kb = rss_pages * 4;  /* 4KB pages on ARM */
-
+                /* No file I/O here — fopen("/proc/self/statm") can block
+                 * when the disk is busy, causing audio clicks. */
                 unified_log("shim", LOG_LEVEL_DEBUG,
-                    "Heartbeat: pid=%d rss=%ldKB overruns=%d display_mode=%d la_pkts=%u la_ch=%d la_stale=%u la_sub_pid=%d la_restarts=%d pin_chal=%d",
-                    getpid(), rss_kb, consecutive_overruns,
+                    "Heartbeat: pid=%d overruns=%d display_mode=%d la_pkts=%u la_ch=%d la_stale=%u la_sub_pid=%d la_restarts=%d pin_chal=%d",
+                    getpid(), consecutive_overruns,
                     shadow_display_mode,
                     link_audio.packets_intercepted, link_audio.move_channel_count,
                     la_stale_frames, (int)link_sub_pid, link_sub_restart_count,
@@ -3578,6 +3567,15 @@ do_ioctl:
                             uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
                             sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                             src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        }
+
+                        /* Shift + Track (without Volume) while shadow UI is displayed = dismiss shadow UI
+                         * and let the Track CC pass through to Move for native track settings */
+                        if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
+                            shadow_control) {
+                            shadow_display_mode = 0;
+                            shadow_control->display_mode = 0;
+                            shadow_log("Shift+Track: dismissing shadow UI");
                         }
                     }
                 }
