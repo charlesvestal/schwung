@@ -313,6 +313,17 @@
       "requires": "Virus ROM file (place in module's roms/ folder)"
     },
     {
+      "id": "superarp",
+      "name": "Super Arp",
+      "description": "Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers",
+      "author": "dom",
+      "component_type": "midi_fx",
+      "github_repo": "handcraftedcc/move-anything-superarp",
+      "default_branch": "main",
+      "asset_name": "superarp-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "rex",
       "name": "REX Player",
       "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
