@@ -135,6 +135,19 @@ echo "Building host..."
 "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
     -o build/move-anything-shim.so \
     src/move_anything_shim.c \
+    src/host/shadow_sampler.c \
+    src/host/shadow_set_pages.c \
+    src/host/shadow_dbus.c \
+    src/host/shadow_chain_mgmt.c \
+    src/host/shadow_link_audio.c \
+    src/host/shadow_process.c \
+    src/host/shadow_resample.c \
+    src/host/shadow_overlay.c \
+    src/host/shadow_pin_scanner.c \
+    src/host/shadow_led_queue.c \
+    src/host/shadow_fd_trace.c \
+    src/host/shadow_state.c \
+    src/host/shadow_midi.c \
     src/host/unified_log.c \
     $SHIM_TTS_SRC \
     $SHIM_DEFINES \
