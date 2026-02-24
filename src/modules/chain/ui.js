@@ -681,7 +681,7 @@ function drawSlotMenu() {
         getLabel: (item) => item.label
     });
 
-    drawMenuFooter("Click:select Back:cancel");
+    drawMenuFooter({left: "Back: cancel", right: "Click: select"});
 }
 
 function getComponentsForSlot(slotType) {
@@ -727,7 +727,7 @@ function drawComponentPicker() {
         getLabel: (item) => item.name
     });
 
-    drawMenuFooter("Click:select Back:cancel");
+    drawMenuFooter({left: "Back: cancel", right: "Click: select"});
 }
 
 function findComponent(slotType, componentId) {
@@ -764,7 +764,7 @@ function drawParamEditor() {
         drawMenuHeader(componentId || "Unknown");
         print(4, 28, "No configurable", 1);
         print(4, 40, "parameters", 1);
-        drawMenuFooter("Back:return");
+        drawMenuFooter("Back: return");
         return;
     }
 
@@ -806,7 +806,7 @@ function drawParamEditor() {
         valueAlignRight: true
     });
 
-    drawMenuFooter("Jog:value Up/Dn:nav");
+    drawMenuFooter({left: "Up/Dn: nav", right: "Jog: value"});
 }
 
 function drawConfirmDelete() {
@@ -925,7 +925,7 @@ function drawKnobEditor() {
         valueAlignRight: true
     });
 
-    drawMenuFooter("Click:assign Back:return");
+    drawMenuFooter({left: "Back: return", right: "Click: assign"});
 }
 
 function drawKnobParamPicker() {
@@ -949,7 +949,7 @@ function drawKnobParamPicker() {
             getLabel: (item) => item.name
         });
 
-        drawMenuFooter("Click:select Back:return");
+        drawMenuFooter({left: "Back: return", right: "Click: select"});
     } else {
         /* Show main view with [Clear] and module folders */
         drawMenuHeader(`Knob ${knobNum} Param`);
@@ -971,7 +971,7 @@ function drawKnobParamPicker() {
             getValue: (item) => item.type === "folder" ? ">" : ""
         });
 
-        drawMenuFooter("Click:select Back:cancel");
+        drawMenuFooter({left: "Back: cancel", right: "Click: select"});
     }
 }
 
@@ -2177,7 +2177,7 @@ function drawUI() {
             },
             getLabel: (item) => item.name
         });
-        drawMenuFooter("Click:load Menu:edit");
+        drawMenuFooter({left: "Menu: edit", right: "Click: load"});
         needsRedraw = false;
         return;
     }
@@ -2212,7 +2212,7 @@ function drawUI() {
     print(2, 44, `Oct:${octStr}  Voices:${polyphony}`, 1);
 
     /* Hint for navigation */
-    const hint = sourceUi ? "Menu:src Back:list" : "Jog:prst Up/Dn:oct";
+    const hint = sourceUi ? "Menu: src  Back: list" : "Jog: prst  Up/Dn: oct";
     if (sourceUiLoadError) {
         print(2, 54, "No ui_chain.js", 1);
     } else {

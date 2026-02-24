@@ -662,7 +662,7 @@ function drawCategories() {
         getValue: (item) => item.value
     });
 
-    drawMenuFooter('Back:exit  Jog:browse');
+    drawMenuFooter({left: "Back: exit", right: "Jog: browse"});
 }
 
 /* Draw host update confirmation screen */
@@ -681,7 +681,7 @@ function drawHostUpdate() {
     fill_rect(2, y - 1, 70, 12, 1);
     print(4, y, '[Update Now]', 0);
 
-    drawMenuFooter('Back:cancel');
+    drawMenuFooter('Back: cancel');
 }
 
 /* Draw update all screen - scrollable list of modules + Update All action */
@@ -716,7 +716,7 @@ function drawUpdateAll() {
         getValue: (item) => item.value
     });
 
-    drawMenuFooter('Back:cancel  Jog:select');
+    drawMenuFooter({left: "Back: cancel", right: "Jog: select"});
 }
 
 /* Draw module list screen */
@@ -728,7 +728,7 @@ function drawModuleList() {
 
     if (modules.length === 0) {
         print(2, 30, 'No modules available', 1);
-        drawMenuFooter('Back:categories');
+        drawMenuFooter('Back: categories');
         return;
     }
 
@@ -753,7 +753,7 @@ function drawModuleList() {
         getValue: (item) => item.statusIcon
     });
 
-    drawMenuFooter('Back:categories');
+    drawMenuFooter('Back: categories');
 }
 
 /* Build scrollable lines from release notes text */

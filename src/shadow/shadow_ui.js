@@ -1791,7 +1791,7 @@ function drawOvertakeMenu() {
         });
     }
 
-    drawFooter("Jog:Select  Back:Exit");
+    drawFooter({left: "Back: Exit", right: "Jog: Select"});
 }
 
 /* Handle input in overtake menu */
@@ -5338,7 +5338,7 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints - always push to edit (for swap/params) */
-        drawFooter("Jog:browse  Push:edit");
+        drawFooter({left: "Push: edit", right: "Jog: browse"});
     } else {
         /* Draw param list */
         if (hierEditorParams.length === 0) {
@@ -5414,7 +5414,7 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints */
-        const hint = hierEditorEditMode ? "Jog:adjust  Push:done" : "Jog:scroll  Push:edit";
+        const hint = hierEditorEditMode ? {left: "Push: done", right: "Jog: adjust"} : {left: "Push: edit", right: "Jog: scroll"};
         drawFooter(hint);
     }
 }
@@ -7291,9 +7291,9 @@ function drawSlotSettings() {
     }
 
     if (editingSettingValue) {
-        drawFooter("Jog: adjust  Click: done");
+        drawFooter({left: "Click: done", right: "Jog: adjust"});
     } else {
-        drawFooter("Click: edit  Back: slots");
+        drawFooter({left: "Back: slots", right: "Click: edit"});
     }
 }
 
@@ -7316,7 +7316,7 @@ function drawPatches() {
                 return isCurrent ? `* ${item.name}` : item.name;
             }
         });
-        drawFooter("Click: load  Back: settings");
+        drawFooter({left: "Back: settings", right: "Click: load"});
     }
 }
 
@@ -7359,7 +7359,7 @@ function drawPatchDetail() {
         }
     }
 
-    drawFooter("Click: edit  Back: list");
+    drawFooter({left: "Back: list", right: "Click: edit"});
 }
 
 function drawComponentParams() {
@@ -7411,9 +7411,9 @@ function drawComponentParams() {
     }
 
     if (editingValue) {
-        drawFooter("Jog: adjust  Click: done");
+        drawFooter({left: "Click: done", right: "Jog: adjust"});
     } else {
-        drawFooter("Click: edit  Back: detail");
+        drawFooter({left: "Back: detail", right: "Click: edit"});
     }
 }
 
@@ -7560,7 +7560,7 @@ function drawStorePickerCategories() {
         getValue: (item) => item.value || ''
     });
 
-    drawFooter('Back:return  Jog:browse');
+    drawFooter({left: "Back: return", right: "Jog: browse"});
 }
 
 /* Draw store picker module list */
@@ -7607,7 +7607,7 @@ function drawStorePickerList() {
         getValue: (item) => item.statusIcon
     });
 
-    drawFooter('Back:return  Jog:browse');
+    drawFooter({left: "Back: return", right: "Jog: browse"});
 }
 
 /* Draw store picker loading screen */
@@ -7879,9 +7879,7 @@ function drawComponentEdit() {
     }
 
     /* Show hint at bottom */
-    const hint = "Jog: preset  Back: done";
-    const hintX = Math.floor((SCREEN_WIDTH - hint.length * 5) / 2);
-    print(hintX, 56, hint, 1);
+    drawFooter({left: "Back: done", right: "Jog: preset"});
 }
 
 /* Draw chain settings view */
@@ -8032,7 +8030,7 @@ function drawKnobEditor() {
         }
     }
 
-    drawFooter("Click: edit  Back: cancel");
+    drawFooter({left: "Back: cancel", right: "Click: edit"});
 }
 
 /* Draw param picker - select target then param for knob assignment */
@@ -8053,7 +8051,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter("Click: select  Back: cancel");
+        drawFooter({left: "Back: cancel", right: "Click: select"});
     } else if (knobParamPickerHierarchy && knobParamPickerLevel) {
         /* Hierarchy mode - show current level */
         const levelDef = knobParamPickerHierarchy.levels[knobParamPickerLevel];
@@ -8069,7 +8067,7 @@ function drawKnobParamPicker() {
         });
 
         const hasNav = knobParamPickerParams.some(p => p.type === "nav");
-        drawFooter(hasNav ? "Click: select  Back: up" : "Click: assign  Back: up");
+        drawFooter(hasNav ? {left: "Back: up", right: "Click: select"} : {left: "Back: up", right: "Click: assign"});
     } else {
         /* Flat mode - show params for selected target */
         drawHeader(`Knob ${knobNum} Param`);
@@ -8087,7 +8085,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter("Click: assign  Back: targets");
+        drawFooter({left: "Back: targets", right: "Click: assign"});
     }
 }
 
@@ -8413,7 +8411,7 @@ function drawMasterFxModuleSelect() {
             return item.id === currentModule ? "*" : "";
         }
     });
-    drawFooter("Click: apply  Back: cancel");
+    drawFooter({left: "Back: cancel", right: "Click: apply"});
 }
 
 globalThis.init = function() {
