@@ -345,6 +345,17 @@
       "default_branch": "main",
       "asset_name": "hush1-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "nusaw",
+      "name": "NuSaw",
+      "description": "Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-nusaw",
+      "default_branch": "main",
+      "asset_name": "nusaw-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }

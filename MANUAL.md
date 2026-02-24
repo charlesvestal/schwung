@@ -53,6 +53,7 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
 | **Shift+Sample** | Open Quantized Sampler |
 | **Shift+Capture** | Skipback (save last 30 seconds) |
+| **Shift+Left/Right** | Switch set page (when enabled) |
 
 **Tip:** You can access slots directly from normal Move mode - you don't need to be in shadow mode first.
 
@@ -137,6 +138,38 @@ Each Move Set maintains its own independent slot configurations. When you switch
 
 ---
 
+## Set Pages
+
+Set Pages let you organize your sets into 8 switchable pages. Each page holds its own collection of sets, so you can group sets by project, genre, or live performance.
+
+### Usage
+
+- **Shift+Left**: Switch to the previous page
+- **Shift+Right**: Switch to the next page
+
+A toast overlay shows "Loading Page X/8..." during the switch. Move restarts automatically to load the new page's sets.
+
+### How It Works
+
+When you switch pages, Move Everything:
+1. Saves the current set (if dirty)
+2. Moves all sets from `Sets/` into a stash directory for the current page
+3. Moves the target page's sets from its stash into `Sets/`
+4. Restarts Move to load the new sets
+
+Each page's sets are completely independent. Per-set slot state (synths, effects, settings) is preserved per-set as usual.
+
+### Settings
+
+Set Pages is **enabled by default**. To disable:
+1. Open **Global Settings** (**Shift+Vol + Step 2**)
+2. Navigate to **Set Pages**
+3. Toggle **Set Pages** to **Off**
+
+The setting takes effect immediately (no restart needed) and persists across reboots.
+
+---
+
 ## Connecting to Move Tracks
 
 1. Set a Move track's **MIDI Out** to a channel (1-4)
@@ -153,7 +186,7 @@ Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from
 
 Access via **Shift+Vol + Menu**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
-Global settings (Link Audio, Resample Src, Mirror Display, Screen Reader, Help, Updates) are accessed via **Shift+Vol + Step 2**.
+Global settings (Link Audio, Resample Src, Mirror Display, Screen Reader, Set Pages, Help, Updates) are accessed via **Shift+Vol + Step 2**.
 
 ---
 
@@ -273,9 +306,13 @@ Files are saved to `Samples/Move Everything/Skipback/`. Uses the same source set
 
 These modules are included with Move Everything:
 
+**Sound Generators:**
+- **Line In** - Line input with conditioning for Line, Guitar, and Phono sources
+
 **MIDI FX:**
 - **Chords** - Chord generator with shapes, inversions, voicing, and strum
 - **Arpeggiator** - Pattern-based arpeggiator (up, down, up/down, random)
+- **Velocity Scale** - Scales MIDI velocity to a configurable min/max range
 
 **Audio FX:**
 - **Freeverb** - Simple, effective reverb
@@ -285,34 +322,47 @@ These modules are included with Move Everything:
 
 ### Module Store
 
-When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Move Everything itself, access Module Store via Settings (**Shift+Vol + Knob 2**), then select Updates -> Module Store.
+When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Move Everything itself, access Module Store via **Global Settings > Updates** (**Shift+Vol + Step 2**).
 
 **Sound Generators:**
+- **AirPlay** - AirPlay audio receiver (stream from iPhone, iPad, or Mac)
 - **Braids** - Mutable Instruments macro oscillator (47 algorithms)
+- **Chiptune** - NES 2A03 & Game Boy DMG chiptune synthesizer
 - **Dexed** - 6-operator FM synthesizer (DX7 compatible)
-- **SF2** - SoundFont player (requires .sf2 files)
+- **Hera** - Juno-60 emulation with BBD chorus
+- **HUSH ONE** - Monophonic SH-101-style subtractive synthesizer
 - **Mini-JV** - Roland JV-880 emulation (requires ROM files)
 - **OB-Xd** - Oberheim-style virtual analog
-- **Hera** - Juno-60 emulation with BBD chorus
-- **Surge XT** - Hybrid synthesizer (wavetable, FM, subtractive, physical modeling)
+- **Osirus** - Access Virus DSP56300 emulator (requires ROM file)
+- **Radio Garden** - Browse and stream live radio from 200 cities worldwide
 - **RaffoSynth** - Monophonic synth with Moog ladder filter
+- **REX Player** - Propellerhead ReCycle (.rx2/.rex) slice player
+- **SF2** - SoundFont player (requires .sf2 files)
+- **Surge XT** - Hybrid synthesizer (wavetable, FM, subtractive, physical modeling)
 - **Webstream** - Web audio search and streaming
 
 **Audio Effects:**
+- **CLAP FX** - Host for CLAP audio effect plugins (requires .clap files)
 - **CloudSeed** - Algorithmic reverb
+- **Ducker** - MIDI-triggered sidechain ducker
+- **Gate** - Noise gate and downward expander
+- **Junologue Chorus** - Juno-60 chorus emulation (I, I+II, II modes)
+- **Key Detect** - Detects the musical key of audio passing through
+- **NAM** - Neural Amp Modeler (requires .nam model files)
 - **PSXVerb** - PlayStation-style reverb
 - **TapeDelay** - RE-201 Space Echo style delay
 - **TAPESCAM** - Tape saturation/degradation
-- **Junologue Chorus** - Juno-60 chorus emulation (I, I+II, II modes)
-- **NAM** - Neural Amp Modeler (requires .nam model files)
-- **Ducker** - MIDI-triggered sidechain ducker
+- **Vocoder** - Channel vocoder (mic/line-in as modulator)
+
+**MIDI FX:**
+- **Super Arp** - Advanced arpeggiator with progression patterns and rhythm presets
 
 **Overtake/Utility:**
-- **Four Track** - Four-track recorder
+- **Custom MIDI Control** - Custom MIDI controller with 16 banks (community)
 - **M8 LPP** - Launchpad Pro emulator for Dirtywave M8
 - **SID Control** - Controller for SIDaster III
 
-**Note:** Some modules require additional files (ROMs, SoundFonts, .nam models). Check each module's documentation.
+**Note:** Some modules require additional files (ROMs, SoundFonts, .nam models, .clap plugins). Check each module's documentation.
 
 ---
 
@@ -371,7 +421,21 @@ If the screen reader is enabled, help pages are read aloud automatically when op
 
 ---
 
+## Mute and Solo
+
+You can mute and solo individual slots using the Mute button (next to the track buttons):
+
+| Shortcut | Action |
+|----------|--------|
+| **Mute + Track 1-4** | Toggle mute on that slot |
+| **Shift + Mute + Track 1-4** | Toggle solo on that slot |
+
+Muted slots are silenced but continue processing MIDI. Solo isolates a single slot.
+
+---
+
 ## Tips
 
 - Each Move Set has its own slot configurations — switch Sets to switch between different instrument setups
+- Use Set Pages to organize sets by project or performance — Shift+Left/Right to switch
 - If something goes wrong, use Move's DFU restore mode to reset
