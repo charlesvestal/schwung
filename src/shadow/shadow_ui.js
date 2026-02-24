@@ -87,6 +87,10 @@ import {
 } from '/data/UserData/move-anything/shared/screen_reader.mjs';
 
 import {
+    fetchAndParseManual
+} from '/data/UserData/move-anything/shared/parse_move_manual.mjs';
+
+import {
     OVERLAY_NONE,
     OVERLAY_SAMPLER,
     OVERLAY_SKIPBACK,
@@ -2817,26 +2821,23 @@ function handleMasterFxSettingsAction(key) {
                 debugLog("Failed to load help content: " + e);
             }
         }
-        /* Try to load parsed Move Manual (from cache, if not already loaded) */
+        /* Try to load Move Manual (from cache or fetch from web) */
         if (helpContent && !helpContent._manualLoaded) {
             try {
-                const manualRaw = host_read_file("/data/UserData/move-anything/cache/move_manual.json");
-                if (manualRaw) {
-                    const manualData = JSON.parse(manualRaw);
-                    if (manualData && manualData.sections && manualData.sections.length > 0) {
-                        /* Find the Move Manual section and replace its children */
-                        for (let i = 0; i < helpContent.sections.length; i++) {
-                            if (helpContent.sections[i].title === "Move Manual") {
-                                helpContent.sections[i].children = manualData.sections;
-                                break;
-                            }
+                const sections = fetchAndParseManual();
+                if (sections && sections.length > 0) {
+                    /* Find the Move Manual section and replace its children */
+                    for (let i = 0; i < helpContent.sections.length; i++) {
+                        if (helpContent.sections[i].title === "Move Manual") {
+                            helpContent.sections[i].children = sections;
+                            break;
                         }
-                        helpContent._manualLoaded = true;
-                        debugLog("Loaded Move Manual: " + manualData.sections.length + " chapters");
                     }
+                    helpContent._manualLoaded = true;
+                    debugLog("Loaded Move Manual: " + sections.length + " chapters");
                 }
             } catch (e) {
-                debugLog("Move Manual cache not available: " + e);
+                debugLog("Move Manual not available: " + e);
             }
         }
         if (helpContent && helpContent.sections && helpContent.sections.length > 0) {
@@ -6112,7 +6113,7 @@ function handleSelect() {
                     helpDetailScrollState = createScrollableText({
                         lines: item.lines,
                         actionLabel: "Back",
-                        visibleLines: 3,
+                        visibleLines: 4,
                         onActionSelected: (label) => announce(label)
                     });
                     needsRedraw = true;
@@ -6729,7 +6730,7 @@ function handleSelect() {
                     helpDetailScrollState = createScrollableText({
                         lines: item.lines,
                         actionLabel: "Back",
-                        visibleLines: 3,
+                        visibleLines: 4,
                         onActionSelected: (label) => announce(label)
                     });
                     needsRedraw = true;
@@ -8199,8 +8200,8 @@ function drawHelpDetail() {
         drawScrollableText({
             state: helpDetailScrollState,
             topY: 16,
-            bottomY: 43,
-            actionY: 52
+            bottomY: 56,
+            actionY: 57
         });
     }
 }

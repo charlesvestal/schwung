@@ -336,9 +336,8 @@ mkdir -p ./build/modules/sound_generators/linein/
     -Isrc \
     -lm
 
-# Copy shared utilities (exclude parse_move_manual.mjs — not for distribution)
+# Copy shared utilities
 for f in ./src/shared/*.mjs; do
-    case "$f" in *parse_move_manual*) continue ;; esac
     cp "$f" ./build/shared/
 done
 cp ./src/shared/*.json ./build/shared/ 2>/dev/null || true

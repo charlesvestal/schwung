@@ -13,9 +13,7 @@ docs/.DS_Store
 # Test patches (kept locally, not committed)
 /src/modules/chain/test_patches/
 
-# Move Manual parser (pending license approval)
-src/shared/parse_move_manual.mjs
-scripts/fetch_move_manual.sh
+# Build caches
 build/cache/
 /.cache/
 

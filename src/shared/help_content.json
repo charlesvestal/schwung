@@ -260,12 +260,14 @@
       "title": "Move Manual",
       "children": [
         {
-          "title": "Coming Soon",
+          "title": "Loading...",
           "lines": [
-            "The Ableton Move",
-            "manual will be",
-            "available in a",
-            "future update."
+            "Fetching the Move",
+            "manual from",
+            "ableton.com.",
+            "",
+            "Requires an internet",
+            "connection."
           ]
         }
       ]
