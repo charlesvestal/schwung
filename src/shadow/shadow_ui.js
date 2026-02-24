@@ -4081,6 +4081,12 @@ function getKnobTargets(slot) {
     const cfg = chainConfigs[slot];
     if (!cfg) return targets;
 
+    /* MIDI FX */
+    if (cfg.midiFx && cfg.midiFx.module) {
+        const name = getSlotParam(slot, "midi_fx1:name") || cfg.midiFx.module;
+        targets.push({ id: "midi_fx1", name: `MIDI FX: ${name}` });
+    }
+
     /* Synth */
     if (cfg.synth && cfg.synth.module) {
         const name = getSlotParam(slot, "synth:name") || cfg.synth.module;
