@@ -321,7 +321,7 @@
       "github_repo": "handcraftedcc/move-anything-superarp",
       "default_branch": "main",
       "asset_name": "superarp-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.5.3"
     },
     {
       "id": "rex",
