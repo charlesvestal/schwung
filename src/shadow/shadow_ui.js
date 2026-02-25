@@ -8199,11 +8199,16 @@ function drawHelpDetail() {
     if (helpDetailScrollState) {
         drawScrollableText({
             state: helpDetailScrollState,
-            topY: 16,
-            bottomY: 56,
-            actionY: 57
+            topY: LIST_TOP_Y,
+            bottomY: FOOTER_RULE_Y,
+            actionY: -1
         });
     }
+
+    const backTarget = helpNavStack.length > 1
+        ? helpNavStack[helpNavStack.length - 2].title
+        : "Settings";
+    drawFooter("Back: " + backTarget);
 }
 
 /* ========== End Master Preset Draw Functions ========== */
