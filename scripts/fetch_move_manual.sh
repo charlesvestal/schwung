@@ -114,7 +114,7 @@ function postProcess(n) {
 }
 for (const ch of chapters) { postProcess(ch); }
 
-const output = { fetched: new Date().toISOString(), sections: chapters };
+const output = { fetched: new Date().toISOString(), version: 2, sections: chapters };
 fs.writeFileSync('${CACHE_DIR}/move_manual.json', JSON.stringify(output, null, 2));
 function countLeaves(n) { return n.children ? n.children.reduce((a,c)=>a+countLeaves(c),0) : 1; }
 const leaves = chapters.reduce((a,c)=>a+countLeaves(c),0);

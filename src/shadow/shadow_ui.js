@@ -87,7 +87,8 @@ import {
 } from '/data/UserData/move-anything/shared/screen_reader.mjs';
 
 import {
-    fetchAndParseManual
+    fetchAndParseManual,
+    refreshManual
 } from '/data/UserData/move-anything/shared/parse_move_manual.mjs';
 
 import {
@@ -2839,6 +2840,35 @@ function handleMasterFxSettingsAction(key) {
             } catch (e) {
                 debugLog("Move Manual not available: " + e);
             }
+        }
+        /* Ensure Notice section is always present */
+        if (helpContent && helpContent.sections &&
+            !helpContent.sections.find(s => s.title === "Notice")) {
+            helpContent.sections.push({
+                title: "Notice",
+                children: [{
+                    title: "Trademark Notice",
+                    lines: [
+                        "Ableton and Move are",
+                        "trademarks of",
+                        "Ableton AG.",
+                        "",
+                        "Move Everything is",
+                        "an independent",
+                        "product and has not",
+                        "been authorized,",
+                        "sponsored, or",
+                        "otherwise approved",
+                        "by Ableton AG.",
+                        "",
+                        "Manual content",
+                        "provided with",
+                        "permission for",
+                        "informational",
+                        "purposes."
+                    ]
+                }]
+            });
         }
         if (helpContent && helpContent.sections && helpContent.sections.length > 0) {
             helpNavStack = [{ items: helpContent.sections, selectedIndex: 0, title: "Help" }];
@@ -8434,6 +8464,10 @@ globalThis.init = function() {
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
 
     /* Auto-update check is manual only (Settings → Updates → Check Updates) */
+
+    /* Refresh manual cache at boot (with 15s max-time, acceptable during startup).
+     * This keeps the cache warm so opening help never blocks on HTTP. */
+    try { refreshManual(); } catch (e) { debugLog("Manual refresh: " + e); }
 
     /* Read active set UUID to point autosave at the correct per-set directory.
      * File format: line 1 = UUID, line 2 = set name */

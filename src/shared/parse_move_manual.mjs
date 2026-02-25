@@ -10,7 +10,7 @@ const CACHE_DIR = "/data/UserData/move-anything/cache";
 const CACHE_PATH = CACHE_DIR + "/move_manual.json";
 const HTML_PATH = "/data/UserData/move-anything/cache/move_manual.html";
 const MAX_LINE_WIDTH = 20;
-const CACHE_MAX_AGE_DAYS = 30;
+const CACHE_MAX_AGE_DAYS = 1;
 const CACHE_VERSION = 2; /* Bump when notice text or parsing logic changes */
 
 function wrapText(text, maxChars) {
@@ -244,11 +244,15 @@ export function fetchAndParseManual() {
     if (cached && !isCacheStale(cached)) {
         return cached.sections;
     }
-    /* Cache missing or stale - try to fetch fresh */
+    /* Stale cache exists - return it immediately, fetch next time.
+     * This avoids blocking the UI on a slow/failing HTTP request. */
+    if (cached) {
+        return cached.sections;
+    }
+    /* No cache at all - must fetch (first-time only) */
     const sections = fetchAndParse();
     if (sections) return sections;
-    /* Fetch failed (offline?) - return stale cache if available */
-    return cached ? cached.sections : null;
+    return null;
 }
 
 /**
