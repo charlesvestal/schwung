@@ -653,18 +653,19 @@ static void shadow_inprocess_process_midi(void) {
 
     /* MIDI_OUT → DSP: Move's track output contains only musical notes.
      * Internal controls (knob touches, step buttons) do NOT appear in MIDI_OUT.
-     * We must clear packets after reading to avoid re-processing stale data. */
-    uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
+     * The buffer is refreshed from hardware after every ioctl (post-ioctl memcpy). */
+    const uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
     int log_on = shadow_midi_out_log_enabled();
     static int midi_log_count = 0;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         const uint8_t *pkt = &out_src[i];
         if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
 
-        uint8_t cin = pkt[0] & 0x0F;
-        uint8_t cable = (pkt[0] >> 4) & 0x0F;
-        uint8_t status_usb = pkt[1];
-        uint8_t status_raw = pkt[0];
+        uint8_t p0 = pkt[0], p1 = pkt[1], p2 = pkt[2], p3 = pkt[3];
+
+        uint8_t cin = p0 & 0x0F;
+        uint8_t cable = (p0 >> 4) & 0x0F;
+        uint8_t status_usb = p1;
 
         /* Handle system realtime messages (CIN=0x0F): clock, start, continue, stop
          * These are 1-byte messages that should be broadcast to ALL active slots */
@@ -674,8 +675,9 @@ static void shadow_inprocess_process_midi(void) {
                 sampler_on_clock(status_usb);
             }
 
-            /* Filter cable 0 (Move UI events) - track output is on cable 2 */
-            if (cable == 0) {
+            /* Only broadcast cable 2 (external USB) clock to slots.
+             * Cable 0 = internal, cable 1 = TRS - both are Move's own output */
+            if (cable != 2) {
                 continue;
             }
             /* Broadcast to all active slots */
@@ -703,28 +705,28 @@ static void shadow_inprocess_process_midi(void) {
             }
 
             /* Validate data bytes (MIDI data bytes must be 0-127, high bit clear) */
-            if ((pkt[2] & 0x80) || (pkt[3] & 0x80)) {
+            if ((p2 & 0x80) || (p3 & 0x80)) {
                 continue;  /* Invalid data bytes - skip garbage packet */
             }
 
-            /* Filter cable 0 (Move UI events) - track output is on cable 2 */
-            if (cable == 0) {
+            /* Only process cable 2 (external USB) MIDI for shadow chain.
+             * Cable 0 = internal, cable 1 = TRS - both are Move's own output */
+            if (cable != 2) {
                 continue;
             }
 
             /* Filter internal control notes: knob touches (0-9) */
-            uint8_t note = pkt[2];
-            if ((type == 0x90 || type == 0x80) && note < 10) {
+            if ((type == 0x90 || type == 0x80) && p2 < 10) {
                 continue;
             }
             shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
 
             /* Also route to overtake DSP if loaded */
             if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
-                uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+                uint8_t msg[3] = { p1, p2, p3 };
                 overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
             } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->on_midi) {
-                uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+                uint8_t msg[3] = { p1, p2, p3 };
                 overtake_dsp_fx->on_midi(overtake_dsp_fx_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
             }
         }
