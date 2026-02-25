@@ -139,19 +139,20 @@ export function drawScrollableText({ state, topY, bottomY, actionY }) {
         drawArrowDown(indicatorX, bottomY - 4);
     }
 
-    /* Draw divider above action button */
-    fill_rect(0, actionY - 6, SCREEN_WIDTH, 1, 1);
+    /* Draw action button (skip if actionY < 0) */
+    if (actionY >= 0) {
+        fill_rect(0, actionY - 6, SCREEN_WIDTH, 1, 1);
 
-    /* Draw action button */
-    const buttonText = `[${actionLabel}]`;
-    const buttonWidth = buttonText.length * CHAR_WIDTH + 8;
-    const buttonX = (SCREEN_WIDTH - buttonWidth) / 2;
+        const buttonText = `[${actionLabel}]`;
+        const buttonWidth = buttonText.length * CHAR_WIDTH + 8;
+        const buttonX = (SCREEN_WIDTH - buttonWidth) / 2;
 
-    if (actionSelected) {
-        fill_rect(buttonX - 2, actionY - 2, buttonWidth + 4, 14, 1);
-        print(buttonX + 4, actionY, buttonText, 0);
-    } else {
-        print(buttonX + 4, actionY, buttonText, 1);
+        if (actionSelected) {
+            fill_rect(buttonX - 2, actionY - 2, buttonWidth + 4, 14, 1);
+            print(buttonX + 4, actionY, buttonText, 0);
+        } else {
+            print(buttonX + 4, actionY, buttonText, 1);
+        }
     }
 }
 

@@ -88,7 +88,10 @@ function parseHtml(html) {
         const startIdx = matches[i].endIndex;
         const endIdx = (i + 1 < matches.length) ? matches[i + 1].index : content.length;
         const rawContent = content.substring(startIdx, endIdx);
-        const textContent = rawContent.replace(/<figure[\s\S]*?<\/figure>/gi, '');
+        const textContent = rawContent
+            .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+            .replace(/<figure[\s\S]*?<\/figure>/gi, '')
+            .replace(/<nav[\s\S]*?<\/nav>/gi, '');
         matches[i].text = sanitizeText(stripHtml(textContent).trim());
     }
 
@@ -126,7 +129,9 @@ function buildHierarchy(flatSections) {
     }
 
     /* Post-process: when a node has both lines and children,
-     * move lines into an "Overview" pseudo-child at the front */
+     * move lines into an "Overview" pseudo-child at the front.
+     * Also remove empty leaf nodes (no lines, no children) such as
+     * image-only sections like "Move Controls". */
     function postProcess(node) {
         if (node.children) {
             if (node.lines && node.lines.length > 0) {
@@ -136,6 +141,12 @@ function buildHierarchy(flatSections) {
             for (const child of node.children) {
                 postProcess(child);
             }
+            /* Remove empty leaf children */
+            node.children = node.children.filter(
+                c => (c.lines && c.lines.length > 0) || (c.children && c.children.length > 0)
+            );
+            /* If all children were removed, drop the array */
+            if (node.children.length === 0) delete node.children;
         }
     }
 
