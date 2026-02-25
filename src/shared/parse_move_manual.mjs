@@ -147,10 +147,10 @@ function buildHierarchy(flatSections) {
     const notice = {
         title: "Notice",
         lines: wrapText(
-            "Provided with permission from Ableton AG " +
-            "for informational purposes. " +
-            "Move Everything is an unofficial product " +
-            "and not affiliated with Ableton AG in any way.",
+            "Ableton and Move are trademarks of Ableton AG. " +
+            "Move Everything is an independent product and has not been " +
+            "authorized, sponsored, or otherwise approved by Ableton AG. " +
+            "Manual content provided with permission for informational purposes.",
             MAX_LINE_WIDTH
         )
     };
