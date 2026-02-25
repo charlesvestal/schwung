@@ -2841,21 +2841,9 @@ function handleMasterFxSettingsAction(key) {
             }
         }
         if (helpContent && helpContent.sections && helpContent.sections.length > 0) {
-            /* If only Move Everything section has real content, skip straight to it */
-            const meSection = helpContent.sections.find(s => s.title === "Move Everything");
-            const hasManual = helpContent._manualLoaded;
-            if (meSection && meSection.children && !hasManual) {
-                /* Skip section list, go directly to ME topics */
-                helpNavStack = [
-                    { items: meSection.children, selectedIndex: 0, title: meSection.title }
-                ];
-                needsRedraw = true;
-                announce(meSection.title + ", " + meSection.children[0].title);
-            } else {
-                helpNavStack = [{ items: helpContent.sections, selectedIndex: 0, title: "Help" }];
-                needsRedraw = true;
-                announce("Help, " + helpContent.sections[0].title);
-            }
+            helpNavStack = [{ items: helpContent.sections, selectedIndex: 0, title: "Help" }];
+            needsRedraw = true;
+            announce("Help, " + helpContent.sections[0].title);
         }
         return;
     }

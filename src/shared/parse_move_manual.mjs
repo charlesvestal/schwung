@@ -11,6 +11,7 @@ const CACHE_PATH = CACHE_DIR + "/move_manual.json";
 const HTML_PATH = "/data/UserData/move-anything/cache/move_manual.html";
 const MAX_LINE_WIDTH = 20;
 const CACHE_MAX_AGE_DAYS = 30;
+const CACHE_VERSION = 2; /* Bump when notice text or parsing logic changes */
 
 function wrapText(text, maxChars) {
     if (!text) return [];
@@ -154,24 +155,6 @@ function buildHierarchy(flatSections) {
         postProcess(chapter);
     }
 
-    /* Inject permission notice as a top-level section after Credits */
-    const notice = {
-        title: "Notice",
-        lines: wrapText(
-            "Ableton and Move are trademarks of Ableton AG. " +
-            "Move Everything is an independent product and has not been " +
-            "authorized, sponsored, or otherwise approved by Ableton AG. " +
-            "Manual content provided with permission for informational purposes.",
-            MAX_LINE_WIDTH
-        )
-    };
-    const creditsIdx = chapters.findIndex(c => c.title.toLowerCase() === "credits");
-    if (creditsIdx >= 0) {
-        chapters.splice(creditsIdx + 1, 0, notice);
-    } else {
-        chapters.push(notice);
-    }
-
     return chapters;
 }
 
@@ -180,6 +163,8 @@ function buildHierarchy(flatSections) {
  */
 function isCacheStale(cacheData) {
     if (!cacheData || !cacheData.fetched) return true;
+    /* Version mismatch means notice or parsing changed — re-fetch */
+    if (cacheData.version !== CACHE_VERSION) return true;
     try {
         const fetched = new Date(cacheData.fetched).getTime();
         const now = Date.now();
@@ -241,6 +226,7 @@ function fetchAndParse() {
 
     const cacheData = {
         fetched: new Date().toISOString(),
+        version: CACHE_VERSION,
         sections: hierarchy
     };
 
