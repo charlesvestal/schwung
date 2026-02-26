@@ -1252,6 +1252,16 @@ ssh_ableton_with_retry "cp /data/UserData/move-anything/presets/track_presets/*.
 # Clean up old underscore-named presets from root Track Presets folder
 ssh_ableton_with_retry "rm -f '/data/UserData/UserLibrary/Track Presets/ME_Slot_'*.json" || true
 
+# Fetch fresh Move Manual on the installing computer and deploy to device cache
+qecho "Fetching Move Manual..."
+if [ -f "scripts/fetch_move_manual.sh" ] && scripts/fetch_move_manual.sh 2>/dev/null && [ -f ".cache/move_manual.json" ]; then
+    ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/cache" || true
+    scp_with_retry ".cache/move_manual.json" "$username@$hostname:./move-anything/cache/move_manual.json" || true
+    qecho "Move Manual deployed ($(wc -c < .cache/move_manual.json | tr -d ' ') bytes)"
+else
+    qecho "Manual fetch skipped (requires node + curl)"
+fi
+
 qecho ""
 iecho "Restarting Move..."
 
