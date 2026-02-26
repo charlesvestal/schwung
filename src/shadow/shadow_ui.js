@@ -88,7 +88,8 @@ import {
 
 import {
     fetchAndParseManual,
-    refreshManual
+    refreshManualBackground,
+    processDownloadedHtml
 } from '/data/UserData/move-anything/shared/parse_move_manual.mjs';
 
 import {
@@ -2822,9 +2823,11 @@ function handleMasterFxSettingsAction(key) {
                 debugLog("Failed to load help content: " + e);
             }
         }
-        /* Try to load Move Manual (from cache or fetch from web) */
+        /* Try to load Move Manual (from bundled or cache — never HTTP) */
         if (helpContent && !helpContent._manualLoaded) {
             try {
+                /* Pick up any completed background download first */
+                processDownloadedHtml();
                 const sections = fetchAndParseManual();
                 if (sections && sections.length > 0) {
                     /* Find the Move Manual section and replace its children */
@@ -2847,6 +2850,21 @@ function handleMasterFxSettingsAction(key) {
             helpContent.sections.push({
                 title: "Notice",
                 children: [{
+                    title: "Copyright",
+                    lines: [
+                        "Ableton Move Manual",
+                        "",
+                        "Copyright 2024",
+                        "Ableton AG.",
+                        "All rights reserved.",
+                        "Made in Germany.",
+                        "",
+                        "Manual content",
+                        "displayed with",
+                        "permission from",
+                        "Ableton AG."
+                    ]
+                }, {
                     title: "Trademark Notice",
                     lines: [
                         "Ableton and Move are",
@@ -2859,13 +2877,7 @@ function handleMasterFxSettingsAction(key) {
                         "been authorized,",
                         "sponsored, or",
                         "otherwise approved",
-                        "by Ableton AG.",
-                        "",
-                        "Manual content",
-                        "provided with",
-                        "permission for",
-                        "informational",
-                        "purposes."
+                        "by Ableton AG."
                     ]
                 }]
             });
@@ -8465,9 +8477,10 @@ globalThis.init = function() {
 
     /* Auto-update check is manual only (Settings → Updates → Check Updates) */
 
-    /* Refresh manual cache at boot (with 15s max-time, acceptable during startup).
-     * This keeps the cache warm so opening help never blocks on HTTP. */
-    try { refreshManual(); } catch (e) { debugLog("Manual refresh: " + e); }
+    /* Process any HTML left by a prior background download, then kick off
+     * a new background download if the cache is stale. Both are non-blocking. */
+    try { processDownloadedHtml(); } catch (e) { debugLog("Manual process: " + e); }
+    try { refreshManualBackground(); } catch (e) { debugLog("Manual refresh: " + e); }
 
     /* Read active set UUID to point autosave at the correct per-set directory.
      * File format: line 1 = UUID, line 2 = set name */

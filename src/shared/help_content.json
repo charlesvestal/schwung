@@ -276,6 +276,22 @@
       "title": "Notice",
       "children": [
         {
+          "title": "Copyright",
+          "lines": [
+            "Ableton Move Manual",
+            "",
+            "Copyright 2024",
+            "Ableton AG.",
+            "All rights reserved.",
+            "Made in Germany.",
+            "",
+            "Manual content",
+            "displayed with",
+            "permission from",
+            "Ableton AG."
+          ]
+        },
+        {
           "title": "Trademark Notice",
           "lines": [
             "Ableton and Move are",
@@ -288,13 +304,7 @@
             "been authorized,",
             "sponsored, or",
             "otherwise approved",
-            "by Ableton AG.",
-            "",
-            "Manual content",
-            "provided with",
-            "permission for",
-            "informational",
-            "purposes."
+            "by Ableton AG."
           ]
         }
       ]

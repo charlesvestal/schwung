@@ -778,6 +778,24 @@ static int run_command(const char *const argv[]) {
     return -1;
 }
 
+/* Fire-and-forget: fork + setsid, parent returns immediately.
+ * Child detaches from session and redirects stdio to /dev/null. */
+static void run_command_background(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid != 0) return;          /* parent (or error) */
+    /* child */
+    setsid();
+    int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+        dup2(devnull, STDIN_FILENO);
+        dup2(devnull, STDOUT_FILENO);
+        dup2(devnull, STDERR_FILENO);
+        if (devnull > 2) close(devnull);
+    }
+    execvp(argv[0], (char *const *)argv);
+    _exit(127);
+}
+
 static int validate_path(const char *path) {
     if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
     if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
@@ -872,6 +890,44 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     JS_FreeCString(ctx, dest_path);
 
     return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_http_download_background(url, dest_path) -> void
+ * Same as host_http_download but fires curl in background (no waitpid).
+ * Returns immediately; curl writes the file independently. */
+static JSValue js_host_http_download_background(JSContext *ctx, JSValueConst this_val,
+                                                int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+
+    const char *url = JS_ToCString(ctx, argv[0]);
+    const char *dest_path = JS_ToCString(ctx, argv[1]);
+    if (!url || !dest_path) {
+        if (url) JS_FreeCString(ctx, url);
+        if (dest_path) JS_FreeCString(ctx, dest_path);
+        return JS_UNDEFINED;
+    }
+
+    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_UNDEFINED;
+    }
+    if (!validate_path(dest_path)) {
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_UNDEFINED;
+    }
+
+    const char *argv_cmd[] = {
+        CURL_PATH, "-fsSLk", "--connect-timeout", "10", "--max-time", "60",
+        "-o", dest_path, url, NULL
+    };
+    run_command_background(argv_cmd);
+
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, dest_path);
+    return JS_UNDEFINED;
 }
 
 /* host_extract_tar(tar_path, dest_dir) -> bool */
@@ -1747,6 +1803,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_read_file", JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_write_file", JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_http_download", JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_http_download_background", JS_NewCFunction(ctx, js_host_http_download_background, "host_http_download_background", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3));
     JS_SetPropertyStr(ctx, global_obj, "host_system_cmd", JS_NewCFunction(ctx, js_host_system_cmd, "host_system_cmd", 1));

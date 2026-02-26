@@ -1,14 +1,16 @@
 /**
  * Parse Ableton Move Manual HTML into help viewer format.
  *
- * Fetches the manual from ableton.com, parses headings and text content
- * into a hierarchical JSON structure, and caches the result on disk.
+ * Reads from a bundled JSON (shipped in tarball) or a cache JSON (refreshed
+ * in background). Never performs blocking HTTP — all network activity is
+ * fire-and-forget via host_http_download_background.
  */
 
 const MANUAL_URL = "https://www.ableton.com/en/move/manual/";
 const CACHE_DIR = "/data/UserData/move-anything/cache";
 const CACHE_PATH = CACHE_DIR + "/move_manual.json";
-const HTML_PATH = "/data/UserData/move-anything/cache/move_manual.html";
+const HTML_PATH = CACHE_DIR + "/move_manual.html";
+const BUNDLED_PATH = "/data/UserData/move-anything/shared/move_manual_bundled.json";
 const MAX_LINE_WIDTH = 20;
 const CACHE_MAX_AGE_DAYS = 1;
 const CACHE_VERSION = 2; /* Bump when notice text or parsing logic changes */
@@ -159,36 +161,19 @@ function buildHierarchy(flatSections) {
 }
 
 /**
- * Check if cached manual data is stale (older than CACHE_MAX_AGE_DAYS).
+ * Try to read a JSON manual file. Returns the parsed object or null.
  */
-function isCacheStale(cacheData) {
-    if (!cacheData || !cacheData.fetched) return true;
-    /* Version mismatch means notice or parsing changed — re-fetch */
-    if (cacheData.version !== CACHE_VERSION) return true;
+function readManualJson(path) {
+    if (typeof host_file_exists !== 'function' || !host_file_exists(path)) return null;
     try {
-        const fetched = new Date(cacheData.fetched).getTime();
-        const now = Date.now();
-        const ageDays = (now - fetched) / (1000 * 60 * 60 * 24);
-        return ageDays > CACHE_MAX_AGE_DAYS;
-    } catch (e) {
-        return true;
-    }
-}
-
-/**
- * Try to read cached manual data. Returns the parsed cache object or null.
- */
-function readCache() {
-    if (typeof host_file_exists !== 'function' || !host_file_exists(CACHE_PATH)) return null;
-    try {
-        const cached = host_read_file(CACHE_PATH);
-        if (cached) {
-            const data = JSON.parse(cached);
+        const raw = host_read_file(path);
+        if (raw) {
+            const data = JSON.parse(raw);
             if (data && data.sections && data.sections.length > 0) {
                 return data;
             }
         }
-    } catch (e) { /* corrupt */ }
+    } catch (e) { /* corrupt or missing */ }
     return null;
 }
 
@@ -207,20 +192,85 @@ function writeCache(cacheData) {
 }
 
 /**
- * Fetch and parse the Move Manual from ableton.com.
- * Returns sections array on success, null on failure.
+ * Get the `fetched` timestamp from a manual data object (ms since epoch), or 0.
  */
-function fetchAndParse() {
-    if (typeof host_http_download !== 'function') return null;
+function getFetchedTime(data) {
+    if (!data || !data.fetched) return 0;
+    try { return new Date(data.fetched).getTime(); } catch (e) { return 0; }
+}
 
-    const ok = host_http_download(MANUAL_URL, HTML_PATH);
-    if (!ok) return null;
+/**
+ * Check if a manual data object is stale (older than CACHE_MAX_AGE_DAYS).
+ */
+function isStale(data) {
+    if (!data || !data.fetched) return true;
+    if (data.version !== CACHE_VERSION) return true;
+    try {
+        const ageDays = (Date.now() - new Date(data.fetched).getTime()) / (1000 * 60 * 60 * 24);
+        return ageDays > CACHE_MAX_AGE_DAYS;
+    } catch (e) { return true; }
+}
+
+/**
+ * Get the Move Manual sections — read-only, never blocks on HTTP.
+ * Returns the freshest available data from cache or bundled file.
+ */
+export function fetchAndParseManual() {
+    const cached = readManualJson(CACHE_PATH);
+    const bundled = readManualJson(BUNDLED_PATH);
+
+    /* Pick whichever has the newer fetched timestamp */
+    const cachedTime = getFetchedTime(cached);
+    const bundledTime = getFetchedTime(bundled);
+
+    if (cachedTime >= bundledTime && cached) {
+        return cached.sections;
+    }
+    if (bundled) {
+        return bundled.sections;
+    }
+    /* Neither available */
+    return null;
+}
+
+/**
+ * Kick off a background curl to download the manual HTML.
+ * Returns immediately — curl runs independently.
+ */
+export function refreshManualBackground() {
+    if (typeof host_http_download_background !== 'function') return;
+
+    /* Only refresh if data is stale */
+    const cached = readManualJson(CACHE_PATH);
+    const bundled = readManualJson(BUNDLED_PATH);
+    const best = (getFetchedTime(cached) >= getFetchedTime(bundled)) ? cached : bundled;
+    if (best && !isStale(best)) return;
+
+    try {
+        if (typeof host_ensure_dir === 'function') {
+            host_ensure_dir(CACHE_DIR);
+        }
+        host_http_download_background(MANUAL_URL, HTML_PATH);
+    } catch (e) { /* non-fatal */ }
+}
+
+/**
+ * Check if a previously-downloaded HTML file exists and is newer than the
+ * cache JSON. If so, parse it and update the cache. Returns true if cache
+ * was updated.
+ *
+ * Called at boot and on help open — just a quick file-exists check in the
+ * common case (no HTML file present).
+ */
+export function processDownloadedHtml() {
+    if (typeof host_file_exists !== 'function') return false;
+    if (!host_file_exists(HTML_PATH)) return false;
 
     const html = host_read_file(HTML_PATH);
-    if (!html) return null;
+    if (!html || html.length < 1000) return false;
 
     const flatSections = parseHtml(html);
-    if (!flatSections || flatSections.length === 0) return null;
+    if (!flatSections || flatSections.length === 0) return false;
 
     const hierarchy = buildHierarchy(flatSections);
 
@@ -231,35 +281,15 @@ function fetchAndParse() {
     };
 
     writeCache(cacheData);
-    return cacheData.sections;
-}
 
-/**
- * Get the Move Manual sections, using cache if fresh, fetching if stale/missing.
- * When cache is stale, attempts a refresh; falls back to stale data if offline.
- * Returns sections array or null.
- */
-export function fetchAndParseManual() {
-    const cached = readCache();
-    if (cached && !isCacheStale(cached)) {
-        return cached.sections;
-    }
-    /* Stale cache exists - return it immediately, fetch next time.
-     * This avoids blocking the UI on a slow/failing HTTP request. */
-    if (cached) {
-        return cached.sections;
-    }
-    /* No cache at all - must fetch (first-time only) */
-    const sections = fetchAndParse();
-    if (sections) return sections;
-    return null;
-}
+    /* Remove the HTML file so we don't re-parse next time */
+    try {
+        if (typeof host_write_file === 'function') {
+            host_write_file(HTML_PATH, '');
+        }
+    } catch (e) { /* non-fatal */ }
 
-/**
- * Refresh the cached manual (re-fetch from web). Returns sections or null.
- */
-export function refreshManual() {
-    return fetchAndParse();
+    return true;
 }
 
 /**

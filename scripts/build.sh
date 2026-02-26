@@ -29,6 +29,14 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         echo ""
     fi
 
+    # Fetch Move Manual on host (Docker has no network access)
+    echo "Fetching Move Manual..."
+    if ./scripts/fetch_move_manual.sh 2>/dev/null && [ -f ".cache/move_manual.json" ]; then
+        echo "Move Manual fetched ($(wc -c < .cache/move_manual.json) bytes)"
+    else
+        echo "Warning: Could not fetch Move Manual - will use existing cache if available"
+    fi
+
     # Run build inside container
     echo "Running build..."
     docker run --rm \
@@ -341,6 +349,14 @@ for f in ./src/shared/*.mjs; do
     cp "$f" ./build/shared/
 done
 cp ./src/shared/*.json ./build/shared/ 2>/dev/null || true
+
+# Bundle Move Manual (fetched on host before Docker, or from prior build)
+if [ -f ".cache/move_manual.json" ]; then
+    cp .cache/move_manual.json ./build/shared/move_manual_bundled.json
+    echo "Bundled Move Manual ($(wc -c < .cache/move_manual.json) bytes)"
+else
+    echo "Warning: .cache/move_manual.json not found - no bundled manual"
+fi
 
 # Copy host files
 cp ./src/host/menu_ui.js ./build/host/
