@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include "shadow_process.h"
+#include "shadow_resample.h"
 #include "shadow_link_audio.h"
 #include "unified_log.h"
 
@@ -325,9 +326,43 @@ static void *link_sub_monitor_main(void *arg) {
     while (link_sub_monitor_running) {
         uint64_t now_ms = link_sub_now_ms();
 
-        if (!host.link_audio->enabled) {
+        if (!host.link_audio->enabled || !link_audio_routing_enabled) {
+            /* When routing is disabled, kill the subscriber so we stop
+             * the fork()-heavy restart cycle that causes audio clicks. */
+            if (link_sub_started && link_sub_pid > 0) {
+                unified_log("shim", LOG_LEVEL_INFO,
+                            "Link Audio routing disabled — killing subscriber pid=%d",
+                            (int)link_sub_pid);
+                link_sub_kill();
+                usleep(100000);  /* 100ms for clean exit */
+                link_sub_reap();
+                if (link_sub_pid > 0) {
+                    kill(link_sub_pid, SIGKILL);
+                    waitpid(link_sub_pid, NULL, WNOHANG);
+                }
+                link_sub_pid = -1;
+                link_sub_started = 0;
+                link_sub_reset_state();
+                kill_pending = 0;
+            }
             usleep(LINK_SUB_MONITOR_POLL_US);
             continue;
+        }
+
+        /* If subscriber not running but routing just got re-enabled, launch it */
+        if (!link_sub_started || link_sub_pid <= 0) {
+            link_sub_reap();
+            if (!link_sub_started || link_sub_pid <= 0) {
+                unified_log("shim", LOG_LEVEL_INFO,
+                            "Link Audio routing enabled — launching subscriber");
+                launch_link_subscriber();
+                cooldown_until_ms = link_sub_now_ms() + LINK_SUB_COOLDOWN_MS;
+                last_packets = host.link_audio->packets_intercepted;
+                last_packet_ms = link_sub_now_ms();
+                next_alive_check_ms = last_packet_ms + LINK_SUB_ALIVE_CHECK_MS;
+                usleep(LINK_SUB_MONITOR_POLL_US);
+                continue;
+            }
         }
 
         uint32_t packets_now = host.link_audio->packets_intercepted;
