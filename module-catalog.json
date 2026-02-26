@@ -356,6 +356,17 @@
       "default_branch": "main",
       "asset_name": "nusaw-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "usefulity",
+      "name": "Usefulity",
+      "description": "Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-usefulity",
+      "default_branch": "main",
+      "asset_name": "usefulity-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
