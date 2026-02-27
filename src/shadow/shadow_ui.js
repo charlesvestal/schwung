@@ -2539,6 +2539,7 @@ function doSavePreset(slotIndex, name) {
     overwriteTargetIndex = -1;
 
     loadPatchList();
+    announce("Chain Settings");
     /* Save complete */
     needsRedraw = true;
 }
@@ -2575,6 +2576,20 @@ function doDeletePreset(slotIndex) {
     setView(VIEWS.CHAIN_EDIT);
     /* Delete complete */
     needsRedraw = true;
+}
+
+function getSavePreviewText(name) {
+    if (!name || name === "") return "Untitled";
+    return name;
+}
+
+function announceSavePreview(name, selectedIndex, full = true) {
+    const selected = selectedIndex === 0 ? "Edit" : "OK";
+    if (!full) {
+        announce(selected);
+        return;
+    }
+    announce(`Save As, current text: ${getSavePreviewText(name)}. ${selected} selected`);
 }
 
 /* Enter slot settings view */
@@ -2904,7 +2919,7 @@ function handleMasterFxSettingsAction(key) {
             masterShowingNamePreview = true;
             masterNamePreviewIndex = 1;  /* Default to OK */
             masterOverwriteFromKeyboard = true;
-            announce(`Confirm save as: ${masterPendingSaveName}`);
+            announceSavePreview(masterPendingSaveName, masterNamePreviewIndex);
             needsRedraw = true;
         }
     } else if (key === "save_as") {
@@ -2914,7 +2929,7 @@ function handleMasterFxSettingsAction(key) {
         masterNamePreviewIndex = 1;
         masterOverwriteFromKeyboard = true;
         masterOverwriteTargetIndex = -1;  /* Force create new */
-        announce(`Confirm save as: ${masterPendingSaveName}`);
+        announceSavePreview(masterPendingSaveName, masterNamePreviewIndex);
         needsRedraw = true;
     } else if (key === "check_updates") {
         /* Check for updates now */
@@ -5754,7 +5769,7 @@ function handleJog(delta) {
             if (masterShowingNamePreview) {
                 /* Navigate Edit/OK */
                 masterNamePreviewIndex = masterNamePreviewIndex === 0 ? 1 : 0;
-                announce(masterNamePreviewIndex === 0 ? "Edit" : "OK");
+                announceSavePreview(masterPendingSaveName, masterNamePreviewIndex, false);
             } else if (masterConfirmingOverwrite || masterConfirmingDelete) {
                 /* Navigate No/Yes */
                 masterConfirmIndex = masterConfirmIndex === 0 ? 1 : 0;
@@ -5890,7 +5905,7 @@ function handleJog(delta) {
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
-                announce(namePreviewIndex === 0 ? "Edit" : "OK");
+                announceSavePreview(pendingSaveName, namePreviewIndex, false);
             } else if (confirmingOverwrite || confirmingDelete) {
                 confirmIndex = confirmIndex === 0 ? 1 : 0;
                 announce(confirmIndex === 0 ? "No" : "Yes");
@@ -6054,14 +6069,17 @@ function handleSelect() {
                     openTextEntry({
                         title: "Save As",
                         initialText: savedName,
+                        onAnnounce: announce,
                         onConfirm: (newName) => {
                             masterPendingSaveName = newName;
                             masterShowingNamePreview = true;
                             masterNamePreviewIndex = 1;
+                            announceSavePreview(masterPendingSaveName, masterNamePreviewIndex);
                             needsRedraw = true;
                         },
                         onCancel: () => {
                             masterShowingNamePreview = true;
+                            announceSavePreview(masterPendingSaveName, masterNamePreviewIndex);
                             needsRedraw = true;
                         }
                     });
@@ -6089,6 +6107,7 @@ function handleSelect() {
                     if (masterOverwriteFromKeyboard) {
                         masterShowingNamePreview = true;
                         masterNamePreviewIndex = 0;
+                        announceSavePreview(masterPendingSaveName, masterNamePreviewIndex);
                     }
                     /* If not from keyboard, just return to settings menu */
                 } else {
@@ -6321,17 +6340,19 @@ function handleSelect() {
                         openTextEntry({
                             title: "Save As",
                             initialText: savedName,
+                            onAnnounce: announce,
                             onConfirm: (newName) => {
                                 pendingSaveName = newName;
                                 /* Return to name preview with edited name */
                                 showingNamePreview = true;
                                 namePreviewIndex = 1;  /* Default to OK */
-                                announce(`Confirm save as: ${pendingSaveName}`);
+                                announceSavePreview(pendingSaveName, namePreviewIndex);
                                 needsRedraw = true;
                             },
                             onCancel: () => {
                                 /* Return to name preview unchanged */
                                 showingNamePreview = true;
+                                announceSavePreview(pendingSaveName, namePreviewIndex);
                                 needsRedraw = true;
                             }
                         });
@@ -6362,6 +6383,7 @@ function handleSelect() {
                             /* Came from Save/Save As flow - return to name preview */
                             showingNamePreview = true;
                             namePreviewIndex = 0;  /* Default to Edit so they can change the name */
+                            announceSavePreview(pendingSaveName, namePreviewIndex);
                         } else {
                             /* Direct Save on existing - just return to settings */
                             pendingSaveName = "";
@@ -6399,6 +6421,7 @@ function handleSelect() {
                             showingNamePreview = true;
                             namePreviewIndex = 1;  /* Default to OK */
                             overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+                            announceSavePreview(pendingSaveName, namePreviewIndex);
                             needsRedraw = true;
                         } else {
                             /* Existing - confirm overwrite (no keyboard needed) */
@@ -6418,6 +6441,7 @@ function handleSelect() {
                         showingNamePreview = true;
                         namePreviewIndex = 1;  /* Default to OK */
                         overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+                        announceSavePreview(pendingSaveName, namePreviewIndex);
                         needsRedraw = true;
                     } else if (setting.key === "delete") {
                         if (isExistingPreset(selectedSlot)) {
