@@ -159,7 +159,7 @@ typedef struct {
 } midi_fx_param_t;
 
 /* State storage size for FX plugins */
-#define MAX_FX_STATE_LEN 2048
+#define MAX_FX_STATE_LEN 8192
 
 /*
  * Format a parameter value for display based on its metadata.
