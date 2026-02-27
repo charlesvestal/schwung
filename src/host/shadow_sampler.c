@@ -269,17 +269,17 @@ float sampler_get_bpm(tempo_source_t *source) {
         return sampler_measured_bpm;
     }
 
-    /* 2. Last measured clock BPM */
-    if (sampler_last_known_bpm >= 20.0f) {
-        if (source) *source = TEMPO_SOURCE_LAST_CLOCK;
-        return sampler_last_known_bpm;
-    }
-
-    /* 3. Current Set's tempo */
+    /* 2. Current Set's tempo */
     float set_tempo = s_set_tempo_ptr ? *s_set_tempo_ptr : 0.0f;
     if (set_tempo >= 20.0f) {
         if (source) *source = TEMPO_SOURCE_SET;
         return set_tempo;
+    }
+
+    /* 3. Last measured clock BPM */
+    if (sampler_last_known_bpm >= 20.0f) {
+        if (source) *source = TEMPO_SOURCE_LAST_CLOCK;
+        return sampler_last_known_bpm;
     }
 
     /* 4. Settings file tempo */
@@ -537,6 +537,13 @@ void sampler_capture_audio(void) {
     /* Fallback timeout */
     if (!sampler_clock_received && sampler_fallback_target > 0) {
         sampler_fallback_blocks++;
+        int bars = sampler_duration_options[sampler_duration_index];
+        if (bars > 0) {
+            int completed = (sampler_fallback_blocks * bars) / sampler_fallback_target;
+            if (completed < 0) completed = 0;
+            if (completed > bars - 1) completed = bars - 1;
+            sampler_bars_completed = completed;
+        }
         if (sampler_fallback_blocks >= sampler_fallback_target) {
             s_host.log("Sampler: fallback timeout reached (no MIDI clock)");
             sampler_stop_recording();

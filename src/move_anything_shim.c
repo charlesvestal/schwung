@@ -3476,8 +3476,8 @@ do_ioctl:
                     if (s_d1 == CC_CAPTURE && shadow_shift_held) {
                         sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
                     }
-                    /* Block jog, back while sampler is armed or recording */
-                    if (sampler_state != SAMPLER_IDLE) {
+                    /* Block jog/back while sampler UI is fullscreen and active */
+                    if (sampler_state != SAMPLER_IDLE && sampler_fullscreen_active) {
                         if (s_d1 == CC_JOG_WHEEL || s_d1 == CC_JOG_CLICK || s_d1 == CC_BACK) {
                             sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
                         }
@@ -3627,7 +3627,7 @@ do_ioctl:
                 /* Sample/Record button (CC 118) - sampler intercept */
                 if (d1 == CC_RECORD && d2 > 0) {
                     if (shadow_shift_held) {
-                        /* Shift+Sample: arm/cancel/force-stop */
+                        /* Shift+Sample: arm/resume/cancel/force-stop */
                         if (sampler_state == SAMPLER_IDLE && !shadow_display_mode) {
                             sampler_state = SAMPLER_ARMED;
                             sampler_overlay_active = 1;
@@ -3646,6 +3646,13 @@ do_ioctl:
                                     src);
                                 send_screenreader_announcement(sr_buf);
                             }
+                        } else if (sampler_state != SAMPLER_IDLE && !sampler_fullscreen_active) {
+                            sampler_overlay_active = 1;
+                            sampler_overlay_timeout = 0;
+                            sampler_fullscreen_active = 1;
+                            shadow_overlay_sync();
+                            shadow_log("Sampler: fullscreen resumed via Shift+Sample");
+                            send_screenreader_announcement("Sampler resumed");
                         } else if (sampler_state == SAMPLER_ARMED) {
                             sampler_state = SAMPLER_IDLE;
                             sampler_overlay_active = 0;
@@ -3674,19 +3681,21 @@ do_ioctl:
                     }
                 }
 
-                /* Back button while sampler is armed = exit */
-                if (d1 == CC_BACK && d2 > 0 && sampler_state == SAMPLER_ARMED) {
-                    sampler_state = SAMPLER_IDLE;
+                /* Back button while sampler is visible = hide sampler UI */
+                if (d1 == CC_BACK && d2 > 0 &&
+                    sampler_state != SAMPLER_IDLE && sampler_fullscreen_active) {
                     sampler_overlay_active = 0;
+                    sampler_overlay_timeout = 0;
                     sampler_fullscreen_active = 0;
                     shadow_overlay_sync();
-                    shadow_log("Sampler: cancelled via Back");
-                    send_screenreader_announcement("Sampler cancelled");
+                    shadow_log("Sampler: fullscreen dismissed via Back");
+                    send_screenreader_announcement("Sampler hidden. Shift+Sample to resume.");
                     src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                 }
 
                 /* Jog wheel while sampler is armed = navigate menu */
-                if (d1 == CC_JOG_WHEEL && sampler_state == SAMPLER_ARMED) {
+                if (d1 == CC_JOG_WHEEL &&
+                    sampler_state == SAMPLER_ARMED && sampler_fullscreen_active) {
                     /* Decode relative value: 1-63=CW, 65-127=CCW */
                     if (d2 >= 1 && d2 <= 63) {
                         if (sampler_menu_cursor < SAMPLER_MENU_COUNT - 1)
@@ -3702,7 +3711,8 @@ do_ioctl:
                 }
 
                 /* Jog click while sampler is armed = cycle selected menu item */
-                if (d1 == CC_JOG_CLICK && d2 > 0 && sampler_state == SAMPLER_ARMED) {
+                if (d1 == CC_JOG_CLICK && d2 > 0 &&
+                    sampler_state == SAMPLER_ARMED && sampler_fullscreen_active) {
                     if (sampler_menu_cursor == SAMPLER_MENU_SOURCE) {
                         sampler_source = (sampler_source == SAMPLER_SOURCE_RESAMPLE)
                             ? SAMPLER_SOURCE_MOVE_INPUT : SAMPLER_SOURCE_RESAMPLE;
