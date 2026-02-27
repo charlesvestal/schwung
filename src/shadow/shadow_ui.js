@@ -8438,7 +8438,10 @@ function drawMasterFx() {
         if (moduleData && moduleData.module) {
             /* Get display name from MASTER_FX_OPTIONS */
             const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
-            infoLine = opt ? opt.name : moduleData.module;
+            const displayName = opt ? opt.name : moduleData.module;
+            const preset = getMasterFxParam(selectedMasterFxComponent, "preset_name") ||
+                          getMasterFxParam(selectedMasterFxComponent, "preset") || "";
+            infoLine = preset ? `${displayName} (${truncateText(preset, 8)})` : displayName;
         } else {
             infoLine = "(empty)";
         }
