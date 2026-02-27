@@ -63,6 +63,10 @@ typedef struct {
 /* Optional file-based debug tracing for chain parsing/preset save diagnostics. */
 #define CHAIN_DEBUG_FLAG_PATH "/data/UserData/move-anything/chain_debug_on"
 #define CHAIN_DEBUG_LOG_PATH "/data/UserData/move-anything/chain_debug.log"
+#define MOVE_SETTINGS_JSON_PATH "/data/UserData/settings/Settings.json"
+#define CLOCK_SETTINGS_MAX_BYTES (256 * 1024)
+#define CLOCK_SETTINGS_REFRESH_MS 1000
+#define CLOCK_TICK_STALE_MS 750
 
 /* Chord types */
 typedef enum {
@@ -599,12 +603,20 @@ static int g_source_ui_active = 0;
 /* Component UI mode - when set, bypass knob CC macro mappings */
 /* 0 = normal (macro mode), 1 = synth, 2 = fx1, 3 = fx2 */
 static int g_component_ui_mode = 0;
+
+/* Clock availability state for sync-aware MIDI FX (arp, etc.). */
+static int g_clock_output_enabled = 1;              /* midiClockMode == "output" */
+static int g_clock_transport_running = 0;           /* Start/Continue seen without Stop */
+static uint64_t g_clock_last_tick_ms = 0;           /* Last 0xF8 tick timestamp */
+static uint64_t g_clock_next_refresh_ms = 0;        /* Settings.json refresh gate */
+
 /* Our host API for sub-plugins (forwards to main host) */
 static host_api_v1_t g_subplugin_host_api;
 static host_api_v1_t g_source_host_api;
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source);
 static int midi_source_send(const uint8_t *msg, int len);
+static int chain_get_clock_status(void);
 static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
@@ -613,6 +625,7 @@ static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char 
 static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
+static void chain_update_clock_runtime(const uint8_t *msg, int len);
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -643,6 +656,107 @@ static uint64_t get_time_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int chain_read_clock_output_enabled(void) {
+    FILE *f = fopen(MOVE_SETTINGS_JSON_PATH, "r");
+    if (!f) return 1;  /* Avoid false warnings if settings file is unavailable. */
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > CLOCK_SETTINGS_MAX_BYTES) {
+        fclose(f);
+        return 1;
+    }
+
+    char *json = malloc((size_t)size + 1);
+    if (!json) {
+        fclose(f);
+        return 1;
+    }
+
+    size_t nread = fread(json, 1, (size_t)size, f);
+    if (nread == 0 && ferror(f)) {
+        free(json);
+        fclose(f);
+        return 1;
+    }
+    json[nread] = '\0';
+    fclose(f);
+
+    const char *key = "\"midiClockMode\"";
+    char *pos = strstr(json, key);
+    if (!pos) {
+        free(json);
+        return 1;
+    }
+
+    pos = strchr(pos + strlen(key), ':');
+    if (!pos) {
+        free(json);
+        return 1;
+    }
+
+    while (*pos == ':' || *pos == ' ' || *pos == '\t' || *pos == '\n' || *pos == '\r') pos++;
+    if (*pos != '"') {
+        free(json);
+        return 1;
+    }
+    pos++;
+
+    char mode[32];
+    int i = 0;
+    while (*pos && *pos != '"' && i < (int)sizeof(mode) - 1) {
+        mode[i++] = *pos++;
+    }
+    mode[i] = '\0';
+
+    free(json);
+
+    if (strcmp(mode, "output") == 0) return 1;
+    if (strcmp(mode, "off") == 0) return 0;
+    if (strcmp(mode, "input") == 0) return 0;
+    return 1;  /* Unknown value: avoid false warnings. */
+}
+
+static void chain_refresh_clock_output_enabled(uint64_t now_ms) {
+    if (now_ms < g_clock_next_refresh_ms) return;
+    g_clock_output_enabled = chain_read_clock_output_enabled();
+    g_clock_next_refresh_ms = now_ms + CLOCK_SETTINGS_REFRESH_MS;
+}
+
+static int chain_get_clock_status(void) {
+    uint64_t now_ms = get_time_ms();
+    chain_refresh_clock_output_enabled(now_ms);
+
+    if (!g_clock_output_enabled) {
+        return MOVE_CLOCK_STATUS_UNAVAILABLE;
+    }
+
+    if (g_clock_transport_running &&
+        g_clock_last_tick_ms > 0 &&
+        (now_ms - g_clock_last_tick_ms) <= CLOCK_TICK_STALE_MS) {
+        return MOVE_CLOCK_STATUS_RUNNING;
+    }
+
+    return MOVE_CLOCK_STATUS_STOPPED;
+}
+
+static void chain_update_clock_runtime(const uint8_t *msg, int len) {
+    if (!msg || len < 1) return;
+
+    uint8_t status = msg[0];
+    uint64_t now_ms = get_time_ms();
+
+    if (status == 0xF8) {          /* MIDI Clock tick */
+        g_clock_last_tick_ms = now_ms;
+    } else if (status == 0xFA || status == 0xFB) {  /* Start / Continue */
+        g_clock_transport_running = 1;
+        if (g_clock_last_tick_ms == 0) g_clock_last_tick_ms = now_ms;
+    } else if (status == 0xFC) {   /* Stop */
+        g_clock_transport_running = 0;
+    }
 }
 
 /* Calculate knob acceleration multiplier based on time between events */
@@ -1316,7 +1430,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
         return -1;
     }
 
-    midi_fx_api_v1_t *api = init_fn(&g_subplugin_host_api);
+    midi_fx_api_v1_t *api = init_fn(&inst->subplugin_host_api);
     if (!api || api->api_version != MIDI_FX_API_VERSION) {
         snprintf(msg, sizeof(msg), "MIDI FX %s API version mismatch", fx_name);
         v2_chain_log(inst, msg);
@@ -3171,6 +3285,7 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (len < 1) return;
+    chain_update_clock_runtime(msg, len);
 
     /* Handle record button (CC 118) - toggle recording on press */
     /* This must be before the synth check so recording works even without a patch loaded */
@@ -3791,6 +3906,8 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
     memcpy(&g_source_host_api, host, sizeof(host_api_v1_t));
     g_source_host_api.midi_send_internal = midi_source_send;
     g_source_host_api.midi_send_external = midi_source_send;
+    g_subplugin_host_api.get_clock_status = chain_get_clock_status;
+    g_source_host_api.get_clock_status = chain_get_clock_status;
 
     /* Initialize our plugin API struct */
     memset(&g_plugin_api, 0, sizeof(g_plugin_api));
@@ -3852,6 +3969,8 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
         inst->host = g_host;
         memcpy(&inst->subplugin_host_api, g_host, sizeof(host_api_v1_t));
         memcpy(&inst->source_host_api, g_host, sizeof(host_api_v1_t));
+        inst->subplugin_host_api.get_clock_status = chain_get_clock_status;
+        inst->source_host_api.get_clock_status = chain_get_clock_status;
         /* Note: MIDI source routing would need instance-specific handling for full v2 */
     }
 
@@ -5709,6 +5828,7 @@ static void inst_send_note_to_synth(chain_instance_t *inst, const uint8_t *msg, 
 static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || len < 1) return;
+    chain_update_clock_runtime(msg, len);
 
     /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
      * Skip synth, MIDI FX, and knob handling - this MIDI is from a
@@ -7001,5 +7121,3 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
         }
     }
 }
-
-

@@ -1091,6 +1091,7 @@ let assetWarningActive = false;  // True when showing asset warning overlay
 let assetWarningTitle = "";      // e.g., "Dexed Warning"
 let assetWarningLines = [];      // Wrapped error message lines
 let assetWarningShownForSlots = new Set();  // Track which chain slots have shown warnings
+let assetWarningShownForMidiFxSlots = new Set();  // Track which slots have shown MIDI FX warnings
 let assetWarningShownForMasterFx = new Set();  // Track which Master FX slots have shown warnings
 
 const MODULES_ROOT = "/data/UserData/move-anything/modules";
@@ -1284,6 +1285,21 @@ function checkAndShowSynthError(slotIndex) {
     return false;
 }
 
+/* Check for MIDI FX warning in a slot and show warning if found */
+function checkAndShowMidiFxError(slotIndex) {
+    const midiFxError = getSlotParam(slotIndex, "midi_fx1:error");
+    if (midiFxError && midiFxError.length > 0) {
+        const midiFxName = getSlotParam(slotIndex, "midi_fx1:name") || "MIDI FX";
+        assetWarningTitle = `${midiFxName} Warning`;
+        assetWarningLines = wrapText(midiFxError, 18);
+        assetWarningActive = true;
+        announce(`${assetWarningTitle}: ${midiFxError}`);
+        needsRedraw = true;
+        return true;
+    }
+    return false;
+}
+
 /* Check for Master FX error in a slot and show warning if found */
 function checkAndShowMasterFxError(fxSlot) {
     /* fxSlot is 0-3 for the 4 Master FX slots */
@@ -1399,7 +1415,21 @@ function getSlotParam(slot, key) {
 function setSlotParam(slot, key, value) {
     if (typeof shadow_set_param !== "function") return false;
     try {
-        return shadow_set_param(slot, key, String(value));
+        const ok = shadow_set_param(slot, key, String(value));
+        if (!ok) return false;
+
+        /* Re-check MIDI FX warnings immediately after sync/module changes. */
+        if (key === "midi_fx1:module") {
+            assetWarningShownForMidiFxSlots.delete(slot);
+        }
+        if (key === "midi_fx1:sync") {
+            assetWarningShownForMidiFxSlots.delete(slot);
+            if (String(value) === "clock") {
+                checkAndShowMidiFxError(slot);
+            }
+        }
+
+        return true;
     } catch (e) {
         return false;
     }
@@ -1861,6 +1891,7 @@ function setMasterFxModule(moduleId) {
 function loadPatchByIndex(slot, index) {
     /* Clear warning tracking for this slot so new warnings can show */
     assetWarningShownForSlots.delete(slot);
+    assetWarningShownForMidiFxSlots.delete(slot);
     return setSlotParam(slot, "load_patch", index);
 }
 
@@ -5730,14 +5761,18 @@ function updateFocusedSlot(slot) {
     }
 
     /* Check for synth errors when selecting a chain slot (not Master FX) */
-    if (slot >= 0 && slot < SHADOW_UI_SLOTS && !assetWarningShownForSlots.has(slot)) {
-        const synthModule = getSlotParam(slot, "synth_module");
-        if (synthModule && synthModule.length > 0) {
-            /* Slot has a synth - check for errors */
-            if (checkAndShowSynthError(slot)) {
-                assetWarningShownForSlots.add(slot);
+    if (slot >= 0 && slot < SHADOW_UI_SLOTS) {
+        if (!assetWarningShownForSlots.has(slot)) {
+            const synthModule = getSlotParam(slot, "synth_module");
+            if (synthModule && synthModule.length > 0) {
+                /* Slot has a synth - check for errors */
+                if (checkAndShowSynthError(slot)) {
+                    assetWarningShownForSlots.add(slot);
+                    return;
+                }
             }
         }
+
     }
 
     /* Check for Master FX errors when selecting the Master FX slot (slot 4) */
@@ -9164,10 +9199,14 @@ globalThis.onMidiMessageInternal = function(data) {
         }
     }
 
-    /* Dismiss asset warning overlay on any button press */
+    /* Dismiss asset warning overlay on button presses, but not knob turns. */
     if (assetWarningActive && (status & 0xF0) === 0xB0 && d2 > 0) {
-        dismissAssetWarning();
-        return;  /* Consumed - don't process further */
+        const isMainKnobTurn = d1 === MoveMainKnob;
+        const isParamKnobTurn = d1 >= KNOB_CC_START && d1 <= KNOB_CC_END;
+        if (!isMainKnobTurn && !isParamKnobTurn) {
+            dismissAssetWarning();
+            return;  /* Consumed - don't process further */
+        }
     }
 
     /* Debug: track last CC for display (only for CC messages) */
