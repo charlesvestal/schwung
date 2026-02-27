@@ -324,6 +324,17 @@
       "min_host_version": "0.5.8"
     },
     {
+      "id": "eucalypso",
+      "name": "Eucalypso",
+      "description": "Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation",
+      "author": "dom",
+      "component_type": "midi_fx",
+      "github_repo": "handcraftedcc/move-anything-eucalypso",
+      "default_branch": "main",
+      "asset_name": "eucalypso-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "rex",
       "name": "REX Player",
       "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
