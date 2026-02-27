@@ -181,6 +181,7 @@ The setting takes effect immediately (no restart needed) and persists across reb
 Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
 
 **Tip:** Some synths and FX (i.e. Arp) utilize Midi Cloc for tempo sync. Make sure your Move is set to "Midi Clock: Out" for these to pick up sync correctly. 
+
 ---
 
 ## Master FX
