@@ -3613,8 +3613,9 @@ do_ioctl:
                     src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                 }
 
-                /* Shift+Left/Right: set page navigation (when enabled) */
-                if (shadow_control && shadow_control->set_pages_enabled && shadow_shift_held && d2 > 0) {
+                /* Shift+Vol+Left/Right: set page navigation (when enabled) */
+                if (shadow_control && shadow_control->set_pages_enabled &&
+                    shadow_shift_held && shadow_volume_knob_touched && d2 > 0) {
                     if (d1 == CC_LEFT && set_page_current > 0) {
                         shadow_change_set_page(set_page_current - 1);
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;

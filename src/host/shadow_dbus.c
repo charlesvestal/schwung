@@ -211,7 +211,7 @@ static void shadow_dbus_handle_text(const char *text)
     /* Track native Move sampler source from stock announcements. */
     host.native_sampler_update(text);
 
-    /* Set page: detect Set Overview screen for Shift+Left/Right interception */
+    /* Set page: detect Set Overview screen for Shift+Vol+Left/Right interception */
     if (strcasecmp(text, "Set Overview") == 0 || strcasecmp(text, "Sets") == 0) {
         in_set_overview = 1;
     } else if (text[0] && strcasecmp(text, "Set Overview") != 0 &&

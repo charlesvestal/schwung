@@ -53,7 +53,7 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
 | **Shift+Sample** | Open Quantized Sampler |
 | **Shift+Capture** | Skipback (save last 30 seconds) |
-| **Shift+Left/Right** | Switch set page (when enabled) |
+| **Shift+Vol + Left/Right** | Switch set page (when enabled) |
 
 **Tip:** You can access slots directly from normal Move mode - you don't need to be in shadow mode first.
 
@@ -144,8 +144,8 @@ Set Pages let you organize your sets into 8 switchable pages. Each page holds it
 
 ### Usage
 
-- **Shift+Left**: Switch to the previous page
-- **Shift+Right**: Switch to the next page
+- **Shift+Vol+Left**: Switch to the previous page
+- **Shift+Vol+Right**: Switch to the next page
 
 A toast overlay shows "Loading Page X/8..." during the switch. Move restarts automatically to load the new page's sets.
 
@@ -439,5 +439,5 @@ Muted slots are silenced but continue processing MIDI. Solo isolates a single sl
 ## Tips
 
 - Each Move Set has its own slot configurations — switch Sets to switch between different instrument setups
-- Use Set Pages to organize sets by project or performance — Shift+Left/Right to switch
+- Use Set Pages to organize sets by project or performance — Shift+Vol+Left/Right to switch
 - If something goes wrong, use Move's DFU restore mode to reset
