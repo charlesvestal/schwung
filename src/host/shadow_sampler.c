@@ -379,10 +379,16 @@ void sampler_start_recording(void) {
         }
     }
 
-    snprintf(sampler_current_recording, sizeof(sampler_current_recording), "%s/sample_%04d%02d%02d_%02d%02d%02d.wav",
+    /* Get BPM for filename */
+    tempo_source_t bpm_src;
+    float bpm_for_name = sampler_get_bpm(&bpm_src);
+    int bpm_int = (int)(bpm_for_name + 0.5f);
+
+    snprintf(sampler_current_recording, sizeof(sampler_current_recording), "%s/sample_%04d%02d%02d_%02d%02d%02d_%dbpm.wav",
              recording_dir,
              tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+             bpm_int);
 
     /* Allocate ring buffer */
     sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
