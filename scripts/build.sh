@@ -171,8 +171,16 @@ echo "Building web shim..."
 "${CROSS_PREFIX}gcc" -g -shared -fPIC \
     -o build/move-anything-web-shim.so \
     src/host/web_shim.c \
-    -Isrc \
+    src/host/unified_log.c \
+    -Isrc -Isrc/host \
     -ldl -lrt
+
+echo "Building unified log CLI..."
+"${CROSS_PREFIX}gcc" -g -O3 \
+    src/host/unified_log_cli.c \
+    src/host/unified_log.c \
+    -o build/unified-log \
+    -Isrc -Isrc/host
 
 echo "Building Shadow POC..."
 
@@ -205,14 +213,20 @@ if [ -d "./libs/link/include/ableton" ]; then
     "${CROSS_PREFIX}gcc" -c -g -O0 \
         src/host/arc4random_compat.c \
         -o build/arc4random_compat.o
+    "${CROSS_PREFIX}gcc" -c -g -O3 \
+        src/host/unified_log.c \
+        -o build/unified_log.o \
+        -Isrc -Isrc/host
     "${CROSS_PREFIX}g++" -std=c++17 -O3 -DNDEBUG \
         -DLINK_PLATFORM_UNIX=1 \
         -DLINK_PLATFORM_LINUX=1 \
         -Wno-multichar \
         -I./libs/link/include \
         -I./libs/link/modules/asio-standalone/asio/include \
+        -Isrc -Isrc/host \
         src/host/link_subscriber.cpp \
         build/arc4random_compat.o \
+        build/unified_log.o \
         -o build/link-subscriber \
         -lpthread -latomic \
         -static-libstdc++ \
@@ -366,7 +380,9 @@ cp ./src/host/version.txt ./build/host/
 echo "Building display server..."
 "${CROSS_PREFIX}gcc" -g -O3 \
     src/host/display_server.c \
+    src/host/unified_log.c \
     -o build/display-server \
+    -Isrc -Isrc/host \
     -lrt
 
 # Copy shadow UI files

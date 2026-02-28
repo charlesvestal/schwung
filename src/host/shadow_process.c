@@ -281,8 +281,8 @@ void launch_link_subscriber(void) {
     if (pid < 0) return;
     if (pid == 0) {
         setsid();
-        freopen("/tmp/link-subscriber.log", "w", stdout);
-        freopen("/tmp/link-subscriber.log", "a", stderr);
+        freopen("/dev/null", "w", stdout);
+        freopen("/dev/null", "a", stderr);
         int fdlimit = (int)sysconf(_SC_OPEN_MAX);
         for (int i = STDERR_FILENO + 1; i < fdlimit; i++) {
             close(i);

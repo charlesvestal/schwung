@@ -25,7 +25,11 @@
 #include <thread>
 #include <vector>
 
+#include "unified_log.h"
+
 static std::atomic<bool> g_running{true};
+
+#define LINK_SUB_LOG_SOURCE "link_subscriber"
 
 /* Channel IDs discovered via callback — processed in main loop */
 struct PendingChannel {
@@ -81,13 +85,14 @@ int main()
     std::signal(SIGBUS, signal_handler);
     std::signal(SIGABRT, signal_handler);
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    unified_log_init();
 
     if (!is_link_audio_enabled()) {
+        unified_log_shutdown();
         return 0;
     }
 
-    printf("link-subscriber: starting\n");
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "starting");
 
     /* Read initial tempo from file written by shim (falls back to 120) */
     double initial_tempo = 120.0;
@@ -117,7 +122,7 @@ int main()
      * with channels is received.  Without this, forPeer() returns nullopt
      * and audio is silently never sent. */
     ableton::LinkAudioSink dummySink(link, "ME-Sub-Ack", 256);
-    printf("link-subscriber: dummy sink created (triggers peer announcement)\n");
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "dummy sink created (triggers peer announcement)");
 
     /* Callback just records channel IDs — source creation deferred to main loop
      * because LinkAudioSource constructor isn't safe from the callback thread */
@@ -131,11 +136,11 @@ int main()
             }
         }
         g_channels_changed = true;
-        printf("link-subscriber: discovered %zu Move channels\n",
-               g_pending_channels.size());
+        LOG_INFO(LINK_SUB_LOG_SOURCE, "discovered %zu Move channels",
+                 g_pending_channels.size());
     });
 
-    printf("link-subscriber: waiting for channel discovery...\n");
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "waiting for channel discovery...");
 
     /* Active sources — managed in main loop only */
     std::vector<ableton::LinkAudioSource> sources;
@@ -157,7 +162,7 @@ int main()
 
             /* Destroy old sources first */
             sources.clear();
-            printf("link-subscriber: cleared old sources\n");
+            LOG_INFO(LINK_SUB_LOG_SOURCE, "cleared old sources");
 
             /* Small delay to let SDK process the unsubscriptions */
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -167,41 +172,42 @@ int main()
 
             /* Create new sources one at a time */
             for (const auto& pc : pending) {
-                printf("link-subscriber: subscribing to %s/%s...\n",
-                       pc.peerName.c_str(), pc.name.c_str());
+                LOG_INFO(LINK_SUB_LOG_SOURCE, "subscribing to %s/%s...",
+                         pc.peerName.c_str(), pc.name.c_str());
 
                 try {
                     sources.emplace_back(link, pc.id,
                         [](ableton::LinkAudioSource::BufferHandle) {
                             g_buffers_received.fetch_add(1, std::memory_order_relaxed);
                         });
-                    printf("link-subscriber: OK\n");
+                    LOG_INFO(LINK_SUB_LOG_SOURCE, "subscription OK");
                 } catch (const std::exception& e) {
-                    printf("link-subscriber: ERROR: %s\n", e.what());
+                    LOG_ERROR(LINK_SUB_LOG_SOURCE, "subscription failed: %s", e.what());
                 } catch (...) {
-                    printf("link-subscriber: ERROR (unknown)\n");
+                    LOG_ERROR(LINK_SUB_LOG_SOURCE, "subscription failed: unknown error");
                 }
 
                 /* Small delay between source creation to avoid overwhelming */
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
 
-            printf("link-subscriber: %zu sources active\n", sources.size());
+            LOG_INFO(LINK_SUB_LOG_SOURCE, "%zu sources active", sources.size());
         }
 
         /* Log buffer count every 30 seconds */
         if (tick % 60 == 0) {
             uint64_t count = g_buffers_received.load(std::memory_order_relaxed);
             if (count != last_count) {
-                printf("link-subscriber: %llu audio buffers received\n",
-                       (unsigned long long)count);
+                LOG_INFO(LINK_SUB_LOG_SOURCE, "%llu audio buffers received",
+                         (unsigned long long)count);
                 last_count = count;
             }
         }
     }
 
     sources.clear();
-    printf("link-subscriber: shutting down (%llu total buffers)\n",
-           (unsigned long long)g_buffers_received.load());
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "shutting down (%llu total buffers)",
+             (unsigned long long)g_buffers_received.load());
+    unified_log_shutdown();
     return 0;
 }
