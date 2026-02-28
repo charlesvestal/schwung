@@ -2890,6 +2890,58 @@ function handleMasterFxSettingsAction(key) {
                 debugLog("Move Manual not available: " + e);
             }
         }
+        /* Scan installed modules for help.json files (rescan each time to pick up new installs) */
+        if (helpContent && helpContent.sections) {
+            try {
+                /* Remove previous Modules section if present */
+                const oldIdx = helpContent.sections.findIndex(s => s.title === "Modules");
+                if (oldIdx >= 0) helpContent.sections.splice(oldIdx, 1);
+
+                const MODULES_DIR = "/data/UserData/move-anything/modules";
+                const moduleHelpChildren = [];
+                const entries = os.readdir(MODULES_DIR) || [];
+                const dirList = entries[0];
+                if (Array.isArray(dirList)) {
+                    for (const entry of dirList) {
+                        if (entry === "." || entry === "..") continue;
+                        const entryPath = `${MODULES_DIR}/${entry}`;
+                        /* Check top-level module dirs and category subdirs */
+                        const checkHelp = function(dirPath) {
+                            try {
+                                const helpRaw = std.loadFile(`${dirPath}/help.json`);
+                                if (!helpRaw) return;
+                                const helpData = JSON.parse(helpRaw);
+                                if (helpData.title && helpData.children) {
+                                    moduleHelpChildren.push(helpData);
+                                }
+                            } catch (e) { /* skip */ }
+                        };
+                        checkHelp(entryPath);
+                        /* Scan subdirectories (sound_generators/, audio_fx/, etc.) */
+                        try {
+                            const subEntries = os.readdir(entryPath) || [];
+                            const subDirList = subEntries[0];
+                            if (Array.isArray(subDirList)) {
+                                for (const subEntry of subDirList) {
+                                    if (subEntry === "." || subEntry === "..") continue;
+                                    checkHelp(`${entryPath}/${subEntry}`);
+                                }
+                            }
+                        } catch (e) { /* not a directory */ }
+                    }
+                }
+                if (moduleHelpChildren.length > 0) {
+                    moduleHelpChildren.sort((a, b) => a.title.localeCompare(b.title));
+                    const modulesSection = { title: "Modules", children: moduleHelpChildren };
+                    /* Insert after "Move Everything" (index 0) */
+                    const meIdx = helpContent.sections.findIndex(s => s.title === "Move Everything");
+                    helpContent.sections.splice(meIdx >= 0 ? meIdx + 1 : 1, 0, modulesSection);
+                    debugLog("Loaded module help: " + moduleHelpChildren.length + " modules");
+                }
+            } catch (e) {
+                debugLog("Module help scan failed: " + e);
+            }
+        }
         /* Ensure Notice section is always present */
         if (helpContent && helpContent.sections &&
             !helpContent.sections.find(s => s.title === "Notice")) {
