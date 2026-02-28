@@ -1,0 +1,95 @@
+{
+  "title": "SEQOMD",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "16-track MIDI step",
+        "sequencer.",
+        "",
+        "Full sequencing with",
+        "patterns, sets, MIDI",
+        "clock sync, and per-",
+        "step note editing.",
+        "",
+        "Routes MIDI to",
+        "external devices or",
+        "internal synths."
+      ]
+    },
+    {
+      "title": "Views",
+      "children": [
+        {
+          "title": "Set View",
+          "lines": [
+            "Pattern selection",
+            "and arrangement.",
+            "",
+            "Step buttons select",
+            "patterns to play.",
+            "",
+            "Pads control pattern",
+            "chains and queuing."
+          ]
+        },
+        {
+          "title": "Track View",
+          "lines": [
+            "MIDI track editing.",
+            "",
+            "Configure channel,",
+            "velocity, and MIDI",
+            "parameters per track.",
+            "",
+            "16 tracks available",
+            "with independent",
+            "MIDI routing."
+          ]
+        },
+        {
+          "title": "Pattern View",
+          "lines": [
+            "Step/note editing.",
+            "",
+            "Pads show active",
+            "steps. Knobs edit",
+            "note, velocity, and",
+            "gate per step.",
+            "",
+            "Visual playhead",
+            "shows position."
+          ]
+        },
+        {
+          "title": "Master View",
+          "lines": [
+            "Menu button opens",
+            "global settings.",
+            "",
+            "BPM and sync config.",
+            "Set save/load.",
+            "Pattern management."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Controls",
+      "lines": [
+        "Play: start/stop",
+        "Record: MIDI input",
+        "Menu: Master View",
+        "Back: navigate back",
+        "",
+        "Step buttons:",
+        " Pattern/track select",
+        "",
+        "Pads: note/step edit",
+        "",
+        "Knobs: parameter",
+        " editing per view"
+      ]
+    }
+  ]
+}
