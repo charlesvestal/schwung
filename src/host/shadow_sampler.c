@@ -353,21 +353,34 @@ void sampler_tick_preroll(void) {
 void sampler_start_recording(void) {
     if (sampler_writer_running) return;
 
-    /* Create recordings directory (skip fork if it already exists) */
+    /* Generate date-based save directory and filename */
+    time_t now = time(NULL);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
+    if (!tm_info) {
+        s_host.log("Sampler: failed to get local time");
+        s_host.announce("Recording failed");
+        return;
+    }
+    char date_subdir[32];
+    if (strftime(date_subdir, sizeof(date_subdir), "%Y-%m-%d", tm_info) == 0) {
+        s_host.log("Sampler: failed to format date subdirectory");
+        s_host.announce("Recording failed");
+        return;
+    }
+    char recording_dir[256];
+    snprintf(recording_dir, sizeof(recording_dir), "%s/%s", SAMPLER_RECORDINGS_DIR, date_subdir);
+
     {
         struct stat st;
-        if (stat(SAMPLER_RECORDINGS_DIR, &st) != 0) {
-            const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
+        if (stat(recording_dir, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", recording_dir, NULL };
             s_host.run_command(mkdir_argv);
         }
     }
 
-    /* Generate filename with timestamp */
-    time_t now = time(NULL);
-    struct tm tm_buf;
-    struct tm *tm_info = localtime_r(&now, &tm_buf);
-    snprintf(sampler_current_recording, sizeof(sampler_current_recording),
-             SAMPLER_RECORDINGS_DIR "/sample_%04d%02d%02d_%02d%02d%02d.wav",
+    snprintf(sampler_current_recording, sizeof(sampler_current_recording), "%s/sample_%04d%02d%02d_%02d%02d%02d.wav",
+             recording_dir,
              tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
              tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
 
@@ -654,22 +667,39 @@ void skipback_capture(int16_t *audio) {
 static void *skipback_writer_func(void *arg) {
     (void)arg;
 
+    /* Build date-based save directory */
+    time_t now = time(NULL);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
+    if (!tm_info) {
+        s_host.log("Skipback: failed to get local time");
+        s_host.announce("Skipback failed");
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
+        return NULL;
+    }
+    char date_subdir[32];
+    if (strftime(date_subdir, sizeof(date_subdir), "%Y-%m-%d", tm_info) == 0) {
+        s_host.log("Skipback: failed to format date subdirectory");
+        s_host.announce("Skipback failed");
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
+        return NULL;
+    }
+    char skipback_dir[256];
+    snprintf(skipback_dir, sizeof(skipback_dir), "%s/%s", SKIPBACK_DIR, date_subdir);
+
     /* Create directory */
     {
         struct stat st;
-        if (stat(SKIPBACK_DIR, &st) != 0) {
-            const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
+        if (stat(skipback_dir, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", skipback_dir, NULL };
             s_host.run_command(mkdir_argv);
         }
     }
 
     /* Generate filename */
-    time_t now = time(NULL);
-    struct tm tm_buf;
-    struct tm *tm_info = localtime_r(&now, &tm_buf);
     char path[256];
-    snprintf(path, sizeof(path),
-             SKIPBACK_DIR "/skipback_%04d%02d%02d_%02d%02d%02d.wav",
+    snprintf(path, sizeof(path), "%s/skipback_%04d%02d%02d_%02d%02d%02d.wav",
+             skipback_dir,
              tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
              tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
 

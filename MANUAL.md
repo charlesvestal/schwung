@@ -41,6 +41,22 @@ After installation, Move will restart automatically.
 
 ---
 
+## Uninstall
+
+Run:
+```
+curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
+```
+
+By default, uninstall exports inactive Set Pages backups to `/data/UserData/UserLibrary/Move Everything Backups/Set Pages/` before removing Move Everything.
+
+To skip that export and permanently delete Move Anything data:
+```
+curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh -s -- --purge-data
+```
+
+---
+
 ## Shortcuts
 
 All shortcuts use **Shift + touch Volume knob** as a modifier:
@@ -288,7 +304,7 @@ Access via **Shift+Sample**. Records Move's audio output (including Move Everyth
 3. Recording starts on a note event or pressing Play
 4. Press **Shift+Sample** again to stop (or it stops automatically at the set duration)
 
-Recordings are saved to `Samples/Move Everything/`.
+Recordings are saved to `Samples/Move Everything/Resampler/YYYY-MM-DD/`.
 
 Uses MIDI clock for accurate bar timing, falling back to project tempo if no clock is available. You can also use Move's built-in count-in for line-in recordings.
 
@@ -298,7 +314,7 @@ Press **Shift+Capture** to save the last 30 seconds of audio to disk.
 
 Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
 
-Files are saved to `Samples/Move Everything/Skipback/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
+Files are saved to `Samples/Move Everything/Skipback/YYYY-MM-DD/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
 
 ---
 
