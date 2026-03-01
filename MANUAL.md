@@ -63,8 +63,8 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 
 | Shortcut | Action |
 |----------|--------|
-| **Shift+Vol + Track 1-4** | Open that slot's editor |
-| **Shift+Vol + Menu** | Open Master FX |
+| **Shift+Vol + Track 1-4**| Open that slot's editor |
+| **Shift+Vol + Note/Session** | Open Master FX |
 | **Shift+Vol + Step 2** | Open Global Settings |
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
 | **Shift+Sample** | Open Quantized Sampler |
@@ -202,7 +202,7 @@ Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from
 
 ## Master FX
 
-Access via **Shift+Vol + Menu**. Contains four audio effect slots that process the mixed output of all instrument slots.
+Access via **Shift+Vol + Note/Session**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
 Global settings (Link Audio, Resample Src, Mirror Display, Screen Reader, Set Pages, Help, Updates) are accessed via **Shift+Vol + Step 2**.
 
@@ -398,7 +398,7 @@ To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
 
 Move Everything includes an optional screen reader for accessibility, using text-to-speech to announce UI elements.
 
-Toggle via **Global Settings > Screen Reader** (**Shift+Vol + Step 2**), or **Shift+Menu** when Shadow UI is disabled.
+Toggle via **Global Settings > Screen Reader** (**Shift+Vol + Step 2**), or **Shift+Note/Session** when Shadow UI is disabled.
 
 Settings:
 - **Speed**: 0.5x to 2.0x
