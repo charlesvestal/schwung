@@ -1479,10 +1479,12 @@ void shadow_inprocess_handle_param_request(void) {
         else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; has_slot_prefix = 1; }
         else { mfx_slot = 0; param_key = fx_key; }
 
-        /* Delegate shim-specific params (resample_bridge, link_audio_routing) */
+        /* Delegate shim-specific params (resample_bridge, link_audio_*) */
         if (!has_slot_prefix && host.handle_param_special) {
             if (strcmp(param_key, "resample_bridge") == 0 ||
-                strcmp(param_key, "link_audio_routing") == 0) {
+                strcmp(param_key, "link_audio_routing") == 0 ||
+                strcmp(param_key, "link_audio_publish") == 0 ||
+                strcmp(param_key, "system_link_enabled") == 0) {
                 if (host.handle_param_special(req_type, req_id)) {
                     shadow_param_publish_response(req_id);
                     return;

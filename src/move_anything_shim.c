@@ -2213,6 +2213,55 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             }
             return 1;
         }
+        /* master_fx:link_audio_publish */
+        if (strcmp(fx_key, "link_audio_publish") == 0) {
+            if (req_type == 1) {
+                int val = atoi(shadow_param->value);
+                link_audio_publish_enabled = val ? 1 : 0;
+                {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "Link Audio publish: %s",
+                             link_audio_publish_enabled ? "ON" : "OFF");
+                    shadow_log(msg);
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%d", link_audio_publish_enabled);
+                shadow_param->error = 0;
+            }
+            return 1;
+        }
+        /* master_fx:system_link_enabled (GET-only, reads Move's Settings.json) */
+        if (strcmp(fx_key, "system_link_enabled") == 0) {
+            if (req_type == 2) {
+                int enabled = 0;
+                FILE *f = fopen("/data/UserData/settings/Settings.json", "r");
+                if (f) {
+                    char buf[1024];
+                    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+                    fclose(f);
+                    buf[n] = '\0';
+                    char *p = strstr(buf, "\"isLinkEnabled\"");
+                    if (p) {
+                        p = strchr(p, ':');
+                        if (p) {
+                            p++;
+                            while (*p == ' ' || *p == '\t') p++;
+                            enabled = (strncmp(p, "true", 4) == 0) ? 1 : 0;
+                        }
+                    }
+                }
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%d", enabled);
+                shadow_param->error = 0;
+            } else {
+                shadow_param->error = 1; /* read-only */
+                shadow_param->result_len = 0;
+            }
+            return 1;
+        }
     }
 
     return 0;  /* Not handled */
@@ -3043,20 +3092,29 @@ int ioctl(int fd, unsigned long request, ...)
     /* Update publisher shm slot active flags (subscriber reads these).
      * When Link Audio is receiving Move per-track audio, always mark all
      * 4 slots active so Live sees ME-1 through ME-4 even without synths.
-     * The mix_from_buffer path publishes Move audio for inactive slots. */
+     * The mix_from_buffer path publishes Move audio for inactive slots.
+     * If link_audio_publish_enabled is off, deactivate all slots so the
+     * subscriber won't create sinks and no shadow audio flows to Live. */
     if (shadow_pub_audio_shm && link_audio.enabled) {
-        int la_flowing = (link_audio.packets_intercepted > 0 &&
-                          link_audio.move_channel_count >= 4);
-        for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
-            int is_active = la_flowing ||
-                            (i < SHADOW_CHAIN_INSTANCES &&
-                             shadow_chain_slots[i].active &&
-                             shadow_chain_slots[i].instance != NULL);
-            shadow_pub_audio_shm->slots[i].active = is_active;
+        if (!link_audio_publish_enabled) {
+            for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++)
+                shadow_pub_audio_shm->slots[i].active = 0;
+            shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX].active = 0;
+            shadow_pub_audio_shm->num_slots = 0;
+        } else {
+            int la_flowing = (link_audio.packets_intercepted > 0 &&
+                              link_audio.move_channel_count >= 4);
+            for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
+                int is_active = la_flowing ||
+                                (i < SHADOW_CHAIN_INSTANCES &&
+                                 shadow_chain_slots[i].active &&
+                                 shadow_chain_slots[i].instance != NULL);
+                shadow_pub_audio_shm->slots[i].active = is_active;
+            }
+            /* Master slot is always active when Link Audio is flowing */
+            shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX].active = la_flowing;
+            shadow_pub_audio_shm->num_slots = la_flowing ? LINK_AUDIO_PUB_SLOT_COUNT : 0;
         }
-        /* Master slot is always active when Link Audio is flowing */
-        shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX].active = la_flowing;
-        shadow_pub_audio_shm->num_slots = la_flowing ? LINK_AUDIO_PUB_SLOT_COUNT : 0;
     }
 
     /* Mix TTS audio AFTER inprocess mix (which may zero-rebuild mailbox for Link Audio) */

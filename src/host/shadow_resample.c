@@ -24,6 +24,7 @@ volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATIVE_RESA
 volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 volatile native_sampler_source_t native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 volatile int link_audio_routing_enabled = 0;
+volatile int link_audio_publish_enabled = 0;
 
 /* Snapshot and component buffers */
 int16_t native_total_mix_snapshot[FRAMES_PER_BLOCK * 2];
@@ -64,6 +65,7 @@ void resample_init(const resample_host_t *h) {
     native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
     native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
     link_audio_routing_enabled = 0;
+    link_audio_publish_enabled = 0;
     native_total_mix_snapshot_valid = 0;
     native_bridge_split_valid = 0;
     native_bridge_capture_mv = 1.0f;
@@ -194,6 +196,27 @@ void native_resample_bridge_load_mode_from_shadow_config(void)
                 char msg[64];
                 snprintf(msg, sizeof(msg), "Link Audio routing: %s (from config)",
                          link_audio_routing_enabled ? "ON" : "OFF");
+                host.log(msg);
+            }
+        }
+    }
+
+    /* Load Link Audio publish setting */
+    char *pub_key = strstr(json, "\"link_audio_publish\"");
+    if (pub_key) {
+        char *colon = strchr(pub_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0 || *colon == '1') {
+                link_audio_publish_enabled = 1;
+            } else {
+                link_audio_publish_enabled = 0;
+            }
+            if (host.log) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "Link Audio publish: %s (from config)",
+                         link_audio_publish_enabled ? "ON" : "OFF");
                 host.log(msg);
             }
         }
