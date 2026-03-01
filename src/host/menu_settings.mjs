@@ -2,7 +2,7 @@
  * Settings screen using shared menu components.
  */
 
-import { createValue, createEnum, createToggle, createBack, createSubmenu, createInfo } from '/data/UserData/move-anything/shared/menu_items.mjs';
+import { createValue, createEnum, createToggle, createBack, createSubmenu, createInfo, capitalize } from '/data/UserData/move-anything/shared/menu_items.mjs';
 import { createMenuState, handleMenuInput } from '/data/UserData/move-anything/shared/menu_nav.mjs';
 import { createMenuStack } from '/data/UserData/move-anything/shared/menu_stack.mjs';
 import { drawStackMenu } from '/data/UserData/move-anything/shared/menu_render.mjs';
@@ -223,11 +223,6 @@ export function handleSettingsCC({ cc, value, shiftHeld }) {
 }
 
 /* Helpers */
-function capitalize(s) {
-    if (!s) return '';
-    return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 function formatClockMode(mode) {
     if (mode === 'internal') return 'INT';
     if (mode === 'external') return 'EXT';

@@ -21,18 +21,20 @@
 #include <errno.h>
 
 #include "shadow_constants.h"
+#include "unified_log.h"
 
 static ssize_t (*real_recvfrom)(int, void *, size_t, int,
                                 struct sockaddr *, socklen_t *) = NULL;
 static ssize_t (*real_recv)(int, void *, size_t, int) = NULL;
 static ssize_t (*real_read)(int, void *, size_t) = NULL;
 static shadow_control_t *ctrl = NULL;
-static FILE *dbg = NULL;
+
+#define WEB_SHIM_LOG_SOURCE "web_shim"
 
 static void dbg_log(const char *msg)
 {
-    if (!dbg) dbg = fopen("/tmp/web_shim.log", "a");
-    if (dbg) { fprintf(dbg, "%s\n", msg); fflush(dbg); }
+    if (!msg) return;
+    unified_log(WEB_SHIM_LOG_SOURCE, LOG_LEVEL_DEBUG, "%s", msg);
 }
 
 static void init_shm(void)
@@ -64,6 +66,7 @@ static void init_shm(void)
 __attribute__((constructor))
 static void web_shim_init(void)
 {
+    unified_log_init();
     dbg_log("web_shim: constructor called - .so loaded!");
 
     real_recvfrom = dlsym(RTLD_NEXT, "recvfrom");

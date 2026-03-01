@@ -1,0 +1,39 @@
+{
+  "id": "velocity_scale",
+  "name": "Velocity Scale",
+  "abbrev": "VS",
+  "version": "0.1.0",
+  "builtin": true,
+  "capabilities": {
+    "chainable": true,
+    "component_type": "midi_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "Velocity Scale",
+          "params": [
+            {
+              "key": "min",
+              "name": "Min",
+              "type": "int",
+              "min": 1,
+              "max": 127,
+              "default": 1,
+              "step": 1
+            },
+            {
+              "key": "max",
+              "name": "Max",
+              "type": "int",
+              "min": 1,
+              "max": 127,
+              "default": 127,
+              "step": 1
+            }
+          ],
+          "knobs": ["min", "max"]
+        }
+      }
+    }
+  }
+}

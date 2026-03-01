@@ -39,7 +39,11 @@ extern "C" {
 #include "link_audio.h"
 }
 
+#include "unified_log.h"
+
 static std::atomic<bool> g_running{true};
+
+#define LINK_SUB_LOG_SOURCE "link_subscriber"
 
 /* Channel IDs discovered via callback — processed in main loop */
 struct PendingChannel {
@@ -122,16 +126,34 @@ int main()
     std::signal(SIGBUS, signal_handler);
     std::signal(SIGABRT, signal_handler);
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    unified_log_init();
 
     if (!is_link_audio_enabled()) {
+        unified_log_shutdown();
         return 0;
     }
 
-    printf("link-subscriber: starting\n");
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "starting");
+
+    /* Read initial tempo from file written by shim (falls back to 120) */
+    double initial_tempo = 120.0;
+    {
+        FILE *fp = fopen("/tmp/link-tempo", "r");
+        if (fp) {
+            double t = 0.0;
+            if (fscanf(fp, "%lf", &t) == 1 && t >= 20.0 && t <= 999.0) {
+                initial_tempo = t;
+                printf("link-subscriber: using set tempo %.1f BPM\n", t);
+            }
+            fclose(fp);
+        }
+        if (initial_tempo == 120.0) {
+            printf("link-subscriber: using default tempo 120.0 BPM\n");
+        }
+    }
 
     /* Join Link session and enable audio */
-    ableton::LinkAudio link(120.0, "ME");
+    ableton::LinkAudio link(initial_tempo, "ME");
     link.enable(true);
     link.enableLinkAudio(true);
 
@@ -143,7 +165,7 @@ int main()
      * with channels is received.  Without this, forPeer() returns nullopt
      * and audio is silently never sent. */
     ableton::LinkAudioSink dummySink(link, "ME-Ack", 256);
-    printf("link-subscriber: dummy sink created (triggers peer announcement)\n");
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "dummy sink created (triggers peer announcement)");
 
     /* Publisher sinks for shadow slots (4 per-track + 1 master) */
     SlotPublisher slots[LINK_AUDIO_PUB_SLOT_COUNT];
@@ -159,11 +181,11 @@ int main()
             }
         }
         g_channels_changed = true;
-        printf("link-subscriber: discovered %zu Move channels\n",
-               g_pending_channels.size());
+        LOG_INFO(LINK_SUB_LOG_SOURCE, "discovered %zu Move channels",
+                 g_pending_channels.size());
     });
 
-    printf("link-subscriber: waiting for channel discovery...\n");
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "waiting for channel discovery...");
 
     /* Active sources — managed in main loop only */
     std::vector<ableton::LinkAudioSource> sources;
@@ -193,29 +215,31 @@ int main()
             }
 
             sources.clear();
-            printf("link-subscriber: cleared old sources\n");
+            LOG_INFO(LINK_SUB_LOG_SOURCE, "cleared old sources");
+
+            /* Small delay to let SDK process the unsubscriptions */
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
             sources.reserve(pending.size());
 
             for (const auto& pc : pending) {
-                printf("link-subscriber: subscribing to %s/%s...\n",
-                       pc.peerName.c_str(), pc.name.c_str());
+                LOG_INFO(LINK_SUB_LOG_SOURCE, "subscribing to %s/%s...",
+                         pc.peerName.c_str(), pc.name.c_str());
                 try {
                     sources.emplace_back(link, pc.id,
                         [](ableton::LinkAudioSource::BufferHandle) {
                             g_buffers_received.fetch_add(1, std::memory_order_relaxed);
                         });
-                    printf("link-subscriber: OK\n");
+                    LOG_INFO(LINK_SUB_LOG_SOURCE, "subscription OK");
                 } catch (const std::exception& e) {
-                    printf("link-subscriber: ERROR: %s\n", e.what());
+                    LOG_ERROR(LINK_SUB_LOG_SOURCE, "subscription failed: %s", e.what());
                 } catch (...) {
-                    printf("link-subscriber: ERROR (unknown)\n");
+                    LOG_ERROR(LINK_SUB_LOG_SOURCE, "subscription failed: unknown error");
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
 
-            printf("link-subscriber: %zu sources active\n", sources.size());
+            LOG_INFO(LINK_SUB_LOG_SOURCE, "%zu sources active", sources.size());
         }
 
         /* Try to open publisher shm if not yet available */
@@ -225,7 +249,7 @@ int main()
                 pub_shm = open_pub_shm();
                 pub_shm_retries++;
                 if (pub_shm) {
-                    printf("link-subscriber: publisher shm opened\n");
+                    LOG_INFO(LINK_SUB_LOG_SOURCE, "publisher shm opened");
                     /* Sync read positions to current write positions */
                     for (int i = 0; i < LINK_AUDIO_PUB_SLOT_COUNT; i++) {
                         slots[i].last_read_pos = pub_shm->slots[i].write_pos;
@@ -250,9 +274,9 @@ int main()
                     try {
                         /* maxNumSamples: 128 frames * 2 channels = 256 samples */
                         slots[i].sink = new ableton::LinkAudioSink(link, name, 256);
-                        printf("link-subscriber: created sink %s\n", name);
+                        LOG_INFO(LINK_SUB_LOG_SOURCE, "created sink %s", name);
                     } catch (...) {
-                        printf("link-subscriber: failed to create sink %s\n", name);
+                        LOG_ERROR(LINK_SUB_LOG_SOURCE, "failed to create sink %s", name);
                         slots[i].sink = nullptr;
                     }
                     slots[i].last_read_pos = ps->write_pos;
@@ -266,7 +290,7 @@ int main()
                             snprintf(name, sizeof(name), "ME-Master");
                         else
                             snprintf(name, sizeof(name), "ME-%d", i + 1);
-                        printf("link-subscriber: destroyed sink %s\n", name);
+                        LOG_INFO(LINK_SUB_LOG_SOURCE, "destroyed sink %s", name);
                     }
                     slots[i].was_active = false;
                 }
@@ -330,8 +354,8 @@ int main()
             uint64_t rx = g_buffers_received.load(std::memory_order_relaxed);
             uint64_t tx = g_buffers_published.load(std::memory_order_relaxed);
             if (rx != last_rx_count || tx != last_tx_count) {
-                printf("link-subscriber: rx=%llu tx=%llu\n",
-                       (unsigned long long)rx, (unsigned long long)tx);
+                LOG_INFO(LINK_SUB_LOG_SOURCE, "rx=%llu tx=%llu",
+                         (unsigned long long)rx, (unsigned long long)tx);
                 last_rx_count = rx;
                 last_tx_count = tx;
             }
@@ -351,8 +375,9 @@ int main()
         munmap(pub_shm, sizeof(link_audio_pub_shm_t));
     }
 
-    printf("link-subscriber: shutting down (rx=%llu tx=%llu)\n",
-           (unsigned long long)g_buffers_received.load(),
-           (unsigned long long)g_buffers_published.load());
+    LOG_INFO(LINK_SUB_LOG_SOURCE, "shutting down (rx=%llu tx=%llu)",
+             (unsigned long long)g_buffers_received.load(),
+             (unsigned long long)g_buffers_published.load());
+    unified_log_shutdown();
     return 0;
 }

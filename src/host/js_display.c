@@ -115,17 +115,56 @@ Font* js_display_load_font(const char *filename, int charSpacing) {
         return NULL;
     }
 
-    char charList[256];
-    if (!fgets(charList, sizeof(charList), f)) {
+    /* Read UTF-8 character list — each character may be multi-byte */
+    char charListRaw[1024];
+    if (!fgets(charListRaw, sizeof(charListRaw), f)) {
         fclose(f);
         stbi_image_free(image);
         return NULL;
     }
     fclose(f);
 
-    size_t numChars = strlen(charList);
-    if (numChars > 0 && charList[numChars - 1] == '\n') {
-        charList[--numChars] = '\0';
+    /* Strip trailing newline */
+    size_t rawLen = strlen(charListRaw);
+    if (rawLen > 0 && charListRaw[rawLen - 1] == '\n') {
+        charListRaw[--rawLen] = '\0';
+    }
+
+    /* Decode UTF-8 into Unicode codepoints */
+    int codepoints[512];
+    int numChars = 0;
+    const unsigned char *p = (const unsigned char *)charListRaw;
+    while (*p && numChars < 512) {
+        unsigned int cp = 0;
+        if (*p < 0x80) {
+            cp = *p++;
+        } else if ((*p & 0xE0) == 0xC0) {
+            cp = (*p++ & 0x1F) << 6;
+            if (*p) cp |= (*p++ & 0x3F);
+        } else if ((*p & 0xF0) == 0xE0) {
+            cp = (*p++ & 0x0F) << 12;
+            if (*p) cp |= (*p++ & 0x3F) << 6;
+            if (*p) cp |= (*p++ & 0x3F);
+        } else {
+            p++; /* skip invalid byte */
+            continue;
+        }
+        codepoints[numChars++] = (int)cp;
+    }
+
+    if (numChars == 0) {
+        fprintf(stderr, "ERROR: empty char list in %s\n", charListFilename);
+        stbi_image_free(image);
+        return NULL;
+    }
+
+    /* Horizontal-strip atlas: each char occupies charW columns, height rows.
+     * charW = width / numChars  (all chars have the same cell width in the atlas) */
+    int charW = width / numChars;
+    if (charW <= 0) {
+        fprintf(stderr, "ERROR: font atlas width %d < numChars %d\n", width, numChars);
+        stbi_image_free(image);
+        return NULL;
     }
 
     Font *out = malloc(sizeof(Font));
@@ -137,34 +176,52 @@ Font* js_display_load_font(const char *filename, int charSpacing) {
     out->charSpacing = charSpacing;
     out->is_ttf = 0;
 
-    for (size_t i = 0; i < numChars; i++) {
-        int charIndex = (int)(unsigned char)charList[i];
+    for (int i = 0; i < numChars; i++) {
+        int cp = codepoints[i];
+        if (cp < 0 || cp >= 256) continue; /* skip out-of-range codepoints */
+
+        int x0 = i * charW;
+
+        /* Find actual pixel extent within this cell (auto-trim whitespace) */
         int startX = -1, endX = -1;
-        for (int x = 0; x < width; x++) {
-            int idx = (x + (int)i * width) * 4;
-            if (image[idx + 3] > 0) {
-                if (startX == -1) startX = x;
-                endX = x;
+        for (int x = 0; x < charW; x++) {
+            for (int y = 0; y < height; y++) {
+                int idx = (y * width + x0 + x) * 4;
+                if (image[idx + 3] > 0) {
+                    if (startX == -1) startX = x;
+                    endX = x;
+                    break;
+                }
             }
         }
-        if (startX == -1) continue;
-        int charWidth = endX - startX + 1;
+        if (startX == -1) {
+            /* Blank glyph — insert a space-width entry so cursor advances */
+            FontChar fc = {0};
+            fc.width = charW;
+            fc.height = height;
+            fc.data = calloc(charW * height, 1);
+            out->charData[cp] = fc;
+            continue;
+        }
+        int glyphW = endX - startX + 1;
+
         FontChar fc = {0};
-        fc.width = charWidth;
+        fc.width = glyphW;
         fc.height = height;
-        fc.data = malloc(charWidth * height);
+        fc.data = malloc(glyphW * height);
         if (!fc.data) continue;
+
         for (int y = 0; y < height; y++) {
-            for (int x = 0; x < charWidth; x++) {
-                int idx = ((startX + x) + y * width) * 4;
-                fc.data[y * charWidth + x] = image[idx + 3] > 0 ? 1 : 0;
+            for (int x = 0; x < glyphW; x++) {
+                int idx = (y * width + x0 + startX + x) * 4;
+                fc.data[y * glyphW + x] = image[idx + 3] > 0 ? 1 : 0;
             }
         }
-        out->charData[charIndex] = fc;
+        out->charData[cp] = fc;
     }
 
     stbi_image_free(image);
-    printf("Loaded bitmap font: %s (%zu chars)\n", filename, numChars);
+    printf("Loaded bitmap font: %s (%d chars, cell %dx%d)\n", filename, numChars, charW, height);
     return out;
 }
 
@@ -273,14 +330,9 @@ int js_display_glyph(Font *fnt, char c, int sx, int sy, int color) {
 void js_display_print(int x, int y, const char *string, int color) {
     if (!string) return;
 
-    /* Lazy load font on first use */
+    /* Lazy load bitmap font on first use — single source of truth from generate_font.py */
     if (!g_font) {
-        /* Try TTF first (available on Move hardware) */
-        g_font = js_display_load_ttf_font("/opt/move/Fonts/unifont_jp-14.0.01.ttf", 12);
-        if (!g_font) {
-            /* Fall back to bitmap font */
-            g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
-        }
+        g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
     }
     if (!g_font) return;
 
@@ -292,6 +344,33 @@ void js_display_print(int x, int y, const char *string, int color) {
             cursor = js_display_glyph(g_font, string[i], cursor, y, color);
         }
     }
+}
+
+int js_display_text_width(const char *string) {
+    if (!string) return 0;
+
+    if (!g_font) {
+        g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
+    }
+    if (!g_font) return 0;
+
+    int width = 0;
+    for (size_t i = 0; i < strlen(string); i++) {
+        unsigned char c = (unsigned char)string[i];
+        if (g_font->is_ttf) {
+            int advance = 0, lsb = 0;
+            stbtt_GetCodepointHMetrics(&g_font->ttf_info, c, &advance, &lsb);
+            width += (int)(advance * g_font->ttf_scale);
+        } else {
+            FontChar fc = g_font->charData[c];
+            if (fc.data) {
+                width += fc.width + g_font->charSpacing;
+            } else {
+                width += g_font->charSpacing;
+            }
+        }
+    }
+    return width;
 }
 
 /* ============================================================================
@@ -358,6 +437,16 @@ JSValue js_display_bind_print(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
+JSValue js_display_bind_text_width(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NewInt32(ctx, 0);
+    const char *str = JS_ToCString(ctx, argv[0]);
+    if (!str) return JS_NewInt32(ctx, 0);
+    int w = js_display_text_width(str);
+    JS_FreeCString(ctx, str);
+    return JS_NewInt32(ctx, w);
+}
+
 void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
     JS_SetPropertyStr(ctx, global_obj, "set_pixel",
         JS_NewCFunction(ctx, js_display_bind_set_pixel, "set_pixel", 3));
@@ -369,4 +458,6 @@ void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
         JS_NewCFunction(ctx, js_display_bind_clear_screen, "clear_screen", 0));
     JS_SetPropertyStr(ctx, global_obj, "print",
         JS_NewCFunction(ctx, js_display_bind_print, "print", 4));
+    JS_SetPropertyStr(ctx, global_obj, "text_width",
+        JS_NewCFunction(ctx, js_display_bind_text_width, "text_width", 1));
 }

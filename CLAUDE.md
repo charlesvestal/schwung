@@ -330,6 +330,7 @@ External modules are maintained in separate repositories and available via Modul
 
 **Sound Generators:**
 - `braids` - Mutable Instruments macro oscillator (47 algorithms)
+- `rings` - Mutable Instruments resonator
 - `sf2` - SoundFont synthesizer (TinySoundFont)
 - `dexed` - 6-operator FM synthesizer (Dexed/MSFA)
 - `minijv` - ROM-based PCM rompler emulator
@@ -343,7 +344,6 @@ External modules are maintained in separate repositories and available via Modul
 - `tapedelay` - Tape delay with flutter and saturation
 
 **Utilities/Overtake:**
-- `fourtrack` - Four-track recorder
 - `m8` - Dirtywave M8 Launchpad Pro emulator
 - `sidcontrol` - SID Control for SIDaster III
 - `controller` - MIDI Controller with 16 banks (built-in)
@@ -356,9 +356,9 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 
 ### Shadow Mode Shortcuts
 
-- **Shift+Vol+Knob1**: Toggle shadow mode on/off
-- **Shift+Vol+Track 1-4**: Jump directly to slot settings (works from Move or Shadow UI)
+- **Shift+Vol+Track 1-4**: Open shadow mode / jump to slot settings (works from Move or Shadow UI)
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
+- **Shift+Vol+Step2**: Open Global Settings
 - **Shift+Vol+Jog Click**: Exit overtake module (when in overtake mode)
 
 ### Quantized Sampler
@@ -367,13 +367,13 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 - Choose source: resample (including Move Everything synths), or Move Input (whatever is set in the regular sample flow)
 - Choose duration in bars (or until stopped). Uses MIDI clock to determine tempo, falling back to project tempo if not found.
 - Starts on a note event or pressing play
-- Recordings are saved to `Samples/Move Everything/`
+- Recordings are saved to `Samples/Move Everything/Resampler/YYYY-MM-DD/`
 
 Works for resampling your Move, including Move Everything synths, or a line-in source or microphone. You can use Move's built-in count-in for line-in recordings too.
 
 ### Skipback
 
-Shift+Capture writes the last 30 seconds of audio to disk. Uses the same source as the quantized sampler (resample or Move Input). Saved to `Samples/Move Everything/Skipback/`.
+Shift+Capture writes the last 30 seconds of audio to disk. Uses the same source as the quantized sampler (resample or Move Input). Saved to `Samples/Move Everything/Skipback/YYYY-MM-DD/`.
 
 ### Shadow Architecture
 

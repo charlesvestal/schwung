@@ -14,6 +14,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <malloc.h>
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v1.h"
@@ -62,6 +63,10 @@ typedef struct {
 /* Optional file-based debug tracing for chain parsing/preset save diagnostics. */
 #define CHAIN_DEBUG_FLAG_PATH "/data/UserData/move-anything/chain_debug_on"
 #define CHAIN_DEBUG_LOG_PATH "/data/UserData/move-anything/chain_debug.log"
+#define MOVE_SETTINGS_JSON_PATH "/data/UserData/settings/Settings.json"
+#define CLOCK_SETTINGS_MAX_BYTES (256 * 1024)
+#define CLOCK_SETTINGS_REFRESH_MS 1000
+#define CLOCK_TICK_STALE_MS 750
 
 /* Chord types */
 typedef enum {
@@ -105,10 +110,11 @@ typedef enum {
 
 /* Knob acceleration settings */
 #define KNOB_ACCEL_MIN_MULT 1    /* Multiplier for slow turns */
-#define KNOB_ACCEL_MAX_MULT 8    /* Multiplier for fast turns (floats) */
-#define KNOB_ACCEL_MAX_MULT_INT 3 /* Multiplier for fast turns (ints - smaller to avoid jumps) */
-#define KNOB_ACCEL_SLOW_MS 150   /* Slower than this = min multiplier */
-#define KNOB_ACCEL_FAST_MS 25    /* Faster than this = max multiplier */
+#define KNOB_ACCEL_MAX_MULT 4    /* Multiplier for fast turns (floats) */
+#define KNOB_ACCEL_MAX_MULT_INT 2 /* Multiplier for fast turns (ints) */
+#define KNOB_ACCEL_ENUM_MULT 1   /* Enums: always step by 1 (no acceleration) */
+#define KNOB_ACCEL_SLOW_MS 250   /* Slower than this = min multiplier */
+#define KNOB_ACCEL_FAST_MS 50    /* Faster than this = max multiplier */
 
 /* Knob mapping types */
 typedef enum {
@@ -153,7 +159,7 @@ typedef struct {
 } midi_fx_param_t;
 
 /* State storage size for FX plugins */
-#define MAX_FX_STATE_LEN 2048
+#define MAX_FX_STATE_LEN 8192
 
 /*
  * Format a parameter value for display based on its metadata.
@@ -408,7 +414,7 @@ typedef struct chain_instance {
     char current_midi_fx_modules[MAX_MIDI_FX][MAX_NAME_LEN];
     chain_param_info_t midi_fx_params[MAX_MIDI_FX][MAX_CHAIN_PARAMS];
     int midi_fx_param_counts[MAX_MIDI_FX];
-    char midi_fx_ui_hierarchy[MAX_MIDI_FX][2048];  /* Cached ui_hierarchy JSON */
+    char midi_fx_ui_hierarchy[MAX_MIDI_FX][8192];  /* Cached ui_hierarchy JSON */
 
     /* Knob mapping state */
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
@@ -597,12 +603,20 @@ static int g_source_ui_active = 0;
 /* Component UI mode - when set, bypass knob CC macro mappings */
 /* 0 = normal (macro mode), 1 = synth, 2 = fx1, 3 = fx2 */
 static int g_component_ui_mode = 0;
+
+/* Clock availability state for sync-aware MIDI FX (arp, etc.). */
+static int g_clock_output_enabled = 1;              /* midiClockMode == "output" */
+static int g_clock_transport_running = 0;           /* Start/Continue seen without Stop */
+static uint64_t g_clock_last_tick_ms = 0;           /* Last 0xF8 tick timestamp */
+static uint64_t g_clock_next_refresh_ms = 0;        /* Settings.json refresh gate */
+
 /* Our host API for sub-plugins (forwards to main host) */
 static host_api_v1_t g_subplugin_host_api;
 static host_api_v1_t g_source_host_api;
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source);
 static int midi_source_send(const uint8_t *msg, int len);
+static int chain_get_clock_status(void);
 static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
@@ -611,6 +625,7 @@ static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char 
 static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
+static void chain_update_clock_runtime(const uint8_t *msg, int len);
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -641,6 +656,107 @@ static uint64_t get_time_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int chain_read_clock_output_enabled(void) {
+    FILE *f = fopen(MOVE_SETTINGS_JSON_PATH, "r");
+    if (!f) return 1;  /* Avoid false warnings if settings file is unavailable. */
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > CLOCK_SETTINGS_MAX_BYTES) {
+        fclose(f);
+        return 1;
+    }
+
+    char *json = malloc((size_t)size + 1);
+    if (!json) {
+        fclose(f);
+        return 1;
+    }
+
+    size_t nread = fread(json, 1, (size_t)size, f);
+    if (nread == 0 && ferror(f)) {
+        free(json);
+        fclose(f);
+        return 1;
+    }
+    json[nread] = '\0';
+    fclose(f);
+
+    const char *key = "\"midiClockMode\"";
+    char *pos = strstr(json, key);
+    if (!pos) {
+        free(json);
+        return 1;
+    }
+
+    pos = strchr(pos + strlen(key), ':');
+    if (!pos) {
+        free(json);
+        return 1;
+    }
+
+    while (*pos == ':' || *pos == ' ' || *pos == '\t' || *pos == '\n' || *pos == '\r') pos++;
+    if (*pos != '"') {
+        free(json);
+        return 1;
+    }
+    pos++;
+
+    char mode[32];
+    int i = 0;
+    while (*pos && *pos != '"' && i < (int)sizeof(mode) - 1) {
+        mode[i++] = *pos++;
+    }
+    mode[i] = '\0';
+
+    free(json);
+
+    if (strcmp(mode, "output") == 0) return 1;
+    if (strcmp(mode, "off") == 0) return 0;
+    if (strcmp(mode, "input") == 0) return 0;
+    return 1;  /* Unknown value: avoid false warnings. */
+}
+
+static void chain_refresh_clock_output_enabled(uint64_t now_ms) {
+    if (now_ms < g_clock_next_refresh_ms) return;
+    g_clock_output_enabled = chain_read_clock_output_enabled();
+    g_clock_next_refresh_ms = now_ms + CLOCK_SETTINGS_REFRESH_MS;
+}
+
+static int chain_get_clock_status(void) {
+    uint64_t now_ms = get_time_ms();
+    chain_refresh_clock_output_enabled(now_ms);
+
+    if (!g_clock_output_enabled) {
+        return MOVE_CLOCK_STATUS_UNAVAILABLE;
+    }
+
+    if (g_clock_transport_running &&
+        g_clock_last_tick_ms > 0 &&
+        (now_ms - g_clock_last_tick_ms) <= CLOCK_TICK_STALE_MS) {
+        return MOVE_CLOCK_STATUS_RUNNING;
+    }
+
+    return MOVE_CLOCK_STATUS_STOPPED;
+}
+
+static void chain_update_clock_runtime(const uint8_t *msg, int len) {
+    if (!msg || len < 1) return;
+
+    uint8_t status = msg[0];
+    uint64_t now_ms = get_time_ms();
+
+    if (status == 0xF8) {          /* MIDI Clock tick */
+        g_clock_last_tick_ms = now_ms;
+    } else if (status == 0xFA || status == 0xFB) {  /* Start / Continue */
+        g_clock_transport_running = 1;
+        if (g_clock_last_tick_ms == 0) g_clock_last_tick_ms = now_ms;
+    } else if (status == 0xFC) {   /* Stop */
+        g_clock_transport_running = 0;
+    }
 }
 
 /* Calculate knob acceleration multiplier based on time between events */
@@ -1314,7 +1430,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
         return -1;
     }
 
-    midi_fx_api_v1_t *api = init_fn(&g_subplugin_host_api);
+    midi_fx_api_v1_t *api = init_fn(&inst->subplugin_host_api);
     if (!api || api->api_version != MIDI_FX_API_VERSION) {
         snprintf(msg, sizeof(msg), "MIDI FX %s API version mismatch", fx_name);
         v2_chain_log(inst, msg);
@@ -1357,7 +1473,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
             fseek(f, 0, SEEK_END);
             long size = ftell(f);
             fseek(f, 0, SEEK_SET);
-            if (size > 0 && size < 8192) {
+            if (size > 0 && size < 32768) {
                 char *json = malloc(size + 1);
                 if (json) {
                     { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
@@ -1375,7 +1491,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
                                 obj_end++;
                             }
                             int len = (int)(obj_end - obj_start);
-                            if (len > 0 && len < 2047) {
+                            if (len > 0 && len < 8191) {
                                 strncpy(inst->midi_fx_ui_hierarchy[slot], obj_start, len);
                                 inst->midi_fx_ui_hierarchy[slot][len] = '\0';
                             }
@@ -3169,6 +3285,7 @@ static void send_note_to_synth(const uint8_t *msg, int len, int source, int inte
 
 static void plugin_on_midi(const uint8_t *msg, int len, int source) {
     if (len < 1) return;
+    chain_update_clock_runtime(msg, len);
 
     /* Handle record button (CC 118) - toggle recording on press */
     /* This must be before the synth check so recording works even without a patch loaded */
@@ -3206,8 +3323,10 @@ static void plugin_on_midi(const uint8_t *msg, int len, int source) {
                     int accel = calc_knob_accel(i);
                     int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
 
-                    /* Cap acceleration for ints/enums to avoid jumping too far */
-                    if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                    /* Cap acceleration: enums never accelerate, ints limited */
+                    if (pinfo->type == KNOB_TYPE_ENUM) {
+                        accel = KNOB_ACCEL_ENUM_MULT;
+                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                         accel = KNOB_ACCEL_MAX_MULT_INT;
                     }
 
@@ -3787,6 +3906,8 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
     memcpy(&g_source_host_api, host, sizeof(host_api_v1_t));
     g_source_host_api.midi_send_internal = midi_source_send;
     g_source_host_api.midi_send_external = midi_source_send;
+    g_subplugin_host_api.get_clock_status = chain_get_clock_status;
+    g_source_host_api.get_clock_status = chain_get_clock_status;
 
     /* Initialize our plugin API struct */
     memset(&g_plugin_api, 0, sizeof(g_plugin_api));
@@ -3848,6 +3969,8 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
         inst->host = g_host;
         memcpy(&inst->subplugin_host_api, g_host, sizeof(host_api_v1_t));
         memcpy(&inst->source_host_api, g_host, sizeof(host_api_v1_t));
+        inst->subplugin_host_api.get_clock_status = chain_get_clock_status;
+        inst->source_host_api.get_clock_status = chain_get_clock_status;
         /* Note: MIDI source routing would need instance-specific handling for full v2 */
     }
 
@@ -5705,6 +5828,7 @@ static void inst_send_note_to_synth(chain_instance_t *inst, const uint8_t *msg, 
 static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || len < 1) return;
+    chain_update_clock_runtime(msg, len);
 
     /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
      * Skip synth, MIDI FX, and knob handling - this MIDI is from a
@@ -5763,8 +5887,15 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                         }
                     }
 
-                    /* Relative encoder: apply acceleration to base step */
+                    /* Cap acceleration: enums never accelerate, ints limited */
                     int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
+                    if (pinfo->type == KNOB_TYPE_ENUM) {
+                        accel = KNOB_ACCEL_ENUM_MULT;
+                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                        accel = KNOB_ACCEL_MAX_MULT_INT;
+                    }
+
+                    /* Relative encoder: apply acceleration to base step */
                     float base_step = (pinfo->step > 0) ? pinfo->step
                         : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
                     float delta = 0.0f;
@@ -5911,6 +6042,17 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 fclose(mf);
             }
         }
+    }
+    else if (strcmp(key, "clear") == 0) {
+        /* Clear all DSP (synth + FX) without loading anything new.
+         * Used by two-pass set switching to free memory before loading. */
+        v2_synth_panic(inst);
+        v2_unload_all_midi_fx(inst);
+        v2_unload_all_audio_fx(inst);
+        v2_unload_synth(inst);
+        inst->current_patch = -1;
+        inst->dirty = 0;
+        malloc_trim(0);
     }
     /* Master preset commands */
     else if (strcmp(key, "save_master_preset") == 0) {
@@ -6162,15 +6304,20 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         int accel = KNOB_ACCEL_MIN_MULT;
                         if (last > 0) {
                             uint64_t elapsed = now - last;
-                            if (elapsed < 50) accel = KNOB_ACCEL_MAX_MULT;
-                            else if (elapsed < 100) accel = 4;
-                            else if (elapsed < 200) accel = 2;
+                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
+                                accel = KNOB_ACCEL_MAX_MULT;
+                            } else if (elapsed < KNOB_ACCEL_SLOW_MS) {
+                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
+                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
+                            }
                         }
 
-                        /* Calculate step based on type, with acceleration */
+                        /* Cap acceleration: enums never accelerate, ints limited */
                         int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                        /* Cap acceleration for ints to avoid jumping too far */
-                        if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
+                        if (pinfo->type == KNOB_TYPE_ENUM) {
+                            accel = KNOB_ACCEL_ENUM_MULT;
+                        } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
                             accel = KNOB_ACCEL_MAX_MULT_INT;
                         }
                         /* Use step from param metadata, or 0.01 default for shadow adjust */
@@ -6974,5 +7121,3 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
         }
     }
 }
-
-

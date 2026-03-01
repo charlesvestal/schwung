@@ -13,6 +13,10 @@ docs/.DS_Store
 # Test patches (kept locally, not committed)
 /src/modules/chain/test_patches/
 
+# Build caches
+build/cache/
+/.cache/
+
 # Binary files that shouldn't be committed
 *.wav
 *.asd

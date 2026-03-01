@@ -3,6 +3,10 @@
 
 #include <stdarg.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Log levels */
 #define LOG_LEVEL_ERROR 0
 #define LOG_LEVEL_WARN  1
@@ -32,5 +36,9 @@ void unified_log_crash(const char *msg);
 #define LOG_WARN(src, ...)  unified_log(src, LOG_LEVEL_WARN, __VA_ARGS__)
 #define LOG_INFO(src, ...)  unified_log(src, LOG_LEVEL_INFO, __VA_ARGS__)
 #define LOG_DEBUG(src, ...) unified_log(src, LOG_LEVEL_DEBUG, __VA_ARGS__)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* UNIFIED_LOG_H */

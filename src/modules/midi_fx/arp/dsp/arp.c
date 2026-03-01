@@ -104,6 +104,38 @@ typedef struct {
 
 static const host_api_v1_t *g_host = NULL;
 
+static int arp_query_clock_status(const arp_instance_t *inst) {
+    if (g_host && g_host->get_clock_status) {
+        return g_host->get_clock_status();
+    }
+
+    /* Fallback for hosts that don't expose clock status. */
+    if (inst && inst->clock_running) {
+        return MOVE_CLOCK_STATUS_RUNNING;
+    }
+    return MOVE_CLOCK_STATUS_STOPPED;
+}
+
+static int arp_get_sync_warning(arp_instance_t *inst, char *buf, int buf_len) {
+    if (!inst || !buf || buf_len < 1) return -1;
+
+    if (inst->sync_mode != SYNC_CLOCK) {
+        buf[0] = '\0';
+        return 0;
+    }
+
+    int status = arp_query_clock_status(inst);
+    if (status == MOVE_CLOCK_STATUS_UNAVAILABLE) {
+        return snprintf(buf, buf_len, "Enable MIDI Clock Out in Move settings");
+    }
+    if (status == MOVE_CLOCK_STATUS_STOPPED) {
+        return snprintf(buf, buf_len, "Clock out enabled, transport stopped");
+    }
+
+    buf[0] = '\0';
+    return 0;
+}
+
 static void arp_calc_samples_per_step(arp_instance_t *inst, int sample_rate) {
     if (inst->bpm <= 0) inst->bpm = DEFAULT_BPM;
     if (inst->division <= 0.0f) inst->division = DEFAULT_DIVISION;
@@ -514,6 +546,9 @@ static int arp_get_param(void *instance, const char *key, char *buf, int buf_len
     }
     else if (strcmp(key, "sync") == 0) {
         return snprintf(buf, buf_len, "%s", inst->sync_mode == SYNC_CLOCK ? "clock" : "internal");
+    }
+    else if (strcmp(key, "error") == 0) {
+        return arp_get_sync_warning(inst, buf, buf_len);
     }
     else if (strcmp(key, "state") == 0) {
         const char *mode_str = "off";

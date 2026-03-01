@@ -26,6 +26,10 @@ jobs:
           echo "$VERSION" > src/host/version.txt
           echo "Set version to $VERSION"
 
+      - name: Fetch Move Manual
+        run: |
+          ./scripts/fetch_move_manual.sh || echo "Warning: manual fetch failed, continuing without bundled manual"
+
       - name: Build with Docker
         run: |
           docker build -t move-anything-builder .

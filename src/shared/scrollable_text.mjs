@@ -6,6 +6,8 @@
  * past all text.
  */
 
+import { drawArrowUp, drawArrowDown } from './menu_layout.mjs';
+
 const SCREEN_WIDTH = 128;
 const CHAR_WIDTH = 6;
 const LINE_HEIGHT = 10;
@@ -49,13 +51,14 @@ export function wrapText(text, maxChars = MAX_CHARS_PER_LINE) {
  * @param {number} options.visibleLines - Number of visible lines (default 4)
  * @returns {Object} State object
  */
-export function createScrollableText({ lines, actionLabel, visibleLines = 4 }) {
+export function createScrollableText({ lines, actionLabel, visibleLines = 4, onActionSelected }) {
     return {
         lines: lines || [],
         actionLabel: actionLabel || 'OK',
         visibleLines,
         scrollOffset: 0,
-        actionSelected: false
+        actionSelected: false,
+        onActionSelected: onActionSelected || null
     };
 }
 
@@ -76,6 +79,9 @@ export function handleScrollableTextJog(state, delta) {
         if (state.scrollOffset >= maxScroll) {
             /* At end of text, select action */
             state.actionSelected = true;
+            if (state.onActionSelected) {
+                state.onActionSelected(state.actionLabel);
+            }
             return true;
         }
         state.scrollOffset++;
@@ -133,33 +139,20 @@ export function drawScrollableText({ state, topY, bottomY, actionY }) {
         drawArrowDown(indicatorX, bottomY - 4);
     }
 
-    /* Draw divider above action button */
-    fill_rect(0, actionY - 6, SCREEN_WIDTH, 1, 1);
+    /* Draw action button (skip if actionY < 0) */
+    if (actionY >= 0) {
+        fill_rect(0, actionY - 6, SCREEN_WIDTH, 1, 1);
 
-    /* Draw action button */
-    const buttonText = `[${actionLabel}]`;
-    const buttonWidth = buttonText.length * CHAR_WIDTH + 8;
-    const buttonX = (SCREEN_WIDTH - buttonWidth) / 2;
+        const buttonText = `[${actionLabel}]`;
+        const buttonWidth = buttonText.length * CHAR_WIDTH + 8;
+        const buttonX = (SCREEN_WIDTH - buttonWidth) / 2;
 
-    if (actionSelected) {
-        fill_rect(buttonX - 2, actionY - 2, buttonWidth + 4, 14, 1);
-        print(buttonX + 4, actionY, buttonText, 0);
-    } else {
-        print(buttonX + 4, actionY, buttonText, 1);
+        if (actionSelected) {
+            fill_rect(buttonX - 2, actionY - 2, buttonWidth + 4, 14, 1);
+            print(buttonX + 4, actionY, buttonText, 0);
+        } else {
+            print(buttonX + 4, actionY, buttonText, 1);
+        }
     }
 }
 
-/* Arrow drawing helpers */
-function drawArrowUp(x, y) {
-    set_pixel(x + 2, y, 1);
-    set_pixel(x + 1, y + 1, 1);
-    set_pixel(x + 3, y + 1, 1);
-    for (let i = 0; i < 5; i++) set_pixel(x + i, y + 2, 1);
-}
-
-function drawArrowDown(x, y) {
-    for (let i = 0; i < 5; i++) set_pixel(x + i, y, 1);
-    set_pixel(x + 1, y + 1, 1);
-    set_pixel(x + 3, y + 1, 1);
-    set_pixel(x + 2, y + 2, 1);
-}

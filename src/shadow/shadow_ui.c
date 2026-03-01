@@ -36,6 +36,7 @@ static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
 static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
+static shadow_overlay_state_t *shadow_overlay = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -108,6 +109,17 @@ static int open_shadow_shm(void) {
             shadow_screenreader = NULL;
         } else {
             unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow screen reader shm mapped: %p", shadow_screenreader);
+        }
+    }
+
+    fd = shm_open(SHM_SHADOW_OVERLAY, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_overlay = (shadow_overlay_state_t *)mmap(NULL, SHADOW_OVERLAY_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_overlay == MAP_FAILED) {
+            shadow_overlay = NULL;
+        } else {
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow overlay shm mapped: %p", shadow_overlay);
         }
     }
 
@@ -352,6 +364,20 @@ static JSValue js_shadow_request_exit(JSContext *ctx, JSValueConst this_val, int
     return JS_UNDEFINED;
 }
 
+/* shadow_control_restart() -> void
+ * Signal the shim to restart Move (e.g. after a core update) */
+static JSValue js_shadow_control_restart(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)ctx;
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    if (shadow_control) {
+        shadow_control->restart_move = 1;
+    }
+    return JS_UNDEFINED;
+}
+
 /* shadow_load_ui_module(path) -> bool
  * Loads and evaluates a JS file (typically ui_chain.js) in the current context.
  * The loaded module can set globalThis.chain_ui to provide init/tick/onMidi functions.
@@ -395,6 +421,82 @@ static JSValue js_shadow_load_ui_module(JSContext *ctx, JSValueConst this_val, i
     return ret == 0 ? JS_TRUE : JS_FALSE;
 }
 
+#define SHADOW_PARAM_POLL_US 200
+#define SHADOW_PARAM_DEFAULT_TIMEOUT_MS 100
+
+static uint32_t shadow_param_request_seq = 0;
+
+static int shadow_param_timeout_to_polls(int timeout_ms) {
+    if (timeout_ms <= 0) timeout_ms = SHADOW_PARAM_DEFAULT_TIMEOUT_MS;
+    long total_us = (long)timeout_ms * 1000L;
+    int polls = (int)(total_us / SHADOW_PARAM_POLL_US);
+    if (polls < 1) polls = 1;
+    return polls;
+}
+
+static uint32_t shadow_param_next_request_id(void) {
+    shadow_param_request_seq++;
+    if (shadow_param_request_seq == 0) {
+        shadow_param_request_seq = 1;
+    }
+    return shadow_param_request_seq;
+}
+
+static int shadow_param_wait_idle(int timeout_ms) {
+    int timeout = shadow_param_timeout_to_polls(timeout_ms);
+    while (shadow_param->request_type != 0 && timeout > 0) {
+        usleep(SHADOW_PARAM_POLL_US);
+        timeout--;
+    }
+    return shadow_param->request_type == 0;
+}
+
+static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
+    int timeout = shadow_param_timeout_to_polls(timeout_ms);
+    while (timeout > 0) {
+        if (shadow_param->response_ready && shadow_param->response_id == req_id) {
+            return shadow_param->error ? -1 : 1;
+        }
+        usleep(SHADOW_PARAM_POLL_US);
+        timeout--;
+    }
+    return 0;
+}
+
+static int shadow_set_param_common(int slot, const char *key, const char *value, int timeout_ms) {
+    const int overtake_fire_and_forget = (shadow_control && shadow_control->overtake_mode >= 2);
+
+    if (!overtake_fire_and_forget) {
+        if (!shadow_param_wait_idle(timeout_ms)) {
+            return 0;
+        }
+    }
+
+    uint32_t req_id = shadow_param_next_request_id();
+
+    /* Copy key and value to shared memory */
+    strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
+    shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
+    strncpy(shadow_param->value, value, SHADOW_PARAM_VALUE_LEN - 1);
+    shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+
+    /* Set up request */
+    shadow_param->slot = (uint8_t)slot;
+    shadow_param->response_ready = 0;
+    shadow_param->error = 0;
+    shadow_param->response_id = 0;
+    shadow_param->request_id = req_id;
+    shadow_param->request_type = 1;  /* SET */
+
+    /* In overtake module mode, keep this fire-and-forget so rapid encoder
+     * streams do not block UI rendering. */
+    if (overtake_fire_and_forget) {
+        return 1;
+    }
+
+    return shadow_param_wait_response(req_id, timeout_ms) > 0;
+}
+
 /* shadow_set_param(slot, key, value) -> bool
  * Sets a parameter on the chain instance for the given slot.
  * Returns true on success, false on error.
@@ -415,45 +517,43 @@ static JSValue js_shadow_set_param(JSContext *ctx, JSValueConst this_val, int ar
         return JS_FALSE;
     }
 
-    /* Copy key and value to shared memory */
-    strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
-    shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
-    strncpy(shadow_param->value, value, SHADOW_PARAM_VALUE_LEN - 1);
-    shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+    int ok = shadow_set_param_common(slot, key, value, SHADOW_PARAM_DEFAULT_TIMEOUT_MS);
 
     JS_FreeCString(ctx, key);
     JS_FreeCString(ctx, value);
 
-    /* Set up request */
-    shadow_param->slot = (uint8_t)slot;
-    shadow_param->response_ready = 0;
-    shadow_param->error = 0;
-    shadow_param->request_type = 1;  /* SET */
+    return ok ? JS_TRUE : JS_FALSE;
+}
 
-    /* In overtake mode, fire-and-forget: don't block waiting for the shim
-     * to acknowledge.  The shim will process the SET on its next ioctl.
-     * This prevents rapid knob turns (many CCs → many setParams) from
-     * stalling the UI thread.  If another setParam overwrites the SHM
-     * before the shim processes it, last-writer-wins — correct for knobs. */
-    if (shadow_control && shadow_control->overtake_mode >= 2) {
-        return JS_TRUE;
-    }
+/* shadow_set_param_timeout(slot, key, value, timeout_ms) -> bool
+ * Timeout-aware variant used by slower operations like load_file.
+ */
+static JSValue js_shadow_set_param_timeout(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_param || argc < 4) return JS_FALSE;
 
-    /* Normal mode: wait for response with timeout.
-     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
-     * Use 200 µs sleep for tighter polling — reduces per-call latency
-     * while keeping CPU low. */
-    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
-    while (!shadow_param->response_ready && timeout > 0) {
-        usleep(200);
-        timeout--;
-    }
+    int slot = 0;
+    if (JS_ToInt32(ctx, &slot, argv[0])) return JS_FALSE;
+    if (slot < 0 || slot >= SHADOW_UI_SLOTS) return JS_FALSE;
 
-    if (!shadow_param->response_ready || shadow_param->error) {
+    int32_t timeout_ms = SHADOW_PARAM_DEFAULT_TIMEOUT_MS;
+    if (JS_ToInt32(ctx, &timeout_ms, argv[3])) return JS_FALSE;
+    if (timeout_ms <= 0) timeout_ms = SHADOW_PARAM_DEFAULT_TIMEOUT_MS;
+
+    const char *key = JS_ToCString(ctx, argv[1]);
+    if (!key) return JS_FALSE;
+    const char *value = JS_ToCString(ctx, argv[2]);
+    if (!value) {
+        JS_FreeCString(ctx, key);
         return JS_FALSE;
     }
 
-    return JS_TRUE;
+    int ok = shadow_set_param_common(slot, key, value, (int)timeout_ms);
+
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, value);
+
+    return ok ? JS_TRUE : JS_FALSE;
 }
 
 /* shadow_get_param(slot, key) -> string or null
@@ -471,6 +571,13 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     const char *key = JS_ToCString(ctx, argv[1]);
     if (!key) return JS_NULL;
 
+    if (!shadow_param_wait_idle(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
+        JS_FreeCString(ctx, key);
+        return JS_NULL;
+    }
+
+    uint32_t req_id = shadow_param_next_request_id();
+
     /* Copy key to shared memory */
     strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
     shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
@@ -483,19 +590,11 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     shadow_param->slot = (uint8_t)slot;
     shadow_param->response_ready = 0;
     shadow_param->error = 0;
+    shadow_param->response_id = 0;
+    shadow_param->request_id = req_id;
     shadow_param->request_type = 2;  /* GET */
 
-    /* Wait for response with timeout.
-     * The shim processes requests during ioctl (~344 Hz = ~2.9 ms).
-     * Use 200 µs sleep for tighter polling — reduces per-call latency
-     * while keeping CPU low. */
-    int timeout = 500;  /* 500 × 200 µs = 100 ms max */
-    while (!shadow_param->response_ready && timeout > 0) {
-        usleep(200);
-        timeout--;
-    }
-
-    if (!shadow_param->response_ready || shadow_param->error) {
+    if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0) {
         return JS_NULL;
     }
 
@@ -679,6 +778,24 @@ static int run_command(const char *const argv[]) {
     return -1;
 }
 
+/* Fire-and-forget: fork + setsid, parent returns immediately.
+ * Child detaches from session and redirects stdio to /dev/null. */
+static void run_command_background(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid != 0) return;          /* parent (or error) */
+    /* child */
+    setsid();
+    int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+        dup2(devnull, STDIN_FILENO);
+        dup2(devnull, STDOUT_FILENO);
+        dup2(devnull, STDERR_FILENO);
+        if (devnull > 2) close(devnull);
+    }
+    execvp(argv[0], (char *const *)argv);
+    _exit(127);
+}
+
 static int validate_path(const char *path) {
     if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
     if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
@@ -762,7 +879,7 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     shadow_ui_log_line("host_http_download: path validated, running curl");
 
     const char *argv_cmd[] = {
-        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "600",
+        CURL_PATH, "-fsSLk", "--connect-timeout", "5", "--max-time", "15",
         "-o", dest_path, url, NULL
     };
     int result = run_command(argv_cmd);
@@ -773,6 +890,44 @@ static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
     JS_FreeCString(ctx, dest_path);
 
     return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_http_download_background(url, dest_path) -> void
+ * Same as host_http_download but fires curl in background (no waitpid).
+ * Returns immediately; curl writes the file independently. */
+static JSValue js_host_http_download_background(JSContext *ctx, JSValueConst this_val,
+                                                int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+
+    const char *url = JS_ToCString(ctx, argv[0]);
+    const char *dest_path = JS_ToCString(ctx, argv[1]);
+    if (!url || !dest_path) {
+        if (url) JS_FreeCString(ctx, url);
+        if (dest_path) JS_FreeCString(ctx, dest_path);
+        return JS_UNDEFINED;
+    }
+
+    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_UNDEFINED;
+    }
+    if (!validate_path(dest_path)) {
+        JS_FreeCString(ctx, url);
+        JS_FreeCString(ctx, dest_path);
+        return JS_UNDEFINED;
+    }
+
+    const char *argv_cmd[] = {
+        CURL_PATH, "-fsSLk", "--connect-timeout", "10", "--max-time", "60",
+        "-o", dest_path, url, NULL
+    };
+    run_command_background(argv_cmd);
+
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, dest_path);
+    return JS_UNDEFINED;
 }
 
 /* host_extract_tar(tar_path, dest_dir) -> bool */
@@ -811,6 +966,99 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
     return (result == 0) ? JS_TRUE : JS_FALSE;
 }
 
+/* host_extract_tar_strip(tar_path, dest_dir, strip_components) -> bool
+ * Like host_extract_tar but with --strip-components for tarballs with a top-level dir */
+static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) {
+        return JS_FALSE;
+    }
+
+    const char *tar_path = JS_ToCString(ctx, argv[0]);
+    const char *dest_dir = JS_ToCString(ctx, argv[1]);
+    int strip = 0;
+    JS_ToInt32(ctx, &strip, argv[2]);
+
+    if (!tar_path || !dest_dir) {
+        if (tar_path) JS_FreeCString(ctx, tar_path);
+        if (dest_dir) JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate paths */
+    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
+        fprintf(stderr, "host_extract_tar_strip: invalid path(s)\n");
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Validate strip range */
+    if (strip < 0 || strip > 5) {
+        fprintf(stderr, "host_extract_tar_strip: invalid strip value: %d\n", strip);
+        JS_FreeCString(ctx, tar_path);
+        JS_FreeCString(ctx, dest_dir);
+        return JS_FALSE;
+    }
+
+    /* Build tar command */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" --strip-components=%d 2>&1",
+             tar_path, dest_dir, strip);
+
+    int result = system(cmd);
+
+    JS_FreeCString(ctx, tar_path);
+    JS_FreeCString(ctx, dest_dir);
+
+    return (result == 0) ? JS_TRUE : JS_FALSE;
+}
+
+/* host_system_cmd(cmd) -> int (exit code, -1 on error)
+ * Run a shell command with allowlist validation.
+ * Commands must start with an allowed prefix for safety. */
+static JSValue js_host_system_cmd(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) {
+        return JS_NewInt32(ctx, -1);
+    }
+
+    const char *cmd = JS_ToCString(ctx, argv[0]);
+    if (!cmd) {
+        return JS_NewInt32(ctx, -1);
+    }
+
+    /* Validate command starts with an allowed prefix */
+    static const char *allowed_prefixes[] = {
+        "tar ", "cp ", "mv ", "mkdir ", "rm ", "ls ", "test ", "chmod ", "sh ",
+        NULL
+    };
+
+    int allowed = 0;
+    for (int i = 0; allowed_prefixes[i]; i++) {
+        if (strncmp(cmd, allowed_prefixes[i], strlen(allowed_prefixes[i])) == 0) {
+            allowed = 1;
+            break;
+        }
+    }
+
+    if (!allowed) {
+        fprintf(stderr, "host_system_cmd: command not allowed: %.40s...\n", cmd);
+        JS_FreeCString(ctx, cmd);
+        return JS_NewInt32(ctx, -1);
+    }
+
+    int result = system(cmd);
+    JS_FreeCString(ctx, cmd);
+
+    if (result == -1) {
+        return JS_NewInt32(ctx, -1);
+    }
+    return JS_NewInt32(ctx, WEXITSTATUS(result));
+}
+
 /* host_remove_dir(path) -> bool */
 static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -831,9 +1079,12 @@ static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
         return JS_FALSE;
     }
 
-    /* Additional safety: must be within modules directory */
-    if (strncmp(path, MODULES_DIR, strlen(MODULES_DIR)) != 0) {
-        fprintf(stderr, "host_remove_dir: path must be within modules dir: %s\n", path);
+    /* Additional safety: must be within base directory (modules, staging, backup, tmp) */
+    if (strncmp(path, MODULES_DIR, strlen(MODULES_DIR)) != 0 &&
+        strncmp(path, BASE_DIR "/update-staging", strlen(BASE_DIR "/update-staging")) != 0 &&
+        strncmp(path, BASE_DIR "/update-backup", strlen(BASE_DIR "/update-backup")) != 0 &&
+        strncmp(path, BASE_DIR "/tmp", strlen(BASE_DIR "/tmp")) != 0) {
+        fprintf(stderr, "host_remove_dir: path not allowed: %s\n", path);
         JS_FreeCString(ctx, path);
         return JS_FALSE;
     }
@@ -1016,7 +1267,7 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
     int idx = 0;
 
     /* Subdirectories to scan */
-    const char *subdirs[] = { "", "sound_generators", "audio_fx", "midi_fx", "utilities", NULL };
+    const char *subdirs[] = { "", "sound_generators", "audio_fx", "midi_fx", "utilities", "overtake", "other", NULL };
 
     for (int s = 0; subdirs[s] != NULL; s++) {
         char dir_path[512];
@@ -1203,6 +1454,68 @@ static JSValue js_display_mirror_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->display_mirror != 0);
 }
 
+/* set_pages_set(enabled) - Write to shared memory + persist to features.json */
+static JSValue js_set_pages_set(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->set_pages_enabled = enabled ? 1 : 0;
+
+    /* Persist to features.json */
+    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    char buf[512];
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        len = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    buf[len] = '\0';
+
+    char *key = strstr(buf, "\"set_pages_enabled\"");
+    if (key) {
+        char *colon = strchr(key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            char newbuf[512];
+            int prefix_len = (int)(colon - buf);
+            int suffix_start = (int)(val_end - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
+                     prefix_len, buf,
+                     enabled ? "true" : "false",
+                     buf + suffix_start);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else if (len > 0) {
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            char newbuf[512];
+            int prefix_len = (int)(brace - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"set_pages_enabled\": %s\n}",
+                     prefix_len, buf, enabled ? "true" : "false");
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* set_pages_get() -> bool - Read from shared memory */
+static JSValue js_set_pages_get(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 1);
+    return JS_NewBool(ctx, shadow_control->set_pages_enabled != 0);
+}
+
 /* tts_set_speed(speed) - Write to shared memory */
 static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -1308,7 +1621,31 @@ static JSValue js_tts_get_engine(JSContext *ctx, JSValueConst this_val,
     return JS_NewString(ctx, shadow_control->tts_engine == 1 ? "flite" : "espeak");
 }
 
-/* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off) */
+/* tts_set_debounce(ms) - Write debounce time to shared memory */
+static JSValue js_tts_set_debounce(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int ms = 0;
+    JS_ToInt32(ctx, &ms, argv[0]);
+    if (ms < 0) ms = 0;
+    if (ms > 1000) ms = 1000;
+
+    shadow_control->tts_debounce_ms = (uint16_t)ms;
+
+    return JS_UNDEFINED;
+}
+
+/* tts_get_debounce() -> int - Read debounce time from shared memory */
+static JSValue js_tts_get_debounce(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 300);
+    return JS_NewInt32(ctx, shadow_control->tts_debounce_ms);
+}
+
+/* overlay_knobs_set_mode(mode) - Write to shared memory (0=shift, 1=jog_touch, 2=off, 3=native) */
 static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv) {
     (void)this_val;
@@ -1317,7 +1654,7 @@ static JSValue js_overlay_knobs_set_mode(JSContext *ctx, JSValueConst this_val,
     int mode = 0;
     JS_ToInt32(ctx, &mode, argv[0]);
     if (mode < 0) mode = 0;
-    if (mode > 2) mode = 2;
+    if (mode > 3) mode = 3;
     shadow_control->overlay_knobs_mode = (uint8_t)mode;
 
     return JS_UNDEFINED;
@@ -1329,6 +1666,83 @@ static JSValue js_overlay_knobs_get_mode(JSContext *ctx, JSValueConst this_val,
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
     return JS_NewInt32(ctx, shadow_control->overlay_knobs_mode);
+}
+
+/* === Overlay state bridge functions === */
+
+static JSValue js_shadow_get_overlay_sequence(JSContext *ctx, JSValueConst this_val,
+                                               int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_overlay) return JS_NewUint32(ctx, 0);
+    return JS_NewUint32(ctx, shadow_overlay->sequence);
+}
+
+static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    JSValue obj = JS_NewObject(ctx);
+    if (!shadow_overlay) {
+        JS_SetPropertyStr(ctx, obj, "type", JS_NewInt32(ctx, 0));
+        return obj;
+    }
+
+    JS_SetPropertyStr(ctx, obj, "type", JS_NewInt32(ctx, shadow_overlay->overlay_type));
+    JS_SetPropertyStr(ctx, obj, "samplerState", JS_NewInt32(ctx, shadow_overlay->sampler_state));
+    JS_SetPropertyStr(ctx, obj, "samplerSource", JS_NewInt32(ctx, shadow_overlay->sampler_source));
+    JS_SetPropertyStr(ctx, obj, "samplerCursor", JS_NewInt32(ctx, shadow_overlay->sampler_cursor));
+    JS_SetPropertyStr(ctx, obj, "samplerFullscreen", JS_NewInt32(ctx, shadow_overlay->sampler_fullscreen));
+    JS_SetPropertyStr(ctx, obj, "skipbackActive", JS_NewInt32(ctx, shadow_overlay->skipback_active));
+    JS_SetPropertyStr(ctx, obj, "samplerDurationBars", JS_NewInt32(ctx, shadow_overlay->sampler_duration_bars));
+    JS_SetPropertyStr(ctx, obj, "samplerVuPeak", JS_NewInt32(ctx, shadow_overlay->sampler_vu_peak));
+    JS_SetPropertyStr(ctx, obj, "samplerBarsCompleted", JS_NewInt32(ctx, shadow_overlay->sampler_bars_completed));
+    JS_SetPropertyStr(ctx, obj, "samplerTargetBars", JS_NewInt32(ctx, shadow_overlay->sampler_target_bars));
+    JS_SetPropertyStr(ctx, obj, "samplerOverlayTimeout", JS_NewInt32(ctx, shadow_overlay->sampler_overlay_timeout));
+    JS_SetPropertyStr(ctx, obj, "skipbackOverlayTimeout", JS_NewInt32(ctx, shadow_overlay->skipback_overlay_timeout));
+    JS_SetPropertyStr(ctx, obj, "samplerSamplesWritten", JS_NewUint32(ctx, shadow_overlay->sampler_samples_written));
+    JS_SetPropertyStr(ctx, obj, "samplerClockCount", JS_NewUint32(ctx, shadow_overlay->sampler_clock_count));
+    JS_SetPropertyStr(ctx, obj, "samplerTargetPulses", JS_NewUint32(ctx, shadow_overlay->sampler_target_pulses));
+    JS_SetPropertyStr(ctx, obj, "samplerFallbackBlocks", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_blocks));
+    JS_SetPropertyStr(ctx, obj, "samplerFallbackTarget", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_target));
+    JS_SetPropertyStr(ctx, obj, "samplerClockReceived", JS_NewInt32(ctx, shadow_overlay->sampler_clock_received));
+
+    /* Shift+knob overlay */
+    JS_SetPropertyStr(ctx, obj, "shiftKnobActive", JS_NewInt32(ctx, shadow_overlay->shift_knob_active));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobTimeout", JS_NewInt32(ctx, shadow_overlay->shift_knob_timeout));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobPatch", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_patch));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobParam", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_param));
+    JS_SetPropertyStr(ctx, obj, "shiftKnobValue", JS_NewString(ctx, (const char *)shadow_overlay->shift_knob_value));
+
+    /* Set page overlay */
+    JS_SetPropertyStr(ctx, obj, "setPageActive", JS_NewInt32(ctx, shadow_overlay->set_page_active));
+    JS_SetPropertyStr(ctx, obj, "setPageCurrent", JS_NewInt32(ctx, shadow_overlay->set_page_current));
+    JS_SetPropertyStr(ctx, obj, "setPageTotal", JS_NewInt32(ctx, shadow_overlay->set_page_total));
+    JS_SetPropertyStr(ctx, obj, "setPageTimeout", JS_NewInt32(ctx, shadow_overlay->set_page_timeout));
+    JS_SetPropertyStr(ctx, obj, "setPageLoading", JS_NewInt32(ctx, shadow_overlay->set_page_loading));
+
+    /* Preroll state */
+    JS_SetPropertyStr(ctx, obj, "samplerPrerollEnabled", JS_NewInt32(ctx, shadow_overlay->sampler_preroll_enabled));
+    JS_SetPropertyStr(ctx, obj, "samplerPrerollActive", JS_NewInt32(ctx, shadow_overlay->sampler_preroll_active));
+    JS_SetPropertyStr(ctx, obj, "samplerPrerollBarsDone", JS_NewInt32(ctx, shadow_overlay->sampler_preroll_bars_done));
+
+    return obj;
+}
+
+static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_val,
+                                              int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control) return JS_UNDEFINED;
+    int mode = 0, x = 0, y = 0, w = 0, h = 0;
+    if (argc >= 1) JS_ToInt32(ctx, &mode, argv[0]);
+    if (argc >= 2) JS_ToInt32(ctx, &x, argv[1]);
+    if (argc >= 3) JS_ToInt32(ctx, &y, argv[2]);
+    if (argc >= 4) JS_ToInt32(ctx, &w, argv[3]);
+    if (argc >= 5) JS_ToInt32(ctx, &h, argv[4]);
+    shadow_control->display_overlay = (uint8_t)mode;
+    shadow_control->overlay_rect_x = (uint8_t)x;
+    shadow_control->overlay_rect_y = (uint8_t)y;
+    shadow_control->overlay_rect_w = (uint8_t)w;
+    shadow_control->overlay_rect_h = (uint8_t)h;
+    return JS_UNDEFINED;
 }
 
 /* === End host functions === */
@@ -1368,8 +1782,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_control_restart", JS_NewCFunction(ctx, js_shadow_control_restart, "shadow_control_restart", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_param_timeout", JS_NewCFunction(ctx, js_shadow_set_param_timeout, "shadow_set_param_timeout", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
 
     /* Register MIDI output functions for overtake modules */
@@ -1387,7 +1803,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_read_file", JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_write_file", JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_http_download", JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_http_download_background", JS_NewCFunction(ctx, js_host_http_download_background, "host_http_download_background", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3));
+    JS_SetPropertyStr(ctx, global_obj, "host_system_cmd", JS_NewCFunction(ctx, js_host_system_cmd, "host_system_cmd", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ensure_dir", JS_NewCFunction(ctx, js_host_ensure_dir, "host_ensure_dir", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_list_modules", JS_NewCFunction(ctx, js_host_list_modules, "host_list_modules", 0));
@@ -1406,6 +1825,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "tts_get_volume", JS_NewCFunction(ctx, js_tts_get_volume, "tts_get_volume", 0));
     JS_SetPropertyStr(ctx, global_obj, "tts_set_engine", JS_NewCFunction(ctx, js_tts_set_engine, "tts_set_engine", 1));
     JS_SetPropertyStr(ctx, global_obj, "tts_get_engine", JS_NewCFunction(ctx, js_tts_get_engine, "tts_get_engine", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_debounce", JS_NewCFunction(ctx, js_tts_set_debounce, "tts_set_debounce", 1));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_debounce", JS_NewCFunction(ctx, js_tts_get_debounce, "tts_get_debounce", 0));
 
     /* Register overlay knobs mode functions */
     JS_SetPropertyStr(ctx, global_obj, "overlay_knobs_set_mode", JS_NewCFunction(ctx, js_overlay_knobs_set_mode, "overlay_knobs_set_mode", 1));
@@ -1414,6 +1835,15 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register display mirror functions */
     JS_SetPropertyStr(ctx, global_obj, "display_mirror_set", JS_NewCFunction(ctx, js_display_mirror_set, "display_mirror_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "display_mirror_get", JS_NewCFunction(ctx, js_display_mirror_get, "display_mirror_get", 0));
+
+    /* Register set pages functions */
+    JS_SetPropertyStr(ctx, global_obj, "set_pages_set", JS_NewCFunction(ctx, js_set_pages_set, "set_pages_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "set_pages_get", JS_NewCFunction(ctx, js_set_pages_get, "set_pages_get", 0));
+
+    /* Register overlay state functions (sampler/skipback state from shim) */
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_sequence", JS_NewCFunction(ctx, js_shadow_get_overlay_sequence, "shadow_get_overlay_sequence", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_state", JS_NewCFunction(ctx, js_shadow_get_overlay_state, "shadow_get_overlay_state", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_display_overlay", JS_NewCFunction(ctx, js_shadow_set_display_overlay, "shadow_set_display_overlay", 5));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
@@ -1478,6 +1908,7 @@ int main(int argc, char *argv[]) {
     JSValue JSonMidiMessageExternal = JS_UNDEFINED;
     JSValue JSinit = JS_UNDEFINED;
     JSValue JSTick = JS_UNDEFINED;
+    JSValue JSSaveState = JS_UNDEFINED;
 
     if (!getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal)) {
         shadow_ui_log_line("shadow_ui: onMidiMessageInternal missing");
@@ -1493,6 +1924,10 @@ int main(int argc, char *argv[]) {
     if (!jsTickIsDefined) {
         shadow_ui_log_line("shadow_ui: tick missing");
     }
+    int jsSaveStateIsDefined = getGlobalFunction(ctx, "shadow_save_state_now", &JSSaveState);
+    if (!jsSaveStateIsDefined) {
+        shadow_ui_log_line("shadow_ui: shadow_save_state_now missing");
+    }
 
     if (jsInitIsDefined) callGlobalFunction(ctx, &JSinit, 0);
     shadow_ui_log_line("shadow_ui: init called");
@@ -1500,6 +1935,9 @@ int main(int argc, char *argv[]) {
     int refresh_counter = 0;
     while (!global_exit_flag) {
         if (shadow_control && shadow_control->should_exit) {
+            if (jsSaveStateIsDefined) {
+                callGlobalFunction(ctx, &JSSaveState, 0);
+            }
             break;
         }
 

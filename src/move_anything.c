@@ -78,7 +78,7 @@ typedef struct FontChar {
 
 typedef struct Font {
   int charSpacing;
-  FontChar charData[128];
+  FontChar charData[256];
   /* TTF font data */
   int is_ttf;
   stbtt_fontinfo ttf_info;
@@ -96,9 +96,7 @@ int frame = 0;
 
 /* Display refresh rate limiting */
 int display_pending = 0;           /* Display has changes waiting to be flushed */
-int display_countdown = 0;         /* Countdown to next allowed refresh */
 int display_refresh_interval = 30; /* Ticks between refreshes (~11Hz at 344Hz loop) */
-int display_force_flush = 0;       /* Force immediate flush */
 
 /* Forward declarations */
 void push_screen(int sync);
@@ -106,11 +104,9 @@ void push_screen(int sync);
 struct SPI_Memory
 {
     unsigned char outgoing_midi[256];
-    unsigned char outgoing_random[512];
-    unsigned char outgoing_unknown[1280];
+    unsigned char _outgoing_pad[1792];  /* Unused regions of SPI memory */
     unsigned char incoming_midi[256];
-    unsigned char incoming_random[512];
-    unsigned char incoming_unknown[1280];
+    unsigned char _incoming_pad[1792];
 };
 
 unsigned char *mapped_memory;
@@ -187,28 +183,6 @@ static JSValue js_get_int16(JSContext *ctx, JSValueConst this_val, int argc, JSV
   JSValue js_val = JS_NewInt32(ctx, val);
   return js_val;
 }
-
-
-
-// void set_audio_out_L(int index, int16_t value) {
-//   if (index >= 512/4) {
-//     return;
-//   }
-
-//   int out256+index*4+0
-// }
-
-// void set_audio_out_R(int index, int16_t value) {
-
-// }
-
-// void get_audio_in_L() {
-
-// }
-
-// void get_audio_in_R() {
-
-// }
 
 void dirty_screen() {
   /* Mark that display needs to be pushed */
@@ -305,105 +279,111 @@ Font* load_font(char* filename, int charSpacing) {
     return NULL;
   }
 
-  char charList[256];
-  fgets(charList, 256, charListFP);
+  /* Read UTF-8 character list — each character may be multi-byte */
+  char charListRaw[1024];
+  if(!fgets(charListRaw, sizeof(charListRaw), charListFP)) {
+    fclose(charListFP);
+    return NULL;
+  }
   fclose(charListFP);
 
-  int numChars = strlen(charList);
+  /* Strip trailing newline */
+  size_t rawLen = strlen(charListRaw);
+  if (rawLen > 0 && charListRaw[rawLen - 1] == '\n') {
+    charListRaw[--rawLen] = '\0';
+  }
 
-  uint32_t* data = (uint32_t*)stbi_load(filename, &width, &height, &comp, 4);
-  if(data == NULL) {
+  /* Decode UTF-8 into Unicode codepoints */
+  int codepoints[512];
+  int numChars = 0;
+  const unsigned char *p = (const unsigned char *)charListRaw;
+  while (*p && numChars < 512) {
+    unsigned int cp = 0;
+    if (*p < 0x80) {
+      cp = *p++;
+    } else if ((*p & 0xE0) == 0xC0) {
+      cp = (*p++ & 0x1F) << 6;
+      if (*p) cp |= (*p++ & 0x3F);
+    } else if ((*p & 0xF0) == 0xE0) {
+      cp = (*p++ & 0x0F) << 12;
+      if (*p) cp |= (*p++ & 0x3F) << 6;
+      if (*p) cp |= (*p++ & 0x3F);
+    } else {
+      p++; /* skip invalid byte */
+      continue;
+    }
+    codepoints[numChars++] = (int)cp;
+  }
+
+  if (numChars == 0) {
+    printf("ERROR: empty char list in %s\n", charListFilename);
+    return NULL;
+  }
+
+  unsigned char *image = stbi_load(filename, &width, &height, &comp, 4);
+  if(image == NULL) {
     printf("ERROR loading font: %s\n", filename);
     return NULL;
   }
 
-  Font* font = calloc(1, sizeof(Font));
+  /* Horizontal-strip atlas: each char occupies charW columns */
+  int charW = width / numChars;
+  if (charW <= 0) {
+    printf("ERROR: font atlas width %d < numChars %d\n", width, numChars);
+    stbi_image_free(image);
+    return NULL;
+  }
 
+  Font* font = calloc(1, sizeof(Font));
   font->charSpacing = charSpacing;
 
-  comp = 4;
-  int x = 0;
-  int y = 0;
-
-  uint32_t borderColor = data[0];
-  uint32_t emptyColor = data[(height-1) * width];
-
-  printf("FONT DEBUG: file=%s, size=%dx%d, numChars=%d\n", filename, width, height, numChars);
-  printf("FONT DEBUG: borderColor=0x%08x, emptyColor=0x%08x\n", borderColor, emptyColor);
-
-  if (borderColor == emptyColor) {
-    printf("FONT ERROR: borderColor == emptyColor, font will not load correctly!\n");
-  }
-
-  x = 0;
-
   for(int i = 0; i < numChars; i++) {
-    FontChar fc;
-    fc.width = 0;
-    fc.height = 0;
+    int cp = codepoints[i];
+    if (cp < 0 || cp >= 256) continue;
 
-    while(x < width && data[x] == borderColor) {
-      x++;
-    }
+    int x0 = i * charW;
 
-    if(x >= width) {
-      break;
-    }
-
-    int bx = x;
-    int by = y;
-    for(int by = 0; by < height; by++) {
-        uint32_t color = data[by * width + x];
-        if(color == borderColor) {
-          fc.height = by;
+    /* Find actual pixel extent within this cell (auto-trim whitespace) */
+    int startX = -1, endX = -1;
+    for (int x = 0; x < charW; x++) {
+      for (int y = 0; y < height; y++) {
+        int idx = (y * width + x0 + x) * 4;
+        if (image[idx + 3] > 0) {
+          if (startX == -1) startX = x;
+          endX = x;
           break;
         }
-    }
-    for(int bx = x; bx < width; bx++) {
-        uint32_t color = data[bx];
-        if(color == borderColor) {
-          fc.width = bx - x;
-          break;
-        }
-    }
-
-    if(fc.width == 0 || fc.height == 0) {
-      printf("FONT ERROR [%d/%d] char '%c' (0x%02x) has zero dimension: %d x %d at x=%d\n",
-             i, numChars, charList[i], (unsigned char)charList[i], fc.width, fc.height, x);
-      printf("FONT DEBUG: x position may have exceeded width (%d)\n", width);
-      break;
-    }
-
-    if (i < 5 || i == numChars - 1) {
-      printf("FONT DEBUG [%d] char '%c': %dx%d at x=%d\n", i, charList[i], fc.width, fc.height, x);
-    }
-
-    fc.data = malloc(fc.width * fc.height);
-
-    int setPixels = 0;
-
-    for(int yi = 0; yi < fc.height; yi++) {
-      for(int xi = 0; xi < fc.width; xi++) {
-        uint32_t color = data[(y + yi) * width + (x + xi)];
-        int set = (color != borderColor && color != emptyColor);
-        if(set) {
-          setPixels++;
-        }
-        fc.data[yi * fc.width + xi] = set;
       }
     }
-
-    font->charData[(unsigned char)charList[i]] = fc;
-
-    x += fc.width+1;
-    if(x >= width) {
-      break;
+    if (startX == -1) {
+      /* Blank glyph — insert a space-width entry so cursor advances */
+      FontChar fc = {0};
+      fc.width = charW;
+      fc.height = height;
+      fc.data = calloc(charW * height, 1);
+      font->charData[cp] = fc;
+      continue;
     }
+    int glyphW = endX - startX + 1;
+
+    FontChar fc = {0};
+    fc.width = glyphW;
+    fc.height = height;
+    fc.data = malloc(glyphW * height);
+    if (!fc.data) continue;
+
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < glyphW; x++) {
+        int idx = (y * width + x0 + startX + x) * 4;
+        fc.data[y * glyphW + x] = image[idx + 3] > 0 ? 1 : 0;
+      }
+    }
+    font->charData[cp] = fc;
   }
 
-  stbi_image_free(data);
+  stbi_image_free(image);
 
-  printf("Loaded bitmap font: %s (%d chars)\n", filename, numChars);
+  printf("Loaded bitmap font: %s (%d chars, cell %dx%d)\n", filename, numChars, charW, height);
   return font;
 }
 
@@ -514,12 +494,8 @@ void print(int sx, int sy, const char* string, int color) {
   int y = sy;
 
   if(font == NULL) {
-    /* Try TTF font first (unifont from Move's fonts directory) */
-    font = load_ttf_font("/opt/move/Fonts/unifont_jp-14.0.01.ttf", 12);
-    if(font == NULL) {
-      /* Fall back to bitmap font */
-      font = load_font("font.png", 1);
-    }
+    /* Bitmap font generated by scripts/generate_font.py — single source of truth */
+    font = load_font("font.png", 1);
   }
 
   if(font == NULL) {
@@ -534,6 +510,32 @@ void print(int sx, int sy, const char* string, int color) {
       x += font->charSpacing;
     }
   }
+}
+
+/* Compute the rendered pixel width of a string using the current font */
+static JSValue js_text_width(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  (void)this_val;
+  if (argc < 1) return JS_NewInt32(ctx, 0);
+  const char *str = JS_ToCString(ctx, argv[0]);
+  if (!str) return JS_NewInt32(ctx, 0);
+
+  if (font == NULL) {
+    font = load_font("font.png", 1);
+  }
+  int width = 0;
+  if (font) {
+    for (int i = 0; i < (int)strlen(str); i++) {
+      unsigned char c = (unsigned char)str[i];
+      FontChar fc = font->charData[c];
+      if (fc.data) {
+        width += fc.width + font->charSpacing;
+      } else {
+        width += font->charSpacing;
+      }
+    }
+  }
+  JS_FreeCString(ctx, str);
+  return JS_NewInt32(ctx, width);
 }
 
 /* Process host-level MIDI for system shortcuts and input transforms
@@ -766,19 +768,6 @@ static void flush_pending_leds(void) {
     }
 }
 
-void onExternalMidiMessage(unsigned char midi_message[4])
-{
-    // js_on_external_midi_message()
-}
-
-void onInternalMidiMessage(unsigned char midi_message[4])
-{
-    // js_on_internal_midi_message()
-}
-
-/* onMidiMessage removed - was dead code with uninitialized 'cable' variable.
-   Actual MIDI routing happens in main() loop via onInternalMidiMessage/onExternalMidiMessage. */
-
 void clearPads(unsigned char *mapped_memory, int fd)
 {
 
@@ -922,10 +911,6 @@ static int eval_file(JSContext *ctx, const char *filename, int module)
         exit(1);
     }
 
-    // if (module < 0) {
-    //     module = (has_suffix(filename, ".mjs") ||
-    //               JS_DetectModule((const char *)buf, buf_len));
-    // }
     if (module)
         eval_flags |= JS_EVAL_TYPE_MODULE;
     else
@@ -1135,8 +1120,6 @@ static JSValue js_move_midi_send(int cable, JSContext *ctx, JSValueConst this_va
     JS_ToUint32(ctx, &len, length_val);
     JS_FreeValue(ctx, length_val);
 
-    //printf("[");
-    JSValue entry;
     for (int i = 0; i < len; i++)
     {
 
@@ -1158,13 +1141,6 @@ static JSValue js_move_midi_send(int cable, JSContext *ctx, JSValueConst this_va
             JS_FreeValue(ctx, val);
             return JS_ThrowRangeError(ctx, "Array element at index %u (%u) is out of byte range (0-255)", i, byte_val);
         }
-
-        // total_sum += byte_val;
-        //printf("%d(%x)", byte_val, byte_val);
-        /*if (i != len - 1)
-        {
-            printf(", ");
-        }*/
 
         js_move_midi_send_buffer[send_buffer_index] = byte_val;
         send_buffer_index++;
@@ -1728,9 +1704,6 @@ static JSValue js_host_set_refresh_rate(JSContext *ctx, JSValueConst this_val,
     display_refresh_interval = 344 / hz;
     if (display_refresh_interval < 1) display_refresh_interval = 1;
 
-    /* Reset countdown so new rate takes effect immediately */
-    display_countdown = 0;
-
     return JS_UNDEFINED;
 }
 
@@ -2184,10 +2157,6 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     }
 
     js_std_add_helpers(ctx, -1, 0);
-    // char jsCode[] = "console.log('Hello world!')\0";
-    // char jsCode[] = "console.log('Hello world!');\0";
-
-    // eval_buf(ctx, jsCode, strlen(jsCode), "<cmdline>", 0);
     JSValue global_obj = JS_GetGlobalObject(ctx);
 
     JSValue move_midi_external_send_func = JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1);
@@ -2216,6 +2185,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue print_func = JS_NewCFunction(ctx, js_print, "print", 1);
     JS_SetPropertyStr(ctx, global_obj, "print", print_func);
+
+    JS_SetPropertyStr(ctx, global_obj, "text_width",
+        JS_NewCFunction(ctx, js_text_width, "text_width", 1));
 
     JSValue draw_line_func = JS_NewCFunction(ctx, js_draw_line, "draw_line", 5);
     JS_SetPropertyStr(ctx, global_obj, "draw_line", draw_line_func);
@@ -2335,12 +2307,6 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
 
-    // Free our reference to the global object
-
-    // eval_file(ctx, "move_m8.js", -1);
-
-    // JSValue val;
-    // val = JS_Eval(ctx, jsCode, strlen(jsCode), "foo.js", 0);
     *prt = rt;
     *pctx = ctx;
 }
@@ -2655,11 +2621,12 @@ int main(int argc, char *argv[])
             }
             if (g_menu_script_path[0]) {
                 eval_file(ctx, g_menu_script_path, -1);
-                JSValue JSinit;
-                getGlobalFunction(&ctx, "init", &JSinit);
-                if (callGlobalFunction(&ctx, &JSinit, 0)) {
+                JSValue JSinitMenu;
+                getGlobalFunction(&ctx, "init", &JSinitMenu);
+                if (callGlobalFunction(&ctx, &JSinitMenu, 0)) {
                     printf("JS:init failed\n");
                 }
+                JS_FreeValue(ctx, JSinitMenu);
                 g_js_functions_need_refresh = 1;
             }
         }
@@ -2838,14 +2805,5 @@ int main(int argc, char *argv[])
 
 
     printf("Exiting\n");
-    // deinit is currenlty failing due to there being JS objects hanging around so...
     exit(0);
-    deinit_javascript(&rt, &ctx);
-
-    // js_std_free_handlers(rt);
-
-    // JS_FreeContext(ctx);
-    // JS_FreeRuntime(rt);
-
-    return 0;
 }

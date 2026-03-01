@@ -45,15 +45,17 @@ void unified_log_shutdown(void) {
 }
 
 int unified_log_enabled(void) {
-    pthread_mutex_lock(&log_mutex);
-    /* Periodically recheck flag file */
-    if (++check_counter >= CHECK_INTERVAL) {
-        check_counter = 0;
-        log_enabled_cache = (access(UNIFIED_LOG_FLAG, F_OK) == 0) ? 1 : 0;
+    /* Non-blocking: if mutex is held (e.g. by a logging thread doing fflush),
+     * just return the cached value to avoid blocking the audio thread. */
+    if (pthread_mutex_trylock(&log_mutex) == 0) {
+        /* Periodically recheck flag file */
+        if (++check_counter >= CHECK_INTERVAL) {
+            check_counter = 0;
+            log_enabled_cache = (access(UNIFIED_LOG_FLAG, F_OK) == 0) ? 1 : 0;
+        }
+        pthread_mutex_unlock(&log_mutex);
     }
-    int enabled = log_enabled_cache;
-    pthread_mutex_unlock(&log_mutex);
-    return enabled;
+    return log_enabled_cache;
 }
 
 static const char *level_str(int level) {
@@ -67,8 +69,11 @@ static const char *level_str(int level) {
 }
 
 void unified_log_v(const char *source, int level, const char *fmt, va_list args) {
-    /* Single lock acquisition -- check enabled + write in one critical section */
-    pthread_mutex_lock(&log_mutex);
+    /* Non-blocking: skip log message if mutex is held (avoids blocking audio thread).
+     * Log messages are best-effort — dropping one is better than an audio click. */
+    if (pthread_mutex_trylock(&log_mutex) != 0) {
+        return;  /* Mutex held by another thread, drop this message */
+    }
 
     /* Periodically recheck flag file */
     if (++check_counter >= CHECK_INTERVAL) {

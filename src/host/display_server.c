@@ -23,6 +23,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "unified_log.h"
+
 #define DEFAULT_PORT       7681
 #define SHM_PATH           "/dev/shm/move-display-live"
 #define DISPLAY_SIZE       1024
@@ -30,6 +32,8 @@
 #define POLL_INTERVAL_MS   33    /* ~30 Hz */
 #define SHM_RETRY_MS       2000
 #define CLIENT_BUF_SIZE    4096
+
+#define DISPLAY_LOG_SOURCE "display_server"
 
 /* Base64 encoding */
 static const char b64_table[] =
@@ -140,7 +144,7 @@ static long long now_ms(void) {
 static void client_remove(int idx) {
     if (clients[idx].fd >= 0) {
         if (clients[idx].streaming)
-            printf("display: SSE client disconnected (slot %d)\n", idx);
+            LOG_INFO(DISPLAY_LOG_SOURCE, "SSE client disconnected (slot %d)", idx);
         close(clients[idx].fd);
     }
     clients[idx].fd = -1;
@@ -199,6 +203,8 @@ int main(int argc, char *argv[]) {
     int port = DEFAULT_PORT;
     if (argc > 1) port = atoi(argv[1]);
 
+    unified_log_init();
+
     signal(SIGINT, sighandler);
     signal(SIGTERM, sighandler);
     signal(SIGPIPE, SIG_IGN);
@@ -217,7 +223,11 @@ int main(int argc, char *argv[]) {
 
     /* Listen socket */
     int srv = socket(AF_INET, SOCK_STREAM, 0);
-    if (srv < 0) { perror("display: socket"); return 1; }
+    if (srv < 0) {
+        LOG_ERROR(DISPLAY_LOG_SOURCE, "socket failed: %s", strerror(errno));
+        unified_log_shutdown();
+        return 1;
+    }
     int opt = 1;
     setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -227,14 +237,15 @@ int main(int argc, char *argv[]) {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("display: bind");
+        LOG_ERROR(DISPLAY_LOG_SOURCE, "bind failed on port %d: %s", port, strerror(errno));
         close(srv);
+        unified_log_shutdown();
         return 1;
     }
     listen(srv, MAX_CLIENTS);
     fcntl(srv, F_SETFL, O_NONBLOCK);
 
-    printf("display: server listening on port %d\n", port);
+    LOG_INFO(DISPLAY_LOG_SOURCE, "server listening on port %d", port);
 
     uint8_t last_display[DISPLAY_SIZE];
     memset(last_display, 0, sizeof(last_display));
@@ -258,7 +269,7 @@ int main(int argc, char *argv[]) {
                         close(shm_fd);
                         shm_fd = -1;
                     } else {
-                        printf("display: opened %s\n", SHM_PATH);
+                        LOG_INFO(DISPLAY_LOG_SOURCE, "opened %s", SHM_PATH);
                     }
                 }
             }
@@ -343,12 +354,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    printf("display: shutting down\n");
+    LOG_INFO(DISPLAY_LOG_SOURCE, "shutting down");
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].fd >= 0) close(clients[i].fd);
     }
     close(srv);
     if (shm_ptr) munmap(shm_ptr, DISPLAY_SIZE);
     if (shm_fd >= 0) close(shm_fd);
+    unified_log_shutdown();
     return 0;
 }

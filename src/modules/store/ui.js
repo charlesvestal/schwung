@@ -34,10 +34,14 @@ import {
 } from '/data/UserData/move-anything/shared/scrollable_text.mjs';
 
 import {
+    announce
+} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+
+import {
     CATALOG_URL, CATALOG_CACHE_PATH, MODULES_DIR, BASE_DIR, TMP_DIR, HOST_VERSION_FILE,
     CATEGORIES,
     compareVersions, isNewerVersion, getInstallSubdir,
-    fetchReleaseJson,
+    fetchReleaseJson, fetchReleaseNotes,
     installModule as sharedInstallModule,
     removeModule as sharedRemoveModule,
     scanInstalledModules as sharedScanInstalledModules,
@@ -658,7 +662,7 @@ function drawCategories() {
         getValue: (item) => item.value
     });
 
-    drawMenuFooter('Back:exit  Jog:browse');
+    drawMenuFooter({left: "Back: exit", right: "Jog: browse"});
 }
 
 /* Draw host update confirmation screen */
@@ -677,7 +681,7 @@ function drawHostUpdate() {
     fill_rect(2, y - 1, 70, 12, 1);
     print(4, y, '[Update Now]', 0);
 
-    drawMenuFooter('Back:cancel');
+    drawMenuFooter('Back: cancel');
 }
 
 /* Draw update all screen - scrollable list of modules + Update All action */
@@ -712,7 +716,7 @@ function drawUpdateAll() {
         getValue: (item) => item.value
     });
 
-    drawMenuFooter('Back:cancel  Jog:select');
+    drawMenuFooter({left: "Back: cancel", right: "Jog: select"});
 }
 
 /* Draw module list screen */
@@ -724,7 +728,7 @@ function drawModuleList() {
 
     if (modules.length === 0) {
         print(2, 30, 'No modules available', 1);
-        drawMenuFooter('Back:categories');
+        drawMenuFooter('Back: categories');
         return;
     }
 
@@ -749,7 +753,26 @@ function drawModuleList() {
         getValue: (item) => item.statusIcon
     });
 
-    drawMenuFooter('Back:categories');
+    drawMenuFooter('Back: categories');
+}
+
+/* Build scrollable lines from release notes text */
+function buildReleaseNoteLines(notesText) {
+    const lines = [];
+    const noteLines = notesText.split('\n');
+    for (const line of noteLines) {
+        if (line.trim() === '') {
+            lines.push('');
+        } else {
+            const cleaned = line.trim()
+                .replace(/^#+\s*/, '')
+                .replace(/\*\*/g, '')
+                .replace(/\*/g, '');
+            const wrapped = wrapText(cleaned, 20);
+            lines.push(...wrapped);
+        }
+    }
+    return lines;
 }
 
 /* Draw module detail screen with scrollable description */
@@ -786,6 +809,16 @@ function drawModuleDetail() {
             descLines.push(...reqLines);
         }
 
+        /* Fetch and append release notes */
+        if (currentModule.github_repo) {
+            const notes = fetchReleaseNotes(currentModule.github_repo);
+            if (notes) {
+                descLines.push('');
+                descLines.push('What\'s New:');
+                descLines.push(...buildReleaseNoteLines(notes));
+            }
+        }
+
         /* Determine action label */
         let actionLabel;
         if (status.installed) {
@@ -797,9 +830,13 @@ function drawModuleDetail() {
         detailScrollState = createScrollableText({
             lines: descLines,
             actionLabel,
-            visibleLines: 3
+            visibleLines: 3,
+            onActionSelected: (label) => announce(label)
         });
         detailScrollState.moduleId = currentModule.id;
+
+        /* Announce module detail for screen reader */
+        announce(currentModule.name + ". " + descLines.join(". "));
     }
 
     /* Draw scrollable content */

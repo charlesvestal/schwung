@@ -13,7 +13,7 @@ cd "$REPO_ROOT"
 cd ./build
 
 # Build list of items to package
-ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./test"
+ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./presets ./test ./unified-log"
 
 # Add bin directory if it exists (contains curl for store module)
 if [ -d "./bin" ]; then
@@ -50,6 +50,12 @@ if [ -f "./move-anything-web-shim.so" ]; then
     ITEMS="$ITEMS ./move-anything-web-shim.so"
 fi
 
-tar -czvf ../move-anything.tar.gz \
-    --transform 's,^\.,move-anything,' \
-    $ITEMS
+if tar --version 2>/dev/null | grep -q GNU; then
+    tar -czvf ../move-anything.tar.gz \
+        --transform 's,^\.,move-anything,' \
+        $ITEMS
+else
+    tar -czvf ../move-anything.tar.gz \
+        -s ',^\.,move-anything,' \
+        $ITEMS
+fi

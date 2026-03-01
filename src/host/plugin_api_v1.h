@@ -25,6 +25,11 @@
 #define MOVE_MIDI_SOURCE_HOST 3  /* Host-generated (clock, etc) */
 #define MOVE_MIDI_SOURCE_FX_BROADCAST 4  /* Broadcast to audio FX only (skip synth) */
 
+/* Clock status identifiers for host_api_v1.get_clock_status() */
+#define MOVE_CLOCK_STATUS_UNAVAILABLE 0  /* Clock output not available/configured */
+#define MOVE_CLOCK_STATUS_STOPPED 1      /* Clock available, transport stopped */
+#define MOVE_CLOCK_STATUS_RUNNING 2      /* Clock available, transport running */
+
 /*
  * Host API - provided by host to plugin during initialization
  */
@@ -50,6 +55,11 @@ typedef struct host_api_v1 {
      */
     int (*midi_send_internal)(const uint8_t *msg, int len);
     int (*midi_send_external)(const uint8_t *msg, int len);
+
+    /* Clock status query for sync-aware plugins.
+     * Returns one of MOVE_CLOCK_STATUS_*.
+     */
+    int (*get_clock_status)(void);
 
 } host_api_v1_t;
 

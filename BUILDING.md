@@ -95,7 +95,7 @@ brew tap messense/macos-cross-toolchains
 brew install aarch64-unknown-linux-gnu
 
 cd libs/quickjs/quickjs-2025-04-26
-CC=aarch64-unknown-linux-gnu-gcc make libquickjs.a
+CC=aarch64-unknown-linux-gnu-gcc AR=aarch64-unknown-linux-gnu-ar make libquickjs.a
 cd ../../..
 
 CROSS_PREFIX=aarch64-unknown-linux-gnu- ./scripts/build.sh
@@ -146,26 +146,31 @@ move-anything.tar.gz         # Deployable package
 **"libquickjs.a not found"**
 ```bash
 cd libs/quickjs/quickjs-2025-04-26
-CC=aarch64-linux-gnu-gcc make libquickjs.a
+CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar make libquickjs.a
 ```
 
 **Missing font.png/font.png.dat**
 
-The host falls back to the bitmap font when the system TTF isn't available, and `package.sh` expects these files. Generate them with:
+`build/host/font.png` and `build/host/font.png.dat` are generated automatically by `build.sh` from `scripts/generate_font.py`. This script is the **single source of truth** for the bitmap font used on the host display, the shadow UI, and the OLED shim overlay.
+
+If you need to regenerate the font manually (e.g. after editing `FONT` in `generate_font.py`):
 
 ```bash
 python3 -m pip install pillow
-python3 scripts/generate_font.py build/font.png
-python3 - <<'PY'
-from importlib.util import spec_from_file_location, module_from_spec
-from pathlib import Path
-
-spec = spec_from_file_location("generate_font", "scripts/generate_font.py")
-mod = module_from_spec(spec)
-spec.loader.exec_module(mod)
-Path("build/font.png.dat").write_text(mod.CHARS + "\n")
-PY
+python3 scripts/generate_font.py --deploy-png build/host/font.png
 ```
+
+To preview the font as a grid image:
+```bash
+python3 scripts/generate_font.py --png font_preview.png
+```
+
+To print the C array for `overlay_font_5x7` in the shim:
+```bash
+python3 scripts/generate_font.py --c-array
+```
+
+> **Note:** The host no longer attempts to load the system TTF (`/opt/move/Fonts/unifont_jp-14.0.01.ttf`). The 5x7 bitmap font from `generate_font.py` is always used.
 
 **Flite bundle verification failed**
 ```bash

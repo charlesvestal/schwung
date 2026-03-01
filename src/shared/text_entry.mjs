@@ -19,6 +19,7 @@
  */
 
 import { decodeDelta } from './input_filter.mjs';
+import { drawRect } from './menu_layout.mjs';
 
 /* Constants */
 const SCREEN_WIDTH = 128;
@@ -67,7 +68,8 @@ let state = {
     lastAction: null,      /* 'char', 'space', 'backspace' */
     lastChar: '',          /* Last character entered (for repeat) */
     onConfirm: null,
-    onCancel: null
+    onCancel: null,
+    onAnnounce: null
 };
 
 /**
@@ -77,8 +79,9 @@ let state = {
  * @param {string} [options.initialText=''] - Pre-populate buffer
  * @param {Function} options.onConfirm - Called with final text on confirm
  * @param {Function} [options.onCancel] - Called when user cancels
+ * @param {Function} [options.onAnnounce] - Screen reader announce callback
  */
-export function openTextEntry({ title = '', initialText = '', onConfirm, onCancel }) {
+export function openTextEntry({ title = '', initialText = '', onConfirm, onCancel, onAnnounce = null }) {
     state.active = true;
     state.title = title;
     state.buffer = initialText.slice(0, MAX_BUFFER_LENGTH);
@@ -90,6 +93,9 @@ export function openTextEntry({ title = '', initialText = '', onConfirm, onCance
     state.lastChar = '';
     state.onConfirm = onConfirm;
     state.onCancel = onCancel || null;
+    state.onAnnounce = (typeof onAnnounce === 'function') ? onAnnounce : null;
+
+    announceTextEntry(`Text entry, ${state.title || "Edit text"}. Current text: ${getAnnounceBuffer()}. ${getSelectedLabel()} selected`);
 }
 
 /**
@@ -99,6 +105,7 @@ export function closeTextEntry() {
     state.active = false;
     state.onConfirm = null;
     state.onCancel = null;
+    state.onAnnounce = null;
 }
 
 /**
@@ -164,7 +171,10 @@ export function handleTextEntryMidi(msg) {
             /* Clamp to edges (no wrap) - allows slamming left/right to reach a or OK */
             if (newIndex < 0) newIndex = 0;
             if (newIndex >= totalItems) newIndex = totalItems - 1;
-            state.selectedIndex = newIndex;
+            if (newIndex !== state.selectedIndex) {
+                state.selectedIndex = newIndex;
+                announceTextEntry(`${getSelectedLabel()} selected`);
+            }
         }
         return true;
     }
@@ -177,6 +187,7 @@ export function handleTextEntryMidi(msg) {
 
     /* Back button - cancel */
     if (cc === CC_BACK && isDown) {
+        announceTextEntry("Text entry cancelled");
         if (state.onCancel) {
             state.onCancel();
         }
@@ -200,6 +211,7 @@ function handleSelection() {
         appendToBuffer(char);
         state.lastAction = 'char';
         state.lastChar = char;
+        announceTextEntry(`${char} entered, text ${getAnnounceBuffer()}`);
         showPreview();
     } else {
         /* Special button selected */
@@ -211,10 +223,12 @@ function handleSelection() {
                 /* Keep page button selected on new page */
                 const newChars = getCurrentPageChars();
                 state.selectedIndex = newChars.length + SPECIAL_PAGE;
+                announceTextEntry(`Keyboard page ${state.page + 1}, ${getSelectedLabel()} selected`);
                 break;
             case SPECIAL_SPACE:
                 appendToBuffer(' ');
                 state.lastAction = 'space';
+                announceTextEntry(`space entered, text ${getAnnounceBuffer()}`);
                 showPreview();
                 break;
             case SPECIAL_BACKSPACE:
@@ -222,9 +236,11 @@ function handleSelection() {
                     state.buffer = state.buffer.slice(0, -1);
                 }
                 state.lastAction = 'backspace';
+                announceTextEntry(`Deleted, text ${getAnnounceBuffer()}`);
                 showPreview();
                 break;
             case SPECIAL_CONFIRM:
+                announceTextEntry(`Text entry confirmed, text ${getAnnounceBuffer()}`);
                 if (state.onConfirm) {
                     state.onConfirm(state.buffer);
                 }
@@ -241,14 +257,17 @@ function repeatLastAction() {
     switch (state.lastAction) {
         case 'char':
             appendToBuffer(state.lastChar);
+            announceTextEntry(`${state.lastChar} entered, text ${getAnnounceBuffer()}`);
             break;
         case 'space':
             appendToBuffer(' ');
+            announceTextEntry(`space entered, text ${getAnnounceBuffer()}`);
             break;
         case 'backspace':
             if (state.buffer.length > 0) {
                 state.buffer = state.buffer.slice(0, -1);
             }
+            announceTextEntry(`Deleted, text ${getAnnounceBuffer()}`);
             break;
     }
     /* Reset preview timeout */
@@ -277,6 +296,35 @@ function showPreview() {
  */
 function getCurrentPageChars() {
     return PAGES[state.page];
+}
+
+function announceTextEntry(text) {
+    if (!state.onAnnounce || !text) return;
+    try {
+        state.onAnnounce(text);
+    } catch (e) {
+        /* Never let screen reader callback errors break UI input flow. */
+    }
+}
+
+function getSelectedLabel() {
+    const chars = getCurrentPageChars();
+    if (state.selectedIndex < chars.length) return chars[state.selectedIndex];
+
+    const specialIndex = state.selectedIndex - chars.length;
+    switch (specialIndex) {
+        case SPECIAL_PAGE: return "page";
+        case SPECIAL_SPACE: return "space";
+        case SPECIAL_BACKSPACE: return "delete";
+        case SPECIAL_CONFIRM: return "OK";
+        default: return "item";
+    }
+}
+
+function getAnnounceBuffer() {
+    if (!state.buffer || state.buffer.length === 0) return "Untitled";
+    if (state.buffer.length > 24) return state.buffer.slice(-24);
+    return state.buffer;
 }
 
 /**
@@ -389,22 +437,12 @@ function drawSpecialButtons(charCount) {
             print(x + 2, specialY + 1, btn.label, 0);
         } else {
             /* Draw button outline */
-            draw_rect(x, specialY + 2, btn.width, btnHeight, 1);
+            drawRect(x, specialY + 2, btn.width, btnHeight, 1);
             print(x + 2, specialY + 1, btn.label, 1);
         }
 
         x += btn.width + 2;
     }
-}
-
-/**
- * Draw outlined rectangle
- */
-function draw_rect(x, y, w, h, color) {
-    fill_rect(x, y, w, 1, color);           /* Top */
-    fill_rect(x, y + h - 1, w, 1, color);   /* Bottom */
-    fill_rect(x, y, 1, h, color);           /* Left */
-    fill_rect(x + w - 1, y, 1, h, color);   /* Right */
 }
 
 /**

@@ -4,22 +4,11 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.4.7",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.4.7/move-anything.tar.gz",
+    "latest_version": "0.5.15",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.5.15/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
-    {
-      "id": "fourtrack",
-      "name": "Four Track",
-      "description": "Four-track recorder with signal chain integration",
-      "author": "Move Anything",
-      "component_type": "utility",
-      "github_repo": "charlesvestal/move-anything-fourtrack",
-      "default_branch": "main",
-      "asset_name": "fourtrack-module.tar.gz",
-      "min_host_version": "0.3.6"
-    },
     {
       "id": "dexed",
       "name": "Dexed",
@@ -277,6 +266,118 @@
       "default_branch": "main",
       "asset_name": "control-module.tar.gz",
       "min_host_version": "0.3.6"
+    },
+    {
+      "id": "chiptune",
+      "name": "Chiptune",
+      "description": "NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets",
+      "author": "blargg (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-chiptune",
+      "default_branch": "main",
+      "asset_name": "chiptune-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "keydetect",
+      "name": "Key Detect",
+      "description": "Detects the musical key of audio passing through it",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-keydetect",
+      "default_branch": "main",
+      "asset_name": "keydetect-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "vocoder",
+      "name": "Vocoder",
+      "description": "Channel vocoder - uses mic/line-in as modulator to shape synth carrier",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-vocoder",
+      "default_branch": "main",
+      "asset_name": "vocoder-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "osirus",
+      "name": "Osirus",
+      "description": "Access Virus DSP56300 emulator via Gearmulator JIT engine",
+      "author": "dsp56300/gearmulator (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-virus",
+      "default_branch": "main",
+      "asset_name": "osirus-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": "Virus ROM file (place in module's roms/ folder)"
+    },
+    {
+      "id": "superarp",
+      "name": "Super Arp",
+      "description": "Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers",
+      "author": "dom",
+      "component_type": "midi_fx",
+      "github_repo": "handcraftedcc/move-anything-superarp",
+      "default_branch": "main",
+      "asset_name": "superarp-module.tar.gz",
+      "min_host_version": "0.5.8"
+    },
+    {
+      "id": "eucalypso",
+      "name": "Eucalypso",
+      "description": "Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation",
+      "author": "dom",
+      "component_type": "midi_fx",
+      "github_repo": "handcraftedcc/move-anything-eucalypso",
+      "default_branch": "main",
+      "asset_name": "eucalypso-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "rex",
+      "name": "REX Player",
+      "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-rex",
+      "default_branch": "main",
+      "asset_name": "rex-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": ".rx2/.rex loop files (created with Propellerhead ReCycle)"
+    },
+    {
+      "id": "hush1",
+      "name": "HUSH ONE",
+      "description": "Monophonic subtractive synthesizer emulating the Roland SH-101",
+      "author": "Move Everything Community",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-hush1",
+      "default_branch": "main",
+      "asset_name": "hush1-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "nusaw",
+      "name": "NuSaw",
+      "description": "Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-nusaw",
+      "default_branch": "main",
+      "asset_name": "nusaw-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "usefulity",
+      "name": "Usefulity",
+      "description": "Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/move-anything-usefulity",
+      "default_branch": "main",
+      "asset_name": "usefulity-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }

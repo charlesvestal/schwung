@@ -1,7 +1,7 @@
 {
     "id": "store",
     "name": "Module Store",
-    "version": "0.2.4",
+    "version": "0.5.2",
     "description": "Browse and install modules",
     "author": "Move Anything",
     "ui": "ui.js",
