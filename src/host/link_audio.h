@@ -44,6 +44,39 @@
 #define LINK_AUDIO_PUB_RING_SAMPLES (LINK_AUDIO_PUB_RING_FRAMES * 2)
 #define LINK_AUDIO_PUB_RING_MASK    (LINK_AUDIO_PUB_RING_SAMPLES - 1)
 
+/* Shared memory for publisher (shim → link_subscriber) */
+#define SHM_LINK_AUDIO_PUB  "/move-shadow-pub-audio"
+#define LINK_AUDIO_PUB_BLOCK_FRAMES  128   /* matches FRAMES_PER_BLOCK */
+#define LINK_AUDIO_PUB_BLOCK_SAMPLES (LINK_AUDIO_PUB_BLOCK_FRAMES * 2) /* stereo */
+
+/* Per-slot ring in shared memory: 8 blocks deep = ~23ms buffer */
+#define LINK_AUDIO_PUB_SHM_BLOCKS   8
+#define LINK_AUDIO_PUB_SHM_RING_SAMPLES (LINK_AUDIO_PUB_BLOCK_SAMPLES * LINK_AUDIO_PUB_SHM_BLOCKS)
+#define LINK_AUDIO_PUB_SHM_RING_MASK   (LINK_AUDIO_PUB_SHM_RING_SAMPLES - 1)
+
+/* Shared memory layout for one publisher slot */
+typedef struct {
+    int16_t  ring[LINK_AUDIO_PUB_SHM_RING_SAMPLES];  /* stereo int16 ring buffer */
+    volatile uint32_t write_pos;   /* updated by shim (producer), sample index */
+    volatile uint32_t read_pos;    /* updated by subscriber (consumer), sample index */
+    volatile int      active;      /* slot has an active chain instance */
+} link_audio_pub_slot_t;
+
+/* Publisher slot count: 4 per-track + 1 master mix */
+#define LINK_AUDIO_PUB_SLOT_COUNT   (LINK_AUDIO_SHADOW_CHANNELS + 1)
+#define LINK_AUDIO_PUB_MASTER_IDX   LINK_AUDIO_SHADOW_CHANNELS  /* index 4 */
+
+/* Top-level shared memory structure */
+typedef struct {
+    volatile uint32_t magic;       /* 0x4C415042 = "LAPB" - Link Audio Pub Buffer */
+    volatile uint32_t version;     /* structure version, currently 1 */
+    volatile int      num_slots;   /* number of active slots */
+    link_audio_pub_slot_t slots[LINK_AUDIO_PUB_SLOT_COUNT]; /* 0-3: per-track, 4: master */
+} link_audio_pub_shm_t;
+
+#define LINK_AUDIO_PUB_SHM_MAGIC   0x4C415042
+#define LINK_AUDIO_PUB_SHM_VERSION 1
+
 /* Timing */
 #define LINK_AUDIO_SESSION_INTERVAL_MS     1000
 

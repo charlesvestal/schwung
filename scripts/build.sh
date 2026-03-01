@@ -228,7 +228,7 @@ if [ -d "./libs/link/include/ableton" ]; then
         build/arc4random_compat.o \
         build/unified_log.o \
         -o build/link-subscriber \
-        -lpthread -latomic \
+        -lpthread -lrt -latomic \
         -static-libstdc++ \
         -Wl,--wrap=arc4random
     echo "Link Audio subscriber built"

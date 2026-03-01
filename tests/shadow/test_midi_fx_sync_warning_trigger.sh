@@ -33,7 +33,7 @@ fi
 echo "PASS: module details do not auto-trigger MIDI FX warnings"
 
 # Warning overlay should not auto-dismiss on main/parameter knob turns.
-if ! perl -0ne 'exit((/assetWarningActive[\s\S]*isMainKnobTurn[\s\S]*MoveMainKnob[\s\S]*isParamKnobTurn[\s\S]*KNOB_CC_START[\s\S]*KNOB_CC_END[\s\S]*if\s*\(!isMainKnobTurn\s*&&\s*!isParamKnobTurn\)/s) ? 0 : 1)' "$file"; then
+if ! perl -0ne 'exit((/warningActive[\s\S]*isMainKnobTurn[\s\S]*MoveMainKnob[\s\S]*isParamKnobTurn[\s\S]*KNOB_CC_START[\s\S]*KNOB_CC_END[\s\S]*if\s*\(!isMainKnobTurn\s*&&\s*!isParamKnobTurn\)/s) ? 0 : 1)' "$file"; then
   echo "FAIL: warning overlay dismissal is not guarded against knob turns" >&2
   exit 1
 fi

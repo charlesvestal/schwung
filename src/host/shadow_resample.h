@@ -59,6 +59,7 @@ extern volatile native_resample_bridge_mode_t native_resample_bridge_mode;
 extern volatile native_sampler_source_t native_sampler_source;
 extern volatile native_sampler_source_t native_sampler_source_last_known;
 extern volatile int link_audio_routing_enabled;
+extern volatile int link_audio_publish_enabled;
 
 /* Snapshot and component buffers - written by shim rendering, read by apply */
 extern int16_t native_total_mix_snapshot[];
