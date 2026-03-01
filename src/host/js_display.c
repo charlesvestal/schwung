@@ -79,6 +79,37 @@ void js_display_fill_rect(int x, int y, int w, int h, int value) {
     }
 }
 
+void js_display_draw_line(int x0, int y0, int x1, int y1, int value) {
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int sx = dx > 0 ? 1 : -1;
+    int sy = dy > 0 ? 1 : -1;
+    dx = dx < 0 ? -dx : dx;
+    dy = dy < 0 ? -dy : dy;
+
+    if (dx == 0) {
+        int start = y0 < y1 ? y0 : y1;
+        int end = y0 < y1 ? y1 : y0;
+        for (int y = start; y <= end; y++) js_display_set_pixel(x0, y, value);
+        return;
+    }
+    if (dy == 0) {
+        int start = x0 < x1 ? x0 : x1;
+        int end = x0 < x1 ? x1 : x0;
+        for (int x = start; x <= end; x++) js_display_set_pixel(x, y0, value);
+        return;
+    }
+
+    int err = dx - dy;
+    while (1) {
+        js_display_set_pixel(x0, y0, value);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx) { err += dx; y0 += sy; }
+    }
+}
+
 void js_display_pack(uint8_t *dest) {
     int i = 0;
     for (int y = 0; y < DISPLAY_HEIGHT / 8; y++) {
@@ -414,6 +445,21 @@ JSValue js_display_bind_fill_rect(JSContext *ctx, JSValueConst this_val, int arg
     return JS_UNDEFINED;
 }
 
+JSValue js_display_bind_draw_line(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 4) return JS_UNDEFINED;
+    int x0, y0, x1, y1, value = 1;
+    if (JS_ToInt32(ctx, &x0, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &y0, argv[1])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &x1, argv[2])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &y1, argv[3])) return JS_UNDEFINED;
+    if (argc >= 5) {
+        if (JS_ToInt32(ctx, &value, argv[4])) return JS_UNDEFINED;
+    }
+    js_display_draw_line(x0, y0, x1, y1, value);
+    return JS_UNDEFINED;
+}
+
 JSValue js_display_bind_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     js_display_clear();
@@ -454,6 +500,8 @@ void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
         JS_NewCFunction(ctx, js_display_bind_draw_rect, "draw_rect", 5));
     JS_SetPropertyStr(ctx, global_obj, "fill_rect",
         JS_NewCFunction(ctx, js_display_bind_fill_rect, "fill_rect", 5));
+    JS_SetPropertyStr(ctx, global_obj, "draw_line",
+        JS_NewCFunction(ctx, js_display_bind_draw_line, "draw_line", 5));
     JS_SetPropertyStr(ctx, global_obj, "clear_screen",
         JS_NewCFunction(ctx, js_display_bind_clear_screen, "clear_screen", 0));
     JS_SetPropertyStr(ctx, global_obj, "print",

@@ -23,7 +23,8 @@ export const CATEGORIES = [
     { id: 'midi_fx', name: 'MIDI FX' },
     { id: 'midi_source', name: 'MIDI Sources' },
     { id: 'utility', name: 'Utilities' },
-    { id: 'overtake', name: 'Overtake Modules' }
+    { id: 'overtake', name: 'Overtake Modules' },
+    { id: 'tool', name: 'Tools' }
 ];
 
 /* Compare semver versions: returns 1 if a > b, -1 if a < b, 0 if equal */
@@ -53,6 +54,7 @@ export function getInstallSubdir(componentType) {
         case 'midi_fx': return 'midi_fx';
         case 'utility': return 'utilities';
         case 'overtake': return 'overtake';
+        case 'tool': return 'tools';
         default: return 'other';
     }
 }

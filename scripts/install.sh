@@ -1002,6 +1002,7 @@ BEGIN { id=""; name=""; repo=""; asset=""; ctype="" }
     else if (ctype == "midi_fx") subdir = "midi_fx"
     else if (ctype == "utility") subdir = "utilities"
     else if (ctype == "overtake") subdir = "overtake"
+    else if (ctype == "tool") subdir = "tools"
     else subdir = "other"
     print id "|" repo "|" asset "|" name "|" subdir
   }
@@ -1394,6 +1395,14 @@ if [ -f "scripts/fetch_move_manual.sh" ] && scripts/fetch_move_manual.sh 2>/dev/
 else
     qecho "Manual fetch skipped (requires node + curl)"
 fi
+
+# Fix ownership of all files under UserData/move-anything.
+# The host binary runs as root, so tar extractions (e.g. Module Store installs)
+# create root-owned files that can't be updated later. Fix them all.
+qecho "Fixing file ownership..."
+ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything" || true
+# Restore setuid on shim (chown clears it)
+ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || true
 
 qecho ""
 iecho "Restarting Move..."
