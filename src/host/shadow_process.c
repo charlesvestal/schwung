@@ -44,6 +44,7 @@ static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.
 static volatile int link_sub_monitor_started = 0;
 static volatile int link_sub_monitor_running = 0;
 static pthread_t link_sub_monitor_thread;
+static const char *link_sub_pid_path = "/data/UserData/move-anything/link_sub.pid";
 
 /* Recovery constants */
 #define LINK_SUB_STALE_THRESHOLD_MS 5000
@@ -217,6 +218,42 @@ static void link_sub_reap(void) {
     }
 }
 
+static pid_t link_sub_read_pid(void) {
+    FILE *f = fopen(link_sub_pid_path, "r");
+    if (!f) return -1;
+    long pid = -1;
+    if (fscanf(f, "%ld", &pid) != 1) pid = -1;
+    fclose(f);
+    return (pid_t)pid;
+}
+
+static void link_sub_write_pid(pid_t pid) {
+    FILE *f = fopen(link_sub_pid_path, "w");
+    if (f) {
+        fprintf(f, "%d\n", (int)pid);
+        fclose(f);
+    }
+}
+
+/* Check if another shim process already launched a subscriber (via PID file) */
+static void link_sub_refresh_pid(void) {
+    if (link_sub_pid_alive(link_sub_pid)) {
+        link_sub_started = 1;
+        return;
+    }
+    pid_t pid = link_sub_read_pid();
+    if (link_sub_pid_alive(pid)) {
+        link_sub_pid = pid;
+        link_sub_started = 1;
+        return;
+    }
+    if (pid > 0) {
+        unlink(link_sub_pid_path);
+    }
+    link_sub_pid = -1;
+    link_sub_started = 0;
+}
+
 void link_sub_kill(void) {
     if (link_sub_pid > 0) {
         kill(link_sub_pid, SIGTERM);
@@ -262,6 +299,15 @@ void launch_link_subscriber(void) {
     link_sub_reap();
     if (link_sub_started && link_sub_pid > 0) return;
 
+    /* Check if another shim process already owns a running subscriber */
+    link_sub_refresh_pid();
+    if (link_sub_started && link_sub_pid > 0) {
+        unified_log("shim", LOG_LEVEL_INFO,
+                    "Link subscriber already running (adopted pid=%d from pidfile)",
+                    (int)link_sub_pid);
+        return;
+    }
+
     link_sub_kill_orphans();
 
     const char *sub_path = "/data/UserData/move-anything/link-subscriber";
@@ -293,6 +339,7 @@ void launch_link_subscriber(void) {
     }
     link_sub_started = 1;
     link_sub_pid = pid;
+    link_sub_write_pid(pid);
     unified_log("shim", LOG_LEVEL_INFO,
                 "Link subscriber launched: pid=%d", pid);
 }
@@ -331,8 +378,10 @@ static void *link_sub_monitor_main(void *arg) {
              * the fork()-heavy restart cycle that causes audio clicks. */
             if (link_sub_started && link_sub_pid > 0) {
                 unified_log("shim", LOG_LEVEL_INFO,
-                            "Link Audio routing disabled — killing subscriber pid=%d",
-                            (int)link_sub_pid);
+                            "Link Audio routing disabled — killing subscriber pid=%d (la_en=%d rt_en=%d)",
+                            (int)link_sub_pid,
+                            host.link_audio->enabled,
+                            link_audio_routing_enabled);
                 link_sub_kill();
                 usleep(100000);  /* 100ms for clean exit */
                 link_sub_reap();
@@ -342,6 +391,7 @@ static void *link_sub_monitor_main(void *arg) {
                 }
                 link_sub_pid = -1;
                 link_sub_started = 0;
+                unlink(link_sub_pid_path);
                 link_sub_reset_state();
                 kill_pending = 0;
             }
@@ -351,10 +401,14 @@ static void *link_sub_monitor_main(void *arg) {
 
         /* If subscriber not running but routing just got re-enabled, launch it */
         if (!link_sub_started || link_sub_pid <= 0) {
+            unified_log("shim", LOG_LEVEL_DEBUG,
+                        "Link sub check: started=%d pid=%d, calling reap",
+                        link_sub_started, (int)link_sub_pid);
             link_sub_reap();
             if (!link_sub_started || link_sub_pid <= 0) {
                 unified_log("shim", LOG_LEVEL_INFO,
-                            "Link Audio routing enabled — launching subscriber");
+                            "Link Audio routing enabled — launching subscriber (started=%d pid=%d)",
+                            link_sub_started, (int)link_sub_pid);
                 launch_link_subscriber();
                 cooldown_until_ms = link_sub_now_ms() + LINK_SUB_COOLDOWN_MS;
                 last_packets = host.link_audio->packets_intercepted;
@@ -400,12 +454,18 @@ static void *link_sub_monitor_main(void *arg) {
             continue;
         }
 
+        /* Stale detection: only trigger if the subscriber process is NOT alive.
+         * With the SDK-based subscriber, packets_intercepted only counts the
+         * initial discovery packets — ongoing audio flows directly through the
+         * SDK without going through the sendto() hook.  The alive check at the
+         * bottom of the loop handles process crashes. */
         if (link_sub_ever_received > 0 &&
             now_ms > last_packet_ms + LINK_SUB_STALE_THRESHOLD_MS &&
-            now_ms >= cooldown_until_ms) {
+            now_ms >= cooldown_until_ms &&
+            !link_sub_pid_alive(link_sub_pid)) {
             pid_t pid = link_sub_pid;
             unified_log("shim", LOG_LEVEL_INFO,
-                        "Link audio stale detected: la_ever=%u, killing subscriber pid=%d",
+                        "Link audio stale detected: la_ever=%u, subscriber pid=%d not alive, restarting",
                         link_sub_ever_received, (int)pid);
             link_sub_kill();
             kill_pending = 1;

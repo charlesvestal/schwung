@@ -214,6 +214,14 @@ int main()
                 pending = g_pending_channels;
             }
 
+            /* Skip if no Move channels found — our own sink creation triggers
+             * this callback, and Move's channels may not be in the transient list.
+             * Clearing sources here would kill audio flow and trigger stale restart. */
+            if (pending.empty()) {
+                LOG_INFO(LINK_SUB_LOG_SOURCE, "channels changed but no Move channels found, keeping existing sources");
+                continue;
+            }
+
             sources.clear();
             LOG_INFO(LINK_SUB_LOG_SOURCE, "cleared old sources");
 

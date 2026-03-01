@@ -2406,9 +2406,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
             };
             midi_routing_init(&midi_host);
         }
-        /* Launch Link Audio subscriber if feature is enabled */
+        /* Start Link Audio monitor — it will launch the subscriber
+         * once link_audio_routing_enabled is set from config */
         if (link_audio.enabled) {
-            launch_link_subscriber();
             start_link_sub_monitor();
         }
         native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
