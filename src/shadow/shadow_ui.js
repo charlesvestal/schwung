@@ -125,6 +125,7 @@ const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
 const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
 const SHADOW_UI_FLAG_JUMP_TO_SETTINGS = 0x40;
+const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -169,7 +170,8 @@ const VIEWS = {
     UPDATE_PROMPT: "updateprompt",    // Startup update prompt (updates available)
     UPDATE_DETAIL: "updatedetail",    // Detail view for a single update
     UPDATE_RESTART: "updaterestart",   // Restart prompt after core update
-    GLOBAL_SETTINGS: "globalsettings"  // Global settings menu (display, audio, etc.)
+    GLOBAL_SETTINGS: "globalsettings",  // Global settings menu (display, audio, etc.)
+    TOOLS: "tools"                      // Tools menu (Stem Separation, Timestretch)
 };
 
 /* Special action key for swap module option */
@@ -636,6 +638,13 @@ let globalSettingsSectionIndex = 0;
 let globalSettingsInSection = false;
 let globalSettingsItemIndex = 0;
 let globalSettingsEditing = false;
+
+/* Tools menu state */
+let toolsMenuIndex = 0;
+const TOOLS_MENU_ITEMS = [
+    { label: "Stem Separation", id: "stem_separation" },
+    { label: "Timestretch", id: "timestretch" }
+];
 
 const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
 const RESAMPLE_BRIDGE_VALUES = [0, 2];
@@ -3081,6 +3090,37 @@ function doDeleteMasterPreset() {
 }
 
 /* ========== End Master Preset Picker Functions ========== */
+
+/* ========== Tools Menu Functions ========== */
+
+function enterToolsMenu() {
+    toolsMenuIndex = 0;
+    setView(VIEWS.TOOLS);
+    needsRedraw = true;
+    announce("Tools, " + TOOLS_MENU_ITEMS[0].label);
+}
+
+function drawToolsMenu() {
+    clear_screen();
+    drawHeader("Tools");
+
+    const items = TOOLS_MENU_ITEMS.map(item => ({
+        label: item.label,
+        value: ""
+    }));
+    drawMenuList({
+        items,
+        selectedIndex: toolsMenuIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value
+    });
+
+    drawFooter({left: "Back: Exit", right: "Jog: Select"});
+}
 
 /* ========== Global Settings Functions ========== */
 
@@ -6150,6 +6190,10 @@ function handleJog(delta) {
                 announceMenuItem("Module", om.name || om.id || "Unknown");
             }
             break;
+        case VIEWS.TOOLS:
+            toolsMenuIndex = Math.max(0, Math.min(TOOLS_MENU_ITEMS.length - 1, toolsMenuIndex + delta));
+            announce(TOOLS_MENU_ITEMS[toolsMenuIndex].label);
+            break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
@@ -6900,6 +6944,14 @@ function handleSelect() {
                 }
             }
             break;
+        case VIEWS.TOOLS:
+            if (toolsMenuIndex >= 0 && toolsMenuIndex < TOOLS_MENU_ITEMS.length) {
+                const toolItem = TOOLS_MENU_ITEMS[toolsMenuIndex];
+                announce("Selected: " + toolItem.label);
+                debugLog("Tools: selected " + toolItem.id);
+                /* TODO: launch tool action */
+            }
+            break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own select input */
             break;
@@ -7287,6 +7339,12 @@ function handleBack() {
                 shadow_request_exit();
             }
             needsRedraw = true;
+            break;
+        case VIEWS.TOOLS:
+            /* Exit Tools menu → exit shadow mode */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
             break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own back input.
@@ -8708,7 +8766,7 @@ globalThis.tick = function() {
             /* Let jump flags through so shortcuts still work */
             const navFlags = flags & (SHADOW_UI_FLAG_JUMP_TO_SLOT | SHADOW_UI_FLAG_JUMP_TO_MASTER_FX |
                               SHADOW_UI_FLAG_JUMP_TO_OVERTAKE | SHADOW_UI_FLAG_JUMP_TO_SETTINGS |
-                              SHADOW_UI_FLAG_JUMP_TO_SCREENREADER);
+                              SHADOW_UI_FLAG_JUMP_TO_SCREENREADER | SHADOW_UI_FLAG_JUMP_TO_TOOLS);
             const otherFlags = flags & ~navFlags;
             if (otherFlags && typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(otherFlags);
@@ -8717,7 +8775,13 @@ globalThis.tick = function() {
         }
         {
             /* Settings/Screenreader flags take priority (clear conflicting SLOT flag) */
-            if (flags & SHADOW_UI_FLAG_JUMP_TO_SETTINGS) {
+            if (flags & SHADOW_UI_FLAG_JUMP_TO_TOOLS) {
+                debugLog("TOOLS flag detected, entering Tools menu");
+                enterToolsMenu();
+                if (typeof shadow_clear_ui_flags === "function") {
+                    shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_TOOLS | SHADOW_UI_FLAG_JUMP_TO_SLOT);
+                }
+            } else if (flags & SHADOW_UI_FLAG_JUMP_TO_SETTINGS) {
                 debugLog("SETTINGS flag detected, entering Global Settings");
                 enterGlobalSettings();
                 if (typeof shadow_clear_ui_flags === "function") {
@@ -9196,6 +9260,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.GLOBAL_SETTINGS:
             drawGlobalSettings();
+            break;
+        case VIEWS.TOOLS:
+            drawToolsMenu();
             break;
         case VIEWS.OVERTAKE_MODULE:
             try {

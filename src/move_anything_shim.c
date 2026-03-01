@@ -3974,6 +3974,22 @@ do_ioctl:
                     }
                 }
 
+                /* Shift + Volume + Step 13 (note 28) = jump to Tools menu */
+                if (d1 == 28 && type == 0x90 && d2 > 0) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                        shadow_block_plain_volume_hide_until_release = 1;
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_TOOLS;
+                        /* Always ensure display shows shadow UI */
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui();  /* No-op if already running */
+                        /* Block Step note from reaching Move */
+                        uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
+                }
+
                 /* Shift + Step button while shadow UI is displayed = dismiss shadow UI
                  * (user is loading a native Move component to edit) */
                 if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&

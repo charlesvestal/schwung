@@ -73,6 +73,7 @@
 #define SHADOW_UI_FLAG_JUMP_TO_SCREENREADER 0x10 /* Jump to screen reader settings */
 #define SHADOW_UI_FLAG_SET_CHANGED 0x20           /* Set changed - reload slot state */
 #define SHADOW_UI_FLAG_JUMP_TO_SETTINGS 0x40     /* Jump to Global Settings */
+#define SHADOW_UI_FLAG_JUMP_TO_TOOLS 0x80        /* Jump to Tools menu */
 
 /* ============================================================================
  * Special Values
