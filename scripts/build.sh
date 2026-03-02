@@ -383,7 +383,13 @@ fi
 # Copy host files
 cp ./src/host/menu_ui.js ./build/host/
 cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
-cp ./src/host/version.txt ./build/host/
+# Derive version from git tag if available, otherwise use source file
+GIT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+if [ -n "$GIT_VERSION" ]; then
+    echo "$GIT_VERSION" > ./build/host/version.txt
+else
+    cp ./src/host/version.txt ./build/host/
+fi
 # Build display server (live display SSE streaming to browser)
 echo "Building display server..."
 "${CROSS_PREFIX}gcc" -g -O3 \
