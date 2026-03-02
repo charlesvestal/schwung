@@ -3432,6 +3432,21 @@ do_ioctl:
      * Check for and send accessibility announcements via D-Bus. */
     shadow_check_screenreader_announcements();
 
+    /* === SHORTCUT INDICATOR LEDS ===
+     * When Shift+Vol held, light step icon LEDs (CCs 16-31 = icons below steps).
+     * Uses shadow_queue_led which gets flushed by shadow_flush_pending_leds above. */
+    {
+        static int shortcut_leds_on = 0;
+        int want_on = shadow_shift_held && shadow_volume_knob_touched;
+        if (want_on && !shortcut_leds_on) {
+            shadow_queue_led(0x0B, 0xB0, 28, 118);  /* Step 13 icon = LightGrey (Tools) */
+            shortcut_leds_on = 1;
+        } else if (!want_on && shortcut_leds_on) {
+            shadow_queue_led(0x0B, 0xB0, 28, 0);    /* Step 13 icon = off */
+            shortcut_leds_on = 0;
+        }
+    }
+
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
      * Copy shadow mailbox to hardware before ioctl.
      * Move has been writing to shadow_mailbox; now we send that to hardware. */
@@ -3948,6 +3963,22 @@ do_ioctl:
                     if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                         shadow_block_plain_volume_hide_until_release = 1;
                         shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SETTINGS;
+                        /* Always ensure display shows shadow UI */
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui();  /* No-op if already running */
+                        /* Block Step note from reaching Move */
+                        uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
+                }
+
+                /* Shift + Volume + Step 13 (note 28) = jump to Tools menu */
+                if (d1 == 28 && type == 0x90 && d2 > 0) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                        shadow_block_plain_volume_hide_until_release = 1;
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_TOOLS;
                         /* Always ensure display shows shadow UI */
                         shadow_display_mode = 1;
                         shadow_control->display_mode = 1;

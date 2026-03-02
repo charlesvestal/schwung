@@ -15,6 +15,9 @@
 #define SHADOW_LED_QUEUE_SAFE_BYTES 76
 /* In overtake mode we clear Move's cable-0 LEDs, freeing most of the buffer */
 #define SHADOW_LED_OVERTAKE_BUDGET 48
+/* Budget for restoring Move's LED state after overtake exit.
+ * Higher than normal mode to restore quickly, but within safe limits. */
+#define SHADOW_LED_RESTORE_BUDGET 16
 /* Max input LED commands per tick from external devices */
 #define SHADOW_INPUT_LED_MAX_PER_TICK 24
 

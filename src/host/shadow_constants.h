@@ -73,6 +73,7 @@
 #define SHADOW_UI_FLAG_JUMP_TO_SCREENREADER 0x10 /* Jump to screen reader settings */
 #define SHADOW_UI_FLAG_SET_CHANGED 0x20           /* Set changed - reload slot state */
 #define SHADOW_UI_FLAG_JUMP_TO_SETTINGS 0x40     /* Jump to Global Settings */
+#define SHADOW_UI_FLAG_JUMP_TO_TOOLS 0x80        /* Jump to Tools menu */
 
 /* ============================================================================
  * Special Values
@@ -252,7 +253,9 @@ typedef struct shadow_overlay_state_t {
     volatile uint8_t  sampler_preroll_active;     /* 1 = currently in preroll countdown */
     volatile uint16_t sampler_preroll_bars_done;  /* Bars completed in preroll */
 
-    volatile uint8_t  reserved[256 - 218];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
+    volatile float    sampler_bpm;                /* Project BPM from MIDI clock or fallback */
+
+    volatile uint8_t  reserved[256 - 224];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
 } shadow_overlay_state_t;
 
 /* Compile-time size checks */

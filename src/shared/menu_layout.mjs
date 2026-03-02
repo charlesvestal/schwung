@@ -103,7 +103,10 @@ export function drawMenuList({
     getValue,
     getSubLabel = null,
     subLabelOffset = 9,
-    editMode = false
+    editMode = false,
+    scrollSelectedValue = false,
+    prioritizeSelectedValue = false,
+    selectedMinLabelChars = 6
 }) {
     const totalItems = items.length;
     const itemHeight = getSubLabel ? (lineHeight + subLabelOffset) : lineHeight;
@@ -151,12 +154,35 @@ export function drawMenuList({
         const labelPrefix = isSelected ? "> " : "  ";
         let label = getLabel(item, i);
         const fullLabel = label; /* Keep original for scrolling */
-        const value = getValue ? getValue(item, i) : "";
+        const valueRaw = getValue ? getValue(item, i) : "";
+        const fullValue = valueRaw ? String(valueRaw) : "";
+        let displayValue = fullValue;
         let resolvedValueX = valueX;
         let maxLabelChars = 0;
 
-        if (valueAlignRight && value) {
-            resolvedValueX = SCREEN_WIDTH - (value.length * DEFAULT_CHAR_WIDTH) - valuePaddingRight;
+        if (valueAlignRight && fullValue) {
+            let valueXFloor = valueX;
+            if (isSelected && prioritizeSelectedValue) {
+                const minLabelChars = Math.max(0, selectedMinLabelChars | 0);
+                const minLabelWidth = ((labelPrefix.length + minLabelChars) * DEFAULT_CHAR_WIDTH) + labelGap;
+                valueXFloor = labelX + minLabelWidth;
+            }
+
+            resolvedValueX = SCREEN_WIDTH - (fullValue.length * DEFAULT_CHAR_WIDTH) - valuePaddingRight;
+            if (resolvedValueX < valueXFloor) {
+                resolvedValueX = valueXFloor;
+            }
+
+            const maxValueWidth = Math.max(0, SCREEN_WIDTH - valuePaddingRight - resolvedValueX);
+            const maxValueChars = Math.floor(maxValueWidth / DEFAULT_CHAR_WIDTH);
+            if (maxValueChars > 0 && fullValue.length > maxValueChars) {
+                if (isSelected && scrollSelectedValue) {
+                    displayValue = labelScroller.getScrolledText(fullValue, maxValueChars);
+                } else {
+                    displayValue = truncateText(fullValue, maxValueChars);
+                }
+            }
+
             const maxLabelWidth = Math.max(0, resolvedValueX - labelX - labelGap);
             maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
         } else {
@@ -178,19 +204,19 @@ export function drawMenuList({
         if (isSelected) {
             fill_rect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
             print(labelX, y, `${labelPrefix}${label}`, 0);
-            if (value) {
+            if (displayValue) {
                 /* Show brackets around value when in edit mode */
-                const displayValue = editMode ? `[${value}]` : value;
+                const shownValue = editMode ? `[${displayValue}]` : displayValue;
                 /* When valueAlignRight and editMode, shift left to account for added brackets */
                 const editValueX = (editMode && valueAlignRight)
                     ? resolvedValueX - (1 * DEFAULT_CHAR_WIDTH)  /* Shift left for right bracket */
                     : resolvedValueX;
-                print(editValueX, y, displayValue, 0);
+                print(editValueX, y, shownValue, 0);
             }
         } else {
             print(labelX, y, `${labelPrefix}${label}`, 1);
-            if (value) {
-                print(resolvedValueX, y, value, 1);
+            if (displayValue) {
+                print(resolvedValueX, y, displayValue, 1);
             }
         }
 

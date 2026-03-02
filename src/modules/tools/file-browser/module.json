@@ -1,0 +1,13 @@
+{
+    "id": "file-browser",
+    "name": "File Browser",
+    "version": "0.1.0",
+    "description": "Browse files and folders on the device",
+    "author": "Move Anything",
+    "component_type": "tool",
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true,
+        "overtake": false
+    }
+}

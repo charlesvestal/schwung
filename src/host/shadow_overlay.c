@@ -461,6 +461,9 @@ void shadow_overlay_sync(void) {
     ov->sampler_preroll_bars_done = (sampler_state == SAMPLER_PREROLL) ?
         (uint16_t)(sampler_preroll_clock_count / 96) : 0;
 
+    /* Project BPM */
+    ov->sampler_bpm = sampler_get_bpm(NULL);
+
     /* Skipback state */
     ov->skipback_active = (skipback_overlay_timeout > 0) ? 1 : 0;
     ov->skipback_overlay_timeout = (uint16_t)skipback_overlay_timeout;

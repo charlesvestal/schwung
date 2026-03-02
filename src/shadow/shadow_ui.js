@@ -112,6 +112,13 @@ import {
     SET_PAGE_BOX_H
 } from '/data/UserData/move-anything/shared/sampler_overlay.mjs';
 
+import {
+    buildFilepathBrowserState,
+    refreshFilepathBrowser,
+    moveFilepathBrowserSelection,
+    activateFilepathBrowserItem
+} from '/data/UserData/move-anything/shared/filepath_browser.mjs';
+
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
 const TRACK_CC_END = MoveRow1;    // CC 43
@@ -125,11 +132,18 @@ const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
 const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
 const SHADOW_UI_FLAG_JUMP_TO_SETTINGS = 0x40;
+const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
 const KNOB_CC_END = MoveKnob8;    // CC 78
 const NUM_KNOBS = 8;
+
+/* Overtake encoder accumulation — batch knob/jog deltas and flush once per tick.
+ * Without this, every encoder tick generates a separate IPC round-trip to the
+ * module, causing sluggish response when turning fast. */
+let overtakeKnobDelta = [0, 0, 0, 0, 0, 0, 0, 0];  // Accumulated delta per knob (CC 71-78)
+let overtakeJogDelta = 0;                             // Accumulated delta for jog wheel (CC 14)
 
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/patches";
@@ -156,6 +170,7 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // Master FX selection
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
+    FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
     STORE_PICKER_CATEGORIES: "storepickercats", // Store: browse categories
@@ -169,7 +184,14 @@ const VIEWS = {
     UPDATE_PROMPT: "updateprompt",    // Startup update prompt (updates available)
     UPDATE_DETAIL: "updatedetail",    // Detail view for a single update
     UPDATE_RESTART: "updaterestart",   // Restart prompt after core update
-    GLOBAL_SETTINGS: "globalsettings"  // Global settings menu (display, audio, etc.)
+    GLOBAL_SETTINGS: "globalsettings",  // Global settings menu (display, audio, etc.)
+    TOOLS: "tools",                     // Tools menu (Stem Separation, Timestretch)
+    TOOL_FILE_BROWSER: "toolfilebrowser",   // Browse directories/files for tool input
+    TOOL_CONFIRM: "toolconfirm",            // Confirm file selection before processing
+    TOOL_PROCESSING: "toolprocessing",      // Progress/status while tool runs
+    TOOL_RESULT: "toolresult",               // Success/failure result
+    TOOL_ENGINE_SELECT: "toolengineselect",  // Pick engine (e.g. 3-stem vs 4-stem)
+    TOOL_STEM_REVIEW: "toolstemreview"       // Review produced stems before saving
 };
 
 /* Special action key for swap module option */
@@ -238,6 +260,7 @@ const VIEW_NAMES = {
     [VIEWS.COMPONENT_EDIT]: "Preset Picker",
     [VIEWS.MASTER_FX]: "Master FX",
     [VIEWS.HIERARCHY_EDITOR]: "Hierarchy Editor",
+    [VIEWS.FILEPATH_BROWSER]: "File Browser",
     [VIEWS.KNOB_EDITOR]: "Knob Editor",
     [VIEWS.KNOB_PARAM_PICKER]: "Parameter Picker",
     [VIEWS.STORE_PICKER_CATEGORIES]: "Module Store",
@@ -248,7 +271,13 @@ const VIEW_NAMES = {
     [VIEWS.STORE_PICKER_POST_INSTALL]: "Installation Complete",
     [VIEWS.OVERTAKE_MENU]: "Overtake Menu",
     [VIEWS.OVERTAKE_MODULE]: "Overtake Module",
-    [VIEWS.GLOBAL_SETTINGS]: "Settings"
+    [VIEWS.GLOBAL_SETTINGS]: "Settings",
+    [VIEWS.TOOL_FILE_BROWSER]: "File Browser",
+    [VIEWS.TOOL_CONFIRM]: "Confirm",
+    [VIEWS.TOOL_PROCESSING]: "Processing",
+    [VIEWS.TOOL_RESULT]: "Result",
+    [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection",
+    [VIEWS.TOOL_STEM_REVIEW]: "Stem Review"
 };
 
 /* Helper to change view and announce it */
@@ -636,6 +665,32 @@ let globalSettingsSectionIndex = 0;
 let globalSettingsInSection = false;
 let globalSettingsItemIndex = 0;
 let globalSettingsEditing = false;
+
+/* Tools menu state */
+let toolsMenuIndex = 0;
+let toolModules = [];           // Populated by scanForToolModules()
+
+/* Tool file browser state (shared filepath_browser) */
+let toolBrowserState = null;
+let toolSelectedFile = "";
+let toolActiveTool = null;      // Currently active tool module descriptor
+let toolProcessPid = -1;        // PID of background tool process
+let toolOutputDir = "";          // Output directory for current tool run
+let toolResultMessage = "";      // Result message to display
+let toolResultSuccess = false;   // Whether the tool succeeded
+let toolProcessingDots = 0;      // Animation counter for processing view
+let toolProcessStartTime = 0;    // Date.now() when process started
+let toolFileDurationSec = 0;     // Duration of input file in seconds
+let toolStemsFound = 0;          // Number of stem WAV files found in output dir
+let toolExpectedStems = 4;       // Expected number of stems
+let toolOvertakeActive = false;  // True if an interactive tool is running as overtake
+let toolNonOvertake = false;     // True if the active tool runs without overtake (pads still work)
+let toolSelectedEngine = null;   // Selected engine from engines array
+let toolEngineIndex = 0;         // Jog position in engine list
+let toolAvailableEngines = [];   // Engines filtered by installed commands
+let toolStemFiles = [];          // Array of stem .wav filenames in output dir
+let toolStemReviewIndex = 0;     // Selected index (0 = "Save All", 1+ = individual stems)
+let toolStemKept = [];           // Parallel bool array — true if stem is marked to keep
 
 const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
 const RESAMPLE_BRIDGE_VALUES = [0, 2];
@@ -1107,6 +1162,20 @@ let hierEditorIsDynamicItems = false; // true when current level uses items_para
 let hierEditorSelectParam = "";       // param to set when item selected
 let hierEditorNavigateTo = "";        // level to navigate to after item selection (optional)
 
+/* Filepath browser state (for chain_params type: filepath) */
+let filepathBrowserState = null;
+let filepathBrowserParamKey = "";
+const FILEPATH_BROWSER_FS = {
+    readdir(path) {
+        const entries = os.readdir(path) || [];
+        if (Array.isArray(entries[0])) return entries[0];
+        return Array.isArray(entries) ? entries : [];
+    },
+    stat(path) {
+        return os.stat(path);
+    }
+};
+
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
 let loadedModuleSlot = -1;       // Which slot the module UI is for
@@ -1210,6 +1279,7 @@ function setupModuleParamShims(slot, componentKey) {
 function clearModuleParamShims() {
     delete globalThis.host_module_get_param;
     delete globalThis.host_module_set_param;
+    delete globalThis.host_exit_module;
 }
 
 /* Load a module's UI for editing */
@@ -1676,10 +1746,53 @@ function exitOvertakeMode() {
     overtakeModulePath = "";
     overtakeModuleCallbacks = null;
 
-    /* Start progressive LED clearing before exiting */
+    /* Reset encoder accumulation */
+    for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+    overtakeJogDelta = 0;
+
+    /* Signal exit — C-side LED cache will restore Move's LEDs
+     * when overtake_mode transitions back to 0 */
     overtakeExitPending = true;
-    ledClearIndex = 0;
     needsRedraw = true;
+}
+
+/* Direct exit for interactive tools - skip LED clearing ceremony */
+function exitToolOvertake() {
+    debugLog("exitToolOvertake: direct tool exit, nonOvertake=" + toolNonOvertake);
+
+    /* Deactivate LED queue (no-op if never activated for non-overtake tools) */
+    deactivateLedQueue();
+
+    /* Unload overtake DSP */
+    if (typeof shadow_set_param === "function") {
+        shadow_set_param(0, "overtake_dsp:unload", "1");
+    }
+
+    /* Clean up shims */
+    delete globalThis.host_module_set_param;
+    delete globalThis.host_module_get_param;
+    delete globalThis.host_exit_module;
+
+    /* Reset overtake state */
+    overtakeModuleLoaded = false;
+    overtakeModulePath = "";
+    overtakeModuleCallbacks = null;
+    overtakeExitPending = false;
+    overtakeInitPending = false;
+
+    /* Reset encoder accumulation */
+    for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+    overtakeJogDelta = 0;
+
+    /* Disable overtake mode (non-overtake tools never changed it, so skip) */
+    if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
+        shadow_set_overtake_mode(0);
+    }
+
+    /* Return to tools menu */
+    toolOvertakeActive = false;
+    toolNonOvertake = false;
+    enterToolsMenu();
 }
 
 /* Complete the exit after LEDs are cleared */
@@ -1689,6 +1802,13 @@ function completeOvertakeExit() {
     /* Disable overtake mode to allow MIDI to reach Move again */
     if (typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
+    }
+
+    /* If exiting an interactive tool, return to tools menu instead of Move */
+    if (toolOvertakeActive) {
+        toolOvertakeActive = false;
+        enterToolsMenu();
+        return;
     }
 
     /* Return to slots view */
@@ -1701,16 +1821,18 @@ function completeOvertakeExit() {
 }
 
 /* Load and run an overtake module */
-function loadOvertakeModule(moduleInfo) {
-    debugLog("loadOvertakeModule called with: " + JSON.stringify(moduleInfo));
+function loadOvertakeModule(moduleInfo, skipOvertake) {
+    debugLog("loadOvertakeModule called with: " + JSON.stringify(moduleInfo) + " skipOvertake=" + !!skipOvertake);
     if (!moduleInfo || !moduleInfo.uiPath) {
         debugLog("loadOvertakeModule: no moduleInfo or uiPath");
         return false;
     }
 
     try {
-        /* Step 1: Enable overtake mode 2 (module) - all MIDI forwarded including external */
-        if (typeof shadow_set_overtake_mode === "function") {
+        /* Step 1: Set overtake mode.
+         * Non-overtake tools stay at mode 0 — jog/click/back already forwarded to shadow,
+         * and everything else (pads, steps, knobs) passes through to Move normally. */
+        if (!skipOvertake && typeof shadow_set_overtake_mode === "function") {
             shadow_set_overtake_mode(2);  /* 2 = module mode (all events) */
             debugLog("loadOvertakeModule: overtake_mode=2 (module)");
         }
@@ -1721,8 +1843,9 @@ function loadOvertakeModule(moduleInfo) {
         debugLog("loadOvertakeModule: escape state reset");
 
         /* Activate LED queue before loading module - intercepts move_midi_internal_send
-         * to prevent SHM buffer flooding from modules that send many LEDs per tick */
-        activateLedQueue();
+         * to prevent SHM buffer flooding from modules that send many LEDs per tick.
+         * Non-overtake tools don't own LEDs, so skip this. */
+        if (!skipOvertake) activateLedQueue();
 
         /* Save current globals before loading - module may overwrite them */
         const savedInit = globalThis.init;
@@ -1754,6 +1877,14 @@ function loadOvertakeModule(moduleInfo) {
                 return shadow_get_param(0, "overtake_dsp:" + key);
             }
             return null;
+        };
+        globalThis.host_exit_module = function() {
+            debugLog("host_exit_module called by overtake module");
+            if (toolOvertakeActive) {
+                exitToolOvertake();
+            } else {
+                exitOvertakeMode();
+            }
         };
         debugLog("loadOvertakeModule: param shims installed");
 
@@ -1802,11 +1933,20 @@ function loadOvertakeModule(moduleInfo) {
 
         overtakeModuleLoaded = true;
 
-        /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen */
-        overtakeInitPending = true;
-        overtakeInitTicks = 0;
-        ledClearIndex = 0;  /* Start LED clearing from beginning */
-        debugLog("loadOvertakeModule: init deferred, LEDs will clear progressively");
+        /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen.
+         * Non-overtake tools don't own LEDs, so call init() immediately. */
+        if (skipOvertake) {
+            overtakeInitPending = false;
+            debugLog("loadOvertakeModule: non-overtake, calling init() immediately");
+            if (overtakeModuleCallbacks && overtakeModuleCallbacks.init) {
+                overtakeModuleCallbacks.init();
+            }
+        } else {
+            overtakeInitPending = true;
+            overtakeInitTicks = 0;
+            ledClearIndex = 0;  /* Start LED clearing from beginning */
+            debugLog("loadOvertakeModule: init deferred, LEDs will clear progressively");
+        }
 
         return true;
     } catch (e) {
@@ -1820,6 +1960,7 @@ function loadOvertakeModule(moduleInfo) {
         }
         delete globalThis.host_module_set_param;
         delete globalThis.host_module_get_param;
+        delete globalThis.host_exit_module;
         if (typeof shadow_set_overtake_mode === "function") {
             shadow_set_overtake_mode(0);
         }
@@ -3081,6 +3222,666 @@ function doDeleteMasterPreset() {
 }
 
 /* ========== End Master Preset Picker Functions ========== */
+
+/* ========== Tools Menu Functions ========== */
+
+function scanForToolModules() {
+    const TOOLS_DIR = "/data/UserData/move-anything/modules/tools";
+    const result = [];
+
+    debugLog("scanForToolModules starting");
+
+    try {
+        const entries = os.readdir(TOOLS_DIR) || [];
+        const dirList = entries[0];
+        if (!Array.isArray(dirList)) {
+            debugLog("scanForToolModules: no entries");
+            return result;
+        }
+
+        for (const entry of dirList) {
+            if (entry === "." || entry === "..") continue;
+            const dirPath = `${TOOLS_DIR}/${entry}`;
+            const modulePath = `${dirPath}/module.json`;
+            try {
+                const content = std.loadFile(modulePath);
+                if (!content) continue;
+                const json = JSON.parse(content);
+                if (json.component_type === "tool") {
+                    debugLog("FOUND tool: " + json.name);
+                    result.push({
+                        id: json.id || entry,
+                        name: json.name || entry,
+                        path: dirPath,
+                        tool_config: json.tool_config || null
+                    });
+                }
+            } catch (e) {
+                /* Skip directories without readable module.json */
+            }
+        }
+    } catch (e) {
+        debugLog("scanForToolModules error: " + e);
+    }
+
+    debugLog("scanForToolModules: found " + result.length + " tools");
+    return result;
+}
+
+function enterToolsMenu() {
+    toolModules = scanForToolModules();
+    toolsMenuIndex = 0;
+    setView(VIEWS.TOOLS);
+    needsRedraw = true;
+    if (toolModules.length > 0) {
+        announce("Tools, " + toolModules[0].name);
+    } else {
+        announce("Tools, no tools installed");
+    }
+}
+
+function drawToolsMenu() {
+    clear_screen();
+    drawHeader("Tools");
+
+    if (toolModules.length === 0) {
+        print(4, 28, "No tools installed", 1);
+        drawFooter({left: "Back: Exit"});
+        return;
+    }
+
+    const items = toolModules.map(m => ({
+        label: m.name,
+        value: ""
+    }));
+    drawMenuList({
+        items,
+        selectedIndex: toolsMenuIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value
+    });
+
+    drawFooter({left: "Back: Exit", right: "Jog: Select"});
+}
+
+/* ========== Tool File Browser Functions (shared filepath_browser) ========== */
+
+function enterToolFileBrowser(toolModule) {
+    debugLog("enterToolFileBrowser: " + toolModule.id);
+    toolActiveTool = toolModule;
+    const exts = (toolModule.tool_config && toolModule.tool_config.input_extensions) || [".wav"];
+    const filter = Array.isArray(exts) ? exts : [exts];
+    toolBrowserState = buildFilepathBrowserState(
+        { root: "/data/UserData/UserLibrary", filter: filter, name: toolModule.name },
+        ""
+    );
+    refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
+    setView(VIEWS.TOOL_FILE_BROWSER);
+    needsRedraw = true;
+    const firstEntry = toolBrowserState.items.length > 0 ? toolBrowserState.items[0].label : "empty";
+    announce(toolModule.name + " - Browse files, " + firstEntry);
+    debugLog("enterToolFileBrowser: view now=" + view + " items=" + toolBrowserState.items.length);
+}
+
+function toolBrowserNavigate(delta) {
+    if (!toolBrowserState || toolBrowserState.items.length === 0) return;
+    moveFilepathBrowserSelection(toolBrowserState, delta);
+    const item = toolBrowserState.items[toolBrowserState.selectedIndex];
+    announce(item.label + (item.kind === "dir" ? " folder" : ""));
+}
+
+function toolBrowserSelect() {
+    if (!toolBrowserState || toolBrowserState.items.length === 0) return;
+    const result = activateFilepathBrowserItem(toolBrowserState);
+    if (result.action === "open") {
+        refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
+        needsRedraw = true;
+        if (toolBrowserState.items.length > 0) {
+            announce(toolBrowserState.items[0].label);
+        } else {
+            announce("empty");
+        }
+    } else if (result.action === "select") {
+        toolSelectedFile = result.value;
+        if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.interactive) {
+            startInteractiveTool(toolActiveTool, result.value);
+        } else if (toolActiveTool && toolActiveTool.tool_config &&
+                   toolActiveTool.tool_config.engines) {
+            enterToolEngineSelect();
+        } else {
+            toolSelectedEngine = null;
+            enterToolConfirm();
+        }
+    }
+}
+
+function toolBrowserBack() {
+    if (!toolBrowserState) { enterToolsMenu(); return; }
+    const root = toolBrowserState.root;
+    if (toolBrowserState.currentDir === root) {
+        enterToolsMenu();
+        return;
+    }
+    /* Navigate up by setting currentDir to parent */
+    const lastSlash = toolBrowserState.currentDir.lastIndexOf("/");
+    if (lastSlash > 0) {
+        toolBrowserState.currentDir = toolBrowserState.currentDir.substring(0, lastSlash);
+        if (toolBrowserState.currentDir.length < root.length) {
+            toolBrowserState.currentDir = root;
+        }
+    } else {
+        toolBrowserState.currentDir = root;
+    }
+    toolBrowserState.selectedIndex = 0;
+    toolBrowserState.selectedPath = "";
+    refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
+    needsRedraw = true;
+    const dirName = toolBrowserState.currentDir.substring(toolBrowserState.currentDir.lastIndexOf("/") + 1);
+    announce(dirName);
+}
+
+function drawToolFileBrowser() {
+    clear_screen();
+
+    if (!toolBrowserState) {
+        drawHeader("Browser");
+        print(4, 28, "No files found", 1);
+        drawFooter({left: "Back: Up"});
+        return;
+    }
+
+    /* Show current directory name in header */
+    const dirName = toolBrowserState.currentDir.substring(toolBrowserState.currentDir.lastIndexOf("/") + 1);
+    drawHeader(dirName);
+
+    if (toolBrowserState.items.length === 0) {
+        print(4, 28, "No files found", 1);
+        drawFooter({left: "Back: Up"});
+        return;
+    }
+
+    drawMenuList({
+        items: toolBrowserState.items,
+        selectedIndex: toolBrowserState.selectedIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: () => ""
+    });
+
+    drawFooter({left: "Back: Up", right: "Jog: Select"});
+}
+
+/* ========== Tool Engine Selection View ========== */
+
+/* Filter engines to only those whose command script exists on disk */
+function getAvailableEngines() {
+    const engines = toolActiveTool.tool_config.engines;
+    if (!engines) return [];
+    return engines.filter(e => {
+        const cmdPath = toolActiveTool.path + "/" + e.command;
+        try {
+            const st = os.stat(cmdPath);
+            return st && st[1] === 0;
+        } catch (err) { return false; }
+    });
+}
+
+function enterToolEngineSelect() {
+    toolEngineIndex = 0;
+    toolSelectedEngine = null;
+    toolAvailableEngines = getAvailableEngines();
+    if (toolAvailableEngines.length === 0) {
+        announce("No engines installed");
+        return;
+    }
+    if (toolAvailableEngines.length === 1) {
+        /* Only one engine available — skip selection */
+        toolSelectedEngine = toolAvailableEngines[0];
+        enterToolConfirm();
+        return;
+    }
+    setView(VIEWS.TOOL_ENGINE_SELECT);
+    needsRedraw = true;
+    announce("Choose engine, " + toolAvailableEngines[0].name);
+}
+
+function toolEngineNavigate(delta) {
+    if (toolAvailableEngines.length === 0) return;
+    toolEngineIndex = Math.max(0, Math.min(toolAvailableEngines.length - 1, toolEngineIndex + delta));
+    announce(toolAvailableEngines[toolEngineIndex].name);
+}
+
+function toolEngineConfirm() {
+    toolSelectedEngine = toolAvailableEngines[toolEngineIndex];
+    enterToolConfirm();
+}
+
+function drawToolEngineSelect() {
+    clear_screen();
+    drawHeader("Choose Engine");
+
+    const items = toolAvailableEngines.map(e => ({
+        label: e.name,
+        value: e.stems ? e.stems.length + " stems" : ""
+    }));
+    drawMenuList({
+        items,
+        selectedIndex: toolEngineIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value
+    });
+
+    drawFooter({left: "Back: Files", right: "Jog: Select"});
+}
+
+/* ========== Tool Confirm View ========== */
+
+/* Read WAV file duration in seconds from header.
+ * WAV format: bytes 24-27 = sample rate (uint32 LE),
+ *             bytes 28-31 = byte rate (uint32 LE),
+ *             bytes 32-33 = block align (uint16 LE).
+ * File size minus header (~44 bytes) divided by byte rate = duration. */
+function getWavDurationSec(filePath) {
+    try {
+        const st = os.stat(filePath);
+        if (!st || st[1] !== 0) return 0;
+        const fileSize = st[0].size;
+
+        const fd = os.open(filePath, os.O_RDONLY);
+        if (fd < 0) return 0;
+        const buf = new ArrayBuffer(44);
+        os.read(fd, buf, 0, 44);
+        os.close(fd);
+
+        const view = new DataView(buf);
+        const byteRate = view.getUint32(28, true);  /* little-endian */
+        if (byteRate <= 0) return 0;
+        return (fileSize - 44) / byteRate;
+    } catch (e) {
+        debugLog("getWavDurationSec error: " + e);
+        return 0;
+    }
+}
+
+/* Estimate processing time based on selected engine.
+ * SpleeterRT (3-stem): ~0.5x realtime on Move's Cortex-A72.
+ * Spleeter TFLite (4-stem): ~3.0x realtime. */
+function getToolProcessingRatio() {
+    if (toolSelectedEngine && toolSelectedEngine.processing_ratio) {
+        return toolSelectedEngine.processing_ratio;
+    }
+    return 0.5;  /* default for legacy/unknown engines */
+}
+
+function formatTime(seconds) {
+    seconds = Math.round(seconds);
+    if (seconds < 60) return seconds + "s";
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return m + "m " + (s < 10 ? "0" : "") + s + "s";
+}
+
+function enterToolConfirm() {
+    /* Read file duration for time estimate */
+    toolFileDurationSec = getWavDurationSec(toolSelectedFile);
+    setView(VIEWS.TOOL_CONFIRM);
+    needsRedraw = true;
+    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+    const estSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
+    const estStr = estSec > 0 ? (", about " + formatTime(estSec)) : "";
+    announce("Separate " + fileName + "? Jog to confirm, Back to cancel" + estStr);
+}
+
+function drawToolConfirm() {
+    clear_screen();
+    drawHeader(toolActiveTool ? toolActiveTool.name : "Confirm");
+
+    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+    /* Truncate filename for display if needed */
+    const displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
+
+    print(4, 16, "Process this file?", 1);
+    print(4, 28, displayName, 1);
+
+    /* Show selected engine name */
+    if (toolSelectedEngine && toolSelectedEngine.name) {
+        print(4, 40, "Engine: " + toolSelectedEngine.name, 1);
+    }
+
+    drawFooter({right: "Jog: Confirm"});
+}
+
+/* ========== Tool Processing View ========== */
+
+function startToolProcess() {
+    if (!toolActiveTool || !toolSelectedFile) return;
+
+    /* Compute output directory */
+    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+    const baseName = fileName.replace(/\.[^.]+$/, "");  /* Remove extension */
+    toolOutputDir = "/data/UserData/UserLibrary/Samples/Move Everything/Stems/" + baseName;
+
+    /* Create output directory hierarchy */
+    try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything", 0o755); } catch (e) {}
+    try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything/Stems", 0o755); } catch (e) {}
+    try { os.mkdir(toolOutputDir, 0o755); } catch (e) {}
+
+    /* Remove stale marker files from previous runs */
+    try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
+    try { os.remove(toolOutputDir + "/.error"); } catch (e) {}
+
+    /* Spawn the tool process — use selected engine's command if available */
+    const engineCmd = toolSelectedEngine ? toolSelectedEngine.command
+        : (toolActiveTool.tool_config.command || "separate");
+    const command = toolActiveTool.path + "/" + engineCmd;
+    debugLog("startToolProcess: " + command + " " + toolSelectedFile + " " + toolOutputDir);
+
+    try {
+        toolProcessPid = os.exec([command, toolSelectedFile, toolOutputDir], { block: false });
+        debugLog("startToolProcess: pid=" + toolProcessPid);
+    } catch (e) {
+        debugLog("startToolProcess error: " + e);
+        toolProcessPid = -1;
+        toolResultSuccess = false;
+        toolResultMessage = "Failed to start: " + e;
+        setView(VIEWS.TOOL_RESULT);
+        needsRedraw = true;
+        announce("Error: " + toolResultMessage);
+        return;
+    }
+
+    toolProcessingDots = 0;
+    toolProcessStartTime = Date.now();
+    toolStemsFound = 0;
+    toolExpectedStems = (toolSelectedEngine && toolSelectedEngine.stems)
+        ? toolSelectedEngine.stems.length
+        : (toolActiveTool.tool_config && toolActiveTool.tool_config.stems)
+            ? toolActiveTool.tool_config.stems.length : 4;
+    setView(VIEWS.TOOL_PROCESSING);
+    needsRedraw = true;
+    const estSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
+    const estStr = estSec > 0 ? (", about " + formatTime(estSec) + " remaining") : "";
+    announce("Processing" + estStr);
+}
+
+function startInteractiveTool(toolModule, filePath) {
+    toolActiveTool = toolModule;
+    toolSelectedFile = filePath;
+    toolOvertakeActive = true;
+
+    /* Non-overtake tools keep pads/buttons working for Move */
+    const skipOvertake = (toolModule.tool_config && toolModule.tool_config.overtake === false);
+    toolNonOvertake = skipOvertake;
+
+    /* Build a moduleInfo descriptor compatible with loadOvertakeModule */
+    const uiPath = toolModule.path + "/ui.js";
+    const uiStat = os.stat(uiPath);
+    if (!uiStat || uiStat[0] === -1) {
+        announce("Tool UI not found");
+        setView(VIEWS.TOOL_RESULT);
+        toolResultSuccess = false;
+        toolResultMessage = "Missing ui.js";
+        toolOvertakeActive = false;
+        toolNonOvertake = false;
+        needsRedraw = true;
+        return;
+    }
+
+    /* Check for DSP plugin */
+    const dspPath = toolModule.path + "/dsp.so";
+    const dspStat = os.stat(dspPath);
+    const hasDsp = (dspStat && dspStat[0] !== -1) ? "dsp.so" : null;
+
+    /* Construct moduleInfo in the same format as scanForOvertakeModules */
+    const moduleInfo = {
+        id: toolModule.id,
+        name: toolModule.name,
+        path: toolModule.path,
+        uiPath: uiPath,
+        dsp: hasDsp,
+        basePath: toolModule.path
+    };
+
+    /* Reuse the existing overtake module loading infrastructure */
+    announce("Loading " + toolModule.name);
+    const success = loadOvertakeModule(moduleInfo, skipOvertake);
+    if (success) {
+        /* DSP is now loaded — pass the selected file path */
+        if (typeof shadow_set_param === "function") {
+            shadow_set_param(0, "overtake_dsp:file_path", filePath);
+            /* Pass project BPM for tempo-aware tools */
+            if (overlayState && overlayState.samplerBpm > 0) {
+                shadow_set_param(0, "overtake_dsp:project_bpm", String(overlayState.samplerBpm));
+            }
+        }
+    } else {
+        toolOvertakeActive = false;
+        setView(VIEWS.TOOL_RESULT);
+        toolResultSuccess = false;
+        toolResultMessage = "Failed to load tool";
+        needsRedraw = true;
+        announce("Error: Failed to load tool");
+    }
+}
+
+function countStemFiles() {
+    /* Count .wav files in the output directory */
+    try {
+        const entries = os.readdir(toolOutputDir) || [];
+        const dirList = entries[0];
+        if (!Array.isArray(dirList)) return 0;
+        let count = 0;
+        for (const name of dirList) {
+            if (name.toLowerCase().endsWith(".wav")) count++;
+        }
+        return count;
+    } catch (e) { return 0; }
+}
+
+function getStemFileNames() {
+    try {
+        const entries = os.readdir(toolOutputDir) || [];
+        const dirList = entries[0];
+        if (!Array.isArray(dirList)) return [];
+        const wavFiles = [];
+        for (const name of dirList) {
+            if (name.toLowerCase().endsWith(".wav")) wavFiles.push(name);
+        }
+        wavFiles.sort();
+        return wavFiles;
+    } catch (e) { return []; }
+}
+
+function pollToolProcess() {
+    /* Count completed stem files for progress */
+    toolStemsFound = countStemFiles();
+
+    /* Check for .done or .error marker files */
+    try {
+        const doneStat = os.stat(toolOutputDir + "/.done");
+        if (doneStat && doneStat[1] === 0) {
+            /* Success! */
+            toolProcessPid = -1;
+            toolResultSuccess = true;
+            toolStemFiles = getStemFileNames();
+            if (toolStemFiles.length > 0) {
+                toolStemReviewIndex = 0;
+                toolStemKept = new Array(toolStemFiles.length).fill(true);
+                setView(VIEWS.TOOL_STEM_REVIEW);
+                needsRedraw = true;
+                announce("Complete! " + toolStemFiles.length + " stems. Push to save all, or jog to choose.");
+            } else {
+                /* Fallback if no WAVs found */
+                const baseName = toolOutputDir.substring(toolOutputDir.lastIndexOf("/") + 1);
+                toolResultMessage = "Stems saved to\nStems/" + baseName + "/";
+                setView(VIEWS.TOOL_RESULT);
+                needsRedraw = true;
+                announce("Complete! Stems saved to Stems " + baseName);
+            }
+            return;
+        }
+    } catch (e) { /* .done not found yet */ }
+
+    try {
+        const errStat = os.stat(toolOutputDir + "/.error");
+        if (errStat && errStat[1] === 0) {
+            /* Error */
+            toolProcessPid = -1;
+            toolResultSuccess = false;
+            try {
+                const errContent = std.loadFile(toolOutputDir + "/.error");
+                toolResultMessage = "Error: " + (errContent || "unknown").trim();
+            } catch (e2) {
+                toolResultMessage = "Error: separation failed";
+            }
+            setView(VIEWS.TOOL_RESULT);
+            needsRedraw = true;
+            announce(toolResultMessage);
+            return;
+        }
+    } catch (e) { /* .error not found yet */ }
+
+    /* Also check if process exited via waitpid (non-blocking) */
+    if (toolProcessPid > 0) {
+        try {
+            const wp = os.waitpid(toolProcessPid, os.WNOHANG);
+            if (wp && wp[0] === toolProcessPid) {
+                /* Process exited but no marker file — check exit status */
+                const status = wp[1];
+                const exitCode = (status >> 8) & 0xff;
+                if (exitCode !== 0) {
+                    toolProcessPid = -1;
+                    toolResultSuccess = false;
+                    toolResultMessage = "Process exited with code " + exitCode;
+                    setView(VIEWS.TOOL_RESULT);
+                    needsRedraw = true;
+                    announce(toolResultMessage);
+                }
+                /* If exit code 0 but no .done yet, keep polling briefly */
+            }
+        } catch (e) { /* waitpid not available or error, keep polling */ }
+    }
+}
+
+function cancelToolProcess() {
+    if (toolProcessPid > 0) {
+        try {
+            os.kill(toolProcessPid, os.SIGTERM);
+            debugLog("cancelToolProcess: killed pid " + toolProcessPid);
+        } catch (e) {
+            debugLog("cancelToolProcess error: " + e);
+        }
+        toolProcessPid = -1;
+    }
+    toolResultSuccess = false;
+    toolResultMessage = "Cancelled";
+    setView(VIEWS.TOOL_RESULT);
+    needsRedraw = true;
+    announce("Cancelled");
+}
+
+function drawToolProcessing() {
+    clear_screen();
+    drawHeader(toolActiveTool ? toolActiveTool.name : "Processing");
+
+    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+    const displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
+
+    /* Elapsed time */
+    const elapsedMs = Date.now() - toolProcessStartTime;
+    const elapsedSec = Math.floor(elapsedMs / 1000);
+    const elapsedStr = formatTime(elapsedSec);
+
+    /* Estimated remaining */
+    const estTotalSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
+    let remainStr = "";
+    if (estTotalSec > 0) {
+        const remainSec = Math.max(0, estTotalSec - elapsedSec);
+        remainStr = "~" + formatTime(remainSec) + " left";
+    }
+
+    /* Progress bar based on stem count */
+    const stemProgress = toolExpectedStems > 0
+        ? toolStemsFound + "/" + toolExpectedStems + " stems"
+        : "";
+
+    /* Animated dots */
+    toolProcessingDots = (toolProcessingDots + 1) % 4;
+    const dots = ".".repeat(toolProcessingDots + 1);
+
+    print(4, 14, displayName, 1);
+    print(4, 24, "Processing" + dots, 1);
+    print(4, 34, elapsedStr + " elapsed  " + remainStr, 1);
+    if (stemProgress) {
+        print(4, 44, stemProgress, 1);
+    }
+
+    drawFooter({left: "Back: Cancel"});
+}
+
+/* ========== Tool Result View ========== */
+
+function drawToolResult() {
+    clear_screen();
+    drawHeader(toolResultSuccess ? "Complete" : "Error");
+
+    /* Split message by newlines and draw each line */
+    const lines = toolResultMessage.split("\n");
+    let y = 20;
+    for (const line of lines) {
+        print(4, y, line, 1);
+        y += 12;
+    }
+
+    drawFooter({left: "Back: Tools"});
+}
+
+/* ========== Tool Stem Review View ========== */
+
+function drawToolStemReview() {
+    clear_screen();
+    drawHeader("Stems");
+
+    const keptCount = toolStemKept.filter(k => k).length;
+    let actionLabel;
+    if (keptCount === 0) {
+        actionLabel = ">> Cancel";
+    } else if (keptCount === toolStemFiles.length) {
+        actionLabel = ">> Save All";
+    } else {
+        actionLabel = ">> Save " + keptCount + " Stem" + (keptCount > 1 ? "s" : "");
+    }
+    const items = [{ label: actionLabel, value: "" }];
+    for (let i = 0; i < toolStemFiles.length; i++) {
+        const name = toolStemFiles[i].replace(/\.wav$/i, "");
+        const prefix = toolStemKept[i] ? "[x] " : "[ ] ";
+        items.push({ label: prefix + name, value: "" });
+    }
+
+    drawMenuList({
+        items,
+        selectedIndex: toolStemReviewIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value
+    });
+
+    drawFooter({right: "Select"});
+}
 
 /* ========== Global Settings Functions ========== */
 
@@ -4582,6 +5383,8 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     hierEditorEditMode = false;
     hierEditorIsMasterFx = false;
     hierEditorMasterFxSlot = -1;
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
 
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
@@ -4840,9 +5643,40 @@ function exitHierarchyEditor() {
     hierEditorPresetEditMode = false;
     hierEditorIsMasterFx = false;
     hierEditorMasterFxSlot = -1;
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
 
     view = returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
     needsRedraw = true;
+}
+
+/* Open generic file browser for a filepath parameter */
+function openHierarchyFilepathBrowser(key, meta) {
+    const effectiveMeta = meta || getParamMetadata(key);
+    if (!effectiveMeta || effectiveMeta.type !== "filepath") return false;
+
+    const fullKey = buildHierarchyParamKey(key);
+    const currentVal = getSlotParam(hierEditorSlot, fullKey) || "";
+
+    filepathBrowserParamKey = key;
+    filepathBrowserState = buildFilepathBrowserState(effectiveMeta, currentVal);
+    refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+    setView(VIEWS.FILEPATH_BROWSER);
+
+    if (filepathBrowserState.items.length > 0) {
+        const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+        announceMenuItem(selected.label || "File", "");
+    } else {
+        announce("No files found");
+    }
+
+    return true;
+}
+
+function closeHierarchyFilepathBrowser() {
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
+    setView(VIEWS.HIERARCHY_EDITOR);
 }
 
 /* Get param metadata from chain_params */
@@ -5393,6 +6227,12 @@ function formatHierDisplayValue(key, val) {
         return val;
     }
 
+    if (meta && meta.type === "filepath") {
+        if (!val) return "";
+        const slashIdx = val.lastIndexOf('/');
+        return slashIdx >= 0 ? val.slice(slashIdx + 1) : val;
+    }
+
     const num = parseFloat(val);
     if (isNaN(num)) return val;
 
@@ -5409,6 +6249,43 @@ function formatHierDisplayValue(key, val) {
         return Math.round(num).toString();
     }
     return num.toFixed(2);
+}
+
+/* Draw filepath browser for filepath chain params */
+function drawFilepathBrowser() {
+    clear_screen();
+
+    const state = filepathBrowserState;
+    const title = state && state.title ? state.title : "File Browser";
+    drawHeader(truncateText(title, 24));
+
+    if (!state) {
+        print(4, LIST_TOP_Y, "Browser unavailable", 1);
+        drawFooter({ left: "Push: return", right: "Jog: scroll" });
+        return;
+    }
+
+    if (state.error) {
+        print(4, LIST_TOP_Y, truncateText(state.error, 20), 1);
+    }
+
+    if (!state.items || state.items.length === 0) {
+        print(4, LIST_TOP_Y + 10, "No files", 1);
+    } else {
+        drawMenuList({
+            items: state.items,
+            selectedIndex: state.selectedIndex,
+            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+            getLabel: (item) => item.label,
+            getValue: () => ""
+        });
+    }
+
+    const selected = state.items && state.items.length > 0
+        ? state.items[state.selectedIndex]
+        : null;
+    const actionText = selected && selected.kind === "file" ? "Push: select" : "Push: open";
+    drawFooter({ left: actionText, right: "Jog: scroll" });
 }
 
 /* Draw the hierarchy-based parameter editor */
@@ -5570,7 +6447,10 @@ function drawHierarchyEditor() {
                 getLabel: (item) => item.label,
                 getValue: (item) => item.value,
                 valueAlignRight: true,
-                editMode: hierEditorEditMode
+                editMode: hierEditorEditMode,
+                scrollSelectedValue: true,
+                prioritizeSelectedValue: true,
+                selectedMinLabelChars: 6
             });
         }
 
@@ -6094,6 +6974,13 @@ function handleJog(delta) {
                 }
             }
             break;
+        case VIEWS.FILEPATH_BROWSER:
+            if (filepathBrowserState) {
+                moveFilepathBrowserSelection(filepathBrowserState, delta);
+                const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+                if (selected) announceMenuItem(selected.label || "File", "");
+            }
+            break;
         case VIEWS.KNOB_EDITOR:
             /* Navigate knob list (8 knobs) */
             knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS - 1, knobEditorIndex + delta));
@@ -6150,6 +7037,33 @@ function handleJog(delta) {
                 announceMenuItem("Module", om.name || om.id || "Unknown");
             }
             break;
+        case VIEWS.TOOLS:
+            toolsMenuIndex = Math.max(0, Math.min(toolModules.length - 1, toolsMenuIndex + delta));
+            if (toolModules.length > 0) {
+                announce(toolModules[toolsMenuIndex].name);
+            }
+            break;
+        case VIEWS.TOOL_FILE_BROWSER:
+            toolBrowserNavigate(delta);
+            break;
+        case VIEWS.TOOL_ENGINE_SELECT:
+            toolEngineNavigate(delta);
+            break;
+        case VIEWS.TOOL_STEM_REVIEW: {
+            const maxIdx = toolStemFiles.length; // 0=Save All, 1..N=stems
+            toolStemReviewIndex = Math.max(0, Math.min(maxIdx, toolStemReviewIndex + delta));
+            if (toolStemReviewIndex === 0) {
+                const kc = toolStemKept.filter(k => k).length;
+                if (kc === 0) announce("Cancel");
+                else if (kc === toolStemFiles.length) announce("Save All");
+                else announce("Save " + kc + " stems");
+            } else {
+                const name = toolStemFiles[toolStemReviewIndex - 1].replace(/\.wav$/i, "");
+                const kept = toolStemKept[toolStemReviewIndex - 1];
+                announce(name + (kept ? ", selected" : ", deselected"));
+            }
+            break;
+        }
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
@@ -6186,6 +7100,7 @@ function handleJog(delta) {
 }
 
 function handleSelect() {
+    debugLog("handleSelect called, view=" + view);
     hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
@@ -6733,8 +7648,34 @@ function handleSelect() {
                         }
                     }
                 } else {
-                    /* Normal param - toggle edit mode */
-                    hierEditorEditMode = !hierEditorEditMode;
+                    /* Normal param - open filepath browser or toggle edit mode */
+                    const selectedKey = (selectedParam && typeof selectedParam === "object")
+                        ? (selectedParam.key || selectedParam)
+                        : selectedParam;
+                    const meta = getParamMetadata(selectedKey);
+                    if (!hierEditorEditMode && meta && meta.type === "filepath") {
+                        openHierarchyFilepathBrowser(selectedKey, meta);
+                    } else {
+                        hierEditorEditMode = !hierEditorEditMode;
+                    }
+                }
+            }
+            break;
+        case VIEWS.FILEPATH_BROWSER:
+            if (!filepathBrowserState) {
+                closeHierarchyFilepathBrowser();
+                break;
+            }
+            {
+                const result = activateFilepathBrowserItem(filepathBrowserState);
+                if (result.action === "open") {
+                    refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+                } else if (result.action === "select") {
+                    const key = filepathBrowserParamKey || result.key;
+                    const fullKey = buildHierarchyParamKey(key);
+                    setSlotParam(hierEditorSlot, fullKey, result.value || "");
+                    announceParameter(filepathBrowserState.title || key, result.filename || result.value || "");
+                    closeHierarchyFilepathBrowser();
                 }
             }
             break;
@@ -6900,6 +7841,76 @@ function handleSelect() {
                 }
             }
             break;
+        case VIEWS.TOOLS:
+            debugLog("TOOLS SELECT: idx=" + toolsMenuIndex + " count=" + toolModules.length);
+            if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
+                const tool = toolModules[toolsMenuIndex];
+                debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
+                if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
+                    debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
+                    startInteractiveTool(tool, "");
+                } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
+                    debugLog("TOOLS SELECT: entering file browser");
+                    enterToolFileBrowser(tool);
+                } else {
+                    debugLog("TOOLS SELECT: tool not available");
+                    announce("Tool not available");
+                }
+            }
+            break;
+        case VIEWS.TOOL_FILE_BROWSER:
+            toolBrowserSelect();
+            break;
+        case VIEWS.TOOL_ENGINE_SELECT:
+            toolEngineConfirm();
+            break;
+        case VIEWS.TOOL_CONFIRM:
+            if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.interactive) {
+                startInteractiveTool(toolActiveTool, toolSelectedFile);
+            } else {
+                startToolProcess();
+            }
+            break;
+        case VIEWS.TOOL_RESULT:
+            enterToolsMenu();
+            break;
+        case VIEWS.TOOL_STEM_REVIEW: {
+            if (toolStemReviewIndex === 0) {
+                /* Action button — save selected or cancel */
+                const kc = toolStemKept.filter(k => k).length;
+                if (kc === 0) {
+                    /* Cancel — discard all */
+                    for (const f of toolStemFiles) {
+                        try { os.remove(toolOutputDir + "/" + f); } catch (e) {}
+                    }
+                    try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
+                    try { os.remove(toolOutputDir); } catch (e) {}
+                    enterToolsMenu();
+                    announce("Cancelled");
+                } else {
+                    /* Save selected, delete unselected */
+                    for (let i = 0; i < toolStemFiles.length; i++) {
+                        if (!toolStemKept[i]) {
+                            try { os.remove(toolOutputDir + "/" + toolStemFiles[i]); } catch (e) {}
+                        }
+                    }
+                    try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
+                    const baseName = toolOutputDir.substring(toolOutputDir.lastIndexOf("/") + 1);
+                    toolResultMessage = kc + " stem" + (kc > 1 ? "s" : "") + " saved to\nStems/" + baseName + "/";
+                    setView(VIEWS.TOOL_RESULT);
+                    needsRedraw = true;
+                    announce(kc + " stem" + (kc > 1 ? "s" : "") + " saved");
+                }
+            } else {
+                /* Toggle individual stem */
+                const idx = toolStemReviewIndex - 1;
+                toolStemKept[idx] = !toolStemKept[idx];
+                const stemName = toolStemFiles[idx].replace(/\.wav$/i, "");
+                needsRedraw = true;
+                announce(stemName + (toolStemKept[idx] ? " selected" : " deselected"));
+            }
+            break;
+        }
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own select input */
             break;
@@ -7117,6 +8128,14 @@ function handleBack() {
             announce("Chain Editor");
             needsRedraw = true;
             break;
+        case VIEWS.FILEPATH_BROWSER:
+            closeHierarchyFilepathBrowser();
+            {
+                const ld = getHierarchyLevelDef();
+                announce(ld && ld.label ? ld.label : "Parameters");
+            }
+            needsRedraw = true;
+            break;
         case VIEWS.HIERARCHY_EDITOR: {
             /* Helper: announce current hierarchy level label after navigation */
             const announceHierLevel = () => {
@@ -7286,6 +8305,44 @@ function handleBack() {
             if (typeof shadow_request_exit === "function") {
                 shadow_request_exit();
             }
+            needsRedraw = true;
+            break;
+        case VIEWS.TOOLS:
+            /* Exit Tools menu → exit shadow mode */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+            break;
+        case VIEWS.TOOL_FILE_BROWSER:
+            toolBrowserBack();
+            break;
+        case VIEWS.TOOL_ENGINE_SELECT:
+            /* Return to file browser */
+            setView(VIEWS.TOOL_FILE_BROWSER);
+            needsRedraw = true;
+            announce("Back to files");
+            break;
+        case VIEWS.TOOL_CONFIRM:
+            /* Return to engine selection if engines available, else file browser */
+            if (toolActiveTool && toolActiveTool.tool_config &&
+                toolActiveTool.tool_config.engines && toolActiveTool.tool_config.engines.length > 1) {
+                enterToolEngineSelect();
+                announce("Back to engine selection");
+            } else {
+                setView(VIEWS.TOOL_FILE_BROWSER);
+                needsRedraw = true;
+                announce("Cancelled, back to files");
+            }
+            break;
+        case VIEWS.TOOL_PROCESSING:
+            cancelToolProcess();
+            break;
+        case VIEWS.TOOL_RESULT:
+            enterToolsMenu();
+            break;
+        case VIEWS.TOOL_STEM_REVIEW:
+            /* Jump to action button */
+            toolStemReviewIndex = 0;
             needsRedraw = true;
             break;
         case VIEWS.OVERTAKE_MODULE:
@@ -8708,7 +9765,7 @@ globalThis.tick = function() {
             /* Let jump flags through so shortcuts still work */
             const navFlags = flags & (SHADOW_UI_FLAG_JUMP_TO_SLOT | SHADOW_UI_FLAG_JUMP_TO_MASTER_FX |
                               SHADOW_UI_FLAG_JUMP_TO_OVERTAKE | SHADOW_UI_FLAG_JUMP_TO_SETTINGS |
-                              SHADOW_UI_FLAG_JUMP_TO_SCREENREADER);
+                              SHADOW_UI_FLAG_JUMP_TO_SCREENREADER | SHADOW_UI_FLAG_JUMP_TO_TOOLS);
             const otherFlags = flags & ~navFlags;
             if (otherFlags && typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(otherFlags);
@@ -8717,7 +9774,13 @@ globalThis.tick = function() {
         }
         {
             /* Settings/Screenreader flags take priority (clear conflicting SLOT flag) */
-            if (flags & SHADOW_UI_FLAG_JUMP_TO_SETTINGS) {
+            if (flags & SHADOW_UI_FLAG_JUMP_TO_TOOLS) {
+                debugLog("TOOLS flag detected, entering Tools menu");
+                enterToolsMenu();
+                if (typeof shadow_clear_ui_flags === "function") {
+                    shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_TOOLS | SHADOW_UI_FLAG_JUMP_TO_SLOT);
+                }
+            } else if (flags & SHADOW_UI_FLAG_JUMP_TO_SETTINGS) {
                 debugLog("SETTINGS flag detected, entering Global Settings");
                 enterGlobalSettings();
                 if (typeof shadow_clear_ui_flags === "function") {
@@ -9158,6 +10221,9 @@ globalThis.tick = function() {
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
             break;
+        case VIEWS.FILEPATH_BROWSER:
+            drawFilepathBrowser();
+            break;
         case VIEWS.KNOB_EDITOR:
             drawKnobEditor();
             break;
@@ -9197,23 +10263,38 @@ globalThis.tick = function() {
         case VIEWS.GLOBAL_SETTINGS:
             drawGlobalSettings();
             break;
+        case VIEWS.TOOLS:
+            drawToolsMenu();
+            break;
+        case VIEWS.TOOL_FILE_BROWSER:
+            drawToolFileBrowser();
+            break;
+        case VIEWS.TOOL_ENGINE_SELECT:
+            drawToolEngineSelect();
+            break;
+        case VIEWS.TOOL_CONFIRM:
+            drawToolConfirm();
+            break;
+        case VIEWS.TOOL_PROCESSING:
+            pollToolProcess();
+            drawToolProcessing();
+            break;
+        case VIEWS.TOOL_RESULT:
+            drawToolResult();
+            break;
+        case VIEWS.TOOL_STEM_REVIEW:
+            drawToolStemReview();
+            break;
         case VIEWS.OVERTAKE_MODULE:
             try {
-                /* Handle exit - progressively clear LEDs then return to Move */
+                /* Handle exit — LED restore is handled by C-side cache.
+                 * When overtake_mode drops to 0, the shim detects the transition
+                 * and progressively replays Move's cached LED state. */
                 if (overtakeExitPending) {
                     debugLog("OVERTAKE tick: exit phase");
-                    /* Show exiting screen while clearing LEDs */
                     clear_screen();
                     print(40, 28, "Exiting...", 1);
-
-                    /* Clear LEDs in batches */
-                    const exitLedsCleared = clearLedBatch();
-
-                    /* After LEDs cleared, complete the exit */
-                    if (exitLedsCleared) {
-                        ledClearIndex = 0;
-                        completeOvertakeExit();
-                    }
+                    completeOvertakeExit();
                 }
                 /* Handle deferred init - progressively clear LEDs then call module init() */
                 else if (overtakeInitPending) {
@@ -9247,6 +10328,44 @@ globalThis.tick = function() {
                         flushLedQueue();  /* Drain any LEDs set during init() */
                     }
                 } else {
+                    /* Flush accumulated encoder deltas as synthetic CC messages
+                     * before calling tick(). This batches rapid knob turns into
+                     * a single message per knob per frame. The accumulated count
+                     * is encoded as: CW = count (1-63), CCW = 128 - abs(count).
+                     * Modules using decodeDelta() will get direction; modules
+                     * reading the raw value get the magnitude for acceleration. */
+                    if (overtakeModuleCallbacks && overtakeModuleCallbacks.onMidiMessageInternal) {
+                        for (let k = 0; k < NUM_KNOBS; k++) {
+                            if (overtakeKnobDelta[k] !== 0) {
+                                const d = overtakeKnobDelta[k];
+                                const ccVal = d > 0 ? Math.min(d, 63) : Math.max(128 + d, 65);
+                                try {
+                                    overtakeModuleCallbacks.onMidiMessageInternal([0xB0, KNOB_CC_START + k, ccVal]);
+                                } catch (e) {
+                                    debugLog("OVERTAKE flush knob exception: " + e);
+                                    exitOvertakeMode();
+                                    break;
+                                }
+                                overtakeKnobDelta[k] = 0;
+                            }
+                        }
+                        if (overtakeJogDelta !== 0) {
+                            const d = overtakeJogDelta;
+                            const ccVal = d > 0 ? Math.min(d, 63) : Math.max(128 + d, 65);
+                            try {
+                                overtakeModuleCallbacks.onMidiMessageInternal([0xB0, MoveMainKnob, ccVal]);
+                            } catch (e) {
+                                debugLog("OVERTAKE flush jog exception: " + e);
+                                exitOvertakeMode();
+                            }
+                            overtakeJogDelta = 0;
+                        }
+                    } else {
+                        /* No MIDI handler, just clear accumulators */
+                        for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+                        overtakeJogDelta = 0;
+                    }
+
                     /* Call the overtake module's tick() function */
                     if (overtakeModuleCallbacks && overtakeModuleCallbacks.tick) {
                         try {
@@ -9359,12 +10478,32 @@ globalThis.onMidiMessageInternal = function(data) {
             debugLog(`JOG CLICK: hostShift=${hostShiftHeld} volTouch=${hostVolumeKnobTouched}`);
             if (hostShiftHeld && hostVolumeKnobTouched) {
                 debugLog("HOST: Shift+Vol+Jog detected, exiting overtake mode");
-                exitOvertakeMode();
+                if (toolOvertakeActive) {
+                    exitToolOvertake();
+                } else {
+                    exitOvertakeMode();
+                }
                 return;
             }
         }
 
-        /* Route to the overtake module's onMidiMessageInternal if it exists */
+        /* Accumulate encoder/jog CCs instead of forwarding immediately.
+         * Deltas are flushed as synthetic messages before tick(). */
+        if ((status & 0xF0) === 0xB0) {
+            if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) {
+                const knobIdx = d1 - KNOB_CC_START;
+                overtakeKnobDelta[knobIdx] += decodeDelta(d2);
+                needsRedraw = true;
+                return;
+            }
+            if (d1 === MoveMainKnob) {
+                overtakeJogDelta += decodeDelta(d2);
+                needsRedraw = true;
+                return;
+            }
+        }
+
+        /* Route non-encoder MIDI to the overtake module immediately */
         if (overtakeModuleCallbacks.onMidiMessageInternal) {
             try {
                 overtakeModuleCallbacks.onMidiMessageInternal(data);

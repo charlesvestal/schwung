@@ -646,6 +646,43 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | `int` | `min`, `max`, `default`/`value` | Integer value |
 | `float` | `min`, `max`, `default`/`value` | Float value |
 | `enum` | `options`, `default`/`value` | List of string options |
+| `filepath` | `root`, `filter`, `default`/`value` | Opens Shadow UI file browser and stores selected path |
+
+#### `filepath` in module.json
+
+Use `type: "filepath"` in `capabilities.chain_params` to let Shadow UI open a reusable file browser.
+
+```json
+{
+  "capabilities": {
+    "chain_params": [
+      {
+        "key": "sample_file",
+        "name": "Sample File",
+        "type": "filepath",
+        "root": "/data/UserData/UserLibrary/Samples",
+        "filter": ".wav",
+        "default": ""
+      }
+    ]
+  }
+}
+```
+
+`filepath` fields:
+
+- `key` (required): Parameter key passed to `set_param`.
+- `name` (required): Label shown in Shadow UI.
+- `type` (required): Must be `"filepath"`.
+- `root` (optional, recommended): Absolute folder where browsing starts and is constrained.
+- `filter` (optional): File extension filter as a string or array, for example `".wav"` or `[".wav", ".aif"]`.
+- `default` or `value` (optional): Initial absolute path. If the path exists and is inside `root`, the browser opens to the parent folder and highlights the file.
+
+Behavior notes:
+
+- Selected files are stored as absolute paths.
+- If the current or default path is missing, invalid, or outside `root`, the browser falls back to `root`.
+- Example user sample file path: `/data/UserData/UserLibrary/Samples/Drums/Kick01.wav`.
 
 These map to knobs 1-8 in the Shadow UI for quick access.
 
@@ -664,6 +701,7 @@ Import path from modules: `../../shared/<file>.mjs`
 | `menu_layout.mjs` | Title/list/footer menu layout helpers |
 | `text_scroll.mjs` | Marquee scrolling for long text |
 | `move_display.mjs` | Display utilities |
+| `filepath_browser.mjs` | Reusable filesystem browser helpers for `chain_params` type `filepath` |
 
 ### Common Imports
 
@@ -703,6 +741,117 @@ For native code, shared headers are in `src/host/`:
 | `shadow_constants.h` | Shadow mode shared memory names, buffer sizes, control structures |
 | `plugin_api_v1.h` | DSP plugin interface |
 | `audio_fx_api_v2.h` | Audio effects plugin interface |
+
+## Help Content (help.json)
+
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Shift+Vol+Menu → Help). Add a `help.json` file to your module's source directory.
+
+### File Location
+
+```
+src/modules/your-module/
+  module.json
+  ui.js
+  help.json          # Help content for the Help viewer
+```
+
+The host scans all installed module directories for `help.json` at runtime. Module help topics appear alphabetically in the "Modules" section of the Help viewer.
+
+### Format
+
+Help content is a tree of sections and leaf topics:
+
+```json
+{
+  "title": "Your Module",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Brief description",
+        "of your module.",
+        "",
+        "Second paragraph",
+        "with more detail."
+      ]
+    },
+    {
+      "title": "Controls",
+      "children": [
+        {
+          "title": "Knob Mapping",
+          "lines": [
+            "Knob 1: Cutoff",
+            "Knob 2: Resonance",
+            "Knob 3: Attack",
+            "Knob 4: Release"
+          ]
+        },
+        {
+          "title": "Other Settings",
+          "lines": [
+            "Detail about other",
+            "settings here."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "MIDI",
+      "lines": [
+        "MIDI behavior",
+        "description."
+      ]
+    }
+  ]
+}
+```
+
+### Node Types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| Branch | `title`, `children` | Navigable folder (shows as a list) |
+| Leaf | `title`, `lines` | Scrollable text content |
+
+- **Branch nodes** have a `children` array of other branch or leaf nodes. Nesting depth is unlimited.
+- **Leaf nodes** have a `lines` array of strings displayed as scrollable text.
+
+### Text Formatting Rules
+
+The display is 128x64 pixels with a ~20 character line width. Pre-wrap your text accordingly:
+
+- Keep lines to **20 characters or fewer**
+- Use empty strings (`""`) for blank lines between paragraphs
+- Indent continuation lines with a leading space for readability:
+  ```json
+  "lines": [
+    "Knob 3: Contour",
+    " (filter env depth)"
+  ]
+  ```
+
+### Packaging
+
+Include `help.json` in your build script so it ends up in the distributed tarball:
+
+```bash
+# In scripts/build.sh, after copying other files to dist/<id>/
+[ -f src/help.json ] && cp src/help.json dist/<id>/help.json
+```
+
+The host discovers `help.json` automatically — no changes to `module.json` are needed.
+
+### Recommended Sections
+
+A typical module help file includes:
+
+| Section | Content |
+|---------|---------|
+| Overview | What the module does, key features |
+| Controls / Knob Mapping | Which knobs control which parameters |
+| MIDI | MIDI behavior, supported CCs, channel info |
+| Presets | List of factory presets (if applicable) |
 
 ## Example Modules
 
@@ -1060,24 +1209,55 @@ function clearLedBatch() {
 ```
 
 **In your module (initialization):**
+
+Use the shared `setLED()` and `setButtonLED()` from `input_filter.mjs` — they provide caching (skip duplicate sends) and correct MIDI packet formatting:
+
 ```javascript
+import {
+    MoveBack, MoveCapture, MoveUndo, MoveLoop, MoveCopy, MoveMute, MoveDelete,
+    MovePads, White, DarkGrey,
+    WhiteLedDim, WhiteLedMedium, WhiteLedBright
+} from '/data/UserData/move-anything/shared/constants.mjs';
+
+import { setLED, setButtonLED } from '/data/UserData/move-anything/shared/input_filter.mjs';
+
 let ledInitPending = false;
 let ledInitIndex = 0;
 const LEDS_PER_FRAME = 8;
 
 globalThis.init = function() {
-    // Start progressive LED setup
     ledInitPending = true;
     ledInitIndex = 0;
 };
 
+function setupLedBatch() {
+    const leds = [];
+    // Button LEDs (CC-based) — use setButtonLED
+    leds.push({ type: 'cc', id: MoveBack, color: WhiteLedDim });
+    leds.push({ type: 'cc', id: MoveCapture, color: WhiteLedDim });
+    // Pad LEDs (note-based) — use setLED
+    for (const pad of MovePads) {
+        leds.push({ type: 'note', id: pad, color: DarkGrey });
+    }
+
+    const end = Math.min(ledInitIndex + LEDS_PER_FRAME, leds.length);
+    for (let i = ledInitIndex; i < end; i++) {
+        if (leds[i].type === 'cc') setButtonLED(leds[i].id, leds[i].color);
+        else setLED(leds[i].id, leds[i].color);
+    }
+    ledInitIndex = end;
+    if (ledInitIndex >= leds.length) ledInitPending = false;
+}
+
 globalThis.tick = function() {
     if (ledInitPending) {
-        setupLedBatch();  // Set 8 LEDs per frame
+        setupLedBatch();
     }
     drawUI();
 };
 ```
+
+**Important:** Always use the shared `setLED()` and `setButtonLED()` from `input_filter.mjs` rather than calling `move_midi_internal_send()` directly. The shared helpers handle LED caching and correct USB-MIDI cable byte formatting. Use absolute import paths (`/data/UserData/move-anything/shared/...`) for module location independence.
 
 ### LED Addresses
 

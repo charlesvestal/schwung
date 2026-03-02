@@ -1917,6 +1917,14 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
     };
     int result = run_command(argv_cmd);
 
+    /* Fix ownership so files are updatable by non-root processes */
+    if (result == 0) {
+        const char *chown_cmd[] = {
+            "chown", "-R", "ableton:users", dest_dir, NULL
+        };
+        run_command(chown_cmd);
+    }
+
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
 
@@ -1964,6 +1972,14 @@ static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
         "tar", "-xzf", tar_path, "-C", dest_dir, strip_arg, NULL
     };
     int result = run_command(argv_cmd);
+
+    /* Fix ownership so files are updatable by non-root processes */
+    if (result == 0) {
+        const char *chown_cmd[] = {
+            "chown", "-R", "ableton:users", dest_dir, NULL
+        };
+        run_command(chown_cmd);
+    }
 
     JS_FreeCString(ctx, tar_path);
     JS_FreeCString(ctx, dest_dir);
