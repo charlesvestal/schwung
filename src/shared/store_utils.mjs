@@ -231,9 +231,11 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
                 const mod = catalog.modules[i];
                 if (mod.github_repo) {
                     if (consecutiveFailures >= 2) {
-                        /* Network likely down — skip remaining fetches */
+                        /* Network likely down — skip remaining fetches but still set fallback URL */
                         mod.latest_version = mod.latest_version || '?';
-                        mod.download_url = mod.download_url || null;
+                        if (!mod.download_url && mod.github_repo && mod.asset_name) {
+                            mod.download_url = `https://github.com/${mod.github_repo}/releases/latest/download/${mod.asset_name}`;
+                        }
                         continue;
                     }
                     if (onProgress) onProgress('Loading Catalog', mod.name, i + 1, moduleCount);
