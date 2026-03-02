@@ -132,6 +132,12 @@ const KNOB_CC_START = MoveKnob1;  // CC 71
 const KNOB_CC_END = MoveKnob8;    // CC 78
 const NUM_KNOBS = 8;
 
+/* Overtake encoder accumulation — batch knob/jog deltas and flush once per tick.
+ * Without this, every encoder tick generates a separate IPC round-trip to the
+ * module, causing sluggish response when turning fast. */
+let overtakeKnobDelta = [0, 0, 0, 0, 0, 0, 0, 0];  // Accumulated delta per knob (CC 71-78)
+let overtakeJogDelta = 0;                             // Accumulated delta for jog wheel (CC 14)
+
 const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/move-anything/patches";
 const SLOT_STATE_DIR_DEFAULT = "/data/UserData/move-anything/slot_state";
@@ -1708,6 +1714,10 @@ function exitOvertakeMode() {
     overtakeModulePath = "";
     overtakeModuleCallbacks = null;
 
+    /* Reset encoder accumulation */
+    for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+    overtakeJogDelta = 0;
+
     /* Start progressive LED clearing before exiting */
     overtakeExitPending = true;
     ledClearIndex = 0;
@@ -1737,6 +1747,10 @@ function exitToolOvertake() {
     overtakeModuleCallbacks = null;
     overtakeExitPending = false;
     overtakeInitPending = false;
+
+    /* Reset encoder accumulation */
+    for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+    overtakeJogDelta = 0;
 
     /* Disable overtake mode */
     if (typeof shadow_set_overtake_mode === "function") {
@@ -9974,6 +9988,44 @@ globalThis.tick = function() {
                         flushLedQueue();  /* Drain any LEDs set during init() */
                     }
                 } else {
+                    /* Flush accumulated encoder deltas as synthetic CC messages
+                     * before calling tick(). This batches rapid knob turns into
+                     * a single message per knob per frame. The accumulated count
+                     * is encoded as: CW = count (1-63), CCW = 128 - abs(count).
+                     * Modules using decodeDelta() will get direction; modules
+                     * reading the raw value get the magnitude for acceleration. */
+                    if (overtakeModuleCallbacks && overtakeModuleCallbacks.onMidiMessageInternal) {
+                        for (let k = 0; k < NUM_KNOBS; k++) {
+                            if (overtakeKnobDelta[k] !== 0) {
+                                const d = overtakeKnobDelta[k];
+                                const ccVal = d > 0 ? Math.min(d, 63) : Math.max(128 + d, 65);
+                                try {
+                                    overtakeModuleCallbacks.onMidiMessageInternal([0xB0, KNOB_CC_START + k, ccVal]);
+                                } catch (e) {
+                                    debugLog("OVERTAKE flush knob exception: " + e);
+                                    exitOvertakeMode();
+                                    break;
+                                }
+                                overtakeKnobDelta[k] = 0;
+                            }
+                        }
+                        if (overtakeJogDelta !== 0) {
+                            const d = overtakeJogDelta;
+                            const ccVal = d > 0 ? Math.min(d, 63) : Math.max(128 + d, 65);
+                            try {
+                                overtakeModuleCallbacks.onMidiMessageInternal([0xB0, MoveMainKnob, ccVal]);
+                            } catch (e) {
+                                debugLog("OVERTAKE flush jog exception: " + e);
+                                exitOvertakeMode();
+                            }
+                            overtakeJogDelta = 0;
+                        }
+                    } else {
+                        /* No MIDI handler, just clear accumulators */
+                        for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+                        overtakeJogDelta = 0;
+                    }
+
                     /* Call the overtake module's tick() function */
                     if (overtakeModuleCallbacks && overtakeModuleCallbacks.tick) {
                         try {
@@ -10095,7 +10147,23 @@ globalThis.onMidiMessageInternal = function(data) {
             }
         }
 
-        /* Route to the overtake module's onMidiMessageInternal if it exists */
+        /* Accumulate encoder/jog CCs instead of forwarding immediately.
+         * Deltas are flushed as synthetic messages before tick(). */
+        if ((status & 0xF0) === 0xB0) {
+            if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) {
+                const knobIdx = d1 - KNOB_CC_START;
+                overtakeKnobDelta[knobIdx] += decodeDelta(d2);
+                needsRedraw = true;
+                return;
+            }
+            if (d1 === MoveMainKnob) {
+                overtakeJogDelta += decodeDelta(d2);
+                needsRedraw = true;
+                return;
+            }
+        }
+
+        /* Route non-encoder MIDI to the overtake module immediately */
         if (overtakeModuleCallbacks.onMidiMessageInternal) {
             try {
                 overtakeModuleCallbacks.onMidiMessageInternal(data);

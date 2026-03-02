@@ -87,14 +87,18 @@ export function clearAllLEDs() {
 /* ============ Encoder Delta Decoding ============ */
 
 /**
- * Decode encoder/jog delta from CC value
- * @param {number} value - CC value (1-63 = clockwise, 65-127 = counter-clockwise)
- * @returns {number} Delta (-1, 0, or 1)
+ * Decode encoder/jog delta from CC value.
+ * The shadow UI framework batches encoder ticks in overtake mode and encodes
+ * the accumulated count: CW = count (1-63), CCW = 128 - count (65-127).
+ * Returns the signed accumulated count for proportional response.
+ *
+ * @param {number} value - CC value (1-63 = CW count, 65-127 = CCW count)
+ * @returns {number} Signed delta (positive = CW, negative = CCW)
  */
 export function decodeDelta(value) {
     if (value === 0) return 0;
-    if (value >= 1 && value <= 63) return 1;
-    if (value >= 65 && value <= 127) return -1;
+    if (value >= 1 && value <= 63) return value;
+    if (value >= 65 && value <= 127) return -(128 - value);
     return 0;
 }
 
