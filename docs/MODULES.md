@@ -704,6 +704,117 @@ For native code, shared headers are in `src/host/`:
 | `plugin_api_v1.h` | DSP plugin interface |
 | `audio_fx_api_v2.h` | Audio effects plugin interface |
 
+## Help Content (help.json)
+
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Shift+Vol+Menu → Help). Add a `help.json` file to your module's source directory.
+
+### File Location
+
+```
+src/modules/your-module/
+  module.json
+  ui.js
+  help.json          # Help content for the Help viewer
+```
+
+The host scans all installed module directories for `help.json` at runtime. Module help topics appear alphabetically in the "Modules" section of the Help viewer.
+
+### Format
+
+Help content is a tree of sections and leaf topics:
+
+```json
+{
+  "title": "Your Module",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Brief description",
+        "of your module.",
+        "",
+        "Second paragraph",
+        "with more detail."
+      ]
+    },
+    {
+      "title": "Controls",
+      "children": [
+        {
+          "title": "Knob Mapping",
+          "lines": [
+            "Knob 1: Cutoff",
+            "Knob 2: Resonance",
+            "Knob 3: Attack",
+            "Knob 4: Release"
+          ]
+        },
+        {
+          "title": "Other Settings",
+          "lines": [
+            "Detail about other",
+            "settings here."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "MIDI",
+      "lines": [
+        "MIDI behavior",
+        "description."
+      ]
+    }
+  ]
+}
+```
+
+### Node Types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| Branch | `title`, `children` | Navigable folder (shows as a list) |
+| Leaf | `title`, `lines` | Scrollable text content |
+
+- **Branch nodes** have a `children` array of other branch or leaf nodes. Nesting depth is unlimited.
+- **Leaf nodes** have a `lines` array of strings displayed as scrollable text.
+
+### Text Formatting Rules
+
+The display is 128x64 pixels with a ~20 character line width. Pre-wrap your text accordingly:
+
+- Keep lines to **20 characters or fewer**
+- Use empty strings (`""`) for blank lines between paragraphs
+- Indent continuation lines with a leading space for readability:
+  ```json
+  "lines": [
+    "Knob 3: Contour",
+    " (filter env depth)"
+  ]
+  ```
+
+### Packaging
+
+Include `help.json` in your build script so it ends up in the distributed tarball:
+
+```bash
+# In scripts/build.sh, after copying other files to dist/<id>/
+[ -f src/help.json ] && cp src/help.json dist/<id>/help.json
+```
+
+The host discovers `help.json` automatically — no changes to `module.json` are needed.
+
+### Recommended Sections
+
+A typical module help file includes:
+
+| Section | Content |
+|---------|---------|
+| Overview | What the module does, key features |
+| Controls / Knob Mapping | Which knobs control which parameters |
+| MIDI | MIDI behavior, supported CCs, channel info |
+| Presets | List of factory presets (if applicable) |
+
 ## Example Modules
 
 See these modules for reference:
