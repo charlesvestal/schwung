@@ -378,6 +378,39 @@
       "default_branch": "main",
       "asset_name": "usefulity-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "waveform-editor",
+      "name": "Waveform Editor",
+      "description": "Trim, gain adjust, and edit audio files on the Move",
+      "author": "charlesvestal",
+      "component_type": "tool",
+      "github_repo": "charlesvestal/move-anything-waveform-editor",
+      "default_branch": "main",
+      "asset_name": "waveform-editor-module.tar.gz",
+      "min_host_version": "0.6.0"
+    },
+    {
+      "id": "stretch",
+      "name": "Time Stretch",
+      "description": "Real-time audio time stretching with Bungee",
+      "author": "charlesvestal",
+      "component_type": "tool",
+      "github_repo": "charlesvestal/move-anything-stretch",
+      "default_branch": "main",
+      "asset_name": "stretch-module.tar.gz",
+      "min_host_version": "0.6.0"
+    },
+    {
+      "id": "stems",
+      "name": "Stem Separation",
+      "description": "Separate audio into stems: drums, vocals, accompaniment (0.5x realtime)",
+      "author": "charlesvestal",
+      "component_type": "tool",
+      "github_repo": "charlesvestal/move-anything-stems",
+      "default_branch": "main",
+      "asset_name": "stems-module.tar.gz",
+      "min_host_version": "0.6.0"
     }
   ]
 }
