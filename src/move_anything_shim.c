@@ -2485,26 +2485,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         shadow_read_initial_volume();  /* Read initial master volume from settings */
         shadow_load_state();  /* Load saved slot volumes */
 
-        /* Sync mute/solo from Song.abl at boot — the saved state may be stale
-         * if the user changed mute/solo in Move's native UI after our last save. */
-        if (sampler_current_set_name[0]) {
-            int boot_muted[4], boot_soloed[4];
-            int n = shadow_read_set_mute_states(sampler_current_set_name, boot_muted, boot_soloed);
-            if (n > 0) {
-                shadow_solo_count = 0;
-                for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
-                    shadow_chain_slots[i].muted = boot_muted[i];
-                    shadow_chain_slots[i].soloed = boot_soloed[i];
-                    if (boot_soloed[i]) shadow_solo_count++;
-                    shadow_ui_state_update_slot(i);
-                }
-                char m[128];
-                snprintf(m, sizeof(m), "Boot Song.abl sync: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
-                         boot_muted[0], boot_muted[1], boot_muted[2], boot_muted[3],
-                         boot_soloed[0], boot_soloed[1], boot_soloed[2], boot_soloed[3]);
-                shadow_log(m);
-            }
-        }
+        /* Mute/solo state is now fully managed by shadow_load_state() above.
+         * Previously we synced from Song.abl here, but Move's native track
+         * mute (speakerOn) is independent of shadow slot mute state. */
 
         /* Initialize TTS and sync loaded state to shared memory */
         tts_init(44100);

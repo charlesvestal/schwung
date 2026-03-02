@@ -455,22 +455,11 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
              set_name, uuid ? uuid : "?", sampler_set_tempo);
     host.log(msg);
 
-    /* Read initial mute and solo states from Song.abl */
-    int muted[4], soloed[4];
-    int n = host.read_set_mute_states(set_name, muted, soloed);
-    *host.solo_count = 0;
-    for (int i = 0; i < n && i < SHADOW_CHAIN_INSTANCES; i++) {
-        host.chain_slots[i].muted = muted[i];
-        host.chain_slots[i].soloed = soloed[i];
-        if (soloed[i]) (*host.solo_count)++;
+    /* Mute/solo state is now managed by per-set config (loaded via
+     * shadow_load_config_from_dir above). Move's Song.abl speakerOn
+     * is independent of shadow slot mute state. */
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         host.ui_state_update_slot(i);
-    }
-    {
-        char m[128];
-        snprintf(m, sizeof(m), "Set load: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
-                 muted[0], muted[1], muted[2], muted[3],
-                 soloed[0], soloed[1], soloed[2], soloed[3]);
-        host.log(m);
     }
 }
 

@@ -450,6 +450,23 @@ void shadow_chain_load_config(void) {
                 }
             }
         }
+
+        /* Parse muted/soloed (0 or 1) */
+        char *muted_pos = strstr(name_pos, "\"muted\"");
+        if (muted_pos) {
+            char *muted_colon = strchr(muted_pos, ':');
+            if (muted_colon) {
+                shadow_chain_slots[i].muted = atoi(muted_colon + 1);
+            }
+        }
+        char *soloed_pos = strstr(name_pos, "\"soloed\"");
+        if (soloed_pos) {
+            char *soloed_colon = strchr(soloed_pos, ':');
+            if (soloed_colon) {
+                shadow_chain_slots[i].soloed = atoi(soloed_colon + 1);
+                if (shadow_chain_slots[i].soloed) shadow_solo_count++;
+            }
+        }
     }
 
     free(json);

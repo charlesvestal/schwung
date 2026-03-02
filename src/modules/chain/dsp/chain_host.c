@@ -472,6 +472,11 @@ typedef struct chain_instance {
     /* When set, render_block outputs raw synth only (no inject mix, no FX).
      * The shim calls chain_process_fx() separately for same-frame FX. */
     int external_fx_mode;
+
+    /* Channel settings from last load_file (autosave restore).
+     * Used as fallback when current_patch == -1 (file-based load, not library). */
+    int loaded_receive_channel;   /* 0=not set, 1-16=specific channel */
+    int loaded_forward_channel;   /* 0=not set, -2=passthrough, -1=auto, 1-16=channel */
 } chain_instance_t;
 
 /* ============================================================================
@@ -6028,6 +6033,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (v2_parse_patch_file(inst, val, &temp_patch) == 0) {
             v2_load_from_patch_info(inst, &temp_patch);
             inst->current_patch = -1;  /* Not from library */
+            /* Preserve channel settings for getter fallback (current_patch == -1) */
+            inst->loaded_receive_channel = temp_patch.receive_channel;
+            inst->loaded_forward_channel = temp_patch.forward_channel;
             /* Check for "modified" field to restore dirty state */
             FILE *mf = fopen(val, "r");
             if (mf) {
@@ -6452,11 +6460,19 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (inst->current_patch >= 0 && inst->current_patch < inst->patch_count) {
             return snprintf(buf, buf_len, "%d", inst->patches[inst->current_patch].receive_channel);
         }
+        /* Fallback for file-based loads (current_patch == -1) */
+        if (inst->loaded_receive_channel != 0) {
+            return snprintf(buf, buf_len, "%d", inst->loaded_receive_channel);
+        }
         return snprintf(buf, buf_len, "0");
     }
     if (strcmp(key, "patch:forward_channel") == 0) {
         if (inst->current_patch >= 0 && inst->current_patch < inst->patch_count) {
             return snprintf(buf, buf_len, "%d", inst->patches[inst->current_patch].forward_channel);
+        }
+        /* Fallback for file-based loads (current_patch == -1) */
+        if (inst->loaded_forward_channel != 0) {
+            return snprintf(buf, buf_len, "%d", inst->loaded_forward_channel);
         }
         return snprintf(buf, buf_len, "0");
     }

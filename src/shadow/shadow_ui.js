@@ -2366,35 +2366,36 @@ function loadMasterFxFromConfig() {
 }
 
 function saveSlotsToConfig(nextSlots) {
-    const payload = {
-        patches: nextSlots.map((slot, idx) => ({
-            name: slot.name,
-            channel: slot.channel,
-            forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
-        })),
-        master_fx: currentMasterFxId || ""
-    };
+    /* Read existing config to preserve fields written by C-side shadow_save_state()
+     * (slot_volumes, slot_muted, slot_soloed, slot_forward_channels, etc.) */
+    const existing = safeLoadJson(CONFIG_PATH) || {};
+    existing.patches = nextSlots.map((slot, idx) => ({
+        name: slot.name,
+        channel: slot.channel,
+        forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
+    }));
+    existing.master_fx = currentMasterFxId || "";
     try {
-        host_write_file(CONFIG_PATH, JSON.stringify(payload, null, 2) + "\n");
+        host_write_file(CONFIG_PATH, JSON.stringify(existing, null, 2) + "\n");
     } catch (e) {
         /* ignore */
     }
 }
 
 function saveConfigMasterFx() {
-    /* Save just the master FX setting to config */
-    const data = safeLoadJson(CONFIG_PATH);
-    const payload = {
-        patches: data && Array.isArray(data.patches) ? data.patches : slots.map((slot, idx) => ({
+    /* Save just the master FX setting to config, preserving all other fields */
+    const existing = safeLoadJson(CONFIG_PATH) || {};
+    if (!Array.isArray(existing.patches)) {
+        existing.patches = slots.map((slot, idx) => ({
             name: slot.name,
             channel: slot.channel,
             forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
-        })),
-        master_fx: currentMasterFxId || "",
-        master_fx_path: currentMasterFxPath || ""
-    };
+        }));
+    }
+    existing.master_fx = currentMasterFxId || "";
+    existing.master_fx_path = currentMasterFxPath || "";
     try {
-        host_write_file(CONFIG_PATH, JSON.stringify(payload, null, 2) + "\n");
+        host_write_file(CONFIG_PATH, JSON.stringify(existing, null, 2) + "\n");
     } catch (e) {
         /* ignore */
     }
@@ -2622,7 +2623,7 @@ function generateUniquePresetName(baseName) {
  * Note: save_patch expects raw chain content (synth, audio_fx at root)
  * with "custom_name" for the name. It wraps it with name/version/chain.
  */
-function buildSlotPatchJson(slotIndex, name) {
+function buildSlotPatchJson(slotIndex, name, forAutosave) {
     const cfg = chainConfigs[slotIndex];
     if (!cfg) return null;
 
@@ -2644,6 +2645,10 @@ function buildSlotPatchJson(slotIndex, name) {
             } catch (e) {
                 /* Keep original params if state parse fails */
             }
+        } else if (forAutosave) {
+            /* State query timed out - skip autosave to avoid clobbering
+             * a good file with empty config (synth reverts to defaults) */
+            return null;
         }
         patch.synth = {
             module: cfg.synth.module,
@@ -2662,6 +2667,8 @@ function buildSlotPatchJson(slotIndex, name) {
             } catch (e) {
                 /* Keep original params if state parse fails */
             }
+        } else if (forAutosave) {
+            return null;
         }
         patch.midi_fx = [{
             type: cfg.midiFx.module,
@@ -2680,6 +2687,8 @@ function buildSlotPatchJson(slotIndex, name) {
             } catch (e) {
                 /* Keep original params if state parse fails */
             }
+        } else if (forAutosave) {
+            return null;
         }
         patch.audio_fx.push({
             type: cfg.fx1.module,
@@ -2697,6 +2706,8 @@ function buildSlotPatchJson(slotIndex, name) {
             } catch (e) {
                 /* Keep original params if state parse fails */
             }
+        } else if (forAutosave) {
+            return null;
         }
         patch.audio_fx.push({
             type: cfg.fx2.module,
@@ -2750,7 +2761,7 @@ function autosaveAllSlots() {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
 
-        const patchJson = buildSlotPatchJson(i, slots[i].name || "Untitled");
+        const patchJson = buildSlotPatchJson(i, slots[i].name || "Untitled", true);
         if (!patchJson) continue;
 
         /* Wrap with name, version, modified flag */
