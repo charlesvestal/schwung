@@ -253,7 +253,9 @@ typedef struct shadow_overlay_state_t {
     volatile uint8_t  sampler_preroll_active;     /* 1 = currently in preroll countdown */
     volatile uint16_t sampler_preroll_bars_done;  /* Bars completed in preroll */
 
-    volatile uint8_t  reserved[256 - 218];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
+    volatile float    sampler_bpm;                /* Project BPM from MIDI clock or fallback */
+
+    volatile uint8_t  reserved[256 - 224];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
 } shadow_overlay_state_t;
 
 /* Compile-time size checks */
