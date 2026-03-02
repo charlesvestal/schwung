@@ -66,6 +66,7 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 | **Shift+Vol + Track 1-4**| Open that slot's editor |
 | **Shift+Vol + Note/Session** | Open Master FX |
 | **Shift+Vol + Step 2** | Open Global Settings |
+| **Shift+Vol + Step 13** | Open Tools Menu |
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
 | **Shift+Sample** | Open Quantized Sampler |
 | **Shift+Capture** | Skipback (save last 30 seconds) |
@@ -204,7 +205,7 @@ Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from
 
 Access via **Shift+Vol + Note/Session**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
-Global settings (Link Audio, Resample Src, Mirror Display, Screen Reader, Set Pages, Help, Updates) are accessed via **Shift+Vol + Step 2**.
+Global settings (Link Audio, Sample Src, Mirror Display, Screen Reader, Set Pages, Help, Updates) are accessed via **Shift+Vol + Step 2**.
 
 ---
 
@@ -272,15 +273,15 @@ ME Slot 2 (synth → FX) ────────────────│
 
 Move Everything audio can be fed into Move's native sampler for resampling.
 
-In **Global Settings > Audio**, `Resample Src` controls this:
+In **Global Settings > Audio**, `Sample Src` controls this:
 
 | Option | Behavior |
 |--------|----------|
-| **Off** | Disabled (default) |
-| **Replace** | Replaces native sampler input with Move Everything master output |
+| **Native** | Disabled — sampler uses Move's normal input (default) |
+| **ME Mix** | Replaces native sampler input with Move Everything master output |
 
 Recommended setup to avoid feedback:
-1. Set `Resample Src` to **Replace**
+1. Set `Sample Src` to **ME Mix**
 2. In native Move Sampler, set source to **Line In**
 3. Set monitoring to **Off**
 
@@ -391,6 +392,28 @@ Overtake modules take full control of Move's display and controls. Access via **
 To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
 
 **Note:** After exiting an overtake module, Move's pad and button LEDs won't refresh automatically. Change tracks or sets and they'll come back as they light back on.
+
+---
+
+## Tools Menu
+
+Access via **Shift+Vol + Step 13**. Tools are standalone utilities that run outside the normal slot system.
+
+### File Browser
+
+Browse files and folders on your Move. Two starting roots:
+- **User Library**: Your samples, presets, and recordings
+- **System Files**: The Move Everything directory (shows a warning before entry)
+
+**Navigation:**
+- **Jog wheel**: Scroll through files and folders
+- **Jog click**: Open a folder, or show file actions for a file
+- **Shift+Jog click**: Show actions for any item (files or folders)
+- **Back**: Go up one directory or exit
+
+**File actions:** Play (WAV files), Duplicate, Rename, Delete, Copy to..., Move to..., New Folder (on directories).
+
+**Play:** Selecting Play on a .wav file starts audio preview through Move's speakers. A progress bar and time display are shown. Push jog or press back to stop.
 
 ---
 

@@ -15,6 +15,7 @@
             "+Menu: Master FX",
             "+Step 2: Global",
             " settings menu",
+            "+Step 13: Tools menu",
             "+Jog Click: overtake",
             " module menu",
             "",
@@ -252,6 +253,25 @@
             " Speed: 0.5x - 2x",
             " Pitch: low - high",
             " Volume: 0 - 100"
+          ]
+        },
+        {
+          "title": "Tools Menu",
+          "lines": [
+            "Open: Shift+Vol+",
+            "Step 13",
+            "",
+            "Standalone tools",
+            "that run outside the",
+            "slot system.",
+            "",
+            "File Browser: browse",
+            "and manage files on",
+            "your Move. Play WAV",
+            "files to preview.",
+            "",
+            "More tools available",
+            "via Module Store."
           ]
         }
       ]

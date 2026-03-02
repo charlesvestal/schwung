@@ -35,6 +35,23 @@
       "title": "File Actions",
       "children": [
         {
+          "title": "Play",
+          "lines": [
+            "Preview WAV files",
+            "through Move speakers.",
+            "",
+            "Select a .wav file,",
+            "choose Play from the",
+            "actions menu.",
+            "",
+            "Shows progress bar",
+            "and elapsed time.",
+            "",
+            "Push jog or press",
+            "back to stop."
+          ]
+        },
+        {
           "title": "Delete",
           "lines": [
             "Remove a file or",

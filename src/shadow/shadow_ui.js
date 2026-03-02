@@ -627,7 +627,7 @@ const GLOBAL_SETTINGS_SECTIONS = [
         items: [
             { key: "link_audio_routing", label: "Route thru ME", type: "bool" },
             { key: "link_audio_publish", label: "ME->Link Audio", type: "bool" },
-            { key: "resample_bridge", label: "Sampling Src", type: "enum",
+            { key: "resample_bridge", label: "Sample Src", type: "enum",
               options: ["Native", "ME Mix"], values: [0, 2] }
         ]
     },
