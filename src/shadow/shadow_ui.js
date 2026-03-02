@@ -190,7 +190,8 @@ const VIEWS = {
     TOOL_CONFIRM: "toolconfirm",            // Confirm file selection before processing
     TOOL_PROCESSING: "toolprocessing",      // Progress/status while tool runs
     TOOL_RESULT: "toolresult",               // Success/failure result
-    TOOL_ENGINE_SELECT: "toolengineselect"   // Pick engine (e.g. 3-stem vs 4-stem)
+    TOOL_ENGINE_SELECT: "toolengineselect",  // Pick engine (e.g. 3-stem vs 4-stem)
+    TOOL_STEM_REVIEW: "toolstemreview"       // Review produced stems before saving
 };
 
 /* Special action key for swap module option */
@@ -275,7 +276,8 @@ const VIEW_NAMES = {
     [VIEWS.TOOL_CONFIRM]: "Confirm",
     [VIEWS.TOOL_PROCESSING]: "Processing",
     [VIEWS.TOOL_RESULT]: "Result",
-    [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection"
+    [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection",
+    [VIEWS.TOOL_STEM_REVIEW]: "Stem Review"
 };
 
 /* Helper to change view and announce it */
@@ -686,6 +688,9 @@ let toolNonOvertake = false;     // True if the active tool runs without overtak
 let toolSelectedEngine = null;   // Selected engine from engines array
 let toolEngineIndex = 0;         // Jog position in engine list
 let toolAvailableEngines = [];   // Engines filtered by installed commands
+let toolStemFiles = [];          // Array of stem .wav filenames in output dir
+let toolStemReviewIndex = 0;     // Selected index (0 = "Save All", 1+ = individual stems)
+let toolStemKept = [];           // Parallel bool array — true if stem is marked to keep
 
 const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
 const RESAMPLE_BRIDGE_VALUES = [0, 2];
@@ -3311,7 +3316,7 @@ function enterToolFileBrowser(toolModule) {
     const exts = (toolModule.tool_config && toolModule.tool_config.input_extensions) || [".wav"];
     const filter = Array.isArray(exts) ? exts : [exts];
     toolBrowserState = buildFilepathBrowserState(
-        { root: "/data/UserData/UserLibrary/Samples", filter: filter, name: toolModule.name },
+        { root: "/data/UserData/UserLibrary", filter: filter, name: toolModule.name },
         ""
     );
     refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
@@ -3554,16 +3559,7 @@ function drawToolConfirm() {
         print(4, 40, "Engine: " + toolSelectedEngine.name, 1);
     }
 
-    /* Show time estimate */
-    if (toolFileDurationSec > 0) {
-        const estSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
-        const durStr = formatTime(Math.round(toolFileDurationSec));
-        const estStr = formatTime(estSec);
-        const yPos = (toolSelectedEngine && toolSelectedEngine.name) ? 52 : 40;
-        print(4, yPos, durStr + " audio ~ " + estStr + " to process", 1);
-    }
-
-    drawFooter({left: "Back: Cancel", right: "Jog: Confirm"});
+    drawFooter({right: "Jog: Confirm"});
 }
 
 /* ========== Tool Processing View ========== */
@@ -3693,6 +3689,20 @@ function countStemFiles() {
     } catch (e) { return 0; }
 }
 
+function getStemFileNames() {
+    try {
+        const entries = os.readdir(toolOutputDir) || [];
+        const dirList = entries[0];
+        if (!Array.isArray(dirList)) return [];
+        const wavFiles = [];
+        for (const name of dirList) {
+            if (name.toLowerCase().endsWith(".wav")) wavFiles.push(name);
+        }
+        wavFiles.sort();
+        return wavFiles;
+    } catch (e) { return []; }
+}
+
 function pollToolProcess() {
     /* Count completed stem files for progress */
     toolStemsFound = countStemFiles();
@@ -3704,11 +3714,21 @@ function pollToolProcess() {
             /* Success! */
             toolProcessPid = -1;
             toolResultSuccess = true;
-            const baseName = toolOutputDir.substring(toolOutputDir.lastIndexOf("/") + 1);
-            toolResultMessage = "Stems saved to\nStems/" + baseName + "/";
-            setView(VIEWS.TOOL_RESULT);
-            needsRedraw = true;
-            announce("Complete! Stems saved to Stems " + baseName);
+            toolStemFiles = getStemFileNames();
+            if (toolStemFiles.length > 0) {
+                toolStemReviewIndex = 0;
+                toolStemKept = new Array(toolStemFiles.length).fill(true);
+                setView(VIEWS.TOOL_STEM_REVIEW);
+                needsRedraw = true;
+                announce("Complete! " + toolStemFiles.length + " stems. Push to save all, or jog to choose.");
+            } else {
+                /* Fallback if no WAVs found */
+                const baseName = toolOutputDir.substring(toolOutputDir.lastIndexOf("/") + 1);
+                toolResultMessage = "Stems saved to\nStems/" + baseName + "/";
+                setView(VIEWS.TOOL_RESULT);
+                needsRedraw = true;
+                announce("Complete! Stems saved to Stems " + baseName);
+            }
             return;
         }
     } catch (e) { /* .done not found yet */ }
@@ -3801,10 +3821,10 @@ function drawToolProcessing() {
     const dots = ".".repeat(toolProcessingDots + 1);
 
     print(4, 14, displayName, 1);
-    print(4, 26, "Processing" + dots, 1);
-    print(4, 38, elapsedStr + " elapsed  " + remainStr, 1);
+    print(4, 24, "Processing" + dots, 1);
+    print(4, 34, elapsedStr + " elapsed  " + remainStr, 1);
     if (stemProgress) {
-        print(4, 50, stemProgress, 1);
+        print(4, 44, stemProgress, 1);
     }
 
     drawFooter({left: "Back: Cancel"});
@@ -3825,6 +3845,42 @@ function drawToolResult() {
     }
 
     drawFooter({left: "Back: Tools"});
+}
+
+/* ========== Tool Stem Review View ========== */
+
+function drawToolStemReview() {
+    clear_screen();
+    drawHeader("Stems");
+
+    const keptCount = toolStemKept.filter(k => k).length;
+    let actionLabel;
+    if (keptCount === 0) {
+        actionLabel = ">> Cancel";
+    } else if (keptCount === toolStemFiles.length) {
+        actionLabel = ">> Save All";
+    } else {
+        actionLabel = ">> Save " + keptCount + " Stem" + (keptCount > 1 ? "s" : "");
+    }
+    const items = [{ label: actionLabel, value: "" }];
+    for (let i = 0; i < toolStemFiles.length; i++) {
+        const name = toolStemFiles[i].replace(/\.wav$/i, "");
+        const prefix = toolStemKept[i] ? "[x] " : "[ ] ";
+        items.push({ label: prefix + name, value: "" });
+    }
+
+    drawMenuList({
+        items,
+        selectedIndex: toolStemReviewIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value
+    });
+
+    drawFooter({right: "Select"});
 }
 
 /* ========== Global Settings Functions ========== */
@@ -6993,6 +7049,21 @@ function handleJog(delta) {
         case VIEWS.TOOL_ENGINE_SELECT:
             toolEngineNavigate(delta);
             break;
+        case VIEWS.TOOL_STEM_REVIEW: {
+            const maxIdx = toolStemFiles.length; // 0=Save All, 1..N=stems
+            toolStemReviewIndex = Math.max(0, Math.min(maxIdx, toolStemReviewIndex + delta));
+            if (toolStemReviewIndex === 0) {
+                const kc = toolStemKept.filter(k => k).length;
+                if (kc === 0) announce("Cancel");
+                else if (kc === toolStemFiles.length) announce("Save All");
+                else announce("Save " + kc + " stems");
+            } else {
+                const name = toolStemFiles[toolStemReviewIndex - 1].replace(/\.wav$/i, "");
+                const kept = toolStemKept[toolStemReviewIndex - 1];
+                announce(name + (kept ? ", selected" : ", deselected"));
+            }
+            break;
+        }
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
@@ -7803,6 +7874,43 @@ function handleSelect() {
         case VIEWS.TOOL_RESULT:
             enterToolsMenu();
             break;
+        case VIEWS.TOOL_STEM_REVIEW: {
+            if (toolStemReviewIndex === 0) {
+                /* Action button — save selected or cancel */
+                const kc = toolStemKept.filter(k => k).length;
+                if (kc === 0) {
+                    /* Cancel — discard all */
+                    for (const f of toolStemFiles) {
+                        try { os.remove(toolOutputDir + "/" + f); } catch (e) {}
+                    }
+                    try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
+                    try { os.remove(toolOutputDir); } catch (e) {}
+                    enterToolsMenu();
+                    announce("Cancelled");
+                } else {
+                    /* Save selected, delete unselected */
+                    for (let i = 0; i < toolStemFiles.length; i++) {
+                        if (!toolStemKept[i]) {
+                            try { os.remove(toolOutputDir + "/" + toolStemFiles[i]); } catch (e) {}
+                        }
+                    }
+                    try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
+                    const baseName = toolOutputDir.substring(toolOutputDir.lastIndexOf("/") + 1);
+                    toolResultMessage = kc + " stem" + (kc > 1 ? "s" : "") + " saved to\nStems/" + baseName + "/";
+                    setView(VIEWS.TOOL_RESULT);
+                    needsRedraw = true;
+                    announce(kc + " stem" + (kc > 1 ? "s" : "") + " saved");
+                }
+            } else {
+                /* Toggle individual stem */
+                const idx = toolStemReviewIndex - 1;
+                toolStemKept[idx] = !toolStemKept[idx];
+                const stemName = toolStemFiles[idx].replace(/\.wav$/i, "");
+                needsRedraw = true;
+                announce(stemName + (toolStemKept[idx] ? " selected" : " deselected"));
+            }
+            break;
+        }
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own select input */
             break;
@@ -8231,6 +8339,11 @@ function handleBack() {
             break;
         case VIEWS.TOOL_RESULT:
             enterToolsMenu();
+            break;
+        case VIEWS.TOOL_STEM_REVIEW:
+            /* Jump to action button */
+            toolStemReviewIndex = 0;
+            needsRedraw = true;
             break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own back input.
@@ -10168,6 +10281,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.TOOL_RESULT:
             drawToolResult();
+            break;
+        case VIEWS.TOOL_STEM_REVIEW:
+            drawToolStemReview();
             break;
         case VIEWS.OVERTAKE_MODULE:
             try {
