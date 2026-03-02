@@ -206,6 +206,8 @@ static void shadow_dbus_handle_text(const char *text)
             *host.display_mode = 0;
             ctrl->display_mode = 0;
         }
+        /* Clear overtake mode so jog click reaches Move for shutdown confirm */
+        ctrl->overtake_mode = 0;
     }
 
     /* Track native Move sampler source from stock announcements. */
