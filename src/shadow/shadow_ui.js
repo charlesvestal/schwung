@@ -112,6 +112,13 @@ import {
     SET_PAGE_BOX_H
 } from '/data/UserData/move-anything/shared/sampler_overlay.mjs';
 
+import {
+    buildFilepathBrowserState,
+    refreshFilepathBrowser,
+    moveFilepathBrowserSelection,
+    activateFilepathBrowserItem
+} from '/data/UserData/move-anything/shared/filepath_browser.mjs';
+
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
 const TRACK_CC_END = MoveRow1;    // CC 43
@@ -163,6 +170,7 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // Master FX selection
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
+    FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
     STORE_PICKER_CATEGORIES: "storepickercats", // Store: browse categories
@@ -251,6 +259,7 @@ const VIEW_NAMES = {
     [VIEWS.COMPONENT_EDIT]: "Preset Picker",
     [VIEWS.MASTER_FX]: "Master FX",
     [VIEWS.HIERARCHY_EDITOR]: "Hierarchy Editor",
+    [VIEWS.FILEPATH_BROWSER]: "File Browser",
     [VIEWS.KNOB_EDITOR]: "Knob Editor",
     [VIEWS.KNOB_PARAM_PICKER]: "Parameter Picker",
     [VIEWS.STORE_PICKER_CATEGORIES]: "Module Store",
@@ -659,10 +668,8 @@ let globalSettingsEditing = false;
 let toolsMenuIndex = 0;
 let toolModules = [];           // Populated by scanForToolModules()
 
-/* Tool file browser state */
-let toolBrowserPath = "/data/UserData/UserLibrary/Samples";
-let toolBrowserEntries = [];    // [{name, isDir, path}]
-let toolBrowserIndex = 0;
+/* Tool file browser state (shared filepath_browser) */
+let toolBrowserState = null;
 let toolSelectedFile = "";
 let toolActiveTool = null;      // Currently active tool module descriptor
 let toolProcessPid = -1;        // PID of background tool process
@@ -675,6 +682,7 @@ let toolFileDurationSec = 0;     // Duration of input file in seconds
 let toolStemsFound = 0;          // Number of stem WAV files found in output dir
 let toolExpectedStems = 4;       // Expected number of stems
 let toolOvertakeActive = false;  // True if an interactive tool is running as overtake
+let toolNonOvertake = false;     // True if the active tool runs without overtake (pads still work)
 let toolSelectedEngine = null;   // Selected engine from engines array
 let toolEngineIndex = 0;         // Jog position in engine list
 let toolAvailableEngines = [];   // Engines filtered by installed commands
@@ -1148,6 +1156,20 @@ let hierEditorPresetEditMode = false; // true when editing params within a prese
 let hierEditorIsDynamicItems = false; // true when current level uses items_param
 let hierEditorSelectParam = "";       // param to set when item selected
 let hierEditorNavigateTo = "";        // level to navigate to after item selection (optional)
+
+/* Filepath browser state (for chain_params type: filepath) */
+let filepathBrowserState = null;
+let filepathBrowserParamKey = "";
+const FILEPATH_BROWSER_FS = {
+    readdir(path) {
+        const entries = os.readdir(path) || [];
+        if (Array.isArray(entries[0])) return entries[0];
+        return Array.isArray(entries) ? entries : [];
+    },
+    stat(path) {
+        return os.stat(path);
+    }
+};
 
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
@@ -1731,9 +1753,9 @@ function exitOvertakeMode() {
 
 /* Direct exit for interactive tools - skip LED clearing ceremony */
 function exitToolOvertake() {
-    debugLog("exitToolOvertake: direct tool exit");
+    debugLog("exitToolOvertake: direct tool exit, nonOvertake=" + toolNonOvertake);
 
-    /* Deactivate LED queue */
+    /* Deactivate LED queue (no-op if never activated for non-overtake tools) */
     deactivateLedQueue();
 
     /* Unload overtake DSP */
@@ -1757,13 +1779,14 @@ function exitToolOvertake() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Disable overtake mode */
-    if (typeof shadow_set_overtake_mode === "function") {
+    /* Disable overtake mode (non-overtake tools never changed it, so skip) */
+    if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
     }
 
     /* Return to tools menu */
     toolOvertakeActive = false;
+    toolNonOvertake = false;
     enterToolsMenu();
 }
 
@@ -1793,16 +1816,18 @@ function completeOvertakeExit() {
 }
 
 /* Load and run an overtake module */
-function loadOvertakeModule(moduleInfo) {
-    debugLog("loadOvertakeModule called with: " + JSON.stringify(moduleInfo));
+function loadOvertakeModule(moduleInfo, skipOvertake) {
+    debugLog("loadOvertakeModule called with: " + JSON.stringify(moduleInfo) + " skipOvertake=" + !!skipOvertake);
     if (!moduleInfo || !moduleInfo.uiPath) {
         debugLog("loadOvertakeModule: no moduleInfo or uiPath");
         return false;
     }
 
     try {
-        /* Step 1: Enable overtake mode 2 (module) - all MIDI forwarded including external */
-        if (typeof shadow_set_overtake_mode === "function") {
+        /* Step 1: Set overtake mode.
+         * Non-overtake tools stay at mode 0 — jog/click/back already forwarded to shadow,
+         * and everything else (pads, steps, knobs) passes through to Move normally. */
+        if (!skipOvertake && typeof shadow_set_overtake_mode === "function") {
             shadow_set_overtake_mode(2);  /* 2 = module mode (all events) */
             debugLog("loadOvertakeModule: overtake_mode=2 (module)");
         }
@@ -1813,8 +1838,9 @@ function loadOvertakeModule(moduleInfo) {
         debugLog("loadOvertakeModule: escape state reset");
 
         /* Activate LED queue before loading module - intercepts move_midi_internal_send
-         * to prevent SHM buffer flooding from modules that send many LEDs per tick */
-        activateLedQueue();
+         * to prevent SHM buffer flooding from modules that send many LEDs per tick.
+         * Non-overtake tools don't own LEDs, so skip this. */
+        if (!skipOvertake) activateLedQueue();
 
         /* Save current globals before loading - module may overwrite them */
         const savedInit = globalThis.init;
@@ -1902,11 +1928,20 @@ function loadOvertakeModule(moduleInfo) {
 
         overtakeModuleLoaded = true;
 
-        /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen */
-        overtakeInitPending = true;
-        overtakeInitTicks = 0;
-        ledClearIndex = 0;  /* Start LED clearing from beginning */
-        debugLog("loadOvertakeModule: init deferred, LEDs will clear progressively");
+        /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen.
+         * Non-overtake tools don't own LEDs, so call init() immediately. */
+        if (skipOvertake) {
+            overtakeInitPending = false;
+            debugLog("loadOvertakeModule: non-overtake, calling init() immediately");
+            if (overtakeModuleCallbacks && overtakeModuleCallbacks.init) {
+                overtakeModuleCallbacks.init();
+            }
+        } else {
+            overtakeInitPending = true;
+            overtakeInitTicks = 0;
+            ledClearIndex = 0;  /* Start LED clearing from beginning */
+            debugLog("loadOvertakeModule: init deferred, LEDs will clear progressively");
+        }
 
         return true;
     } catch (e) {
@@ -3268,106 +3303,51 @@ function drawToolsMenu() {
     drawFooter({left: "Back: Exit", right: "Jog: Select"});
 }
 
-/* ========== Tool File Browser Functions ========== */
-
-function toolListDirectory(path) {
-    const entries = [];
-    try {
-        const result = os.readdir(path) || [];
-        const dirList = result[0];
-        if (!Array.isArray(dirList)) return entries;
-
-        for (const name of dirList) {
-            if (name === "." || name === "..") continue;
-            if (name.startsWith(".")) continue;  /* Skip hidden files */
-            const fullPath = `${path}/${name}`;
-            try {
-                const st = os.stat(fullPath);
-                if (st && st[1] === 0) {
-                    const mode = st[0].mode;
-                    const isDir = (mode & 0o170000) === 0o040000;
-                    if (isDir) {
-                        entries.push({ name: name, isDir: true, path: fullPath });
-                    } else {
-                        /* Filter by tool's accepted extensions */
-                        const exts = (toolActiveTool && toolActiveTool.tool_config &&
-                                      toolActiveTool.tool_config.input_extensions) || [".wav"];
-                        const lowerName = name.toLowerCase();
-                        for (const ext of exts) {
-                            if (lowerName.endsWith(ext)) {
-                                entries.push({ name: name, isDir: false, path: fullPath });
-                                break;
-                            }
-                        }
-                    }
-                }
-            } catch (e) { /* skip unreadable entries */ }
-        }
-    } catch (e) {
-        debugLog("toolListDirectory error: " + e);
-    }
-
-    /* Sort: directories first, then alphabetical */
-    entries.sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-    });
-
-    return entries;
-}
+/* ========== Tool File Browser Functions (shared filepath_browser) ========== */
 
 function enterToolFileBrowser(toolModule) {
     debugLog("enterToolFileBrowser: " + toolModule.id);
     toolActiveTool = toolModule;
-    toolBrowserPath = "/data/UserData/UserLibrary/Samples";
-    try {
-        toolBrowserEntries = toolListDirectory(toolBrowserPath);
-    } catch (e) {
-        debugLog("enterToolFileBrowser error listing dir: " + e);
-        toolBrowserEntries = [];
-    }
-    toolBrowserIndex = 0;
+    const exts = (toolModule.tool_config && toolModule.tool_config.input_extensions) || [".wav"];
+    const filter = Array.isArray(exts) ? exts : [exts];
+    toolBrowserState = buildFilepathBrowserState(
+        { root: "/data/UserData/UserLibrary/Samples", filter: filter, name: toolModule.name },
+        ""
+    );
+    refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
     setView(VIEWS.TOOL_FILE_BROWSER);
     needsRedraw = true;
-    const firstEntry = toolBrowserEntries.length > 0 ? toolBrowserEntries[0].name : "empty";
+    const firstEntry = toolBrowserState.items.length > 0 ? toolBrowserState.items[0].label : "empty";
     announce(toolModule.name + " - Browse files, " + firstEntry);
-    debugLog("enterToolFileBrowser: view now=" + view + " entries=" + toolBrowserEntries.length);
+    debugLog("enterToolFileBrowser: view now=" + view + " items=" + toolBrowserState.items.length);
 }
 
 function toolBrowserNavigate(delta) {
-    if (toolBrowserEntries.length === 0) return;
-    toolBrowserIndex = Math.max(0, Math.min(toolBrowserEntries.length - 1, toolBrowserIndex + delta));
-    const entry = toolBrowserEntries[toolBrowserIndex];
-    announce(entry.name + (entry.isDir ? " folder" : ""));
+    if (!toolBrowserState || toolBrowserState.items.length === 0) return;
+    moveFilepathBrowserSelection(toolBrowserState, delta);
+    const item = toolBrowserState.items[toolBrowserState.selectedIndex];
+    announce(item.label + (item.kind === "dir" ? " folder" : ""));
 }
 
 function toolBrowserSelect() {
-    if (toolBrowserEntries.length === 0) return;
-    const entry = toolBrowserEntries[toolBrowserIndex];
-    if (entry.isDir) {
-        /* Descend into directory */
-        toolBrowserPath = entry.path;
-        toolBrowserEntries = toolListDirectory(toolBrowserPath);
-        toolBrowserIndex = 0;
+    if (!toolBrowserState || toolBrowserState.items.length === 0) return;
+    const result = activateFilepathBrowserItem(toolBrowserState);
+    if (result.action === "open") {
+        refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
         needsRedraw = true;
-        const dirName = entry.name;
-        if (toolBrowserEntries.length > 0) {
-            announce(dirName + ", " + toolBrowserEntries[0].name);
+        if (toolBrowserState.items.length > 0) {
+            announce(toolBrowserState.items[0].label);
         } else {
-            announce(dirName + ", empty");
+            announce("empty");
         }
-    } else {
-        /* Select file */
-        toolSelectedFile = entry.path;
+    } else if (result.action === "select") {
+        toolSelectedFile = result.value;
         if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.interactive) {
-            /* Interactive tools: skip confirm, load directly */
-            startInteractiveTool(toolActiveTool, entry.path);
+            startInteractiveTool(toolActiveTool, result.value);
         } else if (toolActiveTool && toolActiveTool.tool_config &&
                    toolActiveTool.tool_config.engines) {
-            /* Engine-based tool: filter by installed, then select or skip */
             enterToolEngineSelect();
         } else {
-            /* Legacy config with command field */
             toolSelectedEngine = null;
             enterToolConfirm();
         }
@@ -3375,56 +3355,59 @@ function toolBrowserSelect() {
 }
 
 function toolBrowserBack() {
-    /* Go up one directory, or exit to tools menu if at root */
-    const root = "/data/UserData/UserLibrary/Samples";
-    if (toolBrowserPath === root) {
+    if (!toolBrowserState) { enterToolsMenu(); return; }
+    const root = toolBrowserState.root;
+    if (toolBrowserState.currentDir === root) {
         enterToolsMenu();
         return;
     }
-    /* Go to parent directory */
-    const lastSlash = toolBrowserPath.lastIndexOf("/");
+    /* Navigate up by setting currentDir to parent */
+    const lastSlash = toolBrowserState.currentDir.lastIndexOf("/");
     if (lastSlash > 0) {
-        toolBrowserPath = toolBrowserPath.substring(0, lastSlash);
-        /* Don't go above root */
-        if (toolBrowserPath.length < root.length) {
-            toolBrowserPath = root;
+        toolBrowserState.currentDir = toolBrowserState.currentDir.substring(0, lastSlash);
+        if (toolBrowserState.currentDir.length < root.length) {
+            toolBrowserState.currentDir = root;
         }
     } else {
-        toolBrowserPath = root;
+        toolBrowserState.currentDir = root;
     }
-    toolBrowserEntries = toolListDirectory(toolBrowserPath);
-    toolBrowserIndex = 0;
+    toolBrowserState.selectedIndex = 0;
+    toolBrowserState.selectedPath = "";
+    refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
     needsRedraw = true;
-    const dirName = toolBrowserPath.substring(toolBrowserPath.lastIndexOf("/") + 1);
+    const dirName = toolBrowserState.currentDir.substring(toolBrowserState.currentDir.lastIndexOf("/") + 1);
     announce(dirName);
 }
 
 function drawToolFileBrowser() {
     clear_screen();
 
-    /* Show current directory name in header */
-    const dirName = toolBrowserPath.substring(toolBrowserPath.lastIndexOf("/") + 1);
-    drawHeader(dirName);
-
-    if (toolBrowserEntries.length === 0) {
+    if (!toolBrowserState) {
+        drawHeader("Browser");
         print(4, 28, "No files found", 1);
         drawFooter({left: "Back: Up"});
         return;
     }
 
-    const items = toolBrowserEntries.map(e => ({
-        label: e.isDir ? e.name + " >" : e.name,
-        value: ""
-    }));
+    /* Show current directory name in header */
+    const dirName = toolBrowserState.currentDir.substring(toolBrowserState.currentDir.lastIndexOf("/") + 1);
+    drawHeader(dirName);
+
+    if (toolBrowserState.items.length === 0) {
+        print(4, 28, "No files found", 1);
+        drawFooter({left: "Back: Up"});
+        return;
+    }
+
     drawMenuList({
-        items,
-        selectedIndex: toolBrowserIndex,
+        items: toolBrowserState.items,
+        selectedIndex: toolBrowserState.selectedIndex,
         listArea: {
             topY: menuLayoutDefaults.listTopY,
             bottomY: menuLayoutDefaults.listBottomWithFooter
         },
         getLabel: (item) => item.label,
-        getValue: (item) => item.value
+        getValue: () => ""
     });
 
     drawFooter({left: "Back: Up", right: "Jog: Select"});
@@ -3641,6 +3624,10 @@ function startInteractiveTool(toolModule, filePath) {
     toolSelectedFile = filePath;
     toolOvertakeActive = true;
 
+    /* Non-overtake tools keep pads/buttons working for Move */
+    const skipOvertake = (toolModule.tool_config && toolModule.tool_config.overtake === false);
+    toolNonOvertake = skipOvertake;
+
     /* Build a moduleInfo descriptor compatible with loadOvertakeModule */
     const uiPath = toolModule.path + "/ui.js";
     const uiStat = os.stat(uiPath);
@@ -3650,6 +3637,7 @@ function startInteractiveTool(toolModule, filePath) {
         toolResultSuccess = false;
         toolResultMessage = "Missing ui.js";
         toolOvertakeActive = false;
+        toolNonOvertake = false;
         needsRedraw = true;
         return;
     }
@@ -3671,11 +3659,15 @@ function startInteractiveTool(toolModule, filePath) {
 
     /* Reuse the existing overtake module loading infrastructure */
     announce("Loading " + toolModule.name);
-    const success = loadOvertakeModule(moduleInfo);
+    const success = loadOvertakeModule(moduleInfo, skipOvertake);
     if (success) {
         /* DSP is now loaded — pass the selected file path */
         if (typeof shadow_set_param === "function") {
             shadow_set_param(0, "overtake_dsp:file_path", filePath);
+            /* Pass project BPM for tempo-aware tools */
+            if (overlayState && overlayState.samplerBpm > 0) {
+                shadow_set_param(0, "overtake_dsp:project_bpm", String(overlayState.samplerBpm));
+            }
         }
     } else {
         toolOvertakeActive = false;
@@ -5335,6 +5327,8 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     hierEditorEditMode = false;
     hierEditorIsMasterFx = false;
     hierEditorMasterFxSlot = -1;
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
 
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
@@ -5593,9 +5587,40 @@ function exitHierarchyEditor() {
     hierEditorPresetEditMode = false;
     hierEditorIsMasterFx = false;
     hierEditorMasterFxSlot = -1;
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
 
     view = returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
     needsRedraw = true;
+}
+
+/* Open generic file browser for a filepath parameter */
+function openHierarchyFilepathBrowser(key, meta) {
+    const effectiveMeta = meta || getParamMetadata(key);
+    if (!effectiveMeta || effectiveMeta.type !== "filepath") return false;
+
+    const fullKey = buildHierarchyParamKey(key);
+    const currentVal = getSlotParam(hierEditorSlot, fullKey) || "";
+
+    filepathBrowserParamKey = key;
+    filepathBrowserState = buildFilepathBrowserState(effectiveMeta, currentVal);
+    refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+    setView(VIEWS.FILEPATH_BROWSER);
+
+    if (filepathBrowserState.items.length > 0) {
+        const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+        announceMenuItem(selected.label || "File", "");
+    } else {
+        announce("No files found");
+    }
+
+    return true;
+}
+
+function closeHierarchyFilepathBrowser() {
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
+    setView(VIEWS.HIERARCHY_EDITOR);
 }
 
 /* Get param metadata from chain_params */
@@ -6146,6 +6171,12 @@ function formatHierDisplayValue(key, val) {
         return val;
     }
 
+    if (meta && meta.type === "filepath") {
+        if (!val) return "";
+        const slashIdx = val.lastIndexOf('/');
+        return slashIdx >= 0 ? val.slice(slashIdx + 1) : val;
+    }
+
     const num = parseFloat(val);
     if (isNaN(num)) return val;
 
@@ -6162,6 +6193,43 @@ function formatHierDisplayValue(key, val) {
         return Math.round(num).toString();
     }
     return num.toFixed(2);
+}
+
+/* Draw filepath browser for filepath chain params */
+function drawFilepathBrowser() {
+    clear_screen();
+
+    const state = filepathBrowserState;
+    const title = state && state.title ? state.title : "File Browser";
+    drawHeader(truncateText(title, 24));
+
+    if (!state) {
+        print(4, LIST_TOP_Y, "Browser unavailable", 1);
+        drawFooter({ left: "Push: return", right: "Jog: scroll" });
+        return;
+    }
+
+    if (state.error) {
+        print(4, LIST_TOP_Y, truncateText(state.error, 20), 1);
+    }
+
+    if (!state.items || state.items.length === 0) {
+        print(4, LIST_TOP_Y + 10, "No files", 1);
+    } else {
+        drawMenuList({
+            items: state.items,
+            selectedIndex: state.selectedIndex,
+            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+            getLabel: (item) => item.label,
+            getValue: () => ""
+        });
+    }
+
+    const selected = state.items && state.items.length > 0
+        ? state.items[state.selectedIndex]
+        : null;
+    const actionText = selected && selected.kind === "file" ? "Push: select" : "Push: open";
+    drawFooter({ left: actionText, right: "Jog: scroll" });
 }
 
 /* Draw the hierarchy-based parameter editor */
@@ -6323,7 +6391,10 @@ function drawHierarchyEditor() {
                 getLabel: (item) => item.label,
                 getValue: (item) => item.value,
                 valueAlignRight: true,
-                editMode: hierEditorEditMode
+                editMode: hierEditorEditMode,
+                scrollSelectedValue: true,
+                prioritizeSelectedValue: true,
+                selectedMinLabelChars: 6
             });
         }
 
@@ -6845,6 +6916,13 @@ function handleJog(delta) {
                     const param = hierEditorParams[hierEditorSelectedIdx];
                     announceMenuItem(param.label || param.key, param.value || "");
                 }
+            }
+            break;
+        case VIEWS.FILEPATH_BROWSER:
+            if (filepathBrowserState) {
+                moveFilepathBrowserSelection(filepathBrowserState, delta);
+                const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+                if (selected) announceMenuItem(selected.label || "File", "");
             }
             break;
         case VIEWS.KNOB_EDITOR:
@@ -7499,8 +7577,34 @@ function handleSelect() {
                         }
                     }
                 } else {
-                    /* Normal param - toggle edit mode */
-                    hierEditorEditMode = !hierEditorEditMode;
+                    /* Normal param - open filepath browser or toggle edit mode */
+                    const selectedKey = (selectedParam && typeof selectedParam === "object")
+                        ? (selectedParam.key || selectedParam)
+                        : selectedParam;
+                    const meta = getParamMetadata(selectedKey);
+                    if (!hierEditorEditMode && meta && meta.type === "filepath") {
+                        openHierarchyFilepathBrowser(selectedKey, meta);
+                    } else {
+                        hierEditorEditMode = !hierEditorEditMode;
+                    }
+                }
+            }
+            break;
+        case VIEWS.FILEPATH_BROWSER:
+            if (!filepathBrowserState) {
+                closeHierarchyFilepathBrowser();
+                break;
+            }
+            {
+                const result = activateFilepathBrowserItem(filepathBrowserState);
+                if (result.action === "open") {
+                    refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+                } else if (result.action === "select") {
+                    const key = filepathBrowserParamKey || result.key;
+                    const fullKey = buildHierarchyParamKey(key);
+                    setSlotParam(hierEditorSlot, fullKey, result.value || "");
+                    announceParameter(filepathBrowserState.title || key, result.filename || result.value || "");
+                    closeHierarchyFilepathBrowser();
                 }
             }
             break;
@@ -7671,7 +7775,10 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
-                if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
+                if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
+                    debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
+                    startInteractiveTool(tool, "");
+                } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
                     debugLog("TOOLS SELECT: entering file browser");
                     enterToolFileBrowser(tool);
                 } else {
@@ -7911,6 +8018,14 @@ function handleBack() {
             unloadModuleUi();
             setView(VIEWS.CHAIN_EDIT);
             announce("Chain Editor");
+            needsRedraw = true;
+            break;
+        case VIEWS.FILEPATH_BROWSER:
+            closeHierarchyFilepathBrowser();
+            {
+                const ld = getHierarchyLevelDef();
+                announce(ld && ld.label ? ld.label : "Parameters");
+            }
             needsRedraw = true;
             break;
         case VIEWS.HIERARCHY_EDITOR: {
@@ -9992,6 +10107,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
+            break;
+        case VIEWS.FILEPATH_BROWSER:
+            drawFilepathBrowser();
             break;
         case VIEWS.KNOB_EDITOR:
             drawKnobEditor();

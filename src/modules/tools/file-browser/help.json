@@ -1,0 +1,91 @@
+{
+  "title": "File Browser",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Browse files and",
+        "folders on your Move.",
+        "",
+        "Two starting roots:",
+        " User Library: your",
+        "  samples and presets",
+        " System Files: the",
+        "  Move Anything dir",
+        "",
+        "System files show a",
+        "warning before entry."
+      ]
+    },
+    {
+      "title": "Navigation",
+      "lines": [
+        "Jog wheel: scroll",
+        "Jog click: open dir",
+        " or show file actions",
+        "Back: go up one dir",
+        " or exit browser",
+        "",
+        "Folders shown as",
+        " [FolderName]",
+        "Files shown by name."
+      ]
+    },
+    {
+      "title": "File Actions",
+      "children": [
+        {
+          "title": "Delete",
+          "lines": [
+            "Remove a file or",
+            "empty folder.",
+            "",
+            "A confirmation screen",
+            "appears first.",
+            "",
+            "Non-empty folders",
+            "cannot be deleted."
+          ]
+        },
+        {
+          "title": "Rename",
+          "lines": [
+            "Change the name of",
+            "a file or folder.",
+            "",
+            "Opens the on-screen",
+            "keyboard, pre-filled",
+            "with the current name."
+          ]
+        },
+        {
+          "title": "Copy / Move",
+          "lines": [
+            "Copy or move a file",
+            "to another folder.",
+            "",
+            "A destination browser",
+            "opens showing only",
+            "folders. Navigate to",
+            "the target, then push",
+            "to confirm.",
+            "",
+            "Back cancels."
+          ]
+        },
+        {
+          "title": "New Folder",
+          "lines": [
+            "Create a new folder",
+            "inside the selected",
+            "directory.",
+            "",
+            "Opens the on-screen",
+            "keyboard to type the",
+            "folder name."
+          ]
+        }
+      ]
+    }
+  ]
+}

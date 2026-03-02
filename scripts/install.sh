@@ -675,7 +675,7 @@ deleted_modules=""
 old_modules=$($ssh_ableton "cd /data/UserData/move-anything/modules 2>/dev/null && for d in */; do
   d=\${d%/}
   case \"\$d\" in
-    chain|controller|store|text-test|sound_generators|audio_fx|midi_fx|utilities|other) continue ;;
+    chain|controller|store|text-test|sound_generators|audio_fx|midi_fx|utilities|overtake|tools|other) continue ;;
   esac
   if [ -f \"\$d/module.json\" ]; then
     echo \"\$d\"
