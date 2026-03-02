@@ -1171,24 +1171,55 @@ function clearLedBatch() {
 ```
 
 **In your module (initialization):**
+
+Use the shared `setLED()` and `setButtonLED()` from `input_filter.mjs` — they provide caching (skip duplicate sends) and correct MIDI packet formatting:
+
 ```javascript
+import {
+    MoveBack, MoveCapture, MoveUndo, MoveLoop, MoveCopy, MoveMute, MoveDelete,
+    MovePads, White, DarkGrey,
+    WhiteLedDim, WhiteLedMedium, WhiteLedBright
+} from '/data/UserData/move-anything/shared/constants.mjs';
+
+import { setLED, setButtonLED } from '/data/UserData/move-anything/shared/input_filter.mjs';
+
 let ledInitPending = false;
 let ledInitIndex = 0;
 const LEDS_PER_FRAME = 8;
 
 globalThis.init = function() {
-    // Start progressive LED setup
     ledInitPending = true;
     ledInitIndex = 0;
 };
 
+function setupLedBatch() {
+    const leds = [];
+    // Button LEDs (CC-based) — use setButtonLED
+    leds.push({ type: 'cc', id: MoveBack, color: WhiteLedDim });
+    leds.push({ type: 'cc', id: MoveCapture, color: WhiteLedDim });
+    // Pad LEDs (note-based) — use setLED
+    for (const pad of MovePads) {
+        leds.push({ type: 'note', id: pad, color: DarkGrey });
+    }
+
+    const end = Math.min(ledInitIndex + LEDS_PER_FRAME, leds.length);
+    for (let i = ledInitIndex; i < end; i++) {
+        if (leds[i].type === 'cc') setButtonLED(leds[i].id, leds[i].color);
+        else setLED(leds[i].id, leds[i].color);
+    }
+    ledInitIndex = end;
+    if (ledInitIndex >= leds.length) ledInitPending = false;
+}
+
 globalThis.tick = function() {
     if (ledInitPending) {
-        setupLedBatch();  // Set 8 LEDs per frame
+        setupLedBatch();
     }
     drawUI();
 };
 ```
+
+**Important:** Always use the shared `setLED()` and `setButtonLED()` from `input_filter.mjs` rather than calling `move_midi_internal_send()` directly. The shared helpers handle LED caching and correct USB-MIDI cable byte formatting. Use absolute import paths (`/data/UserData/move-anything/shared/...`) for module location independence.
 
 ### LED Addresses
 

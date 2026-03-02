@@ -24,6 +24,27 @@ static uint8_t shadow_pending_cc_status[128];
 static uint8_t shadow_pending_cc_cin[128];
 static int shadow_led_queue_initialized = 0;
 
+/* Move LED state cache — continuously accumulated from Move's MIDI_OUT.
+ * When entering overtake we snapshot this, and on exit we restore it. */
+static int move_note_led_state[128];         /* -1 = unknown, else color */
+static uint8_t move_note_led_cin[128];
+static uint8_t move_note_led_status[128];
+static int move_cc_led_state[128];           /* -1 = unknown, else color */
+static uint8_t move_cc_led_cin[128];
+static uint8_t move_cc_led_status[128];
+
+/* Snapshot taken at overtake entry — this is what we restore on exit */
+static int snapshot_note_color[128];
+static uint8_t snapshot_note_cin[128];
+static uint8_t snapshot_note_status[128];
+static int snapshot_cc_color[128];
+static uint8_t snapshot_cc_cin[128];
+static uint8_t snapshot_cc_status[128];
+static int snapshot_valid = 0;
+
+static int move_led_restore_pending = 0;
+static int prev_overtake_mode = 0;
+
 /* Input LED queue (external MIDI cable 2) */
 static int shadow_input_pending_note_color[128];   /* -1 = not pending */
 static uint8_t shadow_input_pending_note_status[128];
@@ -38,6 +59,15 @@ void led_queue_init(const led_queue_host_t *h) {
     host = *h;
     shadow_led_queue_initialized = 0;
     shadow_input_queue_initialized = 0;
+    snapshot_valid = 0;
+    move_led_restore_pending = 0;
+    prev_overtake_mode = 0;
+    for (int i = 0; i < 128; i++) {
+        move_note_led_state[i] = -1;
+        move_cc_led_state[i] = -1;
+        snapshot_note_color[i] = -1;
+        snapshot_cc_color[i] = -1;
+    }
     led_queue_module_initialized = 1;
 }
 
@@ -71,10 +101,70 @@ void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2)
 
 void shadow_clear_move_leds_if_overtake(void) {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
-    if (!ctrl || ctrl->overtake_mode < 2) return;
+    int cur_overtake = (ctrl && ctrl->overtake_mode >= 2) ? 1 : 0;
 
     uint8_t *midi_out = host.midi_out_buf;
-    if (!midi_out) return;
+    if (!midi_out) {
+        prev_overtake_mode = cur_overtake;
+        return;
+    }
+
+    /* Always scan Move's MIDI_OUT and cache LED state (even when not in overtake).
+     * This way we have a running picture of what Move's LEDs look like. */
+    if (!cur_overtake) {
+        for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+            uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+            uint8_t type = midi_out[i+1] & 0xF0;
+            if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+                uint8_t d1 = midi_out[i+2];
+                uint8_t d2 = midi_out[i+3];
+                if (type == 0x90) {
+                    move_note_led_state[d1] = d2;
+                    move_note_led_status[d1] = midi_out[i+1];
+                    move_note_led_cin[d1] = midi_out[i];
+                } else {
+                    move_cc_led_state[d1] = d2;
+                    move_cc_led_status[d1] = midi_out[i+1];
+                    move_cc_led_cin[d1] = midi_out[i];
+                }
+            }
+        }
+    }
+
+    /* On transition into overtake: snapshot the current LED state */
+    if (!prev_overtake_mode && cur_overtake) {
+        memcpy(snapshot_note_color, move_note_led_state, sizeof(snapshot_note_color));
+        memcpy(snapshot_note_cin, move_note_led_cin, sizeof(snapshot_note_cin));
+        memcpy(snapshot_note_status, move_note_led_status, sizeof(snapshot_note_status));
+        memcpy(snapshot_cc_color, move_cc_led_state, sizeof(snapshot_cc_color));
+        memcpy(snapshot_cc_cin, move_cc_led_cin, sizeof(snapshot_cc_cin));
+        memcpy(snapshot_cc_status, move_cc_led_status, sizeof(snapshot_cc_status));
+        snapshot_valid = 1;
+        move_led_restore_pending = 0;
+    }
+
+    /* On transition out of overtake: queue the snapshot for restore */
+    if (prev_overtake_mode && !cur_overtake && snapshot_valid) {
+        shadow_init_led_queue();
+        for (int i = 0; i < 128; i++) {
+            if (snapshot_note_color[i] >= 0) {
+                shadow_pending_note_color[i] = snapshot_note_color[i];
+                shadow_pending_note_status[i] = snapshot_note_status[i];
+                shadow_pending_note_cin[i] = snapshot_note_cin[i];
+            }
+            if (snapshot_cc_color[i] >= 0) {
+                shadow_pending_cc_color[i] = snapshot_cc_color[i];
+                shadow_pending_cc_status[i] = snapshot_cc_status[i];
+                shadow_pending_cc_cin[i] = snapshot_cc_cin[i];
+            }
+        }
+        move_led_restore_pending = 1;
+    }
+
+    prev_overtake_mode = cur_overtake;
+
+    /* During overtake: clear Move's cable-0 LED packets */
+    if (!cur_overtake) return;
 
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cable = (midi_out[i] >> 4) & 0x0F;
@@ -107,10 +197,18 @@ void shadow_flush_pending_leds(void) {
     }
 
     /* In overtake mode use full buffer (after clearing Move's LEDs).
-     * In normal mode stay within safe limit to coexist with Move's packets. */
+     * In normal mode stay within safe limit to coexist with Move's packets.
+     * During restore, use a higher budget to get LEDs back quickly. */
     int max_bytes = overtake ? MIDI_BUFFER_SIZE : SHADOW_LED_QUEUE_SAFE_BYTES;
     int available = (max_bytes - used) / 4;
-    int budget = overtake ? SHADOW_LED_OVERTAKE_BUDGET : SHADOW_LED_MAX_UPDATES_PER_TICK;
+    int budget;
+    if (overtake) {
+        budget = SHADOW_LED_OVERTAKE_BUDGET;
+    } else if (move_led_restore_pending) {
+        budget = SHADOW_LED_RESTORE_BUDGET;
+    } else {
+        budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
+    }
     if (available <= 0 || budget <= 0) return;
     if (budget > available) budget = available;
 
@@ -118,6 +216,7 @@ void shadow_flush_pending_leds(void) {
     int hw_offset = 0;
 
     /* First flush pending note-on messages */
+    int notes_remaining = 0;
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_note_color[i] >= 0) {
             /* Find empty slot */
@@ -139,8 +238,12 @@ void shadow_flush_pending_leds(void) {
             sent++;
         }
     }
+    for (int i = 0; i < 128; i++) {
+        if (shadow_pending_note_color[i] >= 0) { notes_remaining = 1; break; }
+    }
 
     /* Then flush pending CC messages */
+    int ccs_remaining = 0;
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_cc_color[i] >= 0) {
             /* Find empty slot */
@@ -161,6 +264,14 @@ void shadow_flush_pending_leds(void) {
             hw_offset += 4;
             sent++;
         }
+    }
+    for (int i = 0; i < 128; i++) {
+        if (shadow_pending_cc_color[i] >= 0) { ccs_remaining = 1; break; }
+    }
+
+    /* Clear restore flag when all pending LEDs have been flushed */
+    if (move_led_restore_pending && !notes_remaining && !ccs_remaining) {
+        move_led_restore_pending = 0;
     }
 }
 

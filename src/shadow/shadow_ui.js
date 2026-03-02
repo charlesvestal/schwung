@@ -181,7 +181,8 @@ const VIEWS = {
     TOOL_FILE_BROWSER: "toolfilebrowser",   // Browse directories/files for tool input
     TOOL_CONFIRM: "toolconfirm",            // Confirm file selection before processing
     TOOL_PROCESSING: "toolprocessing",      // Progress/status while tool runs
-    TOOL_RESULT: "toolresult"               // Success/failure result
+    TOOL_RESULT: "toolresult",               // Success/failure result
+    TOOL_ENGINE_SELECT: "toolengineselect"   // Pick engine (e.g. 3-stem vs 4-stem)
 };
 
 /* Special action key for swap module option */
@@ -264,7 +265,8 @@ const VIEW_NAMES = {
     [VIEWS.TOOL_FILE_BROWSER]: "File Browser",
     [VIEWS.TOOL_CONFIRM]: "Confirm",
     [VIEWS.TOOL_PROCESSING]: "Processing",
-    [VIEWS.TOOL_RESULT]: "Result"
+    [VIEWS.TOOL_RESULT]: "Result",
+    [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection"
 };
 
 /* Helper to change view and announce it */
@@ -673,6 +675,9 @@ let toolFileDurationSec = 0;     // Duration of input file in seconds
 let toolStemsFound = 0;          // Number of stem WAV files found in output dir
 let toolExpectedStems = 4;       // Expected number of stems
 let toolOvertakeActive = false;  // True if an interactive tool is running as overtake
+let toolSelectedEngine = null;   // Selected engine from engines array
+let toolEngineIndex = 0;         // Jog position in engine list
+let toolAvailableEngines = [];   // Engines filtered by installed commands
 
 const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
 const RESAMPLE_BRIDGE_VALUES = [0, 2];
@@ -1718,9 +1723,9 @@ function exitOvertakeMode() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Start progressive LED clearing before exiting */
+    /* Signal exit — C-side LED cache will restore Move's LEDs
+     * when overtake_mode transitions back to 0 */
     overtakeExitPending = true;
-    ledClearIndex = 0;
     needsRedraw = true;
 }
 
@@ -3357,8 +3362,13 @@ function toolBrowserSelect() {
         if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.interactive) {
             /* Interactive tools: skip confirm, load directly */
             startInteractiveTool(toolActiveTool, entry.path);
+        } else if (toolActiveTool && toolActiveTool.tool_config &&
+                   toolActiveTool.tool_config.engines) {
+            /* Engine-based tool: filter by installed, then select or skip */
+            enterToolEngineSelect();
         } else {
-            /* Batch tools: show confirm screen */
+            /* Legacy config with command field */
+            toolSelectedEngine = null;
             enterToolConfirm();
         }
     }
@@ -3420,6 +3430,73 @@ function drawToolFileBrowser() {
     drawFooter({left: "Back: Up", right: "Jog: Select"});
 }
 
+/* ========== Tool Engine Selection View ========== */
+
+/* Filter engines to only those whose command script exists on disk */
+function getAvailableEngines() {
+    const engines = toolActiveTool.tool_config.engines;
+    if (!engines) return [];
+    return engines.filter(e => {
+        const cmdPath = toolActiveTool.path + "/" + e.command;
+        try {
+            const st = os.stat(cmdPath);
+            return st && st[1] === 0;
+        } catch (err) { return false; }
+    });
+}
+
+function enterToolEngineSelect() {
+    toolEngineIndex = 0;
+    toolSelectedEngine = null;
+    toolAvailableEngines = getAvailableEngines();
+    if (toolAvailableEngines.length === 0) {
+        announce("No engines installed");
+        return;
+    }
+    if (toolAvailableEngines.length === 1) {
+        /* Only one engine available — skip selection */
+        toolSelectedEngine = toolAvailableEngines[0];
+        enterToolConfirm();
+        return;
+    }
+    setView(VIEWS.TOOL_ENGINE_SELECT);
+    needsRedraw = true;
+    announce("Choose engine, " + toolAvailableEngines[0].name);
+}
+
+function toolEngineNavigate(delta) {
+    if (toolAvailableEngines.length === 0) return;
+    toolEngineIndex = Math.max(0, Math.min(toolAvailableEngines.length - 1, toolEngineIndex + delta));
+    announce(toolAvailableEngines[toolEngineIndex].name);
+}
+
+function toolEngineConfirm() {
+    toolSelectedEngine = toolAvailableEngines[toolEngineIndex];
+    enterToolConfirm();
+}
+
+function drawToolEngineSelect() {
+    clear_screen();
+    drawHeader("Choose Engine");
+
+    const items = toolAvailableEngines.map(e => ({
+        label: e.name,
+        value: e.stems ? e.stems.length + " stems" : ""
+    }));
+    drawMenuList({
+        items,
+        selectedIndex: toolEngineIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.label,
+        getValue: (item) => item.value
+    });
+
+    drawFooter({left: "Back: Files", right: "Jog: Select"});
+}
+
 /* ========== Tool Confirm View ========== */
 
 /* Read WAV file duration in seconds from header.
@@ -3449,10 +3526,15 @@ function getWavDurationSec(filePath) {
     }
 }
 
-/* Estimate processing time.
- * SpleeterRT: ~0.5x realtime on Move's Cortex-A72 with 2 threads.
- * A 10-second file takes ~5 seconds. Model load adds ~0.3s overhead. */
-const TOOL_PROCESSING_RATIO = 0.5;
+/* Estimate processing time based on selected engine.
+ * SpleeterRT (3-stem): ~0.5x realtime on Move's Cortex-A72.
+ * Spleeter TFLite (4-stem): ~3.0x realtime. */
+function getToolProcessingRatio() {
+    if (toolSelectedEngine && toolSelectedEngine.processing_ratio) {
+        return toolSelectedEngine.processing_ratio;
+    }
+    return 0.5;  /* default for legacy/unknown engines */
+}
 
 function formatTime(seconds) {
     seconds = Math.round(seconds);
@@ -3468,7 +3550,7 @@ function enterToolConfirm() {
     setView(VIEWS.TOOL_CONFIRM);
     needsRedraw = true;
     const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
-    const estSec = Math.round(toolFileDurationSec * TOOL_PROCESSING_RATIO);
+    const estSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
     const estStr = estSec > 0 ? (", about " + formatTime(estSec)) : "";
     announce("Separate " + fileName + "? Jog to confirm, Back to cancel" + estStr);
 }
@@ -3484,12 +3566,18 @@ function drawToolConfirm() {
     print(4, 16, "Process this file?", 1);
     print(4, 28, displayName, 1);
 
+    /* Show selected engine name */
+    if (toolSelectedEngine && toolSelectedEngine.name) {
+        print(4, 40, "Engine: " + toolSelectedEngine.name, 1);
+    }
+
     /* Show time estimate */
     if (toolFileDurationSec > 0) {
-        const estSec = Math.round(toolFileDurationSec * TOOL_PROCESSING_RATIO);
+        const estSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
         const durStr = formatTime(Math.round(toolFileDurationSec));
         const estStr = formatTime(estSec);
-        print(4, 40, durStr + " audio ~ " + estStr + " to process", 1);
+        const yPos = (toolSelectedEngine && toolSelectedEngine.name) ? 52 : 40;
+        print(4, yPos, durStr + " audio ~ " + estStr + " to process", 1);
     }
 
     drawFooter({left: "Back: Cancel", right: "Jog: Confirm"});
@@ -3514,8 +3602,10 @@ function startToolProcess() {
     try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
     try { os.remove(toolOutputDir + "/.error"); } catch (e) {}
 
-    /* Spawn the tool process */
-    const command = toolActiveTool.path + "/" + (toolActiveTool.tool_config.command || "separate");
+    /* Spawn the tool process — use selected engine's command if available */
+    const engineCmd = toolSelectedEngine ? toolSelectedEngine.command
+        : (toolActiveTool.tool_config.command || "separate");
+    const command = toolActiveTool.path + "/" + engineCmd;
     debugLog("startToolProcess: " + command + " " + toolSelectedFile + " " + toolOutputDir);
 
     try {
@@ -3535,11 +3625,13 @@ function startToolProcess() {
     toolProcessingDots = 0;
     toolProcessStartTime = Date.now();
     toolStemsFound = 0;
-    toolExpectedStems = (toolActiveTool.tool_config && toolActiveTool.tool_config.stems)
-        ? toolActiveTool.tool_config.stems.length : 4;
+    toolExpectedStems = (toolSelectedEngine && toolSelectedEngine.stems)
+        ? toolSelectedEngine.stems.length
+        : (toolActiveTool.tool_config && toolActiveTool.tool_config.stems)
+            ? toolActiveTool.tool_config.stems.length : 4;
     setView(VIEWS.TOOL_PROCESSING);
     needsRedraw = true;
-    const estSec = Math.round(toolFileDurationSec * TOOL_PROCESSING_RATIO);
+    const estSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
     const estStr = estSec > 0 ? (", about " + formatTime(estSec) + " remaining") : "";
     announce("Processing" + estStr);
 }
@@ -3700,7 +3792,7 @@ function drawToolProcessing() {
     const elapsedStr = formatTime(elapsedSec);
 
     /* Estimated remaining */
-    const estTotalSec = Math.round(toolFileDurationSec * TOOL_PROCESSING_RATIO);
+    const estTotalSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
     let remainStr = "";
     if (estTotalSec > 0) {
         const remainSec = Math.max(0, estTotalSec - elapsedSec);
@@ -6820,6 +6912,9 @@ function handleJog(delta) {
         case VIEWS.TOOL_FILE_BROWSER:
             toolBrowserNavigate(delta);
             break;
+        case VIEWS.TOOL_ENGINE_SELECT:
+            toolEngineNavigate(delta);
+            break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
@@ -7576,7 +7671,7 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
-                if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive)) {
+                if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
                     debugLog("TOOLS SELECT: entering file browser");
                     enterToolFileBrowser(tool);
                 } else {
@@ -7587,6 +7682,9 @@ function handleSelect() {
             break;
         case VIEWS.TOOL_FILE_BROWSER:
             toolBrowserSelect();
+            break;
+        case VIEWS.TOOL_ENGINE_SELECT:
+            toolEngineConfirm();
             break;
         case VIEWS.TOOL_CONFIRM:
             if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.interactive) {
@@ -7995,11 +8093,23 @@ function handleBack() {
         case VIEWS.TOOL_FILE_BROWSER:
             toolBrowserBack();
             break;
-        case VIEWS.TOOL_CONFIRM:
+        case VIEWS.TOOL_ENGINE_SELECT:
             /* Return to file browser */
             setView(VIEWS.TOOL_FILE_BROWSER);
             needsRedraw = true;
-            announce("Cancelled, back to files");
+            announce("Back to files");
+            break;
+        case VIEWS.TOOL_CONFIRM:
+            /* Return to engine selection if engines available, else file browser */
+            if (toolActiveTool && toolActiveTool.tool_config &&
+                toolActiveTool.tool_config.engines && toolActiveTool.tool_config.engines.length > 1) {
+                enterToolEngineSelect();
+                announce("Back to engine selection");
+            } else {
+                setView(VIEWS.TOOL_FILE_BROWSER);
+                needsRedraw = true;
+                announce("Cancelled, back to files");
+            }
             break;
         case VIEWS.TOOL_PROCESSING:
             cancelToolProcess();
@@ -9928,6 +10038,9 @@ globalThis.tick = function() {
         case VIEWS.TOOL_FILE_BROWSER:
             drawToolFileBrowser();
             break;
+        case VIEWS.TOOL_ENGINE_SELECT:
+            drawToolEngineSelect();
+            break;
         case VIEWS.TOOL_CONFIRM:
             drawToolConfirm();
             break;
@@ -9940,21 +10053,14 @@ globalThis.tick = function() {
             break;
         case VIEWS.OVERTAKE_MODULE:
             try {
-                /* Handle exit - progressively clear LEDs then return to Move */
+                /* Handle exit — LED restore is handled by C-side cache.
+                 * When overtake_mode drops to 0, the shim detects the transition
+                 * and progressively replays Move's cached LED state. */
                 if (overtakeExitPending) {
                     debugLog("OVERTAKE tick: exit phase");
-                    /* Show exiting screen while clearing LEDs */
                     clear_screen();
                     print(40, 28, "Exiting...", 1);
-
-                    /* Clear LEDs in batches */
-                    const exitLedsCleared = clearLedBatch();
-
-                    /* After LEDs cleared, complete the exit */
-                    if (exitLedsCleared) {
-                        ledClearIndex = 0;
-                        completeOvertakeExit();
-                    }
+                    completeOvertakeExit();
                 }
                 /* Handle deferred init - progressively clear LEDs then call module init() */
                 else if (overtakeInitPending) {
