@@ -3450,9 +3450,9 @@ function getWavDurationSec(filePath) {
 }
 
 /* Estimate processing time.
- * Empirical ratio: ~40x realtime on Move's Cortex-A53 with 2 threads.
- * A 10-second file takes ~400 seconds (~6.5 min). Calibrate after testing. */
-const TOOL_PROCESSING_RATIO = 40;
+ * SpleeterRT: ~0.5x realtime on Move's Cortex-A72 with 2 threads.
+ * A 10-second file takes ~5 seconds. Model load adds ~0.3s overhead. */
+const TOOL_PROCESSING_RATIO = 0.5;
 
 function formatTime(seconds) {
     seconds = Math.round(seconds);
