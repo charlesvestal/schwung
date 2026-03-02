@@ -1,0 +1,6 @@
+{
+    "id": "wav-player",
+    "name": "WAV Player",
+    "version": "0.1.0",
+    "component_type": "tool"
+}

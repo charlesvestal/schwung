@@ -43,6 +43,10 @@ import {
     tickTextEntry
 } from '/data/UserData/move-anything/shared/text_entry.mjs';
 
+import {
+    announce
+} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+
 /* ============ Constants ============ */
 
 var VIEW_ROOT_PICKER = 1;
@@ -51,6 +55,7 @@ var VIEW_BROWSER = 3;
 var VIEW_ACTIONS = 4;
 var VIEW_CONFIRM = 5;
 var VIEW_DEST_BROWSER = 6;
+var VIEW_PLAYING = 7;
 
 var SCREEN_W = 128;
 var SCREEN_H = 64;
@@ -84,6 +89,11 @@ var destBrowserState = null;
 var pendingOperation = "";  /* 'copy', 'move', or 'duplicate' */
 var pendingSourcePath = "";
 var lastDestDir = "";       /* Remember last destination across operations */
+
+/* WAV Player preview state */
+var wavPlayerLoaded = false;
+var playingFilePath = "";
+var WAV_PLAYER_DSP = "/data/UserData/move-anything/modules/tools/wav-player/dsp.so";
 
 /* Status message */
 var statusMessage = "";
@@ -167,10 +177,20 @@ function fileExists(path) {
 function showStatus(msg) {
     statusMessage = msg;
     statusTicks = 120;  /* ~2 seconds at 60fps */
+    announce(msg);
 }
 
 function setView(v) {
     currentView = v;
+}
+
+function announceBrowserFolder() {
+    if (!browserState) return;
+    var dirName = basename(browserState.currentDir) || rootLabel;
+    var first = browserState.items.length > 0
+        ? (browserState.items[0].label || basename(browserState.items[0].path))
+        : "empty";
+    announce(dirName + ", " + first);
 }
 
 /* Truncate a string for display, max chars */
@@ -406,17 +426,48 @@ function openActionsMenu(path, kind) {
     if (kind === "dir") {
         actionsItems = ["New Folder", "Rename", "Delete", "Copy to...", "Move to..."];
     } else {
-        actionsItems = ["Duplicate", "Rename", "Delete", "Copy to...", "Move to..."];
+        actionsItems = [];
+        /* Add Play option for WAV files */
+        if (path.toLowerCase().endsWith(".wav")) {
+            actionsItems.push("Play");
+        }
+        actionsItems.push("Duplicate", "Rename", "Delete", "Copy to...", "Move to...");
     }
     setView(VIEW_ACTIONS);
 }
 
+function startPlayback(path) {
+    if (!wavPlayerLoaded) {
+        if (typeof host_module_set_param === "function") {
+            host_module_set_param("load", WAV_PLAYER_DSP);
+            wavPlayerLoaded = true;
+        }
+    }
+    playingFilePath = path;
+    if (typeof host_module_set_param === "function") {
+        host_module_set_param("file_path", path);
+    }
+}
+
+function stopPlayback() {
+    if (typeof host_module_set_param === "function") {
+        host_module_set_param("playing", "0");
+    }
+    playingFilePath = "";
+}
+
 function executeAction(action) {
     switch (action) {
+        case "Play":
+            startPlayback(selectedItemPath);
+            setView(VIEW_PLAYING);
+            announce("Playing " + basename(selectedItemPath) + ". Push to stop.");
+            return;
         case "Delete":
             confirmAction = "delete";
             confirmPath = selectedItemPath;
             setView(VIEW_CONFIRM);
+            announce("Confirm delete " + basename(selectedItemPath) + ". Push to delete, back to cancel.");
             break;
         case "Rename":
             openTextEntry({
@@ -427,8 +478,10 @@ function executeAction(action) {
                 },
                 onCancel: function() {
                     setView(VIEW_ACTIONS);
+                    announce(actionsItems[actionsIndex]);
                 }
             });
+            announce("Rename " + basename(selectedItemPath));
             break;
         case "New Folder":
             openTextEntry({
@@ -440,8 +493,10 @@ function executeAction(action) {
                 },
                 onCancel: function() {
                     setView(VIEW_ACTIONS);
+                    announce(actionsItems[actionsIndex]);
                 }
             });
+            announce("New folder name");
             break;
         case "Duplicate":
             doDuplicate(selectedItemPath);
@@ -450,11 +505,13 @@ function executeAction(action) {
             pendingOperation = "copy";
             pendingSourcePath = selectedItemPath;
             openDestBrowser();
+            announce("Choose destination for copy");
             break;
         case "Move to...":
             pendingOperation = "move";
             pendingSourcePath = selectedItemPath;
             openDestBrowser();
+            announce("Choose destination for move");
             break;
     }
 }
@@ -610,6 +667,35 @@ function drawDestBrowser() {
     drawFooter("Push: Select");
 }
 
+function drawPlaying() {
+    clear_screen();
+    drawHeader("Playing");
+
+    var name = basename(playingFilePath);
+    print(4, 18, truncLabel(name, 20), 1);
+
+    /* Show progress bar */
+    if (typeof host_module_get_param === "function") {
+        var pos = parseInt(host_module_get_param("play_pos") || "0", 10);
+        var total = parseInt(host_module_get_param("total_frames") || "0", 10);
+        if (total > 0) {
+            var pct = pos / total;
+            fill_rect(4, 32, 120, 5, 1);
+            fill_rect(5, 33, 118, 3, 0);
+            var barW = Math.floor(pct * 118);
+            if (barW > 0) fill_rect(5, 33, barW, 3, 1);
+
+            /* Time display */
+            var posSec = Math.floor(pos / 44100);
+            var totalSec = Math.floor(total / 44100);
+            var timeStr = posSec + "s / " + totalSec + "s";
+            print(4, 40, timeStr, 1);
+        }
+    }
+
+    drawFooter("Push: Stop");
+}
+
 function drawStatusOverlay() {
     if (statusTicks > 0) {
         var w = text_width(statusMessage) + 8;
@@ -631,21 +717,30 @@ function handleCC(cc, val) {
         switch (currentView) {
             case VIEW_ROOT_PICKER:
                 rootPickerIndex = Math.max(0, Math.min(1, rootPickerIndex + delta));
+                announce(rootPickerIndex === 0 ? "User Library" : "System Files");
                 break;
             case VIEW_BROWSER:
                 if (browserState) {
                     moveFilepathBrowserSelection(browserState, delta);
+                    var bsel = browserState.items[browserState.selectedIndex];
+                    if (bsel) announce(bsel.label || basename(bsel.path));
                 }
                 break;
             case VIEW_ACTIONS:
                 actionsIndex = Math.max(0, Math.min(actionsItems.length - 1, actionsIndex + delta));
+                announce(actionsItems[actionsIndex]);
                 break;
             case VIEW_DEST_BROWSER:
                 if (destBrowserState && destBrowserState.items.length > 0) {
                     destBrowserState.selectedIndex = Math.max(0,
                         Math.min(destBrowserState.items.length - 1,
                             destBrowserState.selectedIndex + delta));
+                    var dsel = destBrowserState.items[destBrowserState.selectedIndex];
+                    if (dsel) announce(dsel.label);
                 }
+                break;
+            case VIEW_PLAYING:
+                /* No jog navigation on playing screen */
                 break;
         }
         return;
@@ -657,12 +752,15 @@ function handleCC(cc, val) {
             case VIEW_ROOT_PICKER:
                 if (rootPickerIndex === 0) {
                     openBrowser(ROOT_USER_LIBRARY, "User Library");
+                    announceBrowserFolder();
                 } else {
                     setView(VIEW_WARNING);
+                    announce("Warning: Changing system files may break Move Everything. Push to continue.");
                 }
                 break;
             case VIEW_WARNING:
                 openBrowser(ROOT_SYSTEM, "System Files");
+                announceBrowserFolder();
                 break;
             case VIEW_BROWSER:
                 handleBrowserSelect();
@@ -680,6 +778,11 @@ function handleCC(cc, val) {
             case VIEW_DEST_BROWSER:
                 handleDestBrowserSelect();
                 break;
+            case VIEW_PLAYING:
+                stopPlayback();
+                setView(VIEW_BROWSER);
+                announce("Stopped");
+                break;
         }
         return;
     }
@@ -692,18 +795,33 @@ function handleCC(cc, val) {
                 break;
             case VIEW_WARNING:
                 setView(VIEW_ROOT_PICKER);
+                announce("File Browser");
                 break;
             case VIEW_BROWSER:
                 handleBrowserBack();
                 break;
             case VIEW_ACTIONS:
                 setView(VIEW_BROWSER);
+                if (browserState && browserState.items.length > 0) {
+                    var backSel = browserState.items[browserState.selectedIndex];
+                    if (backSel) announce(backSel.label || basename(backSel.path));
+                }
                 break;
             case VIEW_CONFIRM:
                 setView(VIEW_ACTIONS);
+                announce(actionsItems[actionsIndex]);
                 break;
             case VIEW_DEST_BROWSER:
                 setView(VIEW_BROWSER);
+                if (browserState && browserState.items.length > 0) {
+                    var backSel2 = browserState.items[browserState.selectedIndex];
+                    if (backSel2) announce(backSel2.label || basename(backSel2.path));
+                }
+                break;
+            case VIEW_PLAYING:
+                stopPlayback();
+                setView(VIEW_BROWSER);
+                announce("Stopped, back to files");
                 break;
         }
         return;
@@ -718,6 +836,7 @@ function handleBrowserSelect() {
         var sel = browserState.items[browserState.selectedIndex];
         if (sel && (sel.kind === "dir" || sel.kind === "file")) {
             openActionsMenu(sel.path, sel.kind);
+            announce("Actions for " + basename(sel.path));
         }
         return;
     }
@@ -725,21 +844,25 @@ function handleBrowserSelect() {
     var result = activateFilepathBrowserItem(browserState);
     if (result.action === "open") {
         refreshFilepathBrowser(browserState, FILEPATH_BROWSER_FS);
+        announceBrowserFolder();
     } else if (result.action === "select") {
         /* File selected — open actions menu */
         openActionsMenu(result.value, "file");
+        announce("Actions for " + basename(result.value));
     }
 }
 
 function handleBrowserBack() {
     if (!browserState) {
         setView(VIEW_ROOT_PICKER);
+        announce("File Browser");
         return;
     }
 
     /* If at root, go back to root picker */
     if (browserState.currentDir === browserState.root) {
         setView(VIEW_ROOT_PICKER);
+        announce("File Browser");
         return;
     }
 
@@ -747,6 +870,7 @@ function handleBrowserBack() {
     browserState.currentDir = dirname(browserState.currentDir);
     browserState.selectedIndex = 0;
     refreshFilepathBrowser(browserState, FILEPATH_BROWSER_FS);
+    announceBrowserFolder();
 }
 
 function handleDestBrowserSelect() {
@@ -764,6 +888,7 @@ function handleDestBrowserSelect() {
         destBrowserState.currentDir = sel.path;
         destBrowserState.selectedIndex = 0;
         refreshDestBrowser();
+        announce(basename(destBrowserState.currentDir) + ", " + (destBrowserState.items.length - 1) + " folders");
     }
 }
 
@@ -790,6 +915,7 @@ globalThis.init = function() {
     rootPickerIndex = 0;
     statusMessage = "";
     statusTicks = 0;
+    announce("File Browser");
 };
 
 globalThis.tick = function() {
@@ -824,6 +950,9 @@ globalThis.tick = function() {
             break;
         case VIEW_DEST_BROWSER:
             drawDestBrowser();
+            break;
+        case VIEW_PLAYING:
+            drawPlaying();
             break;
     }
 

@@ -692,6 +692,60 @@ let toolStemFiles = [];          // Array of stem .wav filenames in output dir
 let toolStemReviewIndex = 0;     // Selected index (0 = "Save All", 1+ = individual stems)
 let toolStemKept = [];           // Parallel bool array — true if stem is marked to keep
 
+/* WAV Player preview state */
+let wavPlayerLoaded = false;
+let wavPlayerPendingFile = "";  /* deferred file_path after DSP load */
+let wavPlayerLoadWait = 0;      /* ticks to wait after loading DSP */
+const WAV_PLAYER_DSP = "/data/UserData/move-anything/modules/tools/wav-player/dsp.so";
+
+function loadWavPlayerDsp() {
+    if (wavPlayerLoaded) return;
+    if (typeof shadow_set_param !== "function") return;
+    shadow_set_param(0, "overtake_dsp:load", WAV_PLAYER_DSP);
+    wavPlayerLoaded = true;
+    wavPlayerLoadWait = 2; /* wait 2 ticks for C-side to process load */
+}
+
+function unloadWavPlayerDsp() {
+    if (!wavPlayerLoaded) return;
+    if (typeof shadow_set_param !== "function") return;
+    shadow_set_param(0, "overtake_dsp:unload", "1");
+    wavPlayerLoaded = false;
+    wavPlayerPendingFile = "";
+    wavPlayerLoadWait = 0;
+}
+
+function wavPlayerPlay(filePath) {
+    loadWavPlayerDsp();
+    if (wavPlayerLoadWait > 0) {
+        /* DSP just loaded — defer file_path to next tick */
+        wavPlayerPendingFile = filePath;
+        return;
+    }
+    if (typeof shadow_set_param !== "function") return;
+    shadow_set_param(0, "overtake_dsp:file_path", filePath);
+}
+
+/* Call from tick() to flush deferred file_path after DSP load */
+function wavPlayerTick() {
+    if (wavPlayerLoadWait > 0) {
+        wavPlayerLoadWait--;
+        if (wavPlayerLoadWait === 0 && wavPlayerPendingFile) {
+            if (typeof shadow_set_param === "function") {
+                shadow_set_param(0, "overtake_dsp:file_path", wavPlayerPendingFile);
+            }
+            wavPlayerPendingFile = "";
+        }
+    }
+}
+
+function wavPlayerStop() {
+    if (!wavPlayerLoaded) return;
+    if (typeof shadow_set_param !== "function") return;
+    wavPlayerPendingFile = "";
+    shadow_set_param(0, "overtake_dsp:playing", "0");
+}
+
 const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
 const RESAMPLE_BRIDGE_VALUES = [0, 2];
 
@@ -3247,7 +3301,7 @@ function scanForToolModules() {
                 const content = std.loadFile(modulePath);
                 if (!content) continue;
                 const json = JSON.parse(content);
-                if (json.component_type === "tool") {
+                if (json.component_type === "tool" && json.tool_config) {
                     debugLog("FOUND tool: " + json.name);
                     result.push({
                         id: json.id || entry,
@@ -3535,6 +3589,10 @@ function formatTime(seconds) {
 function enterToolConfirm() {
     /* Read file duration for time estimate */
     toolFileDurationSec = getWavDurationSec(toolSelectedFile);
+    /* Auto-preview the selected file */
+    if (toolSelectedFile.toLowerCase().endsWith(".wav")) {
+        wavPlayerPlay(toolSelectedFile);
+    }
     setView(VIEWS.TOOL_CONFIRM);
     needsRedraw = true;
     const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
@@ -7053,11 +7111,14 @@ function handleJog(delta) {
             const maxIdx = toolStemFiles.length; // 0=Save All, 1..N=stems
             toolStemReviewIndex = Math.max(0, Math.min(maxIdx, toolStemReviewIndex + delta));
             if (toolStemReviewIndex === 0) {
+                wavPlayerStop();
                 const kc = toolStemKept.filter(k => k).length;
                 if (kc === 0) announce("Cancel");
                 else if (kc === toolStemFiles.length) announce("Save All");
                 else announce("Save " + kc + " stems");
             } else {
+                /* Preview the highlighted stem */
+                wavPlayerPlay(toolOutputDir + "/" + toolStemFiles[toolStemReviewIndex - 1]);
                 const name = toolStemFiles[toolStemReviewIndex - 1].replace(/\.wav$/i, "");
                 const kept = toolStemKept[toolStemReviewIndex - 1];
                 announce(name + (kept ? ", selected" : ", deselected"));
@@ -7865,6 +7926,8 @@ function handleSelect() {
             toolEngineConfirm();
             break;
         case VIEWS.TOOL_CONFIRM:
+            wavPlayerStop();
+            unloadWavPlayerDsp();
             if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.interactive) {
                 startInteractiveTool(toolActiveTool, toolSelectedFile);
             } else {
@@ -7877,6 +7940,8 @@ function handleSelect() {
         case VIEWS.TOOL_STEM_REVIEW: {
             if (toolStemReviewIndex === 0) {
                 /* Action button — save selected or cancel */
+                wavPlayerStop();
+                unloadWavPlayerDsp();
                 const kc = toolStemKept.filter(k => k).length;
                 if (kc === 0) {
                     /* Cancel — discard all */
@@ -8323,6 +8388,8 @@ function handleBack() {
             announce("Back to files");
             break;
         case VIEWS.TOOL_CONFIRM:
+            wavPlayerStop();
+            unloadWavPlayerDsp();
             /* Return to engine selection if engines available, else file browser */
             if (toolActiveTool && toolActiveTool.tool_config &&
                 toolActiveTool.tool_config.engines && toolActiveTool.tool_config.engines.length > 1) {
@@ -8340,11 +8407,29 @@ function handleBack() {
         case VIEWS.TOOL_RESULT:
             enterToolsMenu();
             break;
-        case VIEWS.TOOL_STEM_REVIEW:
-            /* Jump to action button */
-            toolStemReviewIndex = 0;
-            needsRedraw = true;
+        case VIEWS.TOOL_STEM_REVIEW: {
+            wavPlayerStop();
+            if (toolStemReviewIndex === 0) {
+                /* Already at action button — back exits, discards all */
+                unloadWavPlayerDsp();
+                for (const f of toolStemFiles) {
+                    try { os.remove(toolOutputDir + "/" + f); } catch (e) {}
+                }
+                try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
+                try { os.remove(toolOutputDir); } catch (e) {}
+                enterToolsMenu();
+                announce("Cancelled");
+            } else {
+                /* Jump to action button first */
+                toolStemReviewIndex = 0;
+                needsRedraw = true;
+                const keptCount = toolStemKept.filter(k => k).length;
+                if (keptCount === 0) announce("Cancel");
+                else if (keptCount === toolStemFiles.length) announce("Save All");
+                else announce("Save " + keptCount + " stems");
+            }
             break;
+        }
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own back input.
              * Use Shift+Vol+Jog Click to exit overtake mode. */
@@ -10180,6 +10265,9 @@ globalThis.tick = function() {
     if (typeof shadow_set_display_overlay === "function") {
         shadow_set_display_overlay(0, 0, 0, 0, 0);
     }
+
+    /* Flush deferred wav player file_path after DSP load */
+    wavPlayerTick();
 
     switch (view) {
         case VIEWS.SLOTS:

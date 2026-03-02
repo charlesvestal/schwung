@@ -358,6 +358,14 @@ mkdir -p ./build/modules/sound_generators/linein/
     -Isrc \
     -lm
 
+# Build WAV Player tool DSP
+echo "Building WAV Player tool DSP..."
+mkdir -p ./build/modules/tools/wav-player/
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/tools/wav-player/wav_player.c \
+    -o build/modules/tools/wav-player/dsp.so \
+    -Isrc
+
 # Copy shared utilities
 for f in ./src/shared/*.mjs; do
     cp "$f" ./build/shared/

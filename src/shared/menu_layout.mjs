@@ -52,9 +52,9 @@ export function drawMenuHeader(title, titleRight = "") {
 export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
     if (!text) return;
     fill_rect(0, FOOTER_RULE_Y, SCREEN_WIDTH, 1, 1);
-    if (typeof text === 'object' && text.left !== undefined) {
+    if (typeof text === 'object' && (text.left !== undefined || text.right !== undefined)) {
         /* { left: "Back: exit", right: "Jog: browse" } */
-        print(2, y, text.left, 1);
+        if (text.left) print(2, y, text.left, 1);
         if (text.right) {
             const rightW = (typeof text_width === 'function') ? text_width(text.right) : (text.right.length * DEFAULT_CHAR_WIDTH);
             print(SCREEN_WIDTH - rightW - 2, y, text.right, 1);
