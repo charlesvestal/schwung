@@ -335,6 +335,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "granny",
+      "name": "Granny",
+      "description": "Granular sample instrument with scan controls and file browser",
+      "author": "move-anything contributors",
+      "component_type": "sound_generator",
+      "github_repo": "handcraftedcc/move-anything-granny",
+      "default_branch": "main",
+      "asset_name": "granny-grain-module.tar.gz",
+      "min_host_version": "0.6.2"
+    },
+    {
       "id": "rex",
       "name": "REX Player",
       "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
