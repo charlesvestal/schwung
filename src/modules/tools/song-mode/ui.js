@@ -1262,7 +1262,10 @@ globalThis.onMidiMessageInternal = function(data) {
             stopPlayback();
         } else {
             restoreAllPadLeds();
-            clearStepLeds();
+            /* Send step LED clears immediately (queue won't drain after exit) */
+            for (let i = 0; i < STEPS_PER_PAGE; i++) {
+                move_midi_internal_send([0x09, 0x90, MoveStep1 + i, Black]);
+            }
             move_midi_internal_send([0x0B, 0xB0, MovePlay, Black]);
             move_midi_internal_send([0x0B, 0xB0, MoveRec, Black]);
             host_exit_module();
