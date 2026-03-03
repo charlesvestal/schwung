@@ -350,6 +350,88 @@ void sampler_tick_preroll(void) {
     }
 }
 
+void sampler_start_recording_to(const char *output_path) {
+    if (sampler_writer_running) return;
+    if (!output_path || !output_path[0]) {
+        s_host.log("Sampler: empty output path");
+        return;
+    }
+
+    /* Force resample source */
+    sampler_source = SAMPLER_SOURCE_RESAMPLE;
+
+    /* Create parent directory */
+    char dir_buf[256];
+    snprintf(dir_buf, sizeof(dir_buf), "%s", output_path);
+    char *last_slash = strrchr(dir_buf, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+        struct stat st;
+        if (stat(dir_buf, &st) != 0) {
+            const char *mkdir_argv[] = { "mkdir", "-p", dir_buf, NULL };
+            s_host.run_command(mkdir_argv);
+        }
+    }
+
+    /* Copy path */
+    snprintf(sampler_current_recording, sizeof(sampler_current_recording), "%s", output_path);
+
+    /* Allocate ring buffer */
+    sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
+    if (!sampler_ring_buffer) {
+        s_host.log("Sampler: failed to allocate ring buffer");
+        return;
+    }
+
+    /* Open file */
+    sampler_wav_file = fopen(sampler_current_recording, "wb");
+    if (!sampler_wav_file) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Sampler: failed to open WAV file: %s", sampler_current_recording);
+        s_host.log(msg);
+        free(sampler_ring_buffer);
+        sampler_ring_buffer = NULL;
+        return;
+    }
+
+    /* Initialize state — unlimited duration */
+    sampler_samples_written = 0;
+    __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
+    sampler_writer_should_exit = 0;
+    sampler_clock_count = 0;
+    sampler_bars_completed = 0;
+    sampler_clock_received = 0;
+    sampler_fallback_blocks = 0;
+    sampler_target_pulses = 0;
+    sampler_fallback_target = 0;
+
+    /* Write placeholder header */
+    sampler_write_wav_header(sampler_wav_file, 0);
+
+    /* Start writer thread */
+    if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
+        s_host.log("Sampler: failed to create writer thread");
+        fclose(sampler_wav_file);
+        sampler_wav_file = NULL;
+        free(sampler_ring_buffer);
+        sampler_ring_buffer = NULL;
+        return;
+    }
+
+    sampler_writer_running = 1;
+    sampler_state = SAMPLER_RECORDING;
+    /* Don't touch overlay — this is driven by external JS, not the sampler UI */
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Sampler: recording to custom path -> %s", sampler_current_recording);
+    s_host.log(msg);
+}
+
+int sampler_get_state(void) {
+    return (int)sampler_state;
+}
+
 void sampler_start_recording(void) {
     if (sampler_writer_running) return;
 

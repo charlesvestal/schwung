@@ -135,7 +135,6 @@ static volatile float shadow_master_volume;  /* Defined later */
 
 /* Feature flags from config/features.json */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
-static bool standalone_enabled = true;     /* Standalone mode enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 
@@ -457,7 +456,6 @@ static void load_feature_config(void)
     if (!f) {
         /* No config file - use defaults (all enabled) */
         shadow_ui_enabled = true;
-        standalone_enabled = true;
         shadow_log("Features: No config file, using defaults (all enabled)");
         return;
     }
@@ -480,22 +478,6 @@ static void load_feature_config(void)
                 shadow_ui_enabled = false;
             } else {
                 shadow_ui_enabled = true;
-            }
-        }
-    }
-
-    /* Parse standalone_enabled */
-    const char *standalone_key = strstr(config_buf, "\"standalone_enabled\"");
-    if (standalone_key) {
-        const char *colon = strchr(standalone_key, ':');
-        if (colon) {
-            /* Skip whitespace */
-            colon++;
-            while (*colon == ' ' || *colon == '\t') colon++;
-            if (strncmp(colon, "false", 5) == 0) {
-                standalone_enabled = false;
-            } else {
-                standalone_enabled = true;
             }
         }
     }
@@ -541,9 +523,8 @@ static void load_feature_config(void)
 
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, standalone=%s, link_audio=%s, display_mirror=%s, set_pages=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
-             standalone_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled");
@@ -1444,6 +1425,34 @@ static void shadow_inprocess_mix_from_buffer(void) {
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
     native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
+
+    /* Poll sampler commands from shadow UI (via shared memory) */
+    if (shadow_control) {
+        shadow_control->sampler_state_val = (uint8_t)sampler_get_state();
+        uint8_t cmd = shadow_control->sampler_cmd;
+        if (cmd == 1) {
+            /* Start recording — path in file */
+            shadow_control->sampler_cmd = 0;
+            char path_buf[256] = "";
+            FILE *pf = fopen("/data/UserData/move-anything/sampler_cmd_path.txt", "r");
+            if (pf) {
+                if (fgets(path_buf, sizeof(path_buf), pf)) {
+                    char *nl = strchr(path_buf, '\n');
+                    if (nl) *nl = '\0';
+                }
+                fclose(pf);
+            }
+            if (path_buf[0]) {
+                sampler_start_recording_to(path_buf);
+            }
+        } else if (cmd == 2) {
+            /* Stop recording */
+            shadow_control->sampler_cmd = 0;
+            if (sampler_state == SAMPLER_RECORDING) {
+                sampler_stop_recording();
+            }
+        }
+    }
 
     /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
@@ -2676,8 +2685,7 @@ int (*real_ioctl)(int, unsigned long, ...) = NULL;
 int shiftHeld = 0;
 int volumeTouched = 0;
 int wheelTouched = 0;
-int knob8touched = 0;
-int alreadyLaunched = 0;       /* Prevent multiple launches */
+
 
 /* Debug logging disabled for performance - set to 1 to enable */
 #define SHADOW_HOTKEY_DEBUG 0
@@ -2722,8 +2730,8 @@ static void log_hotkey_state(const char *tag)
     if (hotkey_state_log)
     {
         time_t now = time(NULL);
-        fprintf(hotkey_state_log, "%ld %s shift=%d vol=%d knob8=%d\n",
-                (long)now, tag, shiftHeld, volumeTouched, knob8touched);
+        fprintf(hotkey_state_log, "%ld %s shift=%d vol=%d\n",
+                (long)now, tag, shiftHeld, volumeTouched);
         fflush(hotkey_state_log);
     }
 #else
@@ -2809,28 +2817,6 @@ void midi_monitor()
 
         }
 
-        if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x07)
-        {
-            if (midi_2 == 0x7f)
-            {
-                if (!knob8touched) {
-                    knob8touched = 1;
-#if SHADOW_HOTKEY_DEBUG
-                    printf("Knob 8 touch start\n");
-#endif
-                    log_hotkey_state("knob8_on");
-                }
-            }
-            else
-            {
-                knob8touched = 0;
-#if SHADOW_HOTKEY_DEBUG
-                printf("Knob 8 touch stop\n");
-#endif
-                log_hotkey_state("knob8_off");
-            }
-        }
-
         if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x08)
         {
             if (midi_2 == 0x7f)
@@ -2862,15 +2848,6 @@ void midi_monitor()
             {
                 wheelTouched = 0;
             }
-        }
-
-        /* OLD standalone launch code - check feature flag */
-        if (shiftHeld && volumeTouched && knob8touched && !alreadyLaunched && standalone_enabled)
-        {
-            alreadyLaunched = 1;
-            printf("Launching Move Anything!\n");
-            link_sub_kill();
-            launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
         }
 
     }
@@ -4005,24 +3982,6 @@ do_ioctl:
                     shadow_jog_touched = touched;
                 }
 
-                /* Knob 8 touch (note 7) */
-                if (d1 == 7) {
-                    if (touched != knob8touched) {
-                        knob8touched = touched;
-                        char msg[64];
-                        snprintf(msg, sizeof(msg), "Knob 8 touch: %s", touched ? "ON" : "OFF");
-                        shadow_log(msg);
-                    }
-                }
-
-                /* Shift + Volume + Knob8 = launch standalone Move Anything (if enabled) */
-                if (shadow_shift_held && shadow_volume_knob_touched && knob8touched && !alreadyLaunched && standalone_enabled) {
-                    alreadyLaunched = 1;
-                    shadow_log("Launching Move Anything (Shift+Vol+Knob8)!");
-                    link_sub_kill();
-                    launchChildAndKillThisProcess("/data/UserData/move-anything/start.sh", "start.sh", "");
-                }
-
                 /* Shift + Volume + Step 2 (note 17) = jump to Global Settings */
                 if (d1 == 17 && type == 0x90 && d2 > 0) {
                     if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
@@ -4535,9 +4494,8 @@ do_ioctl:
         shadow_control->should_exit = 1;  /* Tell shadow_ui to exit */
         shadow_log("Restart requested by shadow UI — restarting Move");
         /* Use restart script for clean restart (kill as root, start fresh).
-         * launchChildAndKillThisProcess won't work because MoveOriginal has
-         * file capabilities that trigger AT_SECURE, blocking LD_PRELOAD
-         * when forked from a non-root process. */
+         * Fork+exec won't work because MoveOriginal has file capabilities
+         * that trigger AT_SECURE, blocking LD_PRELOAD from a non-root process. */
         system("/data/UserData/move-anything/restart-move.sh");
     }
 

@@ -41,6 +41,7 @@ static int snapshot_cc_color[128];
 static uint8_t snapshot_cc_cin[128];
 static uint8_t snapshot_cc_status[128];
 static int snapshot_valid = 0;
+static int snapshot_skip_restore = 0;  /* set when entering with skip_led_clear — skip restore on exit */
 
 static int move_led_restore_pending = 0;
 static int move_led_clear_pending = 0;
@@ -85,6 +86,7 @@ void led_queue_init(const led_queue_host_t *h) {
     shadow_led_queue_initialized = 0;
     shadow_input_queue_initialized = 0;
     snapshot_valid = 0;
+    snapshot_skip_restore = 0;
     move_led_restore_pending = 0;
     move_led_clear_pending = 0;
     move_led_pass_count = 0;
@@ -220,7 +222,8 @@ void shadow_clear_move_leds_if_overtake(void) {
         memcpy(snapshot_cc_status, move_cc_led_status, sizeof(snapshot_cc_status));
         snapshot_valid = 1;
 
-        if (ctrl && ctrl->skip_led_clear) {
+        snapshot_skip_restore = (ctrl && ctrl->skip_led_clear) ? 1 : 0;
+        if (snapshot_skip_restore) {
             /* Do nothing — LEDs are already correct and Move's MIDI_OUT
              * passes through during overtake with skip_led_clear.
              * No restore needed (avoids LED flicker from re-sending). */
@@ -238,15 +241,16 @@ void shadow_clear_move_leds_if_overtake(void) {
     /* On transition out of overtake: restore from snapshot.
      * LEDs we captured get restored; unknowns get turned off.
      * Two passes to catch stragglers.
-     * If skip_led_clear was active, LEDs have been passing through live
-     * so Move's current state is already on hardware — no restore needed. */
+     * If skip_led_clear was active at entry, LEDs have been passing through
+     * live so Move's current state is already on hardware — no restore needed. */
     if (prev_overtake_mode && !cur_overtake && snapshot_valid) {
-        if (!(ctrl && ctrl->skip_led_clear)) {
+        if (!snapshot_skip_restore) {
             queue_hw_leds_restore();
             move_led_restore_pending = 1;
             move_led_clear_pending = 0;
             move_led_pass_count = 1;
         }
+        snapshot_skip_restore = 0;
     }
 
     prev_overtake_mode = cur_overtake;
@@ -291,6 +295,7 @@ void shadow_flush_pending_leds(void) {
     /* In overtake mode use full buffer (after clearing Move's LEDs).
      * In normal mode stay within safe limit to coexist with Move's packets.
      * During restore, use a higher budget to get LEDs back quickly. */
+    int skip_led_clear = ctrl && ctrl->skip_led_clear;
     int max_bytes = overtake ? MIDI_BUFFER_SIZE : SHADOW_LED_QUEUE_SAFE_BYTES;
     int available = (max_bytes - used) / 4;
     int budget;
@@ -301,8 +306,11 @@ void shadow_flush_pending_leds(void) {
     } else {
         budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
     }
-    if (available <= 0 || budget <= 0) return;
-    if (budget > available) budget = available;
+    /* When skip_led_clear is active, Move's packets fill the buffer.
+     * We can still replace matching packets, so don't bail on available<=0. */
+    if (!skip_led_clear && (available <= 0 || budget <= 0)) return;
+    if (budget <= 0) return;
+    if (!skip_led_clear && budget > available) budget = available;
 
     int sent = 0;
     int hw_offset = 0;
@@ -311,22 +319,39 @@ void shadow_flush_pending_leds(void) {
     int notes_remaining = 0;
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_note_color[i] >= 0) {
-            /* Find empty slot */
-            while (hw_offset < MIDI_BUFFER_SIZE) {
-                if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
-                    midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
-                    break;
+            int slot = -1;
+            /* When skip_led_clear is active, first try to replace Move's
+             * existing packet for the same note (buffer may be full). */
+            if (skip_led_clear) {
+                for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
+                    uint8_t type = midi_out[s+1] & 0xF0;
+                    if (type == 0x90 && midi_out[s+2] == (uint8_t)i) {
+                        slot = s;
+                        break;
+                    }
                 }
-                hw_offset += 4;
             }
-            if (hw_offset >= MIDI_BUFFER_SIZE) break;
+            /* Fall back to finding an empty slot */
+            if (slot < 0) {
+                while (hw_offset < MIDI_BUFFER_SIZE) {
+                    if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
+                        midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
+                        break;
+                    }
+                    hw_offset += 4;
+                }
+                if (hw_offset < MIDI_BUFFER_SIZE) {
+                    slot = hw_offset;
+                    hw_offset += 4;
+                }
+            }
+            if (slot < 0) break;  /* No slot found at all */
 
-            midi_out[hw_offset] = shadow_pending_note_cin[i];
-            midi_out[hw_offset+1] = shadow_pending_note_status[i];
-            midi_out[hw_offset+2] = (uint8_t)i;
-            midi_out[hw_offset+3] = (uint8_t)shadow_pending_note_color[i];
+            midi_out[slot] = shadow_pending_note_cin[i];
+            midi_out[slot+1] = shadow_pending_note_status[i];
+            midi_out[slot+2] = (uint8_t)i;
+            midi_out[slot+3] = (uint8_t)shadow_pending_note_color[i];
             shadow_pending_note_color[i] = -1;
-            hw_offset += 4;
             sent++;
         }
     }
@@ -338,22 +363,36 @@ void shadow_flush_pending_leds(void) {
     int ccs_remaining = 0;
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_cc_color[i] >= 0) {
-            /* Find empty slot */
-            while (hw_offset < MIDI_BUFFER_SIZE) {
-                if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
-                    midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
-                    break;
+            int slot = -1;
+            if (skip_led_clear) {
+                for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
+                    uint8_t type = midi_out[s+1] & 0xF0;
+                    if (type == 0xB0 && midi_out[s+2] == (uint8_t)i) {
+                        slot = s;
+                        break;
+                    }
                 }
-                hw_offset += 4;
             }
-            if (hw_offset >= MIDI_BUFFER_SIZE) break;
+            if (slot < 0) {
+                while (hw_offset < MIDI_BUFFER_SIZE) {
+                    if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
+                        midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
+                        break;
+                    }
+                    hw_offset += 4;
+                }
+                if (hw_offset < MIDI_BUFFER_SIZE) {
+                    slot = hw_offset;
+                    hw_offset += 4;
+                }
+            }
+            if (slot < 0) break;
 
-            midi_out[hw_offset] = shadow_pending_cc_cin[i];
-            midi_out[hw_offset+1] = shadow_pending_cc_status[i];
-            midi_out[hw_offset+2] = (uint8_t)i;
-            midi_out[hw_offset+3] = (uint8_t)shadow_pending_cc_color[i];
+            midi_out[slot] = shadow_pending_cc_cin[i];
+            midi_out[slot+1] = shadow_pending_cc_status[i];
+            midi_out[slot+2] = (uint8_t)i;
+            midi_out[slot+3] = (uint8_t)shadow_pending_cc_color[i];
             shadow_pending_cc_color[i] = -1;
-            hw_offset += 4;
             sent++;
         }
     }

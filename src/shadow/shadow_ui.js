@@ -1883,12 +1883,15 @@ function exitToolOvertake() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Clear skip_led_clear flag and disable overtake mode */
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
-    }
+    /* Disable overtake mode first, THEN clear skip_led_clear.
+     * The C-side checks skip_led_clear during the overtake→0 transition
+     * to decide whether to restore its LED snapshot. skip_led_clear must
+     * still be set at that moment so the restore is skipped. */
     if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
+    }
+    if (typeof shadow_set_skip_led_clear === "function") {
+        shadow_set_skip_led_clear(0);
     }
 
     /* Return to tools menu */

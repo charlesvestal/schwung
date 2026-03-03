@@ -163,7 +163,11 @@ void sampler_announce_menu_item(void);
 
 /* Start/stop recording */
 void sampler_start_recording(void);
+void sampler_start_recording_to(const char *output_path);
 void sampler_stop_recording(void);
+
+/* Query sampler state */
+int sampler_get_state(void);
 
 /* Pre-roll: countdown before recording */
 void sampler_start_preroll(void);
