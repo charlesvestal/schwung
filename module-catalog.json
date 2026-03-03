@@ -410,7 +410,7 @@
       "github_repo": "charlesvestal/move-anything-stretch",
       "default_branch": "main",
       "asset_name": "stretch-module.tar.gz",
-      "min_host_version": "0.7.0"
+      "min_host_version": "0.6.0"
     },
     {
       "id": "stems",
@@ -421,7 +421,7 @@
       "github_repo": "charlesvestal/move-anything-stems",
       "default_branch": "main",
       "asset_name": "stems-module.tar.gz",
-      "min_host_version": "0.7.0"
+      "min_host_version": "0.6.0"
     }
   ]
 }
