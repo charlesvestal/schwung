@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/shadow/shadow_ui.js"
+file="src/shadow/shadow_ui_master_fx.mjs"
 
 if ! command -v perl >/dev/null 2>&1; then
   echo "perl is required to run this test" >&2

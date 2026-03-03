@@ -119,6 +119,62 @@ import {
     activateFilepathBrowserItem
 } from '/data/UserData/move-anything/shared/filepath_browser.mjs';
 
+/* Shared context for view modules */
+import { ctx as _ctx } from './shadow_ui_ctx.mjs';
+
+/* Extracted view modules */
+import {
+    SLOT_SETTINGS,
+    getSlotSettingValue,
+    drawSlots as _drawSlots,
+    drawSlotSettings as _drawSlotSettings,
+    enterSlotSettings as _enterSlotSettings,
+    handleSlotsJog, handleSlotSettingsJog,
+    handleSlotsSelect, handleSlotSettingsSelect,
+    handleSlotsBack, handleSlotSettingsBack
+} from './shadow_ui_slots.mjs';
+import {
+    PATCH_INDEX_NONE,
+    loadPatchList, findPatchIndexByName, findPatchByName,
+    applyPatchSelection as _applyPatchSelection,
+    drawPatches as _drawPatches,
+    drawPatchDetail as _drawPatchDetail,
+    drawComponentParams as _drawComponentParams,
+    enterPatchBrowser as _enterPatchBrowser,
+    enterPatchDetail as _enterPatchDetail,
+    enterComponentParams as _enterComponentParams,
+    handlePatchesJog, handlePatchDetailJog, handleComponentParamsJog,
+    handlePatchesSelect, handlePatchDetailSelect, handleComponentParamsSelect,
+    handlePatchesBack, handlePatchDetailBack, handleComponentParamsBack
+} from './shadow_ui_patches.mjs';
+import {
+    drawMasterFx as _drawMasterFx,
+    getMasterFxDisplayName as _getMasterFxDisplayName,
+    enterMasterFxSettings as _enterMasterFxSettings
+} from './shadow_ui_master_fx.mjs';
+import {
+    scanForToolModules as _scanForToolModules,
+    enterToolsMenu as _enterToolsMenu,
+    drawToolsMenu as _drawToolsMenu,
+    drawToolFileBrowser as _drawToolFileBrowser,
+    drawToolEngineSelect as _drawToolEngineSelect,
+    drawToolConfirm as _drawToolConfirm,
+    drawToolProcessing as _drawToolProcessing,
+    drawToolResult as _drawToolResult,
+    drawToolStemReview as _drawToolStemReview
+} from './shadow_ui_tools.mjs';
+import {
+    drawStorePickerCategories as _drawStorePickerCategories,
+    drawStorePickerList as _drawStorePickerList,
+    drawStorePickerLoading as _drawStorePickerLoading,
+    drawStorePickerResult as _drawStorePickerResult,
+    drawStorePickerDetail as _drawStorePickerDetail
+} from './shadow_ui_store.mjs';
+import {
+    drawChainSettings as _drawChainSettings,
+    drawGlobalSettings as _drawGlobalSettings
+} from './shadow_ui_settings.mjs';
+
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
 const TRACK_CC_END = MoveRow1;    // CC 43
@@ -230,9 +286,8 @@ let slots = [];
 let patches = [];
 let selectedSlot = 0;
 let selectedPatch = 0;
-let selectedDetailItem = 0;    // For patch detail view (0=synth, 1=fx1, 2=fx2, 3=load)
-let selectedSetting = 0;       // For slot settings view
-let editingSettingValue = false;
+/* selectedDetailItem moved to shadow_ui_patches.mjs */
+/* selectedSetting, editingSettingValue moved to shadow_ui_slots.mjs */
 let view = VIEWS.SLOTS;
 let needsRedraw = true;
 let refreshCounter = 0;
@@ -809,33 +864,10 @@ let helpDetailScrollState = null;
 let storeReturnView = null;   /* View to return to from store/update flows */
 let helpReturnView = null;    /* View to return to from help viewer */
 
-/* Slot settings definitions */
-const SLOT_SETTINGS = [
-    { key: "patch", label: "Patch", type: "action" },  // Opens patch browser
-    { key: "chain", label: "Edit Chain", type: "action" },  // Opens chain editor
-    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
-    { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
-    { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
-    { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
-    { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
-];
+/* SLOT_SETTINGS imported from shadow_ui_slots.mjs */
 
-/* Cached patch detail info */
-let patchDetail = {
-    synthName: "",
-    synthPreset: "",
-    fx1Name: "",
-    fx1Wet: "",
-    fx2Name: "",
-    fx2Wet: ""
-};
-
-/* Component parameter editing state */
-let editingComponent = "";     // "synth", "fx1", "fx2"
-let componentParams = [];      // List of {key, label, value, type, min, max}
-let selectedParam = 0;
-let editingValue = false;      // True when adjusting value
-let editValue = "";            // Current value being edited
+/* patchDetail, editingComponent, componentParams, selectedParam,
+ * editingValue moved to shadow_ui_patches.mjs */
 
 /* Chain editing state */
 let chainConfigs = [];         // In-memory chain configs per slot
@@ -2227,15 +2259,7 @@ function getMasterFxHierarchy(fxSlot) {
     }
 }
 
-/* Fetch patch detail info from chain DSP */
-function fetchPatchDetail(slot) {
-    patchDetail.synthName = getSlotParam(slot, "synth:name") || "Unknown";
-    patchDetail.synthPreset = getSlotParam(slot, "synth:preset_name") || getSlotParam(slot, "synth:preset") || "-";
-    patchDetail.fx1Name = getSlotParam(slot, "fx1:name") || "None";
-    patchDetail.fx1Wet = getSlotParam(slot, "fx1:wet") || "-";
-    patchDetail.fx2Name = getSlotParam(slot, "fx2:name") || "None";
-    patchDetail.fx2Wet = getSlotParam(slot, "fx2:wet") || "-";
-}
+/* fetchPatchDetail -> shadow_ui_patches.mjs */
 
 /* Fetch knob mappings for the selected slot */
 function fetchKnobMappings(slot) {
@@ -2248,104 +2272,12 @@ function fetchKnobMappings(slot) {
     lastKnobSlot = slot;
 }
 
-/* Get items for patch detail view */
-function getDetailItems() {
-    return [
-        { label: "Synth", value: patchDetail.synthName, subvalue: patchDetail.synthPreset, editable: true, component: "synth" },
-        { label: "FX1", value: patchDetail.fx1Name, subvalue: patchDetail.fx1Wet, editable: true, component: "fx1" },
-        { label: "FX2", value: patchDetail.fx2Name, subvalue: patchDetail.fx2Wet, editable: true, component: "fx2" },
-        { label: "Load Patch", value: "", subvalue: "", editable: false, component: "" }
-    ];
-}
+/* getDetailItems -> shadow_ui_patches.mjs */
 
-/* Known synth parameters that can be edited */
-const SYNTH_PARAMS = [
-    { key: "preset", label: "Preset", type: "int", min: 0, max: 127 },
-    { key: "volume", label: "Volume", type: "float", min: 0, max: 1 },
-];
+/* SYNTH_PARAMS, FX_PARAMS -> shadow_ui_patches.mjs */
 
-/* Known FX parameters that can be edited */
-const FX_PARAMS = [
-    { key: "wet", label: "Wet", type: "float", min: 0, max: 1 },
-    { key: "dry", label: "Dry", type: "float", min: 0, max: 1 },
-    { key: "room_size", label: "Size", type: "float", min: 0, max: 1 },
-    { key: "damping", label: "Damp", type: "float", min: 0, max: 1 },
-];
-
-/* Fetch current parameter values for a component */
-function fetchComponentParams(slot, component) {
-    const prefix = component + ":";
-    const params = component === "synth" ? SYNTH_PARAMS : FX_PARAMS;
-    const result = [];
-
-    for (const param of params) {
-        const fullKey = prefix + param.key;
-        const value = getSlotParam(slot, fullKey);
-        if (value !== null) {
-            result.push({
-                key: fullKey,
-                label: param.label,
-                value: value,
-                type: param.type,
-                min: param.min,
-                max: param.max
-            });
-        }
-    }
-
-    return result;
-}
-
-/* Enter component parameter editing view */
-function enterComponentParams(slot, component) {
-    editingComponent = component;
-    componentParams = fetchComponentParams(slot, component);
-    selectedParam = 0;
-    editingValue = false;
-    setView(VIEWS.COMPONENT_PARAMS);
-    needsRedraw = true;
-
-    /* Announce menu title + initial selection */
-    if (componentParams.length > 0) {
-        const param = componentParams[0];
-        const label = param.label || param.key;
-        const value = formatParamValue(param);
-        announce(`Component Parameters, ${label}: ${value}`);
-    } else {
-        announce("Component Parameters, No parameters");
-    }
-}
-
-/* Format a parameter value for display */
-function formatParamValue(param) {
-    if (param.type === "float") {
-        const num = parseFloat(param.value);
-        if (isNaN(num)) return param.value;
-        return num.toFixed(2);
-    }
-    return param.value;
-}
-
-/* Adjust parameter value by delta */
-function adjustParamValue(param, delta) {
-    let val;
-    if (param.type === "float") {
-        val = parseFloat(param.value) || 0;
-        const step = (param.step > 0) ? param.step : KNOB_BASE_STEP_FLOAT;
-        val += delta * step;
-    } else {
-        val = parseInt(param.value) || 0;
-        val += delta;
-    }
-
-    /* Clamp to range */
-    val = Math.max(param.min, Math.min(param.max, val));
-
-    if (param.type === "float") {
-        return val.toFixed(4);
-    }
-    return String(Math.round(val));
-}
+/* fetchComponentParams, enterComponentParams, formatParamValue,
+ * adjustParamValue -> shadow_ui_patches.mjs */
 
 function safeLoadJson(path) {
     try {
@@ -2443,127 +2375,9 @@ function refreshSlots() {
     needsRedraw = true;
 }
 
-function parsePatchName(path) {
-    try {
-        const raw = std.loadFile(path);
-        if (!raw) return null;
-        const match = raw.match(/"name"\s*:\s*"([^"]+)"/);
-        if (match && match[1]) {
-            return match[1];
-        }
-    } catch (e) {
-        return null;
-    }
-    return null;
-}
-
-function loadPatchList() {
-    const entries = [];
-    let dir = [];
-    try {
-        dir = os.readdir(PATCH_DIR) || [];
-    } catch (e) {
-        dir = [];
-    }
-    const names = dir[0];
-    if (!Array.isArray(names)) {
-        patches = entries;
-        return;
-    }
-    for (const name of names) {
-        if (name === "." || name === "..") continue;
-        if (!name.endsWith(".json")) continue;
-        const path = `${PATCH_DIR}/${name}`;
-        const patchName = parsePatchName(path);
-        if (patchName) {
-            entries.push({ name: patchName, file: name });
-        }
-    }
-    entries.sort((a, b) => {
-        const al = a.name.toLowerCase();
-        const bl = b.name.toLowerCase();
-        if (al < bl) return -1;
-        if (al > bl) return 1;
-        return 0;
-    });
-    /* Add "New Slot Preset" as first option to clear a slot */
-    patches = [{ name: "[New Slot Preset]", file: null }, ...entries];
-}
-
-function findPatchIndexByName(name) {
-    if (!name) return 0;
-    const match = patches.findIndex((patch) => patch.name === name);
-    return match >= 0 ? match : 0;
-}
-
-function enterPatchBrowser(slotIndex) {
-    loadPatchList();
-    selectedSlot = slotIndex;
-    updateFocusedSlot(slotIndex);
-    if (patches.length === 0) {
-        /* No patches found - still enter view to show message */
-        selectedPatch = 0;
-    } else {
-        selectedPatch = findPatchIndexByName(slots[slotIndex]?.name);
-    }
-    setView(VIEWS.PATCHES);
-    needsRedraw = true;
-
-    /* Announce menu title + initial selection */
-    if (patches.length === 0) {
-        announce("Patch Browser, No patches found");
-    } else {
-        const patchName = patches[selectedPatch]?.name || "Unknown";
-        announce(`Patch Browser, ${patchName}`);
-    }
-}
-
-function enterPatchDetail(slotIndex, patchIndex) {
-    selectedSlot = slotIndex;
-    updateFocusedSlot(slotIndex);
-    selectedPatch = patchIndex;
-    selectedDetailItem = 0;
-    fetchPatchDetail(slotIndex);
-    setView(VIEWS.PATCH_DETAIL);
-    needsRedraw = true;
-
-    /* Announce menu title + initial selection */
-    const patchName = patches[patchIndex]?.name || "Unknown";
-    const items = getDetailItems();
-    if (items.length > 0) {
-        const item = items[0];
-        const value = item.value || "Empty";
-        announce(`${patchName}, ${item.label}: ${value}`);
-    }
-}
-
-/* Special patch index value meaning clear the slot - must match shim */
-const PATCH_INDEX_NONE = 65535;
-
-function applyPatchSelection() {
-    const patch = patches[selectedPatch];
-    const slot = slots[selectedSlot];
-    if (!patch || !slot) return;
-    const isNewSlot = patch.name === "[New Slot Preset]";
-    slot.name = isNewSlot ? "Untitled" : patch.name;
-    saveSlotsToConfig(slots);
-    if (typeof shadow_request_patch === "function") {
-        try {
-            /* "[New Slot Preset]" is at index 0 in patches array, use special value 65535
-             * Real patches start at index 1, so subtract 1 for shim's index */
-            const patchIndex = isNewSlot ? PATCH_INDEX_NONE : selectedPatch - 1;
-            shadow_request_patch(selectedSlot, patchIndex);
-        } catch (e) {
-            /* ignore */
-        }
-    }
-    /* Refresh detail info and knob mappings after loading/clearing patch */
-    fetchPatchDetail(selectedSlot);
-    fetchKnobMappings(selectedSlot);
-    invalidateKnobContextCache();  /* Clear stale knob contexts after patch change */
-    setView(VIEWS.SLOTS);
-    needsRedraw = true;
-}
+/* parsePatchName, loadPatchList, findPatchIndexByName,
+ * enterPatchBrowser, enterPatchDetail, PATCH_INDEX_NONE,
+ * applyPatchSelection -> shadow_ui_patches.mjs */
 
 /* ========== Slot Preset Save/Delete Functions ========== */
 
@@ -2585,16 +2399,7 @@ function getChainSettingsItems(slotIndex) {
     });
 }
 
-/* Find patch index by name (for conflict detection) */
-function findPatchByName(name) {
-    loadPatchList();
-    for (let i = 1; i < patches.length; i++) {
-        if (patches[i].name === name) {
-            return i - 1;
-        }
-    }
-    return -1;
-}
+/* findPatchByName -> shadow_ui_patches.mjs (imported) */
 
 /* Generate default name from chain components */
 function generateSlotPresetName(slotIndex) {
@@ -2846,8 +2651,7 @@ function doDeletePreset(slotIndex) {
         }
     }
 
-    /* Refresh detail info and knob mappings */
-    fetchPatchDetail(slotIndex);
+    /* Refresh knob mappings (patch detail refreshed on re-entry) */
     fetchKnobMappings(slotIndex);
     invalidateKnobContextCache();  /* Clear stale knob contexts after slot clear */
 
@@ -2872,20 +2676,7 @@ function announceSavePreview(name, selectedIndex, full = true) {
     announce(`Save As, current text: ${getSavePreviewText(name)}. ${selected} selected`);
 }
 
-/* Enter slot settings view */
-function enterSlotSettings(slotIndex) {
-    selectedSlot = slotIndex;
-    updateFocusedSlot(slotIndex);
-    selectedSetting = 0;
-    editingSettingValue = false;
-    setView(VIEWS.SLOT_SETTINGS);
-    needsRedraw = true;
-
-    /* Announce menu title + initial selection */
-    const setting = SLOT_SETTINGS[0];
-    const val = getSlotSettingValue(slotIndex, setting);
-    announceMenuItem(`Slot Settings, ${setting.label}`, val);
-}
+/* enterSlotSettings() -> shadow_ui_slots.mjs */
 
 /* ========== Master Preset Picker Functions ========== */
 
@@ -2922,27 +2713,7 @@ function exitMasterPresetPicker() {
     needsRedraw = true;
 }
 
-function drawMasterPresetPicker() {
-    drawHeader("Master Presets");
-
-    /* Build items: [New] + presets */
-    const items = [{ name: "[New]", index: -1 }];
-    for (let i = 0; i < masterPresets.length; i++) {
-        items.push(masterPresets[i]);
-    }
-
-    drawMenuList({
-        items: items,
-        selectedIndex: selectedMasterPresetIndex,
-        getLabel: (item) => {
-            const isCurrent = item.index >= 0 && masterPresets[item.index]?.name === currentMasterPresetName;
-            return isCurrent ? `* ${item.name}` : item.name;
-        },
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
-    });
-
-    drawFooter("Back: cancel");
-}
+/* drawMasterPresetPicker -> shadow_ui_master_fx.mjs */
 
 function findMasterPresetByName(name) {
     for (let i = 0; i < masterPresets.length; i++) {
@@ -3306,88 +3077,9 @@ function doDeleteMasterPreset() {
 
 /* ========== Tools Menu Functions ========== */
 
-function scanForToolModules() {
-    const TOOLS_DIR = "/data/UserData/move-anything/modules/tools";
-    const result = [];
+/* scanForToolModules(), enterToolsMenu() -> shadow_ui_tools.mjs */
 
-    debugLog("scanForToolModules starting");
-
-    try {
-        const entries = os.readdir(TOOLS_DIR) || [];
-        const dirList = entries[0];
-        if (!Array.isArray(dirList)) {
-            debugLog("scanForToolModules: no entries");
-            return result;
-        }
-
-        for (const entry of dirList) {
-            if (entry === "." || entry === "..") continue;
-            const dirPath = `${TOOLS_DIR}/${entry}`;
-            const modulePath = `${dirPath}/module.json`;
-            try {
-                const content = std.loadFile(modulePath);
-                if (!content) continue;
-                const json = JSON.parse(content);
-                if (json.component_type === "tool" && json.tool_config) {
-                    debugLog("FOUND tool: " + json.name);
-                    result.push({
-                        id: json.id || entry,
-                        name: json.name || entry,
-                        path: dirPath,
-                        tool_config: json.tool_config || null
-                    });
-                }
-            } catch (e) {
-                /* Skip directories without readable module.json */
-            }
-        }
-    } catch (e) {
-        debugLog("scanForToolModules error: " + e);
-    }
-
-    debugLog("scanForToolModules: found " + result.length + " tools");
-    return result;
-}
-
-function enterToolsMenu() {
-    toolModules = scanForToolModules();
-    toolsMenuIndex = 0;
-    setView(VIEWS.TOOLS);
-    needsRedraw = true;
-    if (toolModules.length > 0) {
-        announce("Tools, " + toolModules[0].name);
-    } else {
-        announce("Tools, no tools installed");
-    }
-}
-
-function drawToolsMenu() {
-    clear_screen();
-    drawHeader("Tools");
-
-    if (toolModules.length === 0) {
-        print(4, 28, "No tools installed", 1);
-        drawFooter({left: "Back: Exit"});
-        return;
-    }
-
-    const items = toolModules.map(m => ({
-        label: m.name,
-        value: ""
-    }));
-    drawMenuList({
-        items,
-        selectedIndex: toolsMenuIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        getLabel: (item) => item.label,
-        getValue: (item) => item.value
-    });
-
-    drawFooter({left: "Back: Exit", right: "Jog: Select"});
-}
+/* drawToolsMenu() -> shadow_ui_tools.mjs */
 
 /* ========== Tool File Browser Functions (shared filepath_browser) ========== */
 
@@ -3465,39 +3157,7 @@ function toolBrowserBack() {
     announce(dirName);
 }
 
-function drawToolFileBrowser() {
-    clear_screen();
-
-    if (!toolBrowserState) {
-        drawHeader("Browser");
-        print(4, 28, "No files found", 1);
-        drawFooter({left: "Back: Up"});
-        return;
-    }
-
-    /* Show current directory name in header */
-    const dirName = toolBrowserState.currentDir.substring(toolBrowserState.currentDir.lastIndexOf("/") + 1);
-    drawHeader(dirName);
-
-    if (toolBrowserState.items.length === 0) {
-        print(4, 28, "No files found", 1);
-        drawFooter({left: "Back: Up"});
-        return;
-    }
-
-    drawMenuList({
-        items: toolBrowserState.items,
-        selectedIndex: toolBrowserState.selectedIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        getLabel: (item) => item.label,
-        getValue: () => ""
-    });
-
-    drawFooter({left: "Back: Up", right: "Jog: Select"});
-}
+/* drawToolFileBrowser() -> shadow_ui_tools.mjs */
 
 /* ========== Tool Engine Selection View ========== */
 
@@ -3544,27 +3204,7 @@ function toolEngineConfirm() {
     enterToolConfirm();
 }
 
-function drawToolEngineSelect() {
-    clear_screen();
-    drawHeader("Choose Engine");
-
-    const items = toolAvailableEngines.map(e => ({
-        label: e.name,
-        value: e.stems ? e.stems.length + " stems" : ""
-    }));
-    drawMenuList({
-        items,
-        selectedIndex: toolEngineIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        getLabel: (item) => item.label,
-        getValue: (item) => item.value
-    });
-
-    drawFooter({left: "Back: Files", right: "Jog: Select"});
-}
+/* drawToolEngineSelect() -> shadow_ui_tools.mjs */
 
 /* ========== Tool Confirm View ========== */
 
@@ -3628,24 +3268,7 @@ function enterToolConfirm() {
     announce("Separate " + fileName + "? Jog to confirm, Back to cancel" + estStr);
 }
 
-function drawToolConfirm() {
-    clear_screen();
-    drawHeader(toolActiveTool ? toolActiveTool.name : "Confirm");
-
-    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
-    /* Truncate filename for display if needed */
-    const displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
-
-    print(4, 16, "Process this file?", 1);
-    print(4, 28, displayName, 1);
-
-    /* Show selected engine name */
-    if (toolSelectedEngine && toolSelectedEngine.name) {
-        print(4, 40, "Engine: " + toolSelectedEngine.name, 1);
-    }
-
-    drawFooter({right: "Jog: Confirm"});
-}
+/* drawToolConfirm() -> shadow_ui_tools.mjs */
 
 /* ========== Tool Processing View ========== */
 
@@ -3877,97 +3500,7 @@ function cancelToolProcess() {
     announce("Cancelled");
 }
 
-function drawToolProcessing() {
-    clear_screen();
-    drawHeader(toolActiveTool ? toolActiveTool.name : "Processing");
-
-    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
-    const displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
-
-    /* Elapsed time */
-    const elapsedMs = Date.now() - toolProcessStartTime;
-    const elapsedSec = Math.floor(elapsedMs / 1000);
-    const elapsedStr = formatTime(elapsedSec);
-
-    /* Estimated remaining */
-    const estTotalSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
-    let remainStr = "";
-    if (estTotalSec > 0) {
-        const remainSec = Math.max(0, estTotalSec - elapsedSec);
-        remainStr = "~" + formatTime(remainSec) + " left";
-    }
-
-    /* Progress bar based on stem count */
-    const stemProgress = toolExpectedStems > 0
-        ? toolStemsFound + "/" + toolExpectedStems + " stems"
-        : "";
-
-    /* Animated dots */
-    toolProcessingDots = (toolProcessingDots + 1) % 4;
-    const dots = ".".repeat(toolProcessingDots + 1);
-
-    print(4, 14, displayName, 1);
-    print(4, 24, "Processing" + dots, 1);
-    print(4, 34, elapsedStr + " elapsed  " + remainStr, 1);
-    if (stemProgress) {
-        print(4, 44, stemProgress, 1);
-    }
-
-    drawFooter({left: "Back: Cancel"});
-}
-
-/* ========== Tool Result View ========== */
-
-function drawToolResult() {
-    clear_screen();
-    drawHeader(toolResultSuccess ? "Complete" : "Error");
-
-    /* Split message by newlines and draw each line */
-    const lines = toolResultMessage.split("\n");
-    let y = 20;
-    for (const line of lines) {
-        print(4, y, line, 1);
-        y += 12;
-    }
-
-    drawFooter({left: "Back: Tools"});
-}
-
-/* ========== Tool Stem Review View ========== */
-
-function drawToolStemReview() {
-    clear_screen();
-    drawHeader("Stems");
-
-    const keptCount = toolStemKept.filter(k => k).length;
-    let actionLabel;
-    if (keptCount === 0) {
-        actionLabel = ">> Cancel";
-    } else if (keptCount === toolStemFiles.length) {
-        actionLabel = ">> Save All";
-    } else {
-        actionLabel = ">> Save " + keptCount + " Stem" + (keptCount > 1 ? "s" : "");
-    }
-    const items = [{ label: actionLabel, value: "" }];
-    for (let i = 0; i < toolStemFiles.length; i++) {
-        const name = toolStemFiles[i].replace(/\.wav$/i, "");
-        const prefix = toolStemKept[i] ? "[x] " : "[ ] ";
-        items.push({ label: prefix + name, value: "" });
-    }
-
-    drawMenuList({
-        items,
-        selectedIndex: toolStemReviewIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        getLabel: (item) => item.label,
-        getValue: (item) => item.value
-    });
-
-    drawFooter({right: "Select"});
-}
+/* drawToolProcessing(), drawToolResult(), drawToolStemReview() -> shadow_ui_tools.mjs */
 
 /* ========== Global Settings Functions ========== */
 
@@ -4026,21 +3559,7 @@ function handleGlobalSettingsAction(key) {
 
 /* ========== End Global Settings Functions ========== */
 
-function enterMasterFxSettings() {
-    /* Scan for available audio_fx modules */
-    MASTER_FX_OPTIONS = scanForAudioFxModules();
-    /* Load current master FX chain configuration from DSP */
-    loadMasterFxChainConfig();
-    selectedMasterFxComponent = 0;  // Start at FX 1
-    selectingMasterFxModule = false;
-    setView(VIEWS.MASTER_FX);
-    needsRedraw = true;
-
-    /* Announce menu title + initial selection */
-    const comp = MASTER_FX_CHAIN_COMPONENTS[0];
-    const moduleName = getMasterFxSlotModule(0) || "Empty";
-    announce(`Master FX, ${comp.label} ${moduleName}`);
-}
+/* enterMasterFxSettings() -> shadow_ui_master_fx.mjs */
 
 /* Load master FX chain configuration from DSP */
 function loadMasterFxChainConfig() {
@@ -6570,60 +6089,7 @@ function changeComponentPreset(delta) {
     announce(`${presetName}, Preset ${editComponentPreset + 1} of ${editComponentPresetCount}`);
 }
 
-/* Get current value for a slot setting */
-function getSlotSettingValue(slot, setting) {
-    if (setting.key === "patch") {
-        return slots[slot]?.name || "Unknown";
-    }
-    const val = getSlotParam(slot, setting.key);
-    if (val === null) return "-";
-
-    if (setting.key === "slot:volume") {
-        const num = parseFloat(val);
-        const pct = isNaN(num) ? 0 : Math.round(num * 100);
-        return `${pct}%`;
-    }
-    if (setting.key === "slot:muted") {
-        return parseInt(val) ? "Yes" : "No";
-    }
-    if (setting.key === "slot:soloed") {
-        return parseInt(val) ? "Yes" : "No";
-    }
-    if (setting.key === "slot:forward_channel") {
-        const ch = parseInt(val);
-        if (ch === -2) return "Thru";
-        if (ch === -1) return "Auto";
-        return `Ch ${ch + 1}`;
-    }
-    if (setting.key === "slot:receive_channel") {
-        const ch = parseInt(val);
-        return ch === 0 ? "All" : `Ch ${val}`;
-    }
-    return val;
-}
-
-/* Adjust a slot setting by delta */
-function adjustSlotSetting(slot, setting, delta) {
-    if (setting.type === "action") return;
-
-    const current = getSlotParam(slot, setting.key);
-    let val;
-
-    if (setting.type === "float") {
-        val = parseFloat(current) || 0;
-        val += delta * setting.step;
-    } else {
-        val = parseInt(current) || 0;
-        val += delta * setting.step;
-    }
-
-    /* Clamp to range */
-    val = Math.max(setting.min, Math.min(setting.max, val));
-
-    /* Format and set */
-    const newVal = setting.type === "float" ? val.toFixed(2) : String(Math.round(val));
-    setSlotParam(slot, setting.key, newVal);
-}
+/* getSlotSettingValue(), adjustSlotSetting() -> shadow_ui_slots.mjs */
 
 /* Get Master FX setting current value for display */
 function getMasterFxSettingValue(setting) {
@@ -6864,10 +6330,7 @@ function handleJog(delta) {
     hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
-            /* 5 items: 4 slots + Master FX */
-            selectedSlot = Math.max(0, Math.min(slots.length, selectedSlot + delta));
-            /* Update focused slot: 0-3 for chain slots, 4 for Master FX */
-            updateFocusedSlot(selectedSlot);
+            handleSlotsJog(delta);
             break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
@@ -6927,54 +6390,16 @@ function handleJog(delta) {
             }
             break;
         case VIEWS.SLOT_SETTINGS:
-            if (editingSettingValue) {
-                /* Adjust the setting value */
-                const setting = SLOT_SETTINGS[selectedSetting];
-                adjustSlotSetting(selectedSlot, setting, delta);
-                /* Announce new value */
-                const newVal = getSlotSettingValue(selectedSlot, setting);
-                announceParameter(setting.label, newVal);
-            } else {
-                /* Navigate settings list */
-                selectedSetting = Math.max(0, Math.min(SLOT_SETTINGS.length - 1, selectedSetting + delta));
-                /* Announce selected setting */
-                const setting = SLOT_SETTINGS[selectedSetting];
-                const val = getSlotSettingValue(selectedSlot, setting);
-                announceMenuItem(setting.label, val);
-            }
+            handleSlotSettingsJog(delta);
             break;
         case VIEWS.PATCHES:
-            selectedPatch = Math.max(0, Math.min(patches.length - 1, selectedPatch + delta));
-            if (patches.length > 0) {
-                const p = patches[selectedPatch];
-                announceMenuItem("Patch", p.name || p);
-            }
+            handlePatchesJog(delta);
             break;
         case VIEWS.PATCH_DETAIL:
-            const detailItems = getDetailItems();
-            selectedDetailItem = Math.max(0, Math.min(detailItems.length - 1, selectedDetailItem + delta));
-            if (detailItems.length > 0) {
-                const di = detailItems[selectedDetailItem];
-                announceMenuItem(di.label || di.component || "Item", di.value || "");
-            }
+            handlePatchDetailJog(delta);
             break;
         case VIEWS.COMPONENT_PARAMS:
-            if (editingValue && componentParams.length > 0) {
-                /* Adjusting value - modify the current param */
-                const param = componentParams[selectedParam];
-                const newVal = adjustParamValue(param, delta);
-                param.value = newVal;
-                /* Apply immediately */
-                setSlotParam(selectedSlot, param.key, newVal);
-                announceParameter(param.name || param.key, newVal);
-            } else {
-                /* Selecting param */
-                selectedParam = Math.max(0, Math.min(componentParams.length - 1, selectedParam + delta));
-                if (componentParams.length > 0) {
-                    const cp = componentParams[selectedParam];
-                    announceMenuItem(cp.name || cp.key, cp.value || "");
-                }
-            }
+            handleComponentParamsJog(delta);
             break;
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
@@ -7193,13 +6618,7 @@ function handleSelect() {
     hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
-            if (selectedSlot < slots.length) {
-                /* Go directly to chain editor */
-                enterChainEdit(selectedSlot);
-            } else {
-                /* Master FX selected */
-                enterMasterFxSettings();
-            }
+            handleSlotsSelect();
             break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
@@ -7367,57 +6786,16 @@ function handleSelect() {
             }
             break;
         case VIEWS.SLOT_SETTINGS:
-            const setting = SLOT_SETTINGS[selectedSetting];
-            if (setting.type === "action") {
-                if (setting.key === "patch") {
-                    /* Patch action - go to patch browser */
-                    enterPatchBrowser(selectedSlot);
-                } else if (setting.key === "chain") {
-                    /* Chain action - go to chain editor */
-                    enterChainEdit(selectedSlot);
-                }
-            } else {
-                /* Toggle editing mode for value settings */
-                editingSettingValue = !editingSettingValue;
-            }
+            handleSlotSettingsSelect();
             break;
         case VIEWS.PATCHES:
-            if (patches.length > 0) {
-                /* Load patch and return to chain edit */
-                applyPatchSelection();
-                /* Refresh chain config to show newly loaded synth/FX */
-                loadChainConfigFromSlot(selectedSlot);
-                setView(VIEWS.CHAIN_EDIT);
-                needsRedraw = true;
-            }
+            handlePatchesSelect();
             break;
         case VIEWS.PATCH_DETAIL:
-            const detailItems = getDetailItems();
-            const item = detailItems[selectedDetailItem];
-            if (item.component && item.editable) {
-                /* Enter component param editor */
-                enterComponentParams(selectedSlot, item.component);
-            } else if (selectedDetailItem === detailItems.length - 1) {
-                /* "Load Patch" selected - apply and return to chain edit */
-                applyPatchSelection();
-                /* Refresh chain config to show newly loaded synth/FX */
-                loadChainConfigFromSlot(selectedSlot);
-                setView(VIEWS.CHAIN_EDIT);
-                announce("Patch loaded");
-                needsRedraw = true;
-            }
+            handlePatchDetailSelect();
             break;
         case VIEWS.COMPONENT_PARAMS:
-            if (componentParams.length > 0) {
-                /* Toggle between selecting and editing */
-                editingValue = !editingValue;
-                const cp = componentParams[selectedParam];
-                if (editingValue) {
-                    announceParameter(cp.name || cp.key, cp.value || "");
-                } else {
-                    announce("Done editing");
-                }
-            }
+            handleComponentParamsSelect();
             break;
         case VIEWS.CHAIN_EDIT:
             if (selectedChainComponent === -1) {
@@ -8071,48 +7449,19 @@ function handleBack() {
     hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
-            /* At root level - exit shadow mode and return to Move */
-            if (typeof shadow_request_exit === "function") {
-                shadow_request_exit();
-            }
+            handleSlotsBack();
             break;
         case VIEWS.SLOT_SETTINGS:
-            if (editingSettingValue) {
-                /* Exit value editing mode */
-                editingSettingValue = false;
-                needsRedraw = true;
-                announce("Slot Settings");
-            } else {
-                /* Return to slots list */
-                setView(VIEWS.SLOTS);
-                announce("Slots");
-                needsRedraw = true;
-            }
+            handleSlotSettingsBack();
             break;
         case VIEWS.PATCHES:
-            /* Return to chain editor */
-            setView(VIEWS.CHAIN_EDIT);
-            announce("Chain Editor");
-            needsRedraw = true;
+            handlePatchesBack();
             break;
         case VIEWS.PATCH_DETAIL:
-            setView(VIEWS.PATCHES);
-            announce("Patch Browser");
-            needsRedraw = true;
+            handlePatchDetailBack();
             break;
         case VIEWS.COMPONENT_PARAMS:
-            if (editingValue) {
-                /* Exit value editing mode */
-                editingValue = false;
-                needsRedraw = true;
-                announce("Parameters");
-            } else {
-                /* Return to patch detail, refresh info */
-                fetchPatchDetail(selectedSlot);
-                setView(VIEWS.PATCH_DETAIL);
-                announce("Patch Detail");
-                needsRedraw = true;
-            }
+            handleComponentParamsBack();
             break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
@@ -8560,226 +7909,13 @@ function refreshPendingKnobOverlay() {
     pendingKnobIndex = -1;
 }
 
-function drawSlots() {
-    clear_screen();
-    drawHeader("Shadow Chains");
+/* drawSlots() -> shadow_ui_slots.mjs */
 
-    /* Get the track-selected slot (for playback/knobs, set by track buttons) */
-    let trackSelectedSlot = 0;
-    if (typeof shadow_get_selected_slot === "function") {
-        trackSelectedSlot = shadow_get_selected_slot();
-    }
+/* getMasterFxDisplayName() -> shadow_ui_master_fx.mjs */
 
-    /* Create items list: 4 slots + Master FX
-     * Show asterisk (*) before patch name for track-selected slot (playing/knob control)
-     * Use leading space for non-selected to maintain alignment */
-    const items = [
-        ...slots.map((s, i) => {
-            const muted = getSlotParam(i, "slot:muted") === "1";
-            const soloed = getSlotParam(i, "slot:soloed") === "1";
-            const flags = (muted ? "M" : "") + (soloed ? "S" : "");
-            const prefix = (i === trackSelectedSlot ? "*" : " ") + (slotDirtyCache[i] ? "*" : "");
-            return {
-                label: prefix + (s.name || "Unknown Patch"),
-                value: flags || (s.channel === 0 ? "All" : `Ch${s.channel}`),
-                isSlot: true
-            };
-        }),
-        { label: " Master FX", value: getMasterFxDisplayName(), isSlot: false }
-    ];
+/* drawSlotSettings() -> shadow_ui_slots.mjs */
 
-    drawMenuList({
-        items,
-        selectedIndex: selectedSlot,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        getLabel: (item) => item.label,
-        getValue: (item) => item.value,
-        valueAlignRight: true
-    });
-    /* Debug: show flags value in footer */
-    const debugInfo = typeof globalThis._debugFlags !== "undefined"
-        ? `F:${globalThis._debugFlags}` : "";
-    /* Also show current shift/vol state if available */
-    let stateInfo = "";
-    if (typeof shadow_get_debug_state === "function") {
-        stateInfo = shadow_get_debug_state();
-    }
-    drawFooter(`${debugInfo} ${stateInfo}`);
-}
-
-function getMasterFxDisplayName() {
-    const opt = MASTER_FX_OPTIONS.find(o => o.id === currentMasterFxId);
-    return opt ? opt.name : "None";
-}
-
-function drawSlotSettings() {
-    clear_screen();
-    const slotName = slots[selectedSlot]?.name || "Unknown";
-    drawHeader(`Slot ${selectedSlot + 1}`);
-
-    const listY = LIST_TOP_Y;
-    const lineHeight = LIST_LINE_HEIGHT;
-
-    /* Calculate visible items accounting for footer */
-    const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight));
-    let startIdx = 0;
-    const maxSelectedRow = maxVisible - 1;
-    if (selectedSetting > maxSelectedRow) {
-        startIdx = selectedSetting - maxSelectedRow;
-    }
-    const endIdx = Math.min(startIdx + maxVisible, SLOT_SETTINGS.length);
-
-    for (let i = startIdx; i < endIdx; i++) {
-        const y = listY + (i - startIdx) * lineHeight;
-        const setting = SLOT_SETTINGS[i];
-        const isSelected = i === selectedSetting;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const color = isSelected ? 0 : 1;
-        let prefix = "  ";
-        if (isSelected) {
-            prefix = editingSettingValue ? "* " : "> ";
-        }
-
-        const value = getSlotSettingValue(selectedSlot, setting);
-        let valueStr = truncateText(value, 10);
-        if (isSelected && editingSettingValue && setting.type !== "action") {
-            valueStr = `[${valueStr}]`;
-        }
-
-        print(LIST_LABEL_X, y, `${prefix}${setting.label}:`, color);
-        print(LIST_VALUE_X - 8, y, valueStr, color);
-    }
-
-    if (editingSettingValue) {
-        drawFooter({left: "Click: done", right: "Jog: adjust"});
-    } else {
-        drawFooter({left: "Back: slots", right: "Click: edit"});
-    }
-}
-
-function drawPatches() {
-    clear_screen();
-    const rawCh = slots[selectedSlot]?.channel;
-    const channel = (typeof rawCh === "number") ? rawCh : (DEFAULT_SLOTS[selectedSlot]?.channel ?? 1 + selectedSlot);
-    drawHeader(`${channel === 0 ? "All" : "Ch" + channel} Patch`);
-    if (patches.length === 0) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No patches found", 1);
-        drawFooter("Back: settings");
-    } else {
-        const loadedName = slots[selectedSlot]?.name;
-        drawMenuList({
-            items: patches,
-            selectedIndex: selectedPatch,
-            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-            getLabel: (item) => {
-                const isCurrent = loadedName && item.name === loadedName;
-                return isCurrent ? `* ${item.name}` : item.name;
-            }
-        });
-        drawFooter({left: "Back: settings", right: "Click: load"});
-    }
-}
-
-function drawPatchDetail() {
-    clear_screen();
-    const patch = patches[selectedPatch];
-    const patchName = patch ? patch.name : "Unknown";
-    drawHeader(truncateText(patchName, 18));
-
-    const items = getDetailItems();
-    const listY = LIST_TOP_Y;
-    const lineHeight = 12;
-
-    for (let i = 0; i < items.length; i++) {
-        const y = listY + i * lineHeight;
-        const item = items[i];
-        const isSelected = i === selectedDetailItem;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, lineHeight, 1);
-        }
-
-        const color = isSelected ? 0 : 1;
-        const prefix = isSelected ? "> " : "  ";
-
-        if (item.value) {
-            /* Label: Value (subvalue) format */
-            print(LIST_LABEL_X, y, `${prefix}${item.label}:`, color);
-            let valueStr = item.value;
-            if (item.subvalue && item.subvalue !== "-") {
-                valueStr = truncateText(valueStr, 8);
-                print(LIST_VALUE_X - 24, y, valueStr, color);
-                print(LIST_VALUE_X + 4, y, `(${item.subvalue})`, color);
-            } else {
-                print(LIST_VALUE_X - 24, y, truncateText(valueStr, 12), color);
-            }
-        } else {
-            /* Just label (for "Load Patch") */
-            print(LIST_LABEL_X, y, `${prefix}${item.label}`, color);
-        }
-    }
-
-    drawFooter({left: "Back: list", right: "Click: edit"});
-}
-
-function drawComponentParams() {
-    clear_screen();
-
-    /* Live-refresh read-only param values (e.g. detected_key) from DSP */
-    for (const param of componentParams) {
-        const freshVal = getSlotParam(selectedSlot, param.key);
-        if (freshVal !== null) param.value = freshVal;
-    }
-
-    /* Header shows component name */
-    const componentTitle = editingComponent.charAt(0).toUpperCase() + editingComponent.slice(1);
-    drawHeader(`Edit ${componentTitle}`);
-
-    if (componentParams.length === 0) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No parameters", 1);
-        drawFooter("Back: return");
-        return;
-    }
-
-    const listY = LIST_TOP_Y;
-    const lineHeight = 12;
-
-    for (let i = 0; i < componentParams.length; i++) {
-        const y = listY + i * lineHeight;
-        const param = componentParams[i];
-        const isSelected = i === selectedParam;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, lineHeight, 1);
-        }
-
-        const color = isSelected ? 0 : 1;
-        let prefix = "  ";
-        if (isSelected) {
-            prefix = editingValue ? "* " : "> ";
-        }
-
-        print(LIST_LABEL_X, y, `${prefix}${param.label}:`, color);
-
-        /* Format value display */
-        let valueStr = formatParamValue(param);
-        if (isSelected && editingValue) {
-            /* Show brackets when editing */
-            valueStr = `[${valueStr}]`;
-        }
-        print(LIST_VALUE_X - 8, y, valueStr, color);
-    }
-
-    if (editingValue) {
-        drawFooter({left: "Click: done", right: "Jog: adjust"});
-    } else {
-        drawFooter({left: "Back: detail", right: "Click: edit"});
-    }
-}
+/* drawPatches(), drawPatchDetail(), drawComponentParams() -> shadow_ui_patches.mjs */
 
 /* Draw horizontal chain editor with boxed icons */
 function drawChainEdit() {
@@ -8901,98 +8037,11 @@ function drawComponentSelect() {
 
 /* ===== Store Picker Drawing Functions ===== */
 
-/* Draw store category browser */
-function drawStorePickerCategories() {
-    clear_screen();
-    drawHeader('Module Store');
+/* drawStorePickerCategories() -> shadow_ui_store.mjs */
 
-    if (storeCategoryItems.length === 0) {
-        print(2, 28, "No modules available", 1);
-        drawFooter('Back: return');
-        return;
-    }
+/* drawStorePickerList() -> shadow_ui_store.mjs */
 
-    drawMenuList({
-        items: storeCategoryItems,
-        selectedIndex: storeCategoryIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        valueAlignRight: true,
-        getLabel: (item) => item.label,
-        getValue: (item) => item.value || ''
-    });
-
-    drawFooter({left: "Back: return", right: "Jog: browse"});
-}
-
-/* Draw store picker module list */
-function drawStorePickerList() {
-    clear_screen();
-
-    /* Find category name */
-    const cat = CATEGORIES.find(c => c.id === storePickerCategory);
-    const catName = cat ? cat.name : 'Modules';
-
-    /* Header shows "Store: <category>" for context */
-    drawHeader('Store: ' + catName);
-
-    if (storePickerModules.length === 0) {
-        print(2, 28, "No modules available", 1);
-        drawFooter('Back: return');
-        return;
-    }
-
-    /* Build items for drawMenuList */
-    const items = storePickerModules.map(mod => {
-        let statusIcon = '';
-        if (mod._isHostUpdate) {
-            /* Core update always shows update available icon */
-            statusIcon = '^';
-        } else {
-            const status = getModuleStatus(mod, storeInstalledModules);
-            if (status.installed) {
-                statusIcon = status.hasUpdate ? '^' : '*';
-            }
-        }
-        return { ...mod, statusIcon };
-    });
-
-    drawMenuList({
-        items,
-        selectedIndex: storePickerSelectedIndex,
-        listArea: {
-            topY: menuLayoutDefaults.listTopY,
-            bottomY: menuLayoutDefaults.listBottomWithFooter
-        },
-        valueAlignRight: true,
-        getLabel: (item) => item.name,
-        getValue: (item) => item.statusIcon
-    });
-
-    drawFooter({left: "Back: return", right: "Jog: browse"});
-}
-
-/* Draw store picker loading screen */
-function drawStorePickerLoading() {
-    clear_screen();
-    const title = storePickerLoadingTitle || 'Module Store';
-    const msg = storePickerLoadingMessage || 'Loading...';
-    drawStatusOverlay(title, msg);
-}
-
-/* Draw store picker result screen */
-function drawStorePickerResult() {
-    clear_screen();
-    drawHeader(storePickerResultTitle || 'Module Store');
-
-    /* Message centered vertically */
-    const msg = storePickerMessage || 'Done';
-    print(2, 28, msg, 1);
-
-    drawFooter('Press to continue');
-}
+/* drawStorePickerLoading(), drawStorePickerResult() -> shadow_ui_store.mjs */
 
 /* Draw store picker module detail */
 /* Build scrollable lines from release notes text */
@@ -9015,114 +8064,7 @@ function buildReleaseNoteLines(notesText) {
     return lines;
 }
 
-function drawStorePickerDetail() {
-    clear_screen();
-
-    const mod = storePickerCurrentModule;
-    if (!mod) return;
-
-    /* Special handling for core update */
-    if (mod._isHostUpdate) {
-        const title = 'Core Update';
-        const versionStr = `${storeHostVersion}->${mod.latest_version}`;
-        drawHeader(title, versionStr);
-
-        if (!storeDetailScrollState || storeDetailScrollState.moduleId !== mod.id) {
-            const notes = fetchReleaseNotes('charlesvestal/move-anything');
-            const descLines = [];
-            descLines.push(`${storeHostVersion} -> ${mod.latest_version}`);
-            descLines.push('');
-            if (notes) {
-                descLines.push(...buildReleaseNoteLines(notes));
-            } else {
-                descLines.push('Update Move Anything');
-                descLines.push('core framework.');
-                descLines.push('');
-                descLines.push('Restart required');
-                descLines.push('after update.');
-            }
-            storeDetailScrollState = createScrollableText({
-                lines: descLines,
-                actionLabel: 'Update',
-                visibleLines: 3,
-                onActionSelected: (label) => announce(label)
-            });
-            storeDetailScrollState.moduleId = mod.id;
-        }
-
-        drawScrollableText({
-            state: storeDetailScrollState,
-            topY: 16,
-            bottomY: 40,
-            actionY: 52
-        });
-        return;
-    }
-
-    const status = getModuleStatus(mod, storeInstalledModules);
-
-    /* Header with name and version */
-    let title = mod.name;
-    let versionStr = `v${mod.latest_version}`;
-    if (status.installed && status.hasUpdate) {
-        versionStr = `${status.installedVersion}->${mod.latest_version}`;
-        if (title.length > 8) title = title.substring(0, 7) + '~';
-    } else {
-        if (title.length > 12) title = title.substring(0, 11) + '~';
-    }
-    drawHeader(title, versionStr);
-
-    /* Initialize scroll state if needed */
-    if (!storeDetailScrollState || storeDetailScrollState.moduleId !== mod.id) {
-        const descLines = wrapText(mod.description || 'No description available.', 20);
-
-        /* Add author */
-        descLines.push('');
-        descLines.push(`by ${mod.author || 'Unknown'}`);
-
-        /* Add requires line if present */
-        if (mod.requires) {
-            descLines.push('');
-            descLines.push('Requires:');
-            const reqLines = wrapText(mod.requires, 18);
-            descLines.push(...reqLines);
-        }
-
-        /* Fetch and append release notes */
-        if (mod.github_repo) {
-            const notes = fetchReleaseNotes(mod.github_repo);
-            if (notes) {
-                descLines.push('');
-                descLines.push('What\'s New:');
-                descLines.push(...buildReleaseNoteLines(notes));
-            }
-        }
-
-        /* Determine action label */
-        let actionLabel;
-        if (status.installed) {
-            actionLabel = status.hasUpdate ? 'Update' : 'Reinstall';
-        } else {
-            actionLabel = 'Install';
-        }
-
-        storeDetailScrollState = createScrollableText({
-            lines: descLines,
-            actionLabel,
-            visibleLines: 3,
-            onActionSelected: (label) => announce(label)
-        });
-        storeDetailScrollState.moduleId = mod.id;
-    }
-
-    /* Draw scrollable content */
-    drawScrollableText({
-        state: storeDetailScrollState,
-        topY: 16,
-        bottomY: 40,
-        actionY: 52
-    });
-}
+/* drawStorePickerDetail() -> shadow_ui_store.mjs */
 
 /* Draw update detail view (release notes + install action) */
 function drawUpdateDetail() {
@@ -9247,105 +8189,7 @@ function drawComponentEdit() {
 }
 
 /* Draw chain settings view */
-function drawChainSettings() {
-    clear_screen();
-
-    /* Handle name preview view */
-    if (showingNamePreview) {
-        drawHeader("Save As");
-        const name = truncateText(pendingSaveName, 20);
-        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-        const listY = LIST_TOP_Y + 16;
-        for (let i = 0; i < 2; i++) {
-            const y = listY + i * LIST_LINE_HEIGHT;
-            const isSelected = i === namePreviewIndex;
-            if (isSelected) {
-                fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-            }
-            print(LIST_LABEL_X, y, i === 0 ? "Edit" : "OK", isSelected ? 0 : 1);
-        }
-        drawFooter("Back: cancel");
-        return;
-    }
-
-    /* Handle confirmation views */
-    if (confirmingOverwrite) {
-        drawHeader("Overwrite?");
-        const name = truncateText(pendingSaveName, 20);
-        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-        const listY = LIST_TOP_Y + 16;
-        for (let i = 0; i < 2; i++) {
-            const y = listY + i * LIST_LINE_HEIGHT;
-            const isSelected = i === confirmIndex;
-            if (isSelected) {
-                fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-            }
-            print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
-        }
-        drawFooter("Back: cancel");
-        return;
-    }
-
-    if (confirmingDelete) {
-        drawHeader("Delete?");
-        const name = truncateText(slots[selectedSlot] ? slots[selectedSlot].name : "Unknown", 20);
-        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-        const listY = LIST_TOP_Y + 16;
-        for (let i = 0; i < 2; i++) {
-            const y = listY + i * LIST_LINE_HEIGHT;
-            const isSelected = i === confirmIndex;
-            if (isSelected) {
-                fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-            }
-            print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
-        }
-        drawFooter("Back: cancel");
-        return;
-    }
-
-    drawHeader("S" + (selectedSlot + 1) + " Settings");
-
-    const items = getChainSettingsItems(selectedSlot);
-    const listY = LIST_TOP_Y;
-    const lineHeight = 9;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
-
-    let scrollOffset = 0;
-    if (selectedChainSetting >= maxVisible) {
-        scrollOffset = selectedChainSetting - maxVisible + 1;
-    }
-
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const y = listY + i * lineHeight;
-        const setting = items[itemIdx];
-        const isSelected = itemIdx === selectedChainSetting;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, setting.label, labelColor);
-
-        if (setting.type !== "action") {
-            const value = getChainSettingValue(selectedSlot, setting);
-            if (value) {
-                const valueX = SCREEN_WIDTH - value.length * 5 - 4;
-                if (isSelected && editingChainSettingValue) {
-                    print(valueX - 8, y, "<", 0);
-                    print(valueX, y, value, 0);
-                    print(valueX + value.length * 5 + 2, y, ">", 0);
-                } else {
-                    print(valueX, y, value, labelColor);
-                }
-            }
-        }
-    }
-}
+/* drawChainSettings() -> shadow_ui_settings.mjs */
 
 /* Draw knob assignment editor - list of 8 knobs with their assignments */
 function drawKnobEditor() {
@@ -9455,83 +8299,8 @@ function drawKnobParamPicker() {
 
 /* ========== Master Preset Draw Functions ========== */
 
-function drawMasterNamePreview() {
-    drawHeader("Save As");
-
-    const name = truncateText(masterPendingSaveName, 20);
-    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-    const listY = LIST_TOP_Y + 16;
-    for (let i = 0; i < 2; i++) {
-        const y = listY + i * LIST_LINE_HEIGHT;
-        const isSelected = i === masterNamePreviewIndex;
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-        print(LIST_LABEL_X, y, i === 0 ? "Edit" : "OK", isSelected ? 0 : 1);
-    }
-
-    drawFooter("Back: cancel");
-}
-
-function drawMasterConfirmOverwrite() {
-    drawHeader("Overwrite?");
-
-    const name = truncateText(masterPendingSaveName, 20);
-    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-    const listY = LIST_TOP_Y + 16;
-    for (let i = 0; i < 2; i++) {
-        const y = listY + i * LIST_LINE_HEIGHT;
-        const isSelected = i === masterConfirmIndex;
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-        print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
-    }
-
-    drawFooter("Back: cancel");
-}
-
-function drawMasterConfirmDelete() {
-    drawHeader("Delete?");
-
-    const name = truncateText(currentMasterPresetName, 20);
-    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-    const listY = LIST_TOP_Y + 16;
-    for (let i = 0; i < 2; i++) {
-        const y = listY + i * LIST_LINE_HEIGHT;
-        const isSelected = i === masterConfirmIndex;
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-        print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
-    }
-
-    drawFooter("Back: cancel");
-}
-
-function drawMasterFxSettingsMenu() {
-    const title = currentMasterPresetName || "Master FX";
-    drawHeader(truncateText(title, 18));
-
-    const items = getMasterFxSettingsItems();
-
-    drawMenuList({
-        items: items,
-        selectedIndex: selectedMasterFxSetting,
-        getLabel: (item) => item.label,
-        getValue: (item) => {
-            if (item.type === "action") return "";
-            return getMasterFxSettingValue(item);
-        },
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        valueAlignRight: true
-    });
-
-    drawFooter("Back: FX chain");
-}
+/* drawMasterNamePreview, drawMasterConfirmOverwrite, drawMasterConfirmDelete,
+ * drawMasterFxSettingsMenu -> shadow_ui_master_fx.mjs */
 
 /* ========== Help Viewer Draw Functions ========== */
 
@@ -9576,215 +8345,316 @@ function drawHelpDetail() {
 
 /* ========== End Master Preset Draw Functions ========== */
 
-function drawGlobalSettings() {
-    clear_screen();
+/* drawGlobalSettings() -> shadow_ui_settings.mjs */
 
-    /* Help viewer takes over display */
-    if (helpDetailScrollState) {
-        drawHelpDetail();
-        return;
-    }
-    if (helpNavStack.length > 0) {
-        drawHelpList();
-        return;
-    }
+/* drawMasterFx(), drawMasterFxModuleSelect() -> shadow_ui_master_fx.mjs */
 
-    if (globalSettingsInSection) {
-        /* Show items within selected section */
-        const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-        drawHeader(truncateText(section.label, 18));
-
-        drawMenuList({
-            items: section.items,
-            selectedIndex: globalSettingsItemIndex,
-            getLabel: (item) => {
-                if (globalSettingsEditing && section.items[globalSettingsItemIndex] === item) {
-                    return "[" + item.label + "]";
-                }
-                return item.label;
-            },
-            getValue: (item) => {
-                if (item.type === "action") return "";
-                return getMasterFxSettingValue(item);
-            },
-            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-            valueAlignRight: true
-        });
-
-        drawFooter("Back: Settings");
-    } else {
-        /* Show section list */
-        drawHeader("Settings");
-
-        drawMenuList({
-            items: GLOBAL_SETTINGS_SECTIONS,
-            selectedIndex: globalSettingsSectionIndex,
-            getLabel: (section) => section.label,
-            getValue: () => "",
-            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-            valueAlignRight: false
-        });
-
-        drawFooter("Back: return");
-    }
-}
-
-function drawMasterFx() {
-    clear_screen();
-
-    /* Handle text entry (keyboard) */
-    if (isTextEntryActive()) {
-        drawTextEntry();
-        return;
-    }
-
-    /* Check if we're showing name preview */
-    if (masterShowingNamePreview) {
-        drawMasterNamePreview();
-        return;
-    }
-
-    /* Check if we're confirming overwrite */
-    if (masterConfirmingOverwrite) {
-        drawMasterConfirmOverwrite();
-        return;
-    }
-
-    /* Check if we're confirming delete */
-    if (masterConfirmingDelete) {
-        drawMasterConfirmDelete();
-        return;
-    }
-
-    /* Check if we're in help viewer */
-    if (helpDetailScrollState) {
-        drawHelpDetail();
-        return;
-    }
-    if (helpNavStack.length > 0) {
-        drawHelpList();
-        return;
-    }
-
-    /* Check if we're in preset picker mode */
-    if (inMasterPresetPicker) {
-        drawMasterPresetPicker();
-        return;
-    }
-
-    /* Check if we're in settings submenu */
-    if (inMasterFxSettingsMenu) {
-        drawMasterFxSettingsMenu();
-        return;
-    }
-
-    /* Check if we're in module selection mode */
-    if (selectingMasterFxModule) {
-        drawMasterFxModuleSelect();
-        return;
-    }
-
-    drawHeader("Master FX");
-
-    /* Calculate box layout - 5 components (4 FX + settings) across 128px */
-    const BOX_W = 22;
-    const BOX_H = 16;
-    const GAP = 2;
-    const TOTAL_W = 5 * BOX_W + 4 * GAP;  // 118px
-    const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);
-    const BOX_Y = 20;
-
-    const presetSelected = selectedMasterFxComponent === -1;
-
-    /* Draw each component box */
-    for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-        const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-        const x = START_X + i * (BOX_W + GAP);
-        const isSelected = i === selectedMasterFxComponent;
-
-        /* Get abbreviation for this component */
-        let abbrev = "--";
-        if (comp.key === "settings") {
-            abbrev = "*";
-        } else {
-            const moduleData = masterFxConfig[comp.key];
-            abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
-        }
-
-        /* Draw box:
-         * - If preset selected (position -1): all boxes filled (inverted)
-         * - If individual component selected: that box filled
-         * - Otherwise: outlined box */
-        const fillBox = presetSelected || isSelected;
-        if (fillBox) {
-            fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        } else {
-            draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        }
-
-        /* Draw abbreviation centered in box */
-        const textColor = fillBox ? 0 : 1;
-        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
-        const textY = BOX_Y + 5;
-        print(textX, textY, abbrev, textColor);
-    }
-
-    /* Draw component label below boxes */
-    const selectedComp = presetSelected ? null : MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    const labelY = BOX_Y + BOX_H + 4;
-    const label = presetSelected ? "Preset" : (selectedComp ? selectedComp.label : "");
-    const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
-    print(labelX, labelY, label, 1);
-
-    /* Draw current module name/preset below label */
-    const infoY = labelY + 12;
-    let infoLine = "";
-    if (presetSelected) {
-        /* Show preset name when preset is selected */
-        infoLine = currentMasterPresetName || "(no preset)";
-    } else if (selectedComp && selectedComp.key !== "settings") {
-        const moduleData = masterFxConfig[selectedComp.key];
-        if (moduleData && moduleData.module) {
-            /* Get display name from MASTER_FX_OPTIONS */
-            const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
-            const displayName = opt ? opt.name : moduleData.module;
-            const preset = getMasterFxParam(selectedMasterFxComponent, "preset_name") ||
-                          getMasterFxParam(selectedMasterFxComponent, "preset") || "";
-            infoLine = preset ? `${displayName} (${truncateText(preset, 8)})` : displayName;
-        } else {
-            infoLine = "(empty)";
-        }
-    } else if (selectedComp && selectedComp.key === "settings") {
-        infoLine = "Configure master FX";
-    }
-    infoLine = truncateText(infoLine, 24);
-    const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
-    print(infoX, infoY, infoLine, 1);
-}
-
-/* Draw module selection list for Master FX */
-function drawMasterFxModuleSelect() {
-    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    drawHeader(`Select ${comp ? comp.label : "FX"}`);
-
-    if (MASTER_FX_OPTIONS.length === 0) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No FX modules available", 1);
-        return;
-    }
-
-    drawMenuList({
-        items: MASTER_FX_OPTIONS,
-        selectedIndex: selectedMasterFxModuleIndex,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        getLabel: (item) => item.name,
-        getValue: (item) => {
-            /* Show * if this is the currently loaded module */
-            const currentModule = masterFxConfig[comp.key]?.module || "";
-            return item.id === currentModule ? "*" : "";
-        }
+/* ============================================================================
+ * Populate shared context for extracted view modules.
+ * Modules access ctx properties *inside function bodies*, not at import time.
+ * ============================================================================ */
+(function populateCtx() {
+    /* Shared state - use defineProperty so modules read/write the live variables */
+    Object.defineProperty(_ctx, 'selectedSlot', {
+        get() { return selectedSlot; }, set(v) { selectedSlot = v; }, enumerable: true
     });
-    drawFooter({left: "Back: cancel", right: "Click: apply"});
-}
+    Object.defineProperty(_ctx, 'slots', {
+        get() { return slots; }, set(v) { slots = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'needsRedraw', {
+        get() { return needsRedraw; }, set(v) { needsRedraw = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'slotDirtyCache', {
+        get() { return slotDirtyCache; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'patches', {
+        get() { return patches; }, set(v) { patches = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'selectedPatch', {
+        get() { return selectedPatch; }, set(v) { selectedPatch = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'view', {
+        get() { return view; }, set(v) { view = v; }, enumerable: true
+    });
+
+    /* Constants */
+    _ctx.VIEWS = VIEWS;
+    _ctx.DEFAULT_SLOTS = DEFAULT_SLOTS;
+    _ctx.KNOB_BASE_STEP_FLOAT = KNOB_BASE_STEP_FLOAT;
+
+    /* Master FX state (read/write) */
+    Object.defineProperty(_ctx, 'masterFxConfig', {
+        get() { return masterFxConfig; }, set(v) { masterFxConfig = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'MASTER_FX_OPTIONS', {
+        get() { return MASTER_FX_OPTIONS; }, set(v) { MASTER_FX_OPTIONS = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'selectedMasterFxComponent', {
+        get() { return selectedMasterFxComponent; }, set(v) { selectedMasterFxComponent = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'selectingMasterFxModule', {
+        get() { return selectingMasterFxModule; }, set(v) { selectingMasterFxModule = v; }, enumerable: true
+    });
+
+    /* Master FX state (read-only for module) */
+    Object.defineProperty(_ctx, 'masterShowingNamePreview', {
+        get() { return masterShowingNamePreview; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'masterConfirmingOverwrite', {
+        get() { return masterConfirmingOverwrite; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'masterConfirmingDelete', {
+        get() { return masterConfirmingDelete; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'helpDetailScrollState', {
+        get() { return helpDetailScrollState; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'helpNavStack', {
+        get() { return helpNavStack; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'inMasterPresetPicker', {
+        get() { return inMasterPresetPicker; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'inMasterFxSettingsMenu', {
+        get() { return inMasterFxSettingsMenu; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'currentMasterPresetName', {
+        get() { return currentMasterPresetName; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'selectedMasterFxSetting', {
+        get() { return selectedMasterFxSetting; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'selectedMasterFxModuleIndex', {
+        get() { return selectedMasterFxModuleIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'masterPresets', {
+        get() { return masterPresets; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'selectedMasterPresetIndex', {
+        get() { return selectedMasterPresetIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'masterPendingSaveName', {
+        get() { return masterPendingSaveName; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'masterNamePreviewIndex', {
+        get() { return masterNamePreviewIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'masterConfirmIndex', {
+        get() { return masterConfirmIndex; }, enumerable: true
+    });
+
+    _ctx.MASTER_FX_CHAIN_COMPONENTS = MASTER_FX_CHAIN_COMPONENTS;
+
+    /* Utility functions */
+    _ctx.setView = setView;
+    _ctx.getSlotParam = getSlotParam;
+    _ctx.setSlotParam = setSlotParam;
+    _ctx.updateFocusedSlot = updateFocusedSlot;
+    _ctx.getMasterFxDisplayName = () => getMasterFxDisplayName();
+    _ctx.saveSlotsToConfig = (...args) => saveSlotsToConfig(...args);
+    _ctx.fetchKnobMappings = (...args) => fetchKnobMappings(...args);
+    _ctx.invalidateKnobContextCache = (...args) => invalidateKnobContextCache(...args);
+    _ctx.loadChainConfigFromSlot = (...args) => loadChainConfigFromSlot(...args);
+
+    /* Master FX functions */
+    _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
+    _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
+    _ctx.getMasterFxSlotModule = (...args) => getMasterFxSlotModule(...args);
+    _ctx.getMasterFxParam = (...args) => getMasterFxParam(...args);
+    _ctx.getModuleAbbrev = (...args) => getModuleAbbrev(...args);
+    _ctx.isTextEntryActive = () => isTextEntryActive();
+    _ctx.drawTextEntry = () => drawTextEntry();
+    _ctx.drawHelpDetail = () => drawHelpDetail();
+    _ctx.drawHelpList = () => drawHelpList();
+    _ctx.getMasterFxSettingsItems = () => getMasterFxSettingsItems();
+    _ctx.getMasterFxSettingValue = (...args) => getMasterFxSettingValue(...args);
+
+    /* Tools state */
+    Object.defineProperty(_ctx, 'toolModules', {
+        get() { return toolModules; }, set(v) { toolModules = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolsMenuIndex', {
+        get() { return toolsMenuIndex; }, set(v) { toolsMenuIndex = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolBrowserState', {
+        get() { return toolBrowserState; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolAvailableEngines', {
+        get() { return toolAvailableEngines; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolEngineIndex', {
+        get() { return toolEngineIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolActiveTool', {
+        get() { return toolActiveTool; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolSelectedFile', {
+        get() { return toolSelectedFile; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolSelectedEngine', {
+        get() { return toolSelectedEngine; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolProcessStartTime', {
+        get() { return toolProcessStartTime; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolFileDurationSec', {
+        get() { return toolFileDurationSec; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolStemsFound', {
+        get() { return toolStemsFound; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolExpectedStems', {
+        get() { return toolExpectedStems; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolProcessingDots', {
+        get() { return toolProcessingDots; }, set(v) { toolProcessingDots = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolResultSuccess', {
+        get() { return toolResultSuccess; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolResultMessage', {
+        get() { return toolResultMessage; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolStemFiles', {
+        get() { return toolStemFiles; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolStemReviewIndex', {
+        get() { return toolStemReviewIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolStemKept', {
+        get() { return toolStemKept; }, enumerable: true
+    });
+    _ctx.menuLayoutDefaults = menuLayoutDefaults;
+    _ctx.debugLog = debugLog;
+
+    /* Store state */
+    Object.defineProperty(_ctx, 'storeCategoryItems', {
+        get() { return storeCategoryItems; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storeCategoryIndex', {
+        get() { return storeCategoryIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerCategory', {
+        get() { return storePickerCategory; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerModules', {
+        get() { return storePickerModules; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerSelectedIndex', {
+        get() { return storePickerSelectedIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerCurrentModule', {
+        get() { return storePickerCurrentModule; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storeInstalledModules', {
+        get() { return storeInstalledModules; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storeHostVersion', {
+        get() { return storeHostVersion; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storeDetailScrollState', {
+        get() { return storeDetailScrollState; }, set(v) { storeDetailScrollState = v; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerLoadingTitle', {
+        get() { return storePickerLoadingTitle; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerLoadingMessage', {
+        get() { return storePickerLoadingMessage; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerResultTitle', {
+        get() { return storePickerResultTitle; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'storePickerMessage', {
+        get() { return storePickerMessage; }, enumerable: true
+    });
+    _ctx.getModuleStatus = (...args) => getModuleStatus(...args);
+    _ctx.CATEGORIES = CATEGORIES;
+    _ctx.drawStatusOverlay = (...args) => drawStatusOverlay(...args);
+    _ctx.fetchReleaseNotes = (...args) => fetchReleaseNotes(...args);
+    _ctx.createScrollableText = (...args) => createScrollableText(...args);
+    _ctx.drawScrollableText = (...args) => drawScrollableText(...args);
+    _ctx.wrapText = (...args) => wrapText(...args);
+
+    /* Chain settings state */
+    Object.defineProperty(_ctx, 'showingNamePreview', {
+        get() { return showingNamePreview; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'pendingSaveName', {
+        get() { return pendingSaveName; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'namePreviewIndex', {
+        get() { return namePreviewIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'confirmingOverwrite', {
+        get() { return confirmingOverwrite; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'confirmingDelete', {
+        get() { return confirmingDelete; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'confirmIndex', {
+        get() { return confirmIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'selectedChainSetting', {
+        get() { return selectedChainSetting; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'editingChainSettingValue', {
+        get() { return editingChainSettingValue; }, enumerable: true
+    });
+    _ctx.getChainSettingsItems = (...args) => getChainSettingsItems(...args);
+    _ctx.getChainSettingValue = (...args) => getChainSettingValue(...args);
+
+    /* Global settings state */
+    Object.defineProperty(_ctx, 'globalSettingsInSection', {
+        get() { return globalSettingsInSection; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'globalSettingsSectionIndex', {
+        get() { return globalSettingsSectionIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'globalSettingsItemIndex', {
+        get() { return globalSettingsItemIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'globalSettingsEditing', {
+        get() { return globalSettingsEditing; }, enumerable: true
+    });
+    _ctx.GLOBAL_SETTINGS_SECTIONS = GLOBAL_SETTINGS_SECTIONS;
+
+    /* View transitions - bound lazily since some may be defined after this block */
+    _ctx.enterChainEdit = (...args) => enterChainEdit(...args);
+    _ctx.enterPatchBrowser = (...args) => _enterPatchBrowser(...args);
+    _ctx.enterMasterFxSettings = (...args) => enterMasterFxSettings(...args);
+    _ctx.enterSlotSettings = (...args) => _enterSlotSettings(...args);
+})();
+
+/* Delegate draw/enter functions to extracted modules */
+function drawSlots() { _drawSlots(); }
+function drawSlotSettings() { _drawSlotSettings(); }
+function enterSlotSettings(slotIndex) { _enterSlotSettings(slotIndex); }
+function drawPatches() { _drawPatches(); }
+function drawPatchDetail() { _drawPatchDetail(); }
+function drawComponentParams() { _drawComponentParams(); }
+function enterPatchBrowser(slotIndex) { _enterPatchBrowser(slotIndex); }
+function enterPatchDetail(slotIndex, patchIndex) { _enterPatchDetail(slotIndex, patchIndex); }
+function enterComponentParams(slot, component) { _enterComponentParams(slot, component); }
+function applyPatchSelection() { _applyPatchSelection(); }
+function drawMasterFx() { _drawMasterFx(); }
+function getMasterFxDisplayName() { return _getMasterFxDisplayName(); }
+function enterMasterFxSettings() { _enterMasterFxSettings(); }
+function scanForToolModules() { return _scanForToolModules(); }
+function enterToolsMenu() { _enterToolsMenu(); }
+function drawToolsMenu() { _drawToolsMenu(); }
+function drawToolFileBrowser() { _drawToolFileBrowser(); }
+function drawToolEngineSelect() { _drawToolEngineSelect(); }
+function drawToolConfirm() { _drawToolConfirm(); }
+function drawToolProcessing() { _drawToolProcessing(); }
+function drawToolResult() { _drawToolResult(); }
+function drawToolStemReview() { _drawToolStemReview(); }
+function drawStorePickerCategories() { _drawStorePickerCategories(); }
+function drawStorePickerList() { _drawStorePickerList(); }
+function drawStorePickerLoading() { _drawStorePickerLoading(); }
+function drawStorePickerResult() { _drawStorePickerResult(); }
+function drawStorePickerDetail() { _drawStorePickerDetail(); }
+function drawChainSettings() { _drawChainSettings(); }
+function drawGlobalSettings() { _drawGlobalSettings(); }
 
 globalThis.init = function() {
     debugLog("Shadow UI init");

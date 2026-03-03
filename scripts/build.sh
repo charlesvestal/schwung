@@ -401,6 +401,7 @@ echo "Building display server..."
 
 # Copy shadow UI files
 cp ./src/shadow/shadow_ui.js ./build/shadow/
+cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
