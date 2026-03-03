@@ -67,11 +67,18 @@
         " the beginning",
         "Rec again: stop",
         "",
-        "Auto-stops 1 bar after",
-        "the last step finishes.",
+        "Auto-stops after a",
+        "configurable tail to",
+        "capture reverb tails.",
+        "",
+        "Tail setting is the",
+        "last menu item. Click",
+        "to cycle: 0,1,2,4,8",
+        "bars (default 2).",
         "",
         "Files saved to:",
-        " Recordings/Song Mode/"
+        " Recordings/Song Mode/",
+        " with set name"
       ]
     },
     {

@@ -436,8 +436,9 @@ Sequence clips across time to build full songs from your set's clip layout.
 - **Rec**: Record audio from current step
 - **Shift+Rec**: Record from beginning
 - **Rec again**: Stop recording
-- Auto-stops 1 bar after the last step finishes
-- Files saved to `Recordings/Song Mode/`
+- Auto-stops after a configurable tail period (default 2 bars) to capture reverb/delay tails
+- **Tail setting**: Last menu item — jog click cycles through 0, 1, 2, 4, 8 bars
+- Files saved to `Recordings/Song Mode/` with set name in filename
 
 **Loop mode:** Press **Loop** to toggle. When on, playback wraps back to the first step after the last step ends. Shows `[L]` in the header. Disabled during recording.
 
