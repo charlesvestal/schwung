@@ -591,9 +591,6 @@ function updatePadHighlights() {
     if (key === lastHighlightKey && !retry) return;
     lastHighlightKey = key;
 
-    /* Refresh snapshot from overlay SHM for current Move LED state */
-    snapshotPadLeds();
-
     /* No pad highlights during playback — Move's own LEDs show clip state */
     let newNotes = [];
     if (playbackState !== "playing" && selectedEntry < songEntries.length) {

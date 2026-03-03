@@ -1845,10 +1845,9 @@ function exitOvertakeMode() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Clear skip_led_clear flag */
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
-    }
+    /* NOTE: skip_led_clear is cleared in completeOvertakeExit() AFTER
+     * overtake_mode drops to 0, so the C-side transition sees it and
+     * skips its snapshot restore (which may have stale/polluted state). */
 
     /* Signal exit — C-side LED cache will restore Move's LEDs
      * when overtake_mode transitions back to 0 */
@@ -1905,6 +1904,15 @@ function completeOvertakeExit() {
     /* Disable overtake mode to allow MIDI to reach Move again */
     if (typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
+    }
+
+    /* Clear skip_led_clear AFTER overtake_mode drops to 0.
+     * The C-side overtake transition checks skip_led_clear to decide
+     * whether to restore its snapshot. With skip_led_clear still set,
+     * it skips the restore (good — the snapshot may be polluted from
+     * Move's MIDI_OUT during the session). Move reasserts its own LEDs. */
+    if (typeof shadow_set_skip_led_clear === "function") {
+        shadow_set_skip_led_clear(0);
     }
 
     /* If exiting an interactive tool, return to tools menu instead of Move */
