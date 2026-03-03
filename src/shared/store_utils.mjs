@@ -298,7 +298,8 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
 /* Get modules for a specific category */
 export function getModulesForCategory(catalog, categoryId) {
     if (!catalog || !catalog.modules) return [];
-    return catalog.modules.filter(m => m.component_type === categoryId);
+    return catalog.modules.filter(m => m.component_type === categoryId)
+        .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /* Get module install status */
