@@ -1,0 +1,13 @@
+{
+    "id": "song-mode",
+    "name": "Song Mode",
+    "version": "0.1.0",
+    "component_type": "tool",
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true
+    },
+    "capabilities": {
+        "skip_led_clear": true
+    }
+}

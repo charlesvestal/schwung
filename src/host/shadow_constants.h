@@ -27,6 +27,7 @@
 #define SHM_SHADOW_PARAM      "/move-shadow-param"        /* Shadow param requests */
 #define SHM_SHADOW_MIDI_OUT   "/move-shadow-midi-out"   /* MIDI output from shadow UI */
 #define SHM_SHADOW_MIDI_DSP   "/move-shadow-midi-dsp"   /* MIDI from shadow UI to DSP slots */
+#define SHM_SHADOW_MIDI_INJECT "/move-shadow-midi-inject" /* MIDI inject into Move's MIDI_IN */
 #define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/move-shadow-overlay"  /* Overlay state (sampler/skipback) */
 #define SHM_DISPLAY_LIVE    "/move-display-live"    /* Live display for remote viewer */
@@ -48,6 +49,7 @@
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
+#define SHADOW_MIDI_INJECT_BUFFER_SIZE 256    /* MIDI inject buffer (64 packets) */
 #define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
 #define SHADOW_OVERLAY_BUFFER_SIZE 256        /* Overlay state buffer */
 
@@ -121,7 +123,8 @@ typedef struct shadow_control_t {
     volatile uint8_t overlay_rect_h;      /* Overlay rect height (pixels) */
     volatile uint16_t tts_debounce_ms;   /* Screen reader debounce in ms (0-1000, default 300) */
     volatile uint8_t set_pages_enabled;  /* 0=off, 1=on (Shift+Vol+Left/Right page switching) */
-    volatile uint8_t reserved[19];
+    volatile uint8_t skip_led_clear;     /* 1=don't clear LEDs on overtake entry, restore snapshot instead */
+    volatile uint8_t reserved[18];
 } shadow_control_t;
 
 /*
@@ -177,6 +180,19 @@ typedef struct shadow_midi_dsp_t {
     volatile uint8_t reserved[2];
     uint8_t buffer[SHADOW_MIDI_DSP_BUFFER_SIZE];  /* Raw MIDI (4 bytes each: status, d1, d2, pad) */
 } shadow_midi_dsp_t;
+
+/*
+ * MIDI Inject buffer structure.
+ * Used by Shadow UI (or external tools) to inject USB-MIDI packets into
+ * Move's MIDI_IN buffer, making Move process them as real hardware events.
+ * Packets are 4-byte USB-MIDI format (CIN/cable, status, data1, data2).
+ */
+typedef struct shadow_midi_inject_t {
+    volatile uint8_t write_idx;      /* Writer increments after writing */
+    volatile uint8_t ready;          /* Toggle to signal new data */
+    volatile uint8_t reserved[2];
+    uint8_t buffer[SHADOW_MIDI_INJECT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
+} shadow_midi_inject_t;
 
 /*
  * Screen reader message structure.

@@ -313,6 +313,11 @@ void pin_check_and_speak(void)
                 } else {
                     { char lb[128]; snprintf(lb, sizeof(lb), "PIN: speaking '%s'", pin_text); if (host.log) host.log(lb); }
                     if (host.tts_speak) host.tts_speak(pin_text);
+                    /* Write raw PIN digits to file for automated auth flows */
+                    {
+                        FILE *pf = fopen("/data/UserData/move-anything/last_pin.txt", "w");
+                        if (pf) { fprintf(pf, "%s\n", raw_digits); fclose(pf); }
+                    }
                     strncpy(pin_last_spoken, raw_digits, sizeof(pin_last_spoken) - 1);
                     pin_state = PIN_STATE_COOLDOWN;
                     pin_state_entered_ms = now_ms;
@@ -335,9 +340,11 @@ void pin_check_and_speak(void)
         if (challenge == 0 || challenge == 2) {
             pin_state = PIN_STATE_IDLE;
             pin_last_spoken[0] = '\0';  /* Clear dedup so new session can repeat */
+            unlink("/data/UserData/move-anything/last_pin.txt");
             if (host.log) host.log("PIN: challenge cleared, returning to idle");
         } else if (now_ms - pin_state_entered_ms > 5000) {
             pin_state = PIN_STATE_IDLE;
+            unlink("/data/UserData/move-anything/last_pin.txt");
             if (host.log) host.log("PIN: cooldown timeout, returning to idle");
         }
         break;

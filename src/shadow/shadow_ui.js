@@ -161,7 +161,8 @@ import {
     drawToolConfirm as _drawToolConfirm,
     drawToolProcessing as _drawToolProcessing,
     drawToolResult as _drawToolResult,
-    drawToolStemReview as _drawToolStemReview
+    drawToolStemReview as _drawToolStemReview,
+    drawToolSetPicker as _drawToolSetPicker
 } from './shadow_ui_tools.mjs';
 import {
     drawStorePickerCategories as _drawStorePickerCategories,
@@ -247,7 +248,8 @@ const VIEWS = {
     TOOL_PROCESSING: "toolprocessing",      // Progress/status while tool runs
     TOOL_RESULT: "toolresult",               // Success/failure result
     TOOL_ENGINE_SELECT: "toolengineselect",  // Pick engine (e.g. 3-stem vs 4-stem)
-    TOOL_STEM_REVIEW: "toolstemreview"       // Review produced stems before saving
+    TOOL_STEM_REVIEW: "toolstemreview",       // Review produced stems before saving
+    TOOL_SET_PICKER: "toolsetpicker"          // Browse sets for render tool
 };
 
 /* Special action key for swap module option */
@@ -332,7 +334,8 @@ const VIEW_NAMES = {
     [VIEWS.TOOL_PROCESSING]: "Processing",
     [VIEWS.TOOL_RESULT]: "Result",
     [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection",
-    [VIEWS.TOOL_STEM_REVIEW]: "Stem Review"
+    [VIEWS.TOOL_STEM_REVIEW]: "Stem Review",
+    [VIEWS.TOOL_SET_PICKER]: "Choose Set"
 };
 
 /* Helper to change view and announce it */
@@ -746,6 +749,10 @@ let toolAvailableEngines = [];   // Engines filtered by installed commands
 let toolStemFiles = [];          // Array of stem .wav filenames in output dir
 let toolStemReviewIndex = 0;     // Selected index (0 = "Save All", 1+ = individual stems)
 let toolStemKept = [];           // Parallel bool array — true if stem is marked to keep
+let toolSetList = [];            // Array of {uuid, name} for set picker
+let toolSetPickerIndex = 0;      // Selected index in set picker
+let toolSelectedSetUuid = "";    // Chosen set UUID
+let toolSelectedSetName = "";    // Chosen set display name
 
 /* WAV Player preview state */
 let wavPlayerLoaded = false;
@@ -1732,7 +1739,8 @@ function scanForOvertakeModules() {
                     path: dirPath,
                     uiPath: `${dirPath}/${json.ui || 'ui.js'}`,
                     dsp: json.dsp || null,
-                    basePath: dirPath
+                    basePath: dirPath,
+                    capabilities: json.capabilities || null
                 });
             }
         } catch (e) {
@@ -1836,6 +1844,11 @@ function exitOvertakeMode() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
+    /* Clear skip_led_clear flag */
+    if (typeof shadow_set_skip_led_clear === "function") {
+        shadow_set_skip_led_clear(0);
+    }
+
     /* Signal exit — C-side LED cache will restore Move's LEDs
      * when overtake_mode transitions back to 0 */
     overtakeExitPending = true;
@@ -1870,7 +1883,10 @@ function exitToolOvertake() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Disable overtake mode (non-overtake tools never changed it, so skip) */
+    /* Clear skip_led_clear flag and disable overtake mode */
+    if (typeof shadow_set_skip_led_clear === "function") {
+        shadow_set_skip_led_clear(0);
+    }
     if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
     }
@@ -1917,8 +1933,14 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
     try {
         /* Step 1: Set overtake mode.
          * Non-overtake tools stay at mode 0 — jog/click/back already forwarded to shadow,
-         * and everything else (pads, steps, knobs) passes through to Move normally. */
+         * and everything else (pads, steps, knobs) passes through to Move normally.
+         * If skip_led_clear, tell C-side to preserve LED state on overtake entry. */
         if (!skipOvertake && typeof shadow_set_overtake_mode === "function") {
+            const wantSkipLed = moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear;
+            if (wantSkipLed && typeof shadow_set_skip_led_clear === "function") {
+                shadow_set_skip_led_clear(1);
+                debugLog("loadOvertakeModule: skip_led_clear set");
+            }
             shadow_set_overtake_mode(2);  /* 2 = module mode (all events) */
             debugLog("loadOvertakeModule: overtake_mode=2 (module)");
         }
@@ -1930,8 +1952,10 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
 
         /* Activate LED queue before loading module - intercepts move_midi_internal_send
          * to prevent SHM buffer flooding from modules that send many LEDs per tick.
-         * Non-overtake tools don't own LEDs, so skip this. */
-        if (!skipOvertake) activateLedQueue();
+         * Non-overtake tools don't own LEDs, so skip this.
+         * skip_led_clear modules also don't own LEDs — Move's LEDs pass through. */
+        const wantLedQueue = !skipOvertake && !(moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear);
+        if (wantLedQueue) activateLedQueue();
 
         /* Save current globals before loading - module may overwrite them */
         const savedInit = globalThis.init;
@@ -2036,10 +2060,13 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         overtakeModuleLoaded = true;
 
         /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen.
-         * Non-overtake tools don't own LEDs, so call init() immediately. */
-        if (skipOvertake) {
+         * Non-overtake tools don't own LEDs, so call init() immediately.
+         * Modules with skip_led_clear capability skip LED clearing and init immediately
+         * (e.g. song-mode wants Move's pad colors to stay visible). */
+        const skipLedClear = moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear;
+        if (skipOvertake || skipLedClear) {
             overtakeInitPending = false;
-            debugLog("loadOvertakeModule: non-overtake, calling init() immediately");
+            debugLog("loadOvertakeModule: " + (skipOvertake ? "non-overtake" : "skip_led_clear") + ", calling init() immediately");
             if (overtakeModuleCallbacks && overtakeModuleCallbacks.init) {
                 overtakeModuleCallbacks.init();
             }
@@ -3159,6 +3186,73 @@ function toolBrowserBack() {
 
 /* drawToolFileBrowser() -> shadow_ui_tools.mjs */
 
+/* ========== Tool Set Picker Functions ========== */
+
+function scanSetsForPicker() {
+    const SETS_DIR = "/data/UserData/UserLibrary/Sets";
+    const result = [];
+    try {
+        const entries = os.readdir(SETS_DIR) || [];
+        const dirList = entries[0];
+        if (!Array.isArray(dirList)) return result;
+        for (const uuid of dirList) {
+            if (uuid.startsWith(".")) continue;
+            const subEntries = os.readdir(SETS_DIR + "/" + uuid) || [];
+            const subList = subEntries[0];
+            if (!Array.isArray(subList)) continue;
+            for (const name of subList) {
+                if (name.startsWith(".")) continue;
+                result.push({ uuid, name });
+                break; /* only one subdirectory per UUID */
+            }
+        }
+    } catch (e) {
+        debugLog("scanSetsForPicker error: " + e);
+    }
+    result.sort((a, b) => a.name.localeCompare(b.name));
+    return result;
+}
+
+function enterToolSetPicker(toolModule) {
+    debugLog("enterToolSetPicker: " + toolModule.id);
+    toolActiveTool = toolModule;
+    toolSetList = scanSetsForPicker();
+    toolSetPickerIndex = 0;
+    setView(VIEWS.TOOL_SET_PICKER);
+    needsRedraw = true;
+    if (toolSetList.length > 0) {
+        announce(toolModule.name + " - Choose set, " + toolSetList[0].name);
+    } else {
+        announce(toolModule.name + " - No sets found");
+    }
+}
+
+function toolSetPickerNavigate(delta) {
+    if (toolSetList.length === 0) return;
+    toolSetPickerIndex = Math.max(0, Math.min(toolSetList.length - 1, toolSetPickerIndex + delta));
+    announce(toolSetList[toolSetPickerIndex].name);
+}
+
+function toolSetPickerSelect() {
+    if (toolSetList.length === 0) return;
+    const chosen = toolSetList[toolSetPickerIndex];
+    toolSelectedSetUuid = chosen.uuid;
+    toolSelectedSetName = chosen.name;
+    /* Use the set name as the "selected file" for display in confirm/processing */
+    toolSelectedFile = chosen.name;
+    toolSelectedEngine = null;
+    enterToolConfirmForSet();
+}
+
+function enterToolConfirmForSet() {
+    toolFileDurationSec = 0;  /* Unknown duration for sets */
+    setView(VIEWS.TOOL_CONFIRM);
+    needsRedraw = true;
+    announce("Render " + toolSelectedSetName + "? Jog to confirm, Back to cancel");
+}
+
+/* drawToolSetPicker() -> shadow_ui_tools.mjs */
+
 /* ========== Tool Engine Selection View ========== */
 
 /* Filter engines to only those whose command script exists on disk */
@@ -3275,15 +3369,26 @@ function enterToolConfirm() {
 function startToolProcess() {
     if (!toolActiveTool || !toolSelectedFile) return;
 
+    const isSetPicker = toolActiveTool.tool_config && toolActiveTool.tool_config.set_picker;
+
     /* Compute output directory */
-    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
-    const baseName = fileName.replace(/\.[^.]+$/, "");  /* Remove extension */
-    toolOutputDir = "/data/UserData/UserLibrary/Samples/Move Everything/Stems/" + baseName;
+    if (isSetPicker) {
+        toolOutputDir = "/data/UserData/UserLibrary/Recordings/Renders";
+    } else {
+        const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+        const baseName = fileName.replace(/\.[^.]+$/, "");  /* Remove extension */
+        toolOutputDir = "/data/UserData/UserLibrary/Samples/Move Everything/Stems/" + baseName;
+    }
 
     /* Create output directory hierarchy */
-    try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything", 0o755); } catch (e) {}
-    try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything/Stems", 0o755); } catch (e) {}
-    try { os.mkdir(toolOutputDir, 0o755); } catch (e) {}
+    if (isSetPicker) {
+        try { os.mkdir("/data/UserData/UserLibrary/Recordings", 0o755); } catch (e) {}
+        try { os.mkdir("/data/UserData/UserLibrary/Recordings/Renders", 0o755); } catch (e) {}
+    } else {
+        try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything", 0o755); } catch (e) {}
+        try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything/Stems", 0o755); } catch (e) {}
+        try { os.mkdir(toolOutputDir, 0o755); } catch (e) {}
+    }
 
     /* Remove stale marker files from previous runs */
     try { os.remove(toolOutputDir + "/.done"); } catch (e) {}
@@ -3293,10 +3398,18 @@ function startToolProcess() {
     const engineCmd = toolSelectedEngine ? toolSelectedEngine.command
         : (toolActiveTool.tool_config.command || "separate");
     const command = toolActiveTool.path + "/" + engineCmd;
-    debugLog("startToolProcess: " + command + " " + toolSelectedFile + " " + toolOutputDir);
+
+    let execArgs;
+    if (isSetPicker) {
+        execArgs = [command, toolSelectedSetUuid, toolSelectedSetName, toolOutputDir];
+        debugLog("startToolProcess (set): " + command + " " + toolSelectedSetUuid + " " + toolSelectedSetName);
+    } else {
+        execArgs = [command, toolSelectedFile, toolOutputDir];
+        debugLog("startToolProcess: " + command + " " + toolSelectedFile + " " + toolOutputDir);
+    }
 
     try {
-        toolProcessPid = os.exec([command, toolSelectedFile, toolOutputDir], { block: false });
+        toolProcessPid = os.exec(execArgs, { block: false });
         debugLog("startToolProcess: pid=" + toolProcessPid);
     } catch (e) {
         debugLog("startToolProcess error: " + e);
@@ -3358,7 +3471,8 @@ function startInteractiveTool(toolModule, filePath) {
         path: toolModule.path,
         uiPath: uiPath,
         dsp: hasDsp,
-        basePath: toolModule.path
+        basePath: toolModule.path,
+        capabilities: toolModule.capabilities || null
     };
 
     /* Reuse the existing overtake module loading infrastructure */
@@ -3423,20 +3537,29 @@ function pollToolProcess() {
             /* Success! */
             toolProcessPid = -1;
             toolResultSuccess = true;
-            toolStemFiles = getStemFileNames();
-            if (toolStemFiles.length > 0) {
-                toolStemReviewIndex = 0;
-                toolStemKept = new Array(toolStemFiles.length).fill(true);
-                setView(VIEWS.TOOL_STEM_REVIEW);
-                needsRedraw = true;
-                announce("Complete! " + toolStemFiles.length + " stems. Push to save all, or jog to choose.");
-            } else {
-                /* Fallback if no WAVs found */
-                const baseName = toolOutputDir.substring(toolOutputDir.lastIndexOf("/") + 1);
-                toolResultMessage = "Stems saved to\nStems/" + baseName + "/";
+            const isSetPicker = toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.set_picker;
+            if (isSetPicker) {
+                /* Set picker tools (e.g. render): skip stem review, show simple result */
+                toolResultMessage = "Saved to\nrecordings/";
                 setView(VIEWS.TOOL_RESULT);
                 needsRedraw = true;
-                announce("Complete! Stems saved to Stems " + baseName);
+                announce("Complete! Saved to recordings");
+            } else {
+                toolStemFiles = getStemFileNames();
+                if (toolStemFiles.length > 0) {
+                    toolStemReviewIndex = 0;
+                    toolStemKept = new Array(toolStemFiles.length).fill(true);
+                    setView(VIEWS.TOOL_STEM_REVIEW);
+                    needsRedraw = true;
+                    announce("Complete! " + toolStemFiles.length + " stems. Push to save all, or jog to choose.");
+                } else {
+                    /* Fallback if no WAVs found */
+                    const baseName = toolOutputDir.substring(toolOutputDir.lastIndexOf("/") + 1);
+                    toolResultMessage = "Stems saved to\nStems/" + baseName + "/";
+                    setView(VIEWS.TOOL_RESULT);
+                    needsRedraw = true;
+                    announce("Complete! Stems saved to Stems " + baseName);
+                }
             }
             return;
         }
@@ -6557,6 +6680,9 @@ function handleJog(delta) {
         case VIEWS.TOOL_FILE_BROWSER:
             toolBrowserNavigate(delta);
             break;
+        case VIEWS.TOOL_SET_PICKER:
+            toolSetPickerNavigate(delta);
+            break;
         case VIEWS.TOOL_ENGINE_SELECT:
             toolEngineNavigate(delta);
             break;
@@ -7313,7 +7439,10 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
-                if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
+                if (tool.tool_config && tool.tool_config.set_picker) {
+                    debugLog("TOOLS SELECT: entering set picker");
+                    enterToolSetPicker(tool);
+                } else if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
                     debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
                     startInteractiveTool(tool, "");
                 } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
@@ -7327,6 +7456,9 @@ function handleSelect() {
             break;
         case VIEWS.TOOL_FILE_BROWSER:
             toolBrowserSelect();
+            break;
+        case VIEWS.TOOL_SET_PICKER:
+            toolSetPickerSelect();
             break;
         case VIEWS.TOOL_ENGINE_SELECT:
             toolEngineConfirm();
@@ -7758,6 +7890,9 @@ function handleBack() {
         case VIEWS.TOOL_FILE_BROWSER:
             toolBrowserBack();
             break;
+        case VIEWS.TOOL_SET_PICKER:
+            enterToolsMenu();
+            break;
         case VIEWS.TOOL_ENGINE_SELECT:
             /* Return to file browser */
             setView(VIEWS.TOOL_FILE_BROWSER);
@@ -7767,8 +7902,12 @@ function handleBack() {
         case VIEWS.TOOL_CONFIRM:
             wavPlayerStop();
             unloadWavPlayerDsp();
-            /* Return to engine selection if engines available, else file browser */
-            if (toolActiveTool && toolActiveTool.tool_config &&
+            /* Return to set picker, engine selection, or file browser */
+            if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.set_picker) {
+                setView(VIEWS.TOOL_SET_PICKER);
+                needsRedraw = true;
+                announce("Back to sets");
+            } else if (toolActiveTool && toolActiveTool.tool_config &&
                 toolActiveTool.tool_config.engines && toolActiveTool.tool_config.engines.length > 1) {
                 enterToolEngineSelect();
                 announce("Back to engine selection");
@@ -8524,6 +8663,15 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'toolStemKept', {
         get() { return toolStemKept; }, enumerable: true
     });
+    Object.defineProperty(_ctx, 'toolSetList', {
+        get() { return toolSetList; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolSetPickerIndex', {
+        get() { return toolSetPickerIndex; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'toolSelectedSetName', {
+        get() { return toolSelectedSetName; }, enumerable: true
+    });
     _ctx.menuLayoutDefaults = menuLayoutDefaults;
     _ctx.debugLog = debugLog;
 
@@ -8648,6 +8796,7 @@ function drawToolConfirm() { _drawToolConfirm(); }
 function drawToolProcessing() { _drawToolProcessing(); }
 function drawToolResult() { _drawToolResult(); }
 function drawToolStemReview() { _drawToolStemReview(); }
+function drawToolSetPicker() { _drawToolSetPicker(); }
 function drawStorePickerCategories() { _drawStorePickerCategories(); }
 function drawStorePickerList() { _drawStorePickerList(); }
 function drawStorePickerLoading() { _drawStorePickerLoading(); }
@@ -9254,6 +9403,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.TOOL_FILE_BROWSER:
             drawToolFileBrowser();
+            break;
+        case VIEWS.TOOL_SET_PICKER:
+            drawToolSetPicker();
             break;
         case VIEWS.TOOL_ENGINE_SELECT:
             drawToolEngineSelect();

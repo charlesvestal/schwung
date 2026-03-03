@@ -35,6 +35,7 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
 static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
+static shadow_midi_inject_t *shadow_midi_inject = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
 
@@ -99,6 +100,13 @@ static int open_shadow_shm(void) {
         shadow_midi_dsp = (shadow_midi_dsp_t *)mmap(NULL, sizeof(shadow_midi_dsp_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
         if (shadow_midi_dsp == MAP_FAILED) shadow_midi_dsp = NULL;
+    }
+
+    fd = shm_open(SHM_SHADOW_MIDI_INJECT, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_midi_inject = (shadow_midi_inject_t *)mmap(NULL, sizeof(shadow_midi_inject_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_midi_inject == MAP_FAILED) shadow_midi_inject = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
@@ -347,6 +355,19 @@ static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val
             memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
         }
     }
+    return JS_UNDEFINED;
+}
+
+/* shadow_set_skip_led_clear(flag) -> void
+ * Set skip_led_clear flag so the LED queue preserves pad colors on overtake entry.
+ * Must be called BEFORE shadow_set_overtake_mode(2).
+ */
+static JSValue js_shadow_set_skip_led_clear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t flag = 0;
+    JS_ToInt32(ctx, &flag, argv[0]);
+    shadow_control->skip_led_clear = flag ? 1 : 0;
     return JS_UNDEFINED;
 }
 
@@ -704,6 +725,55 @@ static JSValue js_shadow_send_midi_to_dsp(JSContext *ctx, JSValueConst this_val,
 
     /* Signal shim that data is ready */
     shadow_midi_dsp->ready++;
+
+    return JS_TRUE;
+}
+
+/* move_midi_inject_to_move([cin, status, d1, d2, ...]) -> bool
+ * Injects USB-MIDI packets into Move's MIDI_IN buffer via shared memory.
+ * Move processes these as if they came from physical hardware.
+ * Forces cable 0 on all injected events.
+ */
+static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_midi_inject) return JS_FALSE;
+    if (argc < 1) return JS_FALSE;
+
+    JSValueConst arr = argv[0];
+    if (!JS_IsArray(ctx, arr)) return JS_FALSE;
+
+    JSValue len_val = JS_GetPropertyStr(ctx, arr, "length");
+    int32_t len = 0;
+    JS_ToInt32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+
+    /* Process 4 bytes at a time (USB-MIDI packet format) */
+    for (int i = 0; i < len; i += 4) {
+        uint8_t packet[4] = {0, 0, 0, 0};
+
+        for (int j = 0; j < 4 && (i + j) < len; j++) {
+            JSValue elem = JS_GetPropertyUint32(ctx, arr, i + j);
+            int32_t val = 0;
+            JS_ToInt32(ctx, &val, elem);
+            JS_FreeValue(ctx, elem);
+            packet[j] = (uint8_t)(val & 0xFF);
+        }
+
+        /* Force cable 0 (internal hardware) */
+        packet[0] = (packet[0] & 0x0F) | 0x00;
+
+        /* Find space in buffer and write */
+        int write_offset = shadow_midi_inject->write_idx;
+        if (write_offset + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+            memcpy(&shadow_midi_inject->buffer[write_offset], packet, 4);
+            shadow_midi_inject->write_idx = write_offset + 4;
+        }
+    }
+
+    /* Signal shim that data is ready */
+    __sync_synchronize();
+    shadow_midi_inject->ready++;
 
     return JS_TRUE;
 }
@@ -1781,6 +1851,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_control_restart", JS_NewCFunction(ctx, js_shadow_control_restart, "shadow_control_restart", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));
@@ -1792,6 +1863,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_send_midi_to_dsp", JS_NewCFunction(ctx, js_shadow_send_midi_to_dsp, "shadow_send_midi_to_dsp", 1));
+    JS_SetPropertyStr(ctx, global_obj, "move_midi_inject_to_move", JS_NewCFunction(ctx, js_move_midi_inject_to_move, "move_midi_inject_to_move", 1));
 
     /* Register logging function for JS modules */
     JS_SetPropertyStr(ctx, global_obj, "shadow_log", JS_NewCFunction(ctx, js_shadow_log, "shadow_log", 1));

@@ -1482,6 +1482,7 @@ static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shado
 static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
+static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -1499,6 +1500,7 @@ static int shm_ui_fd = -1;
 static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
 static int shm_midi_dsp_fd = -1;
+static int shm_midi_inject_fd = -1;
 static int shm_screenreader_fd = -1;
 static int shm_pub_audio_fd = -1;
 static int shm_overlay_fd = -1;
@@ -1763,6 +1765,23 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create midi_dsp shm\n");
+    }
+
+    /* Create/open MIDI inject shared memory (for injecting events into Move's MIDI_IN) */
+    shm_midi_inject_fd = shm_open(SHM_SHADOW_MIDI_INJECT, O_CREAT | O_RDWR, 0666);
+    if (shm_midi_inject_fd >= 0) {
+        ftruncate(shm_midi_inject_fd, sizeof(shadow_midi_inject_t));
+        shadow_midi_inject_shm = (shadow_midi_inject_t *)mmap(NULL, sizeof(shadow_midi_inject_t),
+                                                         PROT_READ | PROT_WRITE,
+                                                         MAP_SHARED, shm_midi_inject_fd, 0);
+        if (shadow_midi_inject_shm == MAP_FAILED) {
+            shadow_midi_inject_shm = NULL;
+            printf("Shadow: Failed to mmap midi_inject shm\n");
+        } else {
+            memset(shadow_midi_inject_shm, 0, sizeof(shadow_midi_inject_t));
+        }
+    } else {
+        printf("Shadow: Failed to create midi_inject shm\n");
     }
 
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
@@ -2060,6 +2079,11 @@ static void shadow_swap_display(void)
         display_hidden_for_volume = 0;
         shadow_block_plain_volume_hide_until_release = 0;
         return;  /* Not in shadow mode */
+    }
+    /* Let Move's PIN screen show through during challenge so PIN scanner can read it */
+    if (shadow_control->pin_challenge_active == 1) {
+        display_phase = 0;
+        return;
     }
     if (!shadow_volume_knob_touched) {
         shadow_block_plain_volume_hide_until_release = 0;
@@ -2446,6 +2470,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
                 .shadow_midi_out_shm = &shadow_midi_out_shm,
                 .shadow_ui_midi_shm = &shadow_ui_midi_shm,
                 .shadow_midi_dsp_shm = &shadow_midi_dsp_shm,
+                .shadow_midi_inject_shm = &shadow_midi_inject_shm,
                 .shadow_mailbox = shadow_mailbox,
                 .master_fx_capture = &shadow_master_fx_capture,
                 .slot_idle = shadow_slot_idle,
@@ -3133,14 +3158,17 @@ int ioctl(int fd, unsigned long request, ...)
     static int volume_capture_cooldown = 0;
     static int volume_capture_warmup = 0;  /* Wait for Move to render overlay */
 
-    /* Native Move display is visible either when shadow mode is off, or when
-     * plain volume-touch temporarily hides shadow UI to reveal Move overlays. */
+    /* Native Move display is visible either when shadow mode is off, when
+     * plain volume-touch temporarily hides shadow UI to reveal Move overlays,
+     * or when a PIN challenge is active (so the PIN scanner can read the PIN). */
+    int pin_challenge = shadow_control && shadow_control->pin_challenge_active == 1;
     int native_display_visible = (!shadow_display_mode) ||
                                  (shadow_display_mode &&
                                   shadow_volume_knob_touched &&
                                   !shadow_shift_held &&
                                   shadow_control &&
-                                  !shadow_control->overtake_mode);
+                                  !shadow_control->overtake_mode) ||
+                                 pin_challenge;
 
     if (global_mmap_addr && native_display_visible) {
         uint8_t *mem = (uint8_t *)global_mmap_addr;
@@ -3486,10 +3514,12 @@ do_ioctl:
                 /* Only filter internal cable (0x00) */
                 if (cable == 0x00) {
                     /* Overtake mode split:
-                     * - mode 2 (module): block all cable 0 events from Move
+                     * - mode 2 (module): block all cable 0 MIDI events from Move
+                     *   Only filter valid MIDI (status >= 0x80), preserve ASIC metadata
+                     *   (status == 0x00) which Move needs to recognize event validity.
                      * - mode 1 (menu): allow only volume touch/turn passthrough */
                     if (overtake_mode == 2) {
-                        filter = 1;
+                        if (status >= 0x80) filter = 1;
                     } else if (overtake_mode == 1) {
                         filter = 1;
                         if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
@@ -3655,6 +3685,50 @@ do_ioctl:
                         }
                     }
                 }
+            }
+        }
+
+        /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
+        shadow_drain_midi_inject();
+
+        /* Debug: dump raw HW MIDI_IN vs shadow MIDI_IN on inject */
+        {
+            static int inject_dump_count = 0;
+            uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+            /* Check if there's any non-zero data in shadow MIDI_IN (injection happened) */
+            int has_inject = 0;
+            for (int d = 0; d < 32; d += 4) {
+                if (sh[d] || sh[d+1] || sh[d+2] || sh[d+3]) { has_inject = 1; break; }
+            }
+            if (has_inject && inject_dump_count < 5 && hardware_mmap_addr) {
+                inject_dump_count++;
+                uint8_t *hw = hardware_mmap_addr + MIDI_IN_OFFSET;
+                char msg[256];
+                snprintf(msg, sizeof(msg),
+                    "HW  MIDI_IN[0-31]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                    hw[0],hw[1],hw[2],hw[3], hw[4],hw[5],hw[6],hw[7],
+                    hw[8],hw[9],hw[10],hw[11], hw[12],hw[13],hw[14],hw[15],
+                    hw[16],hw[17],hw[18],hw[19], hw[20],hw[21],hw[22],hw[23],
+                    hw[24],hw[25],hw[26],hw[27], hw[28],hw[29],hw[30],hw[31]);
+                shadow_log(msg);
+                snprintf(msg, sizeof(msg),
+                    "SHD MIDI_IN[0-31]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                    sh[0],sh[1],sh[2],sh[3], sh[4],sh[5],sh[6],sh[7],
+                    sh[8],sh[9],sh[10],sh[11], sh[12],sh[13],sh[14],sh[15],
+                    sh[16],sh[17],sh[18],sh[19], sh[20],sh[21],sh[22],sh[23],
+                    sh[24],sh[25],sh[26],sh[27], sh[28],sh[29],sh[30],sh[31]);
+                shadow_log(msg);
+                /* Also dump last 16 bytes of both buffers (check for metadata) */
+                snprintf(msg, sizeof(msg),
+                    "HW  MIDI_IN[240-255]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                    hw[240],hw[241],hw[242],hw[243], hw[244],hw[245],hw[246],hw[247],
+                    hw[248],hw[249],hw[250],hw[251], hw[252],hw[253],hw[254],hw[255]);
+                shadow_log(msg);
+                snprintf(msg, sizeof(msg),
+                    "SHD MIDI_IN[240-255]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                    sh[240],sh[241],sh[242],sh[243], sh[244],sh[245],sh[246],sh[247],
+                    sh[248],sh[249],sh[250],sh[251], sh[252],sh[253],sh[254],sh[255]);
+                shadow_log(msg);
             }
         }
 

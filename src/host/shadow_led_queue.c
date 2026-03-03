@@ -183,9 +183,11 @@ void shadow_clear_move_leds_if_overtake(void) {
         return;
     }
 
-    /* Always scan Move's MIDI_OUT and cache LED state (even when not in overtake).
-     * This way we have a running picture of what Move's LEDs look like. */
-    if (!cur_overtake) {
+    /* Scan Move's MIDI_OUT and cache LED state.
+     * When not in overtake, always cache. When in overtake with skip_led_clear,
+     * also cache since Move's LEDs are passing through and we want an up-to-date
+     * snapshot for restore on exit. */
+    if (!cur_overtake || (ctrl && ctrl->skip_led_clear)) {
         for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
             uint8_t type = midi_out[i+1] & 0xF0;
@@ -205,8 +207,10 @@ void shadow_clear_move_leds_if_overtake(void) {
         }
     }
 
-    /* On transition into overtake: snapshot LED state, then clear.
-     * Two passes to catch any Move re-asserts between frames. */
+    /* On transition into overtake: snapshot LED state, then clear (or restore).
+     * Two passes to catch any Move re-asserts between frames.
+     * If skip_led_clear is set, restore the snapshot instead of clearing
+     * so pad colors stay visible (e.g. song-mode). */
     if (!prev_overtake_mode && cur_overtake) {
         memcpy(snapshot_note_color, move_note_led_state, sizeof(snapshot_note_color));
         memcpy(snapshot_note_cin, move_note_led_cin, sizeof(snapshot_note_cin));
@@ -216,26 +220,43 @@ void shadow_clear_move_leds_if_overtake(void) {
         memcpy(snapshot_cc_status, move_cc_led_status, sizeof(snapshot_cc_status));
         snapshot_valid = 1;
 
-        queue_hw_leds_off();
-        move_led_clear_pending = 1;
-        move_led_restore_pending = 0;
-        move_led_pass_count = 1;
+        if (ctrl && ctrl->skip_led_clear) {
+            /* Do nothing — LEDs are already correct and Move's MIDI_OUT
+             * passes through during overtake with skip_led_clear.
+             * No restore needed (avoids LED flicker from re-sending). */
+            move_led_restore_pending = 0;
+            move_led_clear_pending = 0;
+            move_led_pass_count = 0;
+        } else {
+            queue_hw_leds_off();
+            move_led_clear_pending = 1;
+            move_led_restore_pending = 0;
+            move_led_pass_count = 1;
+        }
     }
 
     /* On transition out of overtake: restore from snapshot.
      * LEDs we captured get restored; unknowns get turned off.
-     * Two passes to catch stragglers. */
+     * Two passes to catch stragglers.
+     * If skip_led_clear was active, LEDs have been passing through live
+     * so Move's current state is already on hardware — no restore needed. */
     if (prev_overtake_mode && !cur_overtake && snapshot_valid) {
-        queue_hw_leds_restore();
-        move_led_restore_pending = 1;
-        move_led_clear_pending = 0;
-        move_led_pass_count = 1;
+        if (!(ctrl && ctrl->skip_led_clear)) {
+            queue_hw_leds_restore();
+            move_led_restore_pending = 1;
+            move_led_clear_pending = 0;
+            move_led_pass_count = 1;
+        }
     }
 
     prev_overtake_mode = cur_overtake;
 
-    /* During overtake: clear Move's cable-0 LED packets */
+    /* During overtake: clear Move's cable-0 LED packets from MIDI_OUT
+     * so the overtake module has full LED control.
+     * If skip_led_clear is set, let Move's LEDs pass through (e.g. song-mode
+     * wants Move's pad colors to update as clips play). */
     if (!cur_overtake) return;
+    if (ctrl && ctrl->skip_led_clear) return;
 
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cable = (midi_out[i] >> 4) & 0x0F;

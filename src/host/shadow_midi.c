@@ -33,6 +33,7 @@ static uint8_t **host_shadow_midi_shm;
 static shadow_midi_out_t **host_shadow_midi_out_shm;
 static uint8_t **host_shadow_ui_midi_shm;
 static shadow_midi_dsp_t **host_shadow_midi_dsp_shm;
+static shadow_midi_inject_t **host_shadow_midi_inject_shm;
 static uint8_t *host_shadow_mailbox;
 
 /* Capture */
@@ -63,6 +64,7 @@ void midi_routing_init(const midi_host_t *host)
     host_shadow_midi_out_shm = host->shadow_midi_out_shm;
     host_shadow_ui_midi_shm = host->shadow_ui_midi_shm;
     host_shadow_midi_dsp_shm = host->shadow_midi_dsp_shm;
+    host_shadow_midi_inject_shm = host->shadow_midi_inject_shm;
     host_shadow_mailbox = host->shadow_mailbox;
     host_master_fx_capture = host->master_fx_capture;
     host_slot_idle = host->slot_idle;
@@ -287,6 +289,67 @@ void shadow_inject_ui_midi_out(void)
 
         memcpy(&midi_out[hw_offset], &local_buf[i], 4);
         hw_offset += 4;
+    }
+}
+
+/* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl).
+ * Copies USB-MIDI packets from SHM into empty slots in shadow_mailbox+MIDI_IN_OFFSET,
+ * making Move process them as if they came from physical hardware.
+ * Rate-limited to 8 packets per tick to avoid flooding. */
+void shadow_drain_midi_inject(void)
+{
+    shadow_midi_inject_t *inject_shm = *host_shadow_midi_inject_shm;
+    static uint8_t last_ready = 0;
+
+    if (!inject_shm) return;
+    if (inject_shm->ready == last_ready) return;
+
+    last_ready = inject_shm->ready;
+
+    /* Snapshot buffer first, then reset write_idx */
+    int snapshot_len = inject_shm->write_idx;
+    uint8_t local_buf[SHADOW_MIDI_INJECT_BUFFER_SIZE];
+    int copy_len = snapshot_len < (int)SHADOW_MIDI_INJECT_BUFFER_SIZE
+                 ? snapshot_len : (int)SHADOW_MIDI_INJECT_BUFFER_SIZE;
+    if (copy_len > 0) {
+        memcpy(local_buf, inject_shm->buffer, copy_len);
+    }
+    __sync_synchronize();
+    inject_shm->write_idx = 0;
+    memset(inject_shm->buffer, 0, SHADOW_MIDI_INJECT_BUFFER_SIZE);
+
+    if (copy_len <= 0) return;
+
+    /* Inject into shadow_mailbox at MIDI_IN_OFFSET */
+    uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
+
+    int hw_offset = 0;
+    int injected = 0;
+    for (int i = 0; i < copy_len && injected < 8; i += 4) {
+        /* Force cable 0 (internal hardware) */
+        local_buf[i] = (local_buf[i] & 0x0F) | 0x00;
+
+        /* Find empty 4-byte slot */
+        while (hw_offset < MIDI_BUFFER_SIZE) {
+            if (midi_in[hw_offset] == 0 && midi_in[hw_offset+1] == 0 &&
+                midi_in[hw_offset+2] == 0 && midi_in[hw_offset+3] == 0) {
+                break;
+            }
+            hw_offset += 4;
+        }
+        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+
+        memcpy(&midi_in[hw_offset], &local_buf[i], 4);
+        hw_offset += 4;
+        injected++;
+    }
+
+    if (host_log && injected > 0) {
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "MIDI inject: drained %d/%d pkts at offset %d",
+                 injected, copy_len / 4,
+                 injected > 0 ? (hw_offset - injected * 4) : -1);
+        host_log(dbg);
     }
 }
 

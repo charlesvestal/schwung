@@ -73,7 +73,8 @@ export function scanForToolModules() {
                         id: json.id || entry,
                         name: json.name || entry,
                         path: dirPath,
-                        tool_config: json.tool_config || null
+                        tool_config: json.tool_config || null,
+                        capabilities: json.capabilities || null
                     });
                 }
             } catch (e) {
@@ -196,19 +197,26 @@ export function drawToolEngineSelect() {
 }
 
 export function drawToolConfirm() {
-    const { toolActiveTool, toolSelectedFile, toolSelectedEngine } = ctx;
+    const { toolActiveTool, toolSelectedFile, toolSelectedEngine, toolSelectedSetName } = ctx;
+    const isSetPicker = toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.set_picker;
 
     clear_screen();
     drawHeader(toolActiveTool ? toolActiveTool.name : "Confirm");
 
-    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
-    const displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
+    if (isSetPicker) {
+        const setName = toolSelectedSetName || "Unknown";
+        const displayName = setName.length > 20 ? setName.substring(0, 17) + "..." : setName;
+        print(4, 16, "Render this set?", 1);
+        print(4, 28, displayName, 1);
+    } else {
+        const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+        const displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
+        print(4, 16, "Process this file?", 1);
+        print(4, 28, displayName, 1);
 
-    print(4, 16, "Process this file?", 1);
-    print(4, 28, displayName, 1);
-
-    if (toolSelectedEngine && toolSelectedEngine.name) {
-        print(4, 40, "Engine: " + toolSelectedEngine.name, 1);
+        if (toolSelectedEngine && toolSelectedEngine.name) {
+            print(4, 40, "Engine: " + toolSelectedEngine.name, 1);
+        }
     }
 
     drawFooter({right: "Jog: Confirm"});
@@ -216,37 +224,49 @@ export function drawToolConfirm() {
 
 export function drawToolProcessing() {
     const { toolActiveTool, toolSelectedFile, toolProcessStartTime,
-            toolFileDurationSec, toolStemsFound, toolExpectedStems } = ctx;
+            toolFileDurationSec, toolStemsFound, toolExpectedStems, toolSelectedSetName } = ctx;
+    const isSetPicker = toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.set_picker;
 
     clear_screen();
     drawHeader(toolActiveTool ? toolActiveTool.name : "Processing");
 
-    const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
-    const displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
+    let displayName;
+    if (isSetPicker) {
+        const setName = toolSelectedSetName || "Set";
+        displayName = setName.length > 20 ? setName.substring(0, 17) + "..." : setName;
+    } else {
+        const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+        displayName = fileName.length > 20 ? fileName.substring(0, 17) + "..." : fileName;
+    }
 
     const elapsedMs = Date.now() - toolProcessStartTime;
     const elapsedSec = Math.floor(elapsedMs / 1000);
     const elapsedStr = formatTime(elapsedSec);
 
-    const estTotalSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
-    let remainStr = "";
-    if (estTotalSec > 0) {
-        const remainSec = Math.max(0, estTotalSec - elapsedSec);
-        remainStr = "~" + formatTime(remainSec) + " left";
-    }
-
-    const stemProgress = toolExpectedStems > 0
-        ? toolStemsFound + "/" + toolExpectedStems + " stems"
-        : "";
-
     ctx.toolProcessingDots = (ctx.toolProcessingDots + 1) % 4;
     const dots = ".".repeat(ctx.toolProcessingDots + 1);
 
     print(4, 14, displayName, 1);
-    print(4, 24, "Processing" + dots, 1);
-    print(4, 34, elapsedStr + " elapsed  " + remainStr, 1);
-    if (stemProgress) {
-        print(4, 44, stemProgress, 1);
+    print(4, 24, (isSetPicker ? "Rendering" : "Processing") + dots, 1);
+    print(4, 34, elapsedStr + " elapsed", 1);
+
+    if (!isSetPicker) {
+        const estTotalSec = Math.round(toolFileDurationSec * getToolProcessingRatio());
+        let remainStr = "";
+        if (estTotalSec > 0) {
+            const remainSec = Math.max(0, estTotalSec - elapsedSec);
+            remainStr = "~" + formatTime(remainSec) + " left";
+        }
+        if (remainStr) {
+            print(76, 34, remainStr, 1);
+        }
+
+        const stemProgress = toolExpectedStems > 0
+            ? toolStemsFound + "/" + toolExpectedStems + " stems"
+            : "";
+        if (stemProgress) {
+            print(4, 44, stemProgress, 1);
+        }
     }
 
     drawFooter({left: "Back: Cancel"});
@@ -303,4 +323,30 @@ export function drawToolStemReview() {
     });
 
     drawFooter({right: "Select"});
+}
+
+export function drawToolSetPicker() {
+    const { toolSetList, toolSetPickerIndex, menuLayoutDefaults } = ctx;
+
+    clear_screen();
+    drawHeader("Choose Set");
+
+    if (toolSetList.length === 0) {
+        print(4, 28, "No sets found", 1);
+        drawFooter({left: "Back: Tools"});
+        return;
+    }
+
+    drawMenuList({
+        items: toolSetList,
+        selectedIndex: toolSetPickerIndex,
+        listArea: {
+            topY: menuLayoutDefaults.listTopY,
+            bottomY: menuLayoutDefaults.listBottomWithFooter
+        },
+        getLabel: (item) => item.name,
+        getValue: () => ""
+    });
+
+    drawFooter({left: "Back: Tools", right: "Jog: Select"});
 }

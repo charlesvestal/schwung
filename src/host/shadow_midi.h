@@ -86,6 +86,7 @@ typedef struct {
     shadow_midi_out_t **shadow_midi_out_shm;
     uint8_t **shadow_ui_midi_shm;
     shadow_midi_dsp_t **shadow_midi_dsp_shm;
+    shadow_midi_inject_t **shadow_midi_inject_shm;
     uint8_t *shadow_mailbox;
     /* Capture state */
     shadow_capture_rules_t *master_fx_capture;
@@ -117,6 +118,9 @@ void shadow_inject_ui_midi_out(void);
 
 /* Drain MIDI-to-DSP buffer from shadow UI and dispatch to chain slots. */
 void shadow_drain_ui_midi_dsp(void);
+
+/* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl). */
+void shadow_drain_midi_inject(void);
 
 /* Copy incoming MIDI from mailbox to shadow shared memory. */
 void shadow_forward_midi(void);
