@@ -30,11 +30,6 @@ Turn your Ableton Move into a customizable MIDI controller with 16 banks.
 3. Select **MIDI Controller**
 4. Exit anytime: **Shift + Vol + Jog Click**
 
-### From Standalone Move Everything
-1. Launch Move Everything: **Shift + Vol + Knob 8**
-2. Select **MIDI Controller** from the menu
-3. Exit: **Shift + Jog Click**
-
 ## Banks
 
 16 banks are available, each with its own pad configuration. Press any step button (1-16) to switch banks. The active bank LED is lit white.

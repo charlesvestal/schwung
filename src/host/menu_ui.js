@@ -112,10 +112,10 @@ function loadModule(mod) {
         return;
     }
 
-    /* Check if module has standalone UI */
+    /* Check if module has its own UI */
     if (!mod.has_ui) {
         showStatus("Chain-only module");
-        console.log(`Module ${mod.id} has no standalone UI`);
+        console.log(`Module ${mod.id} has no UI`);
         return;
     }
 

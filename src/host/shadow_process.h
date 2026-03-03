@@ -36,9 +36,6 @@ extern volatile int link_sub_restart_count;
  * Must be called before any other process management function. */
 void process_init(const process_host_t *host);
 
-/* Launch and replace current process (used for standalone mode) */
-void launchChildAndKillThisProcess(char *pBinPath, char *pBinName, char *pArgs);
-
 /* Shadow UI process management */
 void launch_shadow_ui(void);
 

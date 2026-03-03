@@ -71,35 +71,6 @@ void process_init(const process_host_t *h) {
 }
 
 /* ============================================================================
- * Launch and replace (standalone mode)
- * ============================================================================ */
-
-void launchChildAndKillThisProcess(char *pBinPath, char *pBinName, char *pArgs) {
-    int pid = fork();
-
-    if (pid < 0) {
-        printf("Fork failed\n");
-        exit(1);
-    } else if (pid == 0) {
-        setsid();
-        printf("Child process running in the background...\n");
-        printf("Args: %s\n", pArgs);
-
-        printf("Closing file descriptors...\n");
-        int fdlimit = (int)sysconf(_SC_OPEN_MAX);
-        for (int i = STDERR_FILENO + 1; i < fdlimit; i++) {
-            close(i);
-        }
-
-        execl(pBinPath, pBinName, pArgs, (char *)0);
-        perror("execl failed");
-        _exit(1);
-    } else {
-        kill(getpid(), SIGINT);
-    }
-}
-
-/* ============================================================================
  * Shadow UI process management
  * ============================================================================ */
 

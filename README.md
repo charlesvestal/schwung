@@ -39,7 +39,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 
 **Screen reader only (accessible install):**
 ```bash
-curl -sL https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui --disable-standalone
+curl -sL https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui
 ```
 _Note: Uses `-sL` (silent) for minimal output, suitable for screen readers._
 
@@ -55,7 +55,7 @@ The installer will:
 ./scripts/install.sh local --enable-screen-reader
 
 # Install only screen reader, without UI features
-./scripts/install.sh --enable-screen-reader --disable-shadow-ui --disable-standalone
+./scripts/install.sh --enable-screen-reader --disable-shadow-ui
 
 # Skip module installation prompt
 ./scripts/install.sh --skip-modules
@@ -86,8 +86,6 @@ curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scrip
 - **Quantized Sampler**: Shift+Sample opens a sampler that records to `Samples/Move Everything/Resampler/YYYY-MM-DD/`. Choose resample (including Move Everything synths) or Move Input, set duration in bars, and recording starts on a note event or pressing play.
 - **Skipback**: Shift+Capture writes the last 30 seconds of audio to `Samples/Move Everything/Skipback/YYYY-MM-DD/`.
 - **Screen Reader**: Optional TTS announcements for accessibility. Toggle via Shadow UI settings, or Shift+Menu when Shadow UI is disabled.
-- **Standalone**: Runs Move Everything without the stock app, including the Module Store. Use Shift+Vol+Knob 8 to access Standalone mode.
-
 In **Global Settings > Display > Overlay Knobs**, you can change the knob overlay trigger between `+Shift` (default), `+Jog Touch`, or `Off`. If `Shift+Knob` interferes with native Move actions (like fine control), use `+Jog Touch` or `Off`.
 
 Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md).

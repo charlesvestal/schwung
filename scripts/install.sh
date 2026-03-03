@@ -6,12 +6,10 @@ for arg in "$@"; do
   case "$arg" in
     --enable-screen-reader) enable_screen_reader_arg=true ;;
     --disable-shadow-ui) disable_shadow_ui_arg=true ;;
-    --disable-standalone) disable_standalone_arg=true ;;
   esac
 done
 if [ "${enable_screen_reader_arg:-false}" = true ] && \
-   [ "${disable_shadow_ui_arg:-false}" = true ] && \
-   [ "${disable_standalone_arg:-false}" = true ]; then
+   [ "${disable_shadow_ui_arg:-false}" = true ]; then
   quiet_mode=true
 fi
 
@@ -400,7 +398,6 @@ skip_confirmation=false
 use_reenable=false
 enable_screen_reader=false
 disable_shadow_ui=false
-disable_standalone=false
 screen_reader_runtime_available=true
 for arg in "$@"; do
   case "$arg" in
@@ -410,7 +407,6 @@ for arg in "$@"; do
     -skip-confirmation|--skip-confirmation) skip_confirmation=true ;;
     --enable-screen-reader) enable_screen_reader=true ;;
     --disable-shadow-ui) disable_shadow_ui=true ;;
-    --disable-standalone) disable_standalone=true ;;
     -h|--help)
       echo "Usage: install.sh [options]"
       echo ""
@@ -421,12 +417,11 @@ for arg in "$@"; do
       echo "  --skip-confirmation      Skip unsupported/liability confirmation prompt"
       echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
       echo "  --disable-shadow-ui      Disable shadow UI (slot configuration interface)"
-      echo "  --disable-standalone     Disable standalone mode (shift+vol+knob8)"
       echo ""
       echo "Examples:"
       echo "  install.sh                                    # Install from GitHub, all features enabled"
       echo "  install.sh local --enable-screen-reader       # Install local build with screen reader on"
-      echo "  install.sh --disable-shadow-ui --disable-standalone --enable-screen-reader"
+      echo "  install.sh --disable-shadow-ui --enable-screen-reader"
       echo "                                                # Screen reader only, no UI"
       echo ""
       exit 0
@@ -905,19 +900,12 @@ else
     shadow_ui_val=$(get_existing_feature "shadow_ui_enabled" "true")
 fi
 
-if [ "$disable_standalone" = true ]; then
-    standalone_val="false"
-else
-    standalone_val=$(get_existing_feature "standalone_enabled" "true")
-fi
-
 existing_link_audio=$(get_existing_feature "link_audio_enabled" "$link_audio_val")
 existing_display_mirror=$(get_existing_feature "display_mirror_enabled" "false")
 
 # Build features.json content
 features_json="{
   \"shadow_ui_enabled\": $shadow_ui_val,
-  \"standalone_enabled\": $standalone_val,
   \"link_audio_enabled\": $existing_link_audio,
   \"display_mirror_enabled\": $existing_display_mirror
 }"
@@ -941,18 +929,16 @@ fi
 if [ "$quiet_mode" = false ]; then
     echo "Features configured:"
     echo "  Shadow UI: $([ "$shadow_ui_val" = "true" ] && echo "enabled" || echo "disabled")"
-    echo "  Standalone: $([ "$standalone_val" = "true" ] && echo "enabled" || echo "disabled")"
     echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
 fi
 
 # Optional: Install modules from the Module Store (before restart so they're available immediately)
-# Skip if both shadow UI and standalone are disabled (no way to use modules)
 echo
 install_mode=""
 deleted_modules=$(echo "$deleted_modules" | xargs)  # trim whitespace
 
-if [ "$disable_shadow_ui" = true ] && [ "$disable_standalone" = true ]; then
-    echo "Skipping module installation (shadow UI and standalone both disabled)"
+if [ "$disable_shadow_ui" = true ]; then
+    echo "Skipping module installation (shadow UI disabled)"
     skip_modules=true
 elif [ "$skip_modules" = true ]; then
     echo "Skipping module installation (--skip-modules)"
@@ -1448,14 +1434,9 @@ else
     echo
 
     # Show active features
-    if [ "$disable_shadow_ui" = false ] || [ "$disable_standalone" = false ]; then
+    if [ "$disable_shadow_ui" = false ]; then
         echo "Active features:"
-        if [ "$disable_shadow_ui" = false ]; then
-            echo "  Shift+Vol+Track or Shift+Menu: Access slot configurations and Master FX"
-        fi
-        if [ "$disable_standalone" = false ]; then
-            echo "  Shift+Vol+Knob8: Access standalone mode and module store"
-        fi
+        echo "  Shift+Vol+Track or Shift+Menu: Access slot configurations and Master FX"
         echo
     fi
 

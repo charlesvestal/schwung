@@ -992,12 +992,9 @@ Shadow Mode runs custom signal chains alongside stock Ableton Move. Your modules
 
 ### How It Works
 
-Shadow mode loads the same chain module and patches that Move Anything uses standalone. When you install a module via Module Store (or manually copy it to the modules directory), it becomes available to:
+Shadow mode loads the chain module and patches. When you install a module via Module Store (or manually copy it to the modules directory), it becomes available in Shadow Mode.
 
-1. **Standalone Move Anything** - when launched via the hotkey combo
-2. **Shadow Mode** - when toggled while stock Move is running
-
-Both modes read from the same directories:
+Modules and patches are read from:
 - Modules: `/data/UserData/move-anything/modules/`
 - Patches: `/data/UserData/move-anything/patches/`
 
