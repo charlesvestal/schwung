@@ -2,6 +2,10 @@
 
 Instructions for Claude Code when working with this repository.
 
+## Maintaining This File
+
+Keep CLAUDE.md up to date as the codebase evolves. When you add new JS host functions, module capabilities, component types, shared utilities, deployment paths, shortcuts, or other API surface, update the relevant sections here. Also update `docs/API.md`, `docs/MODULES.md`, and `MANUAL.md` as appropriate — see the Documentation section below for what each covers.
+
 ## Project Overview
 
 Move Anything is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. It provides access to pads, encoders, buttons, display (128x64 1-bit), audio I/O, and MIDI via USB-A.
@@ -58,6 +62,9 @@ Built-in modules (in main repo):
 - `chain` - Signal Chain for combining components
 - `controller` - MIDI Controller with 16 banks
 - `store` - Module Store for downloading external modules
+- `file-browser` - File/folder browser (tool)
+- `song-mode` - Song arranger for sequencing clips (tool)
+- `wav-player` - WAV file playback (tool, used by file browser)
 
 ### Module Categorization
 
@@ -78,6 +85,7 @@ Valid component types:
 - `midi_fx` - MIDI processors
 - `utility` - Utility modules
 - `overtake` - Overtake modules (full UI control in shadow mode)
+- `tool` - Tool modules (accessed via Tools menu, e.g. File Browser, Song Mode)
 - `system` - System modules (Module Store), shown last
 
 The main menu automatically organizes modules by category, reading from each module's `component_type` field.
@@ -150,12 +158,26 @@ host_flush_display()          // Force immediate display update
 host_set_refresh_rate(hz)     // Set display refresh rate
 host_get_refresh_rate()       // Get current refresh rate
 
-// File system utilities (used by Module Store)
+// File system utilities
 host_file_exists(path)        // -> bool
 host_read_file(path)          // -> string or null
+host_write_file(path, content) // -> bool
 host_http_download(url, dest) // -> bool
 host_extract_tar(tarball, dir) // -> bool
+host_extract_tar_strip(tarball, dir, strip) // -> bool (with --strip-components)
+host_ensure_dir(path)         // -> bool (mkdir -p)
 host_remove_dir(path)         // -> bool
+
+// Tool module lifecycle
+host_exit_module()            // Exit tool module, return to tools menu
+
+// MIDI injection (simulate hardware input to Move firmware)
+move_midi_inject_to_move(packet) // [type, status, d1, d2]
+
+// Sampler (record audio to WAV)
+host_sampler_start(path)      // Start recording to WAV path
+host_sampler_stop()           // Stop recording
+host_sampler_is_recording()   // -> bool
 ```
 
 ### Host Volume Control
@@ -167,12 +189,19 @@ Modules can claim the volume knob for their own use by setting `"claims_master_k
 ### Shared JS Utilities
 
 Located in `src/shared/`:
-- `constants.mjs` - MIDI CC/note mappings
-- `input_filter.mjs` - Capacitive touch filtering
-- `midi_messages.mjs` - MIDI helpers
+- `constants.mjs` - MIDI CC/note mappings and LED colors
+- `input_filter.mjs` - Capacitive touch filtering, delta decoding, LED helpers
 - `move_display.mjs` - Display utilities
 - `menu_layout.mjs` - Title/list/footer menu layout helpers
+- `menu_render.mjs` - Menu rendering utilities
+- `menu_nav.mjs` - Menu navigation state
+- `menu_items.mjs` - Menu item types
+- `menu_stack.mjs` - Menu stack management
+- `screen_reader.mjs` - Screen reader announce/announceMenuItem/announceView helpers
 - `store_utils.mjs` - Module Store catalog fetching and install/remove functions
+- `filepath_browser.mjs` - File/folder browser component
+- `text_entry.mjs` - On-screen keyboard for text input
+- `sampler_overlay.mjs` - Quantized sampler UI overlay
 
 ## Move Hardware MIDI
 
@@ -210,7 +239,10 @@ On-device layout:
     sound_generators/<id>/          # External sound generators
     audio_fx/<id>/                  # External audio effects
     midi_fx/<id>/                   # External MIDI effects
+    tools/<id>/                     # Tool modules (File Browser, Song Mode)
 ```
+
+The device is accessed via SSH at `move.local` (e.g., `ssh ableton@move.local`).
 
 External modules are installed to category subdirectories based on their `component_type`.
 
@@ -359,7 +391,10 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 - **Shift+Vol+Track 1-4**: Open shadow mode / jump to slot settings (works from Move or Shadow UI)
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
 - **Shift+Vol+Step2**: Open Global Settings
-- **Shift+Vol+Jog Click**: Exit overtake module (when in overtake mode)
+- **Shift+Vol+Step13**: Open Tools menu
+- **Shift+Vol+Jog Click**: Open Overtake menu (or exit overtake module)
+- **Shift+Sample**: Open Quantized Sampler
+- **Shift+Capture**: Skipback (save last 30 seconds)
 
 ### Quantized Sampler
 
@@ -586,6 +621,14 @@ jobs:
 The Module Store will see the new version within minutes.
 
 See `BUILDING.md` for detailed documentation.
+
+## Documentation
+
+Detailed documentation is in the `docs/` directory:
+- `docs/API.md` - Full JS API reference (display, MIDI, host functions, LED colors)
+- `docs/MODULES.md` - Module development guide (module.json, capabilities, tool_config, DSP plugin API, Signal Chain integration)
+- `MANUAL.md` - User-facing manual (shortcuts, slots, recording, tools, modules)
+- `BUILDING.md` - Build system and cross-compilation
 
 ## Dependencies
 

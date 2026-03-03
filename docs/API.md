@@ -149,6 +149,17 @@ host_remove_dir(path)         // Recursively remove directory, returns bool
 
 // Screen reader
 host_announce_screenreader(text) // Speak text via TTS (if screen reader enabled)
+
+// Tool module lifecycle
+host_exit_module()            // Exit current tool module, return to tools menu
+
+// MIDI injection (inject MIDI into Move's firmware input path)
+move_midi_inject_to_move([type, status, d1, d2]) // Simulate hardware MIDI input
+
+// Sampler (record audio output to WAV)
+host_sampler_start(path)      // Start recording to the given WAV file path
+host_sampler_stop()           // Stop recording
+host_sampler_is_recording()   // Returns bool - true if currently recording
 ```
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
@@ -261,7 +272,9 @@ Overtake modules take full control of Move's UI. The host provides special handl
 
 ### LED Buffer Constraints
 
-The MIDI output buffer holds approximately 64 USB-MIDI packets. Sending more than ~60 LED commands in a single frame causes buffer overflow. Use progressive LED handling:
+The MIDI output buffer holds approximately 64 USB-MIDI packets. Sending more than ~60 LED commands in a single frame causes buffer overflow. Additionally, LED sends can be overwritten by Move's own firmware updating the same LEDs in the same frame. Use progressive LED handling with a queue-based approach:
+
+**Queue pattern:** Instead of sending LED commands immediately, push them to a queue and drain a fixed number per tick. This prevents buffer overflow and improves reliability when competing with Move's own LED updates.
 
 ```javascript
 const LEDS_PER_FRAME = 8;

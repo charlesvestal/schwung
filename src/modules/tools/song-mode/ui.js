@@ -12,8 +12,8 @@
 import {
     MidiNoteOn, MidiCC,
     MoveMainKnob, MoveMainButton, MoveBack, MoveShift,
-    MovePlay, MoveRec, MoveDelete, MoveCopy,
-    MoveLeft, MoveRight,
+    MovePlay, MoveRec, MoveDelete, MoveCopy, MoveUndo, MoveLoop,
+    MoveUp, MoveDown, MoveLeft, MoveRight,
     MoveStep1, MoveStep16,
     Black, White, BrightRed, BrightGreen
 } from '/data/UserData/move-anything/shared/constants.mjs';
@@ -25,6 +25,10 @@ import {
 import {
     drawMessageOverlay
 } from '/data/UserData/move-anything/shared/menu_layout.mjs';
+
+import {
+    announce, announceMenuItem, announceParameter, announceView, announceOverlay
+} from '/data/UserData/move-anything/shared/screen_reader.mjs';
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
@@ -54,6 +58,7 @@ let clipGrid = [];
 let tempo = 120;
 let barDurationMs = 2000;
 let setName = "";
+let activeSetUuid = "";     /* UUID of current set (for persistence) */
 
 /* Per-track empty slot column index (for silencing tracks before playback) */
 let silencePads = [null, null, null, null];
@@ -66,8 +71,14 @@ let scrollOffset = 0;
 /* Playback */
 let playbackState = "stopped";
 let currentEntryIndex = 0;
+let playbackStartEntry = 0;  /* entry to return to on stop */
 let playStartTime = 0;
 let nextEntryQueued = false;
+let loopEnabled = false;     /* loop song from beginning when it ends */
+
+/* Undo */
+let undoStack = [];          /* snapshots of songEntries for undo */
+const MAX_UNDO = 20;
 
 /* MIDI inject queue — drain packets per tick */
 let injectQueue = [];
@@ -82,6 +93,8 @@ let shiftHeld = false;
 const STEPS_PER_PAGE = 16;
 let stepPage = 0;           /* 0 = entries 0-15, 1 = entries 16-31, etc. */
 let lastStepLedKey = "";    /* change detection for step LED updates */
+let stepLedQueue = [];      /* staggered step LED packets to drain per tick */
+const STEP_LEDS_PER_TICK = 4; /* drain 4 step LED packets per tick */
 
 /* Step hold detection */
 let heldStepNote = -1;      /* note of currently held step button, -1 = none */
@@ -107,6 +120,9 @@ let recordStopTime = 0;        /* auto-stop timestamp (ms), 0 = no auto-stop pen
 let recordLedLit = false;
 const RECORDINGS_DIR = "/data/UserData/Recordings/Song Mode";
 let recordingSavedUntil = 0;   /* show "Recording saved!" overlay until this timestamp */
+let recordingSavedAnnounced = false;
+let overlayMessage = "";       /* generic overlay text */
+let overlayTimeout = 0;        /* show overlay until this timestamp */
 
 
 /* Step parameter editing */
@@ -115,6 +131,10 @@ let currentView = "list";   /* "list" or "step_params" */
 let stepParamsPeek = false; /* true = entered via hold (exit on release), false = shift (sticky) */
 let sessionWarning = false;  /* true = show "switch to session" screen, dismiss with jog click */
 let editingEntry = -1;      /* index of entry being edited */
+
+/* Persistence */
+const SET_STATE_DIR = "/data/UserData/move-anything/set_state";
+let lastSavedJson = "";     /* JSON snapshot for dirty detection */
 
 /* ── Song.abl Parsing ──────────────────────────────────────────────── */
 
@@ -131,6 +151,7 @@ function loadSetData() {
         console.log("song-mode: incomplete active_set.txt");
         return false;
     }
+    activeSetUuid = uuid;
 
     const songPath = findSongAbl(uuid, setName);
     if (!songPath) {
@@ -160,6 +181,72 @@ function findSongAbl(uuid, name) {
     return null;
 }
 
+/* ── Persistence ─────────────────────────────────────────────────────── */
+
+function songStatePath() {
+    if (!activeSetUuid) return null;
+    return SET_STATE_DIR + "/" + activeSetUuid + "/song_mode.json";
+}
+
+/* Strip trailing empty entries for clean serialization */
+function serializableSongEntries() {
+    const entries = [];
+    for (const e of songEntries) {
+        if (!isEntryEmpty(e)) entries.push({ pads: e.pads, repeats: e.repeats });
+    }
+    return entries;
+}
+
+function saveSongData() {
+    const path = songStatePath();
+    if (!path) return;
+    const json = JSON.stringify(serializableSongEntries());
+    if (json === lastSavedJson) return;  /* no change */
+    host_write_file(path, json);
+    lastSavedJson = json;
+}
+
+function loadSongData() {
+    const path = songStatePath();
+    if (!path) return false;
+    const raw = host_read_file(path);
+    if (!raw) return false;
+    try {
+        const entries = JSON.parse(raw);
+        if (!Array.isArray(entries) || entries.length === 0) return false;
+        songEntries = entries.map(e => ({
+            pads: Array.isArray(e.pads) ? e.pads : [null, null, null, null],
+            repeats: typeof e.repeats === "number" ? e.repeats : 1
+        }));
+        ensureTrailingEmpty();
+        lastSavedJson = JSON.stringify(serializableSongEntries());
+        console.log("song-mode: loaded " + entries.length + " entries from " + path);
+        return true;
+    } catch (e) {
+        console.log("song-mode: failed to parse song_mode.json: " + e);
+        return false;
+    }
+}
+
+/* ── Undo ─────────────────────────────────────────────────────────── */
+
+function pushUndo() {
+    const snapshot = songEntries.map(e => ({ pads: [...e.pads], repeats: e.repeats }));
+    undoStack.push(JSON.stringify(snapshot));
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+
+function popUndo() {
+    if (undoStack.length === 0) return false;
+    const snapshot = JSON.parse(undoStack.pop());
+    songEntries = snapshot.map(e => ({ pads: e.pads, repeats: e.repeats }));
+    ensureTrailingEmpty();
+    if (selectedEntry >= songEntries.length) selectedEntry = songEntries.length - 1;
+    lastStepLedKey = "";
+    lastHighlightKey = "";
+    return true;
+}
+
 function parseSong(song) {
     clipGrid = [];
     for (let t = 0; t < NUM_TRACKS; t++) {
@@ -185,8 +272,19 @@ function parseSong(song) {
         for (let c = 0; c < Math.min(slots.length, NUM_COLS); c++) {
             const slot = slots[c];
             if (!slot || !slot.clip) continue;
-            const regionEnd = slot.clip.region ? slot.clip.region.end : 0;
-            clipGrid[t][c] = { exists: true, bars: regionEnd > 0 ? regionEnd / 4 : 0 };
+            const region = slot.clip.region;
+            let beats = 0;
+            if (region) {
+                const loop = region.loop;
+                if (loop && loop.isEnabled && loop.end > loop.start) {
+                    /* Use loop range — this is what actually plays */
+                    beats = loop.end - loop.start;
+                } else {
+                    /* No loop: use full region */
+                    beats = (region.end || 0) - (region.start || 0);
+                }
+            }
+            clipGrid[t][c] = { exists: true, bars: beats > 0 ? beats / 4 : 0 };
         }
     }
 }
@@ -211,6 +309,17 @@ function entryLabel(entry) {
         parts.push(c !== null ? (t + 1) + COL_LABELS[c] : "--");
     }
     return parts.join(" ");
+}
+
+function describeEntry(idx) {
+    if (idx === songEntries.length) return "Play Song";
+    if (idx === songEntries.length + 1) return "Record Song";
+    if (idx >= songEntries.length) return "";
+    const entry = songEntries[idx];
+    if (isEntryEmpty(entry)) return "Step " + (idx + 1) + ", empty";
+    const label = entryLabel(entry);
+    const rep = entry.repeats > 1 ? ", repeat " + entry.repeats + " times" : "";
+    return "Step " + (idx + 1) + ", " + label + rep;
 }
 
 function isEntryEmpty(entry) {
@@ -248,7 +357,8 @@ function drawListView() {
 
     /* Header */
     const recFlash = recording && (Math.floor(Date.now() / 500) % 2 === 0);
-    const titleStr = recFlash ? "Song Mode REC" : "Song Mode";
+    const loopStr = loopEnabled ? " [L]" : "";
+    const titleStr = recFlash ? "Song REC" + loopStr : "Song Mode" + loopStr;
     print(2, 2, titleStr, 1);
     const pageLabel = stepPage > 0 ? "P" + (stepPage + 1) + " " : "";
     const nameStr = pageLabel + (setName || "No Set");
@@ -263,9 +373,10 @@ function drawListView() {
     if (selectedEntry >= totalItems) selectedEntry = totalItems - 1;
     if (selectedEntry < 0) selectedEntry = 0;
 
-    /* Scroll */
-    if (selectedEntry < scrollOffset) scrollOffset = selectedEntry;
-    if (selectedEntry >= scrollOffset + MAX_VISIBLE) scrollOffset = selectedEntry - MAX_VISIBLE + 1;
+    /* Scroll — follow playhead during playback, otherwise follow selection */
+    const scrollTarget = playbackState === "playing" ? currentEntryIndex : selectedEntry;
+    if (scrollTarget < scrollOffset) scrollOffset = scrollTarget;
+    if (scrollTarget >= scrollOffset + MAX_VISIBLE) scrollOffset = scrollTarget - MAX_VISIBLE + 1;
 
     for (let i = 0; i < MAX_VISIBLE; i++) {
         const idx = scrollOffset + i;
@@ -327,8 +438,12 @@ function drawListView() {
         const elapsed = (Date.now() - playStartTime) / barDurationMs;
         const currentBar = Math.min(Math.floor(elapsed) + 1, totalBars);
         print(2, 57, "Playing " + (currentEntryIndex + 1) + "/" + countNonEmpty() + " bar " + currentBar + "/" + totalBars, 1);
+    } else if (selectedEntry === songEntries.length) {
+        print(2, 57, "Click:play  Shift:from top", 1);
+    } else if (selectedEntry === songEntries.length + 1) {
+        print(2, 57, "Click:record  Shift:from top", 1);
     } else {
-        print(2, 57, "Pad:set X:del Click:play", 1);
+        print(2, 57, "Pad:set X:del Copy:dup", 1);
     }
 }
 
@@ -373,18 +488,35 @@ function drawStepParamsView() {
 
 /* ── Playback Engine ───────────────────────────────────────────────── */
 
-function startPlayback() {
-    /* Find first non-empty, complete entry */
+function startPlayback(fromBeginning) {
     let startIdx = -1;
-    for (let i = 0; i < songEntries.length; i++) {
-        if (!isEntryEmpty(songEntries[i]) && isEntryComplete(songEntries[i])) {
-            startIdx = i;
-            break;
+    if (fromBeginning) {
+        /* Shift+Play: find first complete entry */
+        for (let i = 0; i < songEntries.length; i++) {
+            if (!isEntryEmpty(songEntries[i]) && isEntryComplete(songEntries[i])) {
+                startIdx = i;
+                break;
+            }
+        }
+    } else {
+        /* Play: start from selected entry (or next complete one after it) */
+        for (let i = selectedEntry; i < songEntries.length; i++) {
+            if (!isEntryEmpty(songEntries[i]) && isEntryComplete(songEntries[i])) {
+                startIdx = i;
+                break;
+            }
         }
     }
-    if (startIdx < 0) { console.log("song-mode: no complete entries to play"); return; }
+    if (startIdx < 0) {
+        console.log("song-mode: no complete entries to play");
+        overlayMessage = "No complete entries";
+        overlayTimeout = Date.now() + 1500;
+        announce("No complete entries");
+        return;
+    }
 
-    console.log("song-mode: startPlayback from entry " + startIdx);
+    playbackStartEntry = fromBeginning ? 0 : selectedEntry;
+    console.log("song-mode: startPlayback from entry " + startIdx + (fromBeginning ? " (beginning)" : ""));
     currentEntryIndex = startIdx;
 
     /* Stop any running transport first via MIDI Stop (unconditional).
@@ -417,16 +549,23 @@ function stopPlayback() {
     }
     queueInjectCC(MovePlay, 127);
     queueInjectCC(MovePlay, 0);
-    /* Jump back to beginning */
-    selectedEntry = 0;
-    stepPage = 0;
+    /* Return to the entry we started from */
+    selectedEntry = playbackStartEntry;
+    stepPage = Math.floor(selectedEntry / STEPS_PER_PAGE);
     lastStepLedKey = "";  /* force LED refresh */
     lastHighlightKey = "";  /* force pad highlight refresh */
-    console.log("song-mode: stopPlayback");
+    console.log("song-mode: stopPlayback, returning to entry " + selectedEntry);
 }
 
 function nextCompleteEntry(afterIdx) {
     for (let i = afterIdx + 1; i < songEntries.length; i++) {
+        if (!isEntryEmpty(songEntries[i]) && isEntryComplete(songEntries[i])) return i;
+    }
+    return -1;
+}
+
+function firstCompleteEntry() {
+    for (let i = 0; i < songEntries.length; i++) {
         if (!isEntryEmpty(songEntries[i]) && isEntryComplete(songEntries[i])) return i;
     }
     return -1;
@@ -443,7 +582,11 @@ function tickPlayback() {
     /* Pre-trigger next entry 1 beat (0.25 bars) before end.
      * Move quantizes clip launches to bar boundaries, so selecting
      * the next clips just before the boundary makes them start on time. */
-    const nextIdx = nextCompleteEntry(currentEntryIndex);
+    let nextIdx = nextCompleteEntry(currentEntryIndex);
+    /* If looping and no next entry, wrap to first */
+    if (nextIdx < 0 && loopEnabled && !recording) {
+        nextIdx = firstCompleteEntry();
+    }
     if (!nextEntryQueued && elapsed >= totalBars - 0.25 && nextIdx >= 0) {
         console.log("song-mode: pre-trigger entry " + nextIdx + " at " + elapsed.toFixed(2) + "/" + totalBars + " bars");
         triggerEntry(nextIdx);
@@ -566,30 +709,40 @@ function getStepLedKey() {
 
 function updateStepLeds() {
     const key = getStepLedKey();
-    if (key === lastStepLedKey) return;
-    lastStepLedKey = key;
+    if (key === lastStepLedKey && stepLedQueue.length === 0) return;
 
-    const base = stepPage * STEPS_PER_PAGE;
-    for (let i = 0; i < STEPS_PER_PAGE; i++) {
-        const note = MoveStep1 + i;
-        const entryIdx = base + i;
-        let color = Black;
+    if (key !== lastStepLedKey) {
+        lastStepLedKey = key;
+        /* Build fresh queue — replaces any pending packets */
+        stepLedQueue = [];
+        const base = stepPage * STEPS_PER_PAGE;
+        for (let i = 0; i < STEPS_PER_PAGE; i++) {
+            const note = MoveStep1 + i;
+            const entryIdx = base + i;
+            let color = Black;
 
-        if (playbackState === "playing" && entryIdx === currentEntryIndex) {
-            color = BrightRed;    /* currently playing */
-        } else if (entryIdx === selectedEntry && selectedEntry < songEntries.length) {
-            color = White;        /* selected (not Play Song item) */
-        } else if (entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
-            color = BrightGreen;  /* populated */
+            if (playbackState === "playing" && entryIdx === currentEntryIndex) {
+                color = BrightRed;    /* currently playing */
+            } else if (entryIdx === selectedEntry && selectedEntry < songEntries.length) {
+                color = White;        /* selected (not Play Song item) */
+            } else if (entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
+                color = BrightGreen;  /* populated */
+            }
+
+            stepLedQueue.push([0x09, 0x90, note, color]);
         }
+    }
 
-        move_midi_internal_send([0x09, 0x90, note, color]);
+    /* Drain a few per tick to avoid buffer contention */
+    for (let i = 0; i < STEP_LEDS_PER_TICK && stepLedQueue.length > 0; i++) {
+        move_midi_internal_send(stepLedQueue.shift());
     }
 }
 
 function clearStepLeds() {
+    stepLedQueue = [];
     for (let i = 0; i < STEPS_PER_PAGE; i++) {
-        move_midi_internal_send([0x09, 0x90, MoveStep1 + i, Black]);
+        stepLedQueue.push([0x09, 0x90, MoveStep1 + i, Black]);
     }
     lastStepLedKey = "";
 }
@@ -658,26 +811,32 @@ function updatePadHighlights() {
             }
         }
 
-        /* Restore old highlights not in new set, and queue retries */
+        /* Queue restores for old highlights not in new set */
         const newSet = new Set(newHighlights);
         for (const note of highlightedNotes) {
             if (!newSet.has(note)) {
                 const color = padLedSnapshot[note] || 0;
-                move_midi_internal_send([0x09, 0x90, note, color]);
-                /* Add to retry queue (or reset TTL if already there) */
                 const existing = restoreRetryQueue.find(r => r.note === note);
-                if (existing) { existing.ttl = 3; }
-                else { restoreRetryQueue.push({ note: note, ttl: 3 }); }
+                if (existing) { existing.ttl = 3; existing.color = color; }
+                else { restoreRetryQueue.push({ note: note, color: color, ttl: 3 }); }
             }
         }
 
-        /* Set new highlights and queue staggered retries */
+        /* Remove new highlights from restore queue */
         for (const note of newHighlights) {
-            move_midi_internal_send([0x09, 0x90, note, LED_RED]);
             restoreRetryQueue = restoreRetryQueue.filter(r => r.note !== note);
         }
-        /* Queue retries staggered 1-per-tick via ledRetryQueue */
+
+        /* Build combined LED queue: restores first, then highlights.
+         * All sends go through the queue — nothing sent immediately. */
         ledRetryQueue = [];
+        for (const r of restoreRetryQueue) {
+            ledRetryQueue.push([0x09, 0x90, r.note, r.color]);
+        }
+        for (const note of newHighlights) {
+            ledRetryQueue.push([0x09, 0x90, note, LED_RED]);
+        }
+        /* Add a second pass of highlights for reliability */
         for (const note of newHighlights) {
             ledRetryQueue.push([0x09, 0x90, note, LED_RED]);
         }
@@ -685,24 +844,15 @@ function updatePadHighlights() {
         highlightedNotes = newHighlights;
     }
 
-    /* Drain 1 staggered LED retry per tick */
-    if (ledRetryQueue.length > 0) {
-        const pkt = ledRetryQueue.shift();
-        move_midi_internal_send(pkt);
+    /* Drain up to 2 queued LED packets per tick */
+    for (let i = 0; i < 2 && ledRetryQueue.length > 0; i++) {
+        move_midi_internal_send(ledRetryQueue.shift());
     }
 
-    /* Retry restores for pads that might have been lost */
-    const hlSet = new Set(highlightedNotes);
+    /* Tick down restore retries and remove expired ones */
     for (let i = restoreRetryQueue.length - 1; i >= 0; i--) {
-        const r = restoreRetryQueue[i];
-        if (hlSet.has(r.note)) {
-            restoreRetryQueue.splice(i, 1);
-            continue;
-        }
-        const color = padLedSnapshot[r.note] || 0;
-        move_midi_internal_send([0x09, 0x90, r.note, color]);
-        r.ttl--;
-        if (r.ttl <= 0) restoreRetryQueue.splice(i, 1);
+        restoreRetryQueue[i].ttl--;
+        if (restoreRetryQueue[i].ttl <= 0) restoreRetryQueue.splice(i, 1);
     }
 }
 
@@ -731,6 +881,7 @@ globalThis.init = function() {
     console.log("song-mode: move_ui_mode=" + uiMode);
     if (uiMode !== 1) {
         sessionWarning = true;
+        announceOverlay("Warning: Switch to Session Mode before using Song Mode");
         console.log("song-mode: NOT in Session view, showing warning screen");
     }
 
@@ -771,6 +922,10 @@ globalThis.init = function() {
         console.log("song-mode: no set data, manual entry mode");
     }
 
+    /* Load saved song arrangement for this set (if any) */
+    loadSongData();
+
+    announceView("Song Mode" + (setName ? ", " + setName : ""));
 };
 
 globalThis.tick = function() {
@@ -790,12 +945,18 @@ globalThis.tick = function() {
             heldStepHandled = true;
             const entryIdx = selectedEntry;
             if (entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
+                pushUndo();
                 editingEntry = entryIdx;
                 currentView = "step_params";
                 stepParamsPeek = true;  /* peek — exits on release */
+                const e = songEntries[editingEntry];
+                announceView("Step " + (editingEntry + 1) + " Settings, Repeats " + e.repeats + " times");
             }
         }
     }
+
+    /* Persist song arrangement if changed */
+    saveSongData();
 
     updateStepLeds();
     updatePlayButtonLed();
@@ -817,8 +978,19 @@ globalThis.tick = function() {
     }
     if (recordingSavedUntil > 0 && Date.now() < recordingSavedUntil) {
         drawMessageOverlay("Recording", ["Recording saved!"], false);
+        if (recordingSavedUntil > 0 && !recordingSavedAnnounced) {
+            announceOverlay("Recording saved");
+            recordingSavedAnnounced = true;
+        }
     } else {
         recordingSavedUntil = 0;
+        recordingSavedAnnounced = false;
+    }
+    if (overlayTimeout > 0 && Date.now() < overlayTimeout) {
+        drawMessageOverlay("Song Mode", [overlayMessage], false);
+    } else {
+        overlayMessage = "";
+        overlayTimeout = 0;
     }
 };
 
@@ -833,6 +1005,7 @@ globalThis.onMidiMessageInternal = function(data) {
     if (sessionWarning) {
         if (status === MidiCC && (d1 === MoveMainButton || d1 === MoveBack) && d2 > 0) {
             sessionWarning = false;
+            announceView("Song Mode");
         }
         return;
     }
@@ -854,12 +1027,14 @@ globalThis.onMidiMessageInternal = function(data) {
                 if (idx < 0) idx = 0;
                 idx = Math.max(0, Math.min(REPEAT_VALUES.length - 1, idx + delta));
                 entry.repeats = REPEAT_VALUES[idx];
+                announceParameter("Repeats", entry.repeats + " times");
             }
             return;
         }
         /* Jog click or Back — return to list */
         if (status === MidiCC && (d1 === MoveMainButton || d1 === MoveBack) && d2 > 0) {
             currentView = "list";
+            announce(describeEntry(selectedEntry));
             return;
         }
         /* Step button in step_params view */
@@ -867,10 +1042,12 @@ globalThis.onMidiMessageInternal = function(data) {
             if (d2 > 0 && shiftHeld) {
                 /* Shift+Step again → exit (sticky mode toggle) */
                 currentView = "list";
+                announce(describeEntry(selectedEntry));
             } else if (d2 === 0 && stepParamsPeek) {
                 /* Release after hold → exit peek mode */
                 heldStepNote = -1;
                 currentView = "list";
+                announce(describeEntry(selectedEntry));
             }
             return;
         }
@@ -888,6 +1065,7 @@ globalThis.onMidiMessageInternal = function(data) {
         if (selectedEntry < songEntries.length) {
             stepPage = Math.floor(selectedEntry / STEPS_PER_PAGE);
         }
+        announce(describeEntry(selectedEntry));
         return;
     }
 
@@ -896,12 +1074,14 @@ globalThis.onMidiMessageInternal = function(data) {
         if (playbackState === "playing") {
             stopRecording();
             stopPlayback();
+            announce("Stopped");
         } else if (selectedEntry === songEntries.length) {
-            /* Play Song */
-            startPlayback();
+            /* Play Song (from beginning — no step selected) */
+            startPlayback(true);
+            if (playbackState === "playing") announce("Playing from beginning");
         } else if (selectedEntry === songEntries.length + 1) {
-            /* Record Song — start playback + recording */
-            startPlayback();
+            /* Record Song (from beginning — no step selected) */
+            startPlayback(true);
             if (playbackState === "playing") {
                 host_ensure_dir(RECORDINGS_DIR);
                 const now = new Date();
@@ -916,35 +1096,95 @@ globalThis.onMidiMessageInternal = function(data) {
                 recording = true;
                 recordStartTime = Date.now();
                 recordStopTime = 0;
+                announce("Recording from beginning");
                 console.log("song-mode: recording started -> " + path);
             }
         } else if (selectedEntry < songEntries.length && !isEntryEmpty(songEntries[selectedEntry])) {
+            pushUndo();
             editingEntry = selectedEntry;
             currentView = "step_params";
             stepParamsPeek = false;  /* jog click = sticky */
+            const e = songEntries[editingEntry];
+            announceView("Step " + (editingEntry + 1) + " Settings, Repeats " + e.repeats + " times");
         }
         return;
     }
 
-    /* Delete (X button) — remove selected entry if not the trailing empty */
+    /* Delete (X button) — remove selected entry, Shift+Delete clears all */
     if (status === MidiCC && d1 === MoveDelete && d2 > 0) {
-        if (songEntries.length > 1 && selectedEntry < songEntries.length) {
+        if (shiftHeld) {
+            /* Shift+Delete: clear entire song */
+            if (countNonEmpty() > 0) {
+                pushUndo();
+                songEntries = [newEntry()];
+                selectedEntry = 0;
+                scrollOffset = 0;
+                lastStepLedKey = "";
+                lastHighlightKey = "";
+                announce("Song cleared");
+            } else {
+                announce("Song is empty");
+            }
+        } else if (songEntries.length > 1 && selectedEntry < songEntries.length &&
+                   !isEntryEmpty(songEntries[selectedEntry])) {
+            pushUndo();
+            const deletedIdx = selectedEntry + 1;
             songEntries.splice(selectedEntry, 1);
             if (selectedEntry >= songEntries.length) selectedEntry = songEntries.length - 1;
             ensureTrailingEmpty();
+            announce("Step " + deletedIdx + " deleted, " + describeEntry(selectedEntry));
+        } else {
+            announce("Nothing to delete");
         }
         return;
     }
 
-    /* Copy — duplicate selected entry below */
+    /* Undo — restore previous song state */
+    if (status === MidiCC && d1 === MoveUndo && d2 > 0) {
+        if (popUndo()) {
+            announce("Undo, " + describeEntry(selectedEntry));
+        } else {
+            announce("Nothing to undo");
+        }
+        return;
+    }
+
+    /* Copy — duplicate selected entry below (skip if empty) */
     if (status === MidiCC && d1 === MoveCopy && d2 > 0) {
-        if (selectedEntry < songEntries.length) {
+        if (selectedEntry < songEntries.length && !isEntryEmpty(songEntries[selectedEntry])) {
+            pushUndo();
             const src = songEntries[selectedEntry];
             const copy = { pads: [...src.pads], repeats: src.repeats };
             songEntries.splice(selectedEntry + 1, 0, copy);
             selectedEntry++;
             ensureTrailingEmpty();
+            announce("Copied to step " + (selectedEntry + 1));
         }
+        return;
+    }
+
+    /* Shift+Up/Down — move selected entry */
+    if (status === MidiCC && (d1 === MoveUp || d1 === MoveDown) && d2 > 0 && shiftHeld) {
+        if (selectedEntry < songEntries.length && !isEntryEmpty(songEntries[selectedEntry])) {
+            const dir = d1 === MoveUp ? -1 : 1;
+            const target = selectedEntry + dir;
+            if (target >= 0 && target < songEntries.length) {
+                pushUndo();
+                const tmp = songEntries[selectedEntry];
+                songEntries[selectedEntry] = songEntries[target];
+                songEntries[target] = tmp;
+                selectedEntry = target;
+                ensureTrailingEmpty();
+                announce("Moved to step " + (selectedEntry + 1));
+            }
+        }
+        return;
+    }
+
+    /* Loop button — toggle loop mode */
+    if (status === MidiCC && d1 === MoveLoop && d2 > 0) {
+        loopEnabled = !loopEnabled;
+        announce(loopEnabled ? "Loop on" : "Loop off");
         return;
     }
 
@@ -969,6 +1209,7 @@ globalThis.onMidiMessageInternal = function(data) {
             stepPage--;
             selectedEntry = stepPage * STEPS_PER_PAGE;
             lastStepLedKey = ""; /* force refresh */
+            announce("Page " + (stepPage + 1) + ", " + describeEntry(selectedEntry));
         }
         return;
     }
@@ -978,6 +1219,7 @@ globalThis.onMidiMessageInternal = function(data) {
         ensureEntryExists(selectedEntry);
         ensureTrailingEmpty();
         lastStepLedKey = ""; /* force refresh */
+        announce("Page " + (stepPage + 1) + ", " + describeEntry(selectedEntry));
         return;
     }
 
@@ -987,17 +1229,21 @@ globalThis.onMidiMessageInternal = function(data) {
         const entryIdx = stepPage * STEPS_PER_PAGE + stepIdx;
         if (shiftHeld && entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
             /* Shift+Step: open step params (sticky — stays until Shift+Step again) */
+            pushUndo();
             selectedEntry = entryIdx;
             editingEntry = entryIdx;
             currentView = "step_params";
             stepParamsPeek = false;
             heldStepNote = -1;
+            const e = songEntries[editingEntry];
+            announceView("Step " + (editingEntry + 1) + " Settings, Repeats " + e.repeats + " times");
         } else {
             /* Track hold — select on release if short press */
             heldStepNote = d1;
             heldStepTime = Date.now();
             heldStepHandled = false;
             selectStep(stepIdx);
+            announce(describeEntry(selectedEntry));
         }
         return;
     }
@@ -1007,26 +1253,31 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Play button — toggle playback */
+    /* Play button — Play from current step, Shift+Play from beginning */
     if (status === MidiCC && d1 === MovePlay && d2 > 0) {
         if (playbackState === "playing") {
             stopRecording();
             stopPlayback();
+            announce("Stopped");
         } else {
-            startPlayback();
+            startPlayback(shiftHeld);
+            if (playbackState === "playing") {
+                announce("Playing from step " + (currentEntryIndex + 1));
+            }
         }
         return;
     }
 
-    /* Record button — start playback+recording, or stop recording */
+    /* Record button — Rec from current step, Shift+Rec from beginning */
     if (status === MidiCC && d1 === MoveRec && d2 > 0) {
         if (recording) {
             /* Stop recording */
             stopRecording();
+            announce("Recording stopped");
         } else {
             /* Start recording — begin playback if not already playing */
             if (playbackState !== "playing") {
-                startPlayback();
+                startPlayback(shiftHeld);
             }
             if (playbackState === "playing") {
                 host_ensure_dir(RECORDINGS_DIR);
@@ -1042,6 +1293,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 recording = true;
                 recordStartTime = Date.now();
                 recordStopTime = 0;
+                announce("Recording from step " + (currentEntryIndex + 1));
                 console.log("song-mode: recording started -> " + path);
             }
         }
@@ -1052,6 +1304,7 @@ globalThis.onMidiMessageInternal = function(data) {
     if (status === MidiNoteOn && d2 > 0) {
         const grid = noteToGrid(d1);
         if (grid && selectedEntry < songEntries.length) {
+            pushUndo();
             const entry = songEntries[selectedEntry];
             /* On first pad press of an empty entry, pre-fill ALL tracks from previous */
             if (isEntryEmpty(entry)) {
@@ -1069,6 +1322,7 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Set the pressed track (no deselect — can't have null) */
             entry.pads[grid.track] = grid.col;
             ensureTrailingEmpty();
+            announce("Track " + (grid.track + 1) + " set to " + COL_LABELS[grid.col]);
         }
         return;
     }

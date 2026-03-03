@@ -1,0 +1,196 @@
+{
+  "title": "Song Mode",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Sequence clips across",
+        "time to build songs.",
+        "",
+        "Reads your set's clip",
+        "layout and tempo, then",
+        "lets you arrange pads",
+        "into an ordered song.",
+        "",
+        "Playback triggers pads",
+        "automatically based on",
+        "bar timing."
+      ]
+    },
+    {
+      "title": "Building a Song",
+      "lines": [
+        "Each step assigns pads",
+        "for all 4 tracks.",
+        "",
+        "Select a step with jog",
+        "or step buttons, then",
+        "tap pads to assign.",
+        "",
+        "First pad press copies",
+        "the previous step so",
+        "you only change what",
+        "differs.",
+        "",
+        "Steps show track clips",
+        "as column letters",
+        "(A-H) per track."
+      ]
+    },
+    {
+      "title": "Playback",
+      "lines": [
+        "Play: play from the",
+        " current step",
+        "Shift+Play: play from",
+        " the beginning",
+        "Play again: stop",
+        "",
+        "When stopped, returns",
+        "to the step where",
+        "playback started.",
+        "",
+        "Menu has Play Song and",
+        "Record Song items at",
+        "the bottom of the list."
+      ]
+    },
+    {
+      "title": "Recording",
+      "lines": [
+        "Record captures audio",
+        "output to a WAV file.",
+        "",
+        "Rec: record from the",
+        " current step",
+        "Shift+Rec: record from",
+        " the beginning",
+        "Rec again: stop",
+        "",
+        "Auto-stops 1 bar after",
+        "the last step finishes.",
+        "",
+        "Files saved to:",
+        " Recordings/Song Mode/"
+      ]
+    },
+    {
+      "title": "Loop Mode",
+      "lines": [
+        "Press Loop to toggle.",
+        "",
+        "When on, playback",
+        "wraps back to the",
+        "first step after the",
+        "last step finishes.",
+        "",
+        "[L] shown in the",
+        "header when active.",
+        "",
+        "Loop is disabled",
+        "during recording so",
+        "auto-stop still works."
+      ]
+    },
+    {
+      "title": "Editing",
+      "children": [
+        {
+          "title": "Step Params",
+          "lines": [
+            "Hold a step button or",
+            "click jog on a step",
+            "to edit its repeats.",
+            "",
+            "Shift+Step also opens",
+            "step params (sticky).",
+            "",
+            "Use jog wheel to",
+            "change repeat count:",
+            " 1,2,4,8,16,32,64",
+            "",
+            "Back to return."
+          ]
+        },
+        {
+          "title": "Copy / Delete",
+          "lines": [
+            "Copy: duplicate the",
+            " selected step below",
+            "Delete: remove the",
+            " selected step",
+            "Shift+Delete: clear",
+            " the entire song",
+            "",
+            "Empty steps cannot",
+            "be copied or deleted."
+          ]
+        },
+        {
+          "title": "Reorder",
+          "lines": [
+            "Shift+Up: move the",
+            " selected step up",
+            "Shift+Down: move the",
+            " selected step down",
+            "",
+            "Only non-empty steps",
+            "can be moved."
+          ]
+        },
+        {
+          "title": "Undo",
+          "lines": [
+            "Press Undo to restore",
+            "the previous state.",
+            "",
+            "Supports up to 20",
+            "undo levels.",
+            "",
+            "Undo covers delete,",
+            "copy, move, pad",
+            "changes, and repeat",
+            "edits."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Navigation",
+      "lines": [
+        "Jog wheel: scroll",
+        " through steps",
+        "Step buttons: select",
+        " steps directly",
+        "Left/Right: page",
+        " through step pages",
+        " (16 steps per page)",
+        "",
+        "Step LEDs show state:",
+        " Green = has content",
+        " Red = now playing",
+        " White = selected",
+        "",
+        "Pad LEDs highlight",
+        "the current step's",
+        "assigned clips in red."
+      ]
+    },
+    {
+      "title": "Persistence",
+      "lines": [
+        "Song arrangements are",
+        "saved automatically",
+        "per set (by UUID).",
+        "",
+        "When you re-enter",
+        "Song Mode for the",
+        "same set, your song",
+        "is restored.",
+        "",
+        "Switching sets loads",
+        "that set's song."
+      ]
+    }
+  ]
+}

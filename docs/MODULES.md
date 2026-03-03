@@ -71,7 +71,28 @@ for keys anywhere in `module.json`).
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 | `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
-| `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, or `overtake` |
+| `skip_led_clear` | Host skips clearing LEDs on module load/unload — preserves Move's native pad colors (useful for modules that overlay highlights on existing clip colors) |
+| `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
+
+### Tool Config
+
+Tool modules (`"component_type": "tool"`) appear in the Tools menu and support additional options via `tool_config`:
+
+```json
+{
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true
+    }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `interactive` | Tool takes over the UI (like an overtake module) rather than running headlessly |
+| `skip_file_browser` | Tool does not use the file browser on launch (goes straight to its own UI) |
+
+Interactive tools use `host_exit_module()` to return to the tools menu when the user presses Back.
 
 ### Defaults
 

@@ -415,6 +415,49 @@ Browse files and folders on your Move. Two starting roots:
 
 **Play:** Selecting Play on a .wav file starts audio preview through Move's speakers. A progress bar and time display are shown. Push jog or press back to stop.
 
+### Song Mode
+
+Sequence clips across time to build full songs from your set's clip layout.
+
+**How it works:** Song Mode reads your set's clips and tempo, then lets you arrange pad assignments into an ordered list of steps. Each step triggers all 4 tracks simultaneously, advancing automatically based on bar timing.
+
+**Building a song:**
+1. Select a step with the jog wheel or step buttons
+2. Tap pads to assign clips for each track
+3. The first pad press on an empty step copies the previous step, so you only change what differs
+4. Steps display track assignments as column letters (A-H)
+
+**Playback:**
+- **Play**: Start from current step
+- **Shift+Play**: Start from beginning
+- **Play again**: Stop (returns to where playback started)
+
+**Recording:**
+- **Rec**: Record audio from current step
+- **Shift+Rec**: Record from beginning
+- **Rec again**: Stop recording
+- Auto-stops 1 bar after the last step finishes
+- Files saved to `Recordings/Song Mode/`
+
+**Loop mode:** Press **Loop** to toggle. When on, playback wraps back to the first step after the last step ends. Shows `[L]` in the header. Disabled during recording.
+
+**Editing:**
+- **Hold step** or **Jog click** on a step: Edit repeat count (1, 2, 4, 8, 16, 32, 64 bars)
+- **Copy**: Duplicate selected step
+- **Delete**: Remove selected step
+- **Shift+Delete**: Clear entire song
+- **Shift+Up/Down**: Reorder steps
+- **Undo**: Restore previous state (up to 20 levels)
+
+**Navigation:**
+- **Jog wheel**: Scroll through steps
+- **Step buttons**: Select steps directly
+- **Left/Right**: Page through steps (16 per page)
+
+Step LEDs: green = has content, red = now playing, white = selected. Pad LEDs highlight the current step's assigned clips in red.
+
+**Persistence:** Song arrangements save automatically per set. Re-entering Song Mode for the same set restores your song.
+
 ---
 
 ## Screen Reader
