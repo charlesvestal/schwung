@@ -1164,7 +1164,7 @@ function processAllUpdates() {
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
-    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
@@ -5442,10 +5442,10 @@ function formatParamForOverlay(val, meta) {
     if (meta && (meta.type === "enum" || meta.type === "bool")) {
         return String(val);
     }
-    /* Float: show as percentage if 0-1 range */
+    /* Float: show as percentage if 0-1 or 0-2 range */
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
     const max = meta && typeof meta.max === "number" ? meta.max : 1;
-    if (min === 0 && max === 1) {
+    if (min === 0 && max >= 1 && max <= 4) {
         return Math.round(val * 100) + "%";
     }
     return val.toFixed(2);

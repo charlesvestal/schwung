@@ -427,13 +427,13 @@ void shadow_chain_load_config(void) {
             cursor = name_pos + 6;
         }
 
-        /* Parse volume (0.0 - 1.0) */
+        /* Parse volume (0.0 - 4.0, +12 dB max) */
         char *vol_pos = strstr(name_pos, "\"volume\"");
         if (vol_pos) {
             char *vol_colon = strchr(vol_pos, ':');
             if (vol_colon) {
                 float vol = atof(vol_colon + 1);
-                if (vol >= 0.0f && vol <= 1.0f) {
+                if (vol >= 0.0f && vol <= 4.0f) {
                     shadow_chain_slots[i].volume = vol;
                 }
             }
@@ -507,7 +507,7 @@ void shadow_ui_state_update_slot(int slot) {
     if (slot < 0 || slot >= SHADOW_UI_SLOTS) return;
     int ch = shadow_chain_slots[slot].channel;
     ui_state->slot_channels[slot] = (ch < 0) ? 0 : (uint8_t)(ch + 1);
-    ui_state->slot_volumes[slot] = (uint8_t)(shadow_chain_slots[slot].volume * 100.0f);
+    ui_state->slot_volumes[slot] = (uint16_t)(shadow_chain_slots[slot].volume * 100.0f);
     ui_state->slot_forward_ch[slot] = (int8_t)shadow_chain_slots[slot].forward_channel;
     strncpy(ui_state->slot_names[slot],
             shadow_chain_slots[slot].patch_name,
@@ -1396,7 +1396,7 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
     if (strcmp(key, "slot:volume") == 0) {
         float vol = atof(value);
         if (vol < 0.0f) vol = 0.0f;
-        if (vol > 1.0f) vol = 1.0f;
+        if (vol > 4.0f) vol = 4.0f;
         shadow_chain_slots[slot].volume = vol;
         shadow_ui_state_update_slot(slot);
         return 1;

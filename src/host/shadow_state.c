@@ -261,6 +261,10 @@ void shadow_load_state(void)
         if (pos) {
             float v0, v1, v2, v3;
             if (sscanf(pos, "[%f, %f, %f, %f]", &v0, &v1, &v2, &v3) == 4) {
+                if (v0 < 0.0f) v0 = 0.0f; if (v0 > 4.0f) v0 = 4.0f;
+                if (v1 < 0.0f) v1 = 0.0f; if (v1 > 4.0f) v1 = 4.0f;
+                if (v2 < 0.0f) v2 = 0.0f; if (v2 > 4.0f) v2 = 4.0f;
+                if (v3 < 0.0f) v3 = 0.0f; if (v3 > 4.0f) v3 = 4.0f;
                 host_chain_slots[0].volume = v0;
                 host_chain_slots[1].volume = v1;
                 host_chain_slots[2].volume = v2;
