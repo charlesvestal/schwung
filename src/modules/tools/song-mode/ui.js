@@ -74,6 +74,9 @@ let currentEntryIndex = 0;
 let playbackStartEntry = 0;  /* entry to return to on stop */
 let playStartTime = 0;
 let nextEntryQueued = false;
+let playStartPending = 0;    /* startup phase: 0=off, 1=selecting, 2=stopping, 3=restarting */
+let playStartPhaseDelay = 0; /* ticks to wait between phases */
+const PHASE_DELAY_TICKS = 3; /* ~50ms between phases */
 let loopEnabled = false;     /* loop song from beginning when it ends */
 
 /* Undo */
@@ -519,36 +522,30 @@ function startPlayback(fromBeginning) {
     console.log("song-mode: startPlayback from entry " + startIdx + (fromBeginning ? " (beginning)" : ""));
     currentEntryIndex = startIdx;
 
-    /* Stop any running transport first via MIDI Stop (unconditional).
-     * Then select empty clips on tracks that have them (clears old sound).
-     * Then select the actual entry clips (auto-starts transport fresh). */
-    injectQueue.push([0x0F, 0xFC, 0x00, 0x00]); /* MIDI Stop */
-    for (let t = 0; t < NUM_TRACKS; t++) {
-        if (silencePads[t] !== null) {
-            const note = padNote(t, silencePads[t]);
-            queueInjectNote(note, 127);
-            pendingNoteOffs.push({ note: note, ticks: 15 });
-        }
-    }
-    triggerEntry(startIdx);
+    /* Startup sequence:
+     *   1. Mute Move's audio output
+     *   2. Select clips via queued injection (one per tick)
+     *   3. Play toggle (stop) → Play toggle (start)
+     *   4. Unmute audio (in phase 3, after restart) */
+    if (typeof host_mute_move_audio === "function") host_mute_move_audio(1);
+    triggerEntry(currentEntryIndex);
 
-    playStartTime = Date.now();
+    playStartPending = 1;
+    playStartTime = 0;
     nextEntryQueued = false;
     playbackState = "playing";
 }
 
 function stopPlayback() {
     playbackState = "stopped";
+    playStartPending = 0;
+    playStartPhaseDelay = 0;
     injectQueue = [];
     pendingNoteOffs = [];
-    /* Select silent/empty clips to stop sound, then stop transport */
-    for (let t = 0; t < NUM_TRACKS; t++) {
-        if (silencePads[t] !== null) {
-            queueInjectNote(padNote(t, silencePads[t]), 127);
-        }
-    }
-    queueInjectCC(MovePlay, 127);
-    queueInjectCC(MovePlay, 0);
+    /* Ensure audio is unmuted */
+    if (typeof host_mute_move_audio === "function") host_mute_move_audio(0);
+    /* Stop transport via Play CC toggle */
+    queuePlayToggle();
     /* Return to the entry we started from */
     selectedEntry = playbackStartEntry;
     stepPage = Math.floor(selectedEntry / STEPS_PER_PAGE);
@@ -573,6 +570,7 @@ function firstCompleteEntry() {
 
 function tickPlayback() {
     if (playbackState !== "playing") return;
+    if (playStartPending > 0) return; /* waiting for clips to load before timing starts */
     if (currentEntryIndex >= songEntries.length) { stopPlayback(); return; }
 
     const entry = songEntries[currentEntryIndex];
@@ -645,15 +643,23 @@ function queueInjectCC(cc, value) {
     injectQueue.push([0x0B, 0xB0, cc, value]);
 }
 
+/* Queue a Play CC press+release to toggle transport */
+function queuePlayToggle() {
+    queueInjectCC(MovePlay, 127);
+    queueInjectCC(MovePlay, 0);
+}
+
+let lastInjectTime = 0;
+const INJECT_INTERVAL_MS = 50; /* 50ms between packets — matches test tool timing */
+
 function drainInjectQueue() {
-    /* Drain exactly 1 packet per tick. Move's MIDI_IN buffer only has
-     * ~1 empty slot per ioctl cycle (~2.9ms). Sending more than 1
-     * causes packets to be overwritten before Move reads them.
-     * JS tick runs at ~16ms (~5-6 ioctl cycles), so 1/tick is safe. */
-    if (injectQueue.length > 0) {
+    /* Drain 1 packet per call, throttled to INJECT_INTERVAL_MS minimum. */
+    const now = Date.now();
+    if (injectQueue.length > 0 && (now - lastInjectTime) >= INJECT_INTERVAL_MS) {
         const pkt = injectQueue.shift();
         console.log("song-mode: inject [" + pkt.join(",") + "] remaining=" + injectQueue.length);
         move_midi_inject_to_move(pkt);
+        lastInjectTime = now;
     }
 
     /* Process deferred note-offs — count down and inject when ready */
@@ -663,6 +669,34 @@ function drainInjectQueue() {
             const note = pendingNoteOffs[i].note;
             queueInjectNote(note, 0);
             pendingNoteOffs.splice(i, 1);
+        }
+    }
+
+    /* Startup state machine: select pads → Play CC (stop) → Play CC (start).
+     * Each phase waits for the queue to drain, then pauses briefly. */
+    if (playStartPending > 0 && injectQueue.length === 0 && pendingNoteOffs.length === 0) {
+        if (playStartPhaseDelay > 0) {
+            playStartPhaseDelay--;
+            return;
+        }
+        if (playStartPending === 1) {
+            /* Phase 1: pad selections drained. Toggle Play (stop transport). */
+            queuePlayToggle();
+            playStartPending = 2;
+            playStartPhaseDelay = PHASE_DELAY_TICKS;
+            console.log("song-mode: phase 1 done, toggling play (stop)");
+        } else if (playStartPending === 2) {
+            /* Phase 2: transport stopped. Toggle Play (restart). */
+            queuePlayToggle();
+            playStartPending = 3;
+            playStartPhaseDelay = PHASE_DELAY_TICKS;
+            console.log("song-mode: phase 2 done, toggling play (start)");
+        } else if (playStartPending === 3) {
+            /* Phase 3: playing with correct clips. Unmute and start timer. */
+            if (typeof host_mute_move_audio === "function") host_mute_move_audio(0);
+            playStartPending = 0;
+            playStartTime = Date.now();
+            console.log("song-mode: phase 3 done, timer started");
         }
     }
 }
@@ -869,6 +903,16 @@ function restoreAllPadLeds() {
 
 globalThis.init = function() {
     console.log("Song Mode initializing");
+
+    /* Mute Move's audio — transport may be playing when we enter.
+     * Unmuted when playback starts (phase 3) or on exit. */
+    if (typeof host_mute_move_audio === "function") host_mute_move_audio(1);
+
+    /* Stop transport if it was playing (Play CC toggle).
+     * If it was stopped, this briefly starts it (muted), handled by
+     * the 2-toggle sequence in startPlayback. */
+    move_midi_inject_to_move([0x0B, 0xB0, MovePlay, 127]);
+    move_midi_inject_to_move([0x0B, 0xB0, MovePlay, 0]);
 
     /* Reset state first (before queueing anything) */
     songEntries = [newEntry()];

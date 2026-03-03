@@ -10,6 +10,9 @@
  *   midi_inject_test play                   - CC 85 toggle (play/stop)
  *   midi_inject_test record                 - CC 86 toggle
  *   midi_inject_test scene <col>            - launch 4 pads in column (0-7)
+ *   midi_inject_test stop                   - MIDI Stop (0xFC, CIN 0x0F)
+ *   midi_inject_test start                  - MIDI Start (0xFA, CIN 0x0F)
+ *   midi_inject_test select <n1> <n2> ...   - note-ons only (no note-off), for testing selection
  */
 
 #include <stdio.h>
@@ -127,6 +130,62 @@ static void cmd_scene(int col)
     }
 }
 
+/* Send MIDI System Real-Time: Stop (0xFC) */
+static void cmd_stop(void)
+{
+    printf("MIDI Stop (0xFC, CIN 0x0F)\n");
+    write_packet(0x0F, 0xFC, 0x00, 0x00);
+    flush();
+}
+
+/* Send MIDI System Real-Time: Start (0xFA) */
+static void cmd_start(void)
+{
+    printf("MIDI Start (0xFA, CIN 0x0F)\n");
+    write_packet(0x0F, 0xFA, 0x00, 0x00);
+    flush();
+}
+
+/* Parse a column letter (A-H) and select all 4 tracks in that column */
+static int parse_column_letter(const char *arg)
+{
+    if (strlen(arg) == 1) {
+        char c = arg[0];
+        if (c >= 'A' && c <= 'H') return c - 'A';
+        if (c >= 'a' && c <= 'h') return c - 'a';
+    }
+    return -1;
+}
+
+static void select_note(int note)
+{
+    printf("Select: note %d\n", note);
+    write_packet(0x09, 0x90, (uint8_t)note, 100);
+    flush();
+    usleep(50000);  /* 50ms hold */
+    write_packet(0x08, 0x80, (uint8_t)note, 0);
+    flush();
+    usleep(5000);  /* 5ms gap before next */
+}
+
+/* Send note-on + delay + note-off for pad notes or column letters (A-H) */
+static void cmd_select(int argc, char *argv[])
+{
+    for (int i = 2; i < argc; i++) {
+        int col = parse_column_letter(argv[i]);
+        if (col >= 0) {
+            /* Column letter: select all 4 tracks */
+            int notes[4] = { 92 + col, 84 + col, 76 + col, 68 + col };
+            printf("Column %c: notes %d %d %d %d\n", 'A' + col,
+                   notes[0], notes[1], notes[2], notes[3]);
+            for (int t = 0; t < 4; t++) select_note(notes[t]);
+        } else {
+            /* Numeric note */
+            select_note(atoi(argv[i]));
+        }
+    }
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr, "Usage:\n");
@@ -134,6 +193,9 @@ static void usage(const char *prog)
     fprintf(stderr, "  %s play                   - toggle play (CC 85)\n", prog);
     fprintf(stderr, "  %s record                 - toggle record (CC 86)\n", prog);
     fprintf(stderr, "  %s scene <col>            - launch scene column (0-7)\n", prog);
+    fprintf(stderr, "  %s stop                   - MIDI Stop (0xFC)\n", prog);
+    fprintf(stderr, "  %s start                  - MIDI Start (0xFA)\n", prog);
+    fprintf(stderr, "  %s select <n1|A-H> ...    - select pads (notes or column letters)\n", prog);
     fprintf(stderr, "\nPad grid:\n");
     fprintf(stderr, "  92-99: Track 1 (top)    84-91: Track 2\n");
     fprintf(stderr, "  76-83: Track 3          68-75: Track 4 (bottom)\n");
@@ -166,6 +228,16 @@ int main(int argc, char *argv[])
             return 1;
         }
         cmd_scene(atoi(argv[2]));
+    } else if (strcmp(argv[1], "stop") == 0) {
+        cmd_stop();
+    } else if (strcmp(argv[1], "start") == 0) {
+        cmd_start();
+    } else if (strcmp(argv[1], "select") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "Usage: %s select <note1> [note2] ...\n", argv[0]);
+            return 1;
+        }
+        cmd_select(argc, argv);
     } else {
         fprintf(stderr, "Unknown command: %s\n", argv[1]);
         usage(argv[0]);

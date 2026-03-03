@@ -3447,6 +3447,11 @@ do_ioctl:
      * Move has been writing to shadow_mailbox; now we send that to hardware. */
     if (hardware_mmap_addr) {
         memcpy(hardware_mmap_addr, shadow_mailbox, MAILBOX_SIZE);
+        /* Mute Move's audio output when requested (e.g. during silent clip switching) */
+        if (shadow_control && shadow_control->mute_move_audio) {
+            memset(hardware_mmap_addr + AUDIO_OUT_OFFSET, 0,
+                   DISPLAY_OFFSET - AUDIO_OUT_OFFSET);
+        }
     }
 
     /* === HARDWARE TRANSACTION === */

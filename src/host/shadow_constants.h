@@ -127,7 +127,8 @@ typedef struct shadow_control_t {
     volatile uint8_t move_ui_mode;       /* Move's UI mode: 0=unknown, 1=session, 2=note, 3=set_overview */
     volatile uint8_t sampler_cmd;        /* 0=none, 1=start (path in file), 2=stop */
     volatile uint8_t sampler_state_val;  /* Mirrors sampler_state_t: 0=idle,1=armed,2=recording,3=preroll */
-    volatile uint8_t reserved[15];
+    volatile uint8_t mute_move_audio;   /* 1=zero Move's audio output (for silent clip switching) */
+    volatile uint8_t reserved[14];
 } shadow_control_t;
 
 /*
