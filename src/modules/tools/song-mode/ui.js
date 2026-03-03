@@ -79,9 +79,6 @@ const STEPS_PER_PAGE = 16;
 let stepPage = 0;           /* 0 = entries 0-15, 1 = entries 16-31, etc. */
 let lastStepLedKey = "";    /* change detection for step LED updates */
 
-/* Debug: last MIDI event for on-screen display */
-let dbgMidi = "";
-
 /* Pad LED highlighting */
 const LED_RED = BrightRed;
 let padLedSnapshot = {};    /* note -> original color from Move */
@@ -277,10 +274,17 @@ function drawListView() {
     if (scrollOffset > 0) print(122, 13, "^", 1);
     if (scrollOffset + MAX_VISIBLE < totalItems) print(122, 52, "v", 1);
 
-    /* Footer — debug mode: show MIDI events */
+    /* Footer */
     fill_rect(0, 55, 128, 1, 1);
-    const hostMidi = globalThis._dbg_host_midi || "-";
-    print(2, 57, "H:" + hostMidi + " M:" + (dbgMidi || "-"), 1);
+    if (playbackState === "playing") {
+        const entry = songEntries[currentEntryIndex];
+        const bars = entryBars(entry);
+        const elapsed = (Date.now() - playStartTime) / barDurationMs;
+        const currentBar = Math.min(Math.floor(elapsed) + 1, bars);
+        print(2, 57, "Playing " + (currentEntryIndex + 1) + "/" + countNonEmpty() + " bar " + currentBar + "/" + bars, 1);
+    } else {
+        print(2, 57, "Pad:set X:del Click:play", 1);
+    }
 }
 
 function countNonEmpty() {
@@ -517,6 +521,9 @@ function updatePadHighlights() {
     if (key === lastHighlightKey) return;
     lastHighlightKey = key;
 
+    /* Refresh snapshot from overlay SHM for current Move LED state */
+    snapshotPadLeds();
+
     /* Determine new highlight set */
     let newNotes = [];
     if (selectedEntry < songEntries.length) {
@@ -528,13 +535,11 @@ function updatePadHighlights() {
         }
     }
 
-    /* Restore old highlights to original colors */
+    /* Restore ALL old highlights to original colors first */
     for (const note of highlightedNotes) {
-        if (newNotes.indexOf(note) < 0) {
-            const orig = padLedSnapshot[note];
-            const color = (orig !== undefined && orig >= 0) ? orig : 0;
-            move_midi_internal_send([0x09, 0x90, note, color]);
-        }
+        const orig = padLedSnapshot[note];
+        const color = (orig !== undefined && orig >= 0) ? orig : 0;
+        move_midi_internal_send([0x09, 0x90, note, color]);
     }
 
     /* Set new highlights to red */
@@ -617,12 +622,6 @@ globalThis.onMidiMessageInternal = function(data) {
     const status = data[0] & 0xF0;
     const d1 = data[1];
     const d2 = data[2];
-
-    /* Debug: log all non-trivial MIDI to console and display */
-    if (d2 > 0) {
-        dbgMidi = status.toString(16) + ":" + d1 + ":" + d2;
-        console.log("song-mode MIDI: status=0x" + status.toString(16) + " d1=" + d1 + " d2=" + d2);
-    }
 
     /* Track shift */
     if (status === MidiCC && d1 === MoveShift) {

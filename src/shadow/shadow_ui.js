@@ -9552,10 +9552,7 @@ globalThis.onMidiMessageInternal = function(data) {
         debugLog(`MIDI_IN: view=${view} status=${status} d1=${d1} d2=${d2} loaded=${overtakeModuleLoaded} callbacks=${!!overtakeModuleCallbacks}`);
     }
 
-    /* Debug: expose last MIDI to overtake modules for on-screen debugging */
-    if (d2 > 0) {
-        globalThis._dbg_host_midi = (status & 0xF0).toString(16) + ":" + d1 + ":" + d2;
-    }
+
 
     /* Handle text entry MIDI if active */
     if (isTextEntryActive()) {
