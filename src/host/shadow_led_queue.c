@@ -401,6 +401,11 @@ void shadow_queue_input_led(uint8_t cin, uint8_t status, uint8_t note, uint8_t v
     }
 }
 
+int led_queue_get_note_led_color(int note) {
+    if (note < 0 || note >= 128) return -1;
+    return move_note_led_state[note];
+}
+
 void shadow_flush_pending_input_leds(void) {
     uint8_t *ui_midi = host.shadow_ui_midi_shm ? *host.shadow_ui_midi_shm : NULL;
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;

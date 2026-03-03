@@ -271,7 +271,9 @@ typedef struct shadow_overlay_state_t {
 
     volatile float    sampler_bpm;                /* Project BPM from MIDI clock or fallback */
 
-    volatile uint8_t  reserved[256 - 224];  /* Pad to SHADOW_OVERLAY_BUFFER_SIZE */
+    /* Pad LED colors (notes 68-99, written by shim from Move's MIDI_OUT cache).
+     * Index 0 = note 68 (track 4 pad A), index 31 = note 99 (track 1 pad H). */
+    volatile uint8_t  pad_led_colors[32];  /* velocity/color for each pad */
 } shadow_overlay_state_t;
 
 /* Compile-time size checks */

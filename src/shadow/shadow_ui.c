@@ -371,6 +371,23 @@ static JSValue js_shadow_set_skip_led_clear(JSContext *ctx, JSValueConst this_va
     return JS_UNDEFINED;
 }
 
+/* shadow_get_pad_led_snapshot() -> object { "68": color, "69": color, ... }
+ * Read cached LED colors for pads (notes 68-99) from overlay SHM.
+ * The shim continuously writes Move's MIDI_OUT LED state here. */
+static JSValue js_shadow_get_pad_led_snapshot(JSContext *ctx, JSValueConst this_val,
+                                               int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    JSValue obj = JS_NewObject(ctx);
+    for (int i = 0; i < 32; i++) {
+        int note = 68 + i;
+        int color = shadow_overlay ? (int)shadow_overlay->pad_led_colors[i] : 0;
+        char key[4];
+        snprintf(key, sizeof(key), "%d", note);
+        JS_SetPropertyStr(ctx, obj, key, JS_NewInt32(ctx, color));
+    }
+    return obj;
+}
+
 /* shadow_request_exit() -> void
  * Request to exit shadow display mode and return to regular Move.
  */
@@ -1852,6 +1869,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_pad_led_snapshot", JS_NewCFunction(ctx, js_shadow_get_pad_led_snapshot, "shadow_get_pad_led_snapshot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_control_restart", JS_NewCFunction(ctx, js_shadow_control_restart, "shadow_control_restart", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_load_ui_module", JS_NewCFunction(ctx, js_shadow_load_ui_module, "shadow_load_ui_module", 1));

@@ -71,6 +71,12 @@ let pendingNoteOffs = [];
 /* Shift tracking */
 let shiftHeld = false;
 
+/* Pad LED highlighting */
+const LED_RED = 1;
+let padLedSnapshot = {};    /* note -> original color from Move */
+let highlightedNotes = [];  /* currently red-highlighted pad notes */
+let lastHighlightKey = "";  /* change detection */
+
 /* ── Song.abl Parsing ──────────────────────────────────────────────── */
 
 function loadSetData() {
@@ -424,10 +430,71 @@ function injectNow(cin, status, d1, d2) {
     move_midi_inject_to_move([cin, status, d1, d2]);
 }
 
+/* ── Pad LED Highlighting ─────────────────────────────────────────── */
+
+function snapshotPadLeds() {
+    if (typeof shadow_get_pad_led_snapshot === "function") {
+        padLedSnapshot = shadow_get_pad_led_snapshot();
+        console.log("song-mode: pad LED snapshot captured");
+    }
+}
+
+function getHighlightKey() {
+    if (selectedEntry >= songEntries.length) return "play";
+    const entry = songEntries[selectedEntry];
+    return selectedEntry + ":" + entry.pads.join(",");
+}
+
+function updatePadHighlights() {
+    const key = getHighlightKey();
+    if (key === lastHighlightKey) return;
+    lastHighlightKey = key;
+
+    /* Determine new highlight set */
+    let newNotes = [];
+    if (selectedEntry < songEntries.length) {
+        const entry = songEntries[selectedEntry];
+        for (let t = 0; t < NUM_TRACKS; t++) {
+            if (entry.pads[t] !== null) {
+                newNotes.push(padNote(t, entry.pads[t]));
+            }
+        }
+    }
+
+    /* Restore old highlights to original colors */
+    for (const note of highlightedNotes) {
+        if (newNotes.indexOf(note) < 0) {
+            const orig = padLedSnapshot[note];
+            const color = (orig !== undefined && orig >= 0) ? orig : 0;
+            move_midi_internal_send([0x09, 0x90, note, color]);
+        }
+    }
+
+    /* Set new highlights to red */
+    for (const note of newNotes) {
+        move_midi_internal_send([0x09, 0x90, note, LED_RED]);
+    }
+
+    highlightedNotes = newNotes;
+}
+
+function restoreAllPadLeds() {
+    for (const note of highlightedNotes) {
+        const orig = padLedSnapshot[note];
+        const color = (orig !== undefined && orig >= 0) ? orig : 0;
+        move_midi_internal_send([0x09, 0x90, note, color]);
+    }
+    highlightedNotes = [];
+    lastHighlightKey = "";
+}
+
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
 globalThis.init = function() {
     console.log("Song Mode initializing");
+
+    /* Snapshot pad LED colors before we modify anything */
+    snapshotPadLeds();
 
     /* Verify injection function exists */
     if (typeof move_midi_inject_to_move === "function") {
@@ -472,6 +539,7 @@ globalThis.init = function() {
 globalThis.tick = function() {
     tickPlayback();
     drainInjectQueue();
+    updatePadHighlights();
     drawListView();
 };
 
@@ -533,6 +601,7 @@ globalThis.onMidiMessageInternal = function(data) {
         if (playbackState === "playing") {
             stopPlayback();
         } else {
+            restoreAllPadLeds();
             host_exit_module();
         }
         return;
@@ -546,6 +615,15 @@ globalThis.onMidiMessageInternal = function(data) {
         const grid = noteToGrid(d1);
         if (grid && selectedEntry < songEntries.length) {
             const entry = songEntries[selectedEntry];
+            /* On first pad press of an empty entry, pre-fill from previous entry */
+            if (isEntryEmpty(entry)) {
+                for (let i = selectedEntry - 1; i >= 0; i--) {
+                    if (!isEntryEmpty(songEntries[i])) {
+                        entry.pads = [...songEntries[i].pads];
+                        break;
+                    }
+                }
+            }
             if (entry.pads[grid.track] === grid.col) {
                 entry.pads[grid.track] = null;
             } else {

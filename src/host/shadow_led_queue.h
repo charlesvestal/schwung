@@ -56,4 +56,8 @@ void shadow_queue_input_led(uint8_t cin, uint8_t status, uint8_t note, uint8_t v
 /* Flush pending input LED commands to UI MIDI buffer, rate-limited. */
 void shadow_flush_pending_input_leds(void);
 
+/* Read the cached LED color for a note (from Move's MIDI_OUT).
+ * Returns -1 if unknown, else the velocity/color value. */
+int led_queue_get_note_led_color(int note);
+
 #endif /* SHADOW_LED_QUEUE_H */

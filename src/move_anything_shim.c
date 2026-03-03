@@ -3436,6 +3436,13 @@ do_ioctl:
      * Inject any MIDI from shadow UI into the mailbox before sync.
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
     shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
+    /* Copy pad LED colors (notes 68-99) to overlay SHM for shadow_ui to read */
+    if (shadow_overlay_shm) {
+        for (int i = 0; i < 32; i++) {
+            int color = led_queue_get_note_led_color(68 + i);
+            shadow_overlay_shm->pad_led_colors[i] = (color >= 0) ? (uint8_t)color : 0;
+        }
+    }
     shadow_inject_ui_midi_out();
     shadow_flush_pending_leds();  /* Rate-limited LED output */
 
