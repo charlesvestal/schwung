@@ -142,6 +142,8 @@ extern int sampler_preroll_target_pulses;
 extern int sampler_preroll_fallback_blocks;
 extern int sampler_preroll_fallback_target;
 
+extern int sampler_external_stop_only;
+
 extern volatile int skipback_overlay_timeout;
 
 /* ============================================================================

@@ -4,8 +4,8 @@
     "name": "Move Anything",
     "github_repo": "charlesvestal/move-anything",
     "asset_name": "move-anything.tar.gz",
-    "latest_version": "0.6.2",
-    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.6.2/move-anything.tar.gz",
+    "latest_version": "0.7.0",
+    "download_url": "https://github.com/charlesvestal/move-anything/releases/download/v0.7.0/move-anything.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -399,7 +399,7 @@
       "github_repo": "charlesvestal/move-anything-waveform-editor",
       "default_branch": "main",
       "asset_name": "waveform-editor-module.tar.gz",
-      "min_host_version": "0.6.0"
+      "min_host_version": "0.7.0"
     },
     {
       "id": "stretch",
@@ -410,7 +410,7 @@
       "github_repo": "charlesvestal/move-anything-stretch",
       "default_branch": "main",
       "asset_name": "stretch-module.tar.gz",
-      "min_host_version": "0.6.0"
+      "min_host_version": "0.7.0"
     },
     {
       "id": "stems",
@@ -421,7 +421,7 @@
       "github_repo": "charlesvestal/move-anything-stems",
       "default_branch": "main",
       "asset_name": "stems-module.tar.gz",
-      "min_host_version": "0.6.0"
+      "min_host_version": "0.7.0"
     }
   ]
 }

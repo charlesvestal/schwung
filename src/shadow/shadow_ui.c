@@ -1895,6 +1895,17 @@ static JSValue js_host_sampler_is_recording(JSContext *ctx, JSValueConst this_va
     return (shadow_control->sampler_state_val == 2) ? JS_TRUE : JS_FALSE;  /* 2 = SAMPLER_RECORDING */
 }
 
+/* host_sampler_set_external_stop(flag) - set/clear external-stop-only mode */
+static JSValue js_host_sampler_set_external_stop(JSContext *ctx, JSValueConst this_val,
+                                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    shadow_control->sampler_ext_stop = val ? 1 : 0;
+    return JS_TRUE;
+}
+
 /* === End host functions === */
 
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -2004,6 +2015,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_start", JS_NewCFunction(ctx, js_host_sampler_start, "host_sampler_start", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_stop", JS_NewCFunction(ctx, js_host_sampler_stop, "host_sampler_stop", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_is_recording", JS_NewCFunction(ctx, js_host_sampler_is_recording, "host_sampler_is_recording", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_sampler_set_external_stop", JS_NewCFunction(ctx, js_host_sampler_set_external_stop, "host_sampler_set_external_stop", 1));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 

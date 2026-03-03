@@ -125,6 +125,8 @@ let recordStopTime = 0;        /* auto-stop timestamp (ms), 0 = no auto-stop pen
 let recordLedLit = false;
 let recordPendingPath = "";    /* non-empty = start recording after startup sequence */
 const RECORDINGS_DIR = "/data/UserData/Recordings/Song Mode";
+const TAIL_OPTIONS = [0, 1, 2, 4, 8];
+let tailBars = 2;  /* recording tail after song ends (bars) */
 let recordingSavedUntil = 0;   /* show "Recording saved!" overlay until this timestamp */
 let recordingSavedAnnounced = false;
 let overlayMessage = "";       /* generic overlay text */
@@ -206,7 +208,8 @@ function serializableSongEntries() {
 function saveSongData() {
     const path = songStatePath();
     if (!path) return;
-    const json = JSON.stringify(serializableSongEntries());
+    const data = { entries: serializableSongEntries(), tailBars: tailBars };
+    const json = JSON.stringify(data);
     if (json === lastSavedJson) return;  /* no change */
     host_write_file(path, json);
     lastSavedJson = json;
@@ -218,15 +221,21 @@ function loadSongData() {
     const raw = host_read_file(path);
     if (!raw) return false;
     try {
-        const entries = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        /* Support both old format (bare array) and new format ({entries, tailBars}) */
+        const entries = Array.isArray(parsed) ? parsed : (parsed.entries || []);
         if (!Array.isArray(entries) || entries.length === 0) return false;
         songEntries = entries.map(e => ({
             pads: Array.isArray(e.pads) ? e.pads : [null, null, null, null],
             repeats: typeof e.repeats === "number" ? e.repeats : 1
         }));
+        if (!Array.isArray(parsed) && typeof parsed.tailBars === "number") {
+            tailBars = parsed.tailBars;
+        }
         ensureTrailingEmpty();
-        lastSavedJson = JSON.stringify(serializableSongEntries());
-        console.log("song-mode: loaded " + entries.length + " entries from " + path);
+        const data = { entries: serializableSongEntries(), tailBars: tailBars };
+        lastSavedJson = JSON.stringify(data);
+        console.log("song-mode: loaded " + entries.length + " entries, tail=" + tailBars + " bars from " + path);
         return true;
     } catch (e) {
         console.log("song-mode: failed to parse song_mode.json: " + e);
@@ -320,6 +329,7 @@ function entryLabel(entry) {
 function describeEntry(idx) {
     if (idx === songEntries.length) return "Play Song";
     if (idx === songEntries.length + 1) return "Record Song";
+    if (idx === songEntries.length + 2) return "Tail: " + tailBars + " Bars";
     if (idx >= songEntries.length) return "";
     const entry = songEntries[idx];
     if (isEntryEmpty(entry)) return "Step " + (idx + 1) + ", empty";
@@ -372,8 +382,8 @@ function drawListView() {
     print(Math.max(128 - nameW - 2, 60), 2, nameStr, 1);
     fill_rect(0, 12, 128, 1, 1);
 
-    /* Total items: songEntries + "Play Song" + "Record Song" at end */
-    const totalItems = songEntries.length + 2;
+    /* Total items: songEntries + "Play Song" + "Record Song" + "Tail" at end */
+    const totalItems = songEntries.length + 3;
 
     /* Ensure selected is in bounds */
     if (selectedEntry >= totalItems) selectedEntry = totalItems - 1;
@@ -405,6 +415,10 @@ function drawListView() {
         if (idx === songEntries.length + 1) {
             const recLabel = recording ? ">> Stop Recording" : ">> Record Song";
             print(2, y, recLabel, color);
+            continue;
+        }
+        if (idx === songEntries.length + 2) {
+            print(2, y, "   Tail: " + tailBars + " Bars", color);
             continue;
         }
 
@@ -603,11 +617,20 @@ function tickPlayback() {
     if (elapsed >= totalBars) {
         if (nextIdx < 0) {
             console.log("song-mode: song ended");
-            if (recording && recordStopTime === 0) {
-                /* Recording: let transport run 1 extra bar to capture tail */
-                recordStopTime = Date.now() + barDurationMs;
-                console.log("song-mode: recording auto-stop scheduled in " + barDurationMs + "ms");
-            } else {
+            if (recording && recordStopTime === 0 && tailBars > 0) {
+                /* Recording: stop transport now, but keep sampler running for tail.
+                 * Set external_stop_only so MIDI Stop doesn't kill the sampler. */
+                if (typeof host_sampler_set_external_stop === "function")
+                    host_sampler_set_external_stop(1);
+                const tailMs = barDurationMs * tailBars;
+                recordStopTime = Date.now() + tailMs;
+                console.log("song-mode: recording tail " + tailMs + "ms (" + tailBars + " bars), stopping transport");
+                stopPlayback();
+            } else if (recording && recordStopTime === 0 && tailBars === 0) {
+                /* No tail — stop recording and playback immediately */
+                stopRecording();
+                stopPlayback();
+            } else if (!recording) {
                 /* Not recording: stop immediately */
                 stopPlayback();
             }
@@ -836,6 +859,8 @@ function updateRecordLed() {
 
 function stopRecording() {
     if (!recording) return;
+    if (typeof host_sampler_set_external_stop === "function")
+        host_sampler_set_external_stop(0);
     host_sampler_stop();
     recording = false;
     recordStopTime = 0;
@@ -999,11 +1024,11 @@ globalThis.tick = function() {
     tickPlayback();
     drainInjectQueue();
 
-    /* Recording auto-stop: after song ends, wait 1 extra bar then stop both */
+    /* Recording tail: transport already stopped, sampler kept alive via external_stop_only.
+     * After tail period expires, stop recording (clears the flag). */
     if (recording && recordStopTime > 0 && Date.now() >= recordStopTime) {
-        console.log("song-mode: recording auto-stop triggered");
+        console.log("song-mode: recording tail complete, stopping sampler");
         stopRecording();
-        if (playbackState === "playing") stopPlayback();
     }
 
     /* Step hold detection — open step params after holding for STEP_HOLD_MS */
@@ -1126,7 +1151,7 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Jog wheel — navigate entries + Play/Record Song items at end */
     if (status === MidiCC && d1 === MoveMainKnob) {
         const delta = decodeDelta(d2);
-        const maxIdx = songEntries.length + 1; /* extra slots for Play/Record Song */
+        const maxIdx = songEntries.length + 2; /* extra slots for Play/Record/Tail */
         selectedEntry = Math.max(0, Math.min(maxIdx, selectedEntry + delta));
         /* Keep step page in sync with selection */
         if (selectedEntry < songEntries.length) {
@@ -1158,7 +1183,7 @@ globalThis.onMidiMessageInternal = function(data) {
                     + "_" + String(now.getHours()).padStart(2, "0")
                     + String(now.getMinutes()).padStart(2, "0")
                     + String(now.getSeconds()).padStart(2, "0");
-                const path = RECORDINGS_DIR + "/song_" + ts + ".wav";
+                const path = RECORDINGS_DIR + "/" + (setName || "song") + "_" + ts + ".wav";
                 host_sampler_start(path);
                 recording = true;
                 recordStartTime = Date.now();
@@ -1166,6 +1191,11 @@ globalThis.onMidiMessageInternal = function(data) {
                 announce("Recording from beginning");
                 console.log("song-mode: recording started -> " + path);
             }
+        } else if (selectedEntry === songEntries.length + 2) {
+            /* Tail setting — cycle through options */
+            const curIdx = TAIL_OPTIONS.indexOf(tailBars);
+            tailBars = TAIL_OPTIONS[(curIdx + 1) % TAIL_OPTIONS.length];
+            announce("Tail: " + tailBars + " Bars");
         } else if (selectedEntry < songEntries.length && !isEntryEmpty(songEntries[selectedEntry])) {
             pushUndo();
             editingEntry = selectedEntry;
@@ -1361,7 +1391,7 @@ globalThis.onMidiMessageInternal = function(data) {
                     + "_" + String(now.getHours()).padStart(2, "0")
                     + String(now.getMinutes()).padStart(2, "0")
                     + String(now.getSeconds()).padStart(2, "0");
-                recordPendingPath = RECORDINGS_DIR + "/song_" + ts + ".wav";
+                recordPendingPath = RECORDINGS_DIR + "/" + (setName || "song") + "_" + ts + ".wav";
                 recording = true;
                 recordStartTime = Date.now();
                 recordStopTime = 0;

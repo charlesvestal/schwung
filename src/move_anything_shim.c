@@ -1429,6 +1429,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
     /* Poll sampler commands from shadow UI (via shared memory) */
     if (shadow_control) {
         shadow_control->sampler_state_val = (uint8_t)sampler_get_state();
+        sampler_external_stop_only = shadow_control->sampler_ext_stop ? 1 : 0;
         uint8_t cmd = shadow_control->sampler_cmd;
         if (cmd == 1) {
             /* Start recording — path in file */

@@ -45,6 +45,7 @@ int sampler_fallback_blocks = 0;
 int sampler_fallback_target = 0;
 int sampler_clock_received = 0;
 int sampler_transport_playing = 0;  /* Set on MIDI Start (0xFA), cleared on Stop (0xFC) */
+int sampler_external_stop_only = 0; /* When set, ignore MIDI Stop auto-kill — only explicit stop_recording() works */
 
 /* Pre-roll state */
 int sampler_preroll_enabled = 0;
@@ -716,8 +717,12 @@ void sampler_on_clock(uint8_t status) {
         s_host.overlay_sync();
         s_host.log("Sampler: transport_playing=0 (MIDI Stop)");
         if (sampler_state == SAMPLER_RECORDING) {
-            s_host.log("Sampler: stopped by MIDI Stop");
-            sampler_stop_recording();
+            if (sampler_external_stop_only) {
+                s_host.log("Sampler: MIDI Stop ignored (external_stop_only)");
+            } else {
+                s_host.log("Sampler: stopped by MIDI Stop");
+                sampler_stop_recording();
+            }
         } else if (sampler_state == SAMPLER_PREROLL) {
             s_host.log("Sampler: preroll cancelled by MIDI Stop");
             sampler_state = SAMPLER_ARMED;
