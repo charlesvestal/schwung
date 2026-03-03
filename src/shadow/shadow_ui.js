@@ -1786,6 +1786,7 @@ function scanForOvertakeModules() {
         /* Failed to read modules directory */
     }
 
+    result.sort((a, b) => a.name.localeCompare(b.name));
     debugLog("returning " + result.length + " modules");
     return result;
 }

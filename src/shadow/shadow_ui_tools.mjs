@@ -85,6 +85,7 @@ export function scanForToolModules() {
         debugLog("scanForToolModules error: " + e);
     }
 
+    result.sort((a, b) => a.name.localeCompare(b.name));
     debugLog("scanForToolModules: found " + result.length + " tools");
     return result;
 }
