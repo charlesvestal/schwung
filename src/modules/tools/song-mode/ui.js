@@ -124,7 +124,7 @@ let recordStartTime = 0;       /* when recording began (ms) */
 let recordStopTime = 0;        /* auto-stop timestamp (ms), 0 = no auto-stop pending */
 let recordLedLit = false;
 let recordPendingPath = "";    /* non-empty = start recording after startup sequence */
-const RECORDINGS_DIR = "/data/UserData/Recordings/Song Mode";
+const RECORDINGS_DIR = "/data/UserData/UserLibrary/Recordings/Song Mode";
 const TAIL_OPTIONS = [0, 1, 2, 4, 8];
 let tailBars = 2;  /* recording tail after song ends (bars) */
 let recordingSavedUntil = 0;   /* show "Recording saved!" overlay until this timestamp */
