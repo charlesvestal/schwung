@@ -750,7 +750,7 @@ static JSValue js_unified_log_enabled(JSContext *ctx, JSValueConst this_val,
 
 /* === Host functions for store operations === */
 
-#define BASE_DIR "/data/UserData/move-anything"
+#define BASE_DIR "/data/UserData"
 #define MODULES_DIR "/data/UserData/move-anything/modules"
 #define CURL_PATH "/data/UserData/move-anything/bin/curl"
 

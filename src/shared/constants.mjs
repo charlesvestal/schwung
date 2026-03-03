@@ -578,6 +578,7 @@ export const MoveMute = 88;
 export const MoveMicOrAudIn = 114;   // Plug detect - MIC in = 0, Line in = 127
 export const MoveSpkrOrAudOut = 115;   // Plug detect - Spkr out = 0, Line out = 127
 export const MoveRecord = 118;   // RGB LED
+export const MoveSample = 118;   // Alias for MoveRecord (Sample button)
 export const MoveDelete = 119;
 
 // Groupings
@@ -591,6 +592,7 @@ export const MoveCCButtons = [
   MoveRec,
   MoveCapture,
   MoveRecord,
+  MoveSample,
   MoveLoop,
   MoveMute,
   MoveDelete,

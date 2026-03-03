@@ -392,7 +392,7 @@
     },
     {
       "id": "waveform-editor",
-      "name": "Waveform Editor",
+      "name": "Wave Edit",
       "description": "Trim, gain adjust, and edit audio files on the Move",
       "author": "charlesvestal",
       "component_type": "tool",

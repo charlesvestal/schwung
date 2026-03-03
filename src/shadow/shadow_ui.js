@@ -1940,6 +1940,19 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                 exitOvertakeMode();
             }
         };
+        /* Expose file I/O to overtake modules */
+        if (typeof host_write_file === "function") {
+            globalThis.host_write_file = host_write_file;
+        }
+        if (typeof host_ensure_dir === "function") {
+            globalThis.host_ensure_dir = host_ensure_dir;
+        }
+        if (typeof host_file_exists === "function") {
+            globalThis.host_file_exists = host_file_exists;
+        }
+        if (typeof host_read_file === "function") {
+            globalThis.host_read_file = host_read_file;
+        }
         debugLog("loadOvertakeModule: param shims installed");
 
         /* Step 4: Load the module's UI script (after DSP + shims so module can use them) */
@@ -3727,6 +3740,7 @@ function startInteractiveTool(toolModule, filePath) {
     const success = loadOvertakeModule(moduleInfo, skipOvertake);
     if (success) {
         /* DSP is now loaded — pass the selected file path */
+        globalThis.host_tool_file_path = filePath || "";
         if (typeof shadow_set_param === "function") {
             shadow_set_param(0, "overtake_dsp:file_path", filePath);
             /* Pass project BPM for tempo-aware tools */
