@@ -74,9 +74,11 @@ let currentEntryIndex = 0;
 let playbackStartEntry = 0;  /* entry to return to on stop */
 let playStartTime = 0;
 let nextEntryQueued = false;
-let playStartPending = 0;    /* startup phase: 0=off, 1=selecting, 2=stopping, 3=restarting */
+let playStartPending = 0;    /* startup phase: 0=off, 1=selecting, 2=stopping, 3=starting, 4=wait */
 let playStartPhaseDelay = 0; /* ticks to wait between phases */
 const PHASE_DELAY_TICKS = 3; /* ~50ms between phases */
+const TRANSPORT_WAIT_TIMEOUT = 300; /* ~5s max wait for transport confirmation */
+let transportWaitTicks = 0;
 let loopEnabled = false;     /* loop song from beginning when it ends */
 
 /* Undo */
@@ -121,6 +123,7 @@ let recording = false;
 let recordStartTime = 0;       /* when recording began (ms) */
 let recordStopTime = 0;        /* auto-stop timestamp (ms), 0 = no auto-stop pending */
 let recordLedLit = false;
+let recordPendingPath = "";    /* non-empty = start recording after startup sequence */
 const RECORDINGS_DIR = "/data/UserData/Recordings/Song Mode";
 let recordingSavedUntil = 0;   /* show "Recording saved!" overlay until this timestamp */
 let recordingSavedAnnounced = false;
@@ -522,12 +525,15 @@ function startPlayback(fromBeginning) {
     console.log("song-mode: startPlayback from entry " + startIdx + (fromBeginning ? " (beginning)" : ""));
     currentEntryIndex = startIdx;
 
-    /* Startup sequence:
-     *   1. Mute Move's audio output
-     *   2. Select clips via queued injection (one per tick)
-     *   3. Play toggle (stop) → Play toggle (start)
-     *   4. Unmute audio (in phase 3, after restart) */
+    /* Startup sequence (works regardless of transport state):
+     *   1. Mute audio
+     *   2. Play toggle (starts if stopped, stops if playing — either way muted)
+     *   3. Select pads (selecting populated pad may restart transport — still muted)
+     *   4. Play toggle (stop transport)
+     *   5. Unmute + Play toggle (start with correct pads, audible)
+     *   6. Start timer */
     if (typeof host_mute_move_audio === "function") host_mute_move_audio(1);
+    queuePlayToggle();
     triggerEntry(currentEntryIndex);
 
     playStartPending = 1;
@@ -540,6 +546,8 @@ function stopPlayback() {
     playbackState = "stopped";
     playStartPending = 0;
     playStartPhaseDelay = 0;
+    transportWaitTicks = 0;
+    recordPendingPath = "";
     injectQueue = [];
     pendingNoteOffs = [];
     /* Ensure audio is unmuted */
@@ -672,31 +680,54 @@ function drainInjectQueue() {
         }
     }
 
-    /* Startup state machine: select pads → Play CC (stop) → Play CC (start).
-     * Each phase waits for the queue to drain, then pauses briefly. */
+    /* Startup state machine:
+     *   Queue already contains: Play toggle (1st) + pad selections.
+     *   Phase 1: queue drained → Play toggle (2nd, stop transport)
+     *   Phase 2: drained → unmute + Play toggle (3rd, start with correct pads)
+     *   Phase 3: drained → wait for transportPlaying confirmation (Link quantize)
+     *   Phase 3 has a ~5s timeout fallback. */
     if (playStartPending > 0 && injectQueue.length === 0 && pendingNoteOffs.length === 0) {
         if (playStartPhaseDelay > 0) {
             playStartPhaseDelay--;
             return;
         }
         if (playStartPending === 1) {
-            /* Phase 1: pad selections drained. Toggle Play (stop transport). */
+            /* Phase 1: first toggle + pad selections drained. Stop transport. */
             queuePlayToggle();
             playStartPending = 2;
             playStartPhaseDelay = PHASE_DELAY_TICKS;
             console.log("song-mode: phase 1 done, toggling play (stop)");
         } else if (playStartPending === 2) {
-            /* Phase 2: transport stopped. Toggle Play (restart). */
+            /* Phase 2: transport stopped. Unmute and start transport. */
+            if (typeof host_mute_move_audio === "function") host_mute_move_audio(0);
             queuePlayToggle();
             playStartPending = 3;
             playStartPhaseDelay = PHASE_DELAY_TICKS;
-            console.log("song-mode: phase 2 done, toggling play (start)");
+            transportWaitTicks = TRANSPORT_WAIT_TIMEOUT;
+            console.log("song-mode: phase 2 done, unmuted, toggling play (start)");
         } else if (playStartPending === 3) {
-            /* Phase 3: playing with correct clips. Unmute and start timer. */
-            if (typeof host_mute_move_audio === "function") host_mute_move_audio(0);
+            /* Phase 3: wait for transport to actually start (Link quantize delay). */
+            let transportUp = false;
+            if (typeof shadow_get_overlay_state === "function") {
+                const ov = shadow_get_overlay_state();
+                transportUp = ov && ov.transportPlaying;
+            } else {
+                transportUp = true; /* no overlay → assume immediate */
+            }
+            transportWaitTicks--;
+            if (!transportUp && transportWaitTicks > 0) return; /* keep polling */
+            if (transportWaitTicks <= 0) {
+                console.log("song-mode: transport wait timeout, starting timer anyway");
+            }
             playStartPending = 0;
             playStartTime = Date.now();
-            console.log("song-mode: phase 3 done, timer started");
+            /* Start deferred recording now that transport is stable */
+            if (recordPendingPath) {
+                host_sampler_start(recordPendingPath);
+                console.log("song-mode: recording started -> " + recordPendingPath);
+                recordPendingPath = "";
+            }
+            console.log("song-mode: timer started" + (transportUp ? " (transport confirmed)" : " (timeout)"));
         }
     }
 }
@@ -904,15 +935,7 @@ function restoreAllPadLeds() {
 globalThis.init = function() {
     console.log("Song Mode initializing");
 
-    /* Mute Move's audio — transport may be playing when we enter.
-     * Unmuted when playback starts (phase 3) or on exit. */
-    if (typeof host_mute_move_audio === "function") host_mute_move_audio(1);
-
-    /* Stop transport if it was playing (Play CC toggle).
-     * If it was stopped, this briefly starts it (muted), handled by
-     * the 2-toggle sequence in startPlayback. */
-    move_midi_inject_to_move([0x0B, 0xB0, MovePlay, 127]);
-    move_midi_inject_to_move([0x0B, 0xB0, MovePlay, 0]);
+    /* No transport manipulation on init — startPlayback handles everything. */
 
     /* Reset state first (before queueing anything) */
     songEntries = [newEntry()];
@@ -1315,11 +1338,14 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Record button — Rec from current step, Shift+Rec from beginning */
     if (status === MidiCC && d1 === MoveRec && d2 > 0) {
         if (recording) {
-            /* Stop recording */
+            /* Stop recording and playback */
             stopRecording();
+            if (playbackState === "playing") stopPlayback();
             announce("Recording stopped");
         } else {
-            /* Start recording — begin playback if not already playing */
+            /* Start recording — begin playback if not already playing.
+             * Recording is deferred until the startup sequence completes (phase 3)
+             * so the sampler isn't killed by the stop-start toggles. */
             if (playbackState !== "playing") {
                 startPlayback(shiftHeld);
             }
@@ -1332,13 +1358,12 @@ globalThis.onMidiMessageInternal = function(data) {
                     + "_" + String(now.getHours()).padStart(2, "0")
                     + String(now.getMinutes()).padStart(2, "0")
                     + String(now.getSeconds()).padStart(2, "0");
-                const path = RECORDINGS_DIR + "/song_" + ts + ".wav";
-                host_sampler_start(path);
+                recordPendingPath = RECORDINGS_DIR + "/song_" + ts + ".wav";
                 recording = true;
                 recordStartTime = Date.now();
                 recordStopTime = 0;
                 announce("Recording from step " + (currentEntryIndex + 1));
-                console.log("song-mode: recording started -> " + path);
+                console.log("song-mode: recording deferred -> " + recordPendingPath);
             }
         }
         return;

@@ -44,6 +44,7 @@ int sampler_bars_completed = 0;
 int sampler_fallback_blocks = 0;
 int sampler_fallback_target = 0;
 int sampler_clock_received = 0;
+int sampler_transport_playing = 0;  /* Set on MIDI Start (0xFA), cleared on Stop (0xFC) */
 
 /* Pre-roll state */
 int sampler_preroll_enabled = 0;
@@ -696,7 +697,10 @@ void sampler_on_clock(uint8_t status) {
             }
         }
     } else if (status == 0xFA) {
-        /* MIDI Start */
+        /* MIDI Start — transport is now playing */
+        sampler_transport_playing = 1;
+        s_host.overlay_sync();
+        s_host.log("Sampler: transport_playing=1 (MIDI Start)");
         if (sampler_state == SAMPLER_ARMED) {
             s_host.log("Sampler: triggered by MIDI Start");
             if (sampler_preroll_enabled && sampler_duration_options[sampler_duration_index] > 0) {
@@ -707,7 +711,10 @@ void sampler_on_clock(uint8_t status) {
         }
     }
     else if (status == 0xFC) {
-        /* MIDI Stop */
+        /* MIDI Stop — transport stopped */
+        sampler_transport_playing = 0;
+        s_host.overlay_sync();
+        s_host.log("Sampler: transport_playing=0 (MIDI Stop)");
         if (sampler_state == SAMPLER_RECORDING) {
             s_host.log("Sampler: stopped by MIDI Stop");
             sampler_stop_recording();

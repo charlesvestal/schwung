@@ -1814,6 +1814,7 @@ static JSValue js_shadow_get_overlay_state(JSContext *ctx, JSValueConst this_val
     JS_SetPropertyStr(ctx, obj, "samplerFallbackBlocks", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_blocks));
     JS_SetPropertyStr(ctx, obj, "samplerFallbackTarget", JS_NewUint32(ctx, shadow_overlay->sampler_fallback_target));
     JS_SetPropertyStr(ctx, obj, "samplerClockReceived", JS_NewInt32(ctx, shadow_overlay->sampler_clock_received));
+    JS_SetPropertyStr(ctx, obj, "transportPlaying", JS_NewInt32(ctx, shadow_overlay->transport_playing));
 
     /* Shift+knob overlay */
     JS_SetPropertyStr(ctx, obj, "shiftKnobActive", JS_NewInt32(ctx, shadow_overlay->shift_knob_active));

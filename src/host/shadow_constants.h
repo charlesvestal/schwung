@@ -253,6 +253,7 @@ typedef struct shadow_overlay_state_t {
     volatile uint32_t sampler_fallback_blocks;
     volatile uint32_t sampler_fallback_target;
     volatile uint8_t  sampler_clock_received;
+    volatile uint8_t  transport_playing;       /* 1 = MIDI Start seen, 0 = MIDI Stop seen */
 
     /* Shift+knob overlay */
     volatile uint8_t  shift_knob_active;        /* 1 = showing shift+knob overlay */

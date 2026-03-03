@@ -115,6 +115,7 @@ extern int sampler_bars_completed;
 extern int sampler_fallback_blocks;
 extern int sampler_fallback_target;
 extern int sampler_clock_received;
+extern int sampler_transport_playing;
 
 extern struct timespec sampler_clock_last_beat;
 extern int sampler_clock_beat_ticks;

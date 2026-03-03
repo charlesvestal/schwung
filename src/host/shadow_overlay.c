@@ -454,6 +454,7 @@ void shadow_overlay_sync(void) {
         ov->sampler_fallback_target = (uint32_t)sampler_fallback_target;
     }
     ov->sampler_clock_received = sampler_clock_received ? 1 : 0;
+    ov->transport_playing = sampler_transport_playing ? 1 : 0;
 
     /* Preroll state */
     ov->sampler_preroll_enabled = sampler_preroll_enabled ? 1 : 0;
