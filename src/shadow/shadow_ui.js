@@ -1953,6 +1953,9 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         if (typeof host_read_file === "function") {
             globalThis.host_read_file = host_read_file;
         }
+        if (typeof host_system_cmd === "function") {
+            globalThis.host_system_cmd = host_system_cmd;
+        }
         debugLog("loadOvertakeModule: param shims installed");
 
         /* Step 4: Load the module's UI script (after DSP + shims so module can use them) */
