@@ -338,6 +338,16 @@ static JSValue js_shadow_get_display_mode(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, shadow_control->display_mode);
 }
 
+/* shadow_get_move_ui_mode() -> int
+ * Returns Move's UI mode from shared control struct:
+ * 0=unknown, 1=session, 2=note, 3=set_overview
+ */
+static JSValue js_shadow_get_move_ui_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->move_ui_mode);
+}
+
 /* shadow_set_overtake_mode(mode) -> void
  * Set overtake mode: 1=block all MIDI from reaching Move, 0=normal.
  */
@@ -1867,6 +1877,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_slot", JS_NewCFunction(ctx, js_shadow_get_ui_slot, "shadow_get_ui_slot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_move_ui_mode", JS_NewCFunction(ctx, js_shadow_get_move_ui_mode, "shadow_get_move_ui_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_pad_led_snapshot", JS_NewCFunction(ctx, js_shadow_get_pad_led_snapshot, "shadow_get_pad_led_snapshot", 0));

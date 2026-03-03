@@ -124,7 +124,8 @@ typedef struct shadow_control_t {
     volatile uint16_t tts_debounce_ms;   /* Screen reader debounce in ms (0-1000, default 300) */
     volatile uint8_t set_pages_enabled;  /* 0=off, 1=on (Shift+Vol+Left/Right page switching) */
     volatile uint8_t skip_led_clear;     /* 1=don't clear LEDs on overtake entry, restore snapshot instead */
-    volatile uint8_t reserved[18];
+    volatile uint8_t move_ui_mode;       /* Move's UI mode: 0=unknown, 1=session, 2=note, 3=set_overview */
+    volatile uint8_t reserved[17];
 } shadow_control_t;
 
 /*

@@ -216,6 +216,10 @@ static void shadow_dbus_handle_text(const char *text)
     /* Set page: detect Set Overview screen for Shift+Vol+Left/Right interception */
     if (strcasecmp(text, "Set Overview") == 0 || strcasecmp(text, "Sets") == 0) {
         in_set_overview = 1;
+        if (ctrl) ctrl->move_ui_mode = 3; /* SET_OVERVIEW */
+    } else if (strcasecmp(text, "Session Mode") == 0) {
+        in_set_overview = 0;
+        if (ctrl) ctrl->move_ui_mode = 1; /* SESSION */
     } else if (text[0] && strcasecmp(text, "Set Overview") != 0 &&
                strcasecmp(text, "Sets") != 0 &&
                strncmp(text, "Page ", 5) != 0) {

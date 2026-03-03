@@ -52,6 +52,7 @@ extern volatile uint8_t native_knob_mapped[8];
 /* Set overview detection (written by D-Bus handler) */
 extern volatile int in_set_overview;
 
+
 /* Priority announcement blocking (shared with TTS subsystem) */
 extern bool tts_priority_announcement_active;
 extern uint64_t tts_priority_announcement_time_ms;

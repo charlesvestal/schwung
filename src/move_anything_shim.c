@@ -3782,6 +3782,7 @@ do_ioctl:
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
                     shadow_update_held_track(d1, pressed);
+                    if (pressed && shadow_control) shadow_control->move_ui_mode = 2; /* NOTE */
 
                     /* Update selected slot when track is pressed (for Shift+Knob routing)
                      * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */

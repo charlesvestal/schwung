@@ -22,6 +22,10 @@ import {
     isCapacitiveTouchMessage, decodeDelta
 } from '/data/UserData/move-anything/shared/input_filter.mjs';
 
+import {
+    drawMessageOverlay
+} from '/data/UserData/move-anything/shared/menu_layout.mjs';
+
 /* ── Constants ─────────────────────────────────────────────────────── */
 
 const NUM_TRACKS = 4;
@@ -83,7 +87,21 @@ let lastStepLedKey = "";    /* change detection for step LED updates */
 const LED_RED = BrightRed;
 let padLedSnapshot = {};    /* note -> original color from Move */
 let highlightedNotes = [];  /* currently red-highlighted pad notes */
+let dirtyNotes = new Set();  /* all notes ever highlighted — restore these on change */
 let lastHighlightKey = "";  /* change detection */
+
+/* Play button LED */
+let playButtonLit = false;
+
+/* Post-stop highlight retry — Move overwrites our restores */
+let highlightRetryCount = 0;
+const HIGHLIGHT_RETRY_MAX = 10;  /* retry for ~160ms at 16ms/tick */
+
+/* Step parameter editing */
+const REPEAT_VALUES = [1, 2, 4, 8, 16, 32, 64];
+let currentView = "list";   /* "list" or "step_params" */
+let sessionWarning = false;  /* true = show "switch to session" screen, dismiss with jog click */
+let editingEntry = -1;      /* index of entry being edited */
 
 /* ── Song.abl Parsing ──────────────────────────────────────────────── */
 
@@ -191,8 +209,9 @@ function isEntryComplete(entry) {
 }
 
 function newEntry() {
-    return { pads: [null, null, null, null] };
+    return { pads: [null, null, null, null], repeats: 1 };
 }
+
 
 /* Ensure there's always exactly one empty row at the end */
 function ensureTrailingEmpty() {
@@ -264,9 +283,8 @@ function drawListView() {
         } else {
             print(2, y, prefix + numStr + ":", color);
             print(26, y, entryLabel(entry), color);
-            const bars = entryBars(entry);
-            const barStr = bars + "b";
-            print(128 - barStr.length * 6 - 2, y, barStr, color);
+            const repStr = "x" + entry.repeats;
+            print(128 - repStr.length * 6 - 2, y, repStr, color);
         }
     }
 
@@ -278,10 +296,10 @@ function drawListView() {
     fill_rect(0, 55, 128, 1, 1);
     if (playbackState === "playing") {
         const entry = songEntries[currentEntryIndex];
-        const bars = entryBars(entry);
+        const totalBars = entryBars(entry) * entry.repeats;
         const elapsed = (Date.now() - playStartTime) / barDurationMs;
-        const currentBar = Math.min(Math.floor(elapsed) + 1, bars);
-        print(2, 57, "Playing " + (currentEntryIndex + 1) + "/" + countNonEmpty() + " bar " + currentBar + "/" + bars, 1);
+        const currentBar = Math.min(Math.floor(elapsed) + 1, totalBars);
+        print(2, 57, "Playing " + (currentEntryIndex + 1) + "/" + countNonEmpty() + " bar " + currentBar + "/" + totalBars, 1);
     } else {
         print(2, 57, "Pad:set X:del Click:play", 1);
     }
@@ -291,6 +309,39 @@ function countNonEmpty() {
     let n = 0;
     for (const e of songEntries) if (!isEntryEmpty(e)) n++;
     return n;
+}
+
+function drawStepParamsView() {
+    clear_screen();
+
+    const entry = songEntries[editingEntry];
+    if (!entry) { currentView = "list"; return; }
+
+    /* Header */
+    const title = "Step " + String(editingEntry + 1).padStart(2, "0") + " Settings";
+    print(2, 2, title, 1);
+    fill_rect(0, 12, 128, 1, 1);
+
+    /* Pad assignments */
+    print(2, 16, entryLabel(entry), 1);
+
+    /* Clip bars (informational) */
+    const bars = entryBars(entry);
+    print(2, 28, "Clip length: " + bars + " bar" + (bars !== 1 ? "s" : ""), 1);
+
+    /* Repeats — highlight value */
+    print(2, 40, "Repeats:", 1);
+    const repStr = " " + entry.repeats + "x ";
+    fill_rect(50, 38, repStr.length * 6 + 2, 11, 1);
+    print(52, 40, repStr, 0);
+
+    /* Total duration */
+    const total = bars * entry.repeats;
+    print(2, 52, "= " + total + " bar" + (total !== 1 ? "s" : "") + " total", 1);
+
+    /* Footer */
+    fill_rect(0, 55, 128, 1, 1);
+    print(2, 57, "Jog:change  Back:done", 1);
 }
 
 /* ── Playback Engine ───────────────────────────────────────────────── */
@@ -339,6 +390,12 @@ function stopPlayback() {
     }
     queueInjectCC(MovePlay, 127);
     queueInjectCC(MovePlay, 0);
+    /* Jump back to beginning */
+    selectedEntry = 0;
+    stepPage = 0;
+    lastStepLedKey = "";  /* force LED refresh */
+    lastHighlightKey = "";  /* force pad highlight refresh */
+    highlightRetryCount = HIGHLIGHT_RETRY_MAX;  /* retry highlights to fight Move's LED updates */
     console.log("song-mode: stopPlayback");
 }
 
@@ -354,21 +411,21 @@ function tickPlayback() {
     if (currentEntryIndex >= songEntries.length) { stopPlayback(); return; }
 
     const entry = songEntries[currentEntryIndex];
-    const bars = entryBars(entry);
+    const totalBars = entryBars(entry) * entry.repeats;
     const elapsed = (Date.now() - playStartTime) / barDurationMs;
 
     /* Pre-trigger next entry 1 beat (0.25 bars) before end.
      * Move quantizes clip launches to bar boundaries, so selecting
      * the next clips just before the boundary makes them start on time. */
     const nextIdx = nextCompleteEntry(currentEntryIndex);
-    if (!nextEntryQueued && elapsed >= bars - 0.25 && nextIdx >= 0) {
-        console.log("song-mode: pre-trigger entry " + nextIdx + " at " + elapsed.toFixed(2) + "/" + bars + " bars");
+    if (!nextEntryQueued && elapsed >= totalBars - 0.25 && nextIdx >= 0) {
+        console.log("song-mode: pre-trigger entry " + nextIdx + " at " + elapsed.toFixed(2) + "/" + totalBars + " bars");
         triggerEntry(nextIdx);
         nextEntryQueued = true;
     }
 
     /* Advance when current entry's duration has elapsed */
-    if (elapsed >= bars) {
+    if (elapsed >= totalBars) {
         if (nextIdx < 0) {
             console.log("song-mode: song ended");
             stopPlayback();
@@ -484,8 +541,8 @@ function updateStepLeds() {
 
         if (playbackState === "playing" && entryIdx === currentEntryIndex) {
             color = BrightRed;    /* currently playing */
-        } else if (entryIdx === selectedEntry) {
-            color = White;        /* selected */
+        } else if (entryIdx === selectedEntry && selectedEntry < songEntries.length) {
+            color = White;        /* selected (not Play Song item) */
         } else if (entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
             color = BrightGreen;  /* populated */
         }
@@ -501,6 +558,16 @@ function clearStepLeds() {
     lastStepLedKey = "";
 }
 
+/* ── Play Button LED ─────────────────────────────────────────────── */
+
+function updatePlayButtonLed() {
+    const shouldLight = (selectedEntry === songEntries.length);
+    if (shouldLight === playButtonLit) return;
+    playButtonLit = shouldLight;
+    const color = shouldLight ? BrightGreen : Black;
+    move_midi_internal_send([0x0B, 0xB0, MovePlay, color]);
+}
+
 /* ── Pad LED Highlighting ─────────────────────────────────────────── */
 
 function snapshotPadLeds() {
@@ -511,22 +578,25 @@ function snapshotPadLeds() {
 }
 
 function getHighlightKey() {
-    if (selectedEntry >= songEntries.length) return "play";
+    if (playbackState === "playing") return "playing";  /* no pad highlights during playback */
+    if (selectedEntry >= songEntries.length) return "none";
     const entry = songEntries[selectedEntry];
     return selectedEntry + ":" + entry.pads.join(",");
 }
 
 function updatePadHighlights() {
     const key = getHighlightKey();
-    if (key === lastHighlightKey) return;
+    const retry = highlightRetryCount > 0;
+    if (retry) highlightRetryCount--;
+    if (key === lastHighlightKey && !retry) return;
     lastHighlightKey = key;
 
     /* Refresh snapshot from overlay SHM for current Move LED state */
     snapshotPadLeds();
 
-    /* Determine new highlight set */
+    /* No pad highlights during playback — Move's own LEDs show clip state */
     let newNotes = [];
-    if (selectedEntry < songEntries.length) {
+    if (playbackState !== "playing" && selectedEntry < songEntries.length) {
         const entry = songEntries[selectedEntry];
         for (let t = 0; t < NUM_TRACKS; t++) {
             if (entry.pads[t] !== null) {
@@ -535,27 +605,30 @@ function updatePadHighlights() {
         }
     }
 
-    /* Restore ALL old highlights to original colors first */
-    for (const note of highlightedNotes) {
+    /* Restore ALL dirty notes (cumulative) to catch stuck LEDs from rapid scrolling */
+    for (const note of dirtyNotes) {
         const orig = padLedSnapshot[note];
         const color = (orig !== undefined && orig >= 0) ? orig : 0;
         move_midi_internal_send([0x09, 0x90, note, color]);
     }
+    dirtyNotes.clear();
 
-    /* Set new highlights to red */
+    /* Set new highlights */
     for (const note of newNotes) {
         move_midi_internal_send([0x09, 0x90, note, LED_RED]);
+        dirtyNotes.add(note);
     }
 
     highlightedNotes = newNotes;
 }
 
 function restoreAllPadLeds() {
-    for (const note of highlightedNotes) {
+    for (const note of dirtyNotes) {
         const orig = padLedSnapshot[note];
         const color = (orig !== undefined && orig >= 0) ? orig : 0;
         move_midi_internal_send([0x09, 0x90, note, color]);
     }
+    dirtyNotes.clear();
     highlightedNotes = [];
     lastHighlightKey = "";
 }
@@ -564,6 +637,20 @@ function restoreAllPadLeds() {
 
 globalThis.init = function() {
     console.log("Song Mode initializing");
+
+    /* Reset state first (before queueing anything) */
+    songEntries = [newEntry()];
+    selectedEntry = 0;
+    playbackState = "stopped";
+    injectQueue = [];
+
+    /* Check if user is in Session view — warn briefly if not */
+    const uiMode = (typeof shadow_get_move_ui_mode === "function") ? shadow_get_move_ui_mode() : 0;
+    console.log("song-mode: move_ui_mode=" + uiMode);
+    if (uiMode !== 1) {
+        sessionWarning = true;
+        console.log("song-mode: NOT in Session view, showing warning screen");
+    }
 
     /* Snapshot pad LED colors before we modify anything */
     snapshotPadLeds();
@@ -602,18 +689,28 @@ globalThis.init = function() {
         console.log("song-mode: no set data, manual entry mode");
     }
 
-    songEntries = [newEntry()];
-    selectedEntry = 0;
-    playbackState = "stopped";
-    injectQueue = [];
 };
 
 globalThis.tick = function() {
     tickPlayback();
     drainInjectQueue();
     updateStepLeds();
+    updatePlayButtonLed();
     updatePadHighlights();
-    drawListView();
+    if (sessionWarning) {
+        clear_screen();
+        drawMessageOverlay("Warning", [
+            "Switch to Session",
+            "Mode before using",
+            "Song Mode"
+        ], true);
+        return;
+    }
+    if (currentView === "step_params") {
+        drawStepParamsView();
+    } else {
+        drawListView();
+    }
 };
 
 globalThis.onMidiMessageInternal = function(data) {
@@ -623,11 +720,43 @@ globalThis.onMidiMessageInternal = function(data) {
     const d1 = data[1];
     const d2 = data[2];
 
+    /* Session warning screen — jog click or back to dismiss */
+    if (sessionWarning) {
+        if (status === MidiCC && (d1 === MoveMainButton || d1 === MoveBack) && d2 > 0) {
+            sessionWarning = false;
+        }
+        return;
+    }
+
     /* Track shift */
     if (status === MidiCC && d1 === MoveShift) {
         shiftHeld = d2 > 0;
         return;
     }
+
+    /* ── Step Params view controls ── */
+    if (currentView === "step_params") {
+        /* Jog wheel — cycle repeat values */
+        if (status === MidiCC && d1 === MoveMainKnob) {
+            const delta = decodeDelta(d2);
+            const entry = songEntries[editingEntry];
+            if (entry) {
+                let idx = REPEAT_VALUES.indexOf(entry.repeats);
+                if (idx < 0) idx = 0;
+                idx = Math.max(0, Math.min(REPEAT_VALUES.length - 1, idx + delta));
+                entry.repeats = REPEAT_VALUES[idx];
+            }
+            return;
+        }
+        /* Jog click or Back — return to list */
+        if (status === MidiCC && (d1 === MoveMainButton || d1 === MoveBack) && d2 > 0) {
+            currentView = "list";
+            return;
+        }
+        return; /* swallow all other input in step_params view */
+    }
+
+    /* ── List view controls ── */
 
     /* Jog wheel — navigate entries + Play Song item at end */
     if (status === MidiCC && d1 === MoveMainKnob) {
@@ -641,12 +770,15 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Jog click — Play Song if on the play item, or stop if playing */
+    /* Jog click — open step params, play, or stop */
     if (status === MidiCC && d1 === MoveMainButton && d2 > 0) {
         if (playbackState === "playing") {
             stopPlayback();
         } else if (selectedEntry === songEntries.length) {
             startPlayback();
+        } else if (selectedEntry < songEntries.length && !isEntryEmpty(songEntries[selectedEntry])) {
+            editingEntry = selectedEntry;
+            currentView = "step_params";
         }
         return;
     }
@@ -665,7 +797,7 @@ globalThis.onMidiMessageInternal = function(data) {
     if (status === MidiCC && d1 === MoveCopy && d2 > 0) {
         if (selectedEntry < songEntries.length) {
             const src = songEntries[selectedEntry];
-            const copy = { pads: [...src.pads] };
+            const copy = { pads: [...src.pads], repeats: src.repeats };
             songEntries.splice(selectedEntry + 1, 0, copy);
             selectedEntry++;
             ensureTrailingEmpty();
@@ -680,6 +812,7 @@ globalThis.onMidiMessageInternal = function(data) {
         } else {
             restoreAllPadLeds();
             clearStepLeds();
+            move_midi_internal_send([0x0B, 0xB0, MovePlay, Black]);
             host_exit_module();
         }
         return;
@@ -703,21 +836,36 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Step buttons — select entry directly */
+    /* Step buttons — select entry, or Shift+Step to open step params */
     if (status === MidiNoteOn && d1 >= MoveStep1 && d1 <= MoveStep16 && d2 > 0) {
-        selectStep(d1 - MoveStep1);
+        const stepIdx = d1 - MoveStep1;
+        const entryIdx = stepPage * STEPS_PER_PAGE + stepIdx;
+        if (shiftHeld && entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
+            selectedEntry = entryIdx;
+            editingEntry = entryIdx;
+            currentView = "step_params";
+        } else {
+            selectStep(stepIdx);
+        }
         return;
     }
 
-    /* Play CC — ignored. Use "Play Song" menu item instead
-     * to avoid confusion with Move's transport. */
+    /* Play button — toggle playback */
+    if (status === MidiCC && d1 === MovePlay && d2 > 0) {
+        if (playbackState === "playing") {
+            stopPlayback();
+        } else {
+            startPlayback();
+        }
+        return;
+    }
 
-    /* Pads — toggle assignment on selected entry (blocked from Move during editing) */
+    /* Pads — set assignment on selected entry (all 4 tracks always populated) */
     if (status === MidiNoteOn && d2 > 0) {
         const grid = noteToGrid(d1);
         if (grid && selectedEntry < songEntries.length) {
             const entry = songEntries[selectedEntry];
-            /* On first pad press of an empty entry, pre-fill from previous entry */
+            /* On first pad press of an empty entry, pre-fill ALL tracks from previous */
             if (isEntryEmpty(entry)) {
                 for (let i = selectedEntry - 1; i >= 0; i--) {
                     if (!isEntryEmpty(songEntries[i])) {
@@ -725,12 +873,13 @@ globalThis.onMidiMessageInternal = function(data) {
                         break;
                     }
                 }
+                /* If no previous entry, default all tracks to column A */
+                if (isEntryEmpty(entry)) {
+                    entry.pads = [0, 0, 0, 0];
+                }
             }
-            if (entry.pads[grid.track] === grid.col) {
-                entry.pads[grid.track] = null;
-            } else {
-                entry.pads[grid.track] = grid.col;
-            }
+            /* Set the pressed track (no deselect — can't have null) */
+            entry.pads[grid.track] = grid.col;
             ensureTrailingEmpty();
         }
         return;
