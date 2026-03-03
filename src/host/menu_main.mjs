@@ -22,6 +22,8 @@ const CATEGORY_ORDER = [
     { id: 'audio_fx', name: 'Audio FX' },
     { id: 'midi_fx', name: 'MIDI FX' },
     { id: 'midi_source', name: 'MIDI Sources' },
+    { id: 'overtake', name: 'Overtake' },
+    { id: 'tool', name: 'Tools' },
     { id: 'utility', name: 'Utilities' },
     /* 'system' modules (Module Store) are listed directly at the end */
 ];
