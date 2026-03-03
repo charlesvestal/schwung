@@ -4015,11 +4015,12 @@ do_ioctl:
                 }
 
                 /* Shift + Step button while shadow UI is displayed = dismiss shadow UI
-                 * (user is loading a native Move component to edit) */
+                 * (user is loading a native Move component to edit).
+                 * Skip in overtake mode — the overtake module owns step buttons. */
                 if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
                     type == 0x90 && d2 > 0 &&
                     d1 >= CC_STEP_UI_FIRST && d1 <= CC_STEP_UI_LAST &&
-                    shadow_control) {
+                    shadow_control && shadow_control->overtake_mode == 0) {
                     shadow_display_mode = 0;
                     shadow_control->display_mode = 0;
                     shadow_log("Shift+Step: dismissing shadow UI");

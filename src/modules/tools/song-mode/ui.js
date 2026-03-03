@@ -83,6 +83,12 @@ const STEPS_PER_PAGE = 16;
 let stepPage = 0;           /* 0 = entries 0-15, 1 = entries 16-31, etc. */
 let lastStepLedKey = "";    /* change detection for step LED updates */
 
+/* Step hold detection */
+let heldStepNote = -1;      /* note of currently held step button, -1 = none */
+let heldStepTime = 0;       /* Date.now() when step was pressed */
+let heldStepHandled = false; /* true if hold already opened step params */
+const STEP_HOLD_MS = 300;   /* ms before hold opens step params */
+
 /* Pad LED highlighting */
 const LED_RED = BrightRed;
 let padLedSnapshot = {};    /* note -> original color from Move (init time) */
@@ -106,6 +112,7 @@ let recordingSavedUntil = 0;   /* show "Recording saved!" overlay until this tim
 /* Step parameter editing */
 const REPEAT_VALUES = [1, 2, 4, 8, 16, 32, 64];
 let currentView = "list";   /* "list" or "step_params" */
+let stepParamsPeek = false; /* true = entered via hold (exit on release), false = shift (sticky) */
 let sessionWarning = false;  /* true = show "switch to session" screen, dismiss with jog click */
 let editingEntry = -1;      /* index of entry being edited */
 
@@ -240,7 +247,8 @@ function drawListView() {
     clear_screen();
 
     /* Header */
-    const titleStr = recording ? "Song Mode REC" : "Song Mode";
+    const recFlash = recording && (Math.floor(Date.now() / 500) % 2 === 0);
+    const titleStr = recFlash ? "Song Mode REC" : "Song Mode";
     print(2, 2, titleStr, 1);
     const pageLabel = stepPage > 0 ? "P" + (stepPage + 1) + " " : "";
     const nameStr = pageLabel + (setName || "No Set");
@@ -311,7 +319,8 @@ function drawListView() {
         const mins = Math.floor(elapsed / 60);
         const secs = Math.floor(elapsed % 60);
         const timeStr = String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0");
-        print(2, 57, "REC " + timeStr + " step " + (currentEntryIndex + 1) + "/" + countNonEmpty(), 1);
+        const recLabel = (Math.floor(Date.now() / 500) % 2 === 0) ? "REC" : "   ";
+        print(2, 57, recLabel + " " + timeStr + " step " + (currentEntryIndex + 1) + "/" + countNonEmpty(), 1);
     } else if (playbackState === "playing") {
         const entry = songEntries[currentEntryIndex];
         const totalBars = entryBars(entry) * entry.repeats;
@@ -341,21 +350,21 @@ function drawStepParamsView() {
     fill_rect(0, 12, 128, 1, 1);
 
     /* Pad assignments */
-    print(2, 16, entryLabel(entry), 1);
+    print(2, 15, entryLabel(entry), 1);
 
     /* Clip bars (informational) */
     const bars = entryBars(entry);
-    print(2, 28, "Clip length: " + bars + " bar" + (bars !== 1 ? "s" : ""), 1);
+    print(2, 25, "Clip: " + bars + " bar" + (bars !== 1 ? "s" : ""), 1);
 
     /* Repeats — highlight value */
-    print(2, 40, "Repeats:", 1);
+    print(2, 35, "Repeats:", 1);
     const repStr = " " + entry.repeats + "x ";
-    fill_rect(50, 38, repStr.length * 6 + 2, 11, 1);
-    print(52, 40, repStr, 0);
+    fill_rect(50, 33, repStr.length * 6 + 2, 11, 1);
+    print(52, 35, repStr, 0);
 
     /* Total duration */
     const total = bars * entry.repeats;
-    print(2, 52, "= " + total + " bar" + (total !== 1 ? "s" : "") + " total", 1);
+    print(2, 45, "= " + total + " bar" + (total !== 1 ? "s" : "") + " total", 1);
 
     /* Footer */
     fill_rect(0, 55, 128, 1, 1);
@@ -529,12 +538,15 @@ function ensureEntryExists(idx) {
     }
 }
 
-/* Select entry by step button index (0-15) on current page */
+/* Select entry by step button index (0-15) on current page.
+ * Only selects song entries, not the Play/Record menu items. */
 function selectStep(stepIdx) {
     const entryIdx = stepPage * STEPS_PER_PAGE + stepIdx;
     ensureEntryExists(entryIdx);
-    selectedEntry = entryIdx;
     ensureTrailingEmpty();
+    /* Don't select past the last song entry (skip Play/Record items) */
+    if (entryIdx > songEntries.length - 1) return;
+    selectedEntry = entryIdx;
 }
 
 function getStepLedKey() {
@@ -772,6 +784,19 @@ globalThis.tick = function() {
         if (playbackState === "playing") stopPlayback();
     }
 
+    /* Step hold detection — open step params after holding for STEP_HOLD_MS */
+    if (heldStepNote >= 0 && !heldStepHandled && currentView === "list") {
+        if (Date.now() - heldStepTime >= STEP_HOLD_MS) {
+            heldStepHandled = true;
+            const entryIdx = selectedEntry;
+            if (entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
+                editingEntry = entryIdx;
+                currentView = "step_params";
+                stepParamsPeek = true;  /* peek — exits on release */
+            }
+        }
+    }
+
     updateStepLeds();
     updatePlayButtonLed();
     updateRecordLed();
@@ -837,6 +862,18 @@ globalThis.onMidiMessageInternal = function(data) {
             currentView = "list";
             return;
         }
+        /* Step button in step_params view */
+        if (status === MidiNoteOn && d1 >= MoveStep1 && d1 <= MoveStep16) {
+            if (d2 > 0 && shiftHeld) {
+                /* Shift+Step again → exit (sticky mode toggle) */
+                currentView = "list";
+            } else if (d2 === 0 && stepParamsPeek) {
+                /* Release after hold → exit peek mode */
+                heldStepNote = -1;
+                currentView = "list";
+            }
+            return;
+        }
         return; /* swallow all other input in step_params view */
     }
 
@@ -884,6 +921,7 @@ globalThis.onMidiMessageInternal = function(data) {
         } else if (selectedEntry < songEntries.length && !isEntryEmpty(songEntries[selectedEntry])) {
             editingEntry = selectedEntry;
             currentView = "step_params";
+            stepParamsPeek = false;  /* jog click = sticky */
         }
         return;
     }
@@ -943,17 +981,29 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Step buttons — select entry, or Shift+Step to open step params */
+    /* Step buttons — tap to select, hold or Shift+tap to open step params */
     if (status === MidiNoteOn && d1 >= MoveStep1 && d1 <= MoveStep16 && d2 > 0) {
         const stepIdx = d1 - MoveStep1;
         const entryIdx = stepPage * STEPS_PER_PAGE + stepIdx;
         if (shiftHeld && entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
+            /* Shift+Step: open step params (sticky — stays until Shift+Step again) */
             selectedEntry = entryIdx;
             editingEntry = entryIdx;
             currentView = "step_params";
+            stepParamsPeek = false;
+            heldStepNote = -1;
         } else {
+            /* Track hold — select on release if short press */
+            heldStepNote = d1;
+            heldStepTime = Date.now();
+            heldStepHandled = false;
             selectStep(stepIdx);
         }
+        return;
+    }
+    /* Step button release */
+    if (status === MidiNoteOn && d1 >= MoveStep1 && d1 <= MoveStep16 && d2 === 0) {
+        heldStepNote = -1;
         return;
     }
 
