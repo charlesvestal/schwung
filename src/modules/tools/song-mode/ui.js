@@ -12,7 +12,10 @@
 import {
     MidiNoteOn, MidiCC,
     MoveMainKnob, MoveMainButton, MoveBack, MoveShift,
-    MovePlay, MoveDelete, MoveCopy
+    MovePlay, MoveDelete, MoveCopy,
+    MoveLeft, MoveRight,
+    MoveStep1, MoveStep16,
+    Black, White, BrightRed, BrightGreen
 } from '/data/UserData/move-anything/shared/constants.mjs';
 
 import {
@@ -71,8 +74,16 @@ let pendingNoteOffs = [];
 /* Shift tracking */
 let shiftHeld = false;
 
+/* Step button navigation */
+const STEPS_PER_PAGE = 16;
+let stepPage = 0;           /* 0 = entries 0-15, 1 = entries 16-31, etc. */
+let lastStepLedKey = "";    /* change detection for step LED updates */
+
+/* Debug: last MIDI event for on-screen display */
+let dbgMidi = "";
+
 /* Pad LED highlighting */
-const LED_RED = 1;
+const LED_RED = BrightRed;
 let padLedSnapshot = {};    /* note -> original color from Move */
 let highlightedNotes = [];  /* currently red-highlighted pad notes */
 let lastHighlightKey = "";  /* change detection */
@@ -208,7 +219,8 @@ function drawListView() {
 
     /* Header */
     print(2, 2, "Song Mode", 1);
-    const nameStr = setName || "No Set";
+    const pageLabel = stepPage > 0 ? "P" + (stepPage + 1) + " " : "";
+    const nameStr = pageLabel + (setName || "No Set");
     const nameW = nameStr.length * 6;
     print(Math.max(128 - nameW - 2, 60), 2, nameStr, 1);
     fill_rect(0, 12, 128, 1, 1);
@@ -265,17 +277,10 @@ function drawListView() {
     if (scrollOffset > 0) print(122, 13, "^", 1);
     if (scrollOffset + MAX_VISIBLE < totalItems) print(122, 52, "v", 1);
 
-    /* Footer */
+    /* Footer — debug mode: show MIDI events */
     fill_rect(0, 55, 128, 1, 1);
-    if (playbackState === "playing") {
-        const entry = songEntries[currentEntryIndex];
-        const bars = entryBars(entry);
-        const elapsed = (Date.now() - playStartTime) / barDurationMs;
-        const currentBar = Math.min(Math.floor(elapsed) + 1, bars);
-        print(2, 57, "Playing " + (currentEntryIndex + 1) + "/" + countNonEmpty() + " bar " + currentBar + "/" + bars, 1);
-    } else {
-        print(2, 57, "Pad:set X:del Click:play", 1);
-    }
+    const hostMidi = globalThis._dbg_host_midi || "-";
+    print(2, 57, "H:" + hostMidi + " M:" + (dbgMidi || "-"), 1);
 }
 
 function countNonEmpty() {
@@ -430,6 +435,68 @@ function injectNow(cin, status, d1, d2) {
     move_midi_inject_to_move([cin, status, d1, d2]);
 }
 
+/* ── Step LED Management ──────────────────────────────────────────── */
+
+/* Ensure songEntries has at least (idx + 1) entries */
+function ensureEntryExists(idx) {
+    while (songEntries.length <= idx) {
+        songEntries.push(newEntry());
+    }
+}
+
+/* Select entry by step button index (0-15) on current page */
+function selectStep(stepIdx) {
+    const entryIdx = stepPage * STEPS_PER_PAGE + stepIdx;
+    ensureEntryExists(entryIdx);
+    selectedEntry = entryIdx;
+    ensureTrailingEmpty();
+}
+
+function getStepLedKey() {
+    /* Encode page, selection, playback, and which entries are populated */
+    let key = stepPage + ":" + selectedEntry + ":" + playbackState + ":" + currentEntryIndex;
+    const base = stepPage * STEPS_PER_PAGE;
+    for (let i = 0; i < STEPS_PER_PAGE; i++) {
+        const idx = base + i;
+        if (idx < songEntries.length && !isEntryEmpty(songEntries[idx])) {
+            key += ":1";
+        } else {
+            key += ":0";
+        }
+    }
+    return key;
+}
+
+function updateStepLeds() {
+    const key = getStepLedKey();
+    if (key === lastStepLedKey) return;
+    lastStepLedKey = key;
+
+    const base = stepPage * STEPS_PER_PAGE;
+    for (let i = 0; i < STEPS_PER_PAGE; i++) {
+        const note = MoveStep1 + i;
+        const entryIdx = base + i;
+        let color = Black;
+
+        if (playbackState === "playing" && entryIdx === currentEntryIndex) {
+            color = BrightRed;    /* currently playing */
+        } else if (entryIdx === selectedEntry) {
+            color = White;        /* selected */
+        } else if (entryIdx < songEntries.length && !isEntryEmpty(songEntries[entryIdx])) {
+            color = BrightGreen;  /* populated */
+        }
+
+        move_midi_internal_send([0x09, 0x90, note, color]);
+    }
+}
+
+function clearStepLeds() {
+    for (let i = 0; i < STEPS_PER_PAGE; i++) {
+        move_midi_internal_send([0x09, 0x90, MoveStep1 + i, Black]);
+    }
+    lastStepLedKey = "";
+}
+
 /* ── Pad LED Highlighting ─────────────────────────────────────────── */
 
 function snapshotPadLeds() {
@@ -539,6 +606,7 @@ globalThis.init = function() {
 globalThis.tick = function() {
     tickPlayback();
     drainInjectQueue();
+    updateStepLeds();
     updatePadHighlights();
     drawListView();
 };
@@ -549,6 +617,12 @@ globalThis.onMidiMessageInternal = function(data) {
     const status = data[0] & 0xF0;
     const d1 = data[1];
     const d2 = data[2];
+
+    /* Debug: log all non-trivial MIDI to console and display */
+    if (d2 > 0) {
+        dbgMidi = status.toString(16) + ":" + d1 + ":" + d2;
+        console.log("song-mode MIDI: status=0x" + status.toString(16) + " d1=" + d1 + " d2=" + d2);
+    }
 
     /* Track shift */
     if (status === MidiCC && d1 === MoveShift) {
@@ -561,6 +635,10 @@ globalThis.onMidiMessageInternal = function(data) {
         const delta = decodeDelta(d2);
         const maxIdx = songEntries.length; /* extra slot for "Play Song" */
         selectedEntry = Math.max(0, Math.min(maxIdx, selectedEntry + delta));
+        /* Keep step page in sync with selection */
+        if (selectedEntry < songEntries.length) {
+            stepPage = Math.floor(selectedEntry / STEPS_PER_PAGE);
+        }
         return;
     }
 
@@ -602,8 +680,33 @@ globalThis.onMidiMessageInternal = function(data) {
             stopPlayback();
         } else {
             restoreAllPadLeds();
+            clearStepLeds();
             host_exit_module();
         }
+        return;
+    }
+
+    /* L/R buttons — page through step pages */
+    if (status === MidiCC && d1 === MoveLeft && d2 > 0) {
+        if (stepPage > 0) {
+            stepPage--;
+            selectedEntry = stepPage * STEPS_PER_PAGE;
+            lastStepLedKey = ""; /* force refresh */
+        }
+        return;
+    }
+    if (status === MidiCC && d1 === MoveRight && d2 > 0) {
+        stepPage++;
+        selectedEntry = stepPage * STEPS_PER_PAGE;
+        ensureEntryExists(selectedEntry);
+        ensureTrailingEmpty();
+        lastStepLedKey = ""; /* force refresh */
+        return;
+    }
+
+    /* Step buttons — select entry directly */
+    if (status === MidiNoteOn && d1 >= MoveStep1 && d1 <= MoveStep16 && d2 > 0) {
+        selectStep(d1 - MoveStep1);
         return;
     }
 
