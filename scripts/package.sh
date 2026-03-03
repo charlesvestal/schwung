@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -eo pipefail
-set -x
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -13,7 +12,7 @@ cd "$REPO_ROOT"
 cd ./build
 
 # Build list of items to package
-ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./presets ./test ./unified-log"
+ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log"
 
 # Add bin directory if it exists (contains curl for store module)
 if [ -d "./bin" ]; then
@@ -51,11 +50,11 @@ if [ -f "./move-anything-web-shim.so" ]; then
 fi
 
 if tar --version 2>/dev/null | grep -q GNU; then
-    tar -czvf ../move-anything.tar.gz \
+    tar -czf ../move-anything.tar.gz \
         --transform 's,^\.,move-anything,' \
         $ITEMS
 else
-    tar -czvf ../move-anything.tar.gz \
+    tar -czf ../move-anything.tar.gz \
         -s ',^\.,move-anything,' \
         $ITEMS
 fi

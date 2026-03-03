@@ -35,18 +35,26 @@ CMD set -e && \
     echo "=== Move Anything Build ===" && \
     echo "Target: aarch64-linux-gnu" && \
     echo "" && \
-    echo "Building QuickJS..." && \
     cd /build/libs/quickjs/quickjs-2025-04-26 && \
-    make clean 2>/dev/null || true && \
-    CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar make libquickjs.a && \
-    echo "QuickJS built successfully" && \
+    if [ ! -f libquickjs.a ]; then \
+        echo "Building QuickJS..." && \
+        CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar make libquickjs.a && \
+        echo "QuickJS built successfully"; \
+    else \
+        echo "QuickJS already built, skipping"; \
+    fi && \
     echo "" && \
     echo "Building Move Anything..." && \
     cd /build && \
     CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh && \
     echo "" && \
-    echo "Packaging..." && \
-    CROSS_PREFIX=aarch64-linux-gnu- ./scripts/package.sh && \
+    if [ ! -f /build/move-anything.tar.gz ] || \
+       [ -n "$(find /build/build -newer /build/move-anything.tar.gz -print -quit 2>/dev/null)" ]; then \
+        echo "Packaging..." && \
+        CROSS_PREFIX=aarch64-linux-gnu- ./scripts/package.sh; \
+    else \
+        echo "Package is up to date, skipping"; \
+    fi && \
     echo "" && \
     echo "=== Build Artifacts ===" && \
     file /build/build/move-anything && \
