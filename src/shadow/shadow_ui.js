@@ -5270,7 +5270,7 @@ function loadHierarchyLevel() {
         hierEditorKnobs = levelDef.knobs || [];
 
         /* Fetch preset count and current preset */
-        const prefix = hierEditorComponent;
+        const prefix = getComponentParamPrefix(hierEditorComponent);
         const countStr = getSlotParam(hierEditorSlot, `${prefix}:${levelDef.count_param}`);
         hierEditorPresetCount = countStr ? parseInt(countStr) : 0;
 
@@ -5295,7 +5295,7 @@ function loadHierarchyLevel() {
         hierEditorKnobs = levelDef.knobs || [];
 
         /* Fetch items list from plugin */
-        const prefix = hierEditorComponent;
+        const prefix = getComponentParamPrefix(hierEditorComponent);
         const itemsJson = getSlotParam(hierEditorSlot, `${prefix}:${levelDef.items_param}`);
         let items = [];
         if (itemsJson) {
@@ -5338,7 +5338,7 @@ function changeHierPreset(delta) {
     if (newPreset >= hierEditorPresetCount) newPreset = 0;
 
     /* Apply the preset change */
-    const prefix = hierEditorComponent;
+    const prefix = getComponentParamPrefix(hierEditorComponent);
     setSlotParam(hierEditorSlot, `${prefix}:${levelDef.list_param}`, String(newPreset));
 
     /* Update local state */
@@ -6085,14 +6085,15 @@ function drawHierarchyEditor() {
         if (hierEditorPresetCount === 0 && hierEditorLevel && hierEditorHierarchy && hierEditorHierarchy.levels) {
             const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
             if (levelDef && levelDef.count_param) {
-                const countStr = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${levelDef.count_param}`);
+                const retryPrefix = getComponentParamPrefix(hierEditorComponent);
+                const countStr = getSlotParam(hierEditorSlot, `${retryPrefix}:${levelDef.count_param}`);
                 const newCount = countStr ? parseInt(countStr) : 0;
                 if (newCount > 0) {
                     hierEditorPresetCount = newCount;
-                    const presetStr = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${levelDef.list_param}`);
+                    const presetStr = getSlotParam(hierEditorSlot, `${retryPrefix}:${levelDef.list_param}`);
                     hierEditorPresetIndex = presetStr ? parseInt(presetStr) : 0;
                     const nameParam = levelDef.name_param || "preset_name";
-                    hierEditorPresetName = getSlotParam(hierEditorSlot, `${hierEditorComponent}:${nameParam}`) || "";
+                    hierEditorPresetName = getSlotParam(hierEditorSlot, `${retryPrefix}:${nameParam}`) || "";
                 }
             }
         }
@@ -7200,7 +7201,7 @@ function handleSelect() {
                 if (selectedParam && typeof selectedParam === "object" && selectedParam.isDynamicItem) {
                     /* Set the select_param to this item's index */
                     if (hierEditorSelectParam) {
-                        const prefix = hierEditorComponent;
+                        const prefix = getComponentParamPrefix(hierEditorComponent);
                         setSlotParam(hierEditorSlot, `${prefix}:${hierEditorSelectParam}`, String(selectedParam.index));
                     }
 
