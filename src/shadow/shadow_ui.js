@@ -1298,23 +1298,12 @@ function buildFilepathBrowserHooks(meta, prefix) {
     const hooksRaw = (meta && meta.browser_hooks && typeof meta.browser_hooks === "object")
         ? meta.browser_hooks
         : {};
-    const hooks = {
+    return {
         onOpen: normalizeFilepathHookActions(hooksRaw.on_open, prefix),
         onPreview: normalizeFilepathHookActions(hooksRaw.on_preview, prefix),
         onCancel: normalizeFilepathHookActions(hooksRaw.on_cancel, prefix),
         onCommit: normalizeFilepathHookActions(hooksRaw.on_commit, prefix)
     };
-
-    /* Backward-compatible alias: suspend_auto_select => on_open restore action */
-    if (parseMetaBool(meta && meta.suspend_auto_select) && prefix) {
-        hooks.onOpen.push({
-            key: `${prefix}:ui_auto_select_pad`,
-            value: "off",
-            restore: true
-        });
-    }
-
-    return hooks;
 }
 
 function resolveFilepathHookValue(rawValue, context) {

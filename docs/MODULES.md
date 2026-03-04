@@ -701,7 +701,6 @@ Use `type: "filepath"` in `capabilities.chain_params` to let Shadow UI open a re
 - `filter` (optional): File extension filter as a string or array, for example `".wav"` or `[".wav", ".aif"]`.
 - `live_preview` (optional): When true, moving the file-browser cursor over files temporarily sets the parameter to that file until the user confirms or cancels.
 - `browser_hooks` (optional): Event hooks to run additional parameter writes at browser lifecycle points. Supported keys: `on_open`, `on_preview`, `on_cancel`, `on_commit`.
-- `suspend_auto_select` (optional): When true, Shadow temporarily sets `<component>:ui_auto_select_pad` to `"off"` while the browser is open, then restores it on close.
 - `default` or `value` (optional): Initial absolute path. If the path exists and is inside `root`, the browser opens to the parent folder and highlights the file.
 
 Behavior notes:
@@ -712,7 +711,7 @@ Behavior notes:
 - With `live_preview: true`, preview changes are temporary: Back cancels and restores the original value, Click commits the highlighted file.
 - `browser_hooks` action format is `{ "key": "<param>", "value": "<string>", "restore": true|false }`. Non-prefixed keys are resolved against the active component prefix.
 - `browser_hooks` supports value placeholders: `$path`/`$selected_path` and `$filename`/`$selected_filename`.
-- `suspend_auto_select: true` is useful for pad samplers so pad-hit selection changes do not retarget the edited filepath while browsing.
+- For pad samplers, you can suspend auto-pad switching while browsing by adding `{"key":"ui_auto_select_pad","value":"off","restore":true}` to `browser_hooks.on_open`.
 - Example user sample file path: `/data/UserData/UserLibrary/Samples/Drums/Kick01.wav`.
 
 These map to knobs 1-8 in the Shadow UI for quick access.
