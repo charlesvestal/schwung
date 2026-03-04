@@ -229,8 +229,8 @@ typedef struct {
     char state[MAX_FX_STATE_LEN];  /* JSON state for audio FX plugin */
 } audio_fx_config_t;
 
-/* Synth state storage size - large synths may need 5-6KB for full state */
-#define MAX_SYNTH_STATE_LEN 8192
+/* Synth state storage size - Surge XT needs ~8KB+ when pretty-printed with indent */
+#define MAX_SYNTH_STATE_LEN 16384
 
 /* Patch info */
 typedef struct {
