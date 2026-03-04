@@ -1258,6 +1258,8 @@ let hierEditorNavigateTo = "";        // level to navigate to after item selecti
 /* Filepath browser state (for chain_params type: filepath) */
 let filepathBrowserState = null;
 let filepathBrowserParamKey = "";
+let filepathBrowserSuspendParamKey = "";
+let filepathBrowserSuspendPrevValue = "";
 const FILEPATH_BROWSER_FS = {
     readdir(path) {
         const entries = os.readdir(path) || [];
@@ -1268,6 +1270,13 @@ const FILEPATH_BROWSER_FS = {
         return os.stat(path);
     }
 };
+
+function parseMetaBool(value) {
+    if (value === true || value === 1) return true;
+    if (value === false || value === 0 || value === null || value === undefined) return false;
+    const v = String(value).trim().toLowerCase();
+    return v === "1" || v === "true" || v === "on" || v === "yes";
+}
 
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
@@ -5412,10 +5421,39 @@ function openHierarchyFilepathBrowser(key, meta) {
 
     const fullKey = buildHierarchyParamKey(key);
     const currentVal = getSlotParam(hierEditorSlot, fullKey) || "";
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+
+    filepathBrowserSuspendParamKey = "";
+    filepathBrowserSuspendPrevValue = "";
+    if (prefix) {
+        const maybeSuspendKey = `${prefix}:ui_auto_select_pad`;
+        const prevVal = getSlotParam(hierEditorSlot, maybeSuspendKey);
+        if (prevVal !== null && prevVal !== undefined && String(prevVal).length > 0) {
+            if (setSlotParam(hierEditorSlot, maybeSuspendKey, "off")) {
+                filepathBrowserSuspendParamKey = maybeSuspendKey;
+                filepathBrowserSuspendPrevValue = String(prevVal);
+            }
+        }
+    }
 
     filepathBrowserParamKey = key;
     filepathBrowserState = buildFilepathBrowserState(effectiveMeta, currentVal);
+    filepathBrowserState.livePreviewEnabled = parseMetaBool(effectiveMeta.live_preview);
+    filepathBrowserState.previewOriginalValue = currentVal;
+    filepathBrowserState.previewCurrentValue = currentVal;
+    filepathBrowserState.previewCommitted = false;
+    filepathBrowserState.previewParamFullKey = fullKey;
     refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+
+    if (filepathBrowserState.livePreviewEnabled) {
+        const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+        if (selected && selected.kind === "file" && selected.path && selected.path !== filepathBrowserState.previewCurrentValue) {
+            if (setSlotParam(hierEditorSlot, fullKey, selected.path)) {
+                filepathBrowserState.previewCurrentValue = selected.path;
+            }
+        }
+    }
+
     setView(VIEWS.FILEPATH_BROWSER);
 
     if (filepathBrowserState.items.length > 0) {
@@ -5429,8 +5467,26 @@ function openHierarchyFilepathBrowser(key, meta) {
 }
 
 function closeHierarchyFilepathBrowser() {
+    if (filepathBrowserState &&
+        filepathBrowserState.livePreviewEnabled &&
+        !filepathBrowserState.previewCommitted &&
+        filepathBrowserState.previewParamFullKey &&
+        filepathBrowserState.previewCurrentValue !== filepathBrowserState.previewOriginalValue) {
+        setSlotParam(
+            hierEditorSlot,
+            filepathBrowserState.previewParamFullKey,
+            filepathBrowserState.previewOriginalValue || ""
+        );
+    }
+
+    if (filepathBrowserSuspendParamKey) {
+        setSlotParam(hierEditorSlot, filepathBrowserSuspendParamKey, filepathBrowserSuspendPrevValue);
+    }
+
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
+    filepathBrowserSuspendParamKey = "";
+    filepathBrowserSuspendPrevValue = "";
     setView(VIEWS.HIERARCHY_EDITOR);
 }
 
@@ -6640,6 +6696,16 @@ function handleJog(delta) {
             if (filepathBrowserState) {
                 moveFilepathBrowserSelection(filepathBrowserState, delta);
                 const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+                if (filepathBrowserState.livePreviewEnabled &&
+                    selected &&
+                    selected.kind === "file" &&
+                    selected.path &&
+                    selected.path !== filepathBrowserState.previewCurrentValue &&
+                    filepathBrowserState.previewParamFullKey) {
+                    if (setSlotParam(hierEditorSlot, filepathBrowserState.previewParamFullKey, selected.path)) {
+                        filepathBrowserState.previewCurrentValue = selected.path;
+                    }
+                }
                 if (selected) announceMenuItem(selected.label || "File", "");
             }
             break;
@@ -7291,9 +7357,25 @@ function handleSelect() {
                 const result = activateFilepathBrowserItem(filepathBrowserState);
                 if (result.action === "open") {
                     refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+                    if (filepathBrowserState.livePreviewEnabled) {
+                        const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+                        if (selected &&
+                            selected.kind === "file" &&
+                            selected.path &&
+                            selected.path !== filepathBrowserState.previewCurrentValue &&
+                            filepathBrowserState.previewParamFullKey) {
+                            if (setSlotParam(hierEditorSlot, filepathBrowserState.previewParamFullKey, selected.path)) {
+                                filepathBrowserState.previewCurrentValue = selected.path;
+                            }
+                        }
+                    }
                 } else if (result.action === "select") {
                     const key = filepathBrowserParamKey || result.key;
                     const fullKey = buildHierarchyParamKey(key);
+                    if (filepathBrowserState.livePreviewEnabled) {
+                        filepathBrowserState.previewCommitted = true;
+                        filepathBrowserState.previewCurrentValue = result.value || "";
+                    }
                     setSlotParam(hierEditorSlot, fullKey, result.value || "");
                     announceParameter(filepathBrowserState.title || key, result.filename || result.value || "");
                     closeHierarchyFilepathBrowser();

@@ -699,6 +699,7 @@ Use `type: "filepath"` in `capabilities.chain_params` to let Shadow UI open a re
 - `root` (optional, recommended): Absolute folder where browsing starts and is constrained.
 - `start_path` (optional): Absolute folder or file path used as the initial location when current value is empty.
 - `filter` (optional): File extension filter as a string or array, for example `".wav"` or `[".wav", ".aif"]`.
+- `live_preview` (optional): When true, moving the file-browser cursor over files temporarily sets the parameter to that file until the user confirms or cancels.
 - `default` or `value` (optional): Initial absolute path. If the path exists and is inside `root`, the browser opens to the parent folder and highlights the file.
 
 Behavior notes:
@@ -706,6 +707,7 @@ Behavior notes:
 - Selected files are stored as absolute paths.
 - Initial browser location priority is: current/default value, then `start_path`, then `root`.
 - If the chosen start location is missing, invalid, or outside `root`, the browser falls back to `root`.
+- With `live_preview: true`, preview changes are temporary: Back cancels and restores the original value, Click commits the highlighted file.
 - Example user sample file path: `/data/UserData/UserLibrary/Samples/Drums/Kick01.wav`.
 
 These map to knobs 1-8 in the Shadow UI for quick access.
