@@ -667,7 +667,7 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | `int` | `min`, `max`, `default`/`value` | Integer value |
 | `float` | `min`, `max`, `default`/`value` | Float value |
 | `enum` | `options`, `default`/`value` | List of string options |
-| `filepath` | `root`, `filter`, `default`/`value` | Opens Shadow UI file browser and stores selected path |
+| `filepath` | `root`, `start_path`, `filter`, `default`/`value` | Opens Shadow UI file browser and stores selected path |
 
 #### `filepath` in module.json
 
@@ -681,7 +681,8 @@ Use `type: "filepath"` in `capabilities.chain_params` to let Shadow UI open a re
         "key": "sample_file",
         "name": "Sample File",
         "type": "filepath",
-        "root": "/data/UserData/UserLibrary/Samples",
+        "root": "/data/UserData",
+        "start_path": "/data/UserData/UserLibrary/Samples",
         "filter": ".wav",
         "default": ""
       }
@@ -696,13 +697,15 @@ Use `type: "filepath"` in `capabilities.chain_params` to let Shadow UI open a re
 - `name` (required): Label shown in Shadow UI.
 - `type` (required): Must be `"filepath"`.
 - `root` (optional, recommended): Absolute folder where browsing starts and is constrained.
+- `start_path` (optional): Absolute folder or file path used as the initial location when current value is empty.
 - `filter` (optional): File extension filter as a string or array, for example `".wav"` or `[".wav", ".aif"]`.
 - `default` or `value` (optional): Initial absolute path. If the path exists and is inside `root`, the browser opens to the parent folder and highlights the file.
 
 Behavior notes:
 
 - Selected files are stored as absolute paths.
-- If the current or default path is missing, invalid, or outside `root`, the browser falls back to `root`.
+- Initial browser location priority is: current/default value, then `start_path`, then `root`.
+- If the chosen start location is missing, invalid, or outside `root`, the browser falls back to `root`.
 - Example user sample file path: `/data/UserData/UserLibrary/Samples/Drums/Kick01.wav`.
 
 These map to knobs 1-8 in the Shadow UI for quick access.

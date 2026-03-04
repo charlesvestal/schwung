@@ -124,7 +124,10 @@ export function buildFilepathBrowserState(paramMeta, currentValue) {
     const root = normalizePath(meta.root || DEFAULT_ROOT);
     const filter = parseFilter(meta.filter);
 
-    const rawCandidate = currentValue && currentValue.length > 0 ? currentValue : root;
+    /* Priority: current value -> optional start_path -> root */
+    const rawCandidate = currentValue && currentValue.length > 0
+        ? currentValue
+        : (meta.start_path || root);
     const startCandidate = normalizePath(rawCandidate);
 
     let currentDir = root;
