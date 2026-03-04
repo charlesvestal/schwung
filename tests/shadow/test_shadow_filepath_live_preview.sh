@@ -14,13 +14,28 @@ if ! rg -F -q "filepathBrowserState.livePreviewEnabled = parseMetaBool(effective
   exit 1
 fi
 
+if ! rg -F -q "function applyLivePreview(state, selected) {" "$shadow_file"; then
+  echo "FAIL: live preview helper function is missing" >&2
+  exit 1
+fi
+
 if ! rg -F -q "filepathBrowserState.previewOriginalValue = currentVal;" "$shadow_file"; then
   echo "FAIL: filepath browser does not snapshot original value for live preview cancel" >&2
   exit 1
 fi
 
-if ! rg -F -q "selected.kind === \"file\"" "$shadow_file"; then
-  echo "FAIL: filepath browser live preview is not gated to file items" >&2
+if ! rg -F -q "filepathBrowserState.previewPendingPath = selected.path;" "$shadow_file"; then
+  echo "FAIL: filepath browser does not queue pending live preview path on jog" >&2
+  exit 1
+fi
+
+if ! rg -F -q "filepathBrowserState.previewPendingTime = Date.now();" "$shadow_file"; then
+  echo "FAIL: filepath browser does not timestamp pending live preview updates" >&2
+  exit 1
+fi
+
+if ! rg -F -q "Date.now() - filepathBrowserState.previewPendingTime >= 150" "$shadow_file"; then
+  echo "FAIL: filepath browser missing debounce threshold check for pending live preview" >&2
   exit 1
 fi
 
@@ -29,12 +44,12 @@ if ! rg -F -q "filepathBrowserState.previewCommitted = true;" "$shadow_file"; th
   exit 1
 fi
 
-if ! rg -F -q "filepathBrowserState.previewCurrentValue !== filepathBrowserState.previewOriginalValue" "$shadow_file"; then
+if ! rg -F -q "state.previewCurrentValue !== state.previewOriginalValue" "$shadow_file"; then
   echo "FAIL: filepath browser cancel path does not compare preview value against original" >&2
   exit 1
 fi
 
-if ! rg -F -q "filepathBrowserState.previewOriginalValue || \"\"" "$shadow_file"; then
+if ! rg -F -q "state.previewOriginalValue || \"\"" "$shadow_file"; then
   echo "FAIL: filepath browser cancel path does not restore original value" >&2
   exit 1
 fi
