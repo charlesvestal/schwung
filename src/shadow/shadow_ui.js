@@ -5390,9 +5390,24 @@ function exitHierarchyEditor() {
     needsRedraw = true;
 }
 
+/* Refresh chain_params metadata for dynamic filepath fields (e.g. start_path). */
+function refreshHierarchyChainParams() {
+    if (hierEditorIsMasterFx) {
+        if (hierEditorMasterFxSlot >= 0) {
+            hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
+        }
+        return;
+    }
+
+    if (hierEditorSlot >= 0 && hierEditorComponent) {
+        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
+    }
+}
+
 /* Open generic file browser for a filepath parameter */
 function openHierarchyFilepathBrowser(key, meta) {
-    const effectiveMeta = meta || getParamMetadata(key);
+    refreshHierarchyChainParams();
+    const effectiveMeta = getParamMetadata(key) || meta;
     if (!effectiveMeta || effectiveMeta.type !== "filepath") return false;
 
     const fullKey = buildHierarchyParamKey(key);
