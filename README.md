@@ -8,6 +8,12 @@ Move Everything adds a Shadow UI that runs alongside stock Move, enabling additi
 
 Move Everything is based on the original Move Anything project by Bobby Digitales.
 
+## License
+
+CC BY-NC-SA 4.0 - See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
+
+Move Everything would not be possible without the work of the [Move Aything](https://github.com/bobbydigitales/move-anything) project from which it is forked. 
+
 ## Important Notice
 
 This project is in no way approved, endorsed or supported by Ableton.
@@ -165,9 +171,6 @@ If monitoring is on (or source/routing is configured differently), audio feedbac
 - Discord: [https://discord.gg/Zn33eRvTyK](https://discord.gg/Zn33eRvTyK)
 - Contributors: @talktogreg, @impbox, @deets, @bobbyd, @chaolue, @charlesvestal
 
-## License
-
-CC BY-NC-SA 4.0 - See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
 
 ## AI Assistance Disclaimer
 
