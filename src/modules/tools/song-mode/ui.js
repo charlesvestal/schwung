@@ -1178,7 +1178,9 @@ globalThis.onMidiMessageInternal = function(data) {
             startPlayback(true);
             if (playbackState === "playing") announce("Playing from beginning");
         } else if (selectedEntry === songEntries.length + 1) {
-            /* Record Song (from beginning — no step selected) */
+            /* Record Song (from beginning — no step selected)
+             * Recording is deferred until the startup sequence completes
+             * so the sampler isn't killed by the stop-start toggles. */
             startPlayback(true);
             if (playbackState === "playing") {
                 host_ensure_dir(RECORDINGS_DIR);
@@ -1189,13 +1191,12 @@ globalThis.onMidiMessageInternal = function(data) {
                     + "_" + String(now.getHours()).padStart(2, "0")
                     + String(now.getMinutes()).padStart(2, "0")
                     + String(now.getSeconds()).padStart(2, "0");
-                const path = RECORDINGS_DIR + "/" + (setName || "song") + "_" + ts + ".wav";
-                host_sampler_start(path);
+                recordPendingPath = RECORDINGS_DIR + "/" + (setName || "song") + "_" + ts + ".wav";
                 recording = true;
                 recordStartTime = Date.now();
                 recordStopTime = 0;
                 announce("Recording from beginning");
-                console.log("song-mode: recording started -> " + path);
+                console.log("song-mode: recording deferred -> " + recordPendingPath);
             }
         } else if (selectedEntry === songEntries.length + 2) {
             /* Tail setting — cycle through options */
