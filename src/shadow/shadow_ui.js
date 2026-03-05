@@ -686,7 +686,9 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "link_audio_routing", label: "Route thru ME", type: "bool" },
             { key: "link_audio_publish", label: "ME->Link Audio", type: "bool" },
             { key: "resample_bridge", label: "Sample Src", type: "enum",
-              options: ["Native", "ME Mix"], values: [0, 2] }
+              options: ["Native", "ME Mix"], values: [0, 2] },
+            { key: "skipback_shortcut", label: "Skipback", type: "enum",
+              options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] }
         ]
     },
     {
@@ -6439,6 +6441,10 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "set_pages_enabled") {
         return (typeof set_pages_get === "function" && set_pages_get()) ? "On" : "Off";
     }
+    if (setting.key === "skipback_shortcut") {
+        const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
+        return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
+    }
     if (setting.key === "auto_update_check") {
         return autoUpdateCheckEnabled ? "On" : "Off";
     }
@@ -6562,6 +6568,17 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "set_pages_enabled" && typeof set_pages_set === "function") {
         const current = typeof set_pages_get === "function" ? set_pages_get() : true;
         set_pages_set(!current ? 1 : 0);
+        return;
+    }
+
+    if (setting.key === "skipback_shortcut") {
+        if (typeof skipback_shortcut_set !== "function") return;
+        const current = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
+        const values = setting.values;
+        let idx = values.indexOf(current);
+        if (idx < 0) idx = 0;
+        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
+        skipback_shortcut_set(values[nextIdx]);
         return;
     }
 
