@@ -579,8 +579,10 @@ The Module Store (`store` module) downloads and installs external modules from G
       "author": "Your Name",
       "component_type": "sound_generator",
       "github_repo": "username/move-anything-mymodule",
+      "default_branch": "main",
       "asset_name": "mymodule-module.tar.gz",
-      "min_host_version": "0.1.0"
+      "min_host_version": "0.1.0",
+      "requires": "Optional: external assets needed (e.g. ROM files, .sf2 soundfonts)"
     }
   ]
 }
@@ -589,14 +591,42 @@ The Module Store (`store` module) downloads and installs external modules from G
 ### How the Store Works
 
 1. Fetches `module-catalog.json` and extracts `catalog.modules` array
-2. For each module, queries GitHub API for latest release
-3. Looks for asset matching `<module-id>-module.tar.gz`
-4. Compares release version to installed version
-5. Downloads and extracts tarball to category subdirectory (e.g., `modules/sound_generators/<id>/`)
+2. For each module, fetches `release.json` from the module's GitHub repo (on `default_branch`)
+3. Compares `release.json` version to installed version
+4. Downloads tarball from `release.json`'s `download_url`
+5. Extracts tarball to category subdirectory (e.g., `modules/sound_generators/<id>/`)
+
+### release.json
+
+Each module repo must have a `release.json` on its main branch. The Module Store reads this to determine the latest version and download URL. The release workflow should auto-update this file on each tagged release.
+
+```json
+{
+  "version": "0.2.0",
+  "download_url": "https://github.com/username/move-anything-mymodule/releases/download/v0.2.0/mymodule-module.tar.gz"
+}
+```
+
+Optional fields: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`.
+
+### Catalog Entry Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Module ID (lowercase hyphenated) |
+| `name` | Yes | Display name |
+| `description` | Yes | Short description |
+| `author` | Yes | Author name |
+| `component_type` | Yes | `sound_generator`, `audio_fx`, `midi_fx`, `overtake`, `utility`, `tool` |
+| `github_repo` | Yes | GitHub `owner/repo` |
+| `default_branch` | Yes | Branch to fetch `release.json` from (usually `main`) |
+| `asset_name` | Yes | Expected tarball filename |
+| `min_host_version` | Yes | Minimum compatible host version |
+| `requires` | No | User-facing note about required external assets (e.g. ROM files, samples) |
 
 ### Adding a Module to the Catalog
 
-Edit `module-catalog.json` and add an entry to the `modules` array (see format above).
+Edit `module-catalog.json` and add an entry to the `modules` array (see format above). Ensure the module repo has a valid `release.json` on its main branch.
 
 ## External Module Development
 

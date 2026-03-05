@@ -1378,8 +1378,10 @@ External modules can be distributed via the built-in Module Store. Users can bro
      "author": "Your Name",
      "component_type": "sound_generator",
      "github_repo": "username/move-anything-yourmodule",
+     "default_branch": "main",
      "asset_name": "your-module-module.tar.gz",
-     "min_host_version": "0.3.0"
+     "min_host_version": "0.3.0",
+     "requires": "Optional: external assets needed (e.g. sample files, ROMs)"
    }
    ```
 
@@ -1427,6 +1429,25 @@ jobs:
           files: ${{ github.event.repository.name }}-module.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update release.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          git fetch origin main
+          git checkout -f main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          cat > release.json << EOF
+          {
+            "version": "${VERSION}",
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ github.event.repository.name }}-module.tar.gz"
+          }
+          EOF
+
+          git add release.json
+          git commit -m "chore: update release.json for ${{ github.ref_name }}" || echo "No changes to commit"
+          git push origin main
 ```
 
 ### Catalog Entry Schema (v2)
@@ -1439,14 +1460,50 @@ Each module in `module-catalog.json`:
   "name": "Display Name",
   "description": "Short description",
   "author": "Author Name",
-  "component_type": "sound_generator|audio_fx|overtake|utility",
+  "component_type": "sound_generator|audio_fx|midi_fx|overtake|utility|tool",
   "github_repo": "username/repo-name",
+  "default_branch": "main",
   "asset_name": "module-id-module.tar.gz",
-  "min_host_version": "0.3.0"
+  "min_host_version": "0.3.0",
+  "requires": "Optional: external assets needed (e.g. ROM files, .sf2 soundfonts)"
 }
 ```
 
-The Module Store fetches the latest release from the GitHub repo and looks for an asset matching `asset_name`.
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Module ID (lowercase hyphenated) |
+| `name` | Yes | Display name |
+| `description` | Yes | Short description |
+| `author` | Yes | Author name |
+| `component_type` | Yes | `sound_generator`, `audio_fx`, `midi_fx`, `overtake`, `utility`, `tool` |
+| `github_repo` | Yes | GitHub `owner/repo` |
+| `default_branch` | Yes | Branch to fetch `release.json` from (usually `main`) |
+| `asset_name` | Yes | Expected tarball filename |
+| `min_host_version` | Yes | Minimum compatible host version |
+| `requires` | No | User-facing note about required external assets |
+
+### release.json
+
+Each module repo must have a `release.json` on its main branch. The Module Store fetches this file (not the GitHub releases API) to determine the latest version and download URL.
+
+```json
+{
+  "version": "0.2.0",
+  "download_url": "https://github.com/username/move-anything-mymodule/releases/download/v0.2.0/mymodule-module.tar.gz"
+}
+```
+
+Optional fields: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`. Fields like `name`, `description`, and `requires` in `release.json` override their catalog equivalents.
+
+The release workflow should auto-update `release.json` on each tagged release (see the workflow template above for an example).
+
+### How the Module Store Works
+
+1. Fetches `module-catalog.json` from the main branch
+2. For each module, fetches `release.json` from the module's GitHub repo (on `default_branch`)
+3. Compares `release.json` version to installed version
+4. Downloads tarball from `release.json`'s `download_url`
+5. Extracts tarball to category subdirectory (e.g., `modules/sound_generators/<id>/`)
 
 ### Component Types
 
@@ -1499,13 +1556,14 @@ The Move Anything host can also be updated via the Module Store. When an update 
    git push
    ```
 
-### How Updates Work
+### How Host Updates Work
 
 1. Module Store fetches `module-catalog.json` from the main branch
-2. Compares `host.latest_version` to installed version in `/data/UserData/move-anything/host/version.txt`
-3. If different, shows "Update Host" option with version numbers
-4. Update downloads the tarball and extracts over the existing installation
-5. User must restart Move Anything for changes to take effect
+2. Fetches `release.json` from the host repo for the latest version and download URL
+3. Compares to installed version in `/data/UserData/move-anything/host/version.txt`
+4. If different, shows "Update Host" option with version numbers
+5. Update downloads the tarball and extracts over the existing installation
+6. User must restart Move Anything for changes to take effect
 
 ### Catalog Location
 
