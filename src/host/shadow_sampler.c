@@ -82,6 +82,10 @@ int sampler_vu_hold_frames = 0;
 /* Full-screen mode flag */
 int sampler_fullscreen_active = 0;
 
+/* Fade-in ramp to avoid click at recording start */
+#define SAMPLER_FADE_SAMPLES 128  /* ~3ms at 44.1kHz — short, click-free */
+static int sampler_fade_in_remaining = 0;
+
 /* Recording state */
 static FILE *sampler_wav_file = NULL;
 uint32_t sampler_samples_written = 0;
@@ -423,6 +427,7 @@ void sampler_start_recording_to(const char *output_path) {
 
     sampler_writer_running = 1;
     sampler_state = SAMPLER_RECORDING;
+    sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
     /* Don't touch overlay — this is driven by external JS, not the sampler UI */
 
     char msg[256];
@@ -538,6 +543,7 @@ void sampler_start_recording(void) {
 
     sampler_writer_running = 1;
     sampler_state = SAMPLER_RECORDING;
+    sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
     sampler_overlay_active = 1;
     sampler_overlay_timeout = 0;
     s_host.overlay_sync();
@@ -564,6 +570,22 @@ void sampler_stop_recording(void) {
     if (!sampler_writer_running) return;
 
     s_host.log("Sampler: stopping recording");
+
+    /* Write a fade-out ramp into the ring buffer to avoid click */
+    if (sampler_ring_buffer && sampler_ring_available_write() >= SAMPLER_FADE_SAMPLES * SAMPLER_NUM_CHANNELS) {
+        size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
+        size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
+
+        /* Read back last SAMPLER_FADE_SAMPLES frames from ring buffer and apply fade */
+        for (int i = 0; i < SAMPLER_FADE_SAMPLES; i++) {
+            int16_t silence = 0;
+            for (int ch = 0; ch < SAMPLER_NUM_CHANNELS; ch++) {
+                sampler_ring_buffer[write_pos] = silence;
+                write_pos = (write_pos + 1) % buffer_samples;
+            }
+        }
+        __atomic_store_n(&sampler_ring_write_pos, write_pos, __ATOMIC_RELEASE);
+    }
 
     /* Signal writer thread to exit */
     pthread_mutex_lock(&sampler_ring_mutex);
@@ -627,7 +649,14 @@ void sampler_capture_audio(void) {
     if (sampler_ring_available_write() >= samples_to_write) {
         size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
         for (size_t i = 0; i < samples_to_write; i++) {
-            sampler_ring_buffer[write_pos] = audio[i];
+            int16_t sample = audio[i];
+            /* Apply fade-in ramp on first block(s) to avoid click */
+            if (sampler_fade_in_remaining > 0) {
+                int pos = SAMPLER_FADE_SAMPLES - sampler_fade_in_remaining;
+                sample = (int16_t)((int32_t)sample * pos / SAMPLER_FADE_SAMPLES);
+                sampler_fade_in_remaining--;
+            }
+            sampler_ring_buffer[write_pos] = sample;
             write_pos = (write_pos + 1) % buffer_samples;
         }
         __atomic_store_n(&sampler_ring_write_pos, write_pos, __ATOMIC_RELEASE);
@@ -908,7 +937,7 @@ void skipback_trigger_save(void) {
  * ============================================================================ */
 
 void sampler_update_vu(void) {
-    if (!sampler_fullscreen_active) return;
+    if (!sampler_fullscreen_active && sampler_state != SAMPLER_RECORDING) return;
 
     int16_t *audio = NULL;
     uint8_t *gmmap = s_host.global_mmap_addr ? *s_host.global_mmap_addr : NULL;

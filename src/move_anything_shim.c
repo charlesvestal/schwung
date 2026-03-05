@@ -3319,7 +3319,7 @@ int ioctl(int fd, unsigned long request, ...)
                     }
                 }
 
-                /* Update VU / sync for sampler when active */
+                /* Update VU / sync for sampler when overlay active */
                 if (sampler_fullscreen_on || sampler_overlay_on) {
                     sampler_update_vu();
                     shadow_overlay_sync();
@@ -3393,6 +3393,12 @@ int ioctl(int fd, unsigned long request, ...)
                 memcpy(mem + 84, overlay_display + offset, bytes);
             }
         }
+    }
+
+    /* Update VU meter during recording even when overtake module owns the display */
+    if (sampler_state == SAMPLER_RECORDING) {
+        sampler_update_vu();
+        shadow_overlay_sync();
     }
 
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
