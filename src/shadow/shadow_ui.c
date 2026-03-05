@@ -1906,6 +1906,15 @@ static JSValue js_host_sampler_set_external_stop(JSContext *ctx, JSValueConst th
     return JS_TRUE;
 }
 
+/* host_wake_all_slots() - clear idle flags on all shadow slots */
+static JSValue js_host_wake_all_slots(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    shadow_control->wake_slots = 1;
+    return JS_TRUE;
+}
+
 /* === End host functions === */
 
 static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -2016,6 +2025,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_stop", JS_NewCFunction(ctx, js_host_sampler_stop, "host_sampler_stop", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_is_recording", JS_NewCFunction(ctx, js_host_sampler_is_recording, "host_sampler_is_recording", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_set_external_stop", JS_NewCFunction(ctx, js_host_sampler_set_external_stop, "host_sampler_set_external_stop", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_wake_all_slots", JS_NewCFunction(ctx, js_host_wake_all_slots, "host_wake_all_slots", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 

@@ -129,7 +129,8 @@ typedef struct shadow_control_t {
     volatile uint8_t sampler_state_val;  /* Mirrors sampler_state_t: 0=idle,1=armed,2=recording,3=preroll */
     volatile uint8_t mute_move_audio;   /* 1=zero Move's audio output (for silent clip switching) */
     volatile uint8_t sampler_ext_stop;  /* 1=sampler ignores MIDI Stop, only explicit stop works */
-    volatile uint8_t reserved[13];
+    volatile uint8_t wake_slots;       /* 1=clear all slot idle flags (auto-clears after read) */
+    volatile uint8_t reserved[12];
 } shadow_control_t;
 
 /*

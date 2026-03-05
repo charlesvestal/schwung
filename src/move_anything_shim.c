@@ -1430,6 +1430,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (shadow_control) {
         shadow_control->sampler_state_val = (uint8_t)sampler_get_state();
         sampler_external_stop_only = shadow_control->sampler_ext_stop ? 1 : 0;
+
+        /* Wake all slots from idle when requested (e.g. Song Mode pre-warming) */
+        if (shadow_control->wake_slots) {
+            shadow_control->wake_slots = 0;
+            for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                shadow_slot_idle[s] = 0;
+                shadow_slot_silence_frames[s] = 0;
+                shadow_slot_fx_idle[s] = 0;
+                shadow_slot_fx_silence_frames[s] = 0;
+            }
+        }
+
         uint8_t cmd = shadow_control->sampler_cmd;
         if (cmd == 1) {
             /* Start recording — path in file */

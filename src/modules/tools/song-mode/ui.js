@@ -546,6 +546,10 @@ function startPlayback(fromBeginning) {
      *   4. Play toggle (stop transport)
      *   5. Unmute + Play toggle (start with correct pads, audible)
      *   6. Start timer */
+    /* Pre-warm: wake all shadow slots from idle so FX chains are running
+     * before audio arrives (avoids glitch on first frame with Link Audio) */
+    if (typeof host_wake_all_slots === "function") host_wake_all_slots();
+
     if (typeof host_mute_move_audio === "function") host_mute_move_audio(1);
     queuePlayToggle();
     triggerEntry(currentEntryIndex);
@@ -637,6 +641,8 @@ function tickPlayback() {
             return;
         }
         console.log("song-mode: advance to entry " + nextIdx);
+        /* Wake slots before step transition in case new tracks become active */
+        if (typeof host_wake_all_slots === "function") host_wake_all_slots();
         currentEntryIndex = nextIdx;
         playStartTime = Date.now();
         nextEntryQueued = false;
