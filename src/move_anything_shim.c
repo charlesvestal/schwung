@@ -2132,8 +2132,8 @@ static void shadow_swap_display(void)
                 display_phase = 0;
                 display_hidden_for_volume = 0;
             }
-        } else if (!shadow_control->overtake_mode) {
-            /* Let native Move overlays remain visible while volume touch is held. */
+        } else {
+            /* Let native Move volume overlay show while volume touch is held. */
             display_phase = 0;
             display_hidden_for_volume = 1;
             return;
@@ -3538,6 +3538,15 @@ do_ioctl:
                      * - mode 1 (menu): allow only volume touch/turn passthrough */
                     if (overtake_mode == 2) {
                         if (status >= 0x80) filter = 1;
+                        /* Let volume knob CC and touch through so Move shows volume overlay */
+                        if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
+                            filter = 0;
+                        }
+                        if ((cin == 0x09 || cin == 0x08) &&
+                            (type == 0x90 || type == 0x80) &&
+                            d1 == 8) {
+                            filter = 0;
+                        }
                     } else if (overtake_mode == 1) {
                         filter = 1;
                         if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
