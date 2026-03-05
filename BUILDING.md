@@ -129,12 +129,17 @@ build/
   shared/                    # Shared JS utilities
   patches/                   # Chain patches
   modules/
-    chain/                   # Signal Chain module
-      audio_fx/              # Audio FX plugins (Freeverb)
-      sound_generators/      # Sound generators (Line In)
-      midi_fx/               # MIDI FX (Chord, Arp)
-    controller/              # MIDI controller
-    store/                   # Module Store
+    chain/                   # Signal Chain module (featured)
+    audio_fx/freeverb/       # Audio FX: Freeverb reverb
+    sound_generators/linein/ # Sound generator: Line In passthrough
+    midi_fx/chord/           # MIDI FX: Chord generator
+    midi_fx/arp/             # MIDI FX: Arpeggiator
+    midi_fx/velocity_scale/  # MIDI FX: Velocity range mapping
+    controller/              # MIDI controller (overtake)
+    store/                   # Module Store (system)
+    tools/file-browser/      # File browser tool (UI only)
+    tools/song-mode/         # Song arranger tool (UI only)
+    tools/wav-player/        # WAV player tool (UI + DSP)
 
 move-anything.tar.gz         # Deployable package
 ```
@@ -530,7 +535,10 @@ Installation paths are automatically determined by the `component_type` field in
 | `sound_generator` | `modules/sound_generators/<id>/` |
 | `audio_fx` | `modules/audio_fx/<id>/` |
 | `midi_fx` | `modules/midi_fx/<id>/` |
-| `utility` (or other) | `modules/<id>/` |
+| `utility` | `modules/utilities/<id>/` |
+| `overtake` | `modules/overtake/<id>/` |
+| `tool` | `modules/tools/<id>/` |
+| (other) | `modules/other/<id>/` |
 
 The Module Store reads `component_type` from the catalog and installs modules to the appropriate subdirectory automatically.
 
