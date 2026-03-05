@@ -433,6 +433,17 @@
       "default_branch": "main",
       "asset_name": "stems-module.tar.gz",
       "min_host_version": "0.6.0"
+    },
+    {
+      "id": "granular",
+      "name": "Boris Granular",
+      "description": "Real-time granular audio effect with live input capture and MIDI sync",
+      "author": "Alessandro Gaiba (port: fillioning)",
+      "component_type": "audio_fx",
+      "github_repo": "fillioning/move-anything-boris",
+      "default_branch": "main",
+      "asset_name": "boris-granular-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
