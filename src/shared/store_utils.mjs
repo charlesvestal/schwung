@@ -226,18 +226,9 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
 
         /* For catalog v2+, fetch release info — but skip if network is down */
         if (catalog.catalog_version >= 2 && catalog.modules && networkAvailable) {
-            let consecutiveFailures = 0;
             for (let i = 0; i < catalog.modules.length; i++) {
                 const mod = catalog.modules[i];
                 if (mod.github_repo) {
-                    if (consecutiveFailures >= 2) {
-                        /* Network likely down — skip remaining fetches but still set fallback URL */
-                        mod.latest_version = mod.latest_version || '?';
-                        if (!mod.download_url && mod.github_repo && mod.asset_name) {
-                            mod.download_url = `https://github.com/${mod.github_repo}/releases/latest/download/${mod.asset_name}`;
-                        }
-                        continue;
-                    }
                     if (onProgress) onProgress('Loading Catalog', mod.name, i + 1, moduleCount);
 
                     /* Pass module id for multi-module repo support */
@@ -252,17 +243,10 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
                         mod.requires = release.requires;
                         mod.post_install = release.post_install;
                         mod.repo_url = release.repo_url;
-                        consecutiveFailures = 0;
                     } else {
                         mod.latest_version = mod.latest_version || '?';
                         if (mod.github_repo && mod.asset_name) {
                             mod.download_url = `https://github.com/${mod.github_repo}/releases/latest/download/${mod.asset_name}`;
-                        } else {
-                            mod.download_url = null;
-                        }
-                        consecutiveFailures++;
-                        if (consecutiveFailures >= 2) {
-                            console.log('Two consecutive release fetch failures, skipping remaining modules');
                         }
                     }
                 }
