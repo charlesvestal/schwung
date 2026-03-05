@@ -91,6 +91,10 @@ Tool modules (`"component_type": "tool"`) appear in the Tools menu and support a
 |-------|-------------|
 | `interactive` | Tool takes over the UI (like an overtake module) rather than running headlessly |
 | `skip_file_browser` | Tool does not use the file browser on launch (goes straight to its own UI) |
+| `input_extensions` | Array of file extensions the tool accepts (e.g., `[".wav"]`) |
+| `allow_new_file` | Show a "+ New File" action in the file browser |
+| `command` | Shell command to run for non-interactive tools |
+| `overtake` | Set to `false` to prevent tool from using overtake display mode |
 
 Interactive tools use `host_exit_module()` to return to the tools menu when the user presses Back.
 
@@ -412,7 +416,7 @@ For audio synthesis/processing, create a native plugin implementing the C API.
 V2 supports multiple instances and is **required for Signal Chain integration**:
 
 ```c
-#include "plugin_api_v2.h"
+#include "host/plugin_api_v1.h"  /* v2 API is defined in this file */
 
 typedef struct my_instance {
     // Your synth state here
@@ -533,37 +537,61 @@ The DSP plugin receives these in `set_param()` and `get_param()`.
 
 ## Shadow UI Parameter Hierarchy
 
-Modules can expose a navigable parameter hierarchy to the Shadow UI by responding to `get_param("ui_hierarchy")`:
+Modules expose a navigable parameter hierarchy to the Shadow UI via `ui_hierarchy` in module.json or `get_param("ui_hierarchy")`. The hierarchy uses a **levels dictionary** format with named levels:
 
-```c
-int get_param(void *instance, const char *key, char *buf, int buf_len) {
-    if (strcmp(key, "ui_hierarchy") == 0) {
-        const char *json = "{"
-            "\"label\": \"Dexed\","
-            "\"children\": ["
-                "{\"label\": \"Algorithm\", \"param\": \"algorithm\", \"type\": \"int\", \"min\": 1, \"max\": 32},"
-                "{\"label\": \"Feedback\", \"param\": \"feedback\", \"type\": \"int\", \"min\": 0, \"max\": 7},"
-                "{\"label\": \"Operators\", \"children\": ["
-                    "{\"label\": \"OP1\", \"children\": [...]}"
-                "]}"
-            "]"
-        "}";
-        strncpy(buf, json, buf_len);
-        return strlen(json);
+```json
+{
+  "ui_hierarchy": {
+    "levels": {
+      "root": {
+        "name": "My Synth",
+        "params": [
+          {"key": "cutoff", "name": "Cutoff", "type": "int", "min": 0, "max": 127},
+          {"key": "mode", "name": "Mode", "type": "enum", "options": ["LP", "HP", "BP"]},
+          {"level": "advanced", "label": "Advanced Settings"}
+        ],
+        "knobs": ["cutoff", "mode"]
+      },
+      "advanced": {
+        "name": "Advanced",
+        "params": [
+          {"key": "drive", "name": "Drive", "type": "float", "min": 0, "max": 1}
+        ],
+        "knobs": ["drive"]
+      }
     }
-    return -1;
+  }
 }
 ```
 
-### Hierarchy Node Types
+### Level Fields
+
+| Field | Description |
+|-------|-------------|
+| `name` / `label` | Display name for the level |
+| `params` | Array of parameter items (see below) |
+| `knobs` | Array of parameter keys mapped to physical knobs 1-8 |
+| `list_param` / `count_param` / `name_param` | For preset browser levels |
+| `items_param` / `select_param` | For dynamic item selection levels |
+| `child_prefix` / `child_count` / `child_label` | For repeated elements (see below) |
+
+### Parameter Item Types
+
+Each entry in `params` is either:
+
+- **Editable param**: `{"key": "cutoff", "name": "Cutoff", "type": "int", "min": 0, "max": 127}`
+- **Navigation link**: `{"level": "advanced", "label": "Advanced Settings"}`
+
+**Important:** Use `key` (not `param`) for editable parameter objects. Metadata (type, min, max) can come from either the hierarchy or `chain_params`.
+
+### Parameter Types
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| Container | `label`, `children` | Navigable folder |
-| Integer | `label`, `param`, `type:"int"`, `min`, `max` | Integer value with knob control |
-| Float | `label`, `param`, `type:"float"`, `min`, `max` | Float value (0.0-1.0 typical) |
-| Enum | `label`, `param`, `type:"enum"`, `options` | List of string options |
-| Mode | `label`, `param`, `type:"mode"`, `options` | Mode selector (like enum, triggers mode switch) |
+| `int` | `min`, `max` | Integer value with knob control |
+| `float` | `min`, `max`, `step` | Float value (0.0-1.0 typical) |
+| `enum` | `options` | List of string options |
+| `mode` | `options` | Mode selector (like enum, triggers mode switch) |
 
 ### Child Selectors (for repeated elements)
 
@@ -577,7 +605,11 @@ For synths with multiple similar elements (tones, operators, parts), use child s
       "child_prefix": "nvram_tone_",
       "child_count": 4,
       "child_label": "Tone",
-      "params": ["cutofffrequency", "resonance", "level"],
+      "params": [
+        {"key": "cutofffrequency", "name": "Cutoff"},
+        {"key": "resonance", "name": "Resonance"},
+        {"key": "level", "name": "Level"}
+      ],
       "knobs": ["cutofffrequency", "resonance", "level"]
     }
   }
@@ -586,27 +618,23 @@ For synths with multiple similar elements (tones, operators, parts), use child s
 
 The Shadow UI will show a selector (Tone 1, Tone 2, etc.) and prefix parameter keys with `child_prefix` + index (e.g., `synth:nvram_tone_0_cutofffrequency`).
 
-### Example Hierarchy
+### Example: Chord MIDI FX Hierarchy
 
 ```json
 {
-  "label": "CloudSeed",
-  "children": [
-    {
-      "label": "Early Reflections",
-      "children": [
-        { "label": "Delay", "param": "early_delay", "type": "float", "min": 0, "max": 1 },
-        { "label": "Amount", "param": "early_amount", "type": "float", "min": 0, "max": 1 }
-      ]
-    },
-    {
-      "label": "Late Reverb",
-      "children": [
-        { "label": "Decay", "param": "decay", "type": "float", "min": 0, "max": 1 },
-        { "label": "Diffusion", "param": "diffusion", "type": "float", "min": 0, "max": 1 }
-      ]
+  "levels": {
+    "root": {
+      "name": "Chord",
+      "params": [
+        {"key": "type", "name": "Type", "type": "enum",
+         "options": ["none", "major", "minor", "dim", "aug", "sus2", "sus4", "power", "octave"]},
+        {"key": "inversion", "name": "Inversion", "type": "enum",
+         "options": ["root", "1st", "2nd", "3rd"]},
+        {"key": "strum", "name": "Strum", "type": "int", "min": 0, "max": 100}
+      ],
+      "knobs": ["type", "inversion", "strum"]
     }
-  ]
+  }
 }
 ```
 
@@ -732,6 +760,16 @@ Import path from modules: `../../shared/<file>.mjs`
 | `text_scroll.mjs` | Marquee scrolling for long text |
 | `move_display.mjs` | Display utilities |
 | `filepath_browser.mjs` | Reusable filesystem browser helpers for `chain_params` type `filepath` |
+| `logger.mjs` | Unified logging utilities |
+| `screen_reader.mjs` | Screen reader announce/announceMenuItem/announceView helpers |
+| `sampler_overlay.mjs` | Quantized sampler UI overlay |
+| `text_entry.mjs` | On-screen keyboard for text input |
+| `store_utils.mjs` | Module Store catalog fetching and install/remove functions |
+| `scrollable_text.mjs` | Scrollable text component |
+| `sound_generator_ui.mjs` | Sound generator UI helpers |
+| `chain_param_utils.mjs` | Chain parameter handling utilities |
+| `chain_ui_views.mjs` | Shadow UI view components |
+| `parse_move_manual.mjs` | Move manual content parsing |
 
 ### Common Imports
 
@@ -909,8 +947,8 @@ The Signal Chain module allows combining MIDI sources, MIDI effects, sound gener
 |------|------------|
 | MIDI Sources | Sequencers or other modules referenced via `midi_source` |
 | Sound Generators | Line In, SF2, Dexed, CLAP, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `minijv`) |
-| MIDI Effects | Chord (none, major, minor, power, octave with strum), Arpeggiator (off, up, down, up_down, random with BPM/division/sync) |
-| Audio Effects | Freeverb (reverb), CLAP effects |
+| MIDI Effects | Chord (15 chord types with inversions, voicings, strum), Arpeggiator (off, up, down, up_down, random with BPM/division/sync), Velocity Scale (min/max velocity mapping), plus external MIDI FX via Module Store |
+| Audio Effects | Freeverb (reverb), CLAP effects, plus external audio FX via Module Store (CloudSeed, PSXVerb, Tapescam, etc.) |
 
 ### CLAP Host Module
 
@@ -1008,6 +1046,126 @@ audio_fx_api_v2_t* move_audio_fx_init_v2(const host_api_v1_t *host);
 ```
 
 The `on_midi` callback is optional (can be NULL). Implement it to receive MIDI from capture rules or other sources.
+
+## MIDI FX Plugin API
+
+MIDI effects transform or generate MIDI messages. They use a separate API defined in `src/host/midi_fx_api_v1.h`:
+
+```c
+typedef struct midi_fx_api_v1 {
+    uint32_t api_version;  /* Must be 1 (MIDI_FX_API_VERSION) */
+
+    void* (*create_instance)(const char *module_dir, const char *config_json);
+    void (*destroy_instance)(void *instance);
+
+    /* Transform incoming MIDI. Returns number of output messages (0 = swallow, >1 = expand).
+     * out_msgs: array of 3-byte MIDI messages
+     * max_out: maximum output messages (MIDI_FX_MAX_OUT_MSGS = 16) */
+    int (*process_midi)(void *instance,
+                        const uint8_t *in_msg, int in_len,
+                        uint8_t out_msgs[][3], int out_lens[],
+                        int max_out);
+
+    /* Time-based generation (e.g., arpeggiator). Called each audio block.
+     * Returns number of output messages to inject. */
+    int (*tick)(void *instance,
+                int frames, int sample_rate,
+                uint8_t out_msgs[][3], int out_lens[],
+                int max_out);
+
+    void (*set_param)(void *instance, const char *key, const char *val);
+    int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+} midi_fx_api_v1_t;
+
+// Entry point
+midi_fx_api_v1_t* move_midi_fx_init(const host_api_v1_t *host);
+```
+
+**Key differences from sound generators and audio FX:**
+
+- `process_midi()` transforms incoming MIDI — can output 0 (swallow), 1 (pass/modify), or multiple messages (e.g., chord generates multiple notes)
+- `tick()` handles time-based generation (e.g., arpeggiator note sequencing) — called every audio block
+- No `render_block()` — MIDI FX don't process audio
+- Maximum 2 native MIDI FX per chain (`MAX_MIDI_FX`)
+- Maximum 16 output messages per `process_midi()` call (`MIDI_FX_MAX_OUT_MSGS`)
+
+### Building MIDI FX
+
+MIDI FX are built identically to other native plugins:
+
+```bash
+"${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+    src/modules/midi_fx/your-fx/dsp/your_fx.c \
+    -o build/modules/midi_fx/your-fx/dsp.so \
+    -Isrc
+```
+
+### Built-in MIDI FX
+
+| Module | ID | Description |
+|--------|----|-------------|
+| Chord | `chord` | Chord generator (15 types, inversions, voicings, strum) |
+| Arpeggiator | `arp` | Arpeggiator (up, down, up_down, random with tempo sync) |
+| Velocity Scale | `velocity_scale` | Velocity range mapping (min/max) |
+
+### MIDI FX module.json Example
+
+```json
+{
+    "id": "velocity_scale",
+    "name": "Velocity Scale",
+    "abbrev": "VS",
+    "version": "0.1.0",
+    "builtin": true,
+    "capabilities": {
+        "chainable": true,
+        "component_type": "midi_fx",
+        "ui_hierarchy": {
+            "levels": {
+                "root": {
+                    "name": "Velocity Scale",
+                    "params": [
+                        {"key": "min", "name": "Min", "type": "int", "min": 1, "max": 127},
+                        {"key": "max", "name": "Max", "type": "int", "min": 1, "max": 127}
+                    ],
+                    "knobs": ["min", "max"]
+                }
+            }
+        }
+    }
+}
+```
+
+## Host API (Passed to Plugins)
+
+All plugin init functions receive a `host_api_v1_t` struct providing access to host services:
+
+```c
+typedef struct host_api_v1 {
+    uint32_t api_version;
+
+    /* Audio constants */
+    int sample_rate;         /* 44100 */
+    int frames_per_block;    /* 128 */
+
+    /* Direct mailbox access (use with care) */
+    uint8_t *mapped_memory;
+    int audio_out_offset;    /* Offset to audio output in mailbox */
+    int audio_in_offset;     /* Offset to audio input in mailbox */
+
+    /* Logging */
+    void (*log)(const char *msg);
+
+    /* MIDI send functions
+     * msg: 4-byte USB-MIDI packet [cable|CIN, status, data1, data2]
+     * Returns: bytes queued, or 0 on failure */
+    int (*midi_send_internal)(const uint8_t *msg, int len);
+    int (*midi_send_external)(const uint8_t *msg, int len);
+
+    /* Clock status for sync-aware plugins */
+    int (*get_clock_status)(void);
+} host_api_v1_t;
+```
 
 ## Audio Specifications
 

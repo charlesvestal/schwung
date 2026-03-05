@@ -85,7 +85,7 @@ The `midi_monitor()` function reads incoming MIDI from the shared memory mailbox
 
 - **Shift held** (CC 49 = 127)
 - **Volume knob touched** (Note 8 on)
-- **Knob 8 touched** (Note 7 on)
+- **Jog encoder touched** (Note 9 on)
 
 When all three are active simultaneously, the shim:
 
@@ -132,11 +132,11 @@ Offset    Size    Direction   Purpose
 ──────────────────────────────────────────────────────
 0x000     256     Out         MIDI to hardware (LEDs, etc.)
 0x100     512     Out         Audio output (L/R interleaved)
-0x300     1280    Out         Display framebuffer
+0x300     1024    Out         Display framebuffer (128x64 @ 1bpp)
 ──────────────────────────────────────────────────────
 0x800     256     In          MIDI from hardware (pads, knobs)
 0x900     512     In          Audio input (L/R interleaved)
-0xB00     1280    In          (unused)
+0xB00     1024    In          (unused)
 ```
 
 ### Display (128x64 1-bit)
@@ -301,35 +301,42 @@ When a module is selected:
    mm->dsp_handle = dlopen(info->dsp_path, RTLD_NOW | RTLD_LOCAL);
    ```
 
-3. **Get the init function**:
+3. **Get the init function** (tries v2 first, falls back to v1):
    ```c
-   move_plugin_init_v1_fn init_fn = dlsym(mm->dsp_handle, "move_plugin_init_v1");
+   move_plugin_init_v2_fn init_v2 = dlsym(mm->dsp_handle, "move_plugin_init_v2");
+   if (!init_v2)
+       move_plugin_init_v1_fn init_v1 = dlsym(mm->dsp_handle, "move_plugin_init_v1");
    ```
 
 4. **Initialize the plugin** (passes host API with audio/MIDI callbacks):
    ```c
-   mm->plugin = init_fn(&mm->host_api);
+   mm->plugin_v2 = init_v2(&mm->host_api);
    ```
 
-5. **Call `on_load`** with the module directory and JSON defaults
+5. **Create instance** (v2) or **call `on_load`** (v1) with the module directory and JSON defaults
 
 6. **Load the JavaScript UI** via QuickJS
 
-### Plugin API v1
+### Plugin APIs
 
-Native DSP plugins implement this interface (`src/host/plugin_api_v1.h`):
+Native DSP plugins implement one of two APIs (both defined in `src/host/plugin_api_v1.h`):
+
+**Plugin API v2 (Recommended)** — supports multiple instances, required for Signal Chain:
 
 ```c
-typedef struct plugin_api_v1 {
-    uint32_t api_version;
-    int (*on_load)(const char *module_dir, const char *json_defaults);
-    void (*on_unload)(void);
-    void (*on_midi)(const uint8_t *msg, int len, int source);
-    void (*set_param)(const char *key, const char *val);
-    int (*get_param)(const char *key, char *buf, int buf_len);
-    void (*render_block)(int16_t *out_interleaved_lr, int frames);
-} plugin_api_v1_t;
+typedef struct plugin_api_v2 {
+    uint32_t api_version;              // Must be 2
+    void* (*create_instance)(const char *module_dir, const char *json_defaults);
+    void (*destroy_instance)(void *instance);
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
+    void (*set_param)(void *instance, const char *key, const char *val);
+    int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+    int (*get_error)(void *instance, char *buf, int buf_len);
+    void (*render_block)(void *instance, int16_t *out_interleaved_lr, int frames);
+} plugin_api_v2_t;
 ```
+
+The module manager tries `move_plugin_init_v2` first, falling back to `move_plugin_init_v1` (deprecated singleton API).
 
 Audio specs:
 - Sample rate: 44100 Hz
@@ -363,7 +370,13 @@ Example catalog entry:
 
 1. User selects a module in the store
 2. Store downloads the tarball via `curl`
-3. Extracts to `/data/UserData/move-anything/modules/<id>/`
+3. Extracts to a category subdirectory based on `component_type`:
+   - `sound_generator` → `modules/sound_generators/<id>/`
+   - `audio_fx` → `modules/audio_fx/<id>/`
+   - `midi_fx` → `modules/midi_fx/<id>/`
+   - `utility` → `modules/utilities/<id>/`
+   - `overtake` → `modules/overtake/<id>/`
+   - `tool` → `modules/tools/<id>/`
 4. Module appears in the main menu immediately
 
 ## Returning to Stock Move
@@ -383,10 +396,7 @@ Shadow Mode is an alternative operating mode that runs Move Anything's audio eng
 
 ### Activation
 
-Shadow Mode is activated with a different hotkey combo:
-- **Shift held** (CC 49 = 127)
-- **Volume knob touched** (Note 8 on)
-- **Knob 1 touched** (Note 0 on)
+Shadow Mode is activated via **Shift + Volume touch + Track button (1-4)**. Each track button opens shadow mode and jumps to the corresponding slot's settings. From stock Move, this also launches the shadow UI process. If already in shadow mode, it switches to the selected slot.
 
 ### Architecture
 
@@ -421,11 +431,18 @@ Shadow Mode uses several shared memory regions for IPC:
 
 | Region | Purpose |
 |--------|---------|
-| `/shadow_control` | Control flags, slot selection, request IDs |
-| `/shadow_ui_midi` | MIDI messages forwarded to shadow UI |
-| `/shadow_display` | Display buffer for overlay rendering |
-| `/shadow_ui_state` | Slot state (names, channels, active status) |
-| `/shadow_param` | Parameter read/write requests |
+| `/move-shadow-control` | Control flags, slot selection, request IDs |
+| `/move-shadow-audio` | Shadow's mixed audio output |
+| `/move-shadow-ui-midi` | MIDI messages forwarded to shadow UI |
+| `/move-shadow-display` | Display buffer for overlay rendering |
+| `/move-shadow-ui` | Slot state (names, channels, active status) |
+| `/move-shadow-param` | Parameter read/write requests |
+| `/move-shadow-midi-out` | MIDI output from shadow UI |
+| `/move-shadow-midi-dsp` | MIDI from shadow UI to DSP slots |
+| `/move-shadow-midi-inject` | MIDI inject into Move's MIDI_IN |
+| `/move-shadow-overlay` | Overlay state (sampler/skipback) |
+| `/move-shadow-screenreader` | Screen reader announcements |
+| `/move-display-live` | Live display for remote viewer |
 
 ### MIDI Cables
 
@@ -619,7 +636,7 @@ if (ccNumber === MoveMainButton && value > 0) {
 
 **LED Buffer Management:**
 
-The MIDI output buffer (`SHADOW_MIDI_OUT_BUFFER_SIZE = 256 bytes`) holds 64 USB-MIDI packets. The host clears LEDs progressively:
+The MIDI output buffer (`SHADOW_MIDI_OUT_BUFFER_SIZE = 512 bytes`) holds ~128 USB-MIDI packets, but the hardware mailbox MIDI region is 256 bytes (~64 packets). The host clears LEDs progressively:
 
 | LED Type | Addressing | Count |
 |----------|-----------|-------|
@@ -673,7 +690,7 @@ globalThis.tick = function() {
          ↓
 ┌─────────────────┐
 │ Shift + Vol +   │
-│ Knob8 detected  │
+│ Jog detected    │
 └────────┬────────┘
          ↓
 ┌─────────────────┐

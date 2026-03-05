@@ -14,6 +14,20 @@ print(x, y, text, color)          // Draw text at position (color: 0=black, 1=wh
 set_pixel(x, y, value)            // Set pixel at position (value: 0=black, 1=white)
 draw_rect(x, y, w, h, value)      // Draw rectangle outline
 fill_rect(x, y, w, h, value)      // Draw filled rectangle
+text_width(text)                  // Get width of text string in pixels
+```
+
+### Display Object (Alternative API)
+
+An object-oriented display API is also available:
+
+```javascript
+display.clear()                          // Clear display to black
+display.drawText(x, y, text, color)      // Draw text at position
+display.fillRect(x, y, w, h, value)      // Draw filled rectangle
+display.drawRect(x, y, w, h, value)      // Draw rectangle outline
+display.drawLine(x1, y1, x2, y2, value)  // Draw line between two points
+display.flush()                          // Force immediate display update
 ```
 
 ## MIDI
@@ -151,7 +165,7 @@ host_remove_dir(path)         // Recursively remove directory, returns bool
 host_announce_screenreader(text) // Speak text via TTS (if screen reader enabled)
 
 // Tool module lifecycle
-host_exit_module()            // Exit current tool module, return to tools menu
+host_exit_module()            // Exit current tool module, return to tools menu (tool modules only)
 
 // MIDI injection (inject MIDI into Move's firmware input path)
 move_midi_inject_to_move([type, status, d1, d2]) // Simulate hardware MIDI input
@@ -160,10 +174,18 @@ move_midi_inject_to_move([type, status, d1, d2]) // Simulate hardware MIDI input
 host_sampler_start(path)      // Start recording to the given WAV file path
 host_sampler_stop()           // Stop recording
 host_sampler_is_recording()   // Returns bool - true if currently recording
+
+// Shadow-mode only functions (available in shadow_ui.js context)
+host_system_cmd(cmd)          // Execute allowlisted system command
+host_wake_all_slots()         // Clear idle flags on all shadow slots
+host_mute_move_audio(bool)    // Mute/unmute Move's audio output
+host_http_download_background(url, dest) // Background HTTP download
+host_sampler_set_external_stop(bool)     // Set external stop flag for sampler
 ```
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
 `host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
+`host_exit_module` is dynamically created for tool modules only — it is not available in the main host context.
 
 ## Utility Functions
 
