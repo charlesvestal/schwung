@@ -1912,7 +1912,7 @@ static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
     }
 
     const char *argv_cmd[] = {
-        "tar", "-xzf", tar_path, "-C", dest_dir, NULL
+        "tar", "-xzof", tar_path, "-C", dest_dir, NULL
     };
     int result = run_command(argv_cmd);
 
@@ -1968,7 +1968,7 @@ static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
     snprintf(strip_arg, sizeof(strip_arg), "--strip-components=%d", strip);
 
     const char *argv_cmd[] = {
-        "tar", "-xzf", tar_path, "-C", dest_dir, strip_arg, NULL
+        "tar", "-xzof", tar_path, "-C", dest_dir, strip_arg, NULL
     };
     int result = run_command(argv_cmd);
 
