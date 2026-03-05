@@ -10,6 +10,14 @@ Keep CLAUDE.md up to date as the codebase evolves. When you add new JS host func
 
 Move Anything is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. It provides access to pads, encoders, buttons, display (128x64 1-bit), audio I/O, and MIDI via USB-A.
 
+## Code Style
+
+**C**: Snake_case for functions/variables. Prefix module manager functions with `mm_`, JS host bindings with `js_`. Log with descriptive prefixes (e.g., `mm:`, `host:`, `shim:`).
+
+**JavaScript**: `.mjs` for shared utilities (ES modules), `.js` for UI modules. Host-exposed functions use `snake_case` (e.g., `host_load_module`).
+
+**Naming**: Module IDs are lowercase hyphenated (`song-mode`). Parameter keys are lowercase underscored (`tail_bars`). LED color constants are PascalCase (`BrightRed`).
+
 ## Build Commands
 
 ```bash
@@ -22,6 +30,25 @@ Move Anything is a framework for custom JavaScript and native DSP modules on Abl
 ```
 
 Cross-compilation uses `${CROSS_PREFIX}gcc` for the Move's ARM architecture.
+
+**Deployment shortcut**: `./scripts/install.sh local --skip-modules --skip-confirmation` — never scp individual files; the install script handles setuid, symlinks, feature config, and service restart.
+
+## Testing
+
+No automated test suite. Testing is done manually on hardware. After deploying, enable the unified logger and check logs on device:
+
+```bash
+ssh ableton@move.local "touch /data/UserData/move-anything/debug_log_on"
+ssh ableton@move.local "tail -f /data/UserData/move-anything/debug.log"
+```
+
+See `docs/LOGGING.md` for the full unified logging guide. In JS use `console.log()` (auto-routed) or import from `shared/logger.mjs`. In C use `LOG_DEBUG("source", "msg")` etc. from `host/unified_log.h`.
+
+## Device Constraints
+
+**Never write to `/tmp` on the Move device.** The root filesystem (`/`) is tiny (~463MB) and nearly always 100% full. `/tmp` is on rootfs. Writing there **will** fill the disk and break things. Always use `/data/UserData/` which has ~49GB free.
+
+This applies to logs, recordings, temp files, test output — everything. Use paths under `/data/UserData/` (e.g., `/data/UserData/UserLibrary/Recordings/`). The unified logger already writes to `/data/UserData/move-anything/debug.log`.
 
 ## Architecture
 
@@ -65,6 +92,26 @@ Built-in modules (in main repo):
 - `file-browser` - File/folder browser (tool)
 - `song-mode` - Song arranger for sequencing clips (tool)
 - `wav-player` - WAV file playback (tool, used by file browser)
+
+### JS Module Lifecycle
+
+Every UI module exports four functions via `globalThis`:
+
+```javascript
+globalThis.init = function() { }                        // Called once on load
+globalThis.tick = function() { }                        // Called ~44x/sec (128 frames @ 44.1kHz)
+globalThis.onMidiMessageInternal = function(data) { }   // Internal Move hardware MIDI
+globalThis.onMidiMessageExternal = function(data) { }   // External USB MIDI (overtake only)
+```
+
+`data` is a Uint8Array: `[status, cc/note, value]`. Always filter noise with `shouldFilterMessage(data)` from `input_filter.mjs`.
+
+Three module loading styles exist:
+- `host_load_module(id)` — Full load (DSP + UI), auto-calls `init()`
+- `host_load_ui_module(path)` — UI-only, caller captures globals and calls `init()` manually (used by Chain)
+- `shadow_load_ui_module(path)` — Overtake modules, deferred `init()` after LED clearing
+
+See `docs/API.md` for full display, LED, and MIDI API reference.
 
 ### Module Categorization
 
@@ -627,8 +674,22 @@ See `BUILDING.md` for detailed documentation.
 Detailed documentation is in the `docs/` directory:
 - `docs/API.md` - Full JS API reference (display, MIDI, host functions, LED colors)
 - `docs/MODULES.md` - Module development guide (module.json, capabilities, tool_config, DSP plugin API, Signal Chain integration)
+- `docs/LOGGING.md` - Unified logging guide (enable/disable, JS and C APIs, log format)
 - `MANUAL.md` - User-facing manual (shortcuts, slots, recording, tools, modules)
 - `BUILDING.md` - Build system and cross-compilation
+
+## Release Checklist
+
+Before tagging a new host release:
+
+1. **Build**: `./scripts/build.sh` succeeds
+2. **Deploy and test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
+3. **Version**: Update `src/host/version.txt` and `module-catalog.json` (host latest_version + download URL)
+4. **Documentation**: Update `CLAUDE.md`, `MANUAL.md`, `docs/API.md`, `docs/MODULES.md` for any new features, APIs, or changed behavior
+5. **Help files**: Update `help.json` in any modified tool modules
+6. **Module catalog**: Update `min_host_version` for any modules that depend on new host features
+7. **Commit, tag, push**: `git tag v0.X.0 && git push --tags`
+8. **Release notes**: Add notes to the GitHub release via `gh release edit`
 
 ## Dependencies
 
