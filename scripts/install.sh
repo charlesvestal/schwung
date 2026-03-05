@@ -640,9 +640,9 @@ ssh_ableton_with_retry "tar -tzf ./$remote_filename | grep -qx 'move-anything/mo
     fail "Invalid tar payload: missing move-anything/move-anything-shim.so entry"
 # Use verbose tar only in non-quiet mode (screen reader friendly)
 if [ "$quiet_mode" = true ]; then
-    ssh_ableton_with_retry "tar -xzf ./$remote_filename" || fail "Failed to extract tarball"
+    ssh_ableton_with_retry "tar -xzof ./$remote_filename" || fail "Failed to extract tarball"
 else
-    ssh_ableton_with_retry "tar -xzvf ./$remote_filename" || fail "Failed to extract tarball"
+    ssh_ableton_with_retry "tar -xzvof ./$remote_filename" || fail "Failed to extract tarball"
 fi
 
 # Verify expected payload exists before making system changes
