@@ -435,6 +435,17 @@
       "min_host_version": "0.6.0"
     },
     {
+      "id": "plaits",
+      "name": "Plaits",
+      "description": "Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits)",
+      "author": "Emilie Gillet (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "j3threejay/move-anything-plaits",
+      "default_branch": "master",
+      "asset_name": "plaits-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "granular",
       "name": "Boris Granular",
       "description": "Real-time granular audio effect with live input capture and MIDI sync",
