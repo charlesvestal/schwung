@@ -131,7 +131,8 @@ typedef struct shadow_control_t {
     volatile uint8_t sampler_ext_stop;  /* 1=sampler ignores MIDI Stop, only explicit stop works */
     volatile uint8_t wake_slots;       /* 1=clear all slot idle flags (auto-clears after read) */
     volatile uint8_t skipback_require_volume; /* 0=Shift+Capture, 1=Shift+Vol+Capture */
-    volatile uint8_t reserved[11];
+    volatile uint8_t preview_cmd;          /* 0=none, 1=play (path in file), 2=stop */
+    volatile uint8_t reserved[10];
 } shadow_control_t;
 
 /*

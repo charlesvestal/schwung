@@ -1918,6 +1918,37 @@ static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
+#define PREVIEW_CMD_PATH "/data/UserData/move-anything/preview_cmd_path.txt"
+
+/* host_preview_play(path) - play WAV file for browser preview via shim IPC */
+static JSValue js_host_preview_play(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_FALSE;
+
+    FILE *f = fopen(PREVIEW_CMD_PATH, "w");
+    if (f) {
+        fputs(path, f);
+        fclose(f);
+    }
+    JS_FreeCString(ctx, path);
+
+    shadow_control->preview_cmd = 1;
+    return JS_TRUE;
+}
+
+/* host_preview_stop() - stop preview playback via shim IPC */
+static JSValue js_host_preview_stop(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    shadow_control->preview_cmd = 2;
+    return JS_TRUE;
+}
+
 /* host_sampler_start(path) - start recording to custom path via shim IPC */
 static JSValue js_host_sampler_start(JSContext *ctx, JSValueConst this_val,
                                       int argc, JSValueConst *argv) {
@@ -2085,6 +2116,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_sequence", JS_NewCFunction(ctx, js_shadow_get_overlay_sequence, "shadow_get_overlay_sequence", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_state", JS_NewCFunction(ctx, js_shadow_get_overlay_state, "shadow_get_overlay_state", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_display_overlay", JS_NewCFunction(ctx, js_shadow_set_display_overlay, "shadow_set_display_overlay", 5));
+
+    /* Register preview player functions */
+    JS_SetPropertyStr(ctx, global_obj, "host_preview_play", JS_NewCFunction(ctx, js_host_preview_play, "host_preview_play", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_preview_stop", JS_NewCFunction(ctx, js_host_preview_stop, "host_preview_stop", 0));
 
     /* Register sampler control functions */
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_start", JS_NewCFunction(ctx, js_host_sampler_start, "host_sampler_start", 1));

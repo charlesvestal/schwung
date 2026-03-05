@@ -202,6 +202,146 @@ static int shadow_deferred_dsp_valid = 0;
 static int16_t shadow_slot_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
 static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
+/* ---- Preview player: lightweight WAV playback for file browser ---- */
+#define PREVIEW_CMD_PATH "/data/UserData/move-anything/preview_cmd_path.txt"
+#define PREVIEW_WAV_FORMAT_PCM   1
+#define PREVIEW_WAV_FORMAT_FLOAT 3
+static int preview_fd = -1;
+static void *preview_map = NULL;
+static size_t preview_map_size = 0;
+static void *preview_data = NULL;
+static uint32_t preview_total_frames = 0;
+static uint32_t preview_pos = 0;
+static int preview_channels = 0;
+static int preview_format = 0;  /* PCM or FLOAT */
+static int preview_bits = 0;
+static int preview_playing = 0;
+static float preview_gain = 0.5f;
+
+static void preview_close(void) {
+    if (preview_map && preview_map != MAP_FAILED) munmap(preview_map, preview_map_size);
+    if (preview_fd >= 0) close(preview_fd);
+    preview_fd = -1;
+    preview_map = NULL;
+    preview_map_size = 0;
+    preview_data = NULL;
+    preview_total_frames = 0;
+    preview_pos = 0;
+    preview_channels = 0;
+    preview_format = 0;
+    preview_bits = 0;
+    preview_playing = 0;
+}
+
+static void preview_stop(void) {
+    preview_playing = 0;
+    preview_pos = 0;
+}
+
+static void preview_play(const char *path) {
+    preview_close();
+
+    preview_fd = open(path, O_RDONLY);
+    if (preview_fd < 0) return;
+
+    struct stat st;
+    if (fstat(preview_fd, &st) < 0 || st.st_size < 44) { preview_close(); return; }
+
+    preview_map_size = (size_t)st.st_size;
+    preview_map = mmap(NULL, preview_map_size, PROT_READ, MAP_PRIVATE, preview_fd, 0);
+    if (preview_map == MAP_FAILED) { preview_map = NULL; preview_close(); return; }
+
+    const uint8_t *raw = (const uint8_t *)preview_map;
+    if (memcmp(raw, "RIFF", 4) != 0 || memcmp(raw + 8, "WAVE", 4) != 0) {
+        preview_close(); return;
+    }
+
+    uint32_t offset = 12;
+    uint16_t audio_fmt = 0, nch = 0, bps = 0;
+    uint32_t data_off = 0, data_sz = 0;
+    int found_fmt = 0, found_data = 0;
+
+    while (offset + 8 <= preview_map_size) {
+        const uint8_t *c = raw + offset;
+        uint32_t csz = c[4] | (c[5]<<8) | (c[6]<<16) | (c[7]<<24);
+        if (memcmp(c, "fmt ", 4) == 0 && csz >= 16) {
+            audio_fmt = c[8] | (c[9]<<8);
+            nch       = c[10] | (c[11]<<8);
+            bps       = c[22] | (c[23]<<8);
+            found_fmt = 1;
+        } else if (memcmp(c, "data", 4) == 0) {
+            data_off = offset + 8;
+            data_sz  = csz;
+            found_data = 1;
+            break;
+        }
+        offset += 8 + csz;
+        if (csz & 1) offset++;
+    }
+
+    if (!found_fmt || !found_data) { preview_close(); return; }
+
+    int bytes_per_sample = 0;
+    if (audio_fmt == PREVIEW_WAV_FORMAT_PCM && bps == 16) bytes_per_sample = 2;
+    else if (audio_fmt == PREVIEW_WAV_FORMAT_PCM && bps == 24) bytes_per_sample = 3;
+    else if (audio_fmt == PREVIEW_WAV_FORMAT_FLOAT && bps == 32) bytes_per_sample = 4;
+    else { preview_close(); return; }
+
+    if (nch < 1 || nch > 2) { preview_close(); return; }
+    if (data_off + data_sz > preview_map_size) data_sz = (uint32_t)(preview_map_size - data_off);
+
+    preview_format = audio_fmt;
+    preview_bits = bps;
+    preview_channels = nch;
+    preview_data = (void *)(raw + data_off);
+    preview_total_frames = data_sz / (nch * bytes_per_sample);
+    preview_pos = 0;
+    preview_playing = 1;
+    LOG_DEBUG("preview", "loaded %u frames, %d ch, fmt=%u/%u-bit", preview_total_frames, nch, audio_fmt, bps);
+}
+
+static void preview_render(int16_t *buf, int frames) {
+    if (!preview_playing || !preview_data || preview_total_frames == 0) return;
+    const float gain = preview_gain;
+    const int nch = preview_channels;
+    const int is_float = (preview_format == PREVIEW_WAV_FORMAT_FLOAT);
+    const int is_24bit = (preview_format == PREVIEW_WAV_FORMAT_PCM && preview_bits == 24);
+
+    for (int i = 0; i < frames; i++) {
+        if (preview_pos >= preview_total_frames) {
+            preview_playing = 0;
+            return;
+        }
+        float fL, fR;
+        if (is_float) {
+            const float *fd = (const float *)preview_data;
+            if (nch == 1) { fL = fR = fd[preview_pos]; }
+            else { fL = fd[preview_pos * 2]; fR = fd[preview_pos * 2 + 1]; }
+        } else if (is_24bit) {
+            const uint8_t *d = (const uint8_t *)preview_data;
+            int off = preview_pos * nch * 3;
+            int32_t sL = (int32_t)((d[off]<<8) | (d[off+1]<<16) | (d[off+2]<<24)) >> 8;
+            fL = sL / 8388608.0f;
+            if (nch == 1) { fR = fL; }
+            else { int32_t sR = (int32_t)((d[off+3]<<8) | (d[off+4]<<16) | (d[off+5]<<24)) >> 8; fR = sR / 8388608.0f; }
+        } else {
+            const int16_t *sd = (const int16_t *)preview_data;
+            if (nch == 1) { fL = fR = sd[preview_pos] / 32768.0f; }
+            else { fL = sd[preview_pos * 2] / 32768.0f; fR = sd[preview_pos * 2 + 1] / 32768.0f; }
+        }
+        int32_t sL = (int32_t)(fL * gain * 32767.0f);
+        int32_t sR = (int32_t)(fR * gain * 32767.0f);
+        /* Mix into existing buffer */
+        int32_t mL = buf[i * 2]     + sL;
+        int32_t mR = buf[i * 2 + 1] + sR;
+        if (mL > 32767) mL = 32767; if (mL < -32768) mL = -32768;
+        if (mR > 32767) mR = 32767; if (mR < -32768) mR = -32768;
+        buf[i * 2]     = (int16_t)mL;
+        buf[i * 2 + 1] = (int16_t)mR;
+        preview_pos++;
+    }
+}
+
 /* Per-slot idle detection: skip render_block when output has been silent.
  * Wakes on MIDI dispatch with one-frame latency (2.9ms, inaudible). */
 #define DSP_IDLE_THRESHOLD 344       /* ~1 second of silence before sleeping */
@@ -1168,6 +1308,9 @@ static void shadow_inprocess_render_to_buffer(void) {
         }
     }
 
+    /* Preview player: mix file preview audio into the deferred buffer */
+    preview_render(shadow_deferred_dsp_buffer, MOVE_FRAMES_PER_BLOCK);
+
     /* Note: Master FX is applied in mix_from_buffer() AFTER mixing with Move's audio */
 
     shadow_deferred_dsp_valid = 1;
@@ -1479,6 +1622,25 @@ static void shadow_inprocess_mix_from_buffer(void) {
             if (sampler_state == SAMPLER_RECORDING) {
                 sampler_stop_recording();
             }
+        }
+
+        /* Preview player commands */
+        uint8_t pcmd = shadow_control->preview_cmd;
+        if (pcmd == 1) {
+            shadow_control->preview_cmd = 0;
+            char path_buf[256] = "";
+            FILE *pf = fopen(PREVIEW_CMD_PATH, "r");
+            if (pf) {
+                if (fgets(path_buf, sizeof(path_buf), pf)) {
+                    char *nl = strchr(path_buf, '\n');
+                    if (nl) *nl = '\0';
+                }
+                fclose(pf);
+            }
+            if (path_buf[0]) preview_play(path_buf);
+        } else if (pcmd == 2) {
+            shadow_control->preview_cmd = 0;
+            preview_stop();
         }
     }
 
