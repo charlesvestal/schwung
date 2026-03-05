@@ -1269,6 +1269,92 @@ const FILEPATH_BROWSER_FS = {
     }
 };
 
+function parseMetaBool(value) {
+    if (value === true || value === 1) return true;
+    if (value === false || value === 0 || value === null || value === undefined) return false;
+    const v = String(value).trim().toLowerCase();
+    return v === "1" || v === "true" || v === "on" || v === "yes";
+}
+
+function normalizeFilepathHookActions(rawActions, prefix) {
+    if (!Array.isArray(rawActions)) return [];
+    const out = [];
+    for (const action of rawActions) {
+        if (!action || typeof action !== "object") continue;
+        const rawKey = typeof action.key === "string" ? action.key.trim() : "";
+        if (!rawKey) continue;
+        const fullKey = rawKey.includes(":") ? rawKey : (prefix ? `${prefix}:${rawKey}` : rawKey);
+        const value = action.value === undefined || action.value === null ? "" : String(action.value);
+        out.push({
+            key: fullKey,
+            value,
+            restore: parseMetaBool(action.restore)
+        });
+    }
+    return out;
+}
+
+function buildFilepathBrowserHooks(meta, prefix) {
+    const hooksRaw = (meta && meta.browser_hooks && typeof meta.browser_hooks === "object")
+        ? meta.browser_hooks
+        : {};
+    return {
+        onOpen: normalizeFilepathHookActions(hooksRaw.on_open, prefix),
+        onPreview: normalizeFilepathHookActions(hooksRaw.on_preview, prefix),
+        onCancel: normalizeFilepathHookActions(hooksRaw.on_cancel, prefix),
+        onCommit: normalizeFilepathHookActions(hooksRaw.on_commit, prefix)
+    };
+}
+
+function resolveFilepathHookValue(rawValue, context) {
+    const value = rawValue === undefined || rawValue === null ? "" : String(rawValue);
+    if (value === "$path" || value === "$selected_path") {
+        return context && context.path ? String(context.path) : "";
+    }
+    if (value === "$filename" || value === "$selected_filename") {
+        if (context && context.path) {
+            const path = String(context.path);
+            const idx = path.lastIndexOf("/");
+            return idx >= 0 ? path.slice(idx + 1) : path;
+        }
+        return "";
+    }
+    return value;
+}
+
+function applyFilepathHookActions(state, actions, context) {
+    if (!state || !Array.isArray(actions) || actions.length === 0) return;
+    for (const action of actions) {
+        if (!action || !action.key) continue;
+
+        if (action.restore && state.hookRestoreValues && !Object.prototype.hasOwnProperty.call(state.hookRestoreValues, action.key)) {
+            const prev = getSlotParam(hierEditorSlot, action.key);
+            if (prev !== null && prev !== undefined) {
+                state.hookRestoreValues[action.key] = String(prev);
+            }
+        }
+
+        const nextVal = resolveFilepathHookValue(action.value, context);
+        setSlotParam(hierEditorSlot, action.key, nextVal);
+    }
+}
+
+function restoreFilepathHookActions(state) {
+    if (!state || !state.hookRestoreValues) return;
+    for (const [key, prevValue] of Object.entries(state.hookRestoreValues)) {
+        setSlotParam(hierEditorSlot, key, prevValue);
+    }
+}
+
+function applyLivePreview(state, selected) {
+    if (!state || !state.livePreviewEnabled || !selected || selected.kind !== "file" || !selected.path) return;
+    if (selected.path === state.previewCurrentValue || !state.previewParamFullKey) return;
+    if (setSlotParam(hierEditorSlot, state.previewParamFullKey, selected.path)) {
+        state.previewCurrentValue = selected.path;
+        applyFilepathHookActions(state, state.hooksOnPreview, { path: selected.path });
+    }
+}
+
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
 let loadedModuleSlot = -1;       // Which slot the module UI is for
@@ -5412,10 +5498,33 @@ function openHierarchyFilepathBrowser(key, meta) {
 
     const fullKey = buildHierarchyParamKey(key);
     const currentVal = getSlotParam(hierEditorSlot, fullKey) || "";
+    const prefix = getComponentParamPrefix(hierEditorComponent);
 
     filepathBrowserParamKey = key;
     filepathBrowserState = buildFilepathBrowserState(effectiveMeta, currentVal);
+    filepathBrowserState.livePreviewEnabled = parseMetaBool(effectiveMeta.live_preview);
+    filepathBrowserState.previewOriginalValue = currentVal;
+    filepathBrowserState.previewCurrentValue = currentVal;
+    filepathBrowserState.previewCommitted = false;
+    filepathBrowserState.previewParamFullKey = fullKey;
+    filepathBrowserState.previewPendingPath = "";
+    filepathBrowserState.previewPendingTime = 0;
+    filepathBrowserState.previewSelectedPath = "";
+    const hooks = buildFilepathBrowserHooks(effectiveMeta, prefix);
+    filepathBrowserState.hooksOnOpen = hooks.onOpen;
+    filepathBrowserState.hooksOnPreview = hooks.onPreview;
+    filepathBrowserState.hooksOnCancel = hooks.onCancel;
+    filepathBrowserState.hooksOnCommit = hooks.onCommit;
+    filepathBrowserState.hookRestoreValues = {};
+    applyFilepathHookActions(filepathBrowserState, filepathBrowserState.hooksOnOpen, { path: currentVal });
+
     refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+
+    if (filepathBrowserState.livePreviewEnabled) {
+        const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+        applyLivePreview(filepathBrowserState, selected);
+    }
+
     setView(VIEWS.FILEPATH_BROWSER);
 
     if (filepathBrowserState.items.length > 0) {
@@ -5429,6 +5538,29 @@ function openHierarchyFilepathBrowser(key, meta) {
 }
 
 function closeHierarchyFilepathBrowser() {
+    const state = filepathBrowserState;
+    if (state) {
+        const committed = !!state.previewCommitted;
+        if (state.livePreviewEnabled &&
+            !committed &&
+            state.previewParamFullKey &&
+            state.previewCurrentValue !== state.previewOriginalValue) {
+            setSlotParam(
+                hierEditorSlot,
+                state.previewParamFullKey,
+                state.previewOriginalValue || ""
+            );
+        }
+
+        if (committed) {
+            applyFilepathHookActions(state, state.hooksOnCommit, { path: state.previewSelectedPath || state.previewCurrentValue || "" });
+        } else {
+            applyFilepathHookActions(state, state.hooksOnCancel, { path: state.previewOriginalValue || "" });
+        }
+
+        restoreFilepathHookActions(state);
+    }
+
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
     setView(VIEWS.HIERARCHY_EDITOR);
@@ -6640,6 +6772,13 @@ function handleJog(delta) {
             if (filepathBrowserState) {
                 moveFilepathBrowserSelection(filepathBrowserState, delta);
                 const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+                if (filepathBrowserState.livePreviewEnabled && selected && selected.kind === "file" && selected.path) {
+                    filepathBrowserState.previewPendingPath = selected.path;
+                    filepathBrowserState.previewPendingTime = Date.now();
+                } else if (filepathBrowserState.livePreviewEnabled) {
+                    filepathBrowserState.previewPendingPath = "";
+                    filepathBrowserState.previewPendingTime = 0;
+                }
                 if (selected) announceMenuItem(selected.label || "File", "");
             }
             break;
@@ -7291,9 +7430,22 @@ function handleSelect() {
                 const result = activateFilepathBrowserItem(filepathBrowserState);
                 if (result.action === "open") {
                     refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
+                    if (filepathBrowserState.livePreviewEnabled) {
+                        const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+                        filepathBrowserState.previewPendingPath = "";
+                        filepathBrowserState.previewPendingTime = 0;
+                        applyLivePreview(filepathBrowserState, selected);
+                    }
                 } else if (result.action === "select") {
                     const key = filepathBrowserParamKey || result.key;
                     const fullKey = buildHierarchyParamKey(key);
+                    if (filepathBrowserState.livePreviewEnabled) {
+                        filepathBrowserState.previewCommitted = true;
+                        filepathBrowserState.previewCurrentValue = result.value || "";
+                        filepathBrowserState.previewPendingPath = "";
+                        filepathBrowserState.previewPendingTime = 0;
+                    }
+                    filepathBrowserState.previewSelectedPath = result.value || "";
                     setSlotParam(hierEditorSlot, fullKey, result.value || "");
                     announceParameter(filepathBrowserState.title || key, result.filename || result.value || "");
                     closeHierarchyFilepathBrowser();
@@ -9164,6 +9316,15 @@ globalThis.tick = function() {
             debugLog("SET_CHANGED: reload complete");
         }
         /* SETTINGS and SCREENREADER flags are handled earlier with SLOT/MFX/OVERTAKE */
+    }
+
+    if (filepathBrowserState &&
+        filepathBrowserState.livePreviewEnabled &&
+        filepathBrowserState.previewPendingPath &&
+        Date.now() - filepathBrowserState.previewPendingTime >= 150) {
+        applyLivePreview(filepathBrowserState, { kind: "file", path: filepathBrowserState.previewPendingPath });
+        filepathBrowserState.previewPendingPath = "";
+        filepathBrowserState.previewPendingTime = 0;
     }
 
 
