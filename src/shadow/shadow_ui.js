@@ -3210,6 +3210,50 @@ function doDeleteMasterPreset() {
 
 /* ========== Tool File Browser Functions (shared filepath_browser) ========== */
 
+/**
+ * Check if the active tool supports creating new files.
+ */
+function toolAllowsNewFile() {
+    return toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.allow_new_file;
+}
+
+/**
+ * Inject a "+ New File" action item into the tool browser after refresh.
+ * Only added when the active tool declares allow_new_file in tool_config.
+ */
+function injectNewFileItem() {
+    if (!toolAllowsNewFile()) return;
+    if (!toolBrowserState || !toolBrowserState.items) return;
+    /* Insert after ".." (up) entry if present, otherwise at top */
+    let insertIdx = 0;
+    if (toolBrowserState.items.length > 0 && toolBrowserState.items[0].kind === "up") {
+        insertIdx = 1;
+    }
+    toolBrowserState.items.splice(insertIdx, 0, {
+        kind: "new_file",
+        label: "+ New File",
+        path: ""
+    });
+    /* Adjust selectedIndex if it was at or after the insert point */
+    if (toolBrowserState.selectedIndex >= insertIdx) {
+        toolBrowserState.selectedIndex++;
+    }
+}
+
+/**
+ * Generate a timestamped file path for a new file in the given directory.
+ * Uses the first input extension from the tool config.
+ */
+function generateNewFilePath(dir) {
+    const d = new Date();
+    const pad2 = (n) => n < 10 ? "0" + n : "" + n;
+    const stamp = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate())
+        + "_" + pad2(d.getHours()) + "-" + pad2(d.getMinutes()) + "-" + pad2(d.getSeconds());
+    const exts = (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.input_extensions) || [".wav"];
+    const ext = Array.isArray(exts) ? exts[0] : exts;
+    return dir + "/New_" + stamp + ext;
+}
+
 function enterToolFileBrowser(toolModule) {
     debugLog("enterToolFileBrowser: " + toolModule.id);
     toolActiveTool = toolModule;
@@ -3220,6 +3264,7 @@ function enterToolFileBrowser(toolModule) {
         ""
     );
     refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
+    injectNewFileItem();
     setView(VIEWS.TOOL_FILE_BROWSER);
     needsRedraw = true;
     const firstEntry = toolBrowserState.items.length > 0 ? toolBrowserState.items[0].label : "empty";
@@ -3236,9 +3281,24 @@ function toolBrowserNavigate(delta) {
 
 function toolBrowserSelect() {
     if (!toolBrowserState || toolBrowserState.items.length === 0) return;
+    /* Handle "+ New File" action item */
+    const selItem = toolBrowserState.items[toolBrowserState.selectedIndex];
+    if (selItem && selItem.kind === "new_file") {
+        const newPath = generateNewFilePath(toolBrowserState.currentDir);
+        toolSelectedFile = newPath;
+        debugLog("toolBrowserSelect: new file -> " + newPath);
+        if (toolActiveTool && toolActiveTool.tool_config && toolActiveTool.tool_config.interactive) {
+            startInteractiveTool(toolActiveTool, newPath);
+        } else {
+            toolSelectedEngine = null;
+            enterToolConfirm();
+        }
+        return;
+    }
     const result = activateFilepathBrowserItem(toolBrowserState);
     if (result.action === "open") {
         refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
+        injectNewFileItem();
         needsRedraw = true;
         if (toolBrowserState.items.length > 0) {
             announce(toolBrowserState.items[0].label);
@@ -3279,6 +3339,7 @@ function toolBrowserBack() {
     toolBrowserState.selectedIndex = 0;
     toolBrowserState.selectedPath = "";
     refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
+    injectNewFileItem();
     needsRedraw = true;
     const dirName = toolBrowserState.currentDir.substring(toolBrowserState.currentDir.lastIndexOf("/") + 1);
     announce(dirName);
