@@ -12,7 +12,7 @@ Move Everything is based on the original Move Anything project by Bobby Digitale
 
 CC BY-NC-SA 4.0 - See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
 
-Move Everything would not be possible without the work of the [Move Aything](https://github.com/bobbydigitales/move-anything) project from which it is forked. 
+Move Everything would not be possible without the work of the [Move Anything](https://github.com/bobbydigitales/move-anything) project from which it is forked. 
 
 ## Important Notice
 
