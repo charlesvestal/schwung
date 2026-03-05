@@ -163,7 +163,8 @@ export function drawGlobalSettings() {
                 return getMasterFxSettingValue(item);
             },
             listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-            valueAlignRight: true
+            valueAlignRight: true,
+            prioritizeSelectedValue: true
         });
 
         drawFooter("Back: Settings");

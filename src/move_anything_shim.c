@@ -137,6 +137,7 @@ static volatile float shadow_master_volume;  /* Defined later */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
+static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
@@ -521,13 +522,27 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse skipback_require_volume (defaults to false) */
+    const char *skipback_key = strstr(config_buf, "\"skipback_require_volume\"");
+    if (skipback_key) {
+        const char *colon = strchr(skipback_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                skipback_require_volume = true;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
-             set_pages_enabled ? "enabled" : "disabled");
+             set_pages_enabled ? "enabled" : "disabled",
+             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
     shadow_log(log_msg);
 }
 
@@ -2414,6 +2429,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         if (shadow_control) {
             shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
             shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
+            shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
         }
         /* Initialize process management subsystem */
         {
@@ -3676,9 +3692,12 @@ do_ioctl:
                     if (s_d1 == CC_RECORD && (shadow_shift_held || sampler_state != SAMPLER_IDLE)) {
                         sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
                     }
-                    /* Block Shift+Capture from reaching Move */
+                    /* Block Shift+Capture from reaching Move (only when skipback would trigger) */
                     if (s_d1 == CC_CAPTURE && shadow_shift_held) {
-                        sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                        int require_vol = shadow_control ? shadow_control->skipback_require_volume : 0;
+                        if (!require_vol || shadow_volume_knob_touched) {
+                            sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                        }
                     }
                     /* Block jog/back while sampler UI is fullscreen and active */
                     if (sampler_state != SAMPLER_IDLE && sampler_fullscreen_active) {
@@ -3856,10 +3875,13 @@ do_ioctl:
                     }
                 }
 
-                /* Shift+Capture: save skipback buffer */
+                /* Skipback: Shift+Capture or Shift+Vol+Capture (configurable) */
                 if (d1 == CC_CAPTURE && d2 > 0 && shadow_shift_held) {
-                    skipback_trigger_save();
-                    src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    int require_vol = shadow_control ? shadow_control->skipback_require_volume : 0;
+                    if (!require_vol || shadow_volume_knob_touched) {
+                        skipback_trigger_save();
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
                 }
 
                 /* Shift+Vol+Left/Right: set page navigation (when enabled) */
