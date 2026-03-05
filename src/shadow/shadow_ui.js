@@ -688,7 +688,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "resample_bridge", label: "Sample Src", type: "enum",
               options: ["Native", "ME Mix"], values: [0, 2] },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
-              options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] }
+              options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
+            { key: "browser_preview", label: "Browser Preview", type: "bool" }
         ]
     },
     {
@@ -729,6 +730,38 @@ let globalSettingsEditing = false;
 /* Tools menu state */
 let toolsMenuIndex = 0;
 let toolModules = [];           // Populated by scanForToolModules()
+
+/* Preview player state */
+let previewEnabled = true;         // Global setting: auto-preview in file browser
+let previewPendingPath = "";       // Path waiting for debounce
+let previewPendingTime = 0;        // Date.now() when path was set
+const PREVIEW_DEBOUNCE_MS = 300;
+const PREVIEW_EXTENSIONS = [".wav", ".aif", ".aiff"];
+
+function isPreviewableFile(path) {
+    if (!path) return false;
+    const lower = path.toLowerCase();
+    return PREVIEW_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
+function previewTick() {
+    if (!previewEnabled || !previewPendingPath || !previewPendingTime) return;
+    if (Date.now() - previewPendingTime >= PREVIEW_DEBOUNCE_MS) {
+        if (typeof host_preview_play === "function") {
+            host_preview_play(previewPendingPath);
+        }
+        previewPendingPath = "";
+        previewPendingTime = 0;
+    }
+}
+
+function previewStopIfPlaying() {
+    previewPendingPath = "";
+    previewPendingTime = 0;
+    if (typeof host_preview_stop === "function") {
+        host_preview_stop();
+    }
+}
 
 /* Tool file browser state (shared filepath_browser) */
 let toolBrowserState = null;
@@ -3277,9 +3310,17 @@ function toolBrowserNavigate(delta) {
     moveFilepathBrowserSelection(toolBrowserState, delta);
     const item = toolBrowserState.items[toolBrowserState.selectedIndex];
     announce(item.label + (item.kind === "dir" ? " folder" : ""));
+    /* Trigger preview for audio files */
+    if (previewEnabled && item.kind === "file" && item.path && isPreviewableFile(item.path)) {
+        previewPendingPath = item.path;
+        previewPendingTime = Date.now();
+    } else {
+        previewStopIfPlaying();
+    }
 }
 
 function toolBrowserSelect() {
+    previewStopIfPlaying();
     if (!toolBrowserState || toolBrowserState.items.length === 0) return;
     /* Handle "+ New File" action item */
     const selItem = toolBrowserState.items[toolBrowserState.selectedIndex];
@@ -3320,6 +3361,7 @@ function toolBrowserSelect() {
 }
 
 function toolBrowserBack() {
+    previewStopIfPlaying();
     if (!toolBrowserState) { enterToolsMenu(); return; }
     const root = toolBrowserState.root;
     if (toolBrowserState.currentDir === root) {
@@ -4078,6 +4120,31 @@ function loadAutoUpdateConfig() {
     } catch (e) {
         /* Ignore errors - default to enabled */
     }
+}
+
+function saveBrowserPreviewConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+        config.browser_preview = previewEnabled;
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {}
+}
+
+function loadBrowserPreviewConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+        const config = JSON.parse(content);
+        if (config.browser_preview !== undefined) {
+            previewEnabled = config.browser_preview;
+        }
+    } catch (e) {}
 }
 
 /* Load master FX chain from config at startup.
@@ -6509,6 +6576,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "auto_update_check") {
         return autoUpdateCheckEnabled ? "On" : "Off";
     }
+    if (setting.key === "browser_preview") {
+        return previewEnabled ? "On" : "Off";
+    }
     return "-";
 }
 
@@ -6646,6 +6716,13 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "auto_update_check") {
         autoUpdateCheckEnabled = !autoUpdateCheckEnabled;
         saveAutoUpdateConfig();
+        return;
+    }
+
+    if (setting.key === "browser_preview") {
+        previewEnabled = !previewEnabled;
+        if (!previewEnabled) previewStopIfPlaying();
+        saveBrowserPreviewConfig();
         return;
     }
 }
@@ -9079,6 +9156,7 @@ globalThis.init = function() {
 
     /* Load auto-update preference */
     loadAutoUpdateConfig();
+    loadBrowserPreviewConfig();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
     const savedMasterFx = loadMasterFxFromConfig();
@@ -9405,6 +9483,8 @@ globalThis.tick = function() {
         filepathBrowserState.previewPendingTime = 0;
     }
 
+    /* Tool file browser audio preview debounce */
+    previewTick();
 
     refreshCounter++;
     if (refreshCounter % 120 === 0) {
