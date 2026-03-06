@@ -481,10 +481,22 @@ Communication between shim and Shadow UI uses flags in `shadow_control_t.ui_flag
 ### Shadow Slot Features
 
 Each of the 4 shadow slots has:
-- **Receive channel**: MIDI channel to listen on (default 1-4)
-- **Forward channel**: Remap MIDI to specific channel for synths that require it (-1 = auto/passthrough)
+- **Receive channel**: MIDI channel to listen on (default 1-4), or All (-1)
+- **Forward channel**: Remap MIDI to specific channel (-1 = auto, -2 = passthrough/THRU)
+  - Auto: remaps to receive channel (if receive=All, acts as passthrough)
+  - THRU (-2): always preserves original MIDI channel
+  - Modules can declare `default_forward_channel` in module.json capabilities (supports -2 for passthrough, or 1-16 for specific channel)
 - **Volume**: Per-slot volume control
 - **State persistence**: Synth, audio FX, and MIDI FX states saved/restored automatically
+
+#### MPE Controllers
+
+For MPE controllers (LinnStrument, Roli, Sensel Morph, etc.), the slot must be configured to pass all MIDI channels through unmodified:
+1. Set **Receive Channel = All** — accepts MIDI on all 16 channels (MPE member channels)
+2. Set **Forward Channel = THRU** — preserves per-channel note expression data
+3. Enable **MPE** in the synth module's settings (if supported)
+
+Without this, the slot remaps all channels to one, destroying MPE's per-note pitch bend, pressure, and slide data.
 
 ### MIDI Cable Filtering
 

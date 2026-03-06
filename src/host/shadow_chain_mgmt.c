@@ -968,7 +968,7 @@ int shadow_inprocess_load_chain(void) {
                     if (len > 0) {
                         fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
                         int default_fwd = atoi(fwd_buf);
-                        if (default_fwd >= 0 && default_fwd <= 15) {
+                        if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
                             shadow_chain_slots[i].forward_channel = default_fwd;
                         }
                     }
@@ -1741,7 +1741,7 @@ void shadow_inprocess_handle_param_request(void) {
                         if (len > 0) {
                             fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
                             int default_fwd = atoi(fwd_buf);
-                            if (default_fwd >= 0 && default_fwd <= 15) {
+                            if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
                                 shadow_chain_slots[slot].forward_channel = default_fwd;
                                 shadow_ui_state_update_slot(slot);
                             }
@@ -1775,7 +1775,7 @@ void shadow_inprocess_handle_param_request(void) {
                         if (len > 0) {
                             fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
                             int default_fwd = atoi(fwd_buf);
-                            if (default_fwd >= 0 && default_fwd <= 15) {
+                            if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
                                 shadow_chain_slots[slot].forward_channel = default_fwd;
                             }
                         }
