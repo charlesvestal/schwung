@@ -502,15 +502,18 @@ fi
 # Copy host files (only if source is newer)
 cp -u ./src/host/menu_ui.js ./build/host/
 cp -u ./src/host/*.mjs ./build/host/ 2>/dev/null || true
-# Derive version from git tag if available, otherwise use source file
+# Derive version: prefer src/host/version.txt (set by CI), fall back to git tag
+SRC_VERSION=$(cat ./src/host/version.txt 2>/dev/null | tr -d '[:space:]')
 GIT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
-if [ -n "$GIT_VERSION" ]; then
-    # Only write if version changed
-    if [ ! -f ./build/host/version.txt ] || [ "$(cat ./build/host/version.txt)" != "$GIT_VERSION" ]; then
-        echo "$GIT_VERSION" > ./build/host/version.txt
-    fi
+if [ -n "$SRC_VERSION" ]; then
+    BUILD_VERSION="$SRC_VERSION"
+elif [ -n "$GIT_VERSION" ]; then
+    BUILD_VERSION="$GIT_VERSION"
 else
-    cp -u ./src/host/version.txt ./build/host/
+    BUILD_VERSION="0.0.0"
+fi
+if [ ! -f ./build/host/version.txt ] || [ "$(cat ./build/host/version.txt)" != "$BUILD_VERSION" ]; then
+    echo "$BUILD_VERSION" > ./build/host/version.txt
 fi
 
 # Build display server (live display SSE streaming to browser)
