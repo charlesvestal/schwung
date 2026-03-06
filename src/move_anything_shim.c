@@ -3747,6 +3747,15 @@ do_ioctl:
                             if (d1 <= 7 || d1 == 9) {
                                 filter = 1;
                             }
+                            /* Block pad notes (68-99) from reaching Move when pad_block is set */
+                            if (shadow_control->pad_block && d1 >= 68 && d1 <= 99) {
+                                filter = 1;
+                            }
+                        }
+                        /* Block polyphonic aftertouch on pads when pad_block is set */
+                        if (cin == 0x0A && type == 0xA0 &&
+                            shadow_control->pad_block && d1 >= 68 && d1 <= 99) {
+                            filter = 1;
                         }
                     }
                 }
@@ -4596,6 +4605,23 @@ do_ioctl:
                     }
                 }
 
+                /* Forward pad notes (68-99) to shadow UI when pad_block is active,
+                 * and skip DSP routing so pads only reach the text entry handler */
+                if (shadow_control && shadow_control->pad_block &&
+                    d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
+                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                        if (shadow_ui_midi_shm[slot] == 0) {
+                            shadow_ui_midi_shm[slot] = (type == 0x90) ? 0x09 : 0x08;
+                            shadow_ui_midi_shm[slot + 1] = status;
+                            shadow_ui_midi_shm[slot + 2] = d1;
+                            shadow_ui_midi_shm[slot + 3] = d2;
+                            shadow_control->midi_ready++;
+                            break;
+                        }
+                    }
+                    continue;  /* Skip DSP routing for blocked pads */
+                }
+
                 /* Check capture rules for focused slot.
                  * Never route knob touch notes (0-9) to DSP even if in capture rules. */
                 {
@@ -4630,6 +4656,22 @@ do_ioctl:
                 if (d1 >= 10) {
                     uint8_t msg[3] = { status, d1, d2 };
                     shadow_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
+                }
+                continue;
+            }
+
+            /* Forward polyphonic aftertouch on pad notes when pad_block is active */
+            if (type == 0xA0 && shadow_control && shadow_control->pad_block &&
+                d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
+                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+                    if (shadow_ui_midi_shm[slot] == 0) {
+                        shadow_ui_midi_shm[slot] = 0x0A;
+                        shadow_ui_midi_shm[slot + 1] = status;
+                        shadow_ui_midi_shm[slot + 2] = d1;
+                        shadow_ui_midi_shm[slot + 3] = d2;
+                        shadow_control->midi_ready++;
+                        break;
+                    }
                 }
                 continue;
             }

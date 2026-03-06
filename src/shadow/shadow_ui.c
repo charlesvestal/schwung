@@ -1921,6 +1921,18 @@ static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_v
 
 #define PREVIEW_CMD_PATH "/data/UserData/move-anything/preview_cmd_path.txt"
 
+/* host_pad_block(enable) - suppress pad notes from reaching Move firmware */
+static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    shadow_control->pad_block = val ? 1 : 0;
+    shadow_ui_log_line(val ? "shadow_ui: pad_block ON" : "shadow_ui: pad_block OFF");
+    return JS_TRUE;
+}
+
 /* host_preview_play(path) - play WAV file for browser preview via shim IPC */
 static JSValue js_host_preview_play(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
@@ -2117,6 +2129,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_sequence", JS_NewCFunction(ctx, js_shadow_get_overlay_sequence, "shadow_get_overlay_sequence", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_state", JS_NewCFunction(ctx, js_shadow_get_overlay_state, "shadow_get_overlay_state", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_display_overlay", JS_NewCFunction(ctx, js_shadow_set_display_overlay, "shadow_set_display_overlay", 5));
+
+    /* Register pad block function */
+    JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
 
     /* Register preview player functions */
     JS_SetPropertyStr(ctx, global_obj, "host_preview_play", JS_NewCFunction(ctx, js_host_preview_play, "host_preview_play", 1));
