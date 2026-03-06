@@ -3,5 +3,5 @@
     "name": "Text Entry Test",
     "version": "0.0.1",
     "description": "Test module for text entry component",
-    "component_type": "utility"
+    "component_type": "overtake"
 }

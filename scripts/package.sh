@@ -50,7 +50,9 @@ if [ -f "./move-anything-web-shim.so" ]; then
 fi
 
 if tar --version 2>/dev/null | grep -q GNU; then
-    tar -czf ../move-anything.tar.gz \
+    # Use POSIX format to avoid GNUSparseFile.0 entries that BusyBox tar
+    # on Move cannot extract (can happen with Docker volume mounts)
+    tar --format=posix -czf ../move-anything.tar.gz \
         --transform 's,^\.,move-anything,' \
         $ITEMS
 else

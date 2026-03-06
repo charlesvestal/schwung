@@ -571,22 +571,6 @@ void sampler_stop_recording(void) {
 
     s_host.log("Sampler: stopping recording");
 
-    /* Write a fade-out ramp into the ring buffer to avoid click */
-    if (sampler_ring_buffer && sampler_ring_available_write() >= SAMPLER_FADE_SAMPLES * SAMPLER_NUM_CHANNELS) {
-        size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
-        size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
-
-        /* Read back last SAMPLER_FADE_SAMPLES frames from ring buffer and apply fade */
-        for (int i = 0; i < SAMPLER_FADE_SAMPLES; i++) {
-            int16_t silence = 0;
-            for (int ch = 0; ch < SAMPLER_NUM_CHANNELS; ch++) {
-                sampler_ring_buffer[write_pos] = silence;
-                write_pos = (write_pos + 1) % buffer_samples;
-            }
-        }
-        __atomic_store_n(&sampler_ring_write_pos, write_pos, __ATOMIC_RELEASE);
-    }
-
     /* Signal writer thread to exit */
     pthread_mutex_lock(&sampler_ring_mutex);
     sampler_writer_should_exit = 1;
