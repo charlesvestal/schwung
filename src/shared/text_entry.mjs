@@ -421,7 +421,8 @@ function handleSelection(fromPad) {
         appendToBuffer(char);
         state.lastAction = 'char';
         state.lastChar = char;
-        announceTextEntry(`${char} entered, text ${getAnnounceBuffer()}`);
+        const charLabel = SYMBOL_NAMES[char] || char;
+        announceTextEntry(`${charLabel} entered, text ${getAnnounceBuffer()}`);
         showPreview(fromPad);
     } else {
         /* Special button selected */
@@ -468,7 +469,8 @@ function repeatLastAction() {
     switch (state.lastAction) {
         case 'char':
             appendToBuffer(state.lastChar);
-            announceTextEntry(`${state.lastChar} entered, text ${getAnnounceBuffer()}`);
+            const repeatLabel = SYMBOL_NAMES[state.lastChar] || state.lastChar;
+            announceTextEntry(`${repeatLabel} entered, text ${getAnnounceBuffer()}`);
             break;
         case 'space':
             appendToBuffer(' ');
@@ -519,9 +521,25 @@ function announceTextEntry(text) {
     }
 }
 
+/* Readable names for symbols that TTS engines skip or mangle */
+const SYMBOL_NAMES = {
+    '.': 'period', '-': 'dash', '!': 'exclamation', '@': 'at',
+    '#': 'hash', '$': 'dollar', '%': 'percent', '^': 'caret',
+    '&': 'ampersand', '*': 'asterisk', "'": 'apostrophe', '"': 'quote',
+    ';': 'semicolon', ':': 'colon', '?': 'question mark', '/': 'slash',
+    '\\': 'backslash', '<': 'less than', '>': 'greater than',
+    '(': 'open paren', ')': 'close paren', '[': 'open bracket',
+    ']': 'close bracket', '{': 'open brace', '}': 'close brace',
+    '=': 'equals', '+': 'plus', ',': 'comma', '_': 'underscore',
+    '~': 'tilde', '`': 'backtick', '|': 'pipe'
+};
+
 function getSelectedLabel() {
     const chars = getCurrentPageChars();
-    if (state.selectedIndex < chars.length) return chars[state.selectedIndex];
+    if (state.selectedIndex < chars.length) {
+        const ch = chars[state.selectedIndex];
+        return SYMBOL_NAMES[ch] || ch;
+    }
 
     const specialIndex = state.selectedIndex - chars.length;
     switch (specialIndex) {
