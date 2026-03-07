@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <time.h>
@@ -148,6 +149,35 @@ typedef struct {
     char options[MAX_ENUM_OPTIONS][32];  /* Enum options (if type is ENUM) */
     int option_count;       /* Number of enum options */
 } chain_param_info_t;
+
+#define MAX_MOD_TARGETS 32
+#define MAX_MOD_SOURCES_PER_TARGET 8
+#define MOD_PARAM_CACHE_REFRESH_MS 250
+#define MOD_FLOAT_CHANGE_EPSILON 0.000001f
+#define MOD_INT_ENUM_MIN_INTERVAL_MS 50
+
+typedef struct mod_source_contribution {
+    int active;
+    char source_id[32];
+    float contribution;
+} mod_source_contribution_t;
+
+/* Runtime modulation target state (non-destructive overlay). */
+typedef struct mod_target_state {
+    int active;
+    int enabled;
+    char target[16];
+    char param[32];
+    float base_value;
+    mod_source_contribution_t sources[MAX_MOD_SOURCES_PER_TARGET];
+    float effective_value;
+    float last_applied_value;
+    uint64_t last_applied_ms;
+    int has_last_applied;
+    float min_val;
+    float max_val;
+    knob_type_t type;
+} mod_target_state_t;
 
 #define MOVE_PAD_NOTE_MAX 99
 
@@ -400,6 +430,7 @@ typedef struct chain_instance {
     int synth_param_count;
     chain_param_info_t fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS];
     int fx_param_counts[MAX_AUDIO_FX];
+    char fx_ui_hierarchy[MAX_AUDIO_FX][8192];  /* Cached ui_hierarchy JSON */
 
     /* Patch state */
     patch_info_t patches[MAX_PATCHES];
@@ -420,6 +451,13 @@ typedef struct chain_instance {
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
     int knob_mapping_count;
     uint64_t knob_last_time_ms[MAX_KNOB_MAPPINGS];  /* For acceleration */
+
+    /* Runtime modulation bus state */
+    mod_target_state_t mod_targets[MAX_MOD_TARGETS];
+    int mod_target_count;
+    uint64_t mod_param_refresh_ms_synth;
+    uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
+    uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
 
     /* Mute countdown after patch switch */
     int mute_countdown;
@@ -625,12 +663,38 @@ static int chain_get_clock_status(void);
 static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
+static int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len);
+static int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params);
 static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
 static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char *target, const char *key);
+static int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target);
 static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
 static void chain_update_clock_runtime(const uint8_t *msg, int len);
+static int chain_mod_emit_value(void *ctx,
+                                const char *source_id,
+                                const char *target,
+                                const char *param,
+                                float signal,
+                                float depth,
+                                float offset,
+                                int bipolar,
+                                int enabled);
+static void chain_mod_clear_source(void *ctx, const char *source_id);
+static int chain_mod_is_target_active(chain_instance_t *inst, const char *target, const char *param);
+static void chain_mod_update_base_from_set_param(chain_instance_t *inst,
+                                                 const char *target,
+                                                 const char *param,
+                                                 const char *val);
+static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);
+static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry, int restore_base);
+static void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
+static int chain_mod_get_base_for_subkey(chain_instance_t *inst,
+                                         const char *target,
+                                         const char *subkey,
+                                         char *buf,
+                                         int buf_len);
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -1454,6 +1518,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
     inst->midi_fx_handles[slot] = handle;
     inst->midi_fx_plugins[slot] = api;
     inst->midi_fx_instances[slot] = instance;
+    inst->mod_param_refresh_ms_midi_fx[slot] = 0;
     strncpy(inst->current_midi_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
     inst->current_midi_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
@@ -1469,45 +1534,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
         return -1;
     }
 
-    /* Parse ui_hierarchy from module.json */
-    {
-        char json_path[MAX_PATH_LEN];
-        snprintf(json_path, sizeof(json_path), "%s/module.json", fx_dir);
-        FILE *f = fopen(json_path, "r");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long size = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            if (size > 0 && size < 32768) {
-                char *json = malloc(size + 1);
-                if (json) {
-                    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
-                    /* Find ui_hierarchy object */
-                    const char *hier_start = strstr(json, "\"ui_hierarchy\"");
-                    if (hier_start) {
-                        const char *obj_start = strchr(hier_start, '{');
-                        if (obj_start) {
-                            /* Find matching } by counting braces */
-                            int depth = 1;
-                            const char *obj_end = obj_start + 1;
-                            while (*obj_end && depth > 0) {
-                                if (*obj_end == '{') depth++;
-                                else if (*obj_end == '}') depth--;
-                                obj_end++;
-                            }
-                            int len = (int)(obj_end - obj_start);
-                            if (len > 0 && len < 8191) {
-                                strncpy(inst->midi_fx_ui_hierarchy[slot], obj_start, len);
-                                inst->midi_fx_ui_hierarchy[slot][len] = '\0';
-                            }
-                        }
-                    }
-                    free(json);
-                }
-            }
-            fclose(f);
-        }
-    }
+    parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], sizeof(inst->midi_fx_ui_hierarchy[slot]));
 
     inst->midi_fx_count++;
 
@@ -1521,6 +1548,10 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
     if (!inst) return;
 
     for (int i = 0; i < inst->midi_fx_count; i++) {
+        char target[16];
+        snprintf(target, sizeof(target), "midi_fx%d", i + 1);
+        chain_mod_clear_target_entries(inst, target, 0);
+
         if (inst->midi_fx_plugins[i] && inst->midi_fx_instances[i] &&
             inst->midi_fx_plugins[i]->destroy_instance) {
             inst->midi_fx_plugins[i]->destroy_instance(inst->midi_fx_instances[i]);
@@ -1533,6 +1564,7 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
         inst->midi_fx_instances[i] = NULL;
         inst->current_midi_fx_modules[i][0] = '\0';
         inst->midi_fx_param_counts[i] = 0;
+        inst->mod_param_refresh_ms_midi_fx[i] = 0;
         inst->midi_fx_ui_hierarchy[i][0] = '\0';
     }
     inst->midi_fx_count = 0;
@@ -2382,6 +2414,105 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
 
     free(json);
     return 0;
+}
+
+/* Parse ui_hierarchy object from module.json and cache it as raw JSON. */
+static int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len) {
+    char json_path[MAX_PATH_LEN];
+    if (!module_path || !out || out_len < 2) return -1;
+
+    out[0] = '\0';
+    snprintf(json_path, sizeof(json_path), "%s/module.json", module_path);
+
+    FILE *f = fopen(json_path, "r");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size >= 32768) {
+        fclose(f);
+        return -1;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return -1;
+    }
+
+    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
+    fclose(f);
+
+    int rc = -1;
+    const char *hier_start = strstr(json, "\"ui_hierarchy\"");
+    if (hier_start) {
+        const char *obj_start = strchr(hier_start, '{');
+        if (obj_start) {
+            int depth = 1;
+            const char *obj_end = obj_start + 1;
+            while (*obj_end && depth > 0) {
+                if (*obj_end == '{') depth++;
+                else if (*obj_end == '}') depth--;
+                obj_end++;
+            }
+            int len = (int)(obj_end - obj_start);
+            if (depth == 0 && len > 0 && len < out_len) {
+                memcpy(out, obj_start, (size_t)len);
+                out[len] = '\0';
+                rc = len;
+            }
+        }
+    }
+
+    free(json);
+    return rc;
+}
+
+/*
+ * Parse a runtime chain_params JSON array (as returned by plugin get_param).
+ * Returns parsed count on success (including 0), or -1 on malformed input.
+ */
+static int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params) {
+    if (!json_array || !params || max_params <= 0) return -1;
+
+    const char *arr_start = strchr(json_array, '[');
+    if (!arr_start) return -1;
+
+    int depth = 1;
+    const char *arr_end = arr_start + 1;
+    while (*arr_end && depth > 0) {
+        if (*arr_end == '[') depth++;
+        else if (*arr_end == ']') depth--;
+        arr_end++;
+    }
+    if (depth != 0) return -1;
+
+    int count = 0;
+    const char *pos = arr_start + 1;
+    while (pos < arr_end && count < max_params) {
+        const char *obj_start = strchr(pos, '{');
+        if (!obj_start || obj_start >= arr_end) break;
+
+        int obj_depth = 0;
+        const char *obj_end = obj_start;
+        do {
+            if (*obj_end == '{') obj_depth++;
+            else if (*obj_end == '}') obj_depth--;
+            obj_end++;
+        } while (obj_end < arr_end && obj_depth > 0);
+
+        if (obj_depth != 0) break;
+
+        chain_param_info_t parsed;
+        if (parse_param_object(obj_start, &parsed) == 0) {
+            params[count++] = parsed;
+        }
+
+        pos = obj_end;
+    }
+
+    return count;
 }
 
 /* Look up parameter info by key in a param list */
@@ -3913,6 +4044,12 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
     g_source_host_api.midi_send_external = midi_source_send;
     g_subplugin_host_api.get_clock_status = chain_get_clock_status;
     g_source_host_api.get_clock_status = chain_get_clock_status;
+    g_subplugin_host_api.mod_emit_value = chain_mod_emit_value;
+    g_subplugin_host_api.mod_clear_source = chain_mod_clear_source;
+    g_subplugin_host_api.mod_host_ctx = NULL;
+    g_source_host_api.mod_emit_value = chain_mod_emit_value;
+    g_source_host_api.mod_clear_source = chain_mod_clear_source;
+    g_source_host_api.mod_host_ctx = NULL;
 
     /* Initialize our plugin API struct */
     memset(&g_plugin_api, 0, sizeof(g_plugin_api));
@@ -3941,6 +4078,469 @@ static void v2_chain_log(chain_instance_t *inst, const char *msg) {
         char buf[256];
         snprintf(buf, sizeof(buf), "[chain-v2] %s", msg);
         inst->host->log(buf);
+    }
+}
+
+static float chain_mod_clampf(float value, float min_val, float max_val) {
+    if (value < min_val) return min_val;
+    if (value > max_val) return max_val;
+    return value;
+}
+
+static int chain_mod_get_param_string(chain_instance_t *inst,
+                                      const char *target,
+                                      const char *param,
+                                      char *buf,
+                                      int buf_len) {
+    if (!inst || !target || !param || !buf || buf_len < 2) return -1;
+
+    if (strcmp(target, "synth") == 0) {
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+            return inst->synth_plugin_v2->get_param(inst->synth_instance, param, buf, buf_len);
+        }
+        if (inst->synth_plugin && inst->synth_plugin->get_param) {
+            return inst->synth_plugin->get_param(param, buf, buf_len);
+        }
+        return -1;
+    }
+
+    if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot < 0 || fx_slot >= MAX_AUDIO_FX || fx_slot >= inst->fx_count) return -1;
+
+        if (inst->fx_is_v2[fx_slot] && inst->fx_plugins_v2[fx_slot] && inst->fx_instances[fx_slot]) {
+            return inst->fx_plugins_v2[fx_slot]->get_param(inst->fx_instances[fx_slot], param, buf, buf_len);
+        }
+        if (inst->fx_plugins[fx_slot] && inst->fx_plugins[fx_slot]->get_param) {
+            return inst->fx_plugins[fx_slot]->get_param(param, buf, buf_len);
+        }
+        return -1;
+    }
+
+    if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot < 0 || midi_fx_slot >= MAX_MIDI_FX || midi_fx_slot >= inst->midi_fx_count) return -1;
+        if (inst->midi_fx_plugins[midi_fx_slot] && inst->midi_fx_instances[midi_fx_slot]) {
+            return inst->midi_fx_plugins[midi_fx_slot]->get_param(inst->midi_fx_instances[midi_fx_slot],
+                                                                  param,
+                                                                  buf,
+                                                                  buf_len);
+        }
+        return -1;
+    }
+
+    return -1;
+}
+
+static int chain_mod_set_param_string(chain_instance_t *inst,
+                                      const char *target,
+                                      const char *param,
+                                      const char *val) {
+    if (!inst || !target || !param || !val) return -1;
+
+    if (strcmp(target, "synth") == 0) {
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
+            inst->synth_plugin_v2->set_param(inst->synth_instance, param, val);
+            return 0;
+        }
+        if (inst->synth_plugin && inst->synth_plugin->set_param) {
+            inst->synth_plugin->set_param(param, val);
+            return 0;
+        }
+        return -1;
+    }
+
+    if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot < 0 || fx_slot >= MAX_AUDIO_FX || fx_slot >= inst->fx_count) return -1;
+
+        if (inst->fx_is_v2[fx_slot] && inst->fx_plugins_v2[fx_slot] && inst->fx_instances[fx_slot]) {
+            inst->fx_plugins_v2[fx_slot]->set_param(inst->fx_instances[fx_slot], param, val);
+            return 0;
+        }
+        if (inst->fx_plugins[fx_slot] && inst->fx_plugins[fx_slot]->set_param) {
+            inst->fx_plugins[fx_slot]->set_param(param, val);
+            return 0;
+        }
+        return -1;
+    }
+
+    if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot < 0 || midi_fx_slot >= MAX_MIDI_FX || midi_fx_slot >= inst->midi_fx_count) return -1;
+        if (inst->midi_fx_plugins[midi_fx_slot] && inst->midi_fx_instances[midi_fx_slot]) {
+            inst->midi_fx_plugins[midi_fx_slot]->set_param(inst->midi_fx_instances[midi_fx_slot], param, val);
+            return 0;
+        }
+        return -1;
+    }
+
+    return -1;
+}
+
+static int chain_mod_has_active_sources(const mod_target_state_t *entry) {
+    if (!entry) return 0;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        if (entry->sources[i].active) return 1;
+    }
+    return 0;
+}
+
+static float chain_mod_sum_contributions(const mod_target_state_t *entry) {
+    float sum = 0.0f;
+    if (!entry) return sum;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        if (!entry->sources[i].active) continue;
+        sum += entry->sources[i].contribution;
+    }
+    return sum;
+}
+
+static mod_source_contribution_t *chain_mod_find_source_contribution(mod_target_state_t *entry,
+                                                                     const char *source_id) {
+    if (!entry || !source_id || !source_id[0]) return NULL;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        mod_source_contribution_t *source_entry = &entry->sources[i];
+        if (!source_entry->active) continue;
+        if (strcmp(source_entry->source_id, source_id) == 0) return source_entry;
+    }
+
+    return NULL;
+}
+
+static mod_source_contribution_t *chain_mod_find_or_alloc_source_contribution(mod_target_state_t *entry,
+                                                                               const char *source_id) {
+    if (!entry || !source_id || !source_id[0]) return NULL;
+
+    mod_source_contribution_t *source_entry = chain_mod_find_source_contribution(entry, source_id);
+    if (source_entry) return source_entry;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        source_entry = &entry->sources[i];
+        if (source_entry->active) continue;
+        memset(source_entry, 0, sizeof(*source_entry));
+        source_entry->active = 1;
+        strncpy(source_entry->source_id, source_id, sizeof(source_entry->source_id) - 1);
+        return source_entry;
+    }
+
+    return NULL;
+}
+
+static void chain_mod_remove_source_contribution(mod_target_state_t *entry, const char *source_id) {
+    mod_source_contribution_t *source_entry = chain_mod_find_source_contribution(entry, source_id);
+    if (!source_entry) return;
+    memset(source_entry, 0, sizeof(*source_entry));
+}
+
+static void chain_mod_recompute_effective(mod_target_state_t *entry) {
+    if (!entry) return;
+
+    float effective = chain_mod_clampf(entry->base_value + chain_mod_sum_contributions(entry),
+                                       entry->min_val,
+                                       entry->max_val);
+    if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
+        effective = (float)((int)effective);
+    }
+    entry->effective_value = chain_mod_clampf(effective, entry->min_val, entry->max_val);
+}
+
+static mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst,
+                                                        const char *target,
+                                                        const char *param) {
+    if (!inst || !target || !param) return NULL;
+
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *entry = &inst->mod_targets[i];
+        if (!entry->active) continue;
+        if (strcmp(entry->target, target) == 0 && strcmp(entry->param, param) == 0) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static mod_target_state_t *chain_mod_alloc_target_entry(chain_instance_t *inst,
+                                                         const char *target,
+                                                         const char *param) {
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    if (entry) return entry;
+    if (!inst || !target || !param) return NULL;
+
+    for (int i = 0; i < MAX_MOD_TARGETS; i++) {
+        entry = &inst->mod_targets[i];
+        if (entry->active) continue;
+
+        memset(entry, 0, sizeof(*entry));
+        entry->active = 1;
+        strncpy(entry->target, target, sizeof(entry->target) - 1);
+        strncpy(entry->param, param, sizeof(entry->param) - 1);
+        entry->min_val = 0.0f;
+        entry->max_val = 1.0f;
+        entry->type = KNOB_TYPE_FLOAT;
+
+        if (i >= inst->mod_target_count) {
+            inst->mod_target_count = i + 1;
+        }
+        return entry;
+    }
+
+    return NULL;
+}
+
+static int chain_mod_is_target_active(chain_instance_t *inst, const char *target, const char *param) {
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    return (entry && entry->active && entry->enabled);
+}
+
+static void chain_mod_update_base_from_set_param(chain_instance_t *inst,
+                                                 const char *target,
+                                                 const char *param,
+                                                 const char *val) {
+    if (!inst || !target || !param || !val) return;
+
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    if (!entry || !entry->active) return;
+
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (pinfo) {
+        entry->type = pinfo->type;
+        entry->min_val = pinfo->min_val;
+        entry->max_val = pinfo->max_val;
+    }
+
+    float base = entry->base_value;
+    if (pinfo) {
+        base = dsp_value_to_float(val, pinfo, base);
+    } else {
+        char *endptr = NULL;
+        float parsed = strtof(val, &endptr);
+        if (endptr != val) {
+            base = parsed;
+        }
+    }
+
+    entry->base_value = chain_mod_clampf(base, entry->min_val, entry->max_val);
+}
+
+static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write) {
+    if (!inst || !entry || !entry->active) return;
+
+    chain_mod_recompute_effective(entry);
+
+    uint64_t now_ms = 0;
+    uint32_t min_interval_ms = 0;
+    if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
+        min_interval_ms = MOD_INT_ENUM_MIN_INTERVAL_MS;
+    }
+
+    if (!force_write) {
+        if (entry->has_last_applied) {
+            if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
+                if ((int)entry->effective_value == (int)entry->last_applied_value) {
+                    return;
+                }
+            } else if (fabsf(entry->effective_value - entry->last_applied_value) < MOD_FLOAT_CHANGE_EPSILON) {
+                return;
+            }
+        }
+
+        if (min_interval_ms > 0) {
+            now_ms = get_time_ms();
+            if (entry->last_applied_ms > 0 && (now_ms - entry->last_applied_ms) < min_interval_ms) {
+                return;
+            }
+        }
+    }
+
+    char val_str[32];
+    if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
+        snprintf(val_str, sizeof(val_str), "%d", (int)entry->effective_value);
+    } else {
+        snprintf(val_str, sizeof(val_str), "%.6f", entry->effective_value);
+    }
+
+    int rc = chain_mod_set_param_string(inst, entry->target, entry->param, val_str);
+    if (rc == 0) {
+        entry->last_applied_value = entry->effective_value;
+        if (now_ms == 0) now_ms = get_time_ms();
+        entry->last_applied_ms = now_ms;
+        entry->has_last_applied = 1;
+    }
+}
+
+static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry, int restore_base) {
+    if (!inst || !entry || !entry->active) return;
+
+    entry->enabled = 0;
+    if (restore_base) {
+        entry->effective_value = entry->base_value;
+        chain_mod_apply_effective_value(inst, entry, 1);
+    }
+    memset(entry, 0, sizeof(*entry));
+
+    while (inst->mod_target_count > 0 &&
+           !inst->mod_targets[inst->mod_target_count - 1].active) {
+        inst->mod_target_count--;
+    }
+}
+
+static void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base) {
+    if (!inst || !target || !target[0]) return;
+
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *entry = &inst->mod_targets[i];
+        if (!entry->active) continue;
+        if (strcmp(entry->target, target) != 0) continue;
+        chain_mod_clear_target_entry(inst, entry, restore_base);
+    }
+}
+
+/* Optional getter helper: key suffix ':base' returns non-modulated base value.
+ * Example: 'synth:cutoff:base' -> base cutoff while modulation is active. */
+static int chain_mod_get_base_for_subkey(chain_instance_t *inst,
+                                         const char *target,
+                                         const char *subkey,
+                                         char *buf,
+                                         int buf_len) {
+    if (!inst || !target || !subkey || !buf || buf_len < 2) return -1;
+
+    const size_t suffix_len = 5; /* ":base" */
+    const size_t subkey_len = strlen(subkey);
+    if (subkey_len <= suffix_len || strcmp(subkey + subkey_len - suffix_len, ":base") != 0) {
+        return -1;
+    }
+
+    char param[64];
+    const size_t param_len = subkey_len - suffix_len;
+    if (param_len == 0 || param_len >= sizeof(param)) return -1;
+    memcpy(param, subkey, param_len);
+    param[param_len] = '\0';
+
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    if (entry && entry->active) {
+        if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
+            return snprintf(buf, buf_len, "%d", (int)entry->base_value);
+        }
+        return snprintf(buf, buf_len, "%.6f", entry->base_value);
+    }
+
+    /* If not modulated, return current plugin value for compatibility. */
+    return chain_mod_get_param_string(inst, target, param, buf, buf_len);
+}
+
+/* Runtime modulation callback (initial stateful implementation).
+ * Applies non-destructive contribution math and stores effective values. */
+static int chain_mod_emit_value(void *ctx,
+                                const char *source_id,
+                                const char *target,
+                                const char *param,
+                                float signal,
+                                float depth,
+                                float offset,
+                                int bipolar,
+                                int enabled) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    if (!inst) inst = g_v1_instance;
+    if (!inst || !source_id || !target || !param) return -1;
+
+    if (!enabled) {
+        chain_mod_clear_source(inst, source_id);
+        return 0;
+    }
+
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (!pinfo) {
+        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
+        if (stale && stale->active) {
+            chain_mod_remove_source_contribution(stale, source_id);
+            if (!chain_mod_has_active_sources(stale)) {
+                chain_mod_clear_target_entry(inst, stale, 0);
+            }
+        }
+        return -1;
+    }
+    if (pinfo->type == KNOB_TYPE_ENUM) {
+        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
+        if (stale && stale->active) {
+            chain_mod_remove_source_contribution(stale, source_id);
+            if (!chain_mod_has_active_sources(stale)) {
+                chain_mod_clear_target_entry(inst, stale, 1);
+            }
+        }
+        return -1;  /* v1 numeric only */
+    }
+
+    mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
+    if (!entry) return -1;
+
+    mod_source_contribution_t *source_entry = chain_mod_find_or_alloc_source_contribution(entry, source_id);
+    if (!source_entry) return -1;
+
+    if (!entry->enabled) {
+        float base = pinfo->default_val;
+        char val_buf[64];
+        if (chain_mod_get_param_string(inst, target, param, val_buf, sizeof(val_buf)) > 0) {
+            base = dsp_value_to_float(val_buf, pinfo, base);
+        }
+        entry->base_value = chain_mod_clampf(base, pinfo->min_val, pinfo->max_val);
+    }
+
+    entry->type = pinfo->type;
+    entry->min_val = pinfo->min_val;
+    entry->max_val = pinfo->max_val;
+
+    /* For unipolar sources, map [-1,1] into [0,1] before depth scaling. */
+    float mod_signal = signal;
+    if (!bipolar) {
+        mod_signal = (signal + 1.0f) * 0.5f;
+    }
+
+    /* Scale source depth/offset by target parameter range so a depth of 1.0
+     * has meaningful effect on large-range params (e.g. 0..127). */
+    float range_span = entry->max_val - entry->min_val;
+    if (range_span <= 0.0f) {
+        range_span = 1.0f;
+    }
+    float range_scale = bipolar ? (0.5f * range_span) : range_span;
+    source_entry->contribution = ((mod_signal * depth) + offset) * range_scale;
+    entry->enabled = chain_mod_has_active_sources(entry);
+    chain_mod_apply_effective_value(inst, entry, 0);
+    return 0;
+}
+
+static void chain_mod_clear_source(void *ctx, const char *source_id) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    if (!inst) inst = g_v1_instance;
+    if (!inst) return;
+
+    const int clear_all = (!source_id || source_id[0] == '\0');
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *entry = &inst->mod_targets[i];
+        if (!entry->active) continue;
+
+        if (clear_all) {
+            chain_mod_clear_target_entry(inst, entry, 1);
+            continue;
+        }
+
+        chain_mod_remove_source_contribution(entry, source_id);
+        if (!chain_mod_has_active_sources(entry)) {
+            chain_mod_clear_target_entry(inst, entry, 1);
+            continue;
+        }
+
+        entry->enabled = 1;
+        chain_mod_apply_effective_value(inst, entry, 0);
     }
 }
 
@@ -3976,6 +4576,12 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
         memcpy(&inst->source_host_api, g_host, sizeof(host_api_v1_t));
         inst->subplugin_host_api.get_clock_status = chain_get_clock_status;
         inst->source_host_api.get_clock_status = chain_get_clock_status;
+        inst->subplugin_host_api.mod_emit_value = chain_mod_emit_value;
+        inst->subplugin_host_api.mod_clear_source = chain_mod_clear_source;
+        inst->subplugin_host_api.mod_host_ctx = inst;
+        inst->source_host_api.mod_emit_value = chain_mod_emit_value;
+        inst->source_host_api.mod_clear_source = chain_mod_clear_source;
+        inst->source_host_api.mod_host_ctx = inst;
         /* Note: MIDI source routing would need instance-specific handling for full v2 */
     }
 
@@ -4061,6 +4667,7 @@ static int v2_synth_get_error(chain_instance_t *inst, char *buf, int buf_len) {
 /* V2 unload synth */
 static void v2_unload_synth(chain_instance_t *inst) {
     if (!inst) return;
+    chain_mod_clear_target_entries(inst, "synth", 0);
 
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->destroy_instance) {
         inst->synth_plugin_v2->destroy_instance(inst->synth_instance);
@@ -4078,6 +4685,7 @@ static void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_instance = NULL;
     inst->current_synth_module[0] = '\0';
     inst->synth_param_count = 0;
+    inst->mod_param_refresh_ms_synth = 0;
     inst->synth_default_forward_channel = -1;
 }
 
@@ -4086,6 +4694,10 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
     if (!inst) return;
 
     for (int i = 0; i < inst->fx_count; i++) {
+        char target_name[16];
+        snprintf(target_name, sizeof(target_name), "fx%d", i + 1);
+        chain_mod_clear_target_entries(inst, target_name, 0);
+
         if (inst->fx_is_v2[i]) {
             if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->destroy_instance) {
                 inst->fx_plugins_v2[i]->destroy_instance(inst->fx_instances[i]);
@@ -4107,7 +4719,9 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
         inst->fx_is_v2[i] = 0;
         inst->fx_on_midi[i] = NULL;
         inst->fx_param_counts[i] = 0;
+        inst->mod_param_refresh_ms_fx[i] = 0;
         inst->current_fx_modules[i][0] = '\0';
+        inst->fx_ui_hierarchy[i][0] = '\0';
     }
     inst->fx_count = 0;
 }
@@ -4115,6 +4729,9 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
 /* V2 unload a single audio FX slot */
 static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return;
+    char target_name[16];
+    snprintf(target_name, sizeof(target_name), "fx%d", slot + 1);
+    chain_mod_clear_target_entries(inst, target_name, 0);
 
     if (inst->fx_is_v2[slot]) {
         if (inst->fx_plugins_v2[slot] && inst->fx_instances[slot] && inst->fx_plugins_v2[slot]->destroy_instance) {
@@ -4137,7 +4754,9 @@ static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     inst->fx_is_v2[slot] = 0;
     inst->fx_on_midi[slot] = NULL;
     inst->fx_param_counts[slot] = 0;
+    inst->mod_param_refresh_ms_fx[slot] = 0;
     inst->current_fx_modules[slot][0] = '\0';
+    inst->fx_ui_hierarchy[slot][0] = '\0';
 }
 
 /* V2 load audio FX into a specific slot */
@@ -4230,8 +4849,11 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         inst->fx_is_v2[slot] = 0;
         inst->fx_on_midi[slot] = NULL;
         inst->current_fx_modules[slot][0] = '\0';
+        inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
+    inst->mod_param_refresh_ms_fx[slot] = 0;
 
     /* Update fx_count to include this slot */
     if (slot >= inst->fx_count) {
@@ -4339,6 +4961,7 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         inst->current_synth_module[0] = '\0';
         return -1;
     }
+    inst->mod_param_refresh_ms_synth = 0;
 
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
@@ -4356,10 +4979,7 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                     { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
                     int fwd_ch = -1;
                     if (json_get_int_in_section(json, "capabilities", "default_forward_channel", &fwd_ch) == 0) {
-                        if (fwd_ch == -2) {
-                            inst->synth_default_forward_channel = -2;  /* Passthrough (for MPE) */
-                            v2_chain_log(inst, "Synth default_forward_channel: passthrough");
-                        } else if (fwd_ch >= 1 && fwd_ch <= 16) {
+                        if (fwd_ch >= 1 && fwd_ch <= 16) {
                             inst->synth_default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
                             snprintf(msg, sizeof(msg), "Synth default_forward_channel: %d", fwd_ch);
                             v2_chain_log(inst, msg);
@@ -4451,8 +5071,11 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
         inst->fx_is_v2[slot] = 0;
         inst->fx_on_midi[slot] = NULL;
         inst->current_fx_modules[slot][0] = '\0';
+        inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
+    inst->mod_param_refresh_ms_fx[slot] = 0;
 
     inst->fx_count++;
 
@@ -6097,6 +6720,16 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else {
+            if (chain_mod_is_target_active(inst, "synth", subkey)) {
+                chain_mod_update_base_from_set_param(inst, "synth", subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "synth", subkey);
+                if (entry) {
+                    chain_mod_apply_effective_value(inst, entry, 0);
+                    inst->dirty = 1;
+                    return;
+                }
+            }
+
             /* Only smooth float params — int/enum values must not be interpolated */
             float fval;
             if (is_smoothable_float(val, &fval)) {
@@ -6123,6 +6756,16 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
             inst->dirty = 1;
         } else if (inst->fx_count > 0) {
+            if (chain_mod_is_target_active(inst, "fx1", subkey)) {
+                chain_mod_update_base_from_set_param(inst, "fx1", subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "fx1", subkey);
+                if (entry) {
+                    chain_mod_apply_effective_value(inst, entry, 0);
+                    inst->dirty = 1;
+                    return;
+                }
+            }
+
             float fval;
             if (is_smoothable_float(val, &fval)) {
                 chain_param_info_t *pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], subkey);
@@ -6134,6 +6777,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
             } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
                 inst->fx_plugins[0]->set_param(subkey, val);
+            }
+            if (strcmp(subkey, "plugin_id") == 0) {
+                inst->fx_param_counts[0] = 0;
+                inst->mod_param_refresh_ms_fx[0] = 0;
             }
             inst->dirty = 1;
         }
@@ -6147,6 +6794,16 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
             inst->dirty = 1;
         } else if (inst->fx_count > 1) {
+            if (chain_mod_is_target_active(inst, "fx2", subkey)) {
+                chain_mod_update_base_from_set_param(inst, "fx2", subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "fx2", subkey);
+                if (entry) {
+                    chain_mod_apply_effective_value(inst, entry, 0);
+                    inst->dirty = 1;
+                    return;
+                }
+            }
+
             float fval;
             if (is_smoothable_float(val, &fval)) {
                 chain_param_info_t *pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], subkey);
@@ -6158,6 +6815,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
                 inst->fx_plugins[1]->set_param(subkey, val);
+            }
+            if (strcmp(subkey, "plugin_id") == 0) {
+                inst->fx_param_counts[1] = 0;
+                inst->mod_param_refresh_ms_fx[1] = 0;
             }
             inst->dirty = 1;
         }
@@ -6175,6 +6836,15 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
+            if (chain_mod_is_target_active(inst, "midi_fx1", subkey)) {
+                chain_mod_update_base_from_set_param(inst, "midi_fx1", subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "midi_fx1", subkey);
+                if (entry) {
+                    chain_mod_apply_effective_value(inst, entry, 0);
+                    inst->dirty = 1;
+                    return;
+                }
+            }
             inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], subkey, val);
             inst->dirty = 1;
         }
@@ -6189,6 +6859,15 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
+            if (chain_mod_is_target_active(inst, "midi_fx2", subkey)) {
+                chain_mod_update_base_from_set_param(inst, "midi_fx2", subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "midi_fx2", subkey);
+                if (entry) {
+                    chain_mod_apply_effective_value(inst, entry, 0);
+                    inst->dirty = 1;
+                    return;
+                }
+            }
             inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], subkey, val);
             inst->dirty = 1;
         }
@@ -6410,12 +7089,117 @@ static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, 
 }
 
 /*
+ * Refresh target parameter metadata from runtime plugin chain_params.
+ * This allows modulation to resolve dynamic params that are not declared in
+ * static module.json metadata.
+ */
+static int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
+    if (!inst || !target) return -1;
+
+    char buf[8192];
+    int result = -1;
+    chain_param_info_t parsed[MAX_CHAIN_PARAMS];
+    int parsed_count = -1;
+
+    if (strcmp(target, "synth") == 0) {
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+            result = inst->synth_plugin_v2->get_param(inst->synth_instance, "chain_params", buf, sizeof(buf));
+        } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
+            result = inst->synth_plugin->get_param("chain_params", buf, sizeof(buf));
+        }
+        if (result <= 0) return -1;
+        parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
+        if (parsed_count < 0) return -1;
+        memcpy(inst->synth_params, parsed, sizeof(chain_param_info_t) * (size_t)parsed_count);
+        inst->synth_param_count = parsed_count;
+        return parsed_count;
+    }
+
+    if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot < 0 || fx_slot >= MAX_AUDIO_FX || fx_slot >= inst->fx_count) return -1;
+
+        if (inst->fx_is_v2[fx_slot] && inst->fx_plugins_v2[fx_slot] &&
+            inst->fx_instances[fx_slot] && inst->fx_plugins_v2[fx_slot]->get_param) {
+            result = inst->fx_plugins_v2[fx_slot]->get_param(inst->fx_instances[fx_slot], "chain_params", buf, sizeof(buf));
+        } else if (inst->fx_plugins[fx_slot] && inst->fx_plugins[fx_slot]->get_param) {
+            result = inst->fx_plugins[fx_slot]->get_param("chain_params", buf, sizeof(buf));
+        }
+        if (result <= 0) return -1;
+        parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
+        if (parsed_count < 0) return -1;
+        memcpy(inst->fx_params[fx_slot], parsed, sizeof(chain_param_info_t) * (size_t)parsed_count);
+        inst->fx_param_counts[fx_slot] = parsed_count;
+        return parsed_count;
+    }
+
+    if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot < 0 || midi_fx_slot >= MAX_MIDI_FX || midi_fx_slot >= inst->midi_fx_count) return -1;
+        if (!inst->midi_fx_plugins[midi_fx_slot] || !inst->midi_fx_instances[midi_fx_slot]) return -1;
+
+        result = inst->midi_fx_plugins[midi_fx_slot]->get_param(inst->midi_fx_instances[midi_fx_slot],
+                                                                "chain_params",
+                                                                buf,
+                                                                sizeof(buf));
+        if (result <= 0) return -1;
+        parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
+        if (parsed_count < 0) return -1;
+        memcpy(inst->midi_fx_params[midi_fx_slot], parsed, sizeof(chain_param_info_t) * (size_t)parsed_count);
+        inst->midi_fx_param_counts[midi_fx_slot] = parsed_count;
+        return parsed_count;
+    }
+
+    return -1;
+}
+
+/*
+ * Match a modulation key against chain_params metadata.
+ * Supports exact matches and child-prefixed keys (e.g. nvram_tone_0_cutofffrequency)
+ * where metadata may only expose the suffix key (e.g. cutofffrequency).
+ */
+static int chain_param_key_matches(const char *requested_key, const char *meta_key) {
+    if (!requested_key || !meta_key) return 0;
+    if (strcmp(requested_key, meta_key) == 0) return 1;
+
+    size_t req_len = strlen(requested_key);
+    size_t meta_len = strlen(meta_key);
+    if (req_len <= meta_len + 1) return 0;
+
+    const char *suffix = requested_key + (req_len - meta_len);
+    if (strcmp(suffix, meta_key) != 0) return 0;
+    if (*(suffix - 1) != '_') return 0;
+
+    /* Require strict "..._<index>_<meta_key>" shape for suffix fallback. */
+    const char *idx_end = suffix - 1;  /* underscore before suffix */
+    const char *idx_start = idx_end;
+    while (idx_start > requested_key && *(idx_start - 1) != '_') {
+        idx_start--;
+    }
+    if (idx_start <= requested_key || *(idx_start - 1) != '_') return 0;
+    if (idx_start >= idx_end) return 0;
+
+    for (const char *p = idx_start; p < idx_end; p++) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+/*
  * Find parameter metadata by target and key.
  */
 static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target, const char *key) {
+    if (!inst || !target || !key || !key[0]) return NULL;
+
     if (strcmp(target, "synth") == 0) {
         for (int i = 0; i < inst->synth_param_count; i++) {
-            if (strcmp(inst->synth_params[i].key, key) == 0) {
+            if (chain_param_key_matches(key, inst->synth_params[i].key)) {
                 return &inst->synth_params[i];
             }
         }
@@ -6423,7 +7207,7 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
         int fx_slot = atoi(target + 2) - 1;
         if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
             for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
-                if (strcmp(inst->fx_params[fx_slot][i].key, key) == 0) {
+                if (chain_param_key_matches(key, inst->fx_params[fx_slot][i].key)) {
                     return &inst->fx_params[fx_slot][i];
                 }
             }
@@ -6436,12 +7220,73 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
         }
         if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
             for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
-                if (strcmp(inst->midi_fx_params[midi_fx_slot][i].key, key) == 0) {
+                if (chain_param_key_matches(key, inst->midi_fx_params[midi_fx_slot][i].key)) {
                     return &inst->midi_fx_params[midi_fx_slot][i];
                 }
             }
         }
     }
+
+    /* Static metadata missed. Retry with runtime chain_params refresh, throttled
+     * to avoid re-parsing dynamic params every tick when a mapping is stale. */
+    uint64_t now_ms = get_time_ms();
+    uint64_t *last_refresh_ms = NULL;
+    if (strcmp(target, "synth") == 0) {
+        last_refresh_ms = &inst->mod_param_refresh_ms_synth;
+    } else if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
+            last_refresh_ms = &inst->mod_param_refresh_ms_fx[fx_slot];
+        }
+    } else if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
+            last_refresh_ms = &inst->mod_param_refresh_ms_midi_fx[midi_fx_slot];
+        }
+    }
+
+    if (!last_refresh_ms) return NULL;
+    if (*last_refresh_ms > 0 && (now_ms - *last_refresh_ms) < MOD_PARAM_CACHE_REFRESH_MS) {
+        return NULL;
+    }
+    *last_refresh_ms = now_ms;
+
+    if (chain_mod_refresh_target_param_cache(inst, target) <= 0) {
+        return NULL;
+    }
+
+    if (strcmp(target, "synth") == 0) {
+        for (int i = 0; i < inst->synth_param_count; i++) {
+            if (chain_param_key_matches(key, inst->synth_params[i].key)) {
+                return &inst->synth_params[i];
+            }
+        }
+    } else if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
+            for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
+                if (chain_param_key_matches(key, inst->fx_params[fx_slot][i].key)) {
+                    return &inst->fx_params[fx_slot][i];
+                }
+            }
+        }
+    } else if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
+            for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
+                if (chain_param_key_matches(key, inst->midi_fx_params[midi_fx_slot][i].key)) {
+                    return &inst->midi_fx_params[midi_fx_slot][i];
+                }
+            }
+        }
+    }
+
     return NULL;
 }
 
@@ -6655,6 +7500,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route synth: prefixed params to synth (strip prefix) */
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
+        int base_result = chain_mod_get_base_for_subkey(inst, "synth", subkey, buf, buf_len);
+        if (base_result >= 0) return base_result;
 
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {
@@ -6720,6 +7567,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route fx1: prefixed params to FX1 (strip prefix) */
     if (strncmp(key, "fx1:", 4) == 0) {
         const char *subkey = key + 4;
+        int base_result = chain_mod_get_base_for_subkey(inst, "fx1", subkey, buf, buf_len);
+        if (base_result >= 0) return base_result;
+
+        /* For ui_hierarchy: return cached JSON from module.json */
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 0) {
+            if (inst->fx_ui_hierarchy[0][0]) {
+                int len = strlen(inst->fx_ui_hierarchy[0]);
+                if (len < buf_len) {
+                    strcpy(buf, inst->fx_ui_hierarchy[0]);
+                    return len;
+                }
+            }
+            return -1;
+        }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 0) {
@@ -6782,6 +7643,20 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route fx2: prefixed params to FX2 (strip prefix) */
     if (strncmp(key, "fx2:", 4) == 0) {
         const char *subkey = key + 4;
+        int base_result = chain_mod_get_base_for_subkey(inst, "fx2", subkey, buf, buf_len);
+        if (base_result >= 0) return base_result;
+
+        /* For ui_hierarchy: return cached JSON from module.json */
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 1) {
+            if (inst->fx_ui_hierarchy[1][0]) {
+                int len = strlen(inst->fx_ui_hierarchy[1]);
+                if (len < buf_len) {
+                    strcpy(buf, inst->fx_ui_hierarchy[1]);
+                    return len;
+                }
+            }
+            return -1;
+        }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 1) {
@@ -6844,6 +7719,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route midi_fx1: prefixed params to MIDI FX1 (strip prefix) */
     if (strncmp(key, "midi_fx1:", 9) == 0) {
         const char *subkey = key + 9;
+        int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
+        if (base_result >= 0) return base_result;
         /* For ui_hierarchy: return cached JSON from module.json */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 0) {
             if (inst->midi_fx_ui_hierarchy[0][0]) {
@@ -6908,6 +7785,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* Route midi_fx2: prefixed params to MIDI FX2 (strip prefix) */
     if (strncmp(key, "midi_fx2:", 9) == 0) {
         const char *subkey = key + 9;
+        int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
+        if (base_result >= 0) return base_result;
         /* For ui_hierarchy: return cached JSON from module.json */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 1) {
             if (inst->midi_fx_ui_hierarchy[1][0]) {
