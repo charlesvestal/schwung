@@ -1378,7 +1378,7 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
     int idx = 0;
 
     /* Subdirectories to scan */
-    const char *subdirs[] = { "", "sound_generators", "audio_fx", "midi_fx", "utilities", "overtake", "other", NULL };
+    const char *subdirs[] = { "", "sound_generators", "audio_fx", "midi_fx", "utilities", "overtake", "tools", "other", NULL };
 
     for (int s = 0; subdirs[s] != NULL; s++) {
         char dir_path[512];
