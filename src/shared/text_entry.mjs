@@ -72,9 +72,11 @@ function snapshotPadLEDs() {
     }
 }
 
-/* Special keys always occupy cols 3-7 of the last character row.
- * Layout: [chars...] [blank] [page/purple] [space/blue] [space/blue] [del/red] [ok/green] */
+/* Special keys always occupy cols 3-7 of the BOTTOM pad row (row 3).
+ * Layout: [chars...] [blank] [page/purple] [space/blue] [space/blue] [del/red] [ok/green]
+ * They never move regardless of how many characters the current page has. */
 const SPECIAL_COL_START = 3;  /* First special at col 3 (after gap at col 2) */
+const SPECIAL_ROW = 3;       /* Always bottom pad row */
 
 /* Get the default LED color for a pad in the current grid layout */
 function getPadDefaultColor(padNote) {
@@ -83,17 +85,10 @@ function getPadDefaultColor(padNote) {
     const padRow = 3 - Math.floor(padIndex / 8);
     const chars = getCurrentPageChars();
     const charCount = chars.length;
-    const numCharRows = Math.ceil(charCount / CHARS_PER_ROW);
     const gridIndex = padRow * CHARS_PER_ROW + padCol;
-    const lastCharRow = numCharRows - 1;
 
-    /* Character rows above the last row */
-    if (padRow < lastCharRow && gridIndex < charCount) {
-        return PAD_COLOR_WHITE;
-    }
-    /* Last character row: chars in cols before remainder, then gap, then specials */
-    if (padRow === lastCharRow) {
-        if (gridIndex < charCount) return PAD_COLOR_WHITE;  /* Remaining chars */
+    /* Bottom row: remaining chars on left, specials on right */
+    if (padRow === SPECIAL_ROW) {
         if (padCol >= SPECIAL_COL_START) {
             const sk = padCol - SPECIAL_COL_START;
             if (sk === 0) return PAD_COLOR_PURPLE;  /* page cycle */
@@ -101,6 +96,13 @@ function getPadDefaultColor(padNote) {
             if (sk === 3) return PAD_COLOR_RED;     /* delete */
             if (sk === 4) return PAD_COLOR_GREEN;   /* ok */
         }
+        /* Chars that fall on the bottom row */
+        if (gridIndex < charCount) return PAD_COLOR_WHITE;
+        return PAD_COLOR_OFF;
+    }
+    /* Character rows above the bottom row */
+    if (gridIndex < charCount) {
+        return PAD_COLOR_WHITE;
     }
     return PAD_COLOR_OFF;
 }
@@ -138,19 +140,23 @@ function selectPadItem(padNote) {
     const padRow = 3 - Math.floor(padIndex / 8);
     const chars = getCurrentPageChars();
     const charCount = chars.length;
-    const numCharRows = Math.ceil(charCount / CHARS_PER_ROW);
     const gridIndex = padRow * CHARS_PER_ROW + padCol;
-    const lastCharRow = numCharRows - 1;
 
-    if (padRow < lastCharRow && gridIndex < charCount) {
-        state.selectedIndex = gridIndex;
-    } else if (padRow === lastCharRow) {
-        if (gridIndex < charCount) {
-            state.selectedIndex = gridIndex;
-        } else if (padCol >= SPECIAL_COL_START) {
+    /* Bottom row: specials always here */
+    if (padRow === SPECIAL_ROW) {
+        if (padCol >= SPECIAL_COL_START) {
             const sp = padColToSpecial(padCol);
             if (sp >= 0) state.selectedIndex = charCount + sp;
+            return;
         }
+        if (gridIndex < charCount) {
+            state.selectedIndex = gridIndex;
+        }
+        return;
+    }
+    /* Character rows above the bottom row */
+    if (gridIndex < charCount) {
+        state.selectedIndex = gridIndex;
     }
 }
 
