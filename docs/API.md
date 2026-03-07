@@ -363,6 +363,27 @@ int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
 
 Note: Audio input routing depends on the last selected input in the stock Move interface before launching Move Anything.
 
+### Chain Runtime Modulation Callbacks (DSP)
+
+When a DSP plugin runs inside Signal Chain, `host_api_v1_t` may expose optional modulation callbacks:
+
+```c
+int (*mod_emit_value)(void *ctx,
+                      const char *source_id,
+                      const char *target,
+                      const char *param,
+                      float signal,
+                      float depth,
+                      float offset,
+                      int bipolar,
+                      int enabled);
+void (*mod_clear_source)(void *ctx, const char *source_id);
+void *mod_host_ctx;
+```
+
+Use these to publish temporary modulation contributions without overwriting saved base parameter values.
+If callbacks are unavailable, plugins should fail silently and keep operating normally.
+
 ## LED Colors
 
 Common color values for pad LEDs (from `constants.mjs`):

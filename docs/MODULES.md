@@ -473,6 +473,33 @@ plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t* host) {
 }
 ```
 
+### Runtime Modulation Callbacks (Chain Host)
+
+When a plugin runs inside Signal Chain, `host_api_v1_t` may provide optional modulation callbacks:
+
+```c
+int (*mod_emit_value)(void *ctx,
+                      const char *source_id,
+                      const char *target,
+                      const char *param,
+                      float signal,
+                      float depth,
+                      float offset,
+                      int bipolar,
+                      int enabled);
+void (*mod_clear_source)(void *ctx, const char *source_id);
+void *mod_host_ctx;
+```
+
+Use these to publish temporary modulation overlays without overwriting a target parameter's saved base value.
+
+Guidelines:
+- `source_id`: stable ID for the modulation source instance/lane.
+- `target`: `"synth"`, `"fx1"`, `"fx2"`, `"midi_fx1"`, or `"midi_fx2"`.
+- `enabled=0` or `mod_clear_source(...)`: clears that source's contribution.
+- Missing/stale targets should fail silently (do not crash or spam logs).
+- Multiple sources can target the same parameter; the host sums contributions and clamps to target range.
+
 ### Plugin API v1 (Deprecated)
 
 V1 is a singleton API - only one instance can exist. **Do not use for new modules:**
@@ -696,6 +723,8 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | `float` | `min`, `max`, `default`/`value` | Float value |
 | `enum` | `options`, `default`/`value` | List of string options |
 | `filepath` | `root`, `start_path`, `filter`, `default`/`value` | Opens Shadow UI file browser and stores selected path |
+| `module_picker` | `allow_none`, `allow_self`, `allowed_targets`, `param_key` | Dynamic enum from loaded chain components |
+| `parameter_picker` | `target_key`, `numeric_only`, `allow_none` | Dynamic enum from selected target's exposed params |
 
 #### `filepath` in module.json
 
@@ -741,6 +770,19 @@ Behavior notes:
 - `browser_hooks` supports value placeholders: `$path`/`$selected_path` and `$filename`/`$selected_filename`.
 - For pad samplers, you can suspend auto-pad switching while browsing by adding `{"key":"ui_auto_select_pad","value":"off","restore":true}` to `browser_hooks.on_open`.
 - Example user sample file path: `/data/UserData/UserLibrary/Samples/Drums/Kick01.wav`.
+
+#### Dynamic Target Pickers
+
+Use `module_picker` and `parameter_picker` for chain-aware target routing without custom UI code.
+
+- `module_picker`: Renders as a normal enum editor whose options are refreshed from currently loaded chain components.
+- `parameter_picker`: Renders as a normal enum editor whose options are refreshed from the component selected by `target_key`.
+- `allow_none` (optional, default true): Includes an empty option for clearing assignment.
+- `allow_self` (module_picker only, optional, default false): Allows selecting the hosting component itself.
+- `allowed_targets` (module_picker only, optional): Comma-separated string or array of target IDs to whitelist.
+- `param_key` (module_picker, optional): Companion parameter key to clear when target changes (for example `lfo1_target_param`).
+- `target_key` (parameter_picker, recommended): Companion key holding selected module target.
+- `numeric_only` (parameter_picker, optional, default true): Restricts options to float/int parameters.
 
 These map to knobs 1-8 in the Shadow UI for quick access.
 
