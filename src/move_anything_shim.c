@@ -3765,7 +3765,7 @@ do_ioctl:
                     } else {
                         /* CC messages: filter jog/back controls (let up/down through for octave) */
                         if (cin == 0x0B && type == 0xB0) {
-                            if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
+                            if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK || d1 == CC_MENU) {
                                 filter = 1;
                             }
                             /* Filter knob CCs when shift held */
