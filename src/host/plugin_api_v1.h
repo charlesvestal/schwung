@@ -30,6 +30,21 @@
 #define MOVE_CLOCK_STATUS_STOPPED 1      /* Clock available, transport stopped */
 #define MOVE_CLOCK_STATUS_RUNNING 2      /* Clock available, transport running */
 
+/* Optional modulation callbacks for chain-owned runtime modulation buses.
+ * Sub-plugins can publish temporary modulation contributions without writing
+ * target base values directly.
+ */
+typedef int (*move_mod_emit_value_fn)(void *ctx,
+                                      const char *source_id,
+                                      const char *target,
+                                      const char *param,
+                                      float signal,
+                                      float depth,
+                                      float offset,
+                                      int bipolar,
+                                      int enabled);
+typedef void (*move_mod_clear_source_fn)(void *ctx, const char *source_id);
+
 /*
  * Host API - provided by host to plugin during initialization
  */
@@ -60,6 +75,11 @@ typedef struct host_api_v1 {
      * Returns one of MOVE_CLOCK_STATUS_*.
      */
     int (*get_clock_status)(void);
+
+    /* Optional runtime modulation callbacks (NULL if unsupported). */
+    move_mod_emit_value_fn mod_emit_value;
+    move_mod_clear_source_fn mod_clear_source;
+    void *mod_host_ctx;
 
 } host_api_v1_t;
 
