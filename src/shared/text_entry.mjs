@@ -20,6 +20,7 @@
 
 import { decodeDelta } from './input_filter.mjs';
 import { drawRect } from './menu_layout.mjs';
+import { announce as defaultAnnounce } from './screen_reader.mjs';
 
 /* Pad LED constants */
 const PAD_NOTE_START = 68;
@@ -503,9 +504,10 @@ function getCurrentPageChars() {
 }
 
 function announceTextEntry(text) {
-    if (!state.onAnnounce || !text) return;
+    if (!text) return;
+    const fn = state.onAnnounce || defaultAnnounce;
     try {
-        state.onAnnounce(text);
+        fn(text);
     } catch (e) {
         /* Never let screen reader callback errors break UI input flow. */
     }
