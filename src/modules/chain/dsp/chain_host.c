@@ -4979,7 +4979,10 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                     { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
                     int fwd_ch = -1;
                     if (json_get_int_in_section(json, "capabilities", "default_forward_channel", &fwd_ch) == 0) {
-                        if (fwd_ch >= 1 && fwd_ch <= 16) {
+                        if (fwd_ch == -2) {
+                            inst->synth_default_forward_channel = -2;  /* Passthrough (for MPE) */
+                            v2_chain_log(inst, "Synth default_forward_channel: passthrough");
+                        } else if (fwd_ch >= 1 && fwd_ch <= 16) {
                             inst->synth_default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
                             snprintf(msg, sizeof(msg), "Synth default_forward_channel: %d", fwd_ch);
                             v2_chain_log(inst, msg);
