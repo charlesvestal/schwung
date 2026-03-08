@@ -3076,6 +3076,10 @@ function handleMasterFxSettingsAction(key) {
                 const raw = host_read_file("/data/UserData/move-anything/shared/help_content.json");
                 if (raw) {
                     helpContent = JSON.parse(raw);
+                    /* Append core version to Move Everything title */
+                    const coreVersion = getHostVersion();
+                    const meSection = helpContent.sections && helpContent.sections.find(s => s.title === "Move Everything");
+                    if (meSection) meSection.title = `Move Everything v${coreVersion}`;
                 }
             } catch (e) {
                 debugLog("Failed to load help content: " + e);
@@ -3102,51 +3106,60 @@ function handleMasterFxSettingsAction(key) {
                 debugLog("Move Manual not available: " + e);
             }
         }
-        /* Scan installed modules for help.json files (rescan each time to pick up new installs) */
+        /* Build Modules section from all installed modules with versions */
         if (helpContent && helpContent.sections) {
             try {
                 /* Remove previous Modules section if present */
                 const oldIdx = helpContent.sections.findIndex(s => s.title === "Modules");
                 if (oldIdx >= 0) helpContent.sections.splice(oldIdx, 1);
 
+                /* Build a map of help.json content keyed by module directory */
                 const MODULES_DIR = "/data/UserData/move-anything/modules";
-                const moduleHelpChildren = [];
+                const helpMap = {};
                 const entries = os.readdir(MODULES_DIR) || [];
                 const dirList = entries[0];
                 if (Array.isArray(dirList)) {
                     for (const entry of dirList) {
                         if (entry === "." || entry === "..") continue;
                         const entryPath = `${MODULES_DIR}/${entry}`;
-                        /* Check top-level module dirs and category subdirs */
-                        const checkHelp = function(dirPath) {
+                        const loadHelp = function(dirPath, id) {
                             try {
                                 const helpRaw = std.loadFile(`${dirPath}/help.json`);
                                 if (!helpRaw) return;
                                 const helpData = JSON.parse(helpRaw);
-                                if (helpData.title && helpData.children) {
-                                    moduleHelpChildren.push(helpData);
-                                }
+                                if (helpData.children) helpMap[id] = helpData.children;
                             } catch (e) { /* skip */ }
                         };
-                        checkHelp(entryPath);
-                        /* Scan subdirectories (sound_generators/, audio_fx/, etc.) */
+                        loadHelp(entryPath, entry);
+                        /* Scan category subdirectories */
                         try {
                             const subEntries = os.readdir(entryPath) || [];
                             const subDirList = subEntries[0];
                             if (Array.isArray(subDirList)) {
                                 for (const subEntry of subDirList) {
                                     if (subEntry === "." || subEntry === "..") continue;
-                                    checkHelp(`${entryPath}/${subEntry}`);
+                                    loadHelp(`${entryPath}/${subEntry}`, subEntry);
                                 }
                             }
                         } catch (e) { /* not a directory */ }
                     }
                 }
+
+                /* List all installed modules with versions, merging help content */
+                const allModules = host_list_modules();
+                const moduleHelpChildren = [];
+                for (const mod of allModules) {
+                    const title = `${mod.name} v${mod.version || '?'}`;
+                    const children = helpMap[mod.id] || [
+                        { title: "Info", lines: ["No help content", "available for this", "module."] }
+                    ];
+                    moduleHelpChildren.push({ title, children });
+                }
+
                 if (moduleHelpChildren.length > 0) {
                     moduleHelpChildren.sort((a, b) => a.title.localeCompare(b.title));
                     const modulesSection = { title: "Modules", children: moduleHelpChildren };
-                    /* Insert after "Move Everything" (index 0) */
-                    const meIdx = helpContent.sections.findIndex(s => s.title === "Move Everything");
+                    const meIdx = helpContent.sections.findIndex(s => s.title.startsWith("Move Everything"));
                     helpContent.sections.splice(meIdx >= 0 ? meIdx + 1 : 1, 0, modulesSection);
                     debugLog("Loaded module help: " + moduleHelpChildren.length + " modules");
                 }
