@@ -54,6 +54,7 @@
 #include "host/shadow_fd_trace.h"
 #include "host/shadow_state.h"
 #include "host/shadow_midi.h"
+#include "host/pfx_track_shm.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
@@ -143,6 +144,9 @@ static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+
 
 /* Link Audio publisher shared memory (shim → link_subscriber) */
 static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
+
+/* PFX per-track audio shared memory (shim → PFX DSP plugin) */
+static pfx_track_audio_shm_t *pfx_track_shm = NULL;
 
 static void load_feature_config(void);
 
@@ -972,6 +976,21 @@ static void shadow_inprocess_mix_audio(void) {
                 me_full[i] += (int32_t)lroundf((float)render_buffer[i] * vol);
             }
         }
+    }
+
+    /* Write per-track audio to PFX shared memory (for Performance FX module) */
+    if (pfx_track_shm && link_audio.enabled && link_audio.move_channel_count > 0) {
+        int ch = link_audio.move_channel_count;
+        if (ch > PFX_TRACK_SHM_CHANNELS) ch = PFX_TRACK_SHM_CHANNELS;
+        pfx_track_shm->channel_count = ch;
+        for (int t = 0; t < ch; t++) {
+            int16_t tbuf[FRAMES_PER_BLOCK * 2];
+            if (link_audio_read_channel(t, tbuf, FRAMES_PER_BLOCK)) {
+                memcpy(pfx_track_shm->audio[t], tbuf, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+            }
+        }
+        __sync_synchronize();
+        pfx_track_shm->sequence++;
     }
 
     /* Subtract Move track audio from mix to avoid doubling.
@@ -1887,10 +1906,10 @@ static void init_shadow_shm(void)
             shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
             shadow_control->tts_volume = 70;    /* 70% volume */
             shadow_control->tts_pitch = 110;    /* 110 Hz */
-            shadow_control->tts_speed = 1.0f;   /* Normal speed */
-            shadow_control->tts_engine = 0;     /* 0=espeak-ng, 1=flite */
+            shadow_control->tts_speed = 1.5f;   /* 1.5x speed */
+            shadow_control->tts_engine = 0;     /* 0=espeak-ng (speak engine) */
             shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
-            shadow_control->tts_debounce_ms = 300; /* default debounce ms */
+            shadow_control->tts_debounce_ms = 50; /* default debounce ms */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -2040,6 +2059,24 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create pub audio shm\n");
+    }
+
+    /* Create PFX per-track audio shared memory */
+    int shm_pfx_fd = shm_open(PFX_TRACK_SHM_NAME, O_CREAT | O_RDWR, 0666);
+    if (shm_pfx_fd >= 0) {
+        ftruncate(shm_pfx_fd, sizeof(pfx_track_audio_shm_t));
+        pfx_track_shm = (pfx_track_audio_shm_t *)mmap(NULL,
+            sizeof(pfx_track_audio_shm_t),
+            PROT_READ | PROT_WRITE, MAP_SHARED, shm_pfx_fd, 0);
+        close(shm_pfx_fd);
+        if (pfx_track_shm == MAP_FAILED) {
+            pfx_track_shm = NULL;
+            printf("Shadow: Failed to mmap PFX track shm\n");
+        } else {
+            memset(pfx_track_shm, 0, sizeof(pfx_track_audio_shm_t));
+            printf("Shadow: PFX track audio shm initialized (%zu bytes)\n",
+                   sizeof(pfx_track_audio_shm_t));
+        }
     }
 
     /* Initialize Link Audio state */
