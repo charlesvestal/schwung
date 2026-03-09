@@ -455,6 +455,17 @@
       "default_branch": "main",
       "asset_name": "boris-granular-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "dj",
+      "name": "DJ Deck",
+      "description": "CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift",
+      "author": "DJ Hard Rich",
+      "component_type": "tool",
+      "github_repo": "djhardrich/move-anything-dj",
+      "default_branch": "main",
+      "asset_name": "dj-module.tar.gz",
+      "min_host_version": "0.7.0"
     }
   ]
 }
