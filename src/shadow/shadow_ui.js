@@ -790,6 +790,7 @@ let toolFileDurationSec = 0;     // Duration of input file in seconds
 let toolStemsFound = 0;          // Number of stem WAV files found in output dir
 let toolExpectedStems = 4;       // Expected number of stems
 let toolOvertakeActive = false;  // True if an interactive tool is running as overtake
+let toolHiddenFile = "";         // File path of hidden tool session (for reconnect detection)
 let toolNonOvertake = false;     // True if the active tool runs without overtake (pads still work)
 let toolSelectedEngine = null;   // Selected engine from engines array
 let toolEngineIndex = 0;         // Jog position in engine list
@@ -2037,6 +2038,7 @@ function exitToolOvertake() {
     /* Return to tools menu */
     toolOvertakeActive = false;
     toolNonOvertake = false;
+    toolHiddenFile = "";
     enterToolsMenu();
 }
 
@@ -2068,6 +2070,7 @@ function hideToolOvertake() {
     /* Mark as hidden, not fully exited */
     toolOvertakeActive = false;
     toolNonOvertake = false;
+    toolHiddenFile = toolSelectedFile;  /* Remember which file is in the hidden session */
 
     /* Keep these set so re-launch can detect existing session:
      * overtakeModuleLoaded stays true
@@ -3387,9 +3390,9 @@ function enterToolFileBrowser(toolModule) {
     refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
     injectNewFileItem();
     /* Inject "Resume" item at top if a hidden session exists for this tool */
-    if (overtakeModuleLoaded && overtakeModulePath.indexOf("/" + toolModule.id + "/") !== -1 && toolSelectedFile) {
-        const resumeLabel = "Resume: " + toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
-        toolBrowserState.items.splice(0, 0, { label: resumeLabel, kind: "resume", path: toolSelectedFile });
+    if (overtakeModuleLoaded && overtakeModulePath.indexOf("/" + toolModule.id + "/") !== -1 && toolHiddenFile) {
+        const resumeLabel = "Resume: " + toolHiddenFile.substring(toolHiddenFile.lastIndexOf("/") + 1);
+        toolBrowserState.items.splice(0, 0, { label: resumeLabel, kind: "resume", path: toolHiddenFile });
         toolBrowserState.selectedIndex = 0;
     }
     setView(VIEWS.TOOL_FILE_BROWSER);
@@ -3740,7 +3743,6 @@ function startToolProcess() {
 }
 
 function startInteractiveTool(toolModule, filePath) {
-    const previousFile = toolSelectedFile;  /* Save before overwriting */
     toolActiveTool = toolModule;
     toolSelectedFile = filePath;
     toolOvertakeActive = true;
@@ -3755,13 +3757,14 @@ function startInteractiveTool(toolModule, filePath) {
 
     if (dspAlreadyLoaded) {
         /* If a different file was selected, close old session and start fresh */
-        if (filePath && previousFile && filePath !== previousFile) {
+        if (filePath && toolHiddenFile && filePath !== toolHiddenFile) {
             debugLog("startInteractiveTool: different file, closing existing session");
             if (typeof shadow_set_param === "function") {
                 shadow_set_param(0, "overtake_dsp:unload", "1");
             }
             overtakeModuleLoaded = false;
             overtakeModulePath = "";
+            toolHiddenFile = "";
             /* Fall through to normal fresh load below */
         } else {
             debugLog("startInteractiveTool: reconnecting to existing DSP session for " + toolModule.id);
