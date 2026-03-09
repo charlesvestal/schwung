@@ -485,23 +485,25 @@ else
     echo "Skipping WAV Player tool DSP (up to date)"
 fi
 
-# Build Performance FX DSP plugin
-echo "Building Performance FX module..."
-mkdir -p ./build/modules/performance-fx/
-if needs_rebuild build/modules/performance-fx/dsp.so \
-    src/modules/performance-fx/dsp/perf_fx_plugin.c \
-    src/modules/performance-fx/dsp/perf_fx_dsp.c \
-    src/modules/performance-fx/dsp/perf_fx_dsp.h \
-    src/host/plugin_api_v1.h; then
-    echo "Building Performance FX DSP..."
-    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+# Build Performance FX DSP plugin (if source exists)
+if [ -f src/modules/performance-fx/dsp/perf_fx_plugin.c ]; then
+    echo "Building Performance FX module..."
+    mkdir -p ./build/modules/performance-fx/
+    if needs_rebuild build/modules/performance-fx/dsp.so \
         src/modules/performance-fx/dsp/perf_fx_plugin.c \
         src/modules/performance-fx/dsp/perf_fx_dsp.c \
-        -o build/modules/performance-fx/dsp.so \
-        -Isrc \
-        -lm
-else
-    echo "Skipping Performance FX DSP (up to date)"
+        src/modules/performance-fx/dsp/perf_fx_dsp.h \
+        src/host/plugin_api_v1.h; then
+        echo "Building Performance FX DSP..."
+        "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+            src/modules/performance-fx/dsp/perf_fx_plugin.c \
+            src/modules/performance-fx/dsp/perf_fx_dsp.c \
+            -o build/modules/performance-fx/dsp.so \
+            -Isrc \
+            -lm
+    else
+        echo "Skipping Performance FX DSP (up to date)"
+    fi
 fi
 
 # Copy shared utilities (only if source is newer)
@@ -549,15 +551,15 @@ else
     echo "Skipping display server (up to date)"
 fi
 
-# Copy shadow UI files (only if source is newer)
-cp -u ./src/shadow/shadow_ui.js ./build/shadow/
-cp -u ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
+# Copy shadow UI files (always — ExFAT timestamps can confuse cp -u)
+cp ./src/shadow/shadow_ui.js ./build/shadow/
+cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
 
-# Copy scripts and assets (only if source is newer)
-cp -u ./src/shim-entrypoint.sh ./build/
-cp -u ./src/restart-move.sh ./build/ 2>/dev/null || true
-cp -u ./src/start.sh ./build/ 2>/dev/null || true
-cp -u ./src/stop.sh ./build/ 2>/dev/null || true
+# Copy scripts and assets
+cp ./src/shim-entrypoint.sh ./build/
+cp ./src/restart-move.sh ./build/ 2>/dev/null || true
+cp ./src/start.sh ./build/ 2>/dev/null || true
+cp ./src/stop.sh ./build/ 2>/dev/null || true
 
 # Copy all module files (js, mjs, json, sh) - preserves directory structure
 # Compiled .so files are built separately above
