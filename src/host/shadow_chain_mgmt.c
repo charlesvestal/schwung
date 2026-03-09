@@ -1242,16 +1242,20 @@ int shadow_inprocess_load_chain(void) {
 
     shadow_ui_state_refresh();
 
-    /* Pre-create directories */
+    /* Pre-create directories (chown to ableton so Move's UI can see them) */
     {
         struct stat st;
         if (stat(SAMPLER_RECORDINGS_DIR, &st) != 0) {
             const char *mkdir_argv[] = { "mkdir", "-p", SAMPLER_RECORDINGS_DIR, NULL };
             if (host.run_command) host.run_command(mkdir_argv);
+            const char *chown_argv[] = { "chown", "-R", "ableton:users", SAMPLER_RECORDINGS_DIR, NULL };
+            if (host.run_command) host.run_command(chown_argv);
         }
         if (stat(SKIPBACK_DIR, &st) != 0) {
             const char *mkdir_argv[] = { "mkdir", "-p", SKIPBACK_DIR, NULL };
             if (host.run_command) host.run_command(mkdir_argv);
+            const char *chown_argv[] = { "chown", "-R", "ableton:users", SKIPBACK_DIR, NULL };
+            if (host.run_command) host.run_command(chown_argv);
         }
         if (stat(SLOT_STATE_DIR, &st) != 0) {
             const char *mkdir_argv[] = { "mkdir", "-p", SLOT_STATE_DIR, NULL };
