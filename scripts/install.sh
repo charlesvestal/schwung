@@ -631,6 +631,13 @@ chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrappe
   exit 0
 fi
 
+# Fix ownership before extraction — previous installs (or manual root-level
+# copies) may have left files owned by root/UID 501, which prevents the
+# ableton user from overwriting them during tar extraction.
+if ssh_root_with_retry "test -d /data/UserData/move-anything" 2>/dev/null; then
+  ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything" || true
+fi
+
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
 scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
 # Validate tar payload layout before extraction.
