@@ -3813,15 +3813,18 @@ function startInteractiveTool(toolModule, filePath) {
                 return;
             }
 
-            /* Capture callbacks */
+            /* Capture callbacks (same keys as loadOvertakeModule) */
             overtakeModuleCallbacks = {
-                init: globalThis.init,
-                tick: globalThis.tick,
-                midi: globalThis.onMidiMessageInternal
+                init: (globalThis.init !== savedInit) ? globalThis.init : null,
+                tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
+                onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
             };
             globalThis.init = savedInit;
             globalThis.tick = savedTick;
             globalThis.onMidiMessageInternal = savedMidi;
+            debugLog("startInteractiveTool reconnect: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
+                     " tick:" + !!overtakeModuleCallbacks.tick +
+                     " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
 
             /* Signal reconnect to the UI via a global flag */
             globalThis.host_tool_reconnect = true;
