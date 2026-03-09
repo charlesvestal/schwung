@@ -39,6 +39,32 @@ The installer will guide you through SSH setup, download the framework, and offe
 
 After installation, Move will restart automatically.
 
+### Module Management (Command Line)
+
+Install, remove, or update individual modules without reinstalling the full framework.
+
+**Install a module from GitHub:**
+```
+./scripts/install.sh install-module-github charlesvestal/move-anything-braids
+```
+
+**Install from a specific branch:**
+```
+./scripts/install.sh install-module-github charlesvestal/move-anything-braids/dev
+```
+
+**Install from a local tarball:**
+```
+./scripts/install.sh install-module braids-module.tar.gz
+```
+
+**Remove a module:**
+```
+./scripts/install.sh uninstall-module braids
+```
+
+The installer auto-detects the module's type (sound generator, audio FX, etc.) and places it in the correct directory.
+
 ---
 
 ## Uninstall
