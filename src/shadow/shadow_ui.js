@@ -3830,14 +3830,16 @@ function startInteractiveTool(toolModule, filePath) {
             /* Signal reconnect to the UI via a global flag */
             globalThis.host_tool_reconnect = true;
 
-            if (typeof overtakeModuleCallbacks.init === "function") {
-                overtakeModuleCallbacks.init();
-            }
+            /* Defer init — clear LEDs progressively first, same as fresh load.
+             * The overtake init phase will call init() after LEDs are cleared. */
+            overtakeInitPending = true;
+            overtakeInitTicks = 0;
+            ledClearIndex = 0;
+            debugLog("startInteractiveTool reconnect: init deferred, LEDs will clear progressively");
 
-            /* Clear reconnect flag after init */
-            delete globalThis.host_tool_reconnect;
+            /* Clear reconnect flag after init is called (in the deferred path) */
+            /* Note: host_tool_reconnect stays set until init() runs */
 
-            announce("Reconnected");
             return;
         }
     }
@@ -10522,6 +10524,8 @@ globalThis.tick = function() {
                                 exitOvertakeMode();
                             }
                         }
+                        /* Clean up reconnect flag after init (no-op for fresh loads) */
+                        delete globalThis.host_tool_reconnect;
                         flushLedQueue();  /* Drain any LEDs set during init() */
                     }
                 } else {
