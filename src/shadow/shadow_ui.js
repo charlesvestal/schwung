@@ -3386,6 +3386,12 @@ function enterToolFileBrowser(toolModule) {
     );
     refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
     injectNewFileItem();
+    /* Inject "Resume" item at top if a hidden session exists for this tool */
+    if (overtakeModuleLoaded && overtakeModulePath.indexOf("/" + toolModule.id + "/") !== -1 && toolSelectedFile) {
+        const resumeLabel = "Resume: " + toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
+        toolBrowserState.items.splice(0, 0, { label: resumeLabel, kind: "resume", path: toolSelectedFile });
+        toolBrowserState.selectedIndex = 0;
+    }
     setView(VIEWS.TOOL_FILE_BROWSER);
     needsRedraw = true;
     const firstEntry = toolBrowserState.items.length > 0 ? toolBrowserState.items[0].label : "empty";
@@ -3410,8 +3416,14 @@ function toolBrowserNavigate(delta) {
 function toolBrowserSelect() {
     previewStopIfPlaying();
     if (!toolBrowserState || toolBrowserState.items.length === 0) return;
-    /* Handle "+ New File" action item */
     const selItem = toolBrowserState.items[toolBrowserState.selectedIndex];
+    /* Handle "Resume" session item */
+    if (selItem && selItem.kind === "resume") {
+        debugLog("toolBrowserSelect: resuming hidden session");
+        startInteractiveTool(toolActiveTool, selItem.path);
+        return;
+    }
+    /* Handle "+ New File" action item */
     if (selItem && selItem.kind === "new_file") {
         const newPath = generateNewFilePath(toolBrowserState.currentDir);
         toolSelectedFile = newPath;
@@ -3779,10 +3791,20 @@ function startInteractiveTool(toolModule, filePath) {
             /* Shims (host_module_set_param etc.) are still installed from initial load */
             globalThis.host_tool_file_path = filePath || "";
 
-            try {
-                std.loadScript(uiPath);
-            } catch(e) {
-                debugLog("startInteractiveTool reconnect: failed to load UI: " + e);
+            if (typeof shadow_load_ui_module === "function") {
+                const result = shadow_load_ui_module(uiPath);
+                debugLog("startInteractiveTool reconnect: shadow_load_ui_module returned " + result);
+                if (!result) {
+                    debugLog("startInteractiveTool reconnect: failed to load UI");
+                    toolOvertakeActive = false;
+                    setView(VIEWS.TOOL_RESULT);
+                    toolResultMessage = "Failed to reload UI";
+                    toolResultSuccess = false;
+                    needsRedraw = true;
+                    return;
+                }
+            } else {
+                debugLog("startInteractiveTool reconnect: shadow_load_ui_module not available");
                 toolOvertakeActive = false;
                 setView(VIEWS.TOOL_RESULT);
                 toolResultMessage = "Failed to reload UI";
@@ -8410,12 +8432,6 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
-                /* If a hidden session exists for this tool, reconnect directly */
-                if (overtakeModuleLoaded && overtakeModulePath.indexOf("/" + tool.id + "/") !== -1) {
-                    debugLog("TOOLS SELECT: reconnecting to hidden session for " + tool.id);
-                    startInteractiveTool(tool, toolSelectedFile);
-                    break;
-                }
                 if (tool.tool_config && tool.tool_config.set_picker) {
                     debugLog("TOOLS SELECT: entering set picker");
                     enterToolSetPicker(tool);

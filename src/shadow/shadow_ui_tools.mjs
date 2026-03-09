@@ -119,15 +119,10 @@ export function drawToolsMenu() {
         return;
     }
 
-    const items = toolModules.map(m => {
-        /* Show "Resume" indicator if a hidden session exists for this tool */
-        const hasSession = ctx.overtakeModuleLoaded &&
-            ctx.overtakeModulePath.indexOf("/" + m.id + "/") !== -1;
-        return {
-            label: hasSession ? m.name + " (Resume)" : m.name,
-            value: ""
-        };
-    });
+    const items = toolModules.map(m => ({
+        label: m.name,
+        value: ""
+    }));
     drawMenuList({
         items,
         selectedIndex: toolsMenuIndex,
