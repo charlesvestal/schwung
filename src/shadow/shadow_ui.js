@@ -3736,6 +3736,86 @@ function startInteractiveTool(toolModule, filePath) {
     const skipOvertake = (toolModule.tool_config && toolModule.tool_config.overtake === false);
     toolNonOvertake = skipOvertake;
 
+    /* Check if this tool's DSP is already running (hidden session) */
+    const dspAlreadyLoaded = overtakeModuleLoaded &&
+        overtakeModulePath.indexOf("/" + toolModule.id + "/") !== -1;
+
+    if (dspAlreadyLoaded) {
+        /* If a different file was selected, close old session and start fresh */
+        if (filePath && toolSelectedFile && filePath !== toolSelectedFile) {
+            debugLog("startInteractiveTool: different file, closing existing session");
+            if (typeof shadow_set_param === "function") {
+                shadow_set_param(0, "overtake_dsp:unload", "1");
+            }
+            overtakeModuleLoaded = false;
+            overtakeModulePath = "";
+            /* Fall through to normal fresh load below */
+        } else {
+            debugLog("startInteractiveTool: reconnecting to existing DSP session for " + toolModule.id);
+
+            /* Re-enter overtake mode */
+            if (!skipOvertake && typeof shadow_set_overtake_mode === "function") {
+                shadow_set_overtake_mode(2);
+            }
+
+            /* Reset escape state variables for clean state */
+            hostShiftHeld = false;
+            hostVolumeKnobTouched = false;
+
+            /* Re-activate LED queue */
+            const wantLedQueue = !skipOvertake && !(toolModule.capabilities && toolModule.capabilities.skip_led_clear);
+            if (wantLedQueue) activateLedQueue();
+
+            /* Re-load the UI JS — DSP is already running */
+            const uiPath = toolModule.path + "/ui.js";
+            setView(VIEWS.OVERTAKE_MODULE);
+            needsRedraw = true;
+
+            /* Save current globals before loading - module may overwrite them */
+            const savedInit = globalThis.init;
+            const savedTick = globalThis.tick;
+            const savedMidi = globalThis.onMidiMessageInternal;
+
+            /* Shims (host_module_set_param etc.) are still installed from initial load */
+            globalThis.host_tool_file_path = filePath || "";
+
+            try {
+                std.loadScript(uiPath);
+            } catch(e) {
+                debugLog("startInteractiveTool reconnect: failed to load UI: " + e);
+                toolOvertakeActive = false;
+                setView(VIEWS.TOOL_RESULT);
+                toolResultMessage = "Failed to reload UI";
+                toolResultSuccess = false;
+                needsRedraw = true;
+                return;
+            }
+
+            /* Capture callbacks */
+            overtakeModuleCallbacks = {
+                init: globalThis.init,
+                tick: globalThis.tick,
+                midi: globalThis.onMidiMessageInternal
+            };
+            globalThis.init = savedInit;
+            globalThis.tick = savedTick;
+            globalThis.onMidiMessageInternal = savedMidi;
+
+            /* Signal reconnect to the UI via a global flag */
+            globalThis.host_tool_reconnect = true;
+
+            if (typeof overtakeModuleCallbacks.init === "function") {
+                overtakeModuleCallbacks.init();
+            }
+
+            /* Clear reconnect flag after init */
+            delete globalThis.host_tool_reconnect;
+
+            announce("Reconnected");
+            return;
+        }
+    }
+
     /* Build a moduleInfo descriptor compatible with loadOvertakeModule */
     const uiPath = toolModule.path + "/ui.js";
     const uiStat = os.stat(uiPath);
