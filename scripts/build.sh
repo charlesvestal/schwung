@@ -485,27 +485,6 @@ else
     echo "Skipping WAV Player tool DSP (up to date)"
 fi
 
-# Build Performance FX DSP plugin (if source exists)
-if [ -f src/modules/performance-fx/dsp/perf_fx_plugin.c ]; then
-    echo "Building Performance FX module..."
-    mkdir -p ./build/modules/performance-fx/
-    if needs_rebuild build/modules/performance-fx/dsp.so \
-        src/modules/performance-fx/dsp/perf_fx_plugin.c \
-        src/modules/performance-fx/dsp/perf_fx_dsp.c \
-        src/modules/performance-fx/dsp/perf_fx_dsp.h \
-        src/host/plugin_api_v1.h; then
-        echo "Building Performance FX DSP..."
-        "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-            src/modules/performance-fx/dsp/perf_fx_plugin.c \
-            src/modules/performance-fx/dsp/perf_fx_dsp.c \
-            -o build/modules/performance-fx/dsp.so \
-            -Isrc \
-            -lm
-    else
-        echo "Skipping Performance FX DSP (up to date)"
-    fi
-fi
-
 # Copy shared utilities (only if source is newer)
 for f in ./src/shared/*.mjs; do
     cp -u "$f" ./build/shared/
