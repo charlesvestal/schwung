@@ -8410,6 +8410,12 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
+                /* If a hidden session exists for this tool, reconnect directly */
+                if (overtakeModuleLoaded && overtakeModulePath.indexOf("/" + tool.id + "/") !== -1) {
+                    debugLog("TOOLS SELECT: reconnecting to hidden session for " + tool.id);
+                    startInteractiveTool(tool, toolSelectedFile);
+                    break;
+                }
                 if (tool.tool_config && tool.tool_config.set_picker) {
                     debugLog("TOOLS SELECT: entering set picker");
                     enterToolSetPicker(tool);
@@ -9731,6 +9737,14 @@ function drawHelpDetail() {
     _ctx.createScrollableText = (...args) => createScrollableText(...args);
     _ctx.drawScrollableText = (...args) => drawScrollableText(...args);
     _ctx.wrapText = (...args) => wrapText(...args);
+
+    /* Overtake session state (for tools menu "Resume" indicator) */
+    Object.defineProperty(_ctx, 'overtakeModuleLoaded', {
+        get() { return overtakeModuleLoaded; }, enumerable: true
+    });
+    Object.defineProperty(_ctx, 'overtakeModulePath', {
+        get() { return overtakeModulePath; }, enumerable: true
+    });
 
     /* Chain settings state */
     Object.defineProperty(_ctx, 'showingNamePreview', {
