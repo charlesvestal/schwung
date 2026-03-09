@@ -2234,6 +2234,16 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         if (typeof host_system_cmd === "function") {
             globalThis.host_system_cmd = host_system_cmd;
         }
+        /* Expose text entry to overtake modules */
+        globalThis.host_open_text_entry = function(opts) {
+            openTextEntry({
+                title: opts.title || "Text Entry",
+                initialText: opts.initialText || "",
+                onAnnounce: announce,
+                onConfirm: opts.onConfirm || function() {},
+                onCancel: opts.onCancel || function() {}
+            });
+        };
         debugLog("loadOvertakeModule: param shims installed");
 
         /* Step 4: Load the module's UI script (after DSP + shims so module can use them) */
@@ -3857,6 +3867,15 @@ function startInteractiveTool(toolModule, filePath) {
                 if (toolOvertakeActive) {
                     hideToolOvertake();
                 }
+            };
+            globalThis.host_open_text_entry = function(opts) {
+                openTextEntry({
+                    title: opts.title || "Text Entry",
+                    initialText: opts.initialText || "",
+                    onAnnounce: announce,
+                    onConfirm: opts.onConfirm || function() {},
+                    onCancel: opts.onCancel || function() {}
+                });
             };
             globalThis.host_tool_file_path = filePath || "";
 
@@ -8955,6 +8974,7 @@ function handleBack() {
             if (typeof shadow_set_overtake_mode === "function") {
                 shadow_set_overtake_mode(0);
             }
+            setView(VIEWS.SLOTS);
             if (typeof shadow_request_exit === "function") {
                 shadow_request_exit();
             }
@@ -10064,11 +10084,12 @@ globalThis.tick = function() {
             if (flags & SHADOW_UI_FLAG_JUMP_TO_OVERTAKE) {
                 debugLog("OVERTAKE flag detected, view=" + view);
                 /* Toggle overtake mode */
-                if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
-                    /* Already in overtake mode - exit back to Move */
+                if (view === VIEWS.OVERTAKE_MODULE) {
+                    /* In a running overtake module - exit back to Move */
                     debugLog("exiting overtake mode");
                     exitOvertakeMode();
                 } else {
+                    /* Enter (or re-enter) overtake menu — always rescan */
                     /* Enter overtake menu */
                     debugLog("entering overtake menu");
                     enterOvertakeMenu();
