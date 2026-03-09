@@ -65,9 +65,9 @@ int g_silence_blocks = 0;
 /* Rec source secondary UI context */
 static JSRuntime *rec_source_rt = NULL;
 static JSContext *rec_source_ctx = NULL;
-static JSValue rec_source_tick_fn = JS_UNDEFINED;
-static JSValue rec_source_midi_int_fn = JS_UNDEFINED;
-static JSValue rec_source_midi_ext_fn = JS_UNDEFINED;
+static JSValue rec_source_tick_fn;
+static JSValue rec_source_midi_int_fn;
+static JSValue rec_source_midi_ext_fn;
 int rec_source_ui_active = 0;
 
 /* Default modules directory */
@@ -2018,6 +2018,15 @@ static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
 
     const char *argv_cmd[] = { "mkdir", "-p", path, NULL };
     int result = run_command(argv_cmd);
+
+    /* Fix ownership so directories are writable by ableton user,
+     * even if parent dirs were created by a different user (e.g. Docker build UID 501) */
+    if (result == 0) {
+        const char *chown_cmd[] = {
+            "chown", "ableton:users", path, NULL
+        };
+        run_command(chown_cmd);
+    }
 
     JS_FreeCString(ctx, path);
 

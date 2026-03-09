@@ -67,6 +67,18 @@ The installer will:
 ./scripts/install.sh --skip-modules
 ```
 
+**Module management:**
+```bash
+# Install a module from a local tarball
+./scripts/install.sh install-module ./dexed-module.tar.gz
+
+# Install a module from a GitHub repo (fetches latest release)
+./scripts/install.sh install-module-github charlesvestal/move-anything-dx7
+
+# Uninstall a module
+./scripts/install.sh uninstall-module dexed
+```
+
 For managing files on your Move, you can also use [Cyberduck](https://cyberduck.io) (SFTP to `move.local`, select your SSH private key).
 
 For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).

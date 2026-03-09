@@ -2295,28 +2295,29 @@ function launchRecSourceUi(moduleId) {
     overtakeModuleLoaded = false;
     overtakeModuleCallbacks = null;
 
-    /* Load source DSP as rec_source */
-    if (typeof host_source_load !== "function" || !host_source_load(moduleId)) {
-        debugLog("launchRecSourceUi: host_source_load failed for " + moduleId);
-        const ret = recSourceReturn;
-        recSourceReturn = null;
-        startInteractiveTool(ret.toolModule, ret.filePath);
-        return false;
-    }
+    /* Load source DSP in the SHIM process via IPC (not locally — local dlopen
+     * of DSPs like webstream spawns threads that crash shadow_ui) */
+    debugLog("launchRecSourceUi: loading DSP in shim via IPC");
+    shadow_set_param(0, "rec_source:load", moduleId);
     recSourceUiModuleId = moduleId;
 
-    /* Set up param shims routed to rec_source */
+    /* Set up param shims routed to shim's rec_source via IPC */
     globalThis.host_module_set_param = function(key, value) {
-        if (typeof host_source_set_param === "function") {
-            return host_source_set_param(key, String(value));
+        debugLog("rec_source set_param: " + key + "=" + String(value).substring(0, 60));
+        shadow_set_param(0, "rec_source:" + key, String(value));
+        /* Auto-return when user selects a stream to play */
+        if (key === "stream_url" && value && String(value).length > 0) {
+            debugLog("rec_source: stream_url set, auto-returning to tool");
+            handleRecSourceUiBack();
         }
-        return false;
+        return true;
     };
     globalThis.host_module_get_param = function(key) {
-        if (typeof host_source_get_param === "function") {
-            return host_source_get_param(key);
+        var result = shadow_get_param(0, "rec_source:" + key);
+        if (key === "search_status" || key === "search_count" || key === "rec_source_mode" || key === "stream_status") {
+            debugLog("rec_source get_param: " + key + " -> " + String(result));
         }
-        return null;
+        return result;
     };
     globalThis.host_exit_module = function() {
         handleRecSourceUiBack();
@@ -2372,6 +2373,7 @@ function launchRecSourceUi(moduleId) {
 function handleRecSourceUiBack() {
     debugLog("handleRecSourceUiBack");
 
+    var moduleId = recSourceUiModuleId;
     recSourceUiCallbacks = null;
     recSourceUiModuleId = null;
 
@@ -2379,7 +2381,11 @@ function handleRecSourceUiBack() {
     delete globalThis.host_module_get_param;
     delete globalThis.host_exit_module;
 
-    /* DON'T unload the rec source DSP — it stays running for recording */
+    /* DSP is already loaded in the shim via IPC — just set the flag
+     * so Wave Edit knows a rec source was configured */
+    if (moduleId) {
+        globalThis._recSourceJustConfigured = moduleId;
+    }
 
     const ret = recSourceReturn;
     recSourceReturn = null;
@@ -10410,6 +10416,7 @@ globalThis.tick = function() {
             if (recSourceUiCallbacks && recSourceUiCallbacks.tick) {
                 recSourceUiCallbacks.tick();
             }
+            /* Auto-return is handled in the set_param shim when stream_url is set */
             break;
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();

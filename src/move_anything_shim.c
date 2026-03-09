@@ -2445,6 +2445,42 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         return 1;
     }
 
+    /* rec_source:<sub_key> — load/unload/configure rec source from shadow_ui via IPC */
+    if (strncmp(key, "rec_source:", 11) == 0) {
+        const char *rs_key = key + 11;
+        if (req_type == 1) {  /* SET */
+            if (strcmp(rs_key, "load") == 0) {
+                int ret = rec_source_load(shadow_param->value);
+                char msg[256];
+                snprintf(msg, sizeof(msg), "rec_source IPC: load '%s' -> %s",
+                         shadow_param->value, ret == 0 ? "ok" : "failed");
+                shadow_log(msg);
+                shadow_param->error = (ret == 0) ? 0 : 15;
+                shadow_param->result_len = 0;
+            } else if (strcmp(rs_key, "unload") == 0) {
+                rec_source_unload();
+                shadow_log("rec_source IPC: unloaded");
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else {
+                /* Forward as set_param to the rec source DSP */
+                int ret = rec_source_set_param(rs_key, shadow_param->value);
+                shadow_param->error = (ret == 0) ? 0 : 16;
+                shadow_param->result_len = 0;
+            }
+        } else if (req_type == 2) {  /* GET */
+            int len = rec_source_get_param(rs_key, shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+            if (len >= 0) {
+                shadow_param->error = 0;
+                shadow_param->result_len = len;
+            } else {
+                shadow_param->error = 17;
+                shadow_param->result_len = -1;
+            }
+        }
+        return 1;
+    }
+
     /* master_fx:resample_bridge */
     if (strncmp(key, "master_fx:", 10) == 0) {
         const char *fx_key = key + 10;

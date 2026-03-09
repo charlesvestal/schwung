@@ -407,6 +407,9 @@ for arg in "$@"; do
     -skip-confirmation|--skip-confirmation) skip_confirmation=true ;;
     --enable-screen-reader) enable_screen_reader=true ;;
     --disable-shadow-ui) disable_shadow_ui=true ;;
+    uninstall-module) module_action="uninstall" ;;
+    install-module) module_action="install-local" ;;
+    install-module-github) module_action="install-github" ;;
     -h|--help)
       echo "Usage: install.sh [options]"
       echo ""
@@ -418,16 +421,52 @@ for arg in "$@"; do
       echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
       echo "  --disable-shadow-ui      Disable shadow UI (slot configuration interface)"
       echo ""
+      echo "Module management:"
+      echo "  uninstall-module <id>              Remove an installed module"
+      echo "  install-module <tarball>           Install a module from a local .tar.gz"
+      echo "  install-module-github <owner/repo> Install a module from a GitHub repo"
+      echo ""
       echo "Examples:"
       echo "  install.sh                                    # Install from GitHub, all features enabled"
       echo "  install.sh local --enable-screen-reader       # Install local build with screen reader on"
-      echo "  install.sh --disable-shadow-ui --enable-screen-reader"
-      echo "                                                # Screen reader only, no UI"
+      echo "  install.sh uninstall-module dexed              # Remove the Dexed module"
+      echo "  install.sh install-module ./dexed-module.tar.gz  # Install from local tarball"
+      echo "  install.sh install-module-github charlesvestal/move-anything-dx7"
+      echo "                                                # Install from GitHub repo"
       echo ""
       exit 0
       ;;
   esac
 done
+
+# Collect positional arguments for module subcommands
+module_action="${module_action:-}"
+module_arg=""
+if [ -n "$module_action" ]; then
+  # Find the argument after the subcommand
+  found_cmd=false
+  for arg in "$@"; do
+    if [ "$found_cmd" = true ]; then
+      module_arg="$arg"
+      break
+    fi
+    case "$arg" in
+      uninstall-module|install-module|install-module-github) found_cmd=true ;;
+    esac
+  done
+  if [ -z "$module_arg" ]; then
+    case "$module_action" in
+      uninstall) fail "Usage: install.sh uninstall-module <module-id>" ;;
+      install-local) fail "Usage: install.sh install-module <tarball-path>" ;;
+      install-github) fail "Usage: install.sh install-module-github <owner/repo>" ;;
+    esac
+  fi
+fi
+
+if [ -n "$module_action" ]; then
+  # Module management subcommands skip the host install confirmation and download
+  skip_confirmation=true
+fi
 
 if [ "$skip_confirmation" = false ]; then
   echo
@@ -451,7 +490,7 @@ if [ "$skip_confirmation" = false ]; then
   fi
 fi
 
-if [ "$use_reenable" = false ]; then
+if [ "$use_reenable" = false ] && [ -z "$module_action" ]; then
   if [ "$use_local" = true ]; then
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     REPO_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -532,11 +571,170 @@ if [ -n "$ssh_result" ]; then
   fi
 else
   qecho "✓ SSH connection OK"
-  if [ "$use_reenable" = true ]; then
+  if [ -n "$module_action" ]; then
+    : # Module subcommand will handle its own messaging
+  elif [ "$use_reenable" = true ]; then
     iecho "Re-enabling Move Everything..."
   else
     iecho "Installing Move Everything..."
   fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Module management subcommands (early exit)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Helper: map component_type to install subdirectory
+component_type_to_subdir() {
+  case "$1" in
+    sound_generator) echo "sound_generators" ;;
+    audio_fx) echo "audio_fx" ;;
+    midi_fx) echo "midi_fx" ;;
+    utility) echo "utilities" ;;
+    overtake) echo "overtake" ;;
+    tool) echo "tools" ;;
+    *) echo "other" ;;
+  esac
+}
+
+if [ "$module_action" = "uninstall" ]; then
+  mod_id="$module_arg"
+  echo "Searching for module '$mod_id' on device..."
+
+  # Search all category subdirectories for the module
+  mod_path=$($ssh_ableton "for subdir in sound_generators audio_fx midi_fx utilities overtake tools other; do
+    if [ -d /data/UserData/move-anything/modules/\$subdir/$mod_id ]; then
+      echo \"modules/\$subdir/$mod_id\"
+      exit 0
+    fi
+  done" 2>/dev/null)
+
+  if [ -z "$mod_path" ]; then
+    # Also check root-level modules (legacy location)
+    if $ssh_ableton "test -d /data/UserData/move-anything/modules/$mod_id" 2>/dev/null; then
+      mod_path="modules/$mod_id"
+    else
+      fail "Module '$mod_id' not found on device"
+    fi
+  fi
+
+  echo "Found: $mod_path"
+  if [ "$skip_confirmation" = false ]; then
+    printf "Remove module '$mod_id'? [y/N] "
+    read -r confirm </dev/tty
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+      echo "Cancelled."
+      exit 0
+    fi
+  fi
+
+  ssh_root_with_retry "rm -rf /data/UserData/move-anything/$mod_path" || fail "Failed to remove module"
+  echo "Module '$mod_id' has been removed."
+  echo "Restart Move or reload modules for the change to take effect."
+  exit 0
+fi
+
+if [ "$module_action" = "install-local" ]; then
+  tarball="$module_arg"
+  if [ ! -f "$tarball" ]; then
+    fail "File not found: $tarball"
+  fi
+
+  echo "Inspecting tarball: $tarball"
+
+  # Extract module.json from tarball to determine module ID and component_type
+  # Find module.json path inside tarball (cross-platform: works on macOS and Linux)
+  mod_json_path=$(tar -tzf "$tarball" 2>/dev/null | grep '/module\.json$' | head -1)
+  if [ -z "$mod_json_path" ]; then
+    fail "No module.json found in tarball"
+  fi
+  mod_json=$(tar -xzf "$tarball" -O "$mod_json_path" 2>/dev/null) || fail "Could not read module.json from tarball"
+  mod_id=$(echo "$mod_json" | grep '"id"' | head -1 | sed 's/.*"id": *"//;s/".*//')
+  ctype=$(echo "$mod_json" | grep '"component_type"' | head -1 | sed 's/.*"component_type": *"//;s/".*//')
+
+  if [ -z "$mod_id" ]; then
+    fail "Could not determine module ID from module.json in tarball"
+  fi
+
+  subdir=$(component_type_to_subdir "$ctype")
+  dest="modules/$subdir"
+  echo "Module: $mod_id (type: ${ctype:-unknown})"
+  echo "Install to: $dest/$mod_id/"
+
+  # Copy tarball to device and extract (use root for mkdir/extract since parent dirs may not be ableton-owned)
+  tarball_name=$(basename "$tarball")
+  scp_with_retry "$tarball" "$username@$hostname:./move-anything/$tarball_name" || fail "Failed to copy tarball to device"
+  ssh_root_with_retry "cd /data/UserData/move-anything && mkdir -p $dest && tar -xzf $tarball_name -C $dest/ && rm $tarball_name" || fail "Failed to extract module on device"
+
+  # Fix ownership
+  ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything/$dest/$mod_id" || true
+
+  echo "Module '$mod_id' installed to $dest/$mod_id/"
+  echo "Restart Move or reload modules for the change to take effect."
+  exit 0
+fi
+
+if [ "$module_action" = "install-github" ]; then
+  github_repo="$module_arg"
+
+  # Validate format
+  if ! echo "$github_repo" | grep -q '/'; then
+    fail "Expected format: owner/repo (e.g., charlesvestal/move-anything-dx7)"
+  fi
+
+  echo "Fetching release.json from $github_repo..."
+  release_json=$(curl -fsSL "https://raw.githubusercontent.com/${github_repo}/main/release.json" 2>/dev/null) || \
+    release_json=$(curl -fsSL "https://raw.githubusercontent.com/${github_repo}/master/release.json" 2>/dev/null) || \
+    fail "Could not fetch release.json from $github_repo (tried main and master branches)"
+
+  version=$(echo "$release_json" | grep '"version"' | head -1 | sed 's/.*"version": *"//;s/".*//')
+  download_url=$(echo "$release_json" | grep '"download_url"' | head -1 | sed 's/.*"download_url": *"//;s/".*//')
+
+  if [ -z "$download_url" ]; then
+    fail "No download_url found in release.json"
+  fi
+
+  echo "Version: ${version:-unknown}"
+  echo "Download URL: $download_url"
+
+  # Download the tarball
+  tarball_name=$(basename "$download_url")
+  echo "Downloading $tarball_name..."
+  curl -fsSLO "$download_url" || fail "Failed to download release tarball"
+
+  # Extract module.json to determine install location
+  # Find module.json path inside tarball (cross-platform: works on macOS and Linux)
+  mod_json_path=$(tar -tzf "$tarball_name" 2>/dev/null | grep '/module\.json$' | head -1)
+  if [ -z "$mod_json_path" ]; then
+    rm -f "$tarball_name"
+    fail "No module.json found in tarball"
+  fi
+  mod_json=$(tar -xzf "$tarball_name" -O "$mod_json_path" 2>/dev/null) || { rm -f "$tarball_name"; fail "Could not read module.json from tarball"; }
+  mod_id=$(echo "$mod_json" | grep '"id"' | head -1 | sed 's/.*"id": *"//;s/".*//')
+  ctype=$(echo "$mod_json" | grep '"component_type"' | head -1 | sed 's/.*"component_type": *"//;s/".*//')
+
+  if [ -z "$mod_id" ]; then
+    fail "Could not determine module ID from module.json in tarball"
+  fi
+
+  subdir=$(component_type_to_subdir "$ctype")
+  dest="modules/$subdir"
+  echo "Module: $mod_id (type: ${ctype:-unknown})"
+  echo "Install to: $dest/$mod_id/"
+
+  # Copy tarball to device and extract (use root for mkdir/extract since parent dirs may not be ableton-owned)
+  scp_with_retry "$tarball_name" "$username@$hostname:./move-anything/$tarball_name" || fail "Failed to copy tarball to device"
+  ssh_root_with_retry "cd /data/UserData/move-anything && mkdir -p $dest && tar -xzf $tarball_name -C $dest/ && rm $tarball_name" || fail "Failed to extract module on device"
+
+  # Clean up local tarball
+  rm -f "$tarball_name"
+
+  # Fix ownership
+  ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything/$dest/$mod_id" || true
+
+  echo "Module '$mod_id' (v${version:-unknown}) installed to $dest/$mod_id/"
+  echo "Restart Move or reload modules for the change to take effect."
+  exit 0
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1015,7 +1213,7 @@ BEGIN { id=""; name=""; repo=""; asset=""; ctype="" }
         if curl -fsSLO "$url"; then
             # Use retry for scp/ssh because Windows mDNS can be flaky
             if scp_with_retry "$asset" "$username@$hostname:./move-anything/"; then
-                ssh_ableton_with_retry "cd move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset" || echo "  Warning: Failed to extract $name"
+                ssh_root_with_retry "cd /data/UserData/move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset && chown -R ableton:users $dest/$id" || echo "  Warning: Failed to extract $name"
             else
                 echo "  Warning: Failed to copy $name to device"
             fi
