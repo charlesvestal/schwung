@@ -2010,6 +2010,7 @@ function exitToolOvertake() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
     delete globalThis.host_exit_module;
+    delete globalThis.host_hide_module;
 
     /* Reset overtake state */
     overtakeModuleLoaded = false;
@@ -2036,6 +2037,42 @@ function exitToolOvertake() {
     /* Return to tools menu */
     toolOvertakeActive = false;
     toolNonOvertake = false;
+    enterToolsMenu();
+}
+
+/* Hide an interactive tool - exit overtake but keep DSP loaded */
+function hideToolOvertake() {
+    debugLog("hideToolOvertake: hiding tool, keeping DSP");
+
+    /* Deactivate LED queue */
+    deactivateLedQueue();
+
+    /* Do NOT unload overtake DSP — it stays running */
+    /* Do NOT delete host_module_set_param/get_param shims — they'll be reused */
+
+    /* Clean up module callbacks only (JS UI is being torn down) */
+    overtakeModuleCallbacks = null;
+
+    /* Reset encoder accumulation */
+    for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+    overtakeJogDelta = 0;
+
+    /* Exit overtake mode — restore Move's LEDs and input */
+    if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
+        shadow_set_overtake_mode(0);
+    }
+    if (typeof shadow_set_skip_led_clear === "function") {
+        shadow_set_skip_led_clear(0);
+    }
+
+    /* Mark as hidden, not fully exited */
+    toolOvertakeActive = false;
+    toolNonOvertake = false;
+
+    /* Keep these set so re-launch can detect existing session:
+     * overtakeModuleLoaded stays true
+     * overtakeModulePath stays set */
+
     enterToolsMenu();
 }
 
@@ -2159,6 +2196,12 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                 exitToolOvertake();
             } else {
                 exitOvertakeMode();
+            }
+        };
+        globalThis.host_hide_module = function() {
+            debugLog("host_hide_module called by overtake module");
+            if (toolOvertakeActive) {
+                hideToolOvertake();
             }
         };
         /* Expose file I/O to overtake modules */
