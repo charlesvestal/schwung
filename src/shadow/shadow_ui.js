@@ -791,6 +791,7 @@ let toolStemsFound = 0;          // Number of stem WAV files found in output dir
 let toolExpectedStems = 4;       // Expected number of stems
 let toolOvertakeActive = false;  // True if an interactive tool is running as overtake
 let toolHiddenFile = "";         // File path of hidden tool session (for reconnect detection)
+let toolHiddenModulePath = "";   // Module path of hidden tool session (survives other tool loads)
 let toolNonOvertake = false;     // True if the active tool runs without overtake (pads still work)
 let toolSelectedEngine = null;   // Selected engine from engines array
 let toolEngineIndex = 0;         // Jog position in engine list
@@ -1931,9 +1932,12 @@ function scanForOvertakeModules() {
 
 /* Enter the overtake module selection menu */
 function enterOvertakeMenu() {
-    /* Reset all overtake state to ensure clean menu entry */
-    overtakeModuleLoaded = false;
-    overtakeModulePath = "";
+    /* Reset overtake state — but preserve it if a tool has a hidden session
+     * (DSP still running, waiting for reconnect). */
+    if (!toolHiddenFile) {
+        overtakeModuleLoaded = false;
+        overtakeModulePath = "";
+    }
     overtakeModuleCallbacks = null;
     overtakeExitPending = false;
     overtakeInitPending = false;
@@ -2035,10 +2039,15 @@ function exitToolOvertake() {
         shadow_set_skip_led_clear(0);
     }
 
-    /* Return to tools menu */
+    /* Return to tools menu — preserve hidden session state if one exists
+     * (this tool exit may be from a *different* tool, e.g. Song Mode) */
     toolOvertakeActive = false;
     toolNonOvertake = false;
-    toolHiddenFile = "";
+    if (!toolHiddenFile) {
+        /* No hidden session — clean slate */
+    } else {
+        /* Hidden session exists from a different tool — don't clear it */
+    }
     enterToolsMenu();
 }
 
@@ -2071,6 +2080,8 @@ function hideToolOvertake() {
     toolOvertakeActive = false;
     toolNonOvertake = false;
     toolHiddenFile = toolSelectedFile;  /* Remember which file is in the hidden session */
+    toolHiddenModulePath = overtakeModulePath;  /* Remember module path independently */
+    debugLog("hideToolOvertake: toolHiddenFile set to '" + toolHiddenFile + "' overtakeModuleLoaded=" + overtakeModuleLoaded + " overtakeModulePath=" + overtakeModulePath);
 
     /* Keep these set so re-launch can detect existing session:
      * overtakeModuleLoaded stays true
@@ -3390,7 +3401,9 @@ function enterToolFileBrowser(toolModule) {
     refreshFilepathBrowser(toolBrowserState, FILEPATH_BROWSER_FS);
     injectNewFileItem();
     /* Inject "Resume" item at top if a hidden session exists for this tool */
-    if (overtakeModuleLoaded && overtakeModulePath.indexOf("/" + toolModule.id + "/") !== -1 && toolHiddenFile) {
+    debugLog("enterToolFileBrowser resume check: hiddenModulePath=" + toolHiddenModulePath +
+             " id=" + toolModule.id + " hiddenFile=" + toolHiddenFile);
+    if (toolHiddenFile && toolHiddenModulePath.indexOf("/" + toolModule.id + "/") !== -1) {
         const resumeLabel = "Resume: " + toolHiddenFile.substring(toolHiddenFile.lastIndexOf("/") + 1);
         toolBrowserState.items.splice(0, 0, { label: resumeLabel, kind: "resume", path: toolHiddenFile });
         toolBrowserState.selectedIndex = 0;
@@ -3751,20 +3764,37 @@ function startInteractiveTool(toolModule, filePath) {
     const skipOvertake = (toolModule.tool_config && toolModule.tool_config.overtake === false);
     toolNonOvertake = skipOvertake;
 
-    /* Check if this tool's DSP is already running (hidden session) */
-    const dspAlreadyLoaded = overtakeModuleLoaded &&
-        overtakeModulePath.indexOf("/" + toolModule.id + "/") !== -1;
+    /* Check if this tool's DSP is already running (hidden session).
+     * Use toolHiddenModulePath because overtakeModuleLoaded/Path get
+     * overwritten when other tools (e.g. Song Mode) load and unload. */
+    const dspAlreadyLoaded = toolHiddenFile &&
+        toolHiddenModulePath.indexOf("/" + toolModule.id + "/") !== -1;
 
     if (dspAlreadyLoaded) {
-        /* If a different file was selected, close old session and start fresh */
-        if (filePath && toolHiddenFile && filePath !== toolHiddenFile) {
-            debugLog("startInteractiveTool: different file, closing existing session");
-            if (typeof shadow_set_param === "function") {
-                shadow_set_param(0, "overtake_dsp:unload", "1");
+        /* If a different file was selected, discard hidden session and start fresh */
+        if (filePath && filePath !== toolHiddenFile) {
+            debugLog("startInteractiveTool: different file, discarding hidden session");
+            /* DSP may already be unloaded if another tool ran since hide */
+            if (overtakeModuleLoaded) {
+                if (typeof shadow_set_param === "function") {
+                    shadow_set_param(0, "overtake_dsp:unload", "1");
+                }
             }
             overtakeModuleLoaded = false;
             overtakeModulePath = "";
             toolHiddenFile = "";
+            toolHiddenModulePath = "";
+            /* Fall through to normal fresh load below */
+        } else if (!overtakeModuleLoaded) {
+            /* Hidden session exists but DSP was replaced by another tool.
+             * Do a fresh load with the hidden file — DSP will be reloaded.
+             * Set host_tool_reconnect so Wave Edit checks sampler state. */
+            debugLog("startInteractiveTool: hidden session DSP was replaced, doing fresh load with " + toolHiddenFile);
+            filePath = toolHiddenFile;
+            toolSelectedFile = filePath;
+            toolHiddenFile = "";
+            toolHiddenModulePath = "";
+            globalThis.host_tool_reconnect = true;
             /* Fall through to normal fresh load below */
         } else {
             debugLog("startInteractiveTool: reconnecting to existing DSP session for " + toolModule.id);
@@ -3792,7 +3822,42 @@ function startInteractiveTool(toolModule, filePath) {
             const savedTick = globalThis.tick;
             const savedMidi = globalThis.onMidiMessageInternal;
 
-            /* Shims (host_module_set_param etc.) are still installed from initial load */
+            /* Reinstall shims before loading the ES module.
+             * QuickJS resolves bare global identifiers at compile time,
+             * so they must exist on globalThis when shadow_load_ui_module
+             * evaluates the module JS — even if they were set before. */
+            globalThis.host_module_set_param = function(key, value) {
+                if (typeof shadow_set_param === "function") {
+                    return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                }
+            };
+            globalThis.host_module_set_param_blocking = function(key, value, timeoutMs) {
+                var timeout = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : 500;
+                if (typeof shadow_set_param_timeout === "function") {
+                    return shadow_set_param_timeout(0, "overtake_dsp:" + key, String(value), timeout);
+                } else if (typeof shadow_set_param === "function") {
+                    return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                }
+            };
+            globalThis.host_module_get_param = function(key) {
+                if (typeof shadow_get_param === "function") {
+                    return shadow_get_param(0, "overtake_dsp:" + key);
+                }
+            };
+            globalThis.host_exit_module = function() {
+                debugLog("host_exit_module called by overtake module (reconnect)");
+                if (toolOvertakeActive) {
+                    exitToolOvertake();
+                } else {
+                    exitOvertakeMode();
+                }
+            };
+            globalThis.host_hide_module = function() {
+                debugLog("host_hide_module called by overtake module (reconnect)");
+                if (toolOvertakeActive) {
+                    hideToolOvertake();
+                }
+            };
             globalThis.host_tool_file_path = filePath || "";
 
             if (typeof shadow_load_ui_module === "function") {
