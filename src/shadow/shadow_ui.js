@@ -3740,6 +3740,7 @@ function startToolProcess() {
 }
 
 function startInteractiveTool(toolModule, filePath) {
+    const previousFile = toolSelectedFile;  /* Save before overwriting */
     toolActiveTool = toolModule;
     toolSelectedFile = filePath;
     toolOvertakeActive = true;
@@ -3754,7 +3755,7 @@ function startInteractiveTool(toolModule, filePath) {
 
     if (dspAlreadyLoaded) {
         /* If a different file was selected, close old session and start fresh */
-        if (filePath && toolSelectedFile && filePath !== toolSelectedFile) {
+        if (filePath && previousFile && filePath !== previousFile) {
             debugLog("startInteractiveTool: different file, closing existing session");
             if (typeof shadow_set_param === "function") {
                 shadow_set_param(0, "overtake_dsp:unload", "1");
