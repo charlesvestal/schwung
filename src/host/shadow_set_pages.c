@@ -61,6 +61,12 @@ void set_pages_init(const set_pages_host_t *h) {
  * Utility functions
  * ============================================================================ */
 
+/* Fix file ownership after writing as root */
+static void chown_to_ableton(const char *path) {
+    const char *argv[] = { "chown", "ableton:users", path, NULL };
+    host.run_command(argv);
+}
+
 /* Ensure a directory exists, creating it if needed (like mkdir -p) */
 void shadow_ensure_dir(const char *dir) {
     struct stat st;
@@ -87,6 +93,7 @@ int shadow_copy_file(const char *src_path, const char *dst_path) {
     if (!df) { free(buf); return 0; }
     size_t nw = fwrite(buf, 1, nr, df);
     fclose(df);
+    chown_to_ableton(dst_path);
     free(buf);
     if (nw != nr) { unlink(dst_path); return 0; }
     return 1;
@@ -163,6 +170,7 @@ write_marker:
         if (mf) {
             fputs("1\n", mf);
             fclose(mf);
+            chown_to_ableton(migrated_path);
         }
     }
 }
@@ -193,6 +201,7 @@ void shadow_save_config_to_dir(const char *dir) {
     }
     fprintf(f, "  ]\n}\n");
     fclose(f);
+    chown_to_ableton(path);
 }
 
 int shadow_load_config_from_dir(const char *dir) {
@@ -400,6 +409,7 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
             fputc('\n', af);
             fputs(set_name ? set_name : "", af);
             fclose(af);
+            chown_to_ableton(ACTIVE_SET_PATH);
         }
         /* Ensure per-set state directory exists */
         char incoming_dir[512];
@@ -423,6 +433,7 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
                     if (csf) {
                         fputs(source_uuid, csf);
                         fclose(csf);
+                        chown_to_ableton(copy_source_path);
                     }
                     /* Also copy the source's chain config to the new dir */
                     {
@@ -596,6 +607,7 @@ static void set_page_save_xattrs(const char *sets_dir, const char *stash_dir)
     }
     closedir(d);
     fclose(xf);
+    chown_to_ableton(xattrs_path);
 }
 
 /* Restore xattrs from stash_dir/xattrs.txt to UUID dirs in sets_dir */
@@ -673,6 +685,7 @@ static void write_manifest(const char *stash_dir, int page_num)
         closedir(d);
     }
     fclose(f);
+    chown_to_ableton(manifest_path);
 }
 
 static int set_page_move_dirs(const char *src_dir, const char *dst_dir, int *out_skipped)
@@ -726,6 +739,7 @@ static void set_page_persist(int page)
     if (f) {
         fprintf(f, "%d\n", page);
         fclose(f);
+        chown_to_ableton(SET_PAGES_CURRENT_PATH);
     }
 }
 
@@ -799,6 +813,7 @@ static void set_page_update_song_index(int index)
             fputs(new_val, out);
             fputs(val_end, out);
             fclose(out);
+            chown_to_ableton(path);
         }
     }
     free(buf);

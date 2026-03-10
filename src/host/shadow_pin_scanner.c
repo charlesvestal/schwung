@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pwd.h>
 #include <time.h>
 #include "shadow_pin_scanner.h"
 
@@ -14,6 +15,12 @@
 
 static pin_scanner_host_t host;
 static int pin_scanner_initialized = 0;
+
+/* Fix file ownership after writing as root */
+static void chown_to_ableton(const char *path) {
+    struct passwd *pw = getpwnam("ableton");
+    if (pw) chown(path, pw->pw_uid, pw->pw_gid);
+}
 
 /* ============================================================================
  * PIN scanner state machine
@@ -316,7 +323,7 @@ void pin_check_and_speak(void)
                     /* Write raw PIN digits to file for automated auth flows */
                     {
                         FILE *pf = fopen("/data/UserData/move-anything/last_pin.txt", "w");
-                        if (pf) { fprintf(pf, "%s\n", raw_digits); fclose(pf); }
+                        if (pf) { fprintf(pf, "%s\n", raw_digits); fclose(pf); chown_to_ableton("/data/UserData/move-anything/last_pin.txt"); }
                     }
                     strncpy(pin_last_spoken, raw_digits, sizeof(pin_last_spoken) - 1);
                     pin_state = PIN_STATE_COOLDOWN;

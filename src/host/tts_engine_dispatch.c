@@ -11,6 +11,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <pwd.h>
 #include "unified_log.h"
 
 /* Engine backend declarations */
@@ -54,6 +56,12 @@ extern float flite_tts_get_pitch(void);
 
 static int active_engine = ENGINE_ESPEAK;  /* Default to eSpeak-NG */
 static bool dispatch_initialized = false;
+
+/* Fix file ownership after writing as root */
+static void chown_to_ableton(const char *path) {
+    struct passwd *pw = getpwnam("ableton");
+    if (pw) chown(path, pw->pw_uid, pw->pw_gid);
+}
 
 /* Read engine choice from tts.json config */
 static void load_engine_choice(void) {
@@ -120,6 +128,7 @@ static void save_engine_choice(void) {
     fprintf(f, "  \"volume\": %d\n", volume);
     fprintf(f, "}\n");
     fclose(f);
+    chown_to_ableton(config_path);
 
     unified_log("tts_dispatch", LOG_LEVEL_INFO, "Engine choice saved: %s", engine_name);
 }
