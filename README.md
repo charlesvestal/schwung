@@ -125,7 +125,7 @@ If monitoring is on (or source/routing is configured differently), audio feedbac
 
 **Installer:**
 - [move-everything-installer](https://github.com/charlesvestal/move-everything-installer) - Cross-platform desktop installer (macOS, Windows, Linux)
-- 
+
 ## Community
 
 - Discord: [https://discord.gg/Zn33eRvTyK](https://discord.gg/GHWaZCC9bQ)
