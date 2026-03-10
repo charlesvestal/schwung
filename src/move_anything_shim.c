@@ -128,6 +128,14 @@ static shadow_param_t *shadow_param = NULL;
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
 
+/* Recording dot: use wall clock for consistent flash rate regardless of call frequency */
+static inline int rec_dot_visible(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    /* 500ms on, 500ms off */
+    return (ts.tv_nsec < 500000000L);
+}
+
 /* Display mode save/restore for overlay forcing */
 /* display_overlay in shadow_control_t replaces the old display_mode forcing */
 
@@ -2355,6 +2363,13 @@ static void shadow_swap_display(void)
         shadow_overlay_sync();
     }
 
+    /* Recording dot overlay on shadow display */
+    if (sampler_state == SAMPLER_RECORDING && rec_dot_visible()) {
+        memcpy(shadow_composited, shadow_display_shm, DISPLAY_BUFFER_SIZE);
+        overlay_fill_rect(shadow_composited, 123, 1, 4, 4, 1);
+        display_src = shadow_composited;
+    }
+
     /* Write full display to DISPLAY_OFFSET (768) */
     memcpy(global_mmap_addr + DISPLAY_OFFSET, display_src, DISPLAY_BUFFER_SIZE);
 
@@ -3497,13 +3512,14 @@ int ioctl(int fd, unsigned long request, ...)
                                      (sampler_state != SAMPLER_IDLE || sampler_overlay_timeout > 0));
         int skipback_overlay_on = (skipback_overlay_timeout > 0);
         int set_page_overlay_on = (set_page_overlay_active && set_page_overlay_timeout > 0);
+        int recording_dot_on = (sampler_state == SAMPLER_RECORDING);
 
         /* Read JS display_overlay request */
         uint8_t disp_overlay = shadow_control ? shadow_control->display_overlay : 0;
 
         int any_overlay = shift_knob_overlay_on || sampler_overlay_on ||
                           sampler_fullscreen_on || skipback_overlay_on ||
-                          set_page_overlay_on || disp_overlay;
+                          set_page_overlay_on || disp_overlay || recording_dot_on;
         if (any_overlay && slice_num >= 1 && slice_num <= 6) {
             static uint8_t overlay_display[1024];
             static int overlay_frame_ready = 0;
@@ -3549,6 +3565,31 @@ int ioctl(int fd, unsigned long request, ...)
                     }
                 } else if (!disp_overlay) {
                     overlay_frame_ready = 0;
+                }
+
+                /* Recording dot: flashing white dot in top-right corner. */
+
+                if (recording_dot_on) {
+                    /* If no other overlay provided a base frame, reconstruct native */
+                    if (!overlay_frame_ready) {
+                        int all_present = 1;
+                        for (int i = 0; i < 6; i++) {
+                            if (!slice_fresh[i]) all_present = 0;
+                        }
+                        if (all_present) {
+                            for (int s = 0; s < 6; s++) {
+                                int offset = s * 172;
+                                int bytes = (s == 5) ? 164 : 172;
+                                memcpy(overlay_display + offset, captured_slices[s], bytes);
+                            }
+                            overlay_frame_ready = 1;
+                        }
+                    }
+
+                    /* Draw dot on visible half of flash cycle (~0.5s on, 0.5s off) */
+                    if (overlay_frame_ready && rec_dot_visible()) {
+                        overlay_fill_rect(overlay_display, 123, 1, 4, 4, 1);
+                    }
                 }
 
                 /* Decrement timeouts once per frame */
@@ -3629,6 +3670,10 @@ int ioctl(int fd, unsigned long request, ...)
                     }
                 }
             }
+        }
+        /* Overlay recording dot on live mirror too */
+        if (sampler_state == SAMPLER_RECORDING && rec_dot_visible()) {
+            overlay_fill_rect(display_live_shm, 123, 1, 4, 4, 1);
         }
     }
 
