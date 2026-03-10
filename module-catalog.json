@@ -34,6 +34,18 @@
       "requires": ".sf2 soundfont files (place in module's soundfonts/ folder)"
     },
     {
+      "id": "sfz",
+      "name": "SFZ Player",
+      "description": "SFZ and DecentSampler (.dspreset) sample player using sfizz engine",
+      "author": "sfizz by sfztools (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/move-anything-sfz",
+      "default_branch": "main",
+      "asset_name": "sfz-module.tar.gz",
+      "min_host_version": "0.7.0",
+      "requires": "SFZ or DecentSampler instrument folders (place in module's instruments/ folder)"
+    },
+    {
       "id": "m8",
       "name": "M8 LPP Emulator",
       "description": "Novation Launchpad Pro emulation for Dirtywave M8",
