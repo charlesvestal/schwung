@@ -38,7 +38,7 @@ export let padSelectGlobal = false;
 export function setPadSelectGlobal(enabled) { padSelectGlobal = !!enabled; }
 
 /* Global text preview setting — toggled via Settings > Display > Text Preview */
-export let textPreviewGlobal = true;
+export let textPreviewGlobal = false;
 export function setTextPreviewGlobal(enabled) { textPreviewGlobal = !!enabled; }
 
 /* Tunable pad entry parameters */
@@ -557,7 +557,7 @@ function getSelectedLabel() {
 }
 
 function getAnnounceBuffer() {
-    if (!state.buffer || state.buffer.length === 0) return "Untitled";
+    if (!state.buffer || state.buffer.length === 0) return "No entry";
     if (state.buffer.length > 24) return state.buffer.slice(-24);
     return state.buffer;
 }
@@ -609,7 +609,7 @@ export function drawTextEntry() {
  */
 function drawKeyboardScreen() {
     /* Title with current buffer */
-    const bufferDisplay = state.buffer || 'Untitled';
+    const bufferDisplay = state.buffer || '';
     if (state.title) {
         /* Combine title and buffer, truncate if needed */
         const combined = `${state.title}: ${bufferDisplay}`;
