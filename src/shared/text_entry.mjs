@@ -37,6 +37,10 @@ const MIDI_NOTE_ON = 0x90;
 export let padSelectGlobal = false;
 export function setPadSelectGlobal(enabled) { padSelectGlobal = !!enabled; }
 
+/* Global text preview setting — toggled via Settings > Display > Text Preview */
+export let textPreviewGlobal = true;
+export function setTextPreviewGlobal(enabled) { textPreviewGlobal = !!enabled; }
+
 /* Tunable pad entry parameters */
 export let padConfig = {
     velocityThreshold: 31,
@@ -500,6 +504,7 @@ function appendToBuffer(char) {
  * Show the preview screen
  */
 function showPreview(fromPad) {
+    if (!textPreviewGlobal) return;
     state.showingPreview = true;
     state.previewTimeout = fromPad ? PREVIEW_DURATION_PAD_TICKS : PREVIEW_DURATION_TICKS;
 }
@@ -610,7 +615,7 @@ function drawKeyboardScreen() {
         const combined = `${state.title}: ${bufferDisplay}`;
         const maxChars = Math.floor((SCREEN_WIDTH - 4) / 6);  /* 6px per char */
         const displayText = combined.length > maxChars
-            ? combined.slice(0, maxChars - 1) + '…'
+            ? '…' + combined.slice(-(maxChars - 1))
             : combined;
         print(2, TITLE_Y, displayText, 1);
     } else {

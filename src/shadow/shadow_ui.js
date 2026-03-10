@@ -78,7 +78,9 @@ import {
     drawTextEntry,
     tickTextEntry,
     padSelectGlobal,
-    setPadSelectGlobal
+    setPadSelectGlobal,
+    textPreviewGlobal,
+    setTextPreviewGlobal
 } from '/data/UserData/move-anything/shared/text_entry.mjs';
 
 import {
@@ -690,7 +692,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "display_mirror", label: "Mirror Display", type: "bool" },
             { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
               options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
-            { key: "pad_typing", label: "Pad Typing", type: "bool" }
+            { key: "pad_typing", label: "Pad Typing", type: "bool" },
+            { key: "text_preview", label: "Text Preview", type: "bool" }
         ]
     },
     {
@@ -4455,6 +4458,31 @@ function loadPadTypingConfig() {
     } catch (e) {}
 }
 
+function saveTextPreviewConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+        config.text_preview = textPreviewGlobal;
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {}
+}
+
+function loadTextPreviewConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+        const config = JSON.parse(content);
+        if (config.text_preview !== undefined) {
+            setTextPreviewGlobal(config.text_preview);
+        }
+    } catch (e) {}
+}
+
 /* Load master FX chain from config at startup.
  * The shim handles actual module loading + state restore from
  * slot_state/master_fx_N.json files at boot. This function just
@@ -7295,6 +7323,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "pad_typing") {
         return padSelectGlobal ? "On" : "Off";
     }
+    if (setting.key === "text_preview") {
+        return textPreviewGlobal ? "On" : "Off";
+    }
     return "-";
 }
 
@@ -7445,6 +7476,12 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "pad_typing") {
         setPadSelectGlobal(!padSelectGlobal);
         savePadTypingConfig();
+        return;
+    }
+
+    if (setting.key === "text_preview") {
+        setTextPreviewGlobal(!textPreviewGlobal);
+        saveTextPreviewConfig();
         return;
     }
 }
@@ -9956,6 +9993,7 @@ globalThis.init = function() {
     loadAutoUpdateConfig();
     loadBrowserPreviewConfig();
     loadPadTypingConfig();
+    loadTextPreviewConfig();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
     const savedMasterFx = loadMasterFxFromConfig();
