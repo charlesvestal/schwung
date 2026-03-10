@@ -252,7 +252,8 @@ const VIEWS = {
     TOOL_RESULT: "toolresult",               // Success/failure result
     TOOL_ENGINE_SELECT: "toolengineselect",  // Pick engine (e.g. 3-stem vs 4-stem)
     TOOL_STEM_REVIEW: "toolstemreview",       // Review produced stems before saving
-    TOOL_SET_PICKER: "toolsetpicker"          // Browse sets for render tool
+    TOOL_SET_PICKER: "toolsetpicker",          // Browse sets for render tool
+    REC_SOURCE_UI: "recsrcui"                  // Rec source module UI handoff
 };
 
 /* Special action key for swap module option */
@@ -360,6 +361,11 @@ let overtakeModuleLoaded = false; // True if an overtake module is running
 let overtakeModulePath = "";      // Path to loaded overtake module
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
 let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
+
+/* Rec source UI handoff state */
+let recSourceReturn = null;
+let recSourceUiCallbacks = null;
+let recSourceUiModuleId = null;
 
 /* Auto-update state */
 let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
@@ -2161,6 +2167,9 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                 exitOvertakeMode();
             }
         };
+        globalThis.host_launch_source_ui = function(moduleId) {
+            return launchRecSourceUi(moduleId);
+        };
         /* Expose file I/O to overtake modules */
         if (typeof host_write_file === "function") {
             globalThis.host_write_file = host_write_file;
@@ -2259,6 +2268,128 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             shadow_set_overtake_mode(0);
         }
         return false;
+    }
+}
+
+function launchRecSourceUi(moduleId) {
+    debugLog("launchRecSourceUi: " + moduleId);
+
+    if (!toolActiveTool) {
+        debugLog("launchRecSourceUi: no active tool to return to");
+        return false;
+    }
+    recSourceReturn = {
+        toolModule: toolActiveTool,
+        filePath: toolSelectedFile
+    };
+
+    /* Clean up current tool overtake without exiting overtake mode */
+    if (typeof shadow_set_param === "function") {
+        shadow_set_param(0, "overtake_dsp:unload", "1");
+    }
+    delete globalThis.host_module_set_param;
+    delete globalThis.host_module_set_param_blocking;
+    delete globalThis.host_module_get_param;
+    delete globalThis.host_exit_module;
+    delete globalThis.host_launch_source_ui;
+    overtakeModuleLoaded = false;
+    overtakeModuleCallbacks = null;
+
+    /* Load source DSP as rec_source */
+    if (typeof host_source_load !== "function" || !host_source_load(moduleId)) {
+        debugLog("launchRecSourceUi: host_source_load failed for " + moduleId);
+        const ret = recSourceReturn;
+        recSourceReturn = null;
+        startInteractiveTool(ret.toolModule, ret.filePath);
+        return false;
+    }
+    recSourceUiModuleId = moduleId;
+
+    /* Set up param shims routed to rec_source */
+    globalThis.host_module_set_param = function(key, value) {
+        if (typeof host_source_set_param === "function") {
+            return host_source_set_param(key, String(value));
+        }
+        return false;
+    };
+    globalThis.host_module_get_param = function(key) {
+        if (typeof host_source_get_param === "function") {
+            return host_source_get_param(key);
+        }
+        return null;
+    };
+    globalThis.host_exit_module = function() {
+        handleRecSourceUiBack();
+    };
+
+    /* Find and load the source module's ui_chain.js */
+    const uiPath = getModuleUiPath(moduleId);
+    if (!uiPath) {
+        debugLog("launchRecSourceUi: no UI found for " + moduleId);
+        handleRecSourceUiBack();
+        return false;
+    }
+
+    const savedInit = globalThis.init;
+    const savedTick = globalThis.tick;
+    const savedMidi = globalThis.onMidiMessageInternal;
+
+    const ok = shadow_load_ui_module(uiPath);
+    if (!ok) {
+        debugLog("launchRecSourceUi: shadow_load_ui_module failed");
+        globalThis.init = savedInit;
+        globalThis.tick = savedTick;
+        globalThis.onMidiMessageInternal = savedMidi;
+        handleRecSourceUiBack();
+        return false;
+    }
+
+    if (globalThis.chain_ui) {
+        recSourceUiCallbacks = globalThis.chain_ui;
+    } else {
+        recSourceUiCallbacks = {
+            init: (globalThis.init !== savedInit) ? globalThis.init : null,
+            tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
+            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
+        };
+    }
+
+    globalThis.init = savedInit;
+    globalThis.tick = savedTick;
+    globalThis.onMidiMessageInternal = savedMidi;
+
+    setView(VIEWS.REC_SOURCE_UI);
+    needsRedraw = true;
+
+    if (recSourceUiCallbacks && recSourceUiCallbacks.init) {
+        recSourceUiCallbacks.init();
+    }
+
+    debugLog("launchRecSourceUi: UI loaded for " + moduleId);
+    return true;
+}
+
+function handleRecSourceUiBack() {
+    debugLog("handleRecSourceUiBack");
+
+    recSourceUiCallbacks = null;
+    recSourceUiModuleId = null;
+
+    delete globalThis.host_module_set_param;
+    delete globalThis.host_module_get_param;
+    delete globalThis.host_exit_module;
+
+    /* DON'T unload the rec source DSP — it stays running for recording */
+
+    const ret = recSourceReturn;
+    recSourceReturn = null;
+
+    if (ret && ret.toolModule) {
+        debugLog("handleRecSourceUiBack: reloading " + ret.toolModule.id);
+        startInteractiveTool(ret.toolModule, ret.filePath);
+    } else {
+        debugLog("handleRecSourceUiBack: no return info, going to slots");
+        exitOvertakeMode();
     }
 }
 
@@ -8543,6 +8674,9 @@ function handleBack() {
                 needsRedraw = true;
             }
             break;
+        case VIEWS.REC_SOURCE_UI:
+            handleRecSourceUiBack();
+            break;
         case VIEWS.COMPONENT_EDIT:
             /* Unload module UI and return to chain edit */
             unloadModuleUi();
@@ -10026,6 +10160,26 @@ globalThis.tick = function() {
         /* SETTINGS and SCREENREADER flags are handled earlier with SLOT/MFX/OVERTAKE */
     }
 
+    /* Extended flags (ui_flags2) */
+    if (typeof shadow_get_ui_flags2 === "function") {
+        const flags2 = shadow_get_ui_flags2();
+        if (flags2 & 0x01 /* SHADOW_UI_FLAG2_JUMP_TO_PERF_FX */) {
+            debugLog("PERF_FX flag detected, launching Performance FX directly");
+            /* Find and launch Performance FX overtake module */
+            const modules = scanForOvertakeModules();
+            const pfx = modules.find(function(m) { return m.id === "performance-fx"; });
+            if (pfx) {
+                loadOvertakeModule(pfx);
+            } else {
+                debugLog("Performance FX module not found in overtake modules");
+                showOverlay("Not Found", "Performance FX", 60);
+            }
+            if (typeof shadow_clear_ui_flags2 === "function") {
+                shadow_clear_ui_flags2(0x01);
+            }
+        }
+    }
+
     if (filepathBrowserState &&
         filepathBrowserState.livePreviewEnabled &&
         filepathBrowserState.previewPendingPath &&
@@ -10250,6 +10404,11 @@ globalThis.tick = function() {
             } else {
                 /* Fall back to simple preset browser */
                 drawComponentEdit();
+            }
+            break;
+        case VIEWS.REC_SOURCE_UI:
+            if (recSourceUiCallbacks && recSourceUiCallbacks.tick) {
+                recSourceUiCallbacks.tick();
             }
             break;
         case VIEWS.HIERARCHY_EDITOR:
@@ -10478,6 +10637,19 @@ globalThis.onMidiMessageInternal = function(data) {
     if ((status & 0xF0) === 0xB0) {
         lastCC = { cc: d1, val: d2 };
         needsRedraw = true;
+    }
+
+    /* When rec source UI is active, route MIDI to it (except Back button) */
+    if (view === VIEWS.REC_SOURCE_UI && recSourceUiCallbacks) {
+        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0) {
+            handleRecSourceUiBack();
+            return;
+        }
+        if (recSourceUiCallbacks.onMidiMessageInternal) {
+            recSourceUiCallbacks.onMidiMessageInternal(data);
+            needsRedraw = true;
+        }
+        return;
     }
 
     /* When a module UI is loaded, route MIDI to it (except Back button) */
