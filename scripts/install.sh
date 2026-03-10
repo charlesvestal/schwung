@@ -1382,11 +1382,14 @@ else
     qecho "Manual fetch skipped (requires node + curl)"
 fi
 
-# Fix ownership of all files under UserData/move-anything.
-# The host binary runs as root, so tar extractions (e.g. Module Store installs)
-# create root-owned files that can't be updated later. Fix them all.
+# Fix ownership of all files under UserData.
+# The shim runs as root (setuid), so any files it creates (recordings, config,
+# skipback, sets, etc.) end up root-owned. Move's UI runs as ableton and can't
+# see root-owned files. Fix everything we touch.
 qecho "Fixing file ownership..."
 ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything" || true
+ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Samples/Move Everything' 2>/dev/null" || true
+ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Track Presets/Move Everything' 2>/dev/null" || true
 # Restore setuid on shim (chown clears it)
 ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || true
 

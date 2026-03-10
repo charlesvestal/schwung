@@ -15,6 +15,8 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#include <pwd.h>
 #include <malloc.h>
 
 #include "host/plugin_api_v1.h"
@@ -720,6 +722,12 @@ static void chain_log(const char *msg) {
     }
 }
 
+/* Fix file ownership after writing as root */
+static void chown_to_ableton(const char *path) {
+    struct passwd *pw = getpwnam("ableton");
+    if (pw) chown(path, pw->pw_uid, pw->pw_gid);
+}
+
 /* Get current time in milliseconds (for knob acceleration) */
 static uint64_t get_time_ms(void) {
     struct timespec ts;
@@ -1038,6 +1046,7 @@ static void stop_recording(void) {
         write_wav_header(g_wav_file, data_size);
         fclose(g_wav_file);
         g_wav_file = NULL;
+        chown_to_ableton(g_current_recording);
     }
 
     /* Free ring buffer */
@@ -2945,6 +2954,7 @@ static int save_patch(const char *json_data) {
 
     fwrite(final_json, 1, strlen(final_json), f);
     fclose(f);
+    chown_to_ableton(filepath);
 
     snprintf(msg, sizeof(msg), "Saved patch: %s", filepath);
     chain_log(msg);
@@ -3003,6 +3013,7 @@ static int update_patch(int index, const char *json_data) {
 
     fwrite(final_json, 1, strlen(final_json), f);
     fclose(f);
+    chown_to_ableton(filepath);
 
     snprintf(msg, sizeof(msg), "Updated patch: %s", filepath);
     chain_log(msg);
@@ -5249,6 +5260,7 @@ static int v2_save_patch(chain_instance_t *inst, const char *json_data) {
 
     fwrite(final_json, 1, strlen(final_json), f);
     fclose(f);
+    chown_to_ableton(filepath);
 
     snprintf(msg, sizeof(msg), "[v2] Saved patch: %s", filepath);
     v2_chain_log(inst, msg);
@@ -5295,6 +5307,7 @@ static int v2_update_patch(chain_instance_t *inst, int index, const char *json_d
 
     fwrite(final_json, 1, strlen(final_json), f);
     fclose(f);
+    chown_to_ableton(filepath);
 
     snprintf(msg, sizeof(msg), "[v2] Updated patch: %s", filepath);
     v2_chain_log(inst, msg);

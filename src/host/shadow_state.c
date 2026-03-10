@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <pwd.h>
 #include "shadow_state.h"
 
 /* ============================================================================
@@ -13,6 +15,12 @@
 static void (*host_log)(const char *msg);
 static shadow_chain_slot_t *host_chain_slots;
 static int *host_solo_count;
+
+/* Fix file ownership after writing as root */
+static void chown_to_ableton(const char *path) {
+    struct passwd *pw = getpwnam("ableton");
+    if (pw) chown(path, pw->pw_uid, pw->pw_gid);
+}
 
 void state_init(const state_host_t *host)
 {
@@ -211,6 +219,7 @@ void shadow_save_state(void)
             host_chain_slots[3].soloed);
     fprintf(f, "}\n");
     fclose(f);
+    chown_to_ableton(SHADOW_CONFIG_PATH);
 
     char msg[256];
     snprintf(msg, sizeof(msg), "Saved slots: vol=[%.2f,%.2f,%.2f,%.2f] muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
