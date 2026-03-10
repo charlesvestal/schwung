@@ -21,3 +21,4 @@ build/cache/
 *.wav
 *.asd
 move_audio_recv
+libs/memfault-firmware-sdk/
