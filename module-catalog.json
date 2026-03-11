@@ -489,6 +489,18 @@
       "default_branch": "main",
       "asset_name": "dj-module.tar.gz",
       "min_host_version": "0.7.0"
+    },
+    {
+      "id": "slicer",
+      "name": "Sample Slicer",
+      "description": "Transient-detecting sample slicer with 32-pad polyphonic playback",
+      "author": "j3threejay",
+      "component_type": "sound_generator",
+      "github_repo": "j3threejay/move-anything-slicer",
+      "default_branch": "main",
+      "asset_name": "slicer-module.tar.gz",
+      "min_host_version": "0.7.0",
+      "requires": "WAV sample files for slicing"
     }
   ]
 }
