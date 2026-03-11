@@ -4761,6 +4761,13 @@ do_ioctl:
 #endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
 
 #if SHADOW_INPROCESS_POC
+    /* === POST-IOCTL: SECOND MIDI-TO-DSP DRAIN ===
+     * Catch any MIDI that the shadow UI JS process wrote between the
+     * pre-ioctl drain and now.  This roughly doubles the time window
+     * for overtake modules calling shadow_send_midi_to_dsp(), reducing
+     * the chance of a note being delayed by one frame (~2.9 ms). */
+    shadow_drain_ui_midi_dsp();
+
     /* === POST-IOCTL: DEFERRED DSP RENDERING (SLOW, ~300µs) ===
      * Render DSP for the NEXT frame. This happens AFTER the ioctl returns,
      * so Move gets to process pad events before we do heavy DSP work.
