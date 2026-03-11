@@ -1,0 +1,58 @@
+name: Update Module Catalog in README
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'module-catalog.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate module table
+        run: |
+          python3 scripts/generate_module_table.py > module_table.md
+
+      - name: Update README
+        run: |
+          python3 -c "
+          import re
+
+          with open('README.md', 'r') as f:
+              readme = f.read()
+
+          with open('module_table.md', 'r') as f:
+              table = f.read()
+
+          pattern = r'<!-- MODULE_TABLE_START -->.*?<!-- MODULE_TABLE_END -->'
+          replacement = '<!-- MODULE_TABLE_START -->\n' + table + '\n<!-- MODULE_TABLE_END -->'
+          updated = re.sub(pattern, replacement, readme, flags=re.DOTALL)
+
+          with open('README.md', 'w') as f:
+              f.write(updated)
+          "
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet README.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update module catalog table in README"
+          git push
