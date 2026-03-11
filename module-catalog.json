@@ -414,6 +414,18 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "samplerobot",
+      "name": "AutoSample",
+      "description": "Autosample external MIDI gear to create multisampled SFZ instruments",
+      "author": "charlesvestal",
+      "component_type": "tool",
+      "github_repo": "charlesvestal/move-everything-autosample",
+      "default_branch": "main",
+      "asset_name": "samplerobot-module.tar.gz",
+      "min_host_version": "0.7.0",
+      "requires": "External synth connected via USB MIDI and line-in audio"
+    },
+    {
       "id": "waveform-editor",
       "name": "Wave Edit",
       "description": "Trim, gain adjust, and edit audio files on the Move",
