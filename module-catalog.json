@@ -494,7 +494,7 @@
       "id": "slicer",
       "name": "Sample Slicer",
       "description": "Transient-detecting sample slicer with 32-pad polyphonic playback",
-      "author": "j3threejay",
+      "author": "Justin Joe",
       "component_type": "sound_generator",
       "github_repo": "j3threejay/move-anything-slicer",
       "default_branch": "main",
