@@ -764,7 +764,8 @@ static JSValue js_shadow_send_midi_to_dsp(JSContext *ctx, JSValueConst this_val,
         shadow_midi_dsp->write_idx = write_offset + 4;
     }
 
-    /* Signal shim that data is ready */
+    /* Signal shim that data is ready (barrier ensures buffer writes are visible first) */
+    __sync_synchronize();
     shadow_midi_dsp->ready++;
 
     return JS_TRUE;

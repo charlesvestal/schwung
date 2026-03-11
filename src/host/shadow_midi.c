@@ -369,13 +369,27 @@ void shadow_drain_ui_midi_dsp(void)
 
     last_ready = midi_dsp_shm->ready;
 
+    /* Snapshot buffer before resetting to avoid race with JS writer.
+     * Barrier ensures we see the buffer data that corresponds to the ready signal. */
+    __sync_synchronize();
+    int snapshot_len = midi_dsp_shm->write_idx;
+    uint8_t local_buf[SHADOW_MIDI_DSP_BUFFER_SIZE];
+    int copy_len = snapshot_len < (int)SHADOW_MIDI_DSP_BUFFER_SIZE
+                 ? snapshot_len : (int)SHADOW_MIDI_DSP_BUFFER_SIZE;
+    if (copy_len > 0) {
+        memcpy(local_buf, midi_dsp_shm->buffer, copy_len);
+    }
+    __sync_synchronize();
+    midi_dsp_shm->write_idx = 0;
+    memset(midi_dsp_shm->buffer, 0, SHADOW_MIDI_DSP_BUFFER_SIZE);
+
     static int midi_log_count = 0;
     int log_on = host_midi_out_log_enabled ? host_midi_out_log_enabled() : 0;
 
-    for (int i = 0; i < midi_dsp_shm->write_idx && i < SHADOW_MIDI_DSP_BUFFER_SIZE; i += 4) {
-        uint8_t status = midi_dsp_shm->buffer[i];
-        uint8_t d1 = midi_dsp_shm->buffer[i + 1];
-        uint8_t d2 = midi_dsp_shm->buffer[i + 2];
+    for (int i = 0; i < copy_len; i += 4) {
+        uint8_t status = local_buf[i];
+        uint8_t d1 = local_buf[i + 1];
+        uint8_t d2 = local_buf[i + 2];
 
         /* Validate status byte has high bit set */
         if (!(status & 0x80)) continue;
@@ -386,10 +400,6 @@ void shadow_drain_ui_midi_dsp(void)
 
         shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
     }
-
-    /* Clear after processing */
-    midi_dsp_shm->write_idx = 0;
-    memset(midi_dsp_shm->buffer, 0, SHADOW_MIDI_DSP_BUFFER_SIZE);
 }
 
 /* ============================================================================
