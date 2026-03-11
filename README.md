@@ -28,7 +28,7 @@ Also: this code is heavily written by coding agents, with human supervision. If 
 
 ### Desktop Installer (Recommended)
 
-Download the [Move Everything Installer](https://github.com/charlesvestal/move-everything-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface.
+Download the [Move Everything Installer](https://github.com/charlesvestal/move-everything-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface. The desktop installer is also accessible via screen reader.
 
 ### Command Line
 
