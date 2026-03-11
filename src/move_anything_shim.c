@@ -60,6 +60,8 @@
 
 unsigned char *global_mmap_addr = NULL;  /* Points to shadow_mailbox (what Move sees) */
 unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
+static int shadow_spi_fd = -1;           /* SPI file descriptor for MIDI/ioctl */
+extern int (*real_ioctl)(int, unsigned long, ...);  /* Forward declaration */
 static unsigned char shadow_mailbox[4096] __attribute__((aligned(64))); /* Shadow buffer for Move */
 
 /* ============================================================================
@@ -1054,18 +1056,38 @@ static int overtake_midi_send_internal(const uint8_t *msg, int len) {
     return len;
 }
 
-/* MIDI send callback for overtake DSP → external USB MIDI */
+/* MIDI send callback for overtake DSP → external USB MIDI
+ * Writes to SPI outgoing_midi buffer (offset 0 of hardware mapped memory)
+ * and triggers the SPI ioctl to flush to USB. */
+static int overtake_ext_midi_log_count = 0;
+
 static int overtake_midi_send_external(const uint8_t *msg, int len) {
     if (!msg || len < 4) return 0;
-    uint8_t *midi_out = shadow_mailbox + MIDI_OUT_OFFSET;
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        if (midi_out[i] == 0 && midi_out[i+1] == 0 &&
-            midi_out[i+2] == 0 && midi_out[i+3] == 0) {
-            memcpy(&midi_out[i], msg, 4);
-            return len;
-        }
+
+    if (overtake_ext_midi_log_count < 10) {
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg),
+                 "overtake_midi_send_ext: [%02x %02x %02x %02x] len=%d hw_mmap=%p spi_fd=%d",
+                 msg[0], msg[1], msg[2], msg[3], len,
+                 (void*)hardware_mmap_addr, shadow_spi_fd);
+        shadow_log(log_msg);
+        overtake_ext_midi_log_count++;
     }
-    return 0;  /* Buffer full */
+
+    if (!hardware_mmap_addr || shadow_spi_fd < 0) return 0;
+
+    /* Clear outgoing_midi area, write our packet, flush */
+    memset(hardware_mmap_addr, 0, 256);
+    memcpy(hardware_mmap_addr, msg, 4);
+    int result = real_ioctl(shadow_spi_fd, _IOC(_IOC_NONE, 0, 0xa, 0), (void*)0x300);
+
+    if (overtake_ext_midi_log_count <= 10) {
+        char log_msg[128];
+        snprintf(log_msg, sizeof(log_msg), "overtake_midi_send_ext: ioctl result=%d", result);
+        shadow_log(log_msg);
+    }
+
+    return len;
 }
 
 static void shadow_overtake_dsp_load(const char *path) {
@@ -1307,6 +1329,31 @@ static void shadow_inprocess_render_to_buffer(void) {
 
     /* Overtake DSP generator: mix its output into the deferred buffer */
     if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->render_block) {
+        /* Restore raw hardware audio_in so overtake plugins can read line-in.
+         * The resample bridge may have overwritten the shadow_mailbox AUDIO_IN
+         * region; re-copy from hardware to give plugins the actual input. */
+        if (hardware_mmap_addr) {
+            int16_t *hw_ain = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
+            int16_t *sh_ain = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
+            /* Log once to verify hardware audio levels */
+            static int ain_log_count = 0;
+            if (ain_log_count < 3) {
+                int16_t hw_peak = 0, sh_peak = 0;
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    int16_t s = hw_ain[i] < 0 ? -hw_ain[i] : hw_ain[i];
+                    if (s > hw_peak) hw_peak = s;
+                    s = sh_ain[i] < 0 ? -sh_ain[i] : sh_ain[i];
+                    if (s > sh_peak) sh_peak = s;
+                }
+                char msg[256];
+                snprintf(msg, sizeof(msg),
+                         "SampleRobot: audio_in restore - hw_peak=%d sh_peak=%d hw[0..3]=%d,%d,%d,%d",
+                         hw_peak, sh_peak, hw_ain[0], hw_ain[1], hw_ain[2], hw_ain[3]);
+                shadow_log(msg);
+                ain_log_count++;
+            }
+            memcpy(sh_ain, hw_ain, AUDIO_BUFFER_SIZE);
+        }
         int16_t render_buffer[FRAMES_PER_BLOCK * 2];
         memset(render_buffer, 0, sizeof(render_buffer));
         overtake_dsp_gen->render_block(overtake_dsp_gen_inst, render_buffer, MOVE_FRAMES_PER_BLOCK);
@@ -3691,6 +3738,11 @@ do_ioctl:
             shadow_queue_led(0x0B, 0xB0, 28, 0);    /* Step 13 icon = off */
             shortcut_leds_on = 0;
         }
+    }
+
+    /* Capture the SPI fd for use by overtake_midi_send_external */
+    if (shadow_spi_fd < 0 && hardware_mmap_addr) {
+        shadow_spi_fd = fd;
     }
 
     /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
