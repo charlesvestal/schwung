@@ -367,6 +367,9 @@ static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val
             memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
         }
     }
+    /* NOTE: Shift-off and volume-touch-off injection on overtake exit is
+     * handled by the shim's ioctl handler (transition detection), not here.
+     * This covers all cases including D-Bus shutdown prompt direct writes. */
     return JS_UNDEFINED;
 }
 
