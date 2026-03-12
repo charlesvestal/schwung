@@ -452,7 +452,8 @@ Sequence clips across time to build full songs from your set's clip layout.
 1. Select a step with the jog wheel or step buttons
 2. Tap pads to assign clips for each track
 3. The first pad press on an empty step copies the previous step, so you only change what differs
-4. Steps display track assignments as column letters (A-H)
+4. **Shift+Pad** on steps 2+ sets that track to **continue** (`--`) so it won't retrigger
+5. Steps display track assignments as column letters (A-H)
 
 **Playback:**
 - **Play**: Start from current step
@@ -470,7 +471,14 @@ Sequence clips across time to build full songs from your set's clip layout.
 **Loop mode:** Press **Loop** to toggle. When on, playback wraps back to the first step after the last step ends. Shows `[L]` in the header. Disabled during recording.
 
 **Editing:**
-- **Hold step** or **Jog click** on a step: Edit repeat count (1, 2, 4, 8, 16, 32, 64 bars)
+- **Hold step** or **Jog click** on a step: Edit step settings
+- **Repeats**: 1, 2, 4, 8, 16, 32, 64
+- **Bar Length**: `Longest` (default), `Shortest`, or `Custom`
+- **Custom Bars** appears when `Bar Length = Custom`
+- In step settings, jog wheel selects a parameter; jog click toggles edit mode for that parameter
+- Tracks set to `--` (continue) do not retrigger and do not contribute to step bar-length calculation
+- Continue tracks are shown as `2"` / `3"` in the step label
+- Step rows show duration at right as `4`, or `4x2` when repeats are >1
 - **Copy**: Duplicate selected step
 - **Delete**: Remove selected step
 - **Shift+Delete**: Clear entire song
