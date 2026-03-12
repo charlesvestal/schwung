@@ -371,6 +371,7 @@ When selecting a module, "[Get more...]" opens the Module Store to download addi
 
 **Sound Generators:**
 - **AirPlay** - AirPlay audio receiver (stream from iPhone, iPad, or Mac)
+- **SConnect** - Unofficial Spotify Connect receiver for personal listening
 - **Braids** - Mutable Instruments macro oscillator (47 algorithms)
 - **Chiptune** - NES 2A03 & Game Boy DMG chiptune synthesizer
 - **Dexed** - 6-operator FM synthesizer (DX7 compatible)
