@@ -274,7 +274,7 @@
       "description": "Custom MIDI controller with 16 banks of configurable pads/knobs/buttons",
       "author": "chaolue",
       "component_type": "overtake",
-      "github_repo": "chaolue/move-everything-control",
+      "github_repo": "chaolue/move-anything-control",
       "default_branch": "main",
       "asset_name": "control-module.tar.gz",
       "min_host_version": "0.3.6"
@@ -464,7 +464,7 @@
       "description": "Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits)",
       "author": "Emilie Gillet (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "j3threejay/move-everything-plaits",
+      "github_repo": "j3threejay/move-anything-plaits",
       "default_branch": "master",
       "asset_name": "plaits-module.tar.gz",
       "min_host_version": "0.3.0"
