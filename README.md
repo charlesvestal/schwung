@@ -130,25 +130,25 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [Dexed](https://github.com/charlesvestal/move-anything-dx7) | 6-operator FM synthesizer (Dexed/MSFA) with .syx patch support | Dexed/MSFA by google/asb2m10 (port: charlesvestal) |
-| [SF2 Synth](https://github.com/charlesvestal/move-anything-sf2) | SoundFont (.sf2) synthesizer using FluidLite | FluidLite by Robin Lobel (port: charlesvestal) |
-| [SFZ Player](https://github.com/charlesvestal/move-anything-sfz) | SFZ and DecentSampler (.dspreset) sample player using sfizz engine | sfizz by sfztools (port: charlesvestal) |
-| [Mini-JV](https://github.com/charlesvestal/move-anything-jv880) | ROM-based PCM rompler emulator | nukeykt/giulioz |
-| [OB-Xd](https://github.com/charlesvestal/move-anything-obxd) | Virtual analog synthesizer based on Oberheim OB-X | reales |
-| [Braids](https://github.com/charlesvestal/move-anything-braids) | Macro oscillator with 47 synthesis algorithms (Mutable Instruments) | Emilie Gillet (port: charlesvestal) |
-| [Hera](https://github.com/charlesvestal/move-anything-hera) | Juno-60 emulation synthesizer with BBD chorus | jpcima (port: charlesvestal) |
-| [Surge XT](https://github.com/charlesvestal/move-anything-surge) | Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets | Surge Synth Team (port: charlesvestal) |
-| [RaffoSynth](https://github.com/charlesvestal/move-anything-moog) | Monophonic synthesizer with 4 oscillators and Moog ladder filter | Nicolas Roulet, Julian Palladino (port: charlesvestal) |
-| [Webstream](https://github.com/charlesvestal/move-anything-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
-| [Radio Garden](https://github.com/charlesvestal/move-anything-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
-| [AirPlay](https://github.com/charlesvestal/move-anything-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
-| [Chiptune](https://github.com/charlesvestal/move-anything-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
-| [Osirus](https://github.com/charlesvestal/move-anything-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
-| [Granny](https://github.com/handcraftedcc/move-anything-granny) | Granular sample instrument with scan controls and file browser | move-anything contributors |
-| [MrDrums](https://github.com/handcraftedcc/move-anything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | move-anything contributors |
-| [REX Player](https://github.com/charlesvestal/move-anything-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
-| [HUSH ONE](https://github.com/charlesvestal/move-anything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | Move Everything Community |
-| [NuSaw](https://github.com/charlesvestal/move-anything-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
+| [Dexed](https://github.com/charlesvestal/move-everything-dx7) | 6-operator FM synthesizer (Dexed/MSFA) with .syx patch support | Dexed/MSFA by google/asb2m10 (port: charlesvestal) |
+| [SF2 Synth](https://github.com/charlesvestal/move-everything-sf2) | SoundFont (.sf2) synthesizer using FluidLite | FluidLite by Robin Lobel (port: charlesvestal) |
+| [SFZ Player](https://github.com/charlesvestal/move-everything-sfz) | SFZ and DecentSampler (.dspreset) sample player using sfizz engine | sfizz by sfztools (port: charlesvestal) |
+| [Mini-JV](https://github.com/charlesvestal/move-everything-jv880) | ROM-based PCM rompler emulator | nukeykt/giulioz |
+| [OB-Xd](https://github.com/charlesvestal/move-everything-obxd) | Virtual analog synthesizer based on Oberheim OB-X | reales |
+| [Braids](https://github.com/charlesvestal/move-everything-braids) | Macro oscillator with 47 synthesis algorithms (Mutable Instruments) | Emilie Gillet (port: charlesvestal) |
+| [Hera](https://github.com/charlesvestal/move-everything-hera) | Juno-60 emulation synthesizer with BBD chorus | jpcima (port: charlesvestal) |
+| [Surge XT](https://github.com/charlesvestal/move-everything-surge) | Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets | Surge Synth Team (port: charlesvestal) |
+| [RaffoSynth](https://github.com/charlesvestal/move-everything-moog) | Monophonic synthesizer with 4 oscillators and Moog ladder filter | Nicolas Roulet, Julian Palladino (port: charlesvestal) |
+| [Webstream](https://github.com/charlesvestal/move-everything-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
+| [Radio Garden](https://github.com/charlesvestal/move-everything-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
+| [AirPlay](https://github.com/charlesvestal/move-everything-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
+| [Chiptune](https://github.com/charlesvestal/move-everything-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
+| [Osirus](https://github.com/charlesvestal/move-everything-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
+| [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | move-everything contributors |
+| [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | move-everything contributors |
+| [REX Player](https://github.com/charlesvestal/move-everything-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
+| [HUSH ONE](https://github.com/charlesvestal/move-everything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | Move Everything Community |
+| [NuSaw](https://github.com/charlesvestal/move-everything-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
 
@@ -156,45 +156,46 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [CloudSeed](https://github.com/charlesvestal/move-anything-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio |
-| [TAPESCAM](https://github.com/charlesvestal/move-anything-tapescam) | Tape saturation and degradation effect | Charles Vestal |
-| [PSX Verb](https://github.com/charlesvestal/move-anything-psxverb) | PlayStation 1 SPU reverb emulation | Charles Vestal |
-| [TapeDelay](https://github.com/charlesvestal/move-anything-space-delay) | Tape delay with flutter and tone shaping | Charles Vestal |
-| [Junologue Chorus](https://github.com/charlesvestal/move-anything-junologue-chorus) | Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes) | Peter Allwin (port: charlesvestal) |
-| [NAM](https://github.com/charlesvestal/move-anything-nam) | Neural Amp Modeler - neural network guitar amp/effect emulation | NeuralAudio by Mike Oliphant (port: charlesvestal) |
-| [Ducker](https://github.com/charlesvestal/move-anything-ducker) | MIDI-triggered sidechain ducker - classic pumping without an audio sidechain | charlesvestal |
-| [CLAP FX](https://github.com/charlesvestal/move-anything-clap) | Host for CLAP audio effect plugins | charlesvestal |
-| [Gate](https://github.com/charlesvestal/move-anything-gate) | Noise gate and downward expander | charlesvestal |
-| [Key Detect](https://github.com/charlesvestal/move-anything-keydetect) | Detects the musical key of audio passing through it | charlesvestal |
-| [Vocoder](https://github.com/charlesvestal/move-anything-vocoder) | Channel vocoder - uses mic/line-in as modulator to shape synth carrier | charlesvestal |
-| [Usefulity](https://github.com/charlesvestal/move-anything-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
+| [CloudSeed](https://github.com/charlesvestal/move-everything-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio |
+| [TAPESCAM](https://github.com/charlesvestal/move-everything-tapescam) | Tape saturation and degradation effect | Charles Vestal |
+| [PSX Verb](https://github.com/charlesvestal/move-everything-psxverb) | PlayStation 1 SPU reverb emulation | Charles Vestal |
+| [TapeDelay](https://github.com/charlesvestal/move-everything-space-delay) | Tape delay with flutter and tone shaping | Charles Vestal |
+| [Junologue Chorus](https://github.com/charlesvestal/move-everything-junologue-chorus) | Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes) | Peter Allwin (port: charlesvestal) |
+| [NAM](https://github.com/charlesvestal/move-everything-nam) | Neural Amp Modeler - neural network guitar amp/effect emulation | NeuralAudio by Mike Oliphant (port: charlesvestal) |
+| [Ducker](https://github.com/charlesvestal/move-everything-ducker) | MIDI-triggered sidechain ducker - classic pumping without an audio sidechain | charlesvestal |
+| [CLAP FX](https://github.com/charlesvestal/move-everything-clap) | Host for CLAP audio effect plugins | charlesvestal |
+| [Gate](https://github.com/charlesvestal/move-everything-gate) | Noise gate and downward expander | charlesvestal |
+| [Key Detect](https://github.com/charlesvestal/move-everything-keydetect) | Detects the musical key of audio passing through it | charlesvestal |
+| [Vocoder](https://github.com/charlesvestal/move-everything-vocoder) | Channel vocoder - uses mic/line-in as modulator to shape synth carrier | charlesvestal |
+| [Usefulity](https://github.com/charlesvestal/move-everything-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
 | [Boris Granular](https://github.com/fillioning/move-anything-boris) | Real-time granular audio effect with live input capture and MIDI sync | Alessandro Gaiba (port: fillioning) |
 
 ### MIDI FX
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [Super Arp](https://github.com/handcraftedcc/move-anything-superarp) | Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers | dom |
-| [Eucalypso](https://github.com/handcraftedcc/move-anything-eucalypso) | Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation | dom |
+| [Super Arp](https://github.com/handcraftedcc/move-everything-superarp) | Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers | dom |
+| [Eucalypso](https://github.com/handcraftedcc/move-everything-eucalypso) | Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation | dom |
 
 ### Overtake
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [M8 LPP Emulator](https://github.com/charlesvestal/move-anything-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales |
-| [SID Control](https://github.com/charlesvestal/move-anything-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
+| [M8 LPP Emulator](https://github.com/charlesvestal/move-everything-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales |
+| [SID Control](https://github.com/charlesvestal/move-everything-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
 | [Custom MIDI Control](https://github.com/chaolue/move-anything-control) | Custom MIDI controller with 16 banks of configurable pads/knobs/buttons | chaolue |
-| [Performance FX](https://github.com/charlesvestal/move-anything-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
+| [Performance FX](https://github.com/charlesvestal/move-everything-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
 
 ### Tools
 
 | Module | Description | Author |
 |--------|-------------|--------|
 | [AutoSample](https://github.com/charlesvestal/move-everything-autosample) | Autosample external MIDI gear to create multisampled SFZ instruments | charlesvestal |
-| [Wave Edit](https://github.com/charlesvestal/move-anything-waveform-editor) | Trim, gain adjust, and edit audio files on the Move | charlesvestal |
-| [Time Stretch](https://github.com/charlesvestal/move-anything-stretch) | Real-time audio time stretching with Bungee | charlesvestal |
-| [Stems](https://github.com/charlesvestal/move-anything-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
+| [Wave Edit](https://github.com/charlesvestal/move-everything-waveform-editor) | Trim, gain adjust, and edit audio files on the Move | charlesvestal |
+| [Time Stretch](https://github.com/charlesvestal/move-everything-stretch) | Real-time audio time stretching with Bungee | charlesvestal |
+| [Stems](https://github.com/charlesvestal/move-everything-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
 | [DJ Deck](https://github.com/djhardrich/move-anything-dj) | CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift | DJ Hard Rich |
+
 <!-- MODULE_TABLE_END -->
 
 ## Related Repositories
