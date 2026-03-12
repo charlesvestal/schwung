@@ -133,8 +133,8 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Dexed](https://github.com/charlesvestal/move-everything-dx7) | 6-operator FM synthesizer (Dexed/MSFA) with .syx patch support | Dexed/MSFA by google/asb2m10 (port: charlesvestal) |
 | [SF2 Synth](https://github.com/charlesvestal/move-everything-sf2) | SoundFont (.sf2) synthesizer using FluidLite | FluidLite by Robin Lobel (port: charlesvestal) |
 | [SFZ Player](https://github.com/charlesvestal/move-everything-sfz) | SFZ and DecentSampler (.dspreset) sample player using sfizz engine | sfizz by sfztools (port: charlesvestal) |
-| [Mini-JV](https://github.com/charlesvestal/move-everything-jv880) | ROM-based PCM rompler emulator | nukeykt/giulioz |
-| [OB-Xd](https://github.com/charlesvestal/move-everything-obxd) | Virtual analog synthesizer based on Oberheim OB-X | reales |
+| [Mini-JV](https://github.com/charlesvestal/move-everything-jv880) | ROM-based PCM rompler emulator | nukeykt/giulioz (port: charlesvestal) |
+| [OB-Xd](https://github.com/charlesvestal/move-everything-obxd) | Virtual analog synthesizer based on Oberheim OB-X | reales (port: charlesvestal) |
 | [Braids](https://github.com/charlesvestal/move-everything-braids) | Macro oscillator with 47 synthesis algorithms (Mutable Instruments) | Emilie Gillet (port: charlesvestal) |
 | [Hera](https://github.com/charlesvestal/move-everything-hera) | Juno-60 emulation synthesizer with BBD chorus | jpcima (port: charlesvestal) |
 | [Surge XT](https://github.com/charlesvestal/move-everything-surge) | Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets | Surge Synth Team (port: charlesvestal) |
@@ -144,10 +144,10 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [AirPlay](https://github.com/charlesvestal/move-everything-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
 | [Chiptune](https://github.com/charlesvestal/move-everything-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
 | [Osirus](https://github.com/charlesvestal/move-everything-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
-| [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | move-everything contributors |
-| [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | move-everything contributors |
+| [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | handcraftedcc |
+| [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | handcraftedcc |
 | [REX Player](https://github.com/charlesvestal/move-everything-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
-| [HUSH ONE](https://github.com/charlesvestal/move-everything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | Move Everything Community |
+| [HUSH ONE](https://github.com/charlesvestal/move-everything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | charlesvestal |
 | [NuSaw](https://github.com/charlesvestal/move-everything-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
@@ -156,7 +156,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [CloudSeed](https://github.com/charlesvestal/move-everything-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio |
+| [CloudSeed](https://github.com/charlesvestal/move-everything-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio (port: charlesvestal) |
 | [TAPESCAM](https://github.com/charlesvestal/move-everything-tapescam) | Tape saturation and degradation effect | Charles Vestal |
 | [PSX Verb](https://github.com/charlesvestal/move-everything-psxverb) | PlayStation 1 SPU reverb emulation | Charles Vestal |
 | [TapeDelay](https://github.com/charlesvestal/move-everything-space-delay) | Tape delay with flutter and tone shaping | Charles Vestal |
@@ -174,14 +174,14 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [Super Arp](https://github.com/handcraftedcc/move-everything-superarp) | Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers | dom |
-| [Eucalypso](https://github.com/handcraftedcc/move-everything-eucalypso) | Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation | dom |
+| [Super Arp](https://github.com/handcraftedcc/move-everything-superarp) | Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers | handcraftedcc |
+| [Eucalypso](https://github.com/handcraftedcc/move-everything-eucalypso) | Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation | handcraftedcc |
 
 ### Overtake
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [M8 LPP Emulator](https://github.com/charlesvestal/move-everything-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales |
+| [M8 LPP Emulator](https://github.com/charlesvestal/move-everything-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales (port: charlesvestal) |
 | [SID Control](https://github.com/charlesvestal/move-everything-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
 | [Custom MIDI Control](https://github.com/chaolue/move-anything-control) | Custom MIDI controller with 16 banks of configurable pads/knobs/buttons | chaolue |
 | [Performance FX](https://github.com/charlesvestal/move-everything-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
