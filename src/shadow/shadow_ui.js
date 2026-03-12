@@ -2841,6 +2841,19 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
         }
     }
 
+    /* Include LFO config */
+    const lfoConfigJson = getSlotParam(slotIndex, "lfo_config");
+    if (lfoConfigJson) {
+        try {
+            const lfos = JSON.parse(lfoConfigJson);
+            if (lfos) {
+                patch.lfos = lfos;
+            }
+        } catch (e) {
+            /* Ignore parse errors */
+        }
+    }
+
     return JSON.stringify(patch);
 }
 
