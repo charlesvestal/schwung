@@ -267,7 +267,18 @@ void shadow_inject_ui_midi_out(void)
     /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
     uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
 
+    /* DIAG: count how many slots are already occupied in MIDI_OUT mailbox */
+    int slots_used = 0;
+    for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
+        if (midi_out[s] != 0 || midi_out[s+1] != 0 ||
+            midi_out[s+2] != 0 || midi_out[s+3] != 0) {
+            slots_used++;
+        }
+    }
+
     int hw_offset = 0;
+    int injected = 0;
+    int dropped = 0;
     for (int i = 0; i < copy_len; i += 4) {
         uint8_t cin = local_buf[i];
         uint8_t cable = (cin >> 4) & 0x0F;
@@ -290,10 +301,32 @@ void shadow_inject_ui_midi_out(void)
             }
             hw_offset += 4;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+        if (hw_offset >= MIDI_BUFFER_SIZE) {
+            dropped++;
+            break;  /* Buffer full */
+        }
 
         memcpy(&midi_out[hw_offset], &local_buf[i], 4);
         hw_offset += 4;
+        injected++;
+    }
+
+    /* DIAG: log buffer state when we have data to inject */
+    {
+        static int diag_counter = 0;
+        static int total_dropped = 0;
+        total_dropped += dropped;
+        diag_counter++;
+        /* Log every injection, but rate limit to avoid flooding */
+        if (host_log && (dropped > 0 || (diag_counter % 100) == 0)) {
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                "midi_out_diag: slots_used=%d/%d injected=%d dropped=%d "
+                "snapshot_len=%d total_dropped=%d seq=%d",
+                slots_used, MIDI_BUFFER_SIZE/4, injected, dropped,
+                copy_len, total_dropped, diag_counter);
+            host_log(msg);
+        }
     }
 }
 

@@ -2245,6 +2245,25 @@ int main(int argc, char *argv[]) {
     shadow_ui_log_line("shadow_ui: init called");
 
     int refresh_counter = 0;
+
+    /* DIAG: tick timing tracking */
+    struct timespec diag_ts;
+    uint64_t diag_last_tick_us = 0;
+    uint64_t diag_max_tick_us = 0;
+    uint64_t diag_total_tick_us = 0;
+    int diag_tick_count = 0;
+    int diag_midi_events_total = 0;
+    int diag_slow_ticks = 0;  /* ticks > 10ms */
+
+    clock_gettime(CLOCK_MONOTONIC, &diag_ts);
+    diag_last_tick_us = (uint64_t)diag_ts.tv_sec * 1000000 + diag_ts.tv_nsec / 1000;
+
+    /* Wall-clock tick scheduling: advance an absolute target time each iteration
+     * instead of sleeping a fixed duration.  This prevents drift accumulation
+     * when individual ticks take longer than the sleep interval. */
+    struct timespec next_tick_ts;
+    clock_gettime(CLOCK_MONOTONIC, &next_tick_ts);
+
     while (!global_exit_flag) {
         if (shadow_control && shadow_control->should_exit) {
             if (jsSaveStateIsDefined) {
@@ -2253,12 +2272,24 @@ int main(int argc, char *argv[]) {
             break;
         }
 
+        /* DIAG: measure tick interval */
+        clock_gettime(CLOCK_MONOTONIC, &diag_ts);
+        uint64_t diag_now_us = (uint64_t)diag_ts.tv_sec * 1000000 + diag_ts.tv_nsec / 1000;
+        uint64_t diag_delta_us = diag_now_us - diag_last_tick_us;
+        diag_last_tick_us = diag_now_us;
+        diag_tick_count++;
+        diag_total_tick_us += diag_delta_us;
+        if (diag_delta_us > diag_max_tick_us) diag_max_tick_us = diag_delta_us;
+        if (diag_delta_us > 10000) diag_slow_ticks++;  /* > 10ms */
+
         /* Process incoming MIDI BEFORE tick() so that the current frame's
          * drawUI() reflects the latest input (knob CCs, button presses).
          * This eliminates one full loop iteration of display latency. */
+        int diag_midi_this_tick = 0;
         if (shadow_control && shadow_control->midi_ready != last_midi_ready) {
             last_midi_ready = shadow_control->midi_ready;
-            process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
+            diag_midi_this_tick = process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
+            diag_midi_events_total += diag_midi_this_tick;
             /* Always clear buffer after processing - even if no events were found,
              * the buffer may contain data the shim wrote that we couldn't parse.
              * This prevents the buffer from filling up and blocking new writes. */
@@ -2273,17 +2304,93 @@ int main(int argc, char *argv[]) {
 
         refresh_counter++;
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
+            struct timespec diag_disp_start, diag_disp_end;
+            clock_gettime(CLOCK_MONOTONIC, &diag_disp_start);
+
             js_display_pack(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
             js_display_screen_dirty = 0;
+
+            clock_gettime(CLOCK_MONOTONIC, &diag_disp_end);
+            uint64_t disp_us = ((uint64_t)diag_disp_end.tv_sec * 1000000 + diag_disp_end.tv_nsec / 1000)
+                             - ((uint64_t)diag_disp_start.tv_sec * 1000000 + diag_disp_start.tv_nsec / 1000);
+            static uint64_t diag_disp_max = 0;
+            static int diag_disp_count = 0;
+            static uint64_t diag_disp_total = 0;
+            diag_disp_count++;
+            diag_disp_total += disp_us;
+            if (disp_us > diag_disp_max) diag_disp_max = disp_us;
+            if (diag_disp_count >= 100) {
+                char disp_msg[256];
+                snprintf(disp_msg, sizeof(disp_msg),
+                    "shadow_ui_display: avg=%lluus max=%lluus count=%d",
+                    (unsigned long long)(diag_disp_total / diag_disp_count),
+                    (unsigned long long)diag_disp_max, diag_disp_count);
+                shadow_ui_log_line(disp_msg);
+                diag_disp_max = 0;
+                diag_disp_total = 0;
+                diag_disp_count = 0;
+            }
         }
 
-        /* Overtake modules need a faster tick rate for responsive display/LED
-         * updates.  Normal shadow UI (slot management) is fine at ~60 Hz. */
-        if (shadow_control && shadow_control->overtake_mode >= 2) {
-            usleep(2000);   /* ~500 Hz effective (minus tick work) */
-        } else {
-            usleep(16000);  /* ~60 Hz for normal shadow UI */
+        /* DIAG: log every 2 seconds (~1000 ticks at 500Hz) */
+        if (diag_tick_count > 0 && (diag_tick_count % 1000) == 0) {
+            uint64_t avg_us = diag_total_tick_us / 1000;
+            char diag_msg[256];
+            snprintf(diag_msg, sizeof(diag_msg),
+                "shadow_ui_diag: avg_tick=%lluus max_tick=%lluus slow_ticks=%d "
+                "midi_events=%d write_idx=%d overtake=%d",
+                (unsigned long long)avg_us, (unsigned long long)diag_max_tick_us,
+                diag_slow_ticks, diag_midi_events_total,
+                shadow_midi_out ? (int)shadow_midi_out->write_idx : -1,
+                shadow_control ? shadow_control->overtake_mode : -1);
+            shadow_ui_log_line(diag_msg);
+            diag_max_tick_us = 0;
+            diag_total_tick_us = 0;
+            diag_slow_ticks = 0;
+            diag_midi_events_total = 0;
+        }
+
+        /* DIAG: detect sudden tick spikes (>20ms) with MIDI context */
+        if (diag_delta_us > 20000 && shadow_control && shadow_control->overtake_mode >= 2) {
+            char spike_msg[256];
+            snprintf(spike_msg, sizeof(spike_msg),
+                "shadow_ui_spike: tick=%lluus midi_this_tick=%d tick#=%d",
+                (unsigned long long)diag_delta_us, diag_midi_this_tick, diag_tick_count);
+            shadow_ui_log_line(spike_msg);
+        }
+
+        /* Advance absolute tick target by the desired interval.
+         * Overtake modules need ~500 Hz; normal shadow UI is ~60 Hz.
+         * Using TIMER_ABSTIME prevents drift: if a tick overruns, the next
+         * sleep is shorter to compensate, keeping average rate on target. */
+        {
+            long interval_ns = (shadow_control && shadow_control->overtake_mode >= 2)
+                ? 2000000L    /* 2ms → ~500 Hz for overtake */
+                : 16000000L;  /* 16ms → ~60 Hz for normal UI */
+
+            next_tick_ts.tv_nsec += interval_ns;
+            while (next_tick_ts.tv_nsec >= 1000000000L) {
+                next_tick_ts.tv_nsec -= 1000000000L;
+                next_tick_ts.tv_sec++;
+            }
+
+            /* If we've fallen behind by more than 50ms, reset the target
+             * to now + interval to avoid a burst of catch-up ticks. */
+            struct timespec now_ts;
+            clock_gettime(CLOCK_MONOTONIC, &now_ts);
+            long behind_ns = (now_ts.tv_sec - next_tick_ts.tv_sec) * 1000000000L
+                           + (now_ts.tv_nsec - next_tick_ts.tv_nsec);
+            if (behind_ns > 50000000L) {
+                next_tick_ts = now_ts;
+                next_tick_ts.tv_nsec += interval_ns;
+                if (next_tick_ts.tv_nsec >= 1000000000L) {
+                    next_tick_ts.tv_nsec -= 1000000000L;
+                    next_tick_ts.tv_sec++;
+                }
+            }
+
+            clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_tick_ts, NULL);
         }
     }
 
