@@ -392,6 +392,7 @@ static volatile int shadow_mute_held = 0;
 /* shadow_handle_set_loaded, shadow_poll_current_set now in shadow_set_pages.c */
 /* shadow_read_set_mute_states — now in shadow_overlay.c (via shadow_overlay.h) */
 static int shim_run_command(const char *const argv[]);  /* forward decl */
+static float shim_get_bpm(void);  /* forward decl */
 
 /* shadow_apply_mute, shadow_toggle_solo now in shadow_chain_mgmt.c */
 
@@ -1020,6 +1021,9 @@ static void shadow_inprocess_mix_audio(void) {
         }
     }
 
+    /* Tick master FX LFOs */
+    shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK);
+
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
@@ -1127,6 +1131,7 @@ static void shadow_overtake_dsp_load(const char *path) {
     overtake_host_api.log = shadow_log;
     overtake_host_api.midi_send_internal = overtake_midi_send_internal;
     overtake_host_api.midi_send_external = overtake_midi_send_external;
+    overtake_host_api.get_bpm = shim_get_bpm;
 
     /* Extract module directory from dsp path */
     char module_dir[256];
@@ -2411,6 +2416,11 @@ static void shadow_swap_display(void)
     display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
 }
 
+/* Callback for chain_mgmt: BPM query via sampler_get_bpm(NULL). */
+static float shim_get_bpm(void) {
+    return sampler_get_bpm(NULL);
+}
+
 /* Callback for chain_mgmt: handle shim-specific param prefixes.
  * Reads/writes shadow_param->key/value/error/result_len directly.
  * Returns 1 if handled, 0 if not. */
@@ -2625,6 +2635,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
                 .startup_modwheel_countdown = &shadow_startup_modwheel_countdown,
                 .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
                 .handle_param_special = shim_handle_param_special,
+                .get_bpm = shim_get_bpm,
             };
             chain_mgmt_init(&cm_host);
         }
