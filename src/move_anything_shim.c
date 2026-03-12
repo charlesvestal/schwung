@@ -149,6 +149,14 @@ static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
 
+/* PipeWire MIDI bridge */
+#include "host/pw_midi_bridge.h"
+static bool pw_midi_bridge_enabled = false;
+static pw_midi_ring_t *pw_midi_ui_shm = NULL;
+static pw_midi_ring_t *pw_midi_out_shm = NULL;
+static int shm_pw_midi_ui_fd = -1;
+static int shm_pw_midi_out_fd = -1;
+
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
 /* Link Audio publisher shared memory (shim → link_subscriber) */
@@ -683,6 +691,19 @@ static void load_feature_config(void)
             while (*colon == ' ' || *colon == '\t') colon++;
             if (strncmp(colon, "true", 4) == 0) {
                 skipback_require_volume = true;
+            }
+        }
+    }
+
+    /* Parse pw_midi_bridge_enabled (defaults to false) */
+    const char *pw_midi_key = strstr(config_buf, "\"pw_midi_bridge_enabled\"");
+    if (pw_midi_key) {
+        const char *colon = strchr(pw_midi_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                pw_midi_bridge_enabled = true;
             }
         }
     }
@@ -2111,6 +2132,43 @@ static void init_shadow_shm(void)
     link_audio.move_socket_fd = -1;
     link_audio.publisher_socket_fd = -1;
     memset(shadow_slot_capture, 0, sizeof(shadow_slot_capture));
+
+    /* PipeWire MIDI bridge shared memory */
+    if (pw_midi_bridge_enabled) {
+        shm_pw_midi_ui_fd = shm_open(SHM_PW_MIDI_UI, O_CREAT | O_RDWR, 0666);
+        if (shm_pw_midi_ui_fd >= 0) {
+            ftruncate(shm_pw_midi_ui_fd, sizeof(pw_midi_ring_t));
+            pw_midi_ui_shm = (pw_midi_ring_t *)mmap(NULL, sizeof(pw_midi_ring_t),
+                                                      PROT_READ | PROT_WRITE,
+                                                      MAP_SHARED, shm_pw_midi_ui_fd, 0);
+            if (pw_midi_ui_shm == MAP_FAILED) {
+                pw_midi_ui_shm = NULL;
+            } else {
+                memset((void *)pw_midi_ui_shm, 0, sizeof(pw_midi_ring_t));
+                pw_midi_ui_shm->active = 1;
+            }
+        }
+
+        shm_pw_midi_out_fd = shm_open(SHM_PW_MIDI_OUT, O_CREAT | O_RDWR, 0666);
+        if (shm_pw_midi_out_fd >= 0) {
+            ftruncate(shm_pw_midi_out_fd, sizeof(pw_midi_ring_t));
+            pw_midi_out_shm = (pw_midi_ring_t *)mmap(NULL, sizeof(pw_midi_ring_t),
+                                                       PROT_READ | PROT_WRITE,
+                                                       MAP_SHARED, shm_pw_midi_out_fd, 0);
+            if (pw_midi_out_shm == MAP_FAILED) {
+                pw_midi_out_shm = NULL;
+            } else {
+                memset((void *)pw_midi_out_shm, 0, sizeof(pw_midi_ring_t));
+                pw_midi_out_shm->active = 1;
+            }
+        }
+
+        if (pw_midi_ui_shm && pw_midi_out_shm) {
+            shadow_log("PipeWire MIDI bridge: shm initialized");
+        } else {
+            shadow_log("PipeWire MIDI bridge: shm init FAILED");
+        }
+    }
 
     shadow_shm_initialized = 1;
     printf("Shadow: Shared memory initialized (audio=%p, midi=%p, ui_midi=%p, display=%p, control=%p, ui=%p, param=%p, midi_out=%p, midi_dsp=%p, screenreader=%p, overlay=%p, pub_audio=%p)\n",
