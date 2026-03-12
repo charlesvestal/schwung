@@ -362,7 +362,7 @@ Example catalog entry:
   "description": "Dexed FM synth with DX7-compatible sysex support",
   "component_type": "sound_generator",
   "latest_version": "0.1.0",
-  "download_url": "https://github.com/charlesvestal/move-anything-dx7/releases/download/v0.1.0/dexed-module.tar.gz"
+  "download_url": "https://github.com/charlesvestal/move-everything-dx7/releases/download/v0.1.0/dexed-module.tar.gz"
 }
 ```
 
