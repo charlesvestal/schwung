@@ -852,6 +852,14 @@ static void shadow_inprocess_process_midi(void) {
         uint8_t cable = (p0 >> 4) & 0x0F;
         uint8_t status_usb = p1;
 
+        /* PipeWire MIDI bridge: forward cable 0 MIDI_OUT (track output) events */
+        if (pw_midi_out_shm && cable == 0 && cin >= 0x08 && cin <= 0x0E && (status_usb & 0x80)) {
+            uint8_t midi_msg[3] = { status_usb, p2, p3 };
+            uint8_t msg_len = 3;
+            if ((status_usb & 0xF0) == 0xC0 || (status_usb & 0xF0) == 0xD0) msg_len = 2;
+            pw_midi_ring_write(pw_midi_out_shm, midi_msg, msg_len);
+        }
+
         /* Handle system realtime messages (CIN=0x0F): clock, start, continue, stop
          * These are 1-byte messages that should be broadcast to ALL active slots */
         if (cin == 0x0F && status_usb >= 0xF8 && status_usb <= 0xFF) {
