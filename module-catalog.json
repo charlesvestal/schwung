@@ -513,6 +513,17 @@
       "asset_name": "slicer-module.tar.gz",
       "min_host_version": "0.7.0",
       "requires": "WAV sample files for slicing"
+    },
+    {
+      "id": "sconnect",
+      "name": "SConnect",
+      "description": "Unofficial Spotify Connect receiver for personal listening",
+      "author": "handcraftedcc",
+      "component_type": "sound_generator",
+      "github_repo": "handcraftedcc/move-anything-sconnect",
+      "default_branch": "main",
+      "asset_name": "sconnect-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
