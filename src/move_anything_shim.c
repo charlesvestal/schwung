@@ -157,6 +157,19 @@ static pw_midi_ring_t *pw_midi_out_shm = NULL;
 static int shm_pw_midi_ui_fd = -1;
 static int shm_pw_midi_out_fd = -1;
 
+/* Write a MIDI event to a PipeWire MIDI bridge ring buffer (lock-free SPSC) */
+static inline void pw_midi_ring_write(pw_midi_ring_t *ring, const uint8_t *midi, uint8_t len) {
+    if (!ring || len == 0 || len > 3) return;
+    uint32_t wi = ring->write_idx;
+    pw_midi_event_t *ev = &ring->events[wi & PW_MIDI_RING_MASK];
+    ev->data[0] = midi[0];
+    ev->data[1] = (len > 1) ? midi[1] : 0;
+    ev->data[2] = (len > 2) ? midi[2] : 0;
+    ev->len = len;
+    __sync_synchronize();  /* Ensure event data is visible before advancing index */
+    ring->write_idx = wi + 1;
+}
+
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
 /* Link Audio publisher shared memory (shim → link_subscriber) */
@@ -3896,6 +3909,14 @@ do_ioctl:
 
                 int filter = 0;
 
+                /* PipeWire MIDI bridge: forward cable 0 MIDI_IN events */
+                if (pw_midi_ui_shm && cable == 0x00 && status >= 0x80 && cin >= 0x08 && cin <= 0x0E) {
+                    uint8_t midi_msg[3] = { status, d1, hw_midi[j + 3] };
+                    uint8_t msg_len = 3;
+                    if (type == 0xC0 || type == 0xD0) msg_len = 2;
+                    pw_midi_ring_write(pw_midi_ui_shm, midi_msg, msg_len);
+                }
+
                 /* Only filter internal cable (0x00) */
                 if (cable == 0x00) {
                     /* Overtake mode split:
@@ -3976,6 +3997,21 @@ do_ioctl:
         } else {
             /* Not in shadow mode - copy MIDI_IN directly */
             memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
+
+            /* PipeWire MIDI bridge: forward cable 0 events when not in shadow display mode */
+            if (pw_midi_ui_shm) {
+                for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                    uint8_t cin_b = hw_midi[j] & 0x0F;
+                    uint8_t cable_b = (hw_midi[j] >> 4) & 0x0F;
+                    uint8_t st = hw_midi[j + 1];
+                    if (cable_b == 0x00 && st >= 0x80 && cin_b >= 0x08 && cin_b <= 0x0E) {
+                        uint8_t midi_msg[3] = { st, hw_midi[j + 2], hw_midi[j + 3] };
+                        uint8_t msg_len = 3;
+                        if ((st & 0xF0) == 0xC0 || (st & 0xF0) == 0xD0) msg_len = 2;
+                        pw_midi_ring_write(pw_midi_ui_shm, midi_msg, msg_len);
+                    }
+                }
+            }
         }
 
         /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
