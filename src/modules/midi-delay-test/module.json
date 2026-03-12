@@ -1,0 +1,10 @@
+{
+    "id": "midi-delay-test",
+    "name": "MIDI Delay Test",
+    "version": "0.1.0",
+    "description": "Sends periodic MIDI to diagnose output delay",
+    "author": "debug",
+    "ui": "ui.js",
+    "api_version": 1,
+    "component_type": "overtake"
+}

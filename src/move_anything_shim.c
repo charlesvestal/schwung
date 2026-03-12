@@ -3765,8 +3765,36 @@ do_ioctl:
      * Hardware has filled in new data; we filter it before Move sees it.
      * This eliminates race conditions - Move only sees our shadow buffer. */
     if (hardware_mmap_addr) {
-        /* Copy non-MIDI sections directly */
-        memcpy(shadow_mailbox + MIDI_OUT_OFFSET, hardware_mmap_addr + MIDI_OUT_OFFSET,
+        /* DIAG: count non-zero slots in hardware MIDI_OUT before copy-back */
+        {
+            static int postioctl_diag_counter = 0;
+            static int postioctl_stale_total = 0;
+            int hw_midi_out_used = 0;
+            for (int d = 0; d < MIDI_BUFFER_SIZE; d += 4) {
+                uint8_t *p = hardware_mmap_addr + MIDI_OUT_OFFSET + d;
+                if (p[0] != 0 || p[1] != 0 || p[2] != 0 || p[3] != 0) {
+                    hw_midi_out_used++;
+                }
+            }
+            postioctl_stale_total += hw_midi_out_used;
+            postioctl_diag_counter++;
+            if (hw_midi_out_used > 0 && (postioctl_diag_counter % 500) == 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg),
+                    "postioctl_diag: hw_midi_out_used=%d avg_stale=%.1f (over 500 ticks)",
+                    hw_midi_out_used, (float)postioctl_stale_total / 500.0f);
+                shadow_log(msg);
+                postioctl_stale_total = 0;
+            }
+        }
+
+        /* Clear MIDI_OUT region instead of copying stale hardware data.
+         * The SPI hardware echoes back ~24 non-zero packets in MIDI_OUT after
+         * each transaction. Move's own code (move_anything.c:2711) clears
+         * MIDI_OUT with memset after ioctl and never reads the hardware response.
+         * Copying stale data back wastes buffer slots and crowds out shadow MIDI
+         * injection + LED updates, causing dropped external MIDI messages. */
+        memset(shadow_mailbox + MIDI_OUT_OFFSET, 0,
                AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
         memcpy(shadow_mailbox + AUDIO_OUT_OFFSET, hardware_mmap_addr + AUDIO_OUT_OFFSET,
                DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
