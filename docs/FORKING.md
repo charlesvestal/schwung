@@ -271,7 +271,7 @@ If your fork uses git subtree to embed move-anything:
 
 ```bash
 # Add upstream as remote
-git remote add upstream https://github.com/charlesvestal/move-anything.git
+git remote add upstream https://github.com/charlesvestal/move-everything.git
 
 # Pull upstream changes
 git subtree pull --prefix=move-anything-my-version upstream main --squash
