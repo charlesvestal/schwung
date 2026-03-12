@@ -151,6 +151,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [NuSaw](https://github.com/charlesvestal/move-everything-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
+| [SConnect](https://github.com/handcraftedcc/move-anything-sconnect) | Unofficial Spotify Connect receiver for personal listening | handcraftedcc |
 
 ### Audio FX
 
