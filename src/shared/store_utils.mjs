@@ -9,7 +9,7 @@ import * as std from 'std';
 import * as os from 'os';
 
 /* Constants */
-export const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json';
+export const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-everything/main/module-catalog.json';
 export const CATALOG_CACHE_PATH = '/data/UserData/move-anything/catalog-cache.json';
 export const MODULES_DIR = '/data/UserData/move-anything/modules';
 export const BASE_DIR = '/data/UserData/move-anything';
