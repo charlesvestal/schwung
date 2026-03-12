@@ -475,7 +475,7 @@
       "description": "Real-time granular audio effect with live input capture and MIDI sync",
       "author": "Alessandro Gaiba (port: fillioning)",
       "component_type": "audio_fx",
-      "github_repo": "fillioning/move-everything-boris",
+      "github_repo": "fillioning/move-anything-boris",
       "default_branch": "main",
       "asset_name": "boris-granular-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -497,7 +497,7 @@
       "description": "CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift",
       "author": "DJ Hard Rich",
       "component_type": "tool",
-      "github_repo": "djhardrich/move-everything-dj",
+      "github_repo": "djhardrich/move-anything-dj",
       "default_branch": "main",
       "asset_name": "dj-module.tar.gz",
       "min_host_version": "0.7.0"
@@ -508,7 +508,7 @@
       "description": "Transient-detecting sample slicer with 32-pad polyphonic playback",
       "author": "Justin Joe",
       "component_type": "sound_generator",
-      "github_repo": "j3threejay/move-everything-slicer",
+      "github_repo": "j3threejay/move-anything-slicer",
       "default_branch": "main",
       "asset_name": "slicer-module.tar.gz",
       "min_host_version": "0.7.0",
