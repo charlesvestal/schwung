@@ -3792,6 +3792,41 @@ do_ioctl:
         uint8_t *sh_midi = shadow_mailbox + MIDI_IN_OFFSET;
         int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
 
+        /* Detect overtake mode exit and inject button releases into Move's MIDI_IN.
+         * During overtake, all cable-0 MIDI is filtered from reaching Move firmware,
+         * so if the user released Shift or the volume knob touch while in overtake,
+         * Move never saw the release. Inject shift-off and volume-touch-off to ensure
+         * Move doesn't think buttons are still held.
+         * This covers all exit paths: JS shadow_set_overtake_mode(0), D-Bus shutdown
+         * prompt, or any other direct write to shadow_control->overtake_mode. */
+        {
+            static int prev_overtake_mode = 0;
+            if (prev_overtake_mode != 0 && overtake_mode == 0 && shadow_midi_inject_shm) {
+                int wr = shadow_midi_inject_shm->write_idx;
+                /* Shift off: CC 49 value 0 */
+                if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+                    shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
+                    shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
+                    shadow_midi_inject_shm->buffer[wr + 2] = CC_SHIFT;
+                    shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
+                    wr += 4;
+                }
+                /* Volume touch off: Note-off note 8 */
+                if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+                    shadow_midi_inject_shm->buffer[wr]     = 0x08; /* CIN=NoteOff, cable=0 */
+                    shadow_midi_inject_shm->buffer[wr + 1] = 0x80; /* Note-off status, ch 0 */
+                    shadow_midi_inject_shm->buffer[wr + 2] = 8;    /* Volume touch note */
+                    shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* velocity 0 */
+                    wr += 4;
+                }
+                shadow_midi_inject_shm->write_idx = wr;
+                __sync_synchronize();
+                shadow_midi_inject_shm->ready++;
+                shadow_log("Overtake exit: injected shift-off and volume-touch-off");
+            }
+            prev_overtake_mode = overtake_mode;
+        }
+
         if (shadow_display_mode && shadow_control) {
             /* Filter MIDI_IN: zero out jog/back/knobs */
             for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
