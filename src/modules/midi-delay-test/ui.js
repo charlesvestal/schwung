@@ -5,7 +5,7 @@
  */
 
 let tickCount = 0;
-const TEST = 15;
+const TEST = 75;
 let state = 1;
 let cable = 2;
 let notesSent = 0;
@@ -66,7 +66,7 @@ function tick() {
     }
 
     /* Display every 50 ticks using shadow UI display API */
-    if (tickCount % 50 === 0) {
+    if (tickCount % 250 === 0) {
         clear_screen();
         print(0, 0, "MIDI Delay Test", 1);
         print(0, 12, "Notes:" + notesSent + " In:" + midiInCount, 1);

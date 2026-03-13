@@ -2366,7 +2366,7 @@ int main(int argc, char *argv[]) {
          * sleep is shorter to compensate, keeping average rate on target. */
         {
             long interval_ns = (shadow_control && shadow_control->overtake_mode >= 2)
-                ? 10000000L   /* 10ms → ~100 Hz for overtake (matches historical effective rate) */
+                ? 2000000L    /* 2ms → ~500 Hz for overtake */
                 : 16000000L;  /* 16ms → ~60 Hz for normal UI */
 
             next_tick_ts.tv_nsec += interval_ns;
