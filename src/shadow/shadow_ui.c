@@ -2285,11 +2285,9 @@ int main(int argc, char *argv[]) {
         /* Process incoming MIDI BEFORE tick() so that the current frame's
          * drawUI() reflects the latest input (knob CCs, button presses).
          * This eliminates one full loop iteration of display latency. */
-        int diag_midi_this_tick = 0;
         if (shadow_control && shadow_control->midi_ready != last_midi_ready) {
             last_midi_ready = shadow_control->midi_ready;
-            diag_midi_this_tick = process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
-            diag_midi_events_total += diag_midi_this_tick;
+            diag_midi_events_total += process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
             /* Always clear buffer after processing - even if no events were found,
              * the buffer may contain data the shim wrote that we couldn't parse.
              * This prevents the buffer from filling up and blocking new writes. */
@@ -2304,33 +2302,9 @@ int main(int argc, char *argv[]) {
 
         refresh_counter++;
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
-            struct timespec diag_disp_start, diag_disp_end;
-            clock_gettime(CLOCK_MONOTONIC, &diag_disp_start);
-
             js_display_pack(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
             js_display_screen_dirty = 0;
-
-            clock_gettime(CLOCK_MONOTONIC, &diag_disp_end);
-            uint64_t disp_us = ((uint64_t)diag_disp_end.tv_sec * 1000000 + diag_disp_end.tv_nsec / 1000)
-                             - ((uint64_t)diag_disp_start.tv_sec * 1000000 + diag_disp_start.tv_nsec / 1000);
-            static uint64_t diag_disp_max = 0;
-            static int diag_disp_count = 0;
-            static uint64_t diag_disp_total = 0;
-            diag_disp_count++;
-            diag_disp_total += disp_us;
-            if (disp_us > diag_disp_max) diag_disp_max = disp_us;
-            if (diag_disp_count >= 100) {
-                char disp_msg[256];
-                snprintf(disp_msg, sizeof(disp_msg),
-                    "shadow_ui_display: avg=%lluus max=%lluus count=%d",
-                    (unsigned long long)(diag_disp_total / diag_disp_count),
-                    (unsigned long long)diag_disp_max, diag_disp_count);
-                shadow_ui_log_line(disp_msg);
-                diag_disp_max = 0;
-                diag_disp_total = 0;
-                diag_disp_count = 0;
-            }
         }
 
         /* DIAG: log every 2 seconds (~1000 ticks at 500Hz) */
@@ -2349,15 +2323,6 @@ int main(int argc, char *argv[]) {
             diag_total_tick_us = 0;
             diag_slow_ticks = 0;
             diag_midi_events_total = 0;
-        }
-
-        /* DIAG: detect sudden tick spikes (>20ms) with MIDI context */
-        if (diag_delta_us > 20000 && shadow_control && shadow_control->overtake_mode >= 2) {
-            char spike_msg[256];
-            snprintf(spike_msg, sizeof(spike_msg),
-                "shadow_ui_spike: tick=%lluus midi_this_tick=%d tick#=%d",
-                (unsigned long long)diag_delta_us, diag_midi_this_tick, diag_tick_count);
-            shadow_ui_log_line(spike_msg);
         }
 
         /* Advance absolute tick target by the desired interval.
