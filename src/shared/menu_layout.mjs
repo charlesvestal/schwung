@@ -249,7 +249,7 @@ export const menuLayoutDefaults = {
 /* === Parameter Overlay === */
 /* A centered overlay for showing parameter name and value feedback */
 
-const OVERLAY_DURATION_TICKS = 240;  /* ~4 seconds at 60fps, dismissed on UI interaction */
+const OVERLAY_DURATION_TICKS = 1200;  /* ~4 seconds at ~300Hz effective overtake rate */
 const OVERLAY_WIDTH = 120;
 const OVERLAY_HEIGHT = 28;
 
