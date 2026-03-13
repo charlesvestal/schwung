@@ -170,6 +170,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Vocoder](https://github.com/charlesvestal/move-everything-vocoder) | Channel vocoder - uses mic/line-in as modulator to shape synth carrier | charlesvestal |
 | [Usefulity](https://github.com/charlesvestal/move-everything-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
 | [Boris Granular](https://github.com/fillioning/move-anything-boris) | Real-time granular audio effect with live input capture and MIDI sync | Alessandro Gaiba (port: fillioning) |
+| [Super Boum](https://github.com/fillioning/super-boum-move) | OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage | fillioning |
 
 ### MIDI FX
 
