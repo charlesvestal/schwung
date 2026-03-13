@@ -20,6 +20,7 @@
 #include <limits.h>
 #include <time.h>
 #include <dirent.h>
+#include <sched.h>
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
@@ -2204,6 +2205,18 @@ int main(int argc, char *argv[]) {
     unified_log_init();
     shadow_ui_log_line("shadow_ui: shared memory open");
     shadow_ui_write_pid();
+
+    /* Request SCHED_FIFO at low RT priority to reduce scheduling latency.
+     * Priority 10 is well below the audio thread (~50-99) but ensures we
+     * aren't starved by normal-priority processes on the PREEMPT_RT kernel. */
+    {
+        struct sched_param sp = { .sched_priority = 10 };
+        if (sched_setscheduler(0, SCHED_FIFO, &sp) == 0) {
+            shadow_ui_log_line("shadow_ui: SCHED_FIFO priority 10");
+        } else {
+            shadow_ui_log_line("shadow_ui: SCHED_FIFO failed (continuing at normal priority)");
+        }
+    }
 
     JSRuntime *rt = NULL;
     JSContext *ctx = NULL;
