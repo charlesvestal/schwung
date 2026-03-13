@@ -481,6 +481,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "superboum",
+      "name": "Super Boum",
+      "description": "OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage",
+      "author": "fillioning",
+      "component_type": "audio_fx",
+      "github_repo": "fillioning/super-boum-move",
+      "default_branch": "main",
+      "asset_name": "super-boum-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "performance-fx",
       "name": "Performance FX",
       "description": "32 punch-in audio FX with pressure control, latch, and tempo sync",
