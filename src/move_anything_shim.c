@@ -3788,13 +3788,12 @@ do_ioctl:
             }
         }
 
-        /* Clear MIDI_OUT region instead of copying stale hardware data.
-         * The SPI hardware echoes back ~24 non-zero packets in MIDI_OUT after
-         * each transaction. Move's own code (move_anything.c:2711) clears
-         * MIDI_OUT with memset after ioctl and never reads the hardware response.
-         * Copying stale data back wastes buffer slots and crowds out shadow MIDI
-         * injection + LED updates, causing dropped external MIDI messages. */
-        memset(shadow_mailbox + MIDI_OUT_OFFSET, 0,
+        /* Copy MIDI_OUT back from hardware.
+         * NOTE: Hardware echoes back ~24 stale packets here, which can pre-fill
+         * the buffer and crowd out shadow MIDI injection. A future optimization
+         * could zero this instead, but needs testing to ensure MoveOriginal
+         * firmware doesn't read back from MIDI_OUT after ioctl. */
+        memcpy(shadow_mailbox + MIDI_OUT_OFFSET, hardware_mmap_addr + MIDI_OUT_OFFSET,
                AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
         memcpy(shadow_mailbox + AUDIO_OUT_OFFSET, hardware_mmap_addr + AUDIO_OUT_OFFSET,
                DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
