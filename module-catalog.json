@@ -535,6 +535,17 @@
       "default_branch": "main",
       "asset_name": "sconnect-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "verglas",
+      "name": "Verglas",
+      "description": "Mutable Instruments Clouds granular processor — granular, stretch, looper, and spectral modes with output filters and limiter",
+      "author": "Emilie Gillet (port: fillioning)",
+      "component_type": "audio_fx",
+      "github_repo": "fillioning/move-everything-verglas",
+      "default_branch": "main",
+      "asset_name": "verglas-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
