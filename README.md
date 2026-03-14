@@ -183,7 +183,6 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [M8 LPP Emulator](https://github.com/charlesvestal/move-everything-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales (port: charlesvestal) |
 | [SID Control](https://github.com/charlesvestal/move-everything-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
 | [Custom MIDI Control](https://github.com/chaolue/move-anything-control) | Custom MIDI controller with 16 banks of configurable pads/knobs/buttons | chaolue |
 | [Performance FX](https://github.com/charlesvestal/move-everything-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
