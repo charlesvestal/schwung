@@ -1997,6 +1997,32 @@ static JSValue js_host_sampler_stop(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
+/* host_sampler_pause() - pause recording via shim IPC */
+static JSValue js_host_sampler_pause(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    shadow_control->sampler_cmd = 3;
+    return JS_TRUE;
+}
+
+/* host_sampler_resume() - resume recording via shim IPC */
+static JSValue js_host_sampler_resume(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    shadow_control->sampler_cmd = 4;
+    return JS_TRUE;
+}
+
+/* host_sampler_is_paused() - query if sampler is paused */
+static JSValue js_host_sampler_is_paused(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    return (shadow_control->sampler_state_val == 4) ? JS_TRUE : JS_FALSE;  /* 4 = SAMPLER_PAUSED */
+}
+
 /* host_sampler_is_recording() - query sampler state from shim */
 static JSValue js_host_sampler_is_recording(JSContext *ctx, JSValueConst this_val,
                                              int argc, JSValueConst *argv) {
@@ -2155,6 +2181,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_is_recording", JS_NewCFunction(ctx, js_host_sampler_is_recording, "host_sampler_is_recording", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_get_samples_written", JS_NewCFunction(ctx, js_host_sampler_get_samples_written, "host_sampler_get_samples_written", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_set_external_stop", JS_NewCFunction(ctx, js_host_sampler_set_external_stop, "host_sampler_set_external_stop", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_sampler_pause", JS_NewCFunction(ctx, js_host_sampler_pause, "host_sampler_pause", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_sampler_resume", JS_NewCFunction(ctx, js_host_sampler_resume, "host_sampler_resume", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_sampler_is_paused", JS_NewCFunction(ctx, js_host_sampler_is_paused, "host_sampler_is_paused", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_wake_all_slots", JS_NewCFunction(ctx, js_host_wake_all_slots, "host_wake_all_slots", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
