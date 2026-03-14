@@ -573,6 +573,24 @@ void sampler_start_recording(void) {
     s_host.log(msg);
 }
 
+void sampler_pause_recording(void) {
+    if (sampler_state != SAMPLER_RECORDING) return;
+    s_host.log("Sampler: pausing recording");
+    sampler_state = SAMPLER_PAUSED;
+    s_host.overlay_sync();
+}
+
+void sampler_resume_recording(void) {
+    if (sampler_state != SAMPLER_PAUSED) return;
+    s_host.log("Sampler: resuming recording");
+
+    /* Re-apply fade-in ramp to avoid click at resume boundary */
+    sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
+
+    sampler_state = SAMPLER_RECORDING;
+    s_host.overlay_sync();
+}
+
 void sampler_stop_recording(void) {
     /* If in preroll, just cancel back to armed (no WAV to finalize) */
     if (sampler_state == SAMPLER_PREROLL) {

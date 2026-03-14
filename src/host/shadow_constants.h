@@ -228,6 +228,7 @@ typedef struct shadow_screenreader_t {
 #define SHADOW_SAMPLER_ARMED      1
 #define SHADOW_SAMPLER_RECORDING  2
 #define SHADOW_SAMPLER_PREROLL    3
+#define SHADOW_SAMPLER_PAUSED    4
 
 /*
  * Overlay state structure for communication from shim to shadow UI.
@@ -238,7 +239,7 @@ typedef struct shadow_overlay_state_t {
     volatile uint32_t sequence;             /* Incremented on state change; JS polls cheaply */
 
     volatile uint8_t  overlay_type;         /* NONE / SAMPLER / SKIPBACK */
-    volatile uint8_t  sampler_state;        /* IDLE / ARMED / RECORDING */
+    volatile uint8_t  sampler_state;        /* IDLE / ARMED / RECORDING / PREROLL / PAUSED */
     volatile uint8_t  sampler_source;       /* 0=Resample, 1=Move Input */
     volatile uint8_t  sampler_cursor;       /* 0=Source menu, 1=Duration menu */
 

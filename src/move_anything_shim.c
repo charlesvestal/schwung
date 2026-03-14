@@ -1683,8 +1683,20 @@ static void shadow_inprocess_mix_from_buffer(void) {
         } else if (cmd == 2) {
             /* Stop recording */
             shadow_control->sampler_cmd = 0;
-            if (sampler_state == SAMPLER_RECORDING) {
+            if (sampler_state == SAMPLER_RECORDING || sampler_state == SAMPLER_PAUSED) {
                 sampler_stop_recording();
+            }
+        } else if (cmd == 3) {
+            /* Pause recording */
+            shadow_control->sampler_cmd = 0;
+            if (sampler_state == SAMPLER_RECORDING) {
+                sampler_pause_recording();
+            }
+        } else if (cmd == 4) {
+            /* Resume recording */
+            shadow_control->sampler_cmd = 0;
+            if (sampler_state == SAMPLER_PAUSED) {
+                sampler_resume_recording();
             }
         }
 
