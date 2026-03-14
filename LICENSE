@@ -17,7 +17,7 @@ Full license text: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
 
 ## Fork Provenance
 
-This project (Move Everything) is forked from [Move Anything](https://github.com/bobbydigitales/move-anything) by Bobby Digitales. At the time of forking, the upstream repository was licensed solely under CC BY-NC-SA 4.0, without additional restrictions. The upstream repository has since added supplementary terms regarding AI training and AI-generated derivative works. Those additional terms were not part of the license at the time this fork was created, and this project does not incorporate any upstream changes made after the fork.
+This project (Move Everything) is forked from [Move Anything](https://github.com/bobbydigitales/move-anything) by Bobby Digitales (approximately March 2026). At the time of forking, the upstream repository was licensed solely under CC BY-NC-SA 4.0, without additional restrictions. The upstream repository has since added supplementary terms regarding AI training and AI-generated derivative works. Those additional terms were not part of the license at the time this fork was created, and no upstream commits have been merged into this repository since the fork.
 
 This fork continues under CC BY-NC-SA 4.0 as it was received.
 
