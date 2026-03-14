@@ -423,6 +423,7 @@ External modules are maintained in separate repositories and available via Modul
 - `tapedelay` - Tape delay with flutter and saturation
 
 **Utilities/Overtake:**
+- `m8` - Dirtywave M8 Launchpad Pro emulator
 - `sidcontrol` - SID Control for SIDaster III
 - `controller` - MIDI Controller with 16 banks (built-in)
 
