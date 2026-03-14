@@ -46,17 +46,6 @@
       "requires": "SFZ or DecentSampler instrument folders (place in module's instruments/ folder)"
     },
     {
-      "id": "m8",
-      "name": "M8 LPP Emulator",
-      "description": "Novation Launchpad Pro emulation for Dirtywave M8",
-      "author": "bobbydigitales (port: charlesvestal)",
-      "component_type": "overtake",
-      "github_repo": "charlesvestal/move-everything-m8",
-      "default_branch": "main",
-      "asset_name": "m8-module.tar.gz",
-      "min_host_version": "0.3.6"
-    },
-    {
       "id": "minijv",
       "name": "Mini-JV",
       "description": "ROM-based PCM rompler emulator",
