@@ -23,7 +23,8 @@ typedef enum {
     SAMPLER_IDLE = 0,
     SAMPLER_ARMED,
     SAMPLER_RECORDING,
-    SAMPLER_PREROLL
+    SAMPLER_PREROLL,
+    SAMPLER_PAUSED
 } sampler_state_t;
 
 typedef enum {
@@ -168,6 +169,8 @@ void sampler_announce_menu_item(void);
 void sampler_start_recording(void);
 void sampler_start_recording_to(const char *output_path);
 void sampler_stop_recording(void);
+void sampler_pause_recording(void);
+void sampler_resume_recording(void);
 
 /* Query sampler state */
 int sampler_get_state(void);
