@@ -568,6 +568,14 @@ else
     echo "Warning: libs/curl/curl not found - store module will not work without it"
 fi
 
+# Copy filebrowser binary (if present)
+if [ -f "./libs/filebrowser/filebrowser" ]; then
+    mkdir -p ./build/bin/
+    cp -u ./libs/filebrowser/filebrowser ./build/bin/
+    cp -u ./libs/filebrowser/LICENSE ./build/licenses/FILEBROWSER_LICENSE.txt 2>/dev/null || true
+    echo "Bundled filebrowser binary"
+fi
+
 # eSpeak-NG data directory is copied to build/espeak-ng-data/ above
 
 echo "Build complete!"

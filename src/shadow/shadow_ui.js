@@ -735,6 +735,12 @@ const GLOBAL_SETTINGS_SECTIONS = [
         ]
     },
     {
+        id: "services", label: "Services",
+        items: [
+            { key: "filebrowser_enabled", label: "File Browser", type: "bool" }
+        ]
+    },
+    {
         id: "updates", label: "Updates",
         items: [
             { key: "check_updates", label: "[Check Updates]", type: "action" },
@@ -754,6 +760,9 @@ let globalSettingsEditing = false;
 /* Tools menu state */
 let toolsMenuIndex = 0;
 let toolModules = [];           // Populated by scanForToolModules()
+
+/* Filebrowser state */
+let filebrowserEnabled = false;    // Off by default, toggle in Settings > Services
 
 /* Preview player state */
 let previewEnabled = true;         // Global setting: auto-preview in file browser
@@ -1244,7 +1253,7 @@ let lfoCtx = null;  /* Active LFO context: { lfoIdx, getParam, setParam, getTarg
 let selectedLfoItem = 0;
 let editingLfoValue = false;
 
-const LFO_SHAPES = ["Sine", "Tri", "Saw", "Square", "S&H"];
+const LFO_SHAPES = ["Sine", "Tri", "Saw", "Square", "S&H", "Swishy"];
 const LFO_DIVISIONS = ["8bar", "4bar", "2bar", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4T", "1/8T", "1/16T", "1/4D", "1/8D"];
 
 /* LFO target picker state */
@@ -4536,6 +4545,38 @@ function loadBrowserPreviewConfig() {
     } catch (e) {}
 }
 
+function saveFilebrowserConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+        config.filebrowser_enabled = filebrowserEnabled;
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {}
+}
+
+function loadFilebrowserConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+        const config = JSON.parse(content);
+        if (config.filebrowser_enabled !== undefined) {
+            filebrowserEnabled = config.filebrowser_enabled;
+            /* Sync flag file with config */
+            const flagPath = "/data/UserData/move-anything/filebrowser_enabled";
+            if (filebrowserEnabled) {
+                host_write_file(flagPath, "1");
+            } else {
+                host_remove_dir(flagPath);
+            }
+        }
+    } catch (e) {}
+}
+
 function savePadTypingConfig() {
     try {
         const configPath = "/data/UserData/move-anything/shadow_config.json";
@@ -7473,6 +7514,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "text_preview") {
         return textPreviewGlobal ? "On" : "Off";
     }
+    if (setting.key === "filebrowser_enabled") {
+        return filebrowserEnabled ? "On" : "Off";
+    }
     return "-";
 }
 
@@ -7629,6 +7673,31 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "text_preview") {
         setTextPreviewGlobal(!textPreviewGlobal);
         saveTextPreviewConfig();
+        return;
+    }
+
+    if (setting.key === "filebrowser_enabled") {
+        filebrowserEnabled = !filebrowserEnabled;
+        const flagPath = "/data/UserData/move-anything/filebrowser_enabled";
+        if (filebrowserEnabled) {
+            host_write_file(flagPath, "1");
+            /* Start filebrowser now */
+            if (typeof host_system_cmd === "function") {
+                host_system_cmd("sh -c '/data/UserData/move-anything/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/move-anything/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
+            }
+        } else {
+            host_remove_dir(flagPath);
+            /* Stop filebrowser now */
+            if (typeof host_system_cmd === "function") {
+                host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
+            }
+        }
+        saveFilebrowserConfig();
+        warningTitle = "File Browser";
+        warningLines = filebrowserEnabled
+            ? wrapText("On. Access at http://move.local:404", 18)
+            : ["Off."];
+        warningActive = true;
         return;
     }
 }
@@ -9527,38 +9596,48 @@ function drawChainEdit() {
         const textY = BOX_Y + 5;
         print(textX, textY, abbrev, textColor);
 
-        /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 3px-high tiny digits */
+        /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 4px-high tiny digits */
         const lfoInfo = lfoTargets[comp.key];
         if (lfoInfo) {
             const has1 = lfoInfo.lfo1;
             const has2 = lfoInfo.lfo2;
-            const iy = BOX_Y - 5;  /* 5px above box top */
-            /* Draw ~ using set_pixel (3px high tilde) */
+            const iy = BOX_Y - 6;  /* 6px above box top (4px glyph + 2px gap) */
             let cx = x + Math.floor(BOX_W / 2);
-            if (has1 && has2) cx -= 5; /* center ~1+2 */
-            else cx -= 2;              /* center ~N */
-            /* 3px tilde: .#. / #.# */
-            set_pixel(cx, iy, 1); set_pixel(cx + 1, iy + 1, 1); set_pixel(cx + 2, iy, 1);
-            let dx = cx + 4;
+            if (has1 && has2) cx -= 7; /* center ~1+2 */
+            else cx -= 3;              /* center ~N */
+            /* 4px-high tilde squiggle: .... / .#.# / #.#. / .... */
+            set_pixel(cx + 1, iy + 1, 1); set_pixel(cx + 3, iy + 1, 1);
+            set_pixel(cx, iy + 2, 1); set_pixel(cx + 2, iy + 2, 1);
+            let dx = cx + 5;
             if (has1 && has2) {
-                /* tiny "1": |, |, | */
-                set_pixel(dx, iy, 1); set_pixel(dx, iy + 1, 1); set_pixel(dx, iy + 2, 1);
-                dx += 2;
-                /* tiny "+": .#. / ### / .#. but 3px: just a cross */
-                set_pixel(dx + 1, iy, 1); set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1); set_pixel(dx + 2, iy + 1, 1); set_pixel(dx + 1, iy + 2, 1);
+                /* tiny "1": .#. / ##. / .#. / .#. */
+                set_pixel(dx + 1, iy, 1);
+                set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1);
+                set_pixel(dx + 1, iy + 2, 1);
+                set_pixel(dx + 1, iy + 3, 1);
+                dx += 3;
+                /* tiny "+": cross centered vertically */
+                set_pixel(dx, iy + 2, 1);
+                set_pixel(dx + 1, iy + 1, 1); set_pixel(dx + 1, iy + 2, 1); set_pixel(dx + 1, iy + 3, 1);
+                set_pixel(dx + 2, iy + 2, 1);
                 dx += 4;
-                /* tiny "2": ## / .# / ## */
+                /* tiny "2": ##. / ..# / .#. / ### */
                 set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
-                set_pixel(dx + 1, iy + 1, 1);
-                set_pixel(dx, iy + 2, 1); set_pixel(dx + 1, iy + 2, 1);
+                set_pixel(dx + 2, iy + 1, 1);
+                set_pixel(dx + 1, iy + 2, 1);
+                set_pixel(dx, iy + 3, 1); set_pixel(dx + 1, iy + 3, 1); set_pixel(dx + 2, iy + 3, 1);
             } else if (has1) {
-                /* tiny "1" */
-                set_pixel(dx, iy, 1); set_pixel(dx, iy + 1, 1); set_pixel(dx, iy + 2, 1);
+                /* tiny "1": .#. / ##. / .#. / .#. */
+                set_pixel(dx + 1, iy, 1);
+                set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1);
+                set_pixel(dx + 1, iy + 2, 1);
+                set_pixel(dx + 1, iy + 3, 1);
             } else {
-                /* tiny "2" */
+                /* tiny "2": ##. / ..# / .#. / ### */
                 set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
-                set_pixel(dx + 1, iy + 1, 1);
-                set_pixel(dx, iy + 2, 1); set_pixel(dx + 1, iy + 2, 1);
+                set_pixel(dx + 2, iy + 1, 1);
+                set_pixel(dx + 1, iy + 2, 1);
+                set_pixel(dx, iy + 3, 1); set_pixel(dx + 1, iy + 3, 1); set_pixel(dx + 2, iy + 3, 1);
             }
         }
     }
@@ -10353,6 +10432,7 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         title: "LFO " + (lfoIdx + 1),
         returnView: VIEWS.CHAIN_SETTINGS,
         returnAnnounce: "Chain Settings",
+        supportsRetrigger: true,
     };
 }
 
@@ -10432,6 +10512,9 @@ function getLfoItems() {
 
     items.push({ key: "depth", label: "Depth", type: "float", min: 0, max: 1, step: 0.01, unit: "%" });
     items.push({ key: "phase_offset", label: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "deg" });
+    if (lfoCtx && lfoCtx.supportsRetrigger) {
+        items.push({ key: "retrigger", label: "Retrigger", type: "enum", options: ["Off", "On"] });
+    }
 
     return items;
 }
@@ -10454,6 +10537,7 @@ function getLfoDisplayValue(item) {
     if (item.key === "rate_hz") return parseFloat(raw).toFixed(1) + " Hz";
     if (item.key === "depth") return Math.round(parseFloat(raw) * 100) + "%";
     if (item.key === "phase_offset") return Math.round(parseFloat(raw) * 360) + "\u00b0";
+    if (item.key === "retrigger") return raw === "1" ? "On" : "Off";
     if (item.key === "target") {
         const target = lfoCtx.getParam("target") || "";
         const param = lfoCtx.getParam("target_param") || "";
@@ -10605,6 +10689,7 @@ globalThis.init = function() {
     loadBrowserPreviewConfig();
     loadPadTypingConfig();
     loadTextPreviewConfig();
+    loadFilebrowserConfig();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
     const savedMasterFx = loadMasterFxFromConfig();
