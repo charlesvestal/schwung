@@ -35,6 +35,7 @@ import {
 const NUM_TRACKS = 4;
 const NUM_COLS   = 8;
 const SETS_DIR   = "/data/UserData/UserLibrary/Sets";
+const CONTINUE_PAD = -1;
 
 /* Pad note for track t (0-3, top=0) column c (0-7) */
 function padNote(t, c) { return (92 - 8 * t) + c; }
@@ -135,10 +136,15 @@ let overlayTimeout = 0;        /* show overlay until this timestamp */
 
 /* Step parameter editing */
 const REPEAT_VALUES = [1, 2, 4, 8, 16, 32, 64];
+const BAR_LENGTH_MODES = ["longest", "shortest", "custom"];
+const CUSTOM_BARS_MIN = 1;
+const CUSTOM_BARS_MAX = 64;
 let currentView = "list";   /* "list" or "step_params" */
 let stepParamsPeek = false; /* true = entered via hold (exit on release), false = shift (sticky) */
 let sessionWarning = false;  /* true = show "switch to session" screen, dismiss with jog click */
 let editingEntry = -1;      /* index of entry being edited */
+let stepParamsField = 0;    /* 0=repeats, 1=bar length mode, 2=custom bars */
+let stepParamsEditing = false; /* false=navigate fields with jog, true=edit field value */
 
 /* Persistence */
 const SET_STATE_DIR = "/data/UserData/move-anything/set_state";
@@ -200,7 +206,14 @@ function songStatePath() {
 function serializableSongEntries() {
     const entries = [];
     for (const e of songEntries) {
-        if (!isEntryEmpty(e)) entries.push({ pads: e.pads, repeats: e.repeats });
+        if (!isEntryEmpty(e)) {
+            entries.push({
+                pads: e.pads,
+                repeats: e.repeats,
+                barLengthMode: getBarLengthMode(e),
+                customBars: Math.max(CUSTOM_BARS_MIN, Math.min(CUSTOM_BARS_MAX, e.customBars || 1))
+            });
+        }
     }
     return entries;
 }
@@ -227,7 +240,19 @@ function loadSongData() {
         if (!Array.isArray(entries) || entries.length === 0) return false;
         songEntries = entries.map(e => ({
             pads: Array.isArray(e.pads) ? e.pads : [null, null, null, null],
-            repeats: typeof e.repeats === "number" ? e.repeats : 1
+            repeats: typeof e.repeats === "number" ? e.repeats : 1,
+            barLengthMode: BAR_LENGTH_MODES.indexOf(e.barLengthMode) >= 0
+                ? e.barLengthMode
+                : ((typeof e.lengthBars === "number" && e.lengthBars > 0) ? "custom" : "longest"),
+            customBars: Math.max(
+                CUSTOM_BARS_MIN,
+                Math.min(
+                    CUSTOM_BARS_MAX,
+                    (typeof e.customBars === "number")
+                        ? e.customBars
+                        : ((typeof e.lengthBars === "number" && e.lengthBars > 0) ? e.lengthBars : 1)
+                )
+            )
         }));
         if (!Array.isArray(parsed) && typeof parsed.tailBars === "number") {
             tailBars = parsed.tailBars;
@@ -246,7 +271,12 @@ function loadSongData() {
 /* ── Undo ─────────────────────────────────────────────────────────── */
 
 function pushUndo() {
-    const snapshot = songEntries.map(e => ({ pads: [...e.pads], repeats: e.repeats }));
+    const snapshot = songEntries.map(e => ({
+        pads: [...e.pads],
+        repeats: e.repeats,
+        barLengthMode: getBarLengthMode(e),
+        customBars: Math.max(CUSTOM_BARS_MIN, Math.min(CUSTOM_BARS_MAX, e.customBars || 1))
+    }));
     undoStack.push(JSON.stringify(snapshot));
     if (undoStack.length > MAX_UNDO) undoStack.shift();
 }
@@ -254,7 +284,12 @@ function pushUndo() {
 function popUndo() {
     if (undoStack.length === 0) return false;
     const snapshot = JSON.parse(undoStack.pop());
-    songEntries = snapshot.map(e => ({ pads: e.pads, repeats: e.repeats }));
+    songEntries = snapshot.map(e => ({
+        pads: e.pads,
+        repeats: e.repeats,
+        barLengthMode: BAR_LENGTH_MODES.indexOf(e.barLengthMode) >= 0 ? e.barLengthMode : "longest",
+        customBars: Math.max(CUSTOM_BARS_MIN, Math.min(CUSTOM_BARS_MAX, e.customBars || 1))
+    }));
     ensureTrailingEmpty();
     if (selectedEntry >= songEntries.length) selectedEntry = songEntries.length - 1;
     lastStepLedKey = "";
@@ -306,22 +341,53 @@ function parseSong(song) {
 
 /* ── Entry Helpers ─────────────────────────────────────────────────── */
 
-function entryBars(entry) {
-    let maxBars = 0;
+function getTriggeredClipBars(entry) {
+    const bars = [];
     for (let t = 0; t < NUM_TRACKS; t++) {
         const c = entry.pads[t];
-        if (c !== null && clipGrid[t] && clipGrid[t][c] && clipGrid[t][c].exists) {
-            maxBars = Math.max(maxBars, clipGrid[t][c].bars);
+        if (c === null || c === CONTINUE_PAD) continue;
+        if (clipGrid[t] && clipGrid[t][c] && clipGrid[t][c].exists) {
+            bars.push(clipGrid[t][c].bars);
         }
     }
-    return Math.max(maxBars, 1);
+    return bars;
+}
+
+function getBarLengthMode(entry) {
+    const mode = entry.barLengthMode;
+    return BAR_LENGTH_MODES.indexOf(mode) >= 0 ? mode : "longest";
+}
+
+function barLengthModeLabel(mode) {
+    if (mode === "shortest") return "Shortest";
+    if (mode === "custom") return "Custom";
+    return "Longest";
+}
+
+function getAutoEntryBars(entry) {
+    const bars = getTriggeredClipBars(entry);
+    if (bars.length === 0) return 1;
+    if (getBarLengthMode(entry) === "shortest") {
+        return Math.max(Math.min.apply(null, bars), 1);
+    }
+    return Math.max(Math.max.apply(null, bars), 1);
+}
+
+function getEntryDurationBars(entry) {
+    if (getBarLengthMode(entry) === "custom") {
+        const customBars = typeof entry.customBars === "number" ? entry.customBars : 1;
+        return Math.max(CUSTOM_BARS_MIN, Math.min(CUSTOM_BARS_MAX, customBars));
+    }
+    return getAutoEntryBars(entry);
 }
 
 function entryLabel(entry) {
     let parts = [];
     for (let t = 0; t < NUM_TRACKS; t++) {
         const c = entry.pads[t];
-        parts.push(c !== null ? (t + 1) + COL_LABELS[c] : "--");
+        if (c === CONTINUE_PAD) parts.push((t + 1) + "\"");
+        else if (c !== null) parts.push((t + 1) + COL_LABELS[c]);
+        else parts.push("--");
     }
     return parts.join(" ");
 }
@@ -335,7 +401,11 @@ function describeEntry(idx) {
     if (isEntryEmpty(entry)) return "Step " + (idx + 1) + ", empty";
     const label = entryLabel(entry);
     const rep = entry.repeats > 1 ? ", repeat " + entry.repeats + " times" : "";
-    return "Step " + (idx + 1) + ", " + label + rep;
+    const mode = getBarLengthMode(entry);
+    const len = mode === "custom"
+        ? ", custom " + getEntryDurationBars(entry) + " bars"
+        : (mode === "shortest" ? ", shortest clip length" : "");
+    return "Step " + (idx + 1) + ", " + label + rep + len;
 }
 
 function isEntryEmpty(entry) {
@@ -347,7 +417,7 @@ function isEntryComplete(entry) {
 }
 
 function newEntry() {
-    return { pads: [null, null, null, null], repeats: 1 };
+    return { pads: [null, null, null, null], repeats: 1, barLengthMode: "longest", customBars: 1 };
 }
 
 
@@ -434,8 +504,9 @@ function drawListView() {
         } else {
             print(2, y, prefix + numStr + ":", color);
             print(26, y, entryLabel(entry), color);
-            const repStr = "x" + entry.repeats;
-            print(128 - repStr.length * 6 - 2, y, repStr, color);
+            const stepBars = getEntryDurationBars(entry);
+            const barsStr = entry.repeats > 1 ? (stepBars + "x" + entry.repeats) : String(stepBars);
+            print(128 - barsStr.length * 6 - 2, y, barsStr, color);
         }
     }
 
@@ -454,7 +525,7 @@ function drawListView() {
         print(2, 57, recLabel + " " + timeStr + " step " + (currentEntryIndex + 1) + "/" + countNonEmpty(), 1);
     } else if (playbackState === "playing") {
         const entry = songEntries[currentEntryIndex];
-        const totalBars = entryBars(entry) * entry.repeats;
+        const totalBars = getEntryDurationBars(entry) * entry.repeats;
         const elapsed = (Date.now() - playStartTime) / barDurationMs;
         const currentBar = Math.min(Math.floor(elapsed) + 1, totalBars);
         print(2, 57, "Playing " + (currentEntryIndex + 1) + "/" + countNonEmpty() + " bar " + currentBar + "/" + totalBars, 1);
@@ -478,6 +549,7 @@ function drawStepParamsView() {
 
     const entry = songEntries[editingEntry];
     if (!entry) { currentView = "list"; return; }
+    const mode = getBarLengthMode(entry);
 
     /* Header */
     const title = "Step " + String(editingEntry + 1).padStart(2, "0") + " Settings";
@@ -487,23 +559,30 @@ function drawStepParamsView() {
     /* Pad assignments */
     print(2, 15, entryLabel(entry), 1);
 
-    /* Clip bars (informational) */
-    const bars = entryBars(entry);
-    print(2, 25, "Clip: " + bars + " bar" + (bars !== 1 ? "s" : ""), 1);
+    /* Effective step bars (custom mode shows custom length) */
+    const stepBars = getEntryDurationBars(entry);
+    print(2, 25, "Steps: " + stepBars + " bar" + (stepBars !== 1 ? "s" : ""), 1);
 
     /* Repeats — highlight value */
     print(2, 35, "Repeats:", 1);
     const repStr = " " + entry.repeats + "x ";
-    fill_rect(50, 33, repStr.length * 6 + 2, 11, 1);
-    print(52, 35, repStr, 0);
+    if (stepParamsField === 0) fill_rect(50, 33, repStr.length * 6 + 2, 11, 1);
+    print(52, 35, repStr, stepParamsField === 0 ? 0 : 1);
 
-    /* Total duration */
-    const total = bars * entry.repeats;
-    print(2, 45, "= " + total + " bar" + (total !== 1 ? "s" : "") + " total", 1);
+    /* Bar length mode — longest/shortest/custom */
+    print(2, 45, "Length:", 1);
+    const modeLabel = barLengthModeLabel(mode);
+    const modeStr = " " + modeLabel + " ";
+    if (stepParamsField === 1) fill_rect(50, 43, modeStr.length * 6 + 2, 11, 1);
+    print(52, 45, modeStr, stepParamsField === 1 ? 0 : 1);
 
-    /* Footer */
-    fill_rect(0, 55, 128, 1, 1);
-    print(2, 57, "Jog:change  Back:done", 1);
+    if (mode === "custom") {
+        print(2, 55, "Custom:", 1);
+        const customBars = getEntryDurationBars(entry);
+        const customStr = " " + customBars + " bars ";
+        if (stepParamsField === 2) fill_rect(50, 53, customStr.length * 6 + 2, 11, 1);
+        print(52, 55, customStr, stepParamsField === 2 ? 0 : 1);
+    }
 }
 
 /* ── Playback Engine ───────────────────────────────────────────────── */
@@ -600,7 +679,7 @@ function tickPlayback() {
     if (currentEntryIndex >= songEntries.length) { stopPlayback(); return; }
 
     const entry = songEntries[currentEntryIndex];
-    const totalBars = entryBars(entry) * entry.repeats;
+    const totalBars = getEntryDurationBars(entry) * entry.repeats;
     const elapsed = (Date.now() - playStartTime) / barDurationMs;
 
     /* Pre-trigger next entry 1 beat (0.25 bars) before end.
@@ -656,7 +735,7 @@ function triggerEntry(entryIndex) {
     const noteOns = [];
     for (let t = 0; t < NUM_TRACKS; t++) {
         const c = entry.pads[t];
-        if (c !== null) noteOns.push(padNote(t, c));
+        if (c !== null && c !== CONTINUE_PAD) noteOns.push(padNote(t, c));
     }
 
     console.log("song-mode: triggerEntry " + entryIndex + " notes=[" + noteOns.join(",") + "]");
@@ -901,7 +980,7 @@ function updatePadHighlights() {
         if (playbackState !== "playing" && selectedEntry < songEntries.length) {
             const entry = songEntries[selectedEntry];
             for (let t = 0; t < NUM_TRACKS; t++) {
-                if (entry.pads[t] !== null) {
+                if (entry.pads[t] !== null && entry.pads[t] !== CONTINUE_PAD) {
                     newHighlights.push(padNote(t, entry.pads[t]));
                 }
             }
@@ -1046,6 +1125,8 @@ globalThis.tick = function() {
                 pushUndo();
                 editingEntry = entryIdx;
                 currentView = "step_params";
+                stepParamsField = 0;
+                stepParamsEditing = false;
                 stepParamsPeek = true;  /* peek — exits on release */
                 const e = songEntries[editingEntry];
                 announceView("Step " + (editingEntry + 1) + " Settings, Repeats " + e.repeats + " times");
@@ -1116,21 +1197,68 @@ globalThis.onMidiMessageInternal = function(data) {
 
     /* ── Step Params view controls ── */
     if (currentView === "step_params") {
-        /* Jog wheel — cycle repeat values */
+        const entry = songEntries[editingEntry];
+        const maxField = (entry && getBarLengthMode(entry) === "custom") ? 2 : 1;
+        if (stepParamsField > maxField) stepParamsField = maxField;
+
+        /* Jog wheel — navigate fields (select mode) or edit value (edit mode) */
         if (status === MidiCC && d1 === MoveMainKnob) {
             const delta = decodeDelta(d2);
-            const entry = songEntries[editingEntry];
+            if (delta === 0) return;
+
+            if (!stepParamsEditing) {
+                stepParamsField = Math.max(0, Math.min(maxField, stepParamsField + delta));
+                if (stepParamsField === 0) {
+                    announceMenuItem("Repeats", entry ? (entry.repeats + "x") : "");
+                } else if (stepParamsField === 1) {
+                    announceMenuItem("Bar Length", entry ? barLengthModeLabel(getBarLengthMode(entry)) : "");
+                } else {
+                    announceMenuItem("Custom Bars", entry ? String(getEntryDurationBars(entry)) : "");
+                }
+                return;
+            }
+
             if (entry) {
-                let idx = REPEAT_VALUES.indexOf(entry.repeats);
-                if (idx < 0) idx = 0;
-                idx = Math.max(0, Math.min(REPEAT_VALUES.length - 1, idx + delta));
-                entry.repeats = REPEAT_VALUES[idx];
-                announceParameter("Repeats", entry.repeats + " times");
+                if (stepParamsField === 0) {
+                    let idx = REPEAT_VALUES.indexOf(entry.repeats);
+                    if (idx < 0) idx = 0;
+                    idx = Math.max(0, Math.min(REPEAT_VALUES.length - 1, idx + delta));
+                    entry.repeats = REPEAT_VALUES[idx];
+                    announceParameter("Repeats", entry.repeats + " times");
+                } else if (stepParamsField === 1) {
+                    let idx = BAR_LENGTH_MODES.indexOf(getBarLengthMode(entry));
+                    if (idx < 0) idx = 0;
+                    idx = Math.max(0, Math.min(BAR_LENGTH_MODES.length - 1, idx + delta));
+                    entry.barLengthMode = BAR_LENGTH_MODES[idx];
+                    announceParameter("Bar Length", barLengthModeLabel(entry.barLengthMode));
+                    if (entry.barLengthMode !== "custom" && stepParamsField === 2) stepParamsField = 1;
+                } else if (stepParamsField === 2) {
+                    const nextBars = (typeof entry.customBars === "number" ? entry.customBars : 1) + delta;
+                    entry.customBars = Math.max(CUSTOM_BARS_MIN, Math.min(CUSTOM_BARS_MAX, nextBars));
+                    announceParameter("Custom Bars", String(entry.customBars));
+                }
             }
             return;
         }
-        /* Jog click or Back — return to list */
-        if (status === MidiCC && (d1 === MoveMainButton || d1 === MoveBack) && d2 > 0) {
+
+        /* Jog click — toggle select/edit mode */
+        if (status === MidiCC && d1 === MoveMainButton && d2 > 0) {
+            stepParamsEditing = !stepParamsEditing;
+            if (stepParamsEditing) {
+                if (stepParamsField === 0) announce("Editing Repeats");
+                else if (stepParamsField === 1) announce("Editing Bar Length");
+                else announce("Editing Custom Bars");
+            } else if (entry) {
+                if (stepParamsField === 0) announceParameter("Repeats", entry.repeats + " times");
+                else if (stepParamsField === 1) announceParameter("Bar Length", barLengthModeLabel(getBarLengthMode(entry)));
+                else announceParameter("Custom Bars", String(getEntryDurationBars(entry)));
+            }
+            return;
+        }
+
+        /* Back — return to list */
+        if (status === MidiCC && d1 === MoveBack && d2 > 0) {
+            stepParamsEditing = false;
             currentView = "list";
             announce(describeEntry(selectedEntry));
             return;
@@ -1139,11 +1267,13 @@ globalThis.onMidiMessageInternal = function(data) {
         if (status === MidiNoteOn && d1 >= MoveStep1 && d1 <= MoveStep16) {
             if (d2 > 0 && shiftHeld) {
                 /* Shift+Step again → exit (sticky mode toggle) */
+                stepParamsEditing = false;
                 currentView = "list";
                 announce(describeEntry(selectedEntry));
             } else if (d2 === 0 && stepParamsPeek) {
                 /* Release after hold → exit peek mode */
                 heldStepNote = -1;
+                stepParamsEditing = false;
                 currentView = "list";
                 announce(describeEntry(selectedEntry));
             }
@@ -1207,6 +1337,8 @@ globalThis.onMidiMessageInternal = function(data) {
             pushUndo();
             editingEntry = selectedEntry;
             currentView = "step_params";
+            stepParamsField = 0;
+            stepParamsEditing = false;
             stepParamsPeek = false;  /* jog click = sticky */
             const e = songEntries[editingEntry];
             announceView("Step " + (editingEntry + 1) + " Settings, Repeats " + e.repeats + " times");
@@ -1258,7 +1390,12 @@ globalThis.onMidiMessageInternal = function(data) {
         if (selectedEntry < songEntries.length && !isEntryEmpty(songEntries[selectedEntry])) {
             pushUndo();
             const src = songEntries[selectedEntry];
-            const copy = { pads: [...src.pads], repeats: src.repeats };
+            const copy = {
+                pads: [...src.pads],
+                repeats: src.repeats,
+                barLengthMode: getBarLengthMode(src),
+                customBars: Math.max(CUSTOM_BARS_MIN, Math.min(CUSTOM_BARS_MAX, src.customBars || 1))
+            };
             songEntries.splice(selectedEntry + 1, 0, copy);
             selectedEntry++;
             ensureTrailingEmpty();
@@ -1340,6 +1477,8 @@ globalThis.onMidiMessageInternal = function(data) {
             selectedEntry = entryIdx;
             editingEntry = entryIdx;
             currentView = "step_params";
+            stepParamsField = 0;
+            stepParamsEditing = false;
             stepParamsPeek = false;
             heldStepNote = -1;
             const e = songEntries[editingEntry];
@@ -1409,12 +1548,17 @@ globalThis.onMidiMessageInternal = function(data) {
         return;
     }
 
-    /* Pads — set assignment on selected entry (all 4 tracks always populated) */
+    /* Pads — set assignment on selected entry */
     if (status === MidiNoteOn && d2 > 0) {
         const grid = noteToGrid(d1);
         if (grid && selectedEntry < songEntries.length) {
-            pushUndo();
             const entry = songEntries[selectedEntry];
+
+            if (shiftHeld && selectedEntry === 0) {
+                announce("Step 1 cannot use continue");
+                return;
+            }
+
             /* On first pad press of an empty entry, pre-fill ALL tracks from previous */
             if (isEntryEmpty(entry)) {
                 for (let i = selectedEntry - 1; i >= 0; i--) {
@@ -1428,7 +1572,16 @@ globalThis.onMidiMessageInternal = function(data) {
                     entry.pads = [0, 0, 0, 0];
                 }
             }
-            /* Set the pressed track (no deselect — can't have null) */
+
+            if (shiftHeld && selectedEntry > 0) {
+                pushUndo();
+                entry.pads[grid.track] = CONTINUE_PAD;
+                ensureTrailingEmpty();
+                announce("Track " + (grid.track + 1) + " continue");
+                return;
+            }
+
+            pushUndo();
             entry.pads[grid.track] = grid.col;
             ensureTrailingEmpty();
             announce("Track " + (grid.track + 1) + " set to " + COL_LABELS[grid.col]);
