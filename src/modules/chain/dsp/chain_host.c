@@ -23,6 +23,7 @@
 #include "host/audio_fx_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"
+#include "host/lfo_common.h"
 #include "../../../host/unified_log.h"
 
 /* Recording constants */
@@ -264,6 +265,8 @@ typedef struct {
 /* Synth state storage size - Surge XT needs ~8KB+ when pretty-printed with indent */
 #define MAX_SYNTH_STATE_LEN 16384
 
+/* LFO types, shapes, divisions, and waveform computation from lfo_common.h */
+
 /* Patch info */
 typedef struct {
     char name[MAX_NAME_LEN];
@@ -283,6 +286,7 @@ typedef struct {
     int knob_mapping_count;
     int receive_channel;   /* 0=not saved, 1-16=specific channel (from saved preset) */
     int forward_channel;   /* 0=not saved, -2=passthrough, -1=auto, 1-16=specific (from saved preset) */
+    lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
 } patch_info_t;
 
 /* ============================================================================
@@ -393,6 +397,8 @@ static int is_smoothable_float(const char *val, float *out_value) {
     return 1;
 }
 
+/* LFO engine: shapes, divisions, and waveform computation now in lfo_common.h */
+
 /* ============================================================================
  * V2 Instance-Based API
  * ============================================================================ */
@@ -460,6 +466,11 @@ typedef struct chain_instance {
     uint64_t mod_param_refresh_ms_synth;
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
+
+    /* Per-slot LFO state */
+    lfo_state_t lfos[LFO_COUNT];
+    float lfo_base_values[LFO_COUNT];  /* Base value snapshot for LFO-to-LFO modulation */
+    int lfo_base_valid[LFO_COUNT];     /* Whether base has been snapshotted */
 
     /* Mute countdown after patch switch */
     int mute_countdown;
@@ -4480,17 +4491,6 @@ static int chain_mod_emit_value(void *ctx,
         }
         return -1;
     }
-    if (pinfo->type == KNOB_TYPE_ENUM) {
-        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
-        if (stale && stale->active) {
-            chain_mod_remove_source_contribution(stale, source_id);
-            if (!chain_mod_has_active_sources(stale)) {
-                chain_mod_clear_target_entry(inst, stale, 1);
-            }
-        }
-        return -1;  /* v1 numeric only */
-    }
-
     mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
     if (!entry) return -1;
 
@@ -6218,6 +6218,54 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
     json_get_int(json, "receive_channel", &patch->receive_channel);
     json_get_int(json, "forward_channel", &patch->forward_channel);
 
+    /* Parse LFO config: "lfos": { "lfo1": { ... }, "lfo2": ... } */
+    const char *lfos_pos = strstr(json, "\"lfos\"");
+    if (lfos_pos) {
+        for (int i = 0; i < LFO_COUNT; i++) {
+            char lfo_key[8];
+            snprintf(lfo_key, sizeof(lfo_key), "\"lfo%d\"", i + 1);
+            const char *lfo_pos = strstr(lfos_pos, lfo_key);
+            if (!lfo_pos) continue;
+
+            /* Check for null */
+            const char *colon = strchr(lfo_pos + strlen(lfo_key), ':');
+            if (!colon) continue;
+            const char *val = colon + 1;
+            while (*val == ' ' || *val == '\t' || *val == '\n') val++;
+            if (strncmp(val, "null", 4) == 0) continue;  /* null = inactive */
+
+            const char *obj = strchr(val, '{');
+            if (!obj) continue;
+            const char *obj_end = obj + 1;
+            int depth = 1;
+            while (*obj_end && depth > 0) {
+                if (*obj_end == '{') depth++;
+                else if (*obj_end == '}') depth--;
+                if (depth > 0) obj_end++;
+            }
+
+            lfo_state_t *lfo = &patch->lfos[i];
+            json_get_int(obj, "enabled", &lfo->enabled);
+            json_get_int(obj, "shape", &lfo->shape);
+            json_get_int(obj, "sync", &lfo->sync);
+            json_get_int(obj, "rate_div", &lfo->rate_div);
+
+            /* Parse floats using json_get_string + strtof */
+            char tmpf[32];
+            if (json_get_string(obj, "rate_hz", tmpf, sizeof(tmpf)) == 0)
+                lfo->rate_hz = strtof(tmpf, NULL);
+            if (json_get_string(obj, "depth", tmpf, sizeof(tmpf)) == 0)
+                lfo->depth = strtof(tmpf, NULL);
+            if (json_get_string(obj, "phase_offset", tmpf, sizeof(tmpf)) == 0)
+                lfo->phase_offset = strtof(tmpf, NULL);
+
+            json_get_string(obj, "target", lfo->target, sizeof(lfo->target));
+            json_get_string(obj, "target_param", lfo->param, sizeof(lfo->param));
+
+            lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
+        }
+    }
+
     free(json);
     return 0;
 }
@@ -6427,6 +6475,21 @@ static int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) 
     /* Copy other settings */
     inst->midi_input = patch->midi_input;
 
+    /* Restore LFO config from patch (clear old sources first) */
+    for (int i = 0; i < LFO_COUNT; i++) {
+        char source_id[8];
+        snprintf(source_id, sizeof(source_id), "lfo%d", i + 1);
+        chain_mod_clear_source(inst, source_id);
+        inst->lfos[i] = patch->lfos[i];
+        /* Reset runtime state */
+        inst->lfos[i].last_sh_value = 0.0f;
+        inst->lfos[i].prev_wrap = 0;
+        /* Reset phase for synced LFOs on patch load */
+        if (inst->lfos[i].sync) {
+            inst->lfos[i].phase = 0.0;
+        }
+    }
+
     inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
     snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
@@ -6476,6 +6539,15 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || len < 1) return;
     chain_update_clock_runtime(msg, len);
+
+    /* Reset synced LFO phases on MIDI Start (0xFA) */
+    if (len >= 1 && msg[0] == 0xFA) {
+        for (int i = 0; i < LFO_COUNT; i++) {
+            if (inst->lfos[i].sync) {
+                inst->lfos[i].phase = 0.0;
+            }
+        }
+    }
 
     /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
      * Skip synth, MIDI FX, and knob handling - this MIDI is from a
@@ -6887,6 +6959,74 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], subkey, val);
             inst->dirty = 1;
         }
+    }
+    /* LFO configuration: lfo1:* and lfo2:* */
+    else if (strncmp(key, "lfo1:", 5) == 0 || strncmp(key, "lfo2:", 5) == 0) {
+        int lfo_idx = (key[3] == '1') ? 0 : 1;
+        lfo_state_t *lfo = &inst->lfos[lfo_idx];
+        const char *subkey = key + 5;
+        char source_id[8];
+        snprintf(source_id, sizeof(source_id), "lfo%d", lfo_idx + 1);
+
+        if (strcmp(subkey, "enabled") == 0) {
+            lfo->enabled = atoi(val);
+            if (!lfo->enabled) {
+                lfo->active = 0;
+                chain_mod_clear_source(inst, source_id);
+            } else {
+                /* Set sensible defaults if this is a fresh LFO (rate_hz still 0) */
+                if (lfo->rate_hz < 0.1f && !lfo->sync) {
+                    lfo->rate_hz = 1.0f;
+                }
+                if (lfo->depth <= 0.0f) {
+                    lfo->depth = 0.5f;
+                }
+                lfo->active = (lfo->target[0] && lfo->param[0]);
+            }
+        } else if (strcmp(subkey, "shape") == 0) {
+            lfo->shape = atoi(val);
+            if (lfo->shape < 0) lfo->shape = 0;
+            if (lfo->shape >= LFO_NUM_SHAPES) lfo->shape = LFO_NUM_SHAPES - 1;
+        } else if (strcmp(subkey, "rate_hz") == 0) {
+            lfo->rate_hz = strtof(val, NULL);
+            if (lfo->rate_hz < 0.1f) lfo->rate_hz = 0.1f;
+            if (lfo->rate_hz > 20.0f) lfo->rate_hz = 20.0f;
+        } else if (strcmp(subkey, "rate_div") == 0) {
+            lfo->rate_div = atoi(val);
+            if (lfo->rate_div < 0) lfo->rate_div = 0;
+            if (lfo->rate_div >= LFO_NUM_DIVISIONS) lfo->rate_div = LFO_NUM_DIVISIONS - 1;
+        } else if (strcmp(subkey, "sync") == 0) {
+            lfo->sync = atoi(val);
+            /* Default to 1/1 (index 3) if rate_div is still at 0 (8bar) */
+            if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 3;
+        } else if (strcmp(subkey, "depth") == 0) {
+            lfo->depth = strtof(val, NULL);
+            if (lfo->depth < 0.0f) lfo->depth = 0.0f;
+            if (lfo->depth > 1.0f) lfo->depth = 1.0f;
+        } else if (strcmp(subkey, "phase_offset") == 0) {
+            lfo->phase_offset = strtof(val, NULL);
+            if (lfo->phase_offset < 0.0f) lfo->phase_offset = 0.0f;
+            if (lfo->phase_offset > 1.0f) lfo->phase_offset = 1.0f;
+        } else if (strcmp(subkey, "target") == 0) {
+            /* Clear old modulation source before changing target */
+            if (lfo->target[0]) {
+                chain_mod_clear_source(inst, source_id);
+            }
+            strncpy(lfo->target, val, sizeof(lfo->target) - 1);
+            lfo->target[sizeof(lfo->target) - 1] = '\0';
+            lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
+            inst->lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
+        } else if (strcmp(subkey, "target_param") == 0) {
+            /* Clear old modulation source before changing param */
+            if (lfo->param[0]) {
+                chain_mod_clear_source(inst, source_id);
+            }
+            strncpy(lfo->param, val, sizeof(lfo->param) - 1);
+            lfo->param[sizeof(lfo->param) - 1] = '\0';
+            lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
+            inst->lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
+        }
+        inst->dirty = 1;
     }
     /* Knob mapping set: knob_N_set with value "target:param" */
     else if (strncmp(key, "knob_", 5) == 0) {
@@ -7395,6 +7535,65 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%d", inst->fx_count);
     }
 
+    /* LFO configuration queries */
+    if (strncmp(key, "lfo1:", 5) == 0 || strncmp(key, "lfo2:", 5) == 0) {
+        int lfo_idx = (key[3] == '1') ? 0 : 1;
+        lfo_state_t *lfo = &inst->lfos[lfo_idx];
+        const char *subkey = key + 5;
+
+        if (strcmp(subkey, "enabled") == 0)
+            return snprintf(buf, buf_len, "%d", lfo->enabled);
+        if (strcmp(subkey, "active") == 0)
+            return snprintf(buf, buf_len, "%d", lfo->active);
+        if (strcmp(subkey, "shape") == 0)
+            return snprintf(buf, buf_len, "%d", lfo->shape);
+        if (strcmp(subkey, "shape_name") == 0)
+            return snprintf(buf, buf_len, "%s",
+                   (lfo->shape >= 0 && lfo->shape < LFO_NUM_SHAPES)
+                   ? lfo_shape_names[lfo->shape] : "sine");
+        if (strcmp(subkey, "rate_hz") == 0)
+            return snprintf(buf, buf_len, "%.1f", lfo->rate_hz);
+        if (strcmp(subkey, "rate_div") == 0)
+            return snprintf(buf, buf_len, "%d", lfo->rate_div);
+        if (strcmp(subkey, "rate_div_label") == 0)
+            return snprintf(buf, buf_len, "%s",
+                   (lfo->rate_div >= 0 && lfo->rate_div < LFO_NUM_DIVISIONS)
+                   ? lfo_divisions[lfo->rate_div].label : "1/4");
+        if (strcmp(subkey, "sync") == 0)
+            return snprintf(buf, buf_len, "%d", lfo->sync);
+        if (strcmp(subkey, "depth") == 0)
+            return snprintf(buf, buf_len, "%.2f", lfo->depth);
+        if (strcmp(subkey, "phase_offset") == 0)
+            return snprintf(buf, buf_len, "%.2f", lfo->phase_offset);
+        if (strcmp(subkey, "target") == 0)
+            return snprintf(buf, buf_len, "%s", lfo->target);
+        if (strcmp(subkey, "target_param") == 0)
+            return snprintf(buf, buf_len, "%s", lfo->param);
+        return -1;
+    }
+    /* LFO config as JSON (for patch save) */
+    if (strcmp(key, "lfo_config") == 0) {
+        int off = 0;
+        off += snprintf(buf + off, buf_len - off, "{");
+        for (int i = 0; i < LFO_COUNT; i++) {
+            lfo_state_t *lfo = &inst->lfos[i];
+            if (i > 0) off += snprintf(buf + off, buf_len - off, ",");
+            if (!lfo->enabled && !lfo->target[0]) {
+                off += snprintf(buf + off, buf_len - off, "\"lfo%d\":null", i + 1);
+            } else {
+                off += snprintf(buf + off, buf_len - off,
+                    "\"lfo%d\":{\"enabled\":%d,\"shape\":%d,\"sync\":%d,"
+                    "\"rate_hz\":%.1f,\"rate_div\":%d,\"depth\":%.2f,"
+                    "\"phase_offset\":%.2f,\"target\":\"%s\",\"target_param\":\"%s\"}",
+                    i + 1, lfo->enabled, lfo->shape, lfo->sync,
+                    lfo->rate_hz, lfo->rate_div, lfo->depth,
+                    lfo->phase_offset, lfo->target, lfo->param);
+            }
+        }
+        off += snprintf(buf + off, buf_len - off, "}");
+        return off;
+    }
+
     /* Knob mapping info */
     if (strcmp(key, "knob_mappings") == 0) {
         /* Return full knob mappings array as JSON for patch saving.
@@ -7874,6 +8073,105 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     return -1;
 }
 
+/* ============================================================================
+ * LFO Engine - ticked once per render_block (~344 Hz at 128 frames / 44100 Hz)
+ * ============================================================================ */
+
+/* LFO param metadata for LFO-to-LFO modulation in slot context */
+typedef struct {
+    const char *key;
+    float min_val;
+    float max_val;
+} slot_lfo_param_meta_t;
+
+static const slot_lfo_param_meta_t slot_lfo_param_meta[] = {
+    { "depth",        0.0f, 1.0f  },
+    { "rate_hz",      0.1f, 20.0f },
+    { "phase_offset", 0.0f, 1.0f  },
+};
+#define SLOT_LFO_PARAM_META_COUNT 3
+
+static void lfo_tick(chain_instance_t *inst, int frames) {
+    if (!inst) return;
+    float sample_rate = (float)(inst->host ? inst->host->sample_rate : MOVE_SAMPLE_RATE);
+
+    for (int i = 0; i < LFO_COUNT; i++) {
+        lfo_state_t *lfo = &inst->lfos[i];
+        if (!lfo->enabled || !lfo->active) continue;
+
+        /* Phase accumulation */
+        float rate_hz;
+        if (lfo->sync) {
+            float bpm = 120.0f;
+            if (inst->host && inst->host->get_bpm) {
+                bpm = inst->host->get_bpm();
+            }
+            rate_hz = lfo_sync_rate_hz(bpm, lfo->rate_div);
+        } else {
+            rate_hz = lfo->rate_hz;
+        }
+
+        lfo->phase = lfo_advance_phase(lfo->phase, rate_hz, frames, sample_rate);
+
+        /* Compute waveform with phase offset */
+        double effective_phase = fmod(lfo->phase + (double)lfo->phase_offset, 1.0);
+        float signal = lfo_compute_shape(lfo->shape, effective_phase,
+                                          &lfo->last_sh_value, &lfo->prev_wrap);
+
+        /* Check for LFO-to-LFO targeting: "lfo1" or "lfo2" */
+        int target_lfo = -1;
+        if (lfo->target[0] == 'l' && lfo->target[1] == 'f' && lfo->target[2] == 'o' &&
+            lfo->target[3] >= '1' && lfo->target[3] <= '2' && lfo->target[4] == '\0') {
+            target_lfo = lfo->target[3] - '1';
+        }
+
+        if (target_lfo >= 0 && target_lfo != i) {
+            /* LFO-to-LFO: directly modify target LFO's param */
+            lfo_state_t *tgt = &inst->lfos[target_lfo];
+            const slot_lfo_param_meta_t *meta = NULL;
+            for (int j = 0; j < SLOT_LFO_PARAM_META_COUNT; j++) {
+                if (strcmp(slot_lfo_param_meta[j].key, lfo->param) == 0) {
+                    meta = &slot_lfo_param_meta[j];
+                    break;
+                }
+            }
+            if (!meta) continue;
+
+            /* Read current value for base */
+            float cur;
+            if (strcmp(lfo->param, "depth") == 0) cur = tgt->depth;
+            else if (strcmp(lfo->param, "rate_hz") == 0) cur = tgt->rate_hz;
+            else if (strcmp(lfo->param, "phase_offset") == 0) cur = tgt->phase_offset;
+            else continue;
+
+            /* Use base from lfo_base_values if not yet snapshotted.
+             * We store base in inst->lfo_base_values[i] and track validity
+             * with inst->lfo_base_valid[i]. */
+            if (!inst->lfo_base_valid[i]) {
+                inst->lfo_base_values[i] = cur;
+                inst->lfo_base_valid[i] = 1;
+            }
+
+            float base = inst->lfo_base_values[i];
+            float half_range = (meta->max_val - meta->min_val) / 2.0f;
+            float modulated = base + signal * lfo->depth * half_range;
+            if (modulated < meta->min_val) modulated = meta->min_val;
+            if (modulated > meta->max_val) modulated = meta->max_val;
+
+            if (strcmp(lfo->param, "depth") == 0) tgt->depth = modulated;
+            else if (strcmp(lfo->param, "rate_hz") == 0) tgt->rate_hz = modulated;
+            else if (strcmp(lfo->param, "phase_offset") == 0) tgt->phase_offset = modulated;
+        } else if (target_lfo < 0) {
+            /* Normal FX/synth target: emit modulation via existing runtime */
+            char source_id[8];
+            snprintf(source_id, sizeof(source_id), "lfo%d", i + 1);
+            chain_mod_emit_value(inst, source_id, lfo->target, lfo->param,
+                                 signal, lfo->depth, 0.0f, 1 /*bipolar*/, 1 /*enabled*/);
+        }
+        /* target_lfo == i: self-targeting, skip */
+    }
+}
+
 /* V2 render_block handler */
 static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int frames) {
     chain_instance_t *inst = (chain_instance_t *)instance;
@@ -7925,6 +8223,9 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
             }
         }
     }
+
+    /* Tick LFOs — emit modulation before audio render */
+    lfo_tick(inst, frames);
 
     /* Process MIDI FX tick (for arpeggiator timing) */
     v2_tick_midi_fx(inst, frames);
