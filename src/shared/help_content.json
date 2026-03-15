@@ -101,8 +101,44 @@
             " Thru: passthrough",
             " 1-16: force channel",
             "",
+            "LFO 1/2: modulation",
+            "sources (see LFOs).",
+            "",
             "Save/Load slot",
             "presets from here."
+          ]
+        },
+        {
+          "title": "LFOs",
+          "lines": [
+            "Each slot has 2 LFOs",
+            "that modulate any",
+            "parameter of any",
+            "module in the chain.",
+            "",
+            "Shapes: Sine, Tri,",
+            "Saw, Square, S&H,",
+            "Swishy (random walk)",
+            "",
+            "Sync: free Hz or",
+            "tempo-synced (8bar",
+            "to 1/32 note).",
+            "",
+            "Retrigger: resets",
+            "phase on first",
+            "note-on of a phrase.",
+            "",
+            "LFOs can target",
+            "each other for",
+            "complex modulation.",
+            "",
+            "Master FX also has",
+            "2 LFOs (in the",
+            "Master FX menu).",
+            "",
+            "~1/~2 indicators",
+            "show active targets",
+            "in chain editor."
           ]
         },
         {
@@ -142,11 +178,14 @@
             "mixed output of all",
             "instrument slots.",
             "",
+            "LFO 1/2 can target",
+            "any master FX param.",
+            "",
             "Use Shift+Vol+",
             "Step 2 for global",
-            "settings (Link,",
-            "Mirror, screen",
-            "reader, updates)."
+            "settings (Display,",
+            "Audio, Screen Reader",
+            "Services, Updates)."
           ]
         },
         {
@@ -161,8 +200,8 @@
             "1.Enable Link in",
             "  Move Settings",
             "2.Global Settings",
-            "  > Audio > Link",
-            "  Audio On",
+            "  > Audio > Route",
+            "  thru ME: On",
             "",
             "Track N maps to",
             "Slot N audio input.",
@@ -250,9 +289,10 @@
             " or Shift+Menu",
             "",
             "Settings:",
-            " Speed: 0.5x - 2x",
-            " Pitch: low - high",
-            " Volume: 0 - 100"
+            " Speed: 0.5x - 6x",
+            " Pitch: 80-180 Hz",
+            " Volume: 0 - 100%",
+            " Debounce: 0-1000ms"
           ]
         },
         {
@@ -272,6 +312,29 @@
             "",
             "More tools available",
             "via Module Store."
+          ]
+        },
+        {
+          "title": "File Browser (Web)",
+          "lines": [
+            "Web-based file",
+            "manager for Move.",
+            "",
+            "Enable in Settings",
+            "> Services > File",
+            "Browser.",
+            "",
+            "Access at:",
+            " move.local:404",
+            "",
+            "Upload, download,",
+            "rename, move, and",
+            "delete files from",
+            "any device on your",
+            "network.",
+            "",
+            "Off by default.",
+            "No auth required."
           ]
         }
       ]
