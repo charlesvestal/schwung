@@ -45,7 +45,7 @@ typedef struct {
     char module_path[256];           /* Full DSP path */
     char module_id[64];              /* Module ID for display */
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
-    char chain_params_cache[4096];   /* Cached chain_params to avoid file I/O in audio thread */
+    char chain_params_cache[65536];  /* Cached chain_params to avoid file I/O in audio thread */
     int chain_params_cached;         /* 1 if cache is valid */
     void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);  /* Optional MIDI handler */
 } master_fx_slot_t;

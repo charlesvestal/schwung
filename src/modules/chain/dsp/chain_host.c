@@ -438,7 +438,7 @@ typedef struct chain_instance {
     int synth_param_count;
     chain_param_info_t fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS];
     int fx_param_counts[MAX_AUDIO_FX];
-    char fx_ui_hierarchy[MAX_AUDIO_FX][8192];  /* Cached ui_hierarchy JSON */
+    char fx_ui_hierarchy[MAX_AUDIO_FX][65536];  /* Cached ui_hierarchy JSON */
 
     /* Patch state */
     patch_info_t patches[MAX_PATCHES];
@@ -453,7 +453,7 @@ typedef struct chain_instance {
     char current_midi_fx_modules[MAX_MIDI_FX][MAX_NAME_LEN];
     chain_param_info_t midi_fx_params[MAX_MIDI_FX][MAX_CHAIN_PARAMS];
     int midi_fx_param_counts[MAX_MIDI_FX];
-    char midi_fx_ui_hierarchy[MAX_MIDI_FX][8192];  /* Cached ui_hierarchy JSON */
+    char midi_fx_ui_hierarchy[MAX_MIDI_FX][65536];  /* Cached ui_hierarchy JSON */
 
     /* Knob mapping state */
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
@@ -2237,7 +2237,7 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 16384) {
+    if (size <= 0 || size > 65536) {
         fclose(f);
         return -1;
     }
@@ -2450,7 +2450,7 @@ static int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (size <= 0 || size >= 32768) {
+    if (size <= 0 || size >= 65536) {
         fclose(f);
         return -1;
     }
@@ -5641,7 +5641,7 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 16384) {
+    if (size <= 0 || size > 65536) {
         fclose(f);
         return -1;
     }
