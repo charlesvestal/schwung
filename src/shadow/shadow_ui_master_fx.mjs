@@ -162,11 +162,12 @@ export function drawMasterFx() {
                 }
             }
         }
-        /* 3px-high tiny indicators: ~1, ~2, or ~1+2 */
-        const TILDE_3PX = [0x5, 0x3, 0x6];  /* 3-row tilde pattern */
-        const DIGIT_1_3PX = [0x2, 0x7, 0x2]; /* 1 */
-        const DIGIT_2_3PX = [0x6, 0x3, 0x5]; /* 2 */
-        const PLUS_3PX = [0x2, 0x7, 0x2];    /* + (same as 1, works at 3px) */
+        /* 4px-high tiny indicators: ~1, ~2, or ~1+2 */
+        /* Tilde: 4w x 2h squiggle (rows 1-2 of 4, padded top/bottom) */
+        const TILDE_4PX = [0x0, 0x5, 0xA, 0x0];  /* .... / .#.# / #.#. / .... */
+        /* Digits: 3w x 4h */
+        const DIGIT_1_4PX = [0x2, 0x6, 0x2, 0x2]; /* .#. / ##. / .#. / .#. */
+        const DIGIT_2_4PX = [0x6, 0x1, 0x2, 0x7]; /* ##. / ..# / .#. / ### */
 
         for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
             const comp = MASTER_FX_CHAIN_COMPONENTS[i];
@@ -175,46 +176,49 @@ export function drawMasterFx() {
             if (!targets) continue;
 
             const x = START_X + i * (BOX_W + GAP);
-            const indicY = BOX_Y - 4;
+            const indicY = BOX_Y - 5;
             const has1 = targets.lfo1;
             const has2 = targets.lfo2;
 
             let cx = x + Math.floor(BOX_W / 2) - 4;
-            /* Draw tilde */
-            for (let row = 0; row < 3; row++) {
-                const bits = TILDE_3PX[row];
-                for (let bit = 0; bit < 3; bit++) {
-                    if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
+            /* Draw tilde (4 wide) */
+            for (let row = 0; row < 4; row++) {
+                const bits = TILDE_4PX[row];
+                for (let bit = 0; bit < 4; bit++) {
+                    if (bits & (1 << (3 - bit))) set_pixel(cx + bit, indicY + row, 1);
                 }
             }
-            cx += 4;
+            cx += 5;
             if (has1 && has2) {
                 /* "1+2" */
-                for (let row = 0; row < 3; row++) {
-                    const bits = DIGIT_1_3PX[row];
+                for (let row = 0; row < 4; row++) {
+                    const bits = DIGIT_1_4PX[row];
                     for (let bit = 0; bit < 3; bit++) {
                         if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
                     }
                 }
                 cx += 3;
-                set_pixel(cx, indicY + 1, 1);
-                cx += 2;
-                for (let row = 0; row < 3; row++) {
-                    const bits = DIGIT_2_3PX[row];
+                /* tiny "+": cross centered vertically */
+                set_pixel(cx, indicY + 2, 1);
+                set_pixel(cx + 1, indicY + 1, 1); set_pixel(cx + 1, indicY + 2, 1); set_pixel(cx + 1, indicY + 3, 1);
+                set_pixel(cx + 2, indicY + 2, 1);
+                cx += 4;
+                for (let row = 0; row < 4; row++) {
+                    const bits = DIGIT_2_4PX[row];
                     for (let bit = 0; bit < 3; bit++) {
                         if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
                     }
                 }
             } else if (has1) {
-                for (let row = 0; row < 3; row++) {
-                    const bits = DIGIT_1_3PX[row];
+                for (let row = 0; row < 4; row++) {
+                    const bits = DIGIT_1_4PX[row];
                     for (let bit = 0; bit < 3; bit++) {
                         if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
                     }
                 }
             } else if (has2) {
-                for (let row = 0; row < 3; row++) {
-                    const bits = DIGIT_2_3PX[row];
+                for (let row = 0; row < 4; row++) {
+                    const bits = DIGIT_2_4PX[row];
                     for (let bit = 0; bit < 3; bit++) {
                         if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
                     }

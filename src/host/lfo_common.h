@@ -17,7 +17,8 @@
 #define LFO_SHAPE_SAW    2
 #define LFO_SHAPE_SQUARE 3
 #define LFO_SHAPE_SH     4
-#define LFO_NUM_SHAPES   5
+#define LFO_SHAPE_SWISHY 5
+#define LFO_NUM_SHAPES   6
 
 /* ============================================================================
  * LFO State
@@ -37,7 +38,32 @@ typedef struct {
     double phase;         /* 0.0-1.0, accumulates each render_block */
     float last_sh_value;  /* Held value for S&H shape */
     int prev_wrap;        /* Phase wrapped last tick (for S&H trigger) */
+    float drunk_start;    /* Swishy: interpolation start value */
+    float drunk_target;   /* Swishy: interpolation target value */
+    int drunk_init;       /* Swishy: initialized flag */
+    int retrigger;        /* Reset phase on first note-on of new phrase */
+    int held_count;       /* Number of currently held notes (for retrigger) */
 } lfo_state_t;
+
+/* Process a MIDI message for retrigger: reset phase on first note-on of a phrase */
+static inline void lfo_process_midi(lfo_state_t *lfos, const uint8_t *msg, int len) {
+    if (len < 3) return;
+    uint8_t status = msg[0] & 0xF0;
+    if (status == 0x90 && msg[2] > 0) {
+        /* Note on */
+        for (int i = 0; i < LFO_COUNT; i++) {
+            if (lfos[i].retrigger && lfos[i].held_count == 0) {
+                lfos[i].phase = 0.0;
+            }
+            lfos[i].held_count++;
+        }
+    } else if (status == 0x80 || (status == 0x90 && msg[2] == 0)) {
+        /* Note off */
+        for (int i = 0; i < LFO_COUNT; i++) {
+            if (lfos[i].held_count > 0) lfos[i].held_count--;
+        }
+    }
+}
 
 /* ============================================================================
  * Division Table
@@ -66,15 +92,22 @@ static const lfo_division_t lfo_divisions[LFO_NUM_DIVISIONS] = {
 };
 
 static const char *lfo_shape_names[LFO_NUM_SHAPES] = {
-    "sine", "tri", "saw", "square", "s&h"
+    "sine", "tri", "saw", "square", "s&h", "swishy"
 };
 
 /* ============================================================================
  * Waveform Computation
  * ============================================================================ */
 
+/* Shared RNG for S&H and Swishy */
+static inline float lfo_rand_bipolar(void) {
+    static unsigned int lfo_rng_state = 12345;
+    lfo_rng_state = lfo_rng_state * 1103515245 + 12345;
+    return ((float)(lfo_rng_state >> 16) / 32768.0f) - 1.0f;
+}
+
 /* Compute LFO waveform from phase (0.0-1.0), returns bipolar (-1.0 to +1.0) */
-static inline float lfo_compute_shape(int shape, double phase, float *last_sh, int *prev_wrap) {
+static inline float lfo_compute_shape(int shape, double phase, lfo_state_t *st) {
     switch (shape) {
     case LFO_SHAPE_SINE:
         return sinf((float)(phase * 2.0 * M_PI));
@@ -87,14 +120,30 @@ static inline float lfo_compute_shape(int shape, double phase, float *last_sh, i
     case LFO_SHAPE_SQUARE:
         return phase < 0.5 ? 1.0f : -1.0f;
     case LFO_SHAPE_SH: {
-        int wrapped = (phase < 0.05 && *prev_wrap == 0);
-        if (wrapped || *last_sh == 0.0f) {
-            static unsigned int lfo_rng_state = 12345;
-            lfo_rng_state = lfo_rng_state * 1103515245 + 12345;
-            *last_sh = ((float)(lfo_rng_state >> 16) / 32768.0f) - 1.0f;
+        int wrapped = (phase < 0.05 && st->prev_wrap == 0);
+        if (wrapped || st->last_sh_value == 0.0f) {
+            st->last_sh_value = lfo_rand_bipolar();
         }
-        *prev_wrap = (phase < 0.05) ? 1 : 0;
-        return *last_sh;
+        st->prev_wrap = (phase < 0.05) ? 1 : 0;
+        return st->last_sh_value;
+    }
+    case LFO_SHAPE_SWISHY: {
+        /* Random walk: smoothly interpolate from start to target each cycle */
+        if (!st->drunk_init) {
+            st->drunk_start = 0.0f;
+            st->drunk_target = lfo_rand_bipolar();
+            st->drunk_init = 1;
+        }
+        int wrapped = (phase < 0.05 && st->prev_wrap == 0);
+        if (wrapped) {
+            st->drunk_start = st->drunk_target;
+            float step = lfo_rand_bipolar() * 0.5f;
+            st->drunk_target = st->drunk_target + step;
+            if (st->drunk_target > 1.0f) st->drunk_target = 1.0f;
+            if (st->drunk_target < -1.0f) st->drunk_target = -1.0f;
+        }
+        st->prev_wrap = (phase < 0.05) ? 1 : 0;
+        return st->drunk_start + (st->drunk_target - st->drunk_start) * (float)phase;
     }
     default:
         return 0.0f;
