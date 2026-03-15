@@ -6261,6 +6261,7 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
 
             json_get_string(obj, "target", lfo->target, sizeof(lfo->target));
             json_get_string(obj, "target_param", lfo->param, sizeof(lfo->param));
+            json_get_int(obj, "retrigger", &lfo->retrigger);
 
             lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
         }
@@ -6548,6 +6549,9 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             }
         }
     }
+
+    /* LFO retrigger: reset phase on first note-on of new phrase */
+    lfo_process_midi(inst->lfos, msg, len);
 
     /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
      * Skip synth, MIDI FX, and knob handling - this MIDI is from a
@@ -7025,6 +7029,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             lfo->param[sizeof(lfo->param) - 1] = '\0';
             lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
             inst->lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
+        } else if (strcmp(subkey, "retrigger") == 0) {
+            lfo->retrigger = atoi(val);
+            lfo->held_count = 0;  /* Reset on toggle */
         }
         inst->dirty = 1;
     }
@@ -7569,6 +7576,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return snprintf(buf, buf_len, "%s", lfo->target);
         if (strcmp(subkey, "target_param") == 0)
             return snprintf(buf, buf_len, "%s", lfo->param);
+        if (strcmp(subkey, "retrigger") == 0)
+            return snprintf(buf, buf_len, "%d", lfo->retrigger);
         return -1;
     }
     /* LFO config as JSON (for patch save) */
@@ -7584,10 +7593,12 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                 off += snprintf(buf + off, buf_len - off,
                     "\"lfo%d\":{\"enabled\":%d,\"shape\":%d,\"sync\":%d,"
                     "\"rate_hz\":%.1f,\"rate_div\":%d,\"depth\":%.2f,"
-                    "\"phase_offset\":%.2f,\"target\":\"%s\",\"target_param\":\"%s\"}",
+                    "\"phase_offset\":%.2f,\"target\":\"%s\",\"target_param\":\"%s\","
+                    "\"retrigger\":%d}",
                     i + 1, lfo->enabled, lfo->shape, lfo->sync,
                     lfo->rate_hz, lfo->rate_div, lfo->depth,
-                    lfo->phase_offset, lfo->target, lfo->param);
+                    lfo->phase_offset, lfo->target, lfo->param,
+                    lfo->retrigger);
             }
         }
         off += snprintf(buf + off, buf_len - off, "}");
@@ -8115,8 +8126,7 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
 
         /* Compute waveform with phase offset */
         double effective_phase = fmod(lfo->phase + (double)lfo->phase_offset, 1.0);
-        float signal = lfo_compute_shape(lfo->shape, effective_phase,
-                                          &lfo->last_sh_value, &lfo->prev_wrap);
+        float signal = lfo_compute_shape(lfo->shape, effective_phase, lfo);
 
         /* Check for LFO-to-LFO targeting: "lfo1" or "lfo2" */
         int target_lfo = -1;
