@@ -50,7 +50,7 @@ void shadow_save_state(void)
         long size = ftell(f);
         fseek(f, 0, SEEK_SET);
 
-        if (size > 0 && size < 16384) {
+        if (size > 0 && size < 65536) {
             char *json = malloc(size + 1);
             if (json) {
                 size_t nread = fread(json, 1, size, f);
