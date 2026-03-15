@@ -171,6 +171,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Usefulity](https://github.com/charlesvestal/move-everything-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
 | [Boris Granular](https://github.com/fillioning/move-anything-boris) | Real-time granular audio effect with live input capture and MIDI sync | Alessandro Gaiba (port: fillioning) |
 | [Super Boum](https://github.com/fillioning/super-boum-move) | OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage | fillioning |
+| [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor — granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
 
 ### MIDI FX
 
