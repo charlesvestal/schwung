@@ -152,7 +152,6 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [NuSaw](https://github.com/charlesvestal/move-everything-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
-| [SConnect](https://github.com/handcraftedcc/move-anything-sconnect) | Unofficial Spotify Connect receiver for personal listening | handcraftedcc |
 
 ### Audio FX
 
@@ -199,6 +198,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Time Stretch](https://github.com/charlesvestal/move-everything-stretch) | Real-time audio time stretching with Bungee | charlesvestal |
 | [Stems](https://github.com/charlesvestal/move-everything-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
 | [DJ Deck](https://github.com/djhardrich/move-anything-dj) | CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift | DJ Hard Rich |
+| [Tuner](https://github.com/CatsAreCool710/Move-Everything-Tuner) | Chromatic and instrument tuner with step guide feedback | Jeremiah Ticket |
 
 <!-- MODULE_TABLE_END -->
 
