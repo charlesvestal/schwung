@@ -1586,8 +1586,7 @@ void shadow_master_fx_lfo_tick(int frames) {
 
         /* Compute waveform with phase offset */
         double effective_phase = fmod(lfo->phase + (double)lfo->phase_offset, 1.0);
-        float signal = lfo_compute_shape(lfo->shape, effective_phase,
-                                          &lfo->last_sh_value, &lfo->prev_wrap);
+        float signal = lfo_compute_shape(lfo->shape, effective_phase, lfo);
 
         /* Determine param min/max and type */
         float p_min = 0.0f, p_max = 1.0f;
