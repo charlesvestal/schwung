@@ -105,7 +105,7 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 The knob parameter overlay shown in native Move mode has a separate trigger setting:
 
 - Go to **Global Settings > Display > Overlay Knobs**
-- Choose **+Shift** (default), **+Jog Touch**, or **Off**
+- Choose **+Shift** (default), **+Jog Touch**, **Off**, or **Native**
 - If native Move's **Shift+Knob** actions (like fine control) are getting blocked, switch this to **+Jog Touch** or **Off**
 
 ---
@@ -150,11 +150,29 @@ The last position in each slot contains settings:
 | **Volume** | Slot volume level |
 | **Receive Ch** | MIDI channel this slot listens to (match your Move track's MIDI Out) |
 | **Forward Ch** | MIDI channel sent to the synth module (see below) |
+| **LFO 1 / LFO 2** | Modulation LFOs (see below) |
 
 **Forward Channel modes:**
 - **Auto** (default): Remaps MIDI to the slot's receive channel. If Receive Ch is "All", passes through unchanged.
 - **Thru**: Passes the original MIDI channel through unchanged — useful for multitimbral synths that respond differently on each channel.
 - **1-16**: Forces all MIDI to a specific channel regardless of what was received.
+
+### Slot LFOs
+
+Each slot has two independent LFOs that can modulate any parameter of any module in the slot's chain (synth, audio FX, MIDI FX), or each other.
+
+**LFO settings:**
+- **Target**: Which component and parameter to modulate
+- **Enabled**: On/Off
+- **Shape**: Sine, Tri, Saw, Square, S&H (sample & hold), Swishy (smooth random walk)
+- **Sync**: Free-running (Hz) or tempo-synced (musical divisions from 8 bars to 1/32)
+- **Depth**: Modulation amount (0-100%)
+- **Phase**: Phase offset (0-360 degrees)
+- **Retrigger**: Reset LFO phase on the first note-on of a new phrase
+
+LFOs can also target each other's parameters (depth, rate, phase offset) for complex modulation.
+
+An indicator (`~1`, `~2`, or `~1+2`) appears above targeted components in the chain editor.
 
 ### Slot Presets
 
@@ -231,7 +249,11 @@ Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from
 
 Access via **Shift+Vol + Note/Session**. Contains four audio effect slots that process the mixed output of all instrument slots.
 
-Global settings (Link Audio, Sample Src, Mirror Display, Screen Reader, Set Pages, Help, Updates) are accessed via **Shift+Vol + Step 2**.
+### Master FX LFOs
+
+The Master FX chain also has two LFOs (**LFO 1** and **LFO 2** in the Master FX menu) that can target any parameter of the loaded master effects. These work the same as slot LFOs (same shapes, sync options, depth, and phase) but operate on the master FX chain rather than individual slots.
+
+Global settings (Display, Audio, Screen Reader, Set Pages, Services, Updates, Help) are accessed via **Shift+Vol + Step 2**.
 
 ---
 
@@ -274,7 +296,7 @@ ME Slot 2 (synth → FX) ────────────────│
 
 1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
 2. **Install or update Move Everything** — the installer enables Link Audio support, but routing is off by default.
-3. **Enable routing**: In **Global Settings > Audio** (**Shift+Vol + Step 2**), toggle **Link Audio** on. This routes Move's per-track audio through ME's slot FX.
+3. **Enable routing**: In **Global Settings > Audio** (**Shift+Vol + Step 2**), toggle **Route thru ME** on. This routes Move's per-track audio through ME's slot FX.
 
 **Note:** A restart of Move is sometimes required for the Link Audio subscriber to begin capturing audio. If you don't hear Move tracks being processed after enabling routing, restart Move.
 
@@ -299,7 +321,7 @@ ME Slot 2 (synth → FX) ────────────────│
 
 Move Everything audio can be fed into Move's native sampler for resampling.
 
-In **Global Settings > Audio**, `Sample Src` controls this:
+In **Global Settings > Audio**, **Sample Src** controls this:
 
 | Option | Behavior |
 |--------|----------|
@@ -307,7 +329,7 @@ In **Global Settings > Audio**, `Sample Src` controls this:
 | **ME Mix** | Replaces native sampler input with Move Everything master output |
 
 Recommended setup to avoid feedback:
-1. Set `Sample Src` to **ME Mix**
+1. Set **Sample Src** to **ME Mix**
 2. In native Move Sampler, set source to **Line In**
 3. Set monitoring to **Off**
 
@@ -329,7 +351,7 @@ Access via **Shift+Sample**. Records Move's audio output (including Move Everyth
 1. Press **Shift+Sample** to open the sampler
 2. Use the jog wheel to select source and duration
 3. Recording starts on a note event or pressing Play
-4. Press **Shift+Sample** again to stop (or it stops automatically at the set duration)
+4. Press **Sample** to stop (or it stops automatically at the set duration)
 
 Recordings are saved to `Samples/Move Everything/Resampler/YYYY-MM-DD/`.
 
@@ -337,9 +359,11 @@ Uses MIDI clock for accurate bar timing, falling back to project tempo if no clo
 
 ### Skipback
 
-Press **Shift+Capture** to save the last 30 seconds of audio to disk.
+Press **Shift+Capture** (default) to save the last 30 seconds of audio to disk.
 
 Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
+
+The shortcut can be changed in **Global Settings > Audio > Skipback** to **Sh+Vol+Cap** if Shift+Capture conflicts with other uses.
 
 Files are saved to `Samples/Move Everything/Skipback/YYYY-MM-DD/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
 
@@ -495,6 +519,28 @@ Step LEDs: green = has content, red = now playing, white = selected. Pad LEDs hi
 
 ---
 
+## File Browser (Web)
+
+Move Everything includes a web-based file browser for managing files on your Move from any device on the same network.
+
+### Setup
+
+1. Open **Global Settings > Services** (**Shift+Vol + Step 2**)
+2. Toggle **File Browser** to **On**
+3. Open `http://move.local:404` in a browser
+
+The file browser serves the `/data/UserData` directory, giving you access to samples, recordings, presets, and other user files. You can upload, download, rename, move, and delete files.
+
+### Notes
+
+- File Browser is **off by default** and must be enabled via the settings toggle
+- Starts immediately when enabled (no restart required)
+- The setting persists across reboots
+- No authentication is required — anyone on the network can access it
+- Shell command execution is disabled for safety
+
+---
+
 ## Screen Reader
 
 Move Everything includes an optional screen reader for accessibility, using text-to-speech to announce UI elements.
@@ -502,9 +548,10 @@ Move Everything includes an optional screen reader for accessibility, using text
 Toggle via **Global Settings > Screen Reader** (**Shift+Vol + Step 2**), or **Shift+Note/Session** when Shadow UI is disabled.
 
 Settings:
-- **Speed**: 0.5x to 2.0x
-- **Pitch**: Low to high
-- **Volume**: 0-100
+- **Speed**: 0.5x to 6.0x
+- **Pitch**: 80-180 Hz
+- **Volume**: 0-100%
+- **Debounce**: 0-1000ms
 
 Can be enabled during installation with `--enable-screen-reader`.
 
