@@ -81,6 +81,11 @@ typedef struct host_api_v1 {
     move_mod_clear_source_fn mod_clear_source;
     void *mod_host_ctx;
 
+    /* Tempo query — returns current BPM (120.0 default).
+     * Uses sampler_get_bpm() fallback chain: MIDI clock → set tempo → settings → 120.
+     * NULL if host does not support tempo. */
+    float (*get_bpm)(void);
+
 } host_api_v1_t;
 
 /*

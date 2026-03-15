@@ -12,6 +12,7 @@
 #include "shadow_chain_types.h"
 #include "plugin_api_v1.h"
 #include "audio_fx_api_v2.h"
+#include "lfo_common.h"
 
 /* ============================================================================
  * Constants
@@ -44,7 +45,7 @@ typedef struct {
     char module_path[256];           /* Full DSP path */
     char module_id[64];              /* Module ID for display */
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
-    char chain_params_cache[2048];   /* Cached chain_params to avoid file I/O in audio thread */
+    char chain_params_cache[4096];   /* Cached chain_params to avoid file I/O in audio thread */
     int chain_params_cached;         /* 1 if cache is valid */
     void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);  /* Optional MIDI handler */
 } master_fx_slot_t;
@@ -74,6 +75,9 @@ typedef struct {
      * The shim callback reads/writes shadow_param->key/value/error/result_len directly.
      * Returns 1 if handled, 0 if not. Caller publishes response if handled. */
     int (*handle_param_special)(uint8_t req_type, uint32_t req_id);
+
+    /* Tempo query — returns current BPM via sampler_get_bpm() fallback chain. */
+    float (*get_bpm)(void);
 } chain_mgmt_host_t;
 
 /* ============================================================================
@@ -96,6 +100,11 @@ extern int shadow_inprocess_ready;
 
 /* Master FX slots */
 extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
+
+/* Master FX LFOs */
+#define MASTER_FX_LFO_COUNT 2
+extern lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
+void shadow_master_fx_lfo_tick(int frames);
 
 /* Legacy single-slot macros */
 #define shadow_master_fx_handle (shadow_master_fx_slots[0].handle)

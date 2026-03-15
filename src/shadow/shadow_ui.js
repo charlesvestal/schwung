@@ -254,7 +254,10 @@ const VIEWS = {
     TOOL_RESULT: "toolresult",               // Success/failure result
     TOOL_ENGINE_SELECT: "toolengineselect",  // Pick engine (e.g. 3-stem vs 4-stem)
     TOOL_STEM_REVIEW: "toolstemreview",       // Review produced stems before saving
-    TOOL_SET_PICKER: "toolsetpicker"          // Browse sets for render tool
+    TOOL_SET_PICKER: "toolsetpicker",         // Browse sets for render tool
+    LFO_EDIT: "lfoedit",                      // LFO sub-menu editor
+    LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
+    LFO_TARGET_PARAM: "lfotargetparam"        // LFO target picker step 2: parameter
 };
 
 /* Special action key for swap module option */
@@ -341,7 +344,10 @@ const VIEW_NAMES = {
     [VIEWS.TOOL_RESULT]: "Result",
     [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection",
     [VIEWS.TOOL_STEM_REVIEW]: "Stem Review",
-    [VIEWS.TOOL_SET_PICKER]: "Choose Set"
+    [VIEWS.TOOL_SET_PICKER]: "Choose Set",
+    [VIEWS.LFO_EDIT]: "LFO Editor",
+    [VIEWS.LFO_TARGET_COMPONENT]: "LFO Target",
+    [VIEWS.LFO_TARGET_PARAM]: "LFO Parameter"
 };
 
 /* Helper to change view and announce it */
@@ -679,6 +685,8 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "mfx_lfo1", label: "LFO 1", type: "action" },
+    { key: "mfx_lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -1222,12 +1230,28 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
+    { key: "lfo1", label: "LFO 1", type: "action" },
+    { key: "lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
     { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
     { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
 ];
 let selectedChainSetting = 0;
 let editingChainSettingValue = false;
+
+/* LFO editor state — generic context drives slot or MFX LFO */
+let lfoCtx = null;  /* Active LFO context: { lfoIdx, getParam, setParam, getTargetComponents, getTargetParams, title, returnView, returnAnnounce } */
+let selectedLfoItem = 0;
+let editingLfoValue = false;
+
+const LFO_SHAPES = ["Sine", "Tri", "Saw", "Square", "S&H"];
+const LFO_DIVISIONS = ["8bar", "4bar", "2bar", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4T", "1/8T", "1/16T", "1/4D", "1/8D"];
+
+/* LFO target picker state */
+let lfoTargetComponents = [];  /* Available components [{key, label}] */
+let selectedLfoTargetComp = 0;
+let lfoTargetParams = [];      /* Params for selected component [{key, label}] */
+let selectedLfoTargetParam = 0;
 
 /* Slot preset save state */
 let pendingSaveName = "";
@@ -2817,6 +2841,19 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
         }
     }
 
+    /* Include LFO config */
+    const lfoConfigJson = getSlotParam(slotIndex, "lfo_config");
+    if (lfoConfigJson) {
+        try {
+            const lfos = JSON.parse(lfoConfigJson);
+            if (lfos) {
+                patch.lfos = lfos;
+            }
+        } catch (e) {
+            /* Ignore parse errors */
+        }
+    }
+
     return JSON.stringify(patch);
 }
 
@@ -3053,6 +3090,30 @@ function loadMasterPreset(index, presetName) {
             }
         }
 
+        /* Restore master FX LFO configs */
+        for (let li = 1; li <= 2; li++) {
+            const lfoConfig = preset["lfo" + li];
+            if (lfoConfig && typeof shadow_set_param === "function") {
+                const pfx = "master_fx:lfo" + li + ":";
+                if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
+                if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
+                shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
+                shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
+                shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
+                shadow_set_param(0, pfx + "rate_div", String(lfoConfig.rate_div || 3));
+                shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
+                shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
+                shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
+            } else {
+                /* No LFO in preset — disable */
+                if (typeof shadow_set_param === "function") {
+                    shadow_set_param(0, "master_fx:lfo" + li + ":enabled", "0");
+                    shadow_set_param(0, "master_fx:lfo" + li + ":target", "");
+                    shadow_set_param(0, "master_fx:lfo" + li + ":target_param", "");
+                }
+            }
+        }
+
         /* Set preset name before saving so it persists */
         if (presetName) {
             currentMasterPresetName = presetName;
@@ -3110,6 +3171,16 @@ function buildMasterPresetJson(name) {
         }
     }
 
+    /* Include master FX LFO configs */
+    for (let li = 1; li <= 2; li++) {
+        try {
+            const configJson = shadow_get_param(0, "master_fx:lfo" + li + ":config");
+            if (configJson) {
+                preset["lfo" + li] = JSON.parse(configJson);
+            }
+        } catch (e) {}
+    }
+
     return JSON.stringify(preset);
 }
 
@@ -3140,6 +3211,26 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "mfx_lfo1" || key === "mfx_lfo2") {
+        const lfoIdx = (key === "mfx_lfo1") ? 0 : 1;
+        lfoCtx = makeMfxLfoCtx(lfoIdx);
+        selectedLfoItem = 0;
+        editingLfoValue = false;
+        setView(VIEWS.LFO_EDIT);
+        const enabled = lfoCtx.getParam("enabled");
+        if (enabled === "1") {
+            const target = lfoCtx.getParam("target") || "";
+            const param = lfoCtx.getParam("target_param") || "";
+            if (target && param) {
+                announce(lfoCtx.title + ", " + target + ":" + param);
+            } else {
+                announce(lfoCtx.title + ", no target");
+            }
+        } else {
+            announce(lfoCtx.title + ", Off");
+        }
+        return;
+    }
     if (key === "help") {
         if (!helpContent) {
             try {
@@ -4371,6 +4462,18 @@ function saveMasterFxChainConfig() {
         config.link_audio_routing = cachedLinkAudioRouting;
         config.link_audio_publish = cachedLinkAudioPublish;
 
+        /* Save master FX LFO configs */
+        if (typeof shadow_get_param === "function") {
+            for (let li = 1; li <= 2; li++) {
+                try {
+                    const configJson = shadow_get_param(0, "master_fx:lfo" + li + ":config");
+                    if (configJson) {
+                        config.master_fx_chain["lfo" + li] = JSON.parse(configJson);
+                    }
+                } catch (e) {}
+            }
+        }
+
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
         /* Ignore errors */
@@ -4538,6 +4641,26 @@ function loadMasterFxChainFromConfig() {
                     }
                 }
             } catch (e) {}
+        }
+
+        /* Restore master FX LFO configs from shadow_config */
+        if (config.master_fx_chain && typeof shadow_set_param === "function") {
+            for (let li = 1; li <= 2; li++) {
+                const lfoConfig = config.master_fx_chain["lfo" + li];
+                if (lfoConfig) {
+                    const pfx = "master_fx:lfo" + li + ":";
+                    if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
+                    if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
+                    shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
+                    shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
+                    shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
+                    shadow_set_param(0, pfx + "rate_div", String(lfoConfig.rate_div || 3));
+                    shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
+                    shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
+                    shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
+                    debugLog(`MFX LFO ${li}: restored target=${lfoConfig.target || "none"}`);
+                }
+            }
         }
     } catch (e) {
         /* Ignore errors */
@@ -7826,6 +7949,33 @@ function handleJog(delta) {
             }
             break;
         }
+        case VIEWS.LFO_EDIT: {
+            const items = getLfoItems();
+            if (editingLfoValue) {
+                const item = items[selectedLfoItem];
+                adjustLfoParam(item, delta);
+                const newVal = getLfoDisplayValue(item);
+                announceParameter(item.label, newVal);
+            } else {
+                selectedLfoItem = Math.max(0, Math.min(items.length - 1, selectedLfoItem + delta));
+                const item = items[selectedLfoItem];
+                const val = getLfoDisplayValue(item);
+                announceMenuItem(item.label, val);
+            }
+            break;
+        }
+        case VIEWS.LFO_TARGET_COMPONENT:
+            selectedLfoTargetComp = Math.max(0, Math.min(lfoTargetComponents.length - 1, selectedLfoTargetComp + delta));
+            if (lfoTargetComponents.length > 0) {
+                announceMenuItem(lfoTargetComponents[selectedLfoTargetComp].label);
+            }
+            break;
+        case VIEWS.LFO_TARGET_PARAM:
+            selectedLfoTargetParam = Math.max(0, Math.min(lfoTargetParams.length - 1, selectedLfoTargetParam + delta));
+            if (lfoTargetParams.length > 0) {
+                announceMenuItem(lfoTargetParams[selectedLfoTargetParam].label);
+            }
+            break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
@@ -8211,6 +8361,24 @@ function handleSelect() {
                         overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
                         announceSavePreview(pendingSaveName, namePreviewIndex);
                         needsRedraw = true;
+                    } else if (setting.key === "lfo1" || setting.key === "lfo2") {
+                        const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
+                        lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);
+                        selectedLfoItem = 0;
+                        editingLfoValue = false;
+                        setView(VIEWS.LFO_EDIT);
+                        const enabled = lfoCtx.getParam("enabled");
+                        if (enabled === "1") {
+                            const target = lfoCtx.getParam("target") || "";
+                            const param = lfoCtx.getParam("target_param") || "";
+                            if (target && param) {
+                                announce(lfoCtx.title + ", " + target + ":" + param);
+                            } else {
+                                announce(lfoCtx.title + ", no target");
+                            }
+                        } else {
+                            announce(lfoCtx.title + ", Off");
+                        }
                     } else if (setting.key === "delete") {
                         if (isExistingPreset(selectedSlot)) {
                             confirmingDelete = true;
@@ -8661,6 +8829,54 @@ function handleSelect() {
             }
             break;
         }
+        case VIEWS.LFO_EDIT: {
+            const items = getLfoItems();
+            const item = items[selectedLfoItem];
+            if (item.key === "target") {
+                /* Open target picker */
+                enterLfoTargetPicker();
+            } else if (item.type === "action") {
+                /* Other actions - ignore */
+            } else if (editingLfoValue) {
+                /* Exit edit mode */
+                editingLfoValue = false;
+                needsRedraw = true;
+                announce(item.label + ", " + getLfoDisplayValue(item));
+            } else {
+                /* Enter edit mode */
+                editingLfoValue = true;
+                needsRedraw = true;
+                announceParameter(item.label, getLfoDisplayValue(item));
+            }
+            break;
+        }
+        case VIEWS.LFO_TARGET_COMPONENT: {
+            if (lfoTargetComponents.length > 0 && lfoCtx) {
+                const comp = lfoTargetComponents[selectedLfoTargetComp];
+                if (comp.key === "__clear__") {
+                    lfoCtx.setParam("target", "");
+                    lfoCtx.setParam("target_param", "");
+                    setView(VIEWS.LFO_EDIT);
+                    announce("Target cleared");
+                    needsRedraw = true;
+                } else {
+                    enterLfoTargetParamPicker(comp.key);
+                }
+            }
+            break;
+        }
+        case VIEWS.LFO_TARGET_PARAM: {
+            if (lfoTargetParams.length > 0 && lfoCtx) {
+                const comp = lfoTargetComponents[selectedLfoTargetComp];
+                const param = lfoTargetParams[selectedLfoTargetParam];
+                lfoCtx.setParam("target", comp.key);
+                lfoCtx.setParam("target_param", param.key);
+                setView(VIEWS.LFO_EDIT);
+                announce("Target set: " + comp.label + " " + param.label);
+                needsRedraw = true;
+            }
+            break;
+        }
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own select input */
             break;
@@ -9106,6 +9322,31 @@ function handleBack() {
             }
             break;
         }
+        case VIEWS.LFO_EDIT:
+            if (editingLfoValue) {
+                editingLfoValue = false;
+                needsRedraw = true;
+                const lfoItems = getLfoItems();
+                const curItem = lfoItems[selectedLfoItem];
+                announceMenuItem(curItem.label, getLfoDisplayValue(curItem));
+            } else {
+                setView(lfoCtx ? lfoCtx.returnView : VIEWS.CHAIN_SETTINGS);
+                announce(lfoCtx ? lfoCtx.returnAnnounce : "Chain Settings");
+                needsRedraw = true;
+            }
+            break;
+        case VIEWS.LFO_TARGET_COMPONENT:
+            setView(VIEWS.LFO_EDIT);
+            announce(lfoCtx ? lfoCtx.title : "LFO");
+            needsRedraw = true;
+            break;
+        case VIEWS.LFO_TARGET_PARAM:
+            setView(VIEWS.LFO_TARGET_COMPONENT);
+            if (lfoTargetComponents.length > 0) {
+                announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
+            }
+            needsRedraw = true;
+            break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own back input.
              * Use Shift+Vol+Jog Click to exit overtake mode. */
@@ -9241,6 +9482,19 @@ function drawChainEdit() {
     const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);  // center it
     const BOX_Y = 20;  // Below header
 
+    /* Build map of LFO-targeted component keys → which LFOs (1, 2, or both) */
+    const lfoTargets = {};  /* key → {lfo1: bool, lfo2: bool} */
+    for (let li = 1; li <= 2; li++) {
+        if (getSlotParam(selectedSlot, "lfo" + li + ":enabled") === "1") {
+            let t = getSlotParam(selectedSlot, "lfo" + li + ":target") || "";
+            if (t === "midi_fx1" || t === "midi_fx2") t = "midiFx";
+            if (t) {
+                if (!lfoTargets[t]) lfoTargets[t] = {};
+                lfoTargets[t]["lfo" + li] = true;
+            }
+        }
+    }
+
     /* Draw each component box */
     for (let i = 0; i < CHAIN_COMPONENTS.length; i++) {
         const comp = CHAIN_COMPONENTS[i];
@@ -9272,6 +9526,41 @@ function drawChainEdit() {
         const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
         const textY = BOX_Y + 5;
         print(textX, textY, abbrev, textColor);
+
+        /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 3px-high tiny digits */
+        const lfoInfo = lfoTargets[comp.key];
+        if (lfoInfo) {
+            const has1 = lfoInfo.lfo1;
+            const has2 = lfoInfo.lfo2;
+            const iy = BOX_Y - 5;  /* 5px above box top */
+            /* Draw ~ using set_pixel (3px high tilde) */
+            let cx = x + Math.floor(BOX_W / 2);
+            if (has1 && has2) cx -= 5; /* center ~1+2 */
+            else cx -= 2;              /* center ~N */
+            /* 3px tilde: .#. / #.# */
+            set_pixel(cx, iy, 1); set_pixel(cx + 1, iy + 1, 1); set_pixel(cx + 2, iy, 1);
+            let dx = cx + 4;
+            if (has1 && has2) {
+                /* tiny "1": |, |, | */
+                set_pixel(dx, iy, 1); set_pixel(dx, iy + 1, 1); set_pixel(dx, iy + 2, 1);
+                dx += 2;
+                /* tiny "+": .#. / ### / .#. but 3px: just a cross */
+                set_pixel(dx + 1, iy, 1); set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1); set_pixel(dx + 2, iy + 1, 1); set_pixel(dx + 1, iy + 2, 1);
+                dx += 4;
+                /* tiny "2": ## / .# / ## */
+                set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
+                set_pixel(dx + 1, iy + 1, 1);
+                set_pixel(dx, iy + 2, 1); set_pixel(dx + 1, iy + 2, 1);
+            } else if (has1) {
+                /* tiny "1" */
+                set_pixel(dx, iy, 1); set_pixel(dx, iy + 1, 1); set_pixel(dx, iy + 2, 1);
+            } else {
+                /* tiny "2" */
+                set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
+                set_pixel(dx + 1, iy + 1, 1);
+                set_pixel(dx, iy + 2, 1); set_pixel(dx + 1, iy + 2, 1);
+            }
+        }
     }
 
     /* Draw component label below boxes */
@@ -9999,6 +10288,304 @@ function drawStorePickerDetail() { _drawStorePickerDetail(); }
 function drawChainSettings() { _drawChainSettings(); }
 function drawGlobalSettings() { _drawGlobalSettings(); }
 
+/* ============================================================================
+ * LFO Editor
+ * ============================================================================ */
+
+/* --- LFO Context Factories --- */
+
+function makeSlotLfoCtx(slot, lfoIdx) {
+    const prefix = "lfo" + (lfoIdx + 1) + ":";
+    return {
+        lfoIdx: lfoIdx,
+        getParam: function(key) { return getSlotParam(slot, prefix + key); },
+        setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
+        getTargetComponents: function() {
+            const comps = [];
+            const synthModule = getSlotParam(slot, "synth_module");
+            if (synthModule) {
+                const name = getSlotParam(slot, "synth:name") || synthModule;
+                comps.push({ key: "synth", label: "Synth: " + name });
+            }
+            for (let i = 1; i <= 2; i++) {
+                const fxModule = getSlotParam(slot, "fx" + i + "_module");
+                if (fxModule) {
+                    const name = getSlotParam(slot, "fx" + i + ":name") || fxModule;
+                    comps.push({ key: "fx" + i, label: "FX " + i + ": " + name });
+                }
+            }
+            const midiFxCount = parseInt(getSlotParam(slot, "midi_fx_count") || "0");
+            for (let i = 1; i <= midiFxCount && i <= 2; i++) {
+                const mfxModule = getSlotParam(slot, "midi_fx" + i + "_module");
+                if (mfxModule) {
+                    const name = getSlotParam(slot, "midi_fx" + i + ":name") || mfxModule;
+                    comps.push({ key: "midi_fx" + i, label: "MIDI FX " + i + ": " + name });
+                }
+            }
+            /* Add the other LFO as a target (skip self) */
+            const otherIdx = lfoIdx === 0 ? 1 : 0;
+            comps.push({ key: "lfo" + (otherIdx + 1), label: "LFO " + (otherIdx + 1) });
+            comps.push({ key: "__clear__", label: "[Clear Target]" });
+            return comps;
+        },
+        getTargetParams: function(compKey) {
+            /* LFO-to-LFO: return hardcoded LFO params */
+            if (compKey === "lfo1" || compKey === "lfo2") {
+                return LFO_TARGET_PARAMS.slice();
+            }
+            const result = [];
+            const paramsJson = getSlotParam(slot, compKey + ":chain_params");
+            if (paramsJson) {
+                try {
+                    const params = JSON.parse(paramsJson);
+                    for (let i = 0; i < params.length; i++) {
+                        const p = params[i];
+                        if (p.type === "float" || p.type === "int" || p.type === "enum") {
+                            result.push({ key: p.key, label: p.name || p.label || p.key });
+                        }
+                    }
+                } catch (e) {
+                    debugLog("LFO: Failed to parse chain_params: " + e);
+                }
+            }
+            return result;
+        },
+        title: "LFO " + (lfoIdx + 1),
+        returnView: VIEWS.CHAIN_SETTINGS,
+        returnAnnounce: "Chain Settings",
+    };
+}
+
+/* Hardcoded LFO param list for LFO-to-LFO modulation */
+const LFO_TARGET_PARAMS = [
+    { key: "depth", label: "Depth" },
+    { key: "rate_hz", label: "Rate Hz" },
+    { key: "phase_offset", label: "Phase Offset" },
+];
+
+function makeMfxLfoCtx(lfoIdx) {
+    const prefix = "master_fx:lfo" + (lfoIdx + 1) + ":";
+    return {
+        lfoIdx: lfoIdx,
+        getParam: function(key) { return shadow_get_param(0, prefix + key); },
+        setParam: function(key, val) { shadow_set_param(0, prefix + key, val); },
+        getTargetComponents: function() {
+            const comps = [];
+            for (let i = 0; i < 4; i++) {
+                const name = shadow_get_param(0, "master_fx:fx" + (i + 1) + ":name") || "";
+                if (name) {
+                    comps.push({ key: "fx" + (i + 1), label: "FX " + (i + 1) + ": " + name });
+                }
+            }
+            /* Add the other LFO as a target (skip self) */
+            const otherIdx = lfoIdx === 0 ? 1 : 0;
+            comps.push({ key: "lfo" + (otherIdx + 1), label: "MFX LFO " + (otherIdx + 1) });
+            comps.push({ key: "__clear__", label: "[Clear Target]" });
+            return comps;
+        },
+        getTargetParams: function(compKey) {
+            /* LFO-to-LFO: return hardcoded LFO params */
+            if (compKey === "lfo1" || compKey === "lfo2") {
+                return LFO_TARGET_PARAMS.slice();
+            }
+            const result = [];
+            try {
+                const json = shadow_get_param(0, "master_fx:" + compKey + ":chain_params");
+                if (json) {
+                    const params = JSON.parse(json);
+                    for (let i = 0; i < params.length; i++) {
+                        const p = params[i];
+                        if (p.type === "float" || p.type === "int" || p.type === "enum") {
+                            result.push({ key: p.key, label: p.name || p.label || p.key });
+                        }
+                    }
+                }
+            } catch (e) {
+                debugLog("MFX LFO: Failed to parse chain_params: " + e);
+            }
+            return result;
+        },
+        title: "MFX LFO " + (lfoIdx + 1),
+        returnView: VIEWS.MASTER_FX_SETTINGS,
+        returnAnnounce: "Master FX Settings",
+    };
+}
+
+/* --- Generic LFO Editor Functions (driven by lfoCtx) --- */
+
+function getLfoItems() {
+    if (!lfoCtx) return [];
+    const sync = lfoCtx.getParam("sync") === "1";
+
+    const items = [
+        { key: "target", label: "Target", type: "action" },
+        { key: "enabled", label: "Enabled", type: "enum", options: ["Off", "On"] },
+        { key: "shape", label: "Shape", type: "enum", options: LFO_SHAPES },
+        { key: "sync", label: "Sync", type: "enum", options: ["Free", "Sync"] },
+    ];
+
+    if (sync) {
+        items.push({ key: "rate_div", label: "Rate", type: "enum", options: LFO_DIVISIONS });
+    } else {
+        items.push({ key: "rate_hz", label: "Rate", type: "float", min: 0.1, max: 20.0, step: 0.1, unit: "Hz" });
+    }
+
+    items.push({ key: "depth", label: "Depth", type: "float", min: 0, max: 1, step: 0.01, unit: "%" });
+    items.push({ key: "phase_offset", label: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "deg" });
+
+    return items;
+}
+
+function getLfoDisplayValue(item) {
+    if (!lfoCtx) return "";
+    const raw = lfoCtx.getParam(item.key);
+    if (raw === null || raw === undefined) return "";
+
+    if (item.key === "enabled") return raw === "1" ? "On" : "Off";
+    if (item.key === "shape") {
+        const idx = parseInt(raw);
+        return (idx >= 0 && idx < LFO_SHAPES.length) ? LFO_SHAPES[idx] : raw;
+    }
+    if (item.key === "sync") return raw === "1" ? "Sync" : "Free";
+    if (item.key === "rate_div") {
+        const idx = parseInt(raw);
+        return (idx >= 0 && idx < LFO_DIVISIONS.length) ? LFO_DIVISIONS[idx] : raw;
+    }
+    if (item.key === "rate_hz") return parseFloat(raw).toFixed(1) + " Hz";
+    if (item.key === "depth") return Math.round(parseFloat(raw) * 100) + "%";
+    if (item.key === "phase_offset") return Math.round(parseFloat(raw) * 360) + "\u00b0";
+    if (item.key === "target") {
+        const target = lfoCtx.getParam("target") || "";
+        const param = lfoCtx.getParam("target_param") || "";
+        if (target && param) return target + ":" + param;
+        return "None";
+    }
+    return raw;
+}
+
+function adjustLfoParam(item, delta) {
+    if (!lfoCtx) return;
+
+    if (item.type === "enum") {
+        const raw = parseInt(lfoCtx.getParam(item.key) || "0");
+        let newVal = raw + delta;
+        if (newVal < 0) newVal = 0;
+        if (newVal >= item.options.length) newVal = item.options.length - 1;
+        lfoCtx.setParam(item.key, String(newVal));
+    } else if (item.type === "float") {
+        const raw = parseFloat(lfoCtx.getParam(item.key) || "0");
+        let newVal = raw + item.step * delta;
+        if (newVal < item.min) newVal = item.min;
+        if (newVal > item.max) newVal = item.max;
+        lfoCtx.setParam(item.key, newVal.toFixed(4));
+    }
+}
+
+function drawLfoEdit() {
+    if (!lfoCtx) return;
+    clear_screen();
+    const enabled = lfoCtx.getParam("enabled") === "1";
+    const target = lfoCtx.getParam("target") || "";
+    const param = lfoCtx.getParam("target_param") || "";
+
+    let title = lfoCtx.title;
+    if (enabled && target && param) {
+        title += ": " + target + ":" + param;
+    } else if (!enabled) {
+        title += ": Off";
+    }
+    drawHeader(truncateText(title, 22));
+
+    const items = getLfoItems();
+    const lineHeight = 9;
+    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
+
+    let scrollOffset = 0;
+    if (selectedLfoItem >= maxVisible) {
+        scrollOffset = selectedLfoItem - maxVisible + 1;
+    }
+
+    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
+        const itemIdx = i + scrollOffset;
+        const y = LIST_TOP_Y + i * lineHeight;
+        const item = items[itemIdx];
+        const isSelected = itemIdx === selectedLfoItem;
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+
+        const labelColor = isSelected ? 0 : 1;
+        print(LIST_LABEL_X, y, item.label, labelColor);
+
+        const value = getLfoDisplayValue(item);
+        if (value) {
+            const valueX = SCREEN_WIDTH - value.length * 5 - 4;
+            if (isSelected && editingLfoValue) {
+                print(valueX - 8, y, "<", 0);
+                print(valueX, y, value, 0);
+                print(valueX + value.length * 5 + 2, y, ">", 0);
+            } else {
+                print(valueX, y, value, labelColor);
+            }
+        }
+    }
+}
+
+/* LFO target picker: step 1 - select component */
+function enterLfoTargetPicker() {
+    if (!lfoCtx) return;
+    lfoTargetComponents = lfoCtx.getTargetComponents();
+    selectedLfoTargetComp = 0;
+    setView(VIEWS.LFO_TARGET_COMPONENT);
+    if (lfoTargetComponents.length > 0) {
+        announce("Target, " + lfoTargetComponents[0].label);
+    }
+}
+
+/* LFO target picker: step 2 - select parameter for chosen component */
+function enterLfoTargetParamPicker(componentKey) {
+    if (!lfoCtx) return;
+    lfoTargetParams = lfoCtx.getTargetParams(componentKey);
+    selectedLfoTargetParam = 0;
+    setView(VIEWS.LFO_TARGET_PARAM);
+    if (lfoTargetParams.length > 0) {
+        announce("Param, " + lfoTargetParams[0].label);
+    } else {
+        announce("No parameters available");
+    }
+}
+
+function drawLfoTargetComponent() {
+    clear_screen();
+    drawHeader((lfoCtx ? lfoCtx.title : "LFO") + " Target");
+
+    drawMenuList({
+        items: lfoTargetComponents,
+        selectedIndex: selectedLfoTargetComp,
+        getLabel: function(item) { return item.label; },
+    });
+}
+
+function drawLfoTargetParam() {
+    clear_screen();
+    const compIdx = selectedLfoTargetComp;
+    const compLabel = (compIdx >= 0 && compIdx < lfoTargetComponents.length)
+        ? lfoTargetComponents[compIdx].label : "Param";
+    drawHeader((lfoCtx ? lfoCtx.title : "LFO") + " > " + compLabel);
+
+    if (lfoTargetParams.length === 0) {
+        print(LIST_LABEL_X, LIST_TOP_Y, "No parameters", 1);
+        return;
+    }
+
+    drawMenuList({
+        items: lfoTargetParams,
+        selectedIndex: selectedLfoTargetParam,
+        getLabel: function(item) { return item.label; },
+    });
+}
+
 globalThis.init = function() {
     debugLog("Shadow UI init");
     refreshSlots();
@@ -10634,6 +11221,15 @@ globalThis.tick = function() {
             break;
         case VIEWS.TOOL_STEM_REVIEW:
             drawToolStemReview();
+            break;
+        case VIEWS.LFO_EDIT:
+            drawLfoEdit();
+            break;
+        case VIEWS.LFO_TARGET_COMPONENT:
+            drawLfoTargetComponent();
+            break;
+        case VIEWS.LFO_TARGET_PARAM:
+            drawLfoTargetParam();
             break;
         case VIEWS.OVERTAKE_MODULE:
             try {
