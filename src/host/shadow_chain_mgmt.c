@@ -679,7 +679,7 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
         fseek(f, 0, SEEK_END);
         long size = ftell(f);
         fseek(f, 0, SEEK_SET);
-        if (size > 0 && size < 16384) {
+        if (size > 0 && size < 65536) {
             char *json = malloc(size + 1);
             if (json) {
                 size_t nread = fread(json, 1, size, f);
@@ -817,7 +817,7 @@ void shadow_slot_load_capture(int slot, int patch_index) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 16384) {
+    if (size <= 0 || size > 65536) {
         fclose(f);
         return;
     }
@@ -1902,7 +1902,7 @@ void shadow_inprocess_handle_param_request(void) {
                     fseek(f, 0, SEEK_END);
                     long size = ftell(f);
                     fseek(f, 0, SEEK_SET);
-                    if (size > 0 && size < 32768) {
+                    if (size > 0 && size < 65536) {
                         char *json = malloc(size + 1);
                         if (json) {
                             size_t nread = fread(json, 1, size, f);
