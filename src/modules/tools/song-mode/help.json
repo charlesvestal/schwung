@@ -20,8 +20,8 @@
     {
       "title": "Building a Song",
       "lines": [
-        "Each step assigns pads",
-        "for all 4 tracks.",
+        "Each step sets pads",
+        "for 4 tracks.",
         "",
         "Select a step with jog",
         "or step buttons, then",
@@ -31,6 +31,11 @@
         "the previous step so",
         "you only change what",
         "differs.",
+        "",
+        "Shift+Pad on step 2+",
+        "sets track to",
+        "trailing quote \"",
+        "(continue).",
         "",
         "Steps show track clips",
         "as column letters",
@@ -107,16 +112,23 @@
           "lines": [
             "Hold a step button or",
             "click jog on a step",
-            "to edit its repeats.",
+            "to edit settings.",
             "",
             "Shift+Step also opens",
             "step params (sticky).",
             "",
-            "Use jog wheel to",
-            "change repeat count:",
-            " 1,2,4,8,16,32,64",
+            "Fields: Repeats,",
+            "Bar Length mode,",
+            "Custom Bars",
+            "(when mode=Custom).",
             "",
-            "Back to return."
+            "Bar Length modes:",
+            " Longest (default),",
+            " Shortest, Custom.",
+            "",
+            "Jog picks a field.",
+            "Click jog to edit.",
+            "Click again to save."
           ]
         },
         {
