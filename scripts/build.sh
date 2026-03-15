@@ -393,7 +393,7 @@ echo "Building Signal Chain module..."
 if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_host.c src/host/unified_log.c \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
-    src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h; then
+    src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h; then
     echo "Building chain DSP..."
     "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
         src/modules/chain/dsp/chain_host.c \

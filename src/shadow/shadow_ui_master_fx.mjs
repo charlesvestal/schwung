@@ -149,6 +149,80 @@ export function drawMasterFx() {
         print(textX, textY, abbrev, textColor);
     }
 
+    /* Draw LFO indicators above targeted FX boxes */
+    if (typeof shadow_get_param === "function") {
+        const mfxLfoTargets = {};
+        for (let li = 1; li <= 2; li++) {
+            const enabled = shadow_get_param(0, "master_fx:lfo" + li + ":enabled");
+            if (enabled === "1") {
+                const t = shadow_get_param(0, "master_fx:lfo" + li + ":target") || "";
+                if (t) {
+                    if (!mfxLfoTargets[t]) mfxLfoTargets[t] = {};
+                    mfxLfoTargets[t]["lfo" + li] = true;
+                }
+            }
+        }
+        /* 3px-high tiny indicators: ~1, ~2, or ~1+2 */
+        const TILDE_3PX = [0x5, 0x3, 0x6];  /* 3-row tilde pattern */
+        const DIGIT_1_3PX = [0x2, 0x7, 0x2]; /* 1 */
+        const DIGIT_2_3PX = [0x6, 0x3, 0x5]; /* 2 */
+        const PLUS_3PX = [0x2, 0x7, 0x2];    /* + (same as 1, works at 3px) */
+
+        for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
+            const comp = MASTER_FX_CHAIN_COMPONENTS[i];
+            if (comp.key === "settings") continue;
+            const targets = mfxLfoTargets[comp.key];
+            if (!targets) continue;
+
+            const x = START_X + i * (BOX_W + GAP);
+            const indicY = BOX_Y - 4;
+            const has1 = targets.lfo1;
+            const has2 = targets.lfo2;
+
+            let cx = x + Math.floor(BOX_W / 2) - 4;
+            /* Draw tilde */
+            for (let row = 0; row < 3; row++) {
+                const bits = TILDE_3PX[row];
+                for (let bit = 0; bit < 3; bit++) {
+                    if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
+                }
+            }
+            cx += 4;
+            if (has1 && has2) {
+                /* "1+2" */
+                for (let row = 0; row < 3; row++) {
+                    const bits = DIGIT_1_3PX[row];
+                    for (let bit = 0; bit < 3; bit++) {
+                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
+                    }
+                }
+                cx += 3;
+                set_pixel(cx, indicY + 1, 1);
+                cx += 2;
+                for (let row = 0; row < 3; row++) {
+                    const bits = DIGIT_2_3PX[row];
+                    for (let bit = 0; bit < 3; bit++) {
+                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
+                    }
+                }
+            } else if (has1) {
+                for (let row = 0; row < 3; row++) {
+                    const bits = DIGIT_1_3PX[row];
+                    for (let bit = 0; bit < 3; bit++) {
+                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
+                    }
+                }
+            } else if (has2) {
+                for (let row = 0; row < 3; row++) {
+                    const bits = DIGIT_2_3PX[row];
+                    for (let bit = 0; bit < 3; bit++) {
+                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
+                    }
+                }
+            }
+        }
+    }
+
     const selectedComp = presetSelected ? null : MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
     const labelY = BOX_Y + BOX_H + 4;
     const label = presetSelected ? "Preset" : (selectedComp ? selectedComp.label : "");

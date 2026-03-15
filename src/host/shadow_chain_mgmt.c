@@ -9,6 +9,7 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <math.h>
+#include <time.h>
 #include <strings.h>  /* strcasecmp */
 
 #include "shadow_chain_mgmt.h"
@@ -42,6 +43,11 @@ int shadow_inprocess_ready = 0;
 
 /* Master FX slots */
 master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
+
+/* Master FX LFOs */
+lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
+static float mfx_lfo_base_value[MASTER_FX_LFO_COUNT];
+static int mfx_lfo_base_valid[MASTER_FX_LFO_COUNT];
 
 /* MIDI out log file */
 FILE *shadow_midi_out_log = NULL;
@@ -682,7 +688,8 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
                 if (caps) {
                     capture_parse_json(&s->capture, caps);
                 }
-                /* Cache chain_params */
+                /* Cache chain_params — try explicit chain_params first,
+                 * then fall back to ui_hierarchy params array */
                 const char *chain_params = strstr(json, "\"chain_params\"");
                 if (chain_params) {
                     const char *arr_start = strchr(chain_params, '[');
@@ -699,6 +706,31 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
                             memcpy(s->chain_params_cache, arr_start, len);
                             s->chain_params_cache[len] = '\0';
                             s->chain_params_cached = 1;
+                        }
+                    }
+                }
+                /* Fallback: extract params from ui_hierarchy if no chain_params */
+                if (!s->chain_params_cached) {
+                    const char *hier = strstr(json, "\"ui_hierarchy\"");
+                    if (hier) {
+                        const char *params_key = strstr(hier, "\"params\"");
+                        if (params_key) {
+                            const char *arr_start = strchr(params_key, '[');
+                            if (arr_start) {
+                                int depth = 1;
+                                const char *arr_end = arr_start + 1;
+                                while (*arr_end && depth > 0) {
+                                    if (*arr_end == '[') depth++;
+                                    else if (*arr_end == ']') depth--;
+                                    arr_end++;
+                                }
+                                int len = (int)(arr_end - arr_start);
+                                if (len > 0 && len < (int)sizeof(s->chain_params_cache) - 1) {
+                                    memcpy(s->chain_params_cache, arr_start, len);
+                                    s->chain_params_cache[len] = '\0';
+                                    s->chain_params_cached = 1;
+                                }
+                            }
                         }
                     }
                 }
@@ -844,6 +876,7 @@ int shadow_inprocess_load_chain(void) {
     shadow_host_api.audio_out_offset = MOVE_AUDIO_OUT_OFFSET;
     shadow_host_api.audio_in_offset = MOVE_AUDIO_IN_OFFSET;
     shadow_host_api.log = shadow_log;
+    shadow_host_api.get_bpm = host.get_bpm;  /* Tempo query for LFO sync */
 
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(
         shadow_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
@@ -1478,6 +1511,176 @@ int shadow_param_publish_response(uint32_t req_id) {
     return 1;
 }
 
+/* ============================================================================
+ * Master FX LFO Engine
+ * ============================================================================ */
+
+#define MFX_LFO_INT_RATE_LIMIT_MS 50
+
+/* LFO param metadata for LFO-to-LFO modulation */
+typedef struct {
+    const char *key;
+    float min_val;
+    float max_val;
+    int is_float;
+} lfo_param_meta_t;
+
+static const lfo_param_meta_t mfx_lfo_param_meta[] = {
+    { "depth",        0.0f, 1.0f,  1 },
+    { "rate_hz",      0.1f, 20.0f, 1 },
+    { "phase_offset", 0.0f, 1.0f,  1 },
+};
+#define MFX_LFO_PARAM_META_COUNT 3
+
+static const lfo_param_meta_t *mfx_lfo_find_param_meta(const char *key) {
+    for (int j = 0; j < MFX_LFO_PARAM_META_COUNT; j++) {
+        if (strcmp(mfx_lfo_param_meta[j].key, key) == 0) return &mfx_lfo_param_meta[j];
+    }
+    return NULL;
+}
+
+void shadow_master_fx_lfo_tick(int frames) {
+    static uint64_t last_emit_ms[MASTER_FX_LFO_COUNT] = {0};
+    float sample_rate = 44100.0f;
+
+    for (int i = 0; i < MASTER_FX_LFO_COUNT; i++) {
+        lfo_state_t *lfo = &shadow_master_fx_lfos[i];
+        if (!lfo->enabled || lfo->target[0] == '\0' || lfo->param[0] == '\0') continue;
+
+        /* Parse target: "fx1"-"fx4" for FX slots, "lfo1"/"lfo2" for other LFO */
+        int target_slot = -1;
+        int target_lfo = -1;
+        if (lfo->target[0] == 'f' && lfo->target[1] == 'x' &&
+            lfo->target[2] >= '1' && lfo->target[2] <= '4') {
+            target_slot = lfo->target[2] - '1';
+        } else if (lfo->target[0] == 'l' && lfo->target[1] == 'f' && lfo->target[2] == 'o' &&
+                   lfo->target[3] >= '1' && lfo->target[3] <= '2') {
+            target_lfo = lfo->target[3] - '1';
+            if (target_lfo == i) continue;  /* Skip self-targeting */
+        }
+
+        /* Validate target */
+        master_fx_slot_t *mfx = NULL;
+        const lfo_param_meta_t *lfo_meta = NULL;
+        if (target_slot >= 0 && target_slot < MASTER_FX_SLOTS) {
+            mfx = &shadow_master_fx_slots[target_slot];
+            if (!mfx->instance || !mfx->api || !mfx->api->set_param) continue;
+        } else if (target_lfo >= 0) {
+            lfo_meta = mfx_lfo_find_param_meta(lfo->param);
+            if (!lfo_meta) continue;
+        } else {
+            continue;
+        }
+
+        /* Phase accumulation */
+        float rate_hz;
+        if (lfo->sync) {
+            float bpm = 120.0f;
+            if (host.get_bpm) bpm = host.get_bpm();
+            rate_hz = lfo_sync_rate_hz(bpm, lfo->rate_div);
+        } else {
+            rate_hz = lfo->rate_hz;
+        }
+
+        lfo->phase = lfo_advance_phase(lfo->phase, rate_hz, frames, sample_rate);
+
+        /* Compute waveform with phase offset */
+        double effective_phase = fmod(lfo->phase + (double)lfo->phase_offset, 1.0);
+        float signal = lfo_compute_shape(lfo->shape, effective_phase,
+                                          &lfo->last_sh_value, &lfo->prev_wrap);
+
+        /* Determine param min/max and type */
+        float p_min = 0.0f, p_max = 1.0f;
+        int p_is_float = 1;
+
+        if (target_lfo >= 0) {
+            /* LFO-to-LFO: use hardcoded metadata */
+            p_min = lfo_meta->min_val;
+            p_max = lfo_meta->max_val;
+            p_is_float = lfo_meta->is_float;
+        } else if (mfx->chain_params_cached && mfx->chain_params_cache[0]) {
+            char needle[64];
+            snprintf(needle, sizeof(needle), "\"key\":\"%s\"", lfo->param);
+            const char *pos = strstr(mfx->chain_params_cache, needle);
+            if (pos) {
+                const char *block_end = strchr(pos, '}');
+                if (block_end) {
+                    const char *min_pos = strstr(pos, "\"min\":");
+                    if (min_pos && min_pos < block_end) p_min = strtof(min_pos + 6, NULL);
+                    const char *max_pos = strstr(pos, "\"max\":");
+                    if (max_pos && max_pos < block_end) p_max = strtof(max_pos + 6, NULL);
+                    const char *type_pos = strstr(pos, "\"type\":\"");
+                    if (type_pos && type_pos < block_end) {
+                        if (strncmp(type_pos + 8, "int", 3) == 0 ||
+                            strncmp(type_pos + 8, "enum", 4) == 0) {
+                            p_is_float = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Rate-limit int/enum updates */
+        if (!p_is_float) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+            if (now_ms - last_emit_ms[i] < MFX_LFO_INT_RATE_LIMIT_MS) continue;
+            last_emit_ms[i] = now_ms;
+        }
+
+        /* Snapshot base value */
+        if (!mfx_lfo_base_valid[i]) {
+            if (target_lfo >= 0) {
+                /* Read current value from target LFO struct */
+                lfo_state_t *tgt = &shadow_master_fx_lfos[target_lfo];
+                if (strcmp(lfo->param, "depth") == 0) mfx_lfo_base_value[i] = tgt->depth;
+                else if (strcmp(lfo->param, "rate_hz") == 0) mfx_lfo_base_value[i] = tgt->rate_hz;
+                else if (strcmp(lfo->param, "phase_offset") == 0) mfx_lfo_base_value[i] = tgt->phase_offset;
+                else continue;
+                mfx_lfo_base_valid[i] = 1;
+            } else if (mfx->api->get_param) {
+                char val_buf[64] = {0};
+                int got = mfx->api->get_param(mfx->instance, lfo->param, val_buf, sizeof(val_buf));
+                if (got > 0) {
+                    mfx_lfo_base_value[i] = strtof(val_buf, NULL);
+                    mfx_lfo_base_valid[i] = 1;
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+
+        float base = mfx_lfo_base_value[i];
+        float half_range = (p_max - p_min) / 2.0f;
+        float modulated = base + signal * lfo->depth * half_range;
+
+        /* Clamp */
+        if (modulated < p_min) modulated = p_min;
+        if (modulated > p_max) modulated = p_max;
+        if (!p_is_float) modulated = roundf(modulated);
+
+        /* Apply */
+        if (target_lfo >= 0) {
+            /* Directly modify target LFO struct */
+            lfo_state_t *tgt = &shadow_master_fx_lfos[target_lfo];
+            if (strcmp(lfo->param, "depth") == 0) tgt->depth = modulated;
+            else if (strcmp(lfo->param, "rate_hz") == 0) tgt->rate_hz = modulated;
+            else if (strcmp(lfo->param, "phase_offset") == 0) tgt->phase_offset = modulated;
+        } else {
+            char mod_str[32];
+            if (p_is_float) {
+                snprintf(mod_str, sizeof(mod_str), "%.6f", modulated);
+            } else {
+                snprintf(mod_str, sizeof(mod_str), "%d", (int)modulated);
+            }
+            mfx->api->set_param(mfx->instance, lfo->param, mod_str);
+        }
+    }
+}
+
 void shadow_inprocess_handle_param_request(void) {
     shadow_param_t *shadow_param = host.shadow_param_ptr ? *host.shadow_param_ptr : NULL;
     if (!shadow_param) return;
@@ -1489,6 +1692,92 @@ void shadow_inprocess_handle_param_request(void) {
     /* Handle master FX chain params */
     if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
         const char *fx_key = shadow_param->key + 10;
+
+        /* Handle master FX LFO params: master_fx:lfo1:*, master_fx:lfo2:* */
+        if (strncmp(fx_key, "lfo1:", 5) == 0 || strncmp(fx_key, "lfo2:", 5) == 0) {
+            int lfo_idx = (fx_key[3] == '1') ? 0 : 1;
+            const char *lfo_param = fx_key + 5;
+            lfo_state_t *lfo = &shadow_master_fx_lfos[lfo_idx];
+
+            if (req_type == 1) {  /* SET */
+                if (strcmp(lfo_param, "enabled") == 0) {
+                    lfo->enabled = atoi(shadow_param->value);
+                    if (lfo->enabled) {
+                        if (lfo->rate_hz < 0.1f) lfo->rate_hz = 1.0f;
+                        if (lfo->depth <= 0.0f) lfo->depth = 0.5f;
+                    }
+                } else if (strcmp(lfo_param, "shape") == 0) {
+                    lfo->shape = atoi(shadow_param->value);
+                    if (lfo->shape < 0) lfo->shape = 0;
+                    if (lfo->shape >= LFO_NUM_SHAPES) lfo->shape = LFO_NUM_SHAPES - 1;
+                } else if (strcmp(lfo_param, "rate_hz") == 0) {
+                    lfo->rate_hz = strtof(shadow_param->value, NULL);
+                    if (lfo->rate_hz < 0.1f) lfo->rate_hz = 0.1f;
+                    if (lfo->rate_hz > 20.0f) lfo->rate_hz = 20.0f;
+                } else if (strcmp(lfo_param, "rate_div") == 0) {
+                    lfo->rate_div = atoi(shadow_param->value);
+                    if (lfo->rate_div < 0) lfo->rate_div = 0;
+                    if (lfo->rate_div >= LFO_NUM_DIVISIONS) lfo->rate_div = LFO_NUM_DIVISIONS - 1;
+                } else if (strcmp(lfo_param, "sync") == 0) {
+                    lfo->sync = atoi(shadow_param->value);
+                    if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 3;  /* Default to 1/1 */
+                } else if (strcmp(lfo_param, "depth") == 0) {
+                    lfo->depth = strtof(shadow_param->value, NULL);
+                    if (lfo->depth < 0.0f) lfo->depth = 0.0f;
+                    if (lfo->depth > 1.0f) lfo->depth = 1.0f;
+                } else if (strcmp(lfo_param, "phase_offset") == 0) {
+                    lfo->phase_offset = strtof(shadow_param->value, NULL);
+                    if (lfo->phase_offset < 0.0f) lfo->phase_offset = 0.0f;
+                    if (lfo->phase_offset > 1.0f) lfo->phase_offset = 1.0f;
+                } else if (strcmp(lfo_param, "target") == 0) {
+                    strncpy(lfo->target, shadow_param->value, sizeof(lfo->target) - 1);
+                    lfo->target[sizeof(lfo->target) - 1] = '\0';
+                    mfx_lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
+                } else if (strcmp(lfo_param, "target_param") == 0) {
+                    strncpy(lfo->param, shadow_param->value, sizeof(lfo->param) - 1);
+                    lfo->param[sizeof(lfo->param) - 1] = '\0';
+                    mfx_lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {  /* GET */
+                char result[256] = {0};
+                if (strcmp(lfo_param, "enabled") == 0) {
+                    snprintf(result, sizeof(result), "%d", lfo->enabled);
+                } else if (strcmp(lfo_param, "shape") == 0) {
+                    snprintf(result, sizeof(result), "%d", lfo->shape);
+                } else if (strcmp(lfo_param, "rate_hz") == 0) {
+                    snprintf(result, sizeof(result), "%.2f", lfo->rate_hz);
+                } else if (strcmp(lfo_param, "rate_div") == 0) {
+                    snprintf(result, sizeof(result), "%d", lfo->rate_div);
+                } else if (strcmp(lfo_param, "sync") == 0) {
+                    snprintf(result, sizeof(result), "%d", lfo->sync);
+                } else if (strcmp(lfo_param, "depth") == 0) {
+                    snprintf(result, sizeof(result), "%.2f", lfo->depth);
+                } else if (strcmp(lfo_param, "phase_offset") == 0) {
+                    snprintf(result, sizeof(result), "%.2f", lfo->phase_offset);
+                } else if (strcmp(lfo_param, "target") == 0) {
+                    snprintf(result, sizeof(result), "%s", lfo->target);
+                } else if (strcmp(lfo_param, "target_param") == 0) {
+                    snprintf(result, sizeof(result), "%s", lfo->param);
+                } else if (strcmp(lfo_param, "config") == 0) {
+                    snprintf(result, sizeof(result),
+                        "{\"enabled\":%d,\"shape\":%d,\"rate_hz\":%.2f,\"rate_div\":%d,"
+                        "\"sync\":%d,\"depth\":%.2f,\"phase_offset\":%.2f,"
+                        "\"target\":\"%s\",\"target_param\":\"%s\"}",
+                        lfo->enabled, lfo->shape, lfo->rate_hz, lfo->rate_div,
+                        lfo->sync, lfo->depth, lfo->phase_offset,
+                        lfo->target, lfo->param);
+                }
+                strncpy(shadow_param->value, result, SHADOW_PARAM_VALUE_LEN - 1);
+                shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(result);
+            }
+            shadow_param_publish_response(req_id);
+            return;
+        }
+
         int mfx_slot = -1;
         int has_slot_prefix = 0;
         const char *param_key = fx_key;
