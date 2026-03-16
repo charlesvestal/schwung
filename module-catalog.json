@@ -557,6 +557,19 @@
       "default_branch": "main",
       "asset_name": "tuner-module.tar.gz",
       "min_host_version": "0.3.11"
+      
+    }
+    {
+      "id": "dragonfly-hall",
+      "name": "Dragonfly Hall",
+      "description": "Dragonfly Hall Reverb — lush hall reverb with 25 presets and full parameter control",
+      "author": "bradcoomber",
+      "component_type": "audio_fx",
+      "github_repo": "wolfrenegade1976/move-anything-dragonfly-hall",
+      "default_branch": "main",
+      "asset_name": "dragonfly-hall-module.tar.gz",
+      "min_host_version": "0.1.0",
+      "license": "GPL-3.0"
     }
   ]
 }
