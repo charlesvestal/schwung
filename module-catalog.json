@@ -557,8 +557,7 @@
       "default_branch": "main",
       "asset_name": "tuner-module.tar.gz",
       "min_host_version": "0.3.11"
-      
-    }
+    },
     {
       "id": "dragonfly-hall",
       "name": "Dragonfly Hall",
@@ -568,8 +567,7 @@
       "github_repo": "wolfrenegade1976/move-anything-dragonfly-hall",
       "default_branch": "main",
       "asset_name": "dragonfly-hall-module.tar.gz",
-      "min_host_version": "0.1.0",
-      "license": "GPL-3.0"
+      "min_host_version": "0.1.0"
     }
   ]
 }
