@@ -877,6 +877,7 @@ int shadow_inprocess_load_chain(void) {
     shadow_host_api.audio_in_offset = MOVE_AUDIO_IN_OFFSET;
     shadow_host_api.log = shadow_log;
     shadow_host_api.get_bpm = host.get_bpm;  /* Tempo query for LFO sync */
+    shadow_host_api.raw_audio_in = host.raw_audio_in;  /* Pre-bridge audio for input plugins */
 
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(
         shadow_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);

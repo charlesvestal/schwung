@@ -46,8 +46,10 @@ volatile int native_bridge_makeup_limited = 0;
 volatile int resample_bridge_feedback_killed = 0;
 static int feedback_detect_count = 0;
 static float feedback_prev_energy = 0.0f;
-#define FEEDBACK_GROWTH_THRESHOLD 1.5f  /* energy grew by 50%+ frame-over-frame */
-#define FEEDBACK_FRAMES_TO_KILL 3       /* ~8.7ms at 44.1kHz/128 frames */
+static int feedback_warmup_frames = 0;
+#define FEEDBACK_GROWTH_THRESHOLD 3.0f  /* energy grew by 200%+ frame-over-frame */
+#define FEEDBACK_FRAMES_TO_KILL 5       /* ~14.5ms at 44.1kHz/128 frames */
+#define FEEDBACK_WARMUP_FRAMES 20       /* skip detection for ~58ms after bridge enables */
 
 /* Settings.json inotify watcher */
 static int settings_inotify_fd = -1;
@@ -55,7 +57,7 @@ static int settings_watch_fd = -1;
 static time_t settings_last_poll = 0;
 #define SETTINGS_POLL_INTERVAL_SEC 1
 #define MOVE_SETTINGS_PATH "/data/UserData/settings/Settings.json"
-static volatile int resample_source_is_output = 0;
+static volatile int resample_source_is_input = 0;
 
 /* ============================================================================
  * Local utility
@@ -378,9 +380,12 @@ static void resample_parse_settings_json(void)
     fclose(f);
     json[nread] = '\0';
 
-    /* Find "sampleRecordingSource": "output" / "input" / "usb" */
+    /* Find "sampleRecordingSource": "output" / "input" / "usb"
+     * Bridge is active when source is "input" — Move reads AUDIO_IN in that mode,
+     * which is where we inject our audio.  When source is "output" (resampling),
+     * Move reads its own internal audio pipeline and ignores AUDIO_IN. */
     char *key = strstr(json, "\"sampleRecordingSource\"");
-    int new_is_output = 0;
+    int new_is_input = 0;
     if (key) {
         char *colon = strchr(key, ':');
         if (colon) {
@@ -390,18 +395,18 @@ static void resample_parse_settings_json(void)
                 char *quote2 = strchr(quote1, '"');
                 if (quote2) {
                     size_t vlen = (size_t)(quote2 - quote1);
-                    new_is_output = (vlen == 6 && strncmp(quote1, "output", 6) == 0);
+                    new_is_input = (vlen == 5 && strncmp(quote1, "input", 5) == 0);
                 }
             }
         }
     }
 
-    if (new_is_output != resample_source_is_output) {
-        resample_source_is_output = new_is_output;
+    if (new_is_input != resample_source_is_input) {
+        resample_source_is_input = new_is_input;
         if (host.log) {
             char msg[128];
             snprintf(msg, sizeof(msg), "Resample source: %s (from Settings.json)",
-                     new_is_output ? "output (bridge allowed)" : "not output (bridge blocked)");
+                     new_is_input ? "input (bridge allowed)" : "not input (bridge blocked)");
             host.log(msg);
         }
     }
@@ -478,14 +483,16 @@ void resample_source_check(void)
 
 int resample_bridge_should_apply(void)
 {
-    return resample_bridge_enabled && resample_source_is_output;
+    return resample_bridge_enabled && resample_source_is_input;
 }
 
 /* ============================================================================
  * Overwrite makeup path
  * ============================================================================ */
 
-/* Overwrite path with component-based compensation. */
+/* Overwrite path with component-based compensation.
+ * Combines Move's audio (move_component scaled by 1/mv) with ME audio
+ * (me_component at full gain) so the resample captures both. */
 static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
                                                           int16_t *dst,
                                                           size_t samples)
@@ -504,7 +511,7 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
     float inv_mv = 1.0f / mv;
     float max_makeup = 20.0f;
 
-    if (!shadow_master_fx_chain_active() && native_bridge_split_valid) {
+    if (native_bridge_split_valid) {
         float native_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
         int limiter_hit = 0;
 
@@ -533,7 +540,10 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
  * ============================================================================ */
 
 /* Check for feedback: is AUDIO_IN energy growing rapidly?
- * Called BEFORE writing bridge content, on the current AUDIO_IN. */
+ * Called BEFORE writing bridge content, on the current AUDIO_IN.
+ * This is a safety net — primary protection is source gating and
+ * raw_audio_in zeroing.  Only triggers on sustained exponential growth
+ * (e.g. monitoring loop with high makeup gain). */
 static int resample_feedback_check(const int16_t *audio_in)
 {
     if (!audio_in) return 0;
@@ -547,14 +557,15 @@ static int resample_feedback_check(const int16_t *audio_in)
     float energy = sqrtf((float)(sum / (FRAMES_PER_BLOCK * 2)));
 
     /* Skip detection if energy is very low (silence / noise floor) */
-    if (energy < 0.001f) {
+    if (energy < 0.01f) {
         feedback_detect_count = 0;
         feedback_prev_energy = energy;
         return 0;
     }
 
-    /* Check for sustained energy growth */
-    if (feedback_prev_energy > 0.001f && energy > feedback_prev_energy * FEEDBACK_GROWTH_THRESHOLD) {
+    /* Check for sustained energy growth — conservative thresholds to avoid
+     * false positives from normal playing (notes starting, volume changes). */
+    if (feedback_prev_energy > 0.01f && energy > feedback_prev_energy * FEEDBACK_GROWTH_THRESHOLD) {
         feedback_detect_count++;
         if (feedback_detect_count >= FEEDBACK_FRAMES_TO_KILL) {
             /* Feedback detected — kill bridge */
@@ -596,7 +607,8 @@ void native_resample_bridge_apply(void)
         static int skip_counter = 0;
         if (native_resample_diag_is_enabled() && skip_counter++ % 200 == 0 && host.log) {
             char msg[128];
-            snprintf(msg, sizeof(msg), "Native bridge diag: skip (disabled) src=%s",
+            snprintf(msg, sizeof(msg), "Native bridge diag: skip enabled=%d src_input=%d src=%s",
+                     (int)resample_bridge_enabled, (int)resample_source_is_input,
                      native_sampler_source_name(native_sampler_source));
             host.log(msg);
         }
@@ -605,29 +617,31 @@ void native_resample_bridge_apply(void)
 
     int16_t *dst = (int16_t *)(mmap_addr + RESAMPLE_AUDIO_IN_OFFSET);
 
-    /* Feedback check on current AUDIO_IN before we overwrite it */
+    /* Feedback safety check on current AUDIO_IN before we overwrite it */
     if (resample_feedback_check(dst)) {
         return;  /* Bridge was killed */
     }
 
-    int16_t compensated_snapshot[FRAMES_PER_BLOCK * 2];
+    /* Write combined Move + ME audio to AUDIO_IN for Move's sampler.
+     * move_component is captured from hardware AUDIO_OUT post-ioctl
+     * (Move's fresh render).  Scale by 1/mv to compensate for master
+     * volume attenuation, then add me_component at full gain. */
+    int16_t compensated[FRAMES_PER_BLOCK * 2];
     native_resample_bridge_apply_overwrite_makeup(
-        native_total_mix_snapshot,
-        compensated_snapshot,
-        FRAMES_PER_BLOCK * 2
-    );
-    memcpy(dst, compensated_snapshot, RESAMPLE_AUDIO_BUFFER_SIZE);
+        native_total_mix_snapshot, compensated, FRAMES_PER_BLOCK * 2);
+    memcpy(dst, compensated, RESAMPLE_AUDIO_BUFFER_SIZE);
 
     /* Periodic diag logging when applying */
     static int apply_counter = 0;
     if (native_resample_diag_is_enabled() && apply_counter++ % 200 == 0 && host.log) {
-        native_audio_metrics_t src_m, dst_m;
+        native_audio_metrics_t src_m, dst_m, me_m;
         native_compute_audio_metrics(native_total_mix_snapshot, &src_m);
         native_compute_audio_metrics(dst, &dst_m);
+        native_compute_audio_metrics(native_bridge_me_component, &me_m);
         char msg[512];
         snprintf(msg, sizeof(msg),
                  "Native bridge diag: apply src=%s mv=%.3f split=%d mfx=%d "
-                 "makeup=(%.2fx->%.2fx lim=%d) src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f)",
+                 "makeup=(%.2fx->%.2fx lim=%d) me_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) split=%d",
                  native_sampler_source_name(native_sampler_source),
                  (double)(host.shadow_master_volume ? *host.shadow_master_volume : 0.0f),
                  (int)native_bridge_split_valid,
@@ -635,8 +649,9 @@ void native_resample_bridge_apply(void)
                  native_bridge_makeup_desired_gain,
                  native_bridge_makeup_applied_gain,
                  (int)native_bridge_makeup_limited,
-                 src_m.rms_l, src_m.rms_r,
-                 dst_m.rms_l, dst_m.rms_r);
+                 me_m.rms_l, me_m.rms_r,
+                 dst_m.rms_l, dst_m.rms_r,
+                 (int)native_bridge_split_valid);
         host.log(msg);
     }
 }
