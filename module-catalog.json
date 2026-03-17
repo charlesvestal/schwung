@@ -369,6 +369,17 @@
       "min_host_version": "0.6.2"
     },
     {
+      "id": "freak",
+      "name": "Freak",
+      "description": "MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits",
+      "author": "handcraftedcc",
+      "component_type": "sound_generator",
+      "github_repo": "handcraftedcc/move-everything-freak",
+      "default_branch": "main",
+      "asset_name": "freak-module.tar.gz",
+      "min_host_version": "0.7.12"
+    },
+    {
       "id": "mrdrums",
       "name": "MrDrums",
       "description": "16-pad sample drum module with per-pad controls and dynamic pad editing",
