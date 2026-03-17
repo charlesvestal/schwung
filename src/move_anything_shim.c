@@ -64,6 +64,8 @@ unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
 static int shadow_spi_fd = -1;           /* SPI file descriptor for MIDI/ioctl */
 extern int (*real_ioctl)(int, unsigned long, ...);  /* Forward declaration */
 static unsigned char shadow_mailbox[4096] __attribute__((aligned(64))); /* Shadow buffer for Move */
+static chord_engine_t chord_engine;
+static int chord_engine_initialized = 0;
 
 /* ============================================================================
  * SHADOW INSTRUMENT SUPPORT
@@ -1771,8 +1773,6 @@ static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
 static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
-static chord_engine_t chord_engine;
-static int chord_engine_initialized = 0;
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
