@@ -6,6 +6,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <math.h>
+#include <sys/inotify.h>
+#include <fcntl.h>
+#include <time.h>
 #include "shadow_resample.h"
 #include "shadow_chain_mgmt.h"  /* for shadow_master_fx_chain_active() */
 
@@ -38,6 +41,14 @@ volatile int native_bridge_split_valid = 0;
 volatile float native_bridge_makeup_desired_gain = 1.0f;
 volatile float native_bridge_makeup_applied_gain = 1.0f;
 volatile int native_bridge_makeup_limited = 0;
+
+/* Settings.json inotify watcher */
+static int settings_inotify_fd = -1;
+static int settings_watch_fd = -1;
+static time_t settings_last_poll = 0;
+#define SETTINGS_POLL_INTERVAL_SEC 1
+#define MOVE_SETTINGS_PATH "/data/UserData/settings/Settings.json"
+static volatile int resample_source_is_output = 0;
 
 /* ============================================================================
  * Local utility
@@ -337,12 +348,114 @@ void native_compute_audio_metrics(const int16_t *buf, native_audio_metrics_t *m)
 }
 
 /* ============================================================================
- * Source gating (Task 2 will add source-based gating)
+ * Settings.json source tracking (inotify + poll)
+ * ============================================================================ */
+
+static void resample_parse_settings_json(void)
+{
+    FILE *f = fopen(MOVE_SETTINGS_PATH, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 65536) { fclose(f); return; }
+
+    char *json = malloc((size_t)size + 1);
+    if (!json) { fclose(f); return; }
+
+    size_t nread = fread(json, 1, (size_t)size, f);
+    fclose(f);
+    json[nread] = '\0';
+
+    /* Find "sampleRecordingSource": "output" / "input" / "usb" */
+    char *key = strstr(json, "\"sampleRecordingSource\"");
+    int new_is_output = 0;
+    if (key) {
+        char *colon = strchr(key, ':');
+        if (colon) {
+            char *quote1 = strchr(colon, '"');
+            if (quote1) {
+                quote1++;
+                char *quote2 = strchr(quote1, '"');
+                if (quote2) {
+                    size_t vlen = (size_t)(quote2 - quote1);
+                    new_is_output = (vlen == 6 && strncmp(quote1, "output", 6) == 0);
+                }
+            }
+        }
+    }
+
+    if (new_is_output != resample_source_is_output) {
+        resample_source_is_output = new_is_output;
+        if (host.log) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Resample source: %s (from Settings.json)",
+                     new_is_output ? "output (bridge allowed)" : "not output (bridge blocked)");
+            host.log(msg);
+        }
+    }
+
+    free(json);
+}
+
+void resample_source_init_watcher(void)
+{
+    /* Read initial state */
+    resample_parse_settings_json();
+    settings_last_poll = time(NULL);
+
+    /* Set up inotify */
+    settings_inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (settings_inotify_fd < 0) {
+        if (host.log) host.log("Resample: inotify_init failed, using poll-only");
+        return;
+    }
+
+    settings_watch_fd = inotify_add_watch(settings_inotify_fd,
+        MOVE_SETTINGS_PATH, IN_CLOSE_WRITE | IN_MODIFY);
+    if (settings_watch_fd < 0) {
+        if (host.log) host.log("Resample: inotify_add_watch failed, using poll-only");
+        close(settings_inotify_fd);
+        settings_inotify_fd = -1;
+        return;
+    }
+
+    if (host.log) host.log("Resample: inotify watcher active on Settings.json");
+}
+
+void resample_source_check(void)
+{
+    int did_inotify = 0;
+
+    /* Check inotify (non-blocking) */
+    if (settings_inotify_fd >= 0) {
+        char buf[256];
+        ssize_t len = read(settings_inotify_fd, buf, sizeof(buf));
+        if (len > 0) {
+            resample_parse_settings_json();
+            settings_last_poll = time(NULL);
+            did_inotify = 1;
+        }
+    }
+
+    /* Fallback poll every SETTINGS_POLL_INTERVAL_SEC */
+    if (!did_inotify) {
+        time_t now = time(NULL);
+        if (now - settings_last_poll >= SETTINGS_POLL_INTERVAL_SEC) {
+            resample_parse_settings_json();
+            settings_last_poll = now;
+        }
+    }
+}
+
+/* ============================================================================
+ * Source gating
  * ============================================================================ */
 
 int resample_bridge_should_apply(void)
 {
-    return resample_bridge_enabled;
+    return resample_bridge_enabled && resample_source_is_output;
 }
 
 /* ============================================================================
