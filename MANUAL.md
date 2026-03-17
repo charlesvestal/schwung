@@ -321,19 +321,14 @@ ME Slot 2 (synth → FX) ────────────────│
 
 Move Everything audio can be fed into Move's native sampler for resampling.
 
-In **Global Settings > Audio**, **Sample Src** controls this:
+In **Global Settings > Audio**, enable **Resample Bridge** to include Move Everything audio when resampling.
 
-| Option | Behavior |
-|--------|----------|
-| **Native** | Disabled — sampler uses Move's normal input (default) |
-| **ME Mix** | Replaces native sampler input with Move Everything master output |
+The bridge is only active when Move's sample source is set to **Resampling** ("output"). When Move's source is set to Line In, USB, or Mic, the bridge is automatically disabled to prevent feedback.
 
-Recommended setup to avoid feedback:
-1. Set **Sample Src** to **ME Mix**
-2. In native Move Sampler, set source to **Line In**
-3. Set monitoring to **Off**
-
-If monitoring is on or routing is configured differently, audio feedback may occur.
+**Safety features:**
+- **Source tracking**: The bridge monitors Move's Settings.json for source changes and deactivates instantly when not resampling
+- **Feedback detection**: If audio feedback is detected, the bridge auto-disables and must be manually re-enabled
+- **Raw audio input**: Audio-input plugins (Line In, etc.) always read pre-bridge hardware audio, preventing self-feed loops
 
 ---
 
