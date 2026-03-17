@@ -524,6 +524,17 @@ typedef struct chain_instance {
      * The shim calls chain_process_fx() separately for same-frame FX. */
     int external_fx_mode;
 
+    /* Move MIDI FX injection: when midi_fx_to_move is set, MIDI FX output
+     * is written here instead of being sent to the shadow synth.
+     * The shim reads this buffer and injects into MIDI_IN cable-2. */
+    int midi_fx_to_move;                      /* Flag: redirect MIDI FX output to Move */
+    uint8_t midi_fx_out_buf[16][3];           /* Output messages (up to 16) */
+    int midi_fx_out_lens[16];                 /* Message lengths */
+    volatile int midi_fx_out_count;           /* Number of messages (0 = empty/consumed) */
+    uint8_t midi_fx_out_original_note;        /* The input note that produced this output */
+    uint8_t midi_fx_out_original_status;      /* The input status byte */
+    uint8_t midi_fx_out_channel;              /* MIDI channel */
+
     /* Channel settings from last load_file (autosave restore).
      * Used as fallback when current_patch == -1 (file-based load, not library). */
     int loaded_receive_channel;   /* 0=not set, 1-16=specific channel */
@@ -6680,6 +6691,24 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     int out_lens[MIDI_FX_MAX_OUT_MSGS];
     int out_count = v2_process_midi_fx(inst, msg, len, out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
 
+    /* When midi_fx_to_move is set, write output to shared buffer for shim injection
+     * instead of sending to shadow synth (shadow synth will hear it via MIDI_OUT echo) */
+    if (inst->midi_fx_to_move && inst->midi_fx_count > 0) {
+        int n = out_count < 16 ? out_count : 16;
+        for (int i = 0; i < n; i++) {
+            inst->midi_fx_out_buf[i][0] = out_msgs[i][0];
+            inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
+            inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
+            inst->midi_fx_out_lens[i] = out_lens[i];
+        }
+        inst->midi_fx_out_original_note = len >= 2 ? msg[1] : 0;
+        inst->midi_fx_out_original_status = msg[0];
+        inst->midi_fx_out_channel = msg[0] & 0x0F;
+        __sync_synchronize();
+        inst->midi_fx_out_count = n;
+        return;  /* Don't send to synth — shim will inject, shadow synth hears via MIDI_OUT */
+    }
+
     /* Send processed messages to synth */
     for (int i = 0; i < out_count; i++) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
@@ -8323,6 +8352,45 @@ void chain_set_inject_audio(void *instance, int16_t *buf, int frames) {
 /* Exported: enable/disable external FX mode.
  * When enabled, render_block outputs raw synth only (no inject, no FX).
  * The caller is responsible for running chain_process_fx() separately. */
+/* Exported: enable/disable MIDI FX → Move routing.
+ * When enabled, MIDI FX output goes to a buffer for shim injection
+ * instead of being sent to the shadow synth. */
+void chain_set_midi_fx_to_move(void *instance, int enable) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->midi_fx_to_move = enable;
+    if (!enable) {
+        inst->midi_fx_out_count = 0;
+    }
+}
+
+/* Exported: read MIDI FX output buffer.
+ * Returns number of messages. Clears the buffer after reading.
+ * out_msgs/out_lens must have room for 16 entries.
+ * Also returns original note info for note-off injection. */
+int chain_read_midi_fx_output(void *instance,
+                               uint8_t out_msgs[][3], int out_lens[],
+                               uint8_t *original_note, uint8_t *original_status,
+                               uint8_t *channel) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || inst->midi_fx_out_count == 0) return 0;
+
+    int count = inst->midi_fx_out_count;
+    for (int i = 0; i < count; i++) {
+        out_msgs[i][0] = inst->midi_fx_out_buf[i][0];
+        out_msgs[i][1] = inst->midi_fx_out_buf[i][1];
+        out_msgs[i][2] = inst->midi_fx_out_buf[i][2];
+        out_lens[i] = inst->midi_fx_out_lens[i];
+    }
+    if (original_note) *original_note = inst->midi_fx_out_original_note;
+    if (original_status) *original_status = inst->midi_fx_out_original_status;
+    if (channel) *channel = inst->midi_fx_out_channel;
+
+    __sync_synchronize();
+    inst->midi_fx_out_count = 0;
+    return count;
+}
+
 void chain_set_external_fx_mode(void *instance, int mode) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;

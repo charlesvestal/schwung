@@ -95,6 +95,10 @@ extern const plugin_api_v2_t *shadow_plugin_v2;
 extern void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames);
 extern void (*shadow_chain_set_external_fx_mode)(void *instance, int mode);
 extern void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames);
+extern void (*shadow_chain_set_midi_fx_to_move)(void *instance, int enable);
+extern int (*shadow_chain_read_midi_fx_output)(void *instance,
+    uint8_t out_msgs[][3], int out_lens[],
+    uint8_t *original_note, uint8_t *original_status, uint8_t *channel);
 extern host_api_v1_t shadow_host_api;
 extern int shadow_inprocess_ready;
 
