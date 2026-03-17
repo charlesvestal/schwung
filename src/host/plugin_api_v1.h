@@ -1,5 +1,32 @@
 /*
- * Move Anything Plugin API v1
+ * Move Anything Plugin API v1 & v2
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Copyright (c) 2025-2026 Charles Vestal
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this file and associated documentation, to deal in the Software without
+ * restriction, including without limitation the rights to use, copy, modify,
+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ *
+ * ---
+ *
+ * This file is dual-licensed. Within the Move Everything host repository it is
+ * also covered by the repository-wide CC BY-NC-SA 4.0 license. External module
+ * authors may use, copy, and distribute this file under the MIT license above
+ * without any CC BY-NC-SA 4.0 obligations.
+ *
+ * ---
  *
  * Stable ABI for DSP modules loaded by the host runtime.
  * Modules are .so files loaded via dlopen() and must export move_plugin_init_v1().
@@ -85,6 +112,14 @@ typedef struct host_api_v1 {
      * Uses sampler_get_bpm() fallback chain: MIDI clock → set tempo → settings → 120.
      * NULL if host does not support tempo. */
     float (*get_bpm)(void);
+
+    /* Raw hardware audio input (pre-bridge).
+     * Points to a buffer with MOVE_FRAMES_PER_BLOCK stereo frames of raw
+     * hardware AUDIO_IN, captured before the native resample bridge overwrites
+     * the mailbox AUDIO_IN region.  Plugins that need the actual hardware input
+     * (e.g. line-in) should read from this instead of mapped_memory+audio_in_offset
+     * to avoid feeding back on bridge content.  May be NULL if not available. */
+    int16_t *raw_audio_in;
 
 } host_api_v1_t;
 

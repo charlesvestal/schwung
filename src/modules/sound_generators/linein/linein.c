@@ -959,7 +959,11 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         return;
     }
 
-    int16_t *audio_in = (int16_t *)(g_host->mapped_memory + g_host->audio_in_offset);
+    /* Use raw hardware audio input when available (pre-bridge) to avoid
+     * feeding back on our own processed output via the native resample bridge. */
+    int16_t *audio_in = g_host->raw_audio_in
+        ? g_host->raw_audio_in
+        : (int16_t *)(g_host->mapped_memory + g_host->audio_in_offset);
 
     /* Compute target gains */
     float input_gain_target = db_to_linear(inst->input_trim_db);
