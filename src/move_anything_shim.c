@@ -204,6 +204,11 @@ static void shadow_overtake_dsp_unload(void);
 #define STARTUP_MODWHEEL_RESET_FRAMES 20  /* ~0.6 seconds at 128 frames/block */
 static int shadow_startup_modwheel_countdown = 0;
 
+/* Raw hardware AUDIO_IN saved before bridge overwrites it.
+ * Exposed to sub-plugins (e.g. linein) via host_api_v1_t.raw_audio_in
+ * so they read actual hardware input instead of bridge content. */
+static int16_t raw_audio_in_buffer[FRAMES_PER_BLOCK * 2];
+
 /* Deferred DSP rendering buffer - rendered post-ioctl, mixed pre-ioctl next frame.
  * Used for overtake DSP and as fallback when chain_process_fx is unavailable. */
 static int16_t shadow_deferred_dsp_buffer[FRAMES_PER_BLOCK * 2];
@@ -1132,6 +1137,7 @@ static void shadow_overtake_dsp_load(const char *path) {
     overtake_host_api.midi_send_internal = overtake_midi_send_internal;
     overtake_host_api.midi_send_external = overtake_midi_send_external;
     overtake_host_api.get_bpm = shim_get_bpm;
+    overtake_host_api.raw_audio_in = raw_audio_in_buffer;
 
     /* Extract module directory from dsp path */
     char module_dir[256];
@@ -2647,6 +2653,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
                 .get_bpm = shim_get_bpm,
             };
             chain_mgmt_init(&cm_host);
+            /* Wire raw_audio_in into shadow chain host API so sub-plugins
+             * (e.g. linein) read hardware input instead of bridge content. */
+            shadow_host_api.raw_audio_in = raw_audio_in_buffer;
         }
         /* Initialize sampler subsystem with callbacks to shim functions */
         {
@@ -3794,6 +3803,11 @@ do_ioctl:
                MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
         memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
                MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
+
+        /* Save raw hardware AUDIO_IN before bridge overwrites it. */
+        memcpy(raw_audio_in_buffer,
+               shadow_mailbox + AUDIO_IN_OFFSET,
+               AUDIO_BUFFER_SIZE);
 
         /* Bridge Move Everything's total mix into native resampling path when selected. */
         native_resample_bridge_apply();
