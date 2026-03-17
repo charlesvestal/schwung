@@ -87,8 +87,12 @@ void native_sampler_update_from_dbus_text(const char *text);
 /* Snapshot capture (called from shim rendering) */
 void native_capture_total_mix_snapshot_from_buffer(const int16_t *src);
 
-/* Should the bridge write to AUDIO_IN? (Task 2 will add source gating) */
+/* Should the bridge write to AUDIO_IN? (gated on source = output) */
 int resample_bridge_should_apply(void);
+
+/* Source tracking from Settings.json (inotify + poll) */
+void resample_source_init_watcher(void);
+void resample_source_check(void);  /* Call from D-Bus loop iteration */
 
 /* Apply bridge to AUDIO_IN (called from ioctl handler) */
 void native_resample_bridge_apply(void);

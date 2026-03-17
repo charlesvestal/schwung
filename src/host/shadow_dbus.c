@@ -31,6 +31,7 @@
 #endif
 
 #include "shadow_dbus.h"
+#include "shadow_resample.h"
 
 /* ============================================================================
  * Internal state
@@ -765,6 +766,9 @@ static void *shadow_dbus_thread_func(void *arg)
     sleep(1);
     send_screenreader_announcement("Screen Reader Active");
 
+    /* Initialize Settings.json watcher for resample source tracking */
+    resample_source_init_watcher();
+
     /* Main loop - process D-Bus messages */
     while (shadow_dbus_running) {
         /* Non-blocking read with timeout */
@@ -774,6 +778,9 @@ static void *shadow_dbus_thread_func(void *arg)
         while (dbus_connection_dispatch(shadow_dbus_conn) == DBUS_DISPATCH_DATA_REMAINS) {
             /* Keep dispatching */
         }
+
+        /* Check Settings.json for sampleRecordingSource changes */
+        resample_source_check();
     }
 
     host.log("D-Bus: Thread exiting");
