@@ -144,6 +144,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Chiptune](https://github.com/charlesvestal/move-everything-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
 | [Osirus](https://github.com/charlesvestal/move-everything-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
 | [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | handcraftedcc |
+| [Freak](https://github.com/handcraftedcc/move-everything-freak) | MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits | handcraftedcc |
 | [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | handcraftedcc |
 | [REX Player](https://github.com/charlesvestal/move-everything-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
 | [HUSH ONE](https://github.com/charlesvestal/move-everything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | charlesvestal |
