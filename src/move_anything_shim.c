@@ -2503,6 +2503,9 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
                     shadow_log(msg);
                 }
                 resample_bridge_enabled = new_val;
+                if (resample_bridge_enabled) {
+                    resample_bridge_feedback_killed = 0;  /* Clear feedback kill on manual re-enable */
+                }
                 shadow_param->error = 0;
                 shadow_param->result_len = 0;
             } else if (req_type == 2) {
