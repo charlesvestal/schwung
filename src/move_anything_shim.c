@@ -1974,6 +1974,7 @@ static void init_shadow_shm(void)
             shadow_control->tts_engine = 0;     /* 0=espeak-ng (speak engine) */
             shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
             shadow_control->tts_debounce_ms = 50; /* default debounce ms */
+            shadow_control->chord_mode = 1;  /* Chain MIDI FX → Move on by default */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");

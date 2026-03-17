@@ -6694,12 +6694,28 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     if (inst->midi_fx_to_move && len >= 2) {
         uint8_t note = msg[1];
         uint8_t type = msg[0] & 0xF0;
+        int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
+        int is_note_on = (type == 0x90 && len >= 3 && msg[2] > 0);
+
         if (note < 128 && inst->midi_fx_injected[note] > 0) {
-            int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
             if (is_note_off) {
                 inst->midi_fx_injected[note]--;
             }
-            return;  /* Skip echo — both note-on and note-off */
+            {
+                char dbg[96];
+                snprintf(dbg, sizeof(dbg), "MFX-echo: SKIP %s n=%d inj_remaining=%d",
+                         is_note_off ? "note-off" : "note-on", note, inst->midi_fx_injected[note]);
+                v2_chain_log(inst, dbg);
+            }
+            return;  /* Skip echo */
+        }
+
+        {
+            char dbg[96];
+            snprintf(dbg, sizeof(dbg), "MFX-in: %s n=%d v=%d (pass to FX)",
+                     is_note_on ? "NOTE-ON" : (is_note_off ? "NOTE-OFF" : "other"),
+                     note, len >= 3 ? msg[2] : 0);
+            v2_chain_log(inst, dbg);
         }
     }
 
@@ -6712,6 +6728,17 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
      * instead of sending to shadow synth (shadow synth will hear it via MIDI_OUT echo) */
     if (inst->midi_fx_to_move && inst->midi_fx_count > 0) {
         int n = out_count < 16 ? out_count : 16;
+        {
+            char dbg[128];
+            snprintf(dbg, sizeof(dbg), "MFX-out: %d msgs from FX (in: st=%02X n=%d v=%d)",
+                     n, msg[0], len>=2?msg[1]:0, len>=3?msg[2]:0);
+            v2_chain_log(inst, dbg);
+            for (int d = 0; d < n; d++) {
+                snprintf(dbg, sizeof(dbg), "  MFX-out[%d]: st=%02X n=%d v=%d",
+                         d, out_msgs[d][0], out_msgs[d][1], out_msgs[d][2]);
+                v2_chain_log(inst, dbg);
+            }
+        }
         for (int i = 0; i < n; i++) {
             inst->midi_fx_out_buf[i][0] = out_msgs[i][0];
             inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
