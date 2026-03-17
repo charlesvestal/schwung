@@ -43,6 +43,8 @@
  * ============================================================================ */
 
 #define MIDI_BUFFER_SIZE    256   /* Hardware mailbox MIDI area: 64 USB-MIDI packets */
+#define MIDI_SPI_MAX_MESSAGES 20   /* SPI transfers max 20 USB-MIDI msgs per SPI cycle */
+#define MIDI_SPI_MAX_BYTES    (MIDI_SPI_MAX_MESSAGES * 4)  /* 80 bytes */
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
