@@ -54,6 +54,7 @@
 #include "host/shadow_fd_trace.h"
 #include "host/shadow_state.h"
 #include "host/shadow_midi.h"
+#include "host/shadow_chord.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
@@ -864,6 +865,13 @@ static void shadow_inprocess_process_midi(void) {
             /* Only process cable 2 (external USB) MIDI for shadow chain.
              * Cable 0 = internal, cable 1 = TRS - both are Move's own output */
             if (cable != 2) {
+                /* Chord mode: capture cable-0 musical notes for harmony generation */
+                if (cable == 0 && shadow_control && shadow_control->chord_mode &&
+                    (type == 0x90 || type == 0x80)) {
+                    uint8_t ch = status_usb & 0x0F;
+                    chord_engine_on_note(&chord_engine, status_usb, p2, p3, ch,
+                                         shadow_control->chord_mode);
+                }
                 continue;
             }
 
@@ -1763,6 +1771,8 @@ static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
 static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
+static chord_engine_t chord_engine;
+static int chord_engine_initialized = 0;
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -2062,6 +2072,11 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create midi_inject shm\n");
+    }
+
+    if (!chord_engine_initialized) {
+        chord_engine_init(&chord_engine);
+        chord_engine_initialized = 1;
     }
 
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
@@ -4061,6 +4076,48 @@ do_ioctl:
 
         /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
         shadow_drain_midi_inject();
+
+        /* === CHORD MODE: Detect cable-0 notes and drain harmony === */
+        if (shadow_control && shadow_control->chord_mode) {
+            int cable0_notes = 0;
+            uint8_t *sh_m = shadow_mailbox + MIDI_IN_OFFSET;
+            for (int j = 0; j < MIDI_SPI_MAX_BYTES; j += 4) {
+                if (sh_m[j] == 0 && sh_m[j+1] == 0) continue;
+                uint8_t c = (sh_m[j] >> 4) & 0x0F;
+                uint8_t t = sh_m[j+1] & 0xF0;
+                if (c == 0 && (t == 0x90 || t == 0x80)) { cable0_notes = 1; break; }
+            }
+            chord_engine_tick(&chord_engine, cable0_notes);
+            chord_engine_drain(&chord_engine, shadow_mailbox + MIDI_IN_OFFSET);
+        }
+
+        /* Chord mode cleanup: send note-offs when disabled */
+        {
+            static uint8_t prev_chord_mode = 0;
+            uint8_t cur_chord = shadow_control ? shadow_control->chord_mode : 0;
+            if (prev_chord_mode && !cur_chord) {
+                uint8_t *sh_m = shadow_mailbox + MIDI_IN_OFFSET;
+                for (int i = 0; i < CHORD_MAX_ACTIVE; i++) {
+                    chord_active_t *a = &chord_engine.active_notes[i];
+                    if (a->active) {
+                        for (int h = 0; h < a->harmony_count; h++) {
+                            for (int s = 0; s < MIDI_SPI_MAX_BYTES; s += 4) {
+                                if (sh_m[s]==0 && sh_m[s+1]==0 && sh_m[s+2]==0 && sh_m[s+3]==0) {
+                                    sh_m[s]   = (2 << 4) | 0x08;
+                                    sh_m[s+1] = 0x80 | a->channel;
+                                    sh_m[s+2] = a->harmony[h];
+                                    sh_m[s+3] = 0;
+                                    break;
+                                }
+                            }
+                        }
+                        a->active = 0;
+                    }
+                }
+                chord_engine_init(&chord_engine);
+            }
+            prev_chord_mode = cur_chord;
+        }
 
         /* Debug: dump raw HW MIDI_IN vs shadow MIDI_IN on inject */
         {
