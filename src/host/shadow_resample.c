@@ -42,6 +42,13 @@ volatile float native_bridge_makeup_desired_gain = 1.0f;
 volatile float native_bridge_makeup_applied_gain = 1.0f;
 volatile int native_bridge_makeup_limited = 0;
 
+/* Feedback detection */
+volatile int resample_bridge_feedback_killed = 0;
+static int feedback_detect_count = 0;
+static float feedback_prev_energy = 0.0f;
+#define FEEDBACK_GROWTH_THRESHOLD 1.5f  /* energy grew by 50%+ frame-over-frame */
+#define FEEDBACK_FRAMES_TO_KILL 3       /* ~8.7ms at 44.1kHz/128 frames */
+
 /* Settings.json inotify watcher */
 static int settings_inotify_fd = -1;
 static int settings_watch_fd = -1;
@@ -83,6 +90,9 @@ void resample_init(const resample_host_t *h) {
     native_bridge_makeup_desired_gain = 1.0f;
     native_bridge_makeup_applied_gain = 1.0f;
     native_bridge_makeup_limited = 0;
+    resample_bridge_feedback_killed = 0;
+    feedback_detect_count = 0;
+    feedback_prev_energy = 0.0f;
     resample_initialized = 1;
 }
 
@@ -506,6 +516,57 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
 }
 
 /* ============================================================================
+ * Feedback detection
+ * ============================================================================ */
+
+/* Check for feedback: is AUDIO_IN energy growing rapidly?
+ * Called BEFORE writing bridge content, on the current AUDIO_IN. */
+static int resample_feedback_check(const int16_t *audio_in)
+{
+    if (!audio_in) return 0;
+
+    /* Compute RMS energy of current AUDIO_IN */
+    double sum = 0.0;
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        float s = (float)audio_in[i] / 32768.0f;
+        sum += (double)s * (double)s;
+    }
+    float energy = sqrtf((float)(sum / (FRAMES_PER_BLOCK * 2)));
+
+    /* Skip detection if energy is very low (silence / noise floor) */
+    if (energy < 0.001f) {
+        feedback_detect_count = 0;
+        feedback_prev_energy = energy;
+        return 0;
+    }
+
+    /* Check for sustained energy growth */
+    if (feedback_prev_energy > 0.001f && energy > feedback_prev_energy * FEEDBACK_GROWTH_THRESHOLD) {
+        feedback_detect_count++;
+        if (feedback_detect_count >= FEEDBACK_FRAMES_TO_KILL) {
+            /* Feedback detected — kill bridge */
+            resample_bridge_feedback_killed = 1;
+            resample_bridge_enabled = 0;
+            if (host.log) {
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                         "FEEDBACK DETECTED: bridge auto-disabled (energy %.4f -> %.4f over %d frames)",
+                         feedback_prev_energy, energy, feedback_detect_count);
+                host.log(msg);
+            }
+            feedback_detect_count = 0;
+            feedback_prev_energy = 0.0f;
+            return 1;
+        }
+    } else {
+        feedback_detect_count = 0;
+    }
+
+    feedback_prev_energy = energy;
+    return 0;
+}
+
+/* ============================================================================
  * Apply bridge to AUDIO_IN
  * ============================================================================ */
 
@@ -515,6 +576,9 @@ void native_resample_bridge_apply(void)
     if (!mmap_addr || !native_total_mix_snapshot_valid) return;
 
     if (!resample_bridge_should_apply()) {
+        /* Reset feedback state when bridge is off */
+        feedback_detect_count = 0;
+        feedback_prev_energy = 0.0f;
         /* Periodic diag logging when skipping */
         static int skip_counter = 0;
         if (native_resample_diag_is_enabled() && skip_counter++ % 200 == 0 && host.log) {
@@ -527,6 +591,12 @@ void native_resample_bridge_apply(void)
     }
 
     int16_t *dst = (int16_t *)(mmap_addr + RESAMPLE_AUDIO_IN_OFFSET);
+
+    /* Feedback check on current AUDIO_IN before we overwrite it */
+    if (resample_feedback_check(dst)) {
+        return;  /* Bridge was killed */
+    }
+
     int16_t compensated_snapshot[FRAMES_PER_BLOCK * 2];
     native_resample_bridge_apply_overwrite_makeup(
         native_total_mix_snapshot,

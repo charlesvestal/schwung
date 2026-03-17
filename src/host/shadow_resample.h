@@ -55,6 +55,9 @@ extern volatile native_sampler_source_t native_sampler_source_last_known;
 extern volatile int link_audio_routing_enabled;
 extern volatile int link_audio_publish_enabled;
 
+/* Feedback detection state (read-only for UI) */
+extern volatile int resample_bridge_feedback_killed;
+
 /* Snapshot and component buffers - written by shim rendering, read by apply */
 extern int16_t native_total_mix_snapshot[];
 extern volatile int native_total_mix_snapshot_valid;
