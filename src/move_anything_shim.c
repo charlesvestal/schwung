@@ -2489,22 +2489,19 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         const char *fx_key = key + 10;
         if (strcmp(fx_key, "resample_bridge") == 0) {
             if (req_type == 1) {
-                native_resample_bridge_mode_t new_mode =
-                    native_resample_bridge_mode_from_text(shadow_param->value);
-                if (new_mode != native_resample_bridge_mode) {
+                int new_val = atoi(shadow_param->value) ? 1 : 0;
+                if (new_val != resample_bridge_enabled) {
                     char msg[128];
-                    snprintf(msg, sizeof(msg), "Native resample bridge mode: %s",
-                             native_resample_bridge_mode_name(new_mode));
+                    snprintf(msg, sizeof(msg), "Resample bridge: %s",
+                             new_val ? "enabled" : "disabled");
                     shadow_log(msg);
                 }
-                native_resample_bridge_mode = new_mode;
+                resample_bridge_enabled = new_val;
                 shadow_param->error = 0;
                 shadow_param->result_len = 0;
             } else if (req_type == 2) {
-                int mode = (int)native_resample_bridge_mode;
-                if (mode < 0 || mode > 2) mode = 0;
                 shadow_param->result_len = snprintf(shadow_param->value,
-                    SHADOW_PARAM_VALUE_LEN, "%d", mode);
+                    SHADOW_PARAM_VALUE_LEN, "%d", (int)resample_bridge_enabled);
                 shadow_param->error = 0;
             }
             return 1;

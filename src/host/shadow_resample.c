@@ -20,7 +20,7 @@ static int resample_initialized = 0;
  * Global definitions
  * ============================================================================ */
 
-volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
+volatile int resample_bridge_enabled = 0;
 volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 volatile native_sampler_source_t native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 volatile int link_audio_routing_enabled = 0;
@@ -61,7 +61,7 @@ static void str_to_lower(char *dst, size_t dst_size, const char *src)
 
 void resample_init(const resample_host_t *h) {
     host = *h;
-    native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
+    resample_bridge_enabled = 0;
     native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
     native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
     link_audio_routing_enabled = 0;
@@ -91,41 +91,9 @@ const char *native_sampler_source_name(native_sampler_source_t src)
     }
 }
 
-const char *native_resample_bridge_mode_name(native_resample_bridge_mode_t mode)
-{
-    switch (mode) {
-        case NATIVE_RESAMPLE_BRIDGE_OFF: return "off";
-        case NATIVE_RESAMPLE_BRIDGE_OVERWRITE: return "overwrite";
-        case NATIVE_RESAMPLE_BRIDGE_MIX:
-        default: return "mix";
-    }
-}
-
 /* ============================================================================
- * Mode parsing and config loading
+ * Config loading
  * ============================================================================ */
-
-native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *text)
-{
-    if (!text || !text[0]) return NATIVE_RESAMPLE_BRIDGE_OFF;
-
-    char lower[64];
-    str_to_lower(lower, sizeof(lower), text);
-
-    if (strcmp(lower, "0") == 0 || strcmp(lower, "off") == 0) {
-        return NATIVE_RESAMPLE_BRIDGE_OFF;
-    }
-    if (strcmp(lower, "2") == 0 ||
-        strcmp(lower, "overwrite") == 0 ||
-        strcmp(lower, "replace") == 0) {
-        return NATIVE_RESAMPLE_BRIDGE_OVERWRITE;
-    }
-    if (strcmp(lower, "1") == 0 || strcmp(lower, "mix") == 0) {
-        return NATIVE_RESAMPLE_BRIDGE_MIX;
-    }
-
-    return NATIVE_RESAMPLE_BRIDGE_OFF;
-}
 
 void native_resample_bridge_load_mode_from_shadow_config(void)
 {
@@ -151,30 +119,54 @@ void native_resample_bridge_load_mode_from_shadow_config(void)
     fclose(f);
     json[nread] = '\0';
 
-    char *mode_key = strstr(json, "\"resample_bridge_mode\"");
-    if (mode_key) {
-        char *colon = strchr(mode_key, ':');
+    /* New key: resample_bridge_enabled (bool) */
+    char *enabled_key = strstr(json, "\"resample_bridge_enabled\"");
+    if (enabled_key) {
+        char *colon = strchr(enabled_key, ':');
         if (colon) {
             colon++;
-            while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
-            char token[32];
-            size_t idx = 0;
-            while (*colon && idx + 1 < sizeof(token)) {
-                char c = *colon;
-                if (c == '"' || c == ',' || c == '}' || c == '\n' || c == '\r' || c == ' ' || c == '\t')
-                    break;
-                token[idx++] = c;
-                colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0 || *colon == '1') {
+                resample_bridge_enabled = 1;
+            } else {
+                resample_bridge_enabled = 0;
             }
-            token[idx] = '\0';
-            if (token[0]) {
-                native_resample_bridge_mode_t new_mode = native_resample_bridge_mode_from_text(token);
-                native_resample_bridge_mode = new_mode;
-                if (host.log) {
-                    char msg[128];
-                    snprintf(msg, sizeof(msg), "Native resample bridge mode: %s (from config)",
-                             native_resample_bridge_mode_name(new_mode));
-                    host.log(msg);
+            if (host.log) {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Resample bridge: %s (from config)",
+                         resample_bridge_enabled ? "enabled" : "disabled");
+                host.log(msg);
+            }
+        }
+    } else {
+        /* Backward compat: old resample_bridge_mode key */
+        char *mode_key = strstr(json, "\"resample_bridge_mode\"");
+        if (mode_key) {
+            char *colon = strchr(mode_key, ':');
+            if (colon) {
+                colon++;
+                while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
+                char token[32];
+                size_t idx = 0;
+                while (*colon && idx + 1 < sizeof(token)) {
+                    char c = *colon;
+                    if (c == '"' || c == ',' || c == '}' || c == '\n' || c == '\r' || c == ' ' || c == '\t')
+                        break;
+                    token[idx++] = c;
+                    colon++;
+                }
+                token[idx] = '\0';
+                if (token[0]) {
+                    char lower[32];
+                    str_to_lower(lower, sizeof(lower), token);
+                    /* Any non-off value -> enabled */
+                    resample_bridge_enabled = (strcmp(lower, "0") != 0 && strcmp(lower, "off") != 0) ? 1 : 0;
+                    if (host.log) {
+                        char msg[128];
+                        snprintf(msg, sizeof(msg), "Resample bridge: %s (migrated from mode '%s')",
+                                 resample_bridge_enabled ? "enabled" : "disabled", token);
+                        host.log(msg);
+                    }
                 }
             }
         }
@@ -344,92 +336,18 @@ void native_compute_audio_metrics(const int16_t *buf, native_audio_metrics_t *m)
     m->rms_low_r = sqrtf((float)sum_low_r * inv_n);
 }
 
-static void native_resample_diag_log_skip(native_resample_bridge_mode_t mode, const char *reason)
+/* ============================================================================
+ * Source gating (Task 2 will add source-based gating)
+ * ============================================================================ */
+
+int resample_bridge_should_apply(void)
 {
-    static int skip_counter = 0;
-    if (!native_resample_diag_is_enabled()) return;
-    if (skip_counter++ % 200 != 0) return;
-
-    if (host.log) {
-        char msg[256];
-        snprintf(msg, sizeof(msg),
-                 "Native bridge diag: skip reason=%s mode=%s src=%s last=%s",
-                 reason ? reason : "unknown",
-                 native_resample_bridge_mode_name(mode),
-                 native_sampler_source_name(native_sampler_source),
-                 native_sampler_source_name(native_sampler_source_last_known));
-        host.log(msg);
-    }
-}
-
-static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
-                                           const int16_t *src,
-                                           const int16_t *dst)
-{
-    static int apply_counter = 0;
-    if (!native_resample_diag_is_enabled()) return;
-    if (apply_counter++ % 200 != 0) return;
-
-    native_audio_metrics_t src_m;
-    native_audio_metrics_t dst_m;
-    native_compute_audio_metrics(src, &src_m);
-    native_compute_audio_metrics(dst, &dst_m);
-
-    int overwrite_diff = -1;
-    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE && src && dst) {
-        overwrite_diff = 0;
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            if (src[i] != dst[i]) overwrite_diff++;
-        }
-    }
-
-    float src_side_ratio = src_m.rms_side / (src_m.rms_mid + 1e-9f);
-    float dst_side_ratio = dst_m.rms_side / (dst_m.rms_mid + 1e-9f);
-
-    if (host.log) {
-        char msg[512];
-        snprintf(msg, sizeof(msg),
-                 "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f split=%d mfx=%d makeup=(%.2fx->%.2fx lim=%d) tap=post-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
-                 native_resample_bridge_mode_name(mode),
-                 native_sampler_source_name(native_sampler_source),
-                 native_sampler_source_name(native_sampler_source_last_known),
-                 (double)(host.shadow_master_volume ? *host.shadow_master_volume : 0.0f),
-                 (int)native_bridge_split_valid,
-                 shadow_master_fx_chain_active(),
-                 native_bridge_makeup_desired_gain,
-                 native_bridge_makeup_applied_gain,
-                 (int)native_bridge_makeup_limited,
-                 src_m.rms_l, src_m.rms_r,
-                 dst_m.rms_l, dst_m.rms_r,
-                 src_m.rms_low_l, src_m.rms_low_r,
-                 dst_m.rms_low_l, dst_m.rms_low_r,
-                 src_side_ratio, dst_side_ratio,
-                 overwrite_diff);
-        host.log(msg);
-    }
+    return resample_bridge_enabled;
 }
 
 /* ============================================================================
- * Source gating and apply
+ * Overwrite makeup path
  * ============================================================================ */
-
-int native_resample_bridge_source_allows_apply(native_resample_bridge_mode_t mode)
-{
-    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) return 1;
-
-    native_sampler_source_t src = native_sampler_source;
-
-    if (src == NATIVE_SAMPLER_SOURCE_MIC_IN) return 0;
-    if (src == NATIVE_SAMPLER_SOURCE_USB_C_IN) return 0;
-    return 1;
-}
-
-static int16_t clamp_i16(int32_t v)
-{
-    if (v > 32767) return 32767;
-    if (v < -32768) return -32768;
-    return (int16_t)v;
-}
 
 /* Overwrite path with component-based compensation. */
 static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
@@ -466,11 +384,6 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
         native_bridge_makeup_desired_gain = inv_mv;
         native_bridge_makeup_applied_gain = native_gain;
         native_bridge_makeup_limited = limiter_hit;
-    } else if (shadow_master_fx_chain_active()) {
-        memcpy(dst, src, samples * sizeof(int16_t));
-        native_bridge_makeup_desired_gain = 1.0f;
-        native_bridge_makeup_applied_gain = 1.0f;
-        native_bridge_makeup_limited = 0;
     } else {
         memcpy(dst, src, samples * sizeof(int16_t));
         native_bridge_makeup_desired_gain = 1.0f;
@@ -479,38 +392,55 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
     }
 }
 
+/* ============================================================================
+ * Apply bridge to AUDIO_IN
+ * ============================================================================ */
+
 void native_resample_bridge_apply(void)
 {
     unsigned char *mmap_addr = host.global_mmap_addr ? *host.global_mmap_addr : NULL;
     if (!mmap_addr || !native_total_mix_snapshot_valid) return;
 
-    native_resample_bridge_mode_t mode = native_resample_bridge_mode;
-    if (mode == NATIVE_RESAMPLE_BRIDGE_OFF) {
-        native_resample_diag_log_skip(mode, "mode_off");
-        return;
-    }
-
-    if (!native_resample_bridge_source_allows_apply(mode)) {
-        native_resample_diag_log_skip(mode, "source_blocked");
+    if (!resample_bridge_should_apply()) {
+        /* Periodic diag logging when skipping */
+        static int skip_counter = 0;
+        if (native_resample_diag_is_enabled() && skip_counter++ % 200 == 0 && host.log) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Native bridge diag: skip (disabled) src=%s",
+                     native_sampler_source_name(native_sampler_source));
+            host.log(msg);
+        }
         return;
     }
 
     int16_t *dst = (int16_t *)(mmap_addr + RESAMPLE_AUDIO_IN_OFFSET);
-    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) {
-        int16_t compensated_snapshot[FRAMES_PER_BLOCK * 2];
-        native_resample_bridge_apply_overwrite_makeup(
-            native_total_mix_snapshot,
-            compensated_snapshot,
-            FRAMES_PER_BLOCK * 2
-        );
-        memcpy(dst, compensated_snapshot, RESAMPLE_AUDIO_BUFFER_SIZE);
-        native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
-        return;
-    }
+    int16_t compensated_snapshot[FRAMES_PER_BLOCK * 2];
+    native_resample_bridge_apply_overwrite_makeup(
+        native_total_mix_snapshot,
+        compensated_snapshot,
+        FRAMES_PER_BLOCK * 2
+    );
+    memcpy(dst, compensated_snapshot, RESAMPLE_AUDIO_BUFFER_SIZE);
 
-    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t mixed = (int32_t)dst[i] + (int32_t)native_total_mix_snapshot[i];
-        dst[i] = clamp_i16(mixed);
+    /* Periodic diag logging when applying */
+    static int apply_counter = 0;
+    if (native_resample_diag_is_enabled() && apply_counter++ % 200 == 0 && host.log) {
+        native_audio_metrics_t src_m, dst_m;
+        native_compute_audio_metrics(native_total_mix_snapshot, &src_m);
+        native_compute_audio_metrics(dst, &dst_m);
+        char msg[512];
+        snprintf(msg, sizeof(msg),
+                 "Native bridge diag: apply src=%s mv=%.3f split=%d mfx=%d "
+                 "makeup=(%.2fx->%.2fx lim=%d) src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f)",
+                 native_sampler_source_name(native_sampler_source),
+                 (double)(host.shadow_master_volume ? *host.shadow_master_volume : 0.0f),
+                 (int)native_bridge_split_valid,
+                 shadow_master_fx_chain_active(),
+                 native_bridge_makeup_desired_gain,
+                 native_bridge_makeup_applied_gain,
+                 (int)native_bridge_makeup_limited,
+                 src_m.rms_l, src_m.rms_r,
+                 dst_m.rms_l, dst_m.rms_r);
+        host.log(msg);
     }
-    native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
 }
