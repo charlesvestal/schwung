@@ -867,14 +867,15 @@ static void shadow_inprocess_process_midi(void) {
             /* Only process cable 2 (external USB) MIDI for shadow chain.
              * Cable 0 = internal, cable 1 = TRS - both are Move's own output */
             if (cable != 2) {
-                /* Chord mode: capture cable-0 musical notes for harmony generation */
-                if (cable == 0 && shadow_control && shadow_control->chord_mode &&
-                    (type == 0x90 || type == 0x80)) {
-                    uint8_t ch = status_usb & 0x0F;
-                    chord_engine_on_note(&chord_engine, status_usb, p2, p3, ch,
-                                         shadow_control->chord_mode);
-                }
                 continue;
+            }
+
+            /* Chord mode: capture cable-2 musical notes for harmony generation */
+            if (shadow_control && shadow_control->chord_mode &&
+                (type == 0x90 || type == 0x80)) {
+                uint8_t ch = status_usb & 0x0F;
+                chord_engine_on_note(&chord_engine, status_usb, p2, p3, ch,
+                                     shadow_control->chord_mode);
             }
 
             /* Filter internal control notes: knob touches (0-9) */
