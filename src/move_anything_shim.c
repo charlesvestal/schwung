@@ -2654,11 +2654,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
                 .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
                 .handle_param_special = shim_handle_param_special,
                 .get_bpm = shim_get_bpm,
+                .raw_audio_in = raw_audio_in_buffer,
             };
             chain_mgmt_init(&cm_host);
-            /* Wire raw_audio_in into shadow chain host API so sub-plugins
-             * (e.g. linein) read hardware input instead of bridge content. */
-            shadow_host_api.raw_audio_in = raw_audio_in_buffer;
         }
         /* Initialize sampler subsystem with callbacks to shim functions */
         {
@@ -3807,10 +3805,17 @@ do_ioctl:
         memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
                MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
 
-        /* Save raw hardware AUDIO_IN before bridge overwrites it. */
-        memcpy(raw_audio_in_buffer,
-               shadow_mailbox + AUDIO_IN_OFFSET,
-               AUDIO_BUFFER_SIZE);
+        /* Save raw hardware AUDIO_IN before bridge overwrites it.
+         * When bridge is active (source=output), zero the raw buffer so
+         * audio-input plugins (linein etc.) get silence — prevents feedback
+         * from bridge content looping through our own chain. */
+        if (resample_bridge_should_apply()) {
+            memset(raw_audio_in_buffer, 0, AUDIO_BUFFER_SIZE);
+        } else {
+            memcpy(raw_audio_in_buffer,
+                   shadow_mailbox + AUDIO_IN_OFFSET,
+                   AUDIO_BUFFER_SIZE);
+        }
 
         /* Bridge Move Everything's total mix into native resampling path when selected. */
         native_resample_bridge_apply();

@@ -78,6 +78,10 @@ typedef struct {
 
     /* Tempo query — returns current BPM via sampler_get_bpm() fallback chain. */
     float (*get_bpm)(void);
+
+    /* Raw hardware audio input buffer (pre-bridge).  Set by shim so that
+     * shadow_host_api.raw_audio_in is wired up before the chain plugin inits. */
+    int16_t *raw_audio_in;
 } chain_mgmt_host_t;
 
 /* ============================================================================
