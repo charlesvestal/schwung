@@ -4081,8 +4081,8 @@ do_ioctl:
         if (shadow_control && shadow_control->chord_mode) {
             int cable0_notes = 0;
             uint8_t *sh_m = shadow_mailbox + MIDI_IN_OFFSET;
-            for (int j = 0; j < MIDI_SPI_MAX_BYTES; j += 4) {
-                if (sh_m[j] == 0 && sh_m[j+1] == 0) continue;
+            for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVENT_SIZE) {
+                if ((sh_m[j] & 0xFF) == 0) continue;
                 uint8_t c = (sh_m[j] >> 4) & 0x0F;
                 uint8_t t = sh_m[j+1] & 0xF0;
                 if (c == 0 && (t == 0x90 || t == 0x80)) { cable0_notes = 1; break; }
@@ -4101,12 +4101,13 @@ do_ioctl:
                     chord_active_t *a = &chord_engine.active_notes[i];
                     if (a->active) {
                         for (int h = 0; h < a->harmony_count; h++) {
-                            for (int s = 0; s < MIDI_SPI_MAX_BYTES; s += 4) {
-                                if (sh_m[s]==0 && sh_m[s+1]==0 && sh_m[s+2]==0 && sh_m[s+3]==0) {
+                            for (int s = 0; s < MIDI_IN_MAX_BYTES; s += MIDI_IN_EVENT_SIZE) {
+                                if ((sh_m[s] & 0xFF) == 0) {
                                     sh_m[s]   = (2 << 4) | 0x08;
                                     sh_m[s+1] = 0x80 | a->channel;
                                     sh_m[s+2] = a->harmony[h];
                                     sh_m[s+3] = 0;
+                                    memset(&sh_m[s+4], 0, 4);
                                     break;
                                 }
                             }
