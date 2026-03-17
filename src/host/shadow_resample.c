@@ -422,8 +422,11 @@ void resample_source_init_watcher(void)
         return;
     }
 
+    /* Watch the directory, not the file — if Move does atomic write
+     * (write temp + rename), watching the file inode would miss the rename.
+     * Watching the directory catches MOVED_TO and CREATE events too. */
     settings_watch_fd = inotify_add_watch(settings_inotify_fd,
-        MOVE_SETTINGS_PATH, IN_CLOSE_WRITE | IN_MODIFY);
+        "/data/UserData/settings", IN_CLOSE_WRITE | IN_MODIFY | IN_MOVED_TO | IN_CREATE);
     if (settings_watch_fd < 0) {
         if (host.log) host.log("Resample: inotify_add_watch failed, using poll-only");
         close(settings_inotify_fd);
@@ -431,21 +434,31 @@ void resample_source_init_watcher(void)
         return;
     }
 
-    if (host.log) host.log("Resample: inotify watcher active on Settings.json");
+    if (host.log) host.log("Resample: inotify watcher active on settings dir");
 }
 
 void resample_source_check(void)
 {
     int did_inotify = 0;
 
-    /* Check inotify (non-blocking) */
+    /* Check inotify (non-blocking) — watching the directory, so filter
+     * events to only re-parse when Settings.json is the affected file. */
     if (settings_inotify_fd >= 0) {
-        char buf[256];
+        char buf[512];
         ssize_t len = read(settings_inotify_fd, buf, sizeof(buf));
         if (len > 0) {
-            resample_parse_settings_json();
-            settings_last_poll = time(NULL);
-            did_inotify = 1;
+            /* Scan events for Settings.json */
+            ssize_t offset = 0;
+            while (offset < len) {
+                struct inotify_event *ev = (struct inotify_event *)(buf + offset);
+                if (ev->len > 0 && strcmp(ev->name, "Settings.json") == 0) {
+                    resample_parse_settings_json();
+                    settings_last_poll = time(NULL);
+                    did_inotify = 1;
+                    break;
+                }
+                offset += sizeof(struct inotify_event) + ev->len;
+            }
         }
     }
 
