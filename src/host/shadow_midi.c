@@ -283,14 +283,14 @@ void shadow_inject_ui_midi_out(void)
         }
 
         /* All other messages: copy directly to mailbox */
-        while (hw_offset < MIDI_BUFFER_SIZE) {
+        while (hw_offset < MIDI_SPI_MAX_BYTES) {
             if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
                 midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
                 break;
             }
             hw_offset += 4;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+        if (hw_offset >= MIDI_SPI_MAX_BYTES) break;  /* Buffer full */
 
         memcpy(&midi_out[hw_offset], &local_buf[i], 4);
         hw_offset += 4;
@@ -335,14 +335,14 @@ void shadow_drain_midi_inject(void)
         local_buf[i] = (local_buf[i] & 0x0F) | 0x00;
 
         /* Find empty 4-byte slot */
-        while (hw_offset < MIDI_BUFFER_SIZE) {
+        while (hw_offset < MIDI_SPI_MAX_BYTES) {
             if (midi_in[hw_offset] == 0 && midi_in[hw_offset+1] == 0 &&
                 midi_in[hw_offset+2] == 0 && midi_in[hw_offset+3] == 0) {
                 break;
             }
             hw_offset += 4;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+        if (hw_offset >= MIDI_SPI_MAX_BYTES) break;  /* Buffer full */
 
         memcpy(&midi_in[hw_offset], &local_buf[i], 4);
         hw_offset += 4;
