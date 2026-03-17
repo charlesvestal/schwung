@@ -12,12 +12,6 @@
  * ============================================================================ */
 
 typedef enum {
-    NATIVE_RESAMPLE_BRIDGE_OFF = 0,
-    NATIVE_RESAMPLE_BRIDGE_MIX,
-    NATIVE_RESAMPLE_BRIDGE_OVERWRITE
-} native_resample_bridge_mode_t;
-
-typedef enum {
     NATIVE_SAMPLER_SOURCE_UNKNOWN = 0,
     NATIVE_SAMPLER_SOURCE_RESAMPLING,
     NATIVE_SAMPLER_SOURCE_LINE_IN,
@@ -55,7 +49,7 @@ typedef struct {
  * Extern globals
  * ============================================================================ */
 
-extern volatile native_resample_bridge_mode_t native_resample_bridge_mode;
+extern volatile int resample_bridge_enabled;
 extern volatile native_sampler_source_t native_sampler_source;
 extern volatile native_sampler_source_t native_sampler_source_last_known;
 extern volatile int link_audio_routing_enabled;
@@ -82,11 +76,9 @@ extern volatile int native_bridge_makeup_limited;
 void resample_init(const resample_host_t *host);
 
 /* Name helpers */
-const char *native_resample_bridge_mode_name(native_resample_bridge_mode_t mode);
 const char *native_sampler_source_name(native_sampler_source_t src);
 
-/* Mode parsing */
-native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *text);
+/* Config loading */
 void native_resample_bridge_load_mode_from_shadow_config(void);
 
 /* Source tracking (called from D-Bus text handler) */
@@ -95,8 +87,8 @@ void native_sampler_update_from_dbus_text(const char *text);
 /* Snapshot capture (called from shim rendering) */
 void native_capture_total_mix_snapshot_from_buffer(const int16_t *src);
 
-/* Source gating policy */
-int native_resample_bridge_source_allows_apply(native_resample_bridge_mode_t mode);
+/* Should the bridge write to AUDIO_IN? (Task 2 will add source gating) */
+int resample_bridge_should_apply(void);
 
 /* Apply bridge to AUDIO_IN (called from ioctl handler) */
 void native_resample_bridge_apply(void);

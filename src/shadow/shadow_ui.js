@@ -709,8 +709,7 @@ const GLOBAL_SETTINGS_SECTIONS = [
         items: [
             { key: "link_audio_routing", label: "Route thru ME", type: "bool" },
             { key: "link_audio_publish", label: "ME->Link Audio", type: "bool" },
-            { key: "resample_bridge", label: "Sample Src", type: "enum",
-              options: ["Native", "ME Mix"], values: [0, 2] },
+            { key: "resample_bridge", label: "Resample Bridge", type: "bool" },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
               options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
             { key: "browser_preview", label: "Browser Preview", type: "bool" }
@@ -878,8 +877,7 @@ function wavPlayerStop() {
     shadow_set_param(0, "overtake_dsp:playing", "0");
 }
 
-const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
-const RESAMPLE_BRIDGE_VALUES = [0, 2];
+/* Resample bridge is now a simple boolean */
 
 /* Check Move's system Link setting via shim param (reads Settings.json) */
 function checkSystemLinkEnabled() {
@@ -905,13 +903,12 @@ function warnIfLinkDisabled(settingName) {
     }
 }
 
-function parseResampleBridgeMode(raw) {
-    if (raw === null || raw === undefined) return 0;
+/* Parse resample bridge value - backward compat: any non-off/0 value -> enabled */
+function parseResampleBridgeEnabled(raw) {
+    if (raw === null || raw === undefined) return false;
     const text = String(raw).trim().toLowerCase();
-    if (text === "0" || text === "off") return 0;
-    if (text === "2" || text === "overwrite" || text === "replace") return 2;
-    if (text === "1" || text === "mix") return 2;  // Backward compatibility
-    return 0;
+    if (text === "0" || text === "off" || text === "false" || text === "") return false;
+    return true;
 }
 
 /* Get dynamic settings items based on whether preset is loaded */
@@ -1281,7 +1278,7 @@ let inMasterPresetPicker = false;    // True when showing preset picker
 /* Cached settings — written during save instead of reading from shim,
  * to avoid a race where the periodic autosave reads shim defaults before
  * loadMasterFxChainFromConfig() has restored the correct values. */
-let cachedResampleBridgeMode = 0;
+let cachedResampleBridgeEnabled = false;
 let cachedLinkAudioRouting = false;
 let cachedLinkAudioPublish = false;
 let systemLinkEnabled = null; /* null = not checked yet */
@@ -4467,7 +4464,7 @@ function saveMasterFxChainConfig() {
         /* Use JS-cached values instead of reading from shim to avoid
          * race condition where periodic autosave reads shim defaults
          * before loadMasterFxChainFromConfig() has restored them. */
-        config.resample_bridge_mode = cachedResampleBridgeMode;
+        config.resample_bridge_enabled = cachedResampleBridgeEnabled;
         config.link_audio_routing = cachedLinkAudioRouting;
         config.link_audio_publish = cachedLinkAudioPublish;
 
@@ -4647,10 +4644,16 @@ function loadMasterFxChainFromConfig() {
         if (typeof config.tts_debounce_ms === "number" && typeof tts_set_debounce === "function") {
             tts_set_debounce(config.tts_debounce_ms);
         }
-        if (config.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
-            const mode = parseResampleBridgeMode(config.resample_bridge_mode);
-            shadow_set_param(0, "master_fx:resample_bridge", String(mode));
-            cachedResampleBridgeMode = mode;
+        /* Restore resample bridge - support both new (resample_bridge_enabled) and old (resample_bridge_mode) keys */
+        if (typeof shadow_set_param === "function") {
+            let enabled = false;
+            if (config.resample_bridge_enabled !== undefined) {
+                enabled = !!config.resample_bridge_enabled;
+            } else if (config.resample_bridge_mode !== undefined) {
+                enabled = parseResampleBridgeEnabled(config.resample_bridge_mode);
+            }
+            shadow_set_param(0, "master_fx:resample_bridge", enabled ? "1" : "0");
+            cachedResampleBridgeEnabled = enabled;
         }
         if (config.link_audio_routing !== undefined && typeof shadow_set_param === "function") {
             shadow_set_param(0, "master_fx:link_audio_routing", config.link_audio_routing ? "1" : "0");
@@ -7450,9 +7453,8 @@ function getMasterFxSettingValue(setting) {
         return (val === "1") ? "On" : "Off";
     }
     if (setting.key === "resample_bridge") {
-        const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
-        const mode = parseResampleBridgeMode(modeRaw);
-        return RESAMPLE_BRIDGE_LABEL_BY_MODE[mode] || "Off";
+        const val = shadow_get_param(0, "master_fx:resample_bridge");
+        return (val === "1") ? "On" : "Off";
     }
     if (setting.key === "overlay_knobs") {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
@@ -7551,21 +7553,11 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
     if (setting.key === "resample_bridge") {
-        const current = parseResampleBridgeMode(shadow_get_param(0, "master_fx:resample_bridge"));
-        const values = (Array.isArray(setting.values) && setting.values.length > 0)
-            ? setting.values
-            : RESAMPLE_BRIDGE_VALUES;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        shadow_set_param(0, "master_fx:resample_bridge", String(values[nextIdx]));
-        cachedResampleBridgeMode = values[nextIdx];
+        const current = shadow_get_param(0, "master_fx:resample_bridge");
+        const newVal = (current === "1") ? "0" : "1";
+        shadow_set_param(0, "master_fx:resample_bridge", newVal);
+        cachedResampleBridgeEnabled = (newVal === "1");
         saveMasterFxChainConfig();
-        if (values[nextIdx] === 2) {
-            warningTitle = "ME Mix";
-            warningLines = wrapText("Replaces Mic and Line-in with ME + Move Audio", 18);
-            warningActive = true;
-        }
         return;
     }
 
