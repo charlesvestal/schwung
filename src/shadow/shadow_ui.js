@@ -735,6 +735,14 @@ const GLOBAL_SETTINGS_SECTIONS = [
         ]
     },
     {
+        id: "midi", label: "MIDI",
+        items: [
+            { key: "chord_mode", label: "Chord Mode", type: "enum",
+              options: ["Off", "Major", "Minor", "Dim", "Aug", "Sus2", "Sus4", "Dom7", "Min7", "Maj7", "Power", "Oct"],
+              values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }
+        ]
+    },
+    {
         id: "services", label: "Services",
         items: [
             { key: "filebrowser_enabled", label: "File Browser", type: "bool" }
@@ -7517,6 +7525,11 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "filebrowser_enabled") {
         return filebrowserEnabled ? "On" : "Off";
     }
+    if (setting.key === "chord_mode") {
+        const val = typeof chord_mode_get === "function" ? chord_mode_get() : 0;
+        const labels = ["Off", "Major", "Minor", "Dim", "Aug", "Sus2", "Sus4", "Dom7", "Min7", "Maj7", "Power", "Oct"];
+        return labels[val] || "Off";
+    }
     return "-";
 }
 
@@ -7661,6 +7674,14 @@ function adjustMasterFxSetting(setting, delta) {
         previewEnabled = !previewEnabled;
         if (!previewEnabled) previewStopIfPlaying();
         saveBrowserPreviewConfig();
+        return;
+    }
+
+    if (setting.key === "chord_mode" && typeof chord_mode_set === "function") {
+        const current = typeof chord_mode_get === "function" ? chord_mode_get() : 0;
+        const count = setting.values.length;
+        const next = ((current + (delta > 0 ? 1 : count - 1)) % count);
+        chord_mode_set(next);
         return;
     }
 

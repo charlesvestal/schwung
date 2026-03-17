@@ -1925,6 +1925,27 @@ static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_v
 
 #define PREVIEW_CMD_PATH "/data/UserData/move-anything/preview_cmd_path.txt"
 
+/* chord_mode_get() -> int */
+static JSValue js_chord_mode_get(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->chord_mode);
+}
+
+/* chord_mode_set(value) */
+static JSValue js_chord_mode_set(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+    int32_t val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    if (val < 0) val = 0;
+    if (val > 11) val = 11;
+    shadow_control->chord_mode = (uint8_t)val;
+    return JS_UNDEFINED;
+}
+
 /* host_pad_block(enable) - suppress pad notes from reaching Move firmware */
 static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -2170,6 +2191,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register pad block function */
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
+
+    /* Register chord mode functions */
+    JS_SetPropertyStr(ctx, global_obj, "chord_mode_get", JS_NewCFunction(ctx, js_chord_mode_get, "chord_mode_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "chord_mode_set", JS_NewCFunction(ctx, js_chord_mode_set, "chord_mode_set", 1));
 
     /* Register preview player functions */
     JS_SetPropertyStr(ctx, global_obj, "host_preview_play", JS_NewCFunction(ctx, js_host_preview_play, "host_preview_play", 1));
