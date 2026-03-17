@@ -103,17 +103,19 @@ int chord_engine_drain(chord_engine_t *engine, uint8_t *midi_in) {
     int src_idx = 0;
 
     while (src_idx < engine->pending_count && injected < CHORD_INJECT_PER_TICK) {
-        while (hw_offset < MIDI_SPI_MAX_BYTES) {
-            if (midi_in[hw_offset] == 0 && midi_in[hw_offset+1] == 0 &&
-                midi_in[hw_offset+2] == 0 && midi_in[hw_offset+3] == 0) {
+        /* Find empty 8-byte slot (MIDI_IN uses 8-byte events) */
+        while (hw_offset < MIDI_IN_MAX_BYTES) {
+            if ((midi_in[hw_offset] & 0xFF) == 0) {
                 break;
             }
-            hw_offset += 4;
+            hw_offset += MIDI_IN_EVENT_SIZE;
         }
-        if (hw_offset >= MIDI_SPI_MAX_BYTES) break;
+        if (hw_offset >= MIDI_IN_MAX_BYTES) break;
 
+        /* Write 4-byte USB-MIDI packet + 4 zero bytes */
         memcpy(&midi_in[hw_offset], engine->pending[src_idx].packet, 4);
-        hw_offset += 4;
+        memset(&midi_in[hw_offset + 4], 0, 4);
+        hw_offset += MIDI_IN_EVENT_SIZE;
         src_idx++;
         injected++;
     }
