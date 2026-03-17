@@ -42,12 +42,17 @@ typedef struct {
     chord_pending_t pending[32];
     int pending_count;
     int defer_counter;
+    uint8_t injected_notes[128];  /* Per-note refcount of our injected harmony notes */
 } chord_engine_t;
 
 /* Initialize chord engine */
 void chord_engine_init(chord_engine_t *engine);
 
-/* Process a note from MIDI_OUT cable-0. Queues harmony notes for injection.
+/* Check if a note is one we injected (to avoid feedback loops).
+ * Returns 1 if this note should be ignored. */
+int chord_engine_is_echo(chord_engine_t *engine, uint8_t note);
+
+/* Process a note from MIDI_OUT cable-2. Queues harmony notes for injection.
  * chord_type: one of CHORD_* constants. Returns number of harmony notes queued. */
 int chord_engine_on_note(chord_engine_t *engine, uint8_t status, uint8_t note,
                          uint8_t velocity, uint8_t channel, int chord_type);

@@ -35,11 +35,24 @@ static void queue_packet(chord_engine_t *engine, uint8_t cin, uint8_t status,
     p->packet[3] = d2;
 }
 
+int chord_engine_is_echo(chord_engine_t *engine, uint8_t note) {
+    if (note > 127) return 0;
+    return engine->injected_notes[note] > 0;
+}
+
 int chord_engine_on_note(chord_engine_t *engine, uint8_t status, uint8_t note,
                          uint8_t velocity, uint8_t channel, int chord_type) {
     uint8_t type = status & 0xF0;
     int is_note_on = (type == 0x90 && velocity > 0);
     int is_note_off = (type == 0x80 || (type == 0x90 && velocity == 0));
+
+    /* Ignore echoes of our own injected notes */
+    if (chord_engine_is_echo(engine, note)) {
+        if (is_note_off && engine->injected_notes[note] > 0) {
+            engine->injected_notes[note]--;
+        }
+        return 0;
+    }
 
     if (is_note_on) {
         int slot = -1;
@@ -62,6 +75,7 @@ int chord_engine_on_note(chord_engine_t *engine, uint8_t status, uint8_t note,
             int harm_note = note + intervals[i];
             if (harm_note > 127) continue;
             a->harmony[a->harmony_count++] = (uint8_t)harm_note;
+            engine->injected_notes[harm_note]++;  /* Track as ours */
             queue_packet(engine, 0x09, 0x90 | channel, (uint8_t)harm_note, velocity);
         }
         return a->harmony_count;
