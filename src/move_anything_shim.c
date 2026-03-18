@@ -4064,75 +4064,114 @@ do_ioctl:
         /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
         shadow_drain_midi_inject();
 
-        /* === MOVE MIDI FX: Read chain's MIDI FX output and inject into MIDI_IN === */
-        if (shadow_control && shadow_control->chord_mode &&
-            shadow_chain_read_midi_fx_output) {
-            /* Check all active chain slots for MIDI FX output */
-            for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-                if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+        /* === MOVE MIDI FX: Read chain output → buffer → deferred inject === */
+        {
+            /* Pending buffer for deferred cable-2 injection */
+            static uint8_t mfx_pending[64][4];
+            static int mfx_pending_count = 0;
+            static int mfx_defer_counter = 2;  /* Start ready */
+            #define MFX_DEFER_FRAMES 2
+            #define MFX_INJECT_PER_TICK 4
 
-                uint8_t out_msgs[16][3];
-                int out_lens[16];
-                uint8_t orig_note, orig_status, ch;
-                int count = shadow_chain_read_midi_fx_output(
-                    shadow_chain_slots[s].instance,
-                    out_msgs, out_lens, &orig_note, &orig_status, &ch);
+            /* Read chain's MIDI FX output into pending buffer */
+            if (shadow_control && shadow_control->chord_mode &&
+                shadow_chain_read_midi_fx_output) {
+                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                    if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
-                if (count <= 0) continue;
+                    uint8_t out_msgs[16][3];
+                    int out_lens[16];
+                    uint8_t orig_note, orig_status, ch;
+                    int count = shadow_chain_read_midi_fx_output(
+                        shadow_chain_slots[s].instance,
+                        out_msgs, out_lens, &orig_note, &orig_status, &ch);
 
-                uint8_t orig_type = orig_status & 0xF0;
-                int is_note_on = (orig_type == 0x90);
+                    if (count <= 0) continue;
 
-                /* Check if FX removed the original note */
-                int original_present = 0;
-                for (int i = 0; i < count; i++) {
-                    if (out_lens[i] >= 3 && out_msgs[i][1] == orig_note &&
-                        (out_msgs[i][0] & 0xF0) == orig_type) {
-                        original_present = 1;
-                        break;
-                    }
-                }
+                    uint8_t orig_type = orig_status & 0xF0;
+                    int is_note_on = (orig_type == 0x90);
 
-                /* If FX removed original note-on, inject note-off to cancel it */
-                if (is_note_on && !original_present) {
-                    uint8_t *mi = shadow_mailbox + MIDI_IN_OFFSET;
-                    for (int slot = 0; slot < MIDI_IN_MAX_BYTES; slot += MIDI_IN_EVENT_SIZE) {
-                        if ((mi[slot] & 0xFF) == 0) {
-                            mi[slot]   = (2 << 4) | 0x08;
-                            mi[slot+1] = 0x80 | ch;
-                            mi[slot+2] = orig_note;
-                            mi[slot+3] = 0;
-                            memset(&mi[slot+4], 0, 4);
+                    /* If FX removed original note-on, queue note-off to cancel it */
+                    int original_present = 0;
+                    for (int i = 0; i < count; i++) {
+                        if (out_lens[i] >= 3 && out_msgs[i][1] == orig_note &&
+                            (out_msgs[i][0] & 0xF0) == orig_type) {
+                            original_present = 1;
                             break;
                         }
                     }
-                }
+                    if (is_note_on && !original_present && mfx_pending_count < 64) {
+                        mfx_pending[mfx_pending_count][0] = (2 << 4) | 0x08;
+                        mfx_pending[mfx_pending_count][1] = 0x80 | ch;
+                        mfx_pending[mfx_pending_count][2] = orig_note;
+                        mfx_pending[mfx_pending_count][3] = 0;
+                        mfx_pending_count++;
+                    }
 
-                /* Inject FX output notes that differ from original */
+                    /* Queue FX output notes (skip root — Move handles it via pad) */
+                    for (int i = 0; i < count; i++) {
+                        if (out_lens[i] < 3 || mfx_pending_count >= 64) continue;
+                        uint8_t out_note = out_msgs[i][1];
+                        uint8_t out_vel = out_msgs[i][2];
+                        uint8_t out_type = out_msgs[i][0] & 0xF0;
+
+                        if (out_note == orig_note) continue;
+
+                        uint8_t cin = (out_type == 0x90 && out_vel > 0) ? 0x09 : 0x08;
+                        mfx_pending[mfx_pending_count][0] = (2 << 4) | cin;
+                        mfx_pending[mfx_pending_count][1] = out_type | ch;
+                        mfx_pending[mfx_pending_count][2] = out_note;
+                        mfx_pending[mfx_pending_count][3] = out_vel;
+                        mfx_pending_count++;
+                    }
+                }
+            }
+
+            /* Detect cable-0 notes in MIDI_IN for deferral */
+            int cable0_notes = 0;
+            {
+                uint8_t *sh_m = shadow_mailbox + MIDI_IN_OFFSET;
+                for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVENT_SIZE) {
+                    if ((sh_m[j] & 0xFF) == 0) continue;
+                    uint8_t c = (sh_m[j] >> 4) & 0x0F;
+                    uint8_t t = sh_m[j+1] & 0xF0;
+                    if (c == 0 && (t == 0x90 || t == 0x80)) { cable0_notes = 1; break; }
+                }
+            }
+
+            if (cable0_notes) {
+                mfx_defer_counter = 0;
+            } else if (mfx_defer_counter < MFX_DEFER_FRAMES + 1) {
+                mfx_defer_counter++;
+            }
+
+            /* Drain pending buffer when safe (no cable-0 notes for 2 frames) */
+            if (mfx_pending_count > 0 && mfx_defer_counter >= MFX_DEFER_FRAMES) {
                 uint8_t *mi = shadow_mailbox + MIDI_IN_OFFSET;
-                for (int i = 0; i < count; i++) {
-                    if (out_lens[i] < 3) continue;
-                    uint8_t out_note = out_msgs[i][1];
-                    uint8_t out_vel = out_msgs[i][2];
-                    uint8_t out_type = out_msgs[i][0] & 0xF0;
+                int injected = 0;
+                int hw_offset = 0;
+                int src = 0;
 
-                    /* Skip notes that match original (Move already handles root via pad) */
-                    if (out_note == orig_note)
-                        continue;
-
-                    /* Find empty slot and inject */
-                    for (int slot = 0; slot < MIDI_IN_MAX_BYTES; slot += MIDI_IN_EVENT_SIZE) {
-                        if ((mi[slot] & 0xFF) == 0) {
-                            uint8_t cin = (out_type == 0x90 && out_vel > 0) ? 0x09 : 0x08;
-                            mi[slot]   = (2 << 4) | cin;
-                            mi[slot+1] = out_type | ch;
-                            mi[slot+2] = out_note;
-                            mi[slot+3] = out_vel;
-                            memset(&mi[slot+4], 0, 4);
-                            break;
-                        }
+                while (src < mfx_pending_count && injected < MFX_INJECT_PER_TICK) {
+                    while (hw_offset < MIDI_IN_MAX_BYTES) {
+                        if ((mi[hw_offset] & 0xFF) == 0) break;
+                        hw_offset += MIDI_IN_EVENT_SIZE;
                     }
+                    if (hw_offset >= MIDI_IN_MAX_BYTES) break;
+
+                    memcpy(&mi[hw_offset], mfx_pending[src], 4);
+                    memset(&mi[hw_offset + 4], 0, 4);
+                    hw_offset += MIDI_IN_EVENT_SIZE;
+                    src++;
+                    injected++;
                 }
+
+                /* Shift remaining */
+                if (src > 0 && src < mfx_pending_count) {
+                    memmove(&mfx_pending[0], &mfx_pending[src],
+                            (mfx_pending_count - src) * 4);
+                }
+                mfx_pending_count -= src;
             }
         }
 
