@@ -4071,7 +4071,7 @@ do_ioctl:
             static int mfx_pending_count = 0;
             static int mfx_defer_counter = 2;  /* Start ready */
             #define MFX_DEFER_FRAMES 2
-            #define MFX_INJECT_PER_TICK 4
+            #define MFX_INJECT_PER_TICK 16
 
             /* Read chain's MIDI FX output into pending buffer */
             if (shadow_control && shadow_control->chord_mode &&
@@ -4127,20 +4127,30 @@ do_ioctl:
                 }
             }
 
-            /* Detect cable-0 notes in MIDI_IN for deferral */
-            int cable0_notes = 0;
-            {
+            /* Zero non-pad cable-0 from MIDI_IN when pending.
+             * Keep pad note-on/off (68-99) so Move tracks notes.
+             * Track pad events to skip drain in those frames. */
+            int cable0_pad_present = 0;
+            if (mfx_pending_count > 0) {
                 uint8_t *sh_m = shadow_mailbox + MIDI_IN_OFFSET;
                 for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVENT_SIZE) {
                     if ((sh_m[j] & 0xFF) == 0) continue;
                     uint8_t c = (sh_m[j] >> 4) & 0x0F;
-                    uint8_t t = sh_m[j+1] & 0xF0;
-                    if (c == 0 && (t == 0x90 || t == 0x80)) { cable0_notes = 1; break; }
+                    if (c != 0) continue;
+                    uint8_t type = sh_m[j+1] & 0xF0;
+                    uint8_t d1 = sh_m[j+2];
+                    /* Keep pad note-on/off */
+                    if ((type == 0x90 || type == 0x80) && d1 >= 68 && d1 <= 99) {
+                        cable0_pad_present = 1;
+                        continue;
+                    }
+                    /* Zero everything else on cable-0 (aftertouch, CCs) */
+                    memset(&sh_m[j], 0, MIDI_IN_EVENT_SIZE);
                 }
             }
 
-            /* Drain pending buffer when no cable-0 notes in THIS frame */
-            if (mfx_pending_count > 0 && !cable0_notes) {
+            /* Drain pending buffer — skip if cable-0 pad events in this frame */
+            if (mfx_pending_count > 0 && !cable0_pad_present) {
                 uint8_t *mi = shadow_mailbox + MIDI_IN_OFFSET;
                 int injected = 0;
                 int hw_offset = 0;
@@ -4169,17 +4179,13 @@ do_ioctl:
             }
         }
 
-        /* Toggle midi_fx_to_move flag on chain instances when chord_mode changes */
+        /* Ensure midi_fx_to_move flag matches chord_mode on ALL active instances */
         if (shadow_chain_set_midi_fx_to_move) {
-            static uint8_t prev_chord_mode_flag = 0;
             uint8_t cur = shadow_control ? shadow_control->chord_mode : 0;
-            if (cur != prev_chord_mode_flag) {
-                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-                    if (shadow_chain_slots[s].instance) {
-                        shadow_chain_set_midi_fx_to_move(shadow_chain_slots[s].instance, cur ? 1 : 0);
-                    }
+            for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                if (shadow_chain_slots[s].instance) {
+                    shadow_chain_set_midi_fx_to_move(shadow_chain_slots[s].instance, cur ? 1 : 0);
                 }
-                prev_chord_mode_flag = cur;
             }
         }
 

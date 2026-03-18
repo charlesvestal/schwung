@@ -1683,6 +1683,30 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
         int count = api->tick(fx_inst, frames, SAMPLE_RATE,
                               out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
 
+        /* When midi_fx_to_move is set, redirect tick output to injection buffer */
+        if (inst->midi_fx_to_move && count > 0) {
+            int n = count < 16 ? count : 16;
+            if (inst->midi_fx_out_count == 0) {
+                for (int i = 0; i < n; i++) {
+                    inst->midi_fx_out_buf[i][0] = out_msgs[i][0];
+                    inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
+                    inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
+                    inst->midi_fx_out_lens[i] = out_lens[i];
+                    uint8_t ot = out_msgs[i][0] & 0xF0;
+                    uint8_t on = out_msgs[i][1];
+                    if (on < 128 && ot == 0x90 && out_msgs[i][2] > 0) {
+                        inst->midi_fx_injected[on]++;
+                    }
+                }
+                inst->midi_fx_out_original_note = 255;
+                inst->midi_fx_out_original_status = 0;
+                inst->midi_fx_out_channel = out_msgs[0][0] & 0x0F;
+                __sync_synchronize();
+                inst->midi_fx_out_count = n;
+            }
+            continue;
+        }
+
         /* Send generated messages to synth */
         for (int i = 0; i < count; i++) {
             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
@@ -6698,24 +6722,9 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         int is_note_on = (type == 0x90 && len >= 3 && msg[2] > 0);
 
         if (note < 128 && inst->midi_fx_injected[note] > 0) {
-            if (is_note_off) {
-                inst->midi_fx_injected[note]--;
-            }
-            {
-                char dbg[96];
-                snprintf(dbg, sizeof(dbg), "MFX-echo: SKIP %s n=%d inj_remaining=%d",
-                         is_note_off ? "note-off" : "note-on", note, inst->midi_fx_injected[note]);
-                v2_chain_log(inst, dbg);
-            }
-            return;  /* Skip echo */
-        }
-
-        {
-            char dbg[96];
-            snprintf(dbg, sizeof(dbg), "MFX-in: %s n=%d v=%d (pass to FX)",
-                     is_note_on ? "NOTE-ON" : (is_note_off ? "NOTE-OFF" : "other"),
-                     note, len >= 3 ? msg[2] : 0);
-            v2_chain_log(inst, dbg);
+            /* Don't decrement on note-off — keep refcount high so
+             * subsequent note-off echoes are also caught */
+            return;  /* Skip ALL echoes */
         }
     }
 
