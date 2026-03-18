@@ -11021,8 +11021,17 @@ globalThis.tick = function() {
     previewTick();
 
     refreshCounter++;
-    if (refreshCounter % 120 === 0) {
-        refreshSlots();
+
+    /* Skip all IPC polling and file I/O while an overtake module is running.
+     * Every getSlotParam() call is a synchronous shim round-trip (~3-10ms) and
+     * autosaveAllSlots() does file writes.  Together these caused consistent
+     * 12-26ms stalls on every %15 tick and ~104ms stalls every ~700ms, corrupting
+     * the timing of any overtake module that relies on tick() cadence.
+     * These tasks are deferred until the user returns to the normal shadow UI. */
+    const isOvertakeActive = (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU);
+
+    if (!isOvertakeActive && refreshCounter % 120 === 0) {
+    refreshSlots();
     }
 
     /* Periodic autosave (suppressed briefly after set change) */
@@ -11031,14 +11040,14 @@ globalThis.tick = function() {
         autosaveCounter = 0;
     } else {
         autosaveCounter++;
-        if (autosaveCounter >= AUTOSAVE_INTERVAL) {
+        if (!isOvertakeActive && autosaveCounter >= AUTOSAVE_INTERVAL) {
             autosaveCounter = 0;
             autosaveAllSlots();
             saveMasterFxChainConfig();
         }
     }
     /* Refresh dirty cache frequently for responsive UI */
-    if (refreshCounter % 15 === 0) {
+    if (!isOvertakeActive && refreshCounter % 15 === 0) {
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
             const dirty = getSlotParam(i, "dirty");
             const isDirty = (dirty === "1");
@@ -11051,7 +11060,7 @@ globalThis.tick = function() {
 
     /* Poll FX display_name for change-based announcements (e.g. key detection).
      * Check every ~1 second (30 ticks at 30fps). Only poll slots that have FX loaded. */
-    if (refreshCounter % 30 === 0) {
+    if (!isOvertakeActive && refreshCounter % 30 === 0) {
         const fxComponents = ["fx1", "fx2"];
         /* Per-slot FX */
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
@@ -11092,7 +11101,7 @@ globalThis.tick = function() {
     if (typeof shadow_get_selected_slot === "function") {
         currentTargetSlot = shadow_get_selected_slot();
     }
-    if (refreshCounter % 30 === 0) {
+    if (!isOvertakeActive && refreshCounter % 30 === 0) {
         refreshSlotModuleSignature(selectedSlot);
         if (currentTargetSlot !== selectedSlot) {
             refreshSlotModuleSignature(currentTargetSlot);
