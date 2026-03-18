@@ -534,6 +534,7 @@ typedef struct chain_instance {
     uint8_t midi_fx_out_original_note;        /* The input note that produced this output */
     uint8_t midi_fx_out_original_status;      /* The input status byte */
     uint8_t midi_fx_out_channel;              /* MIDI channel */
+    uint8_t midi_fx_injected[128];            /* Refcount of notes we generated (echo filter) */
 
     /* Channel settings from last load_file (autosave restore).
      * Used as fallback when current_patch == -1 (file-based load, not library). */
@@ -6686,6 +6687,19 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
     }
 
+    /* When midi_fx_to_move is active, filter echoes of notes we injected.
+     * These arrive back via MIDI_OUT cable-2 after Move plays them. */
+    if (inst->midi_fx_to_move && len >= 2) {
+        uint8_t note = msg[1];
+        uint8_t type = msg[0] & 0xF0;
+        if (note < 128 && inst->midi_fx_injected[note] > 0) {
+            if (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0))) {
+                inst->midi_fx_injected[note]--;
+            }
+            return;  /* Skip echo — don't process through MIDI FX again */
+        }
+    }
+
     /* Process through MIDI FX modules (if any loaded) */
     uint8_t out_msgs[MIDI_FX_MAX_OUT_MSGS][3];
     int out_lens[MIDI_FX_MAX_OUT_MSGS];
@@ -6700,6 +6714,15 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
             inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
             inst->midi_fx_out_lens[i] = out_lens[i];
+            /* Track note-ons we output for echo filtering */
+            uint8_t ot = out_msgs[i][0] & 0xF0;
+            uint8_t on = out_msgs[i][1];
+            if (ot == 0x90 && out_msgs[i][2] > 0 && on < 128) {
+                /* Only track notes that differ from input (those get injected) */
+                if (on != (len >= 2 ? msg[1] : 255)) {
+                    inst->midi_fx_injected[on]++;
+                }
+            }
         }
         inst->midi_fx_out_original_note = len >= 2 ? msg[1] : 0;
         inst->midi_fx_out_original_status = msg[0];
@@ -8361,6 +8384,7 @@ void chain_set_midi_fx_to_move(void *instance, int enable) {
     inst->midi_fx_to_move = enable;
     if (!enable) {
         inst->midi_fx_out_count = 0;
+        memset(inst->midi_fx_injected, 0, sizeof(inst->midi_fx_injected));
     }
 }
 
