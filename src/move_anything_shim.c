@@ -4116,8 +4116,8 @@ do_ioctl:
                     uint8_t out_vel = out_msgs[i][2];
                     uint8_t out_type = out_msgs[i][0] & 0xF0;
 
-                    /* Skip note-ons that match original (Move already played it) */
-                    if (out_note == orig_note && out_type == orig_type && is_note_on)
+                    /* Skip notes that match original (Move already handles root via pad) */
+                    if (out_note == orig_note)
                         continue;
 
                     /* Find empty slot and inject */
