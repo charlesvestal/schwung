@@ -2115,7 +2115,10 @@ function hideToolOvertake() {
     /* Mark as hidden, not fully exited */
     toolOvertakeActive = false;
     toolNonOvertake = false;
-    toolHiddenFile = toolSelectedFile;  /* Remember which file is in the hidden session */
+    /* Use sentinel "_hidden_" when no file was selected (e.g. fileless tools like
+     * Wave Edit that removed input_extensions). Without this, toolHiddenFile stays
+     * empty, dspAlreadyLoaded = "" && ... = false, and reconnect is never detected. */
+    toolHiddenFile = toolSelectedFile || "_hidden_";
     toolHiddenModulePath = overtakeModulePath;  /* Remember module path independently */
     debugLog("hideToolOvertake: toolHiddenFile set to '" + toolHiddenFile + "' overtakeModuleLoaded=" + overtakeModuleLoaded + " overtakeModulePath=" + overtakeModulePath);
 
