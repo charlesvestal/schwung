@@ -12,7 +12,10 @@ Move Anything 1.x grew organically from experiments into a 62,000-line framework
 - Replaces god objects with focused domains
 - Defines a module contract so modules declare what they need and get behavior for free
 - Makes every domain unit-testable without hardware
+- Rewrites the LD_PRELOAD shim from scratch using Ableton's GPL-2.0 `ablspi` library as reference (no bobbydigitales code)
 - Lives in a new repo (`move-anything-2`) alongside the working 1.x system
+
+**Shadow mode is the only mode.** Standalone mode (removed in 1.x as of March 2026) does not return. Move Anything always coexists with stock Move via the LD_PRELOAD shim. There is no "replace MoveEngine" mode.
 
 ## Why a New Repo
 
@@ -21,7 +24,7 @@ Move Anything 1.x grew organically from experiments into a 62,000-line framework
 - **Clean git history.** No "refactor shadow_ui.js part 37 of 94" commits.
 - **Module porting is the same either way.** Every module needs params.json and v3 API changes regardless of approach.
 
-Battle-tested hardware interface code (shim ioctl interception, audio mailbox layout, MIDI buffer format, SPI communication, setuid dance, LED packet limits, display protocol) is extracted and brought forward — not rewritten.
+The hardware interface (shim, audio mailbox, MIDI buffers, display protocol) is rewritten from scratch in Phase 0.5 using Ableton's official `ablspi` library as the authoritative reference for buffer layout, struct definitions, and protocol constants. No code from the bobbydigitales fork is used. Battle-tested domain knowledge (cable routing, LED limits, display protocol) is carried forward in documentation form.
 
 ---
 
@@ -138,8 +141,8 @@ Hardware I/O  →  Input / Audio  →  Core Logic  →  UI Layer
 | Audio FX | `audio_engine` (process buffer), `param_system`, optionally `midi_router`, `audio_input` |
 | MIDI FX | `midi_router` (transform events), `param_system`, `clock_manager` |
 | Performance FX | `audio_input` (live feed), `audio_engine`, `param_system`, `input_manager`, `led_manager` |
-| Overtake | Everything — `input_manager`, `led_manager`, `screen_manager`, `midi_in/out` |
-| Tool | `menu_toolkit`, `screen_manager`, `input_manager` |
+| Overtake | Everything — `input_manager`, `led_manager`, `screen_manager`, `midi_in/out`. Shim suppresses Move's display and routes all MIDI (cable 0 + cable 2+) to the overtake module. Progressive LED init via `led_manager` batching. |
+| Tool | `menu_toolkit`, `screen_manager`, `input_manager`, optionally `audio_engine`, `param_system`. Runs within shadow UI (not overtake). Accessed via Tools menu. Can be `backgroundable` (Song Mode, WaveEdit). |
 
 ### Domain Design Rationale
 
@@ -154,6 +157,9 @@ Each domain was pressure-tested against real modules:
 - **module_registry with sessions** — WaveEdit, Performance FX, Song Mode need to keep running (audio + MIDI) when the user navigates away. Today modules are binary: loaded or unloaded.
 - **task_manager** — Module Store downloads block tick(). Any operation longer than one tick should be a managed background task.
 - **screen_reader as observer** — Today every module manually calls announce(). If it doesn't, screen reader is silent. 2.0 auto-announces from param_system and menu_toolkit data.
+- **led_manager with batching** — Overtake modules need to set all 32 pad LEDs + step LEDs + track LEDs on init, but the SPI buffer holds only 20 MIDI OUT messages per transfer. Progressive init (8 LEDs/frame) is mandatory. Today each overtake module implements its own batching. `led_manager` handles this once.
+- **module_registry with tool lifecycle** — Tool modules run within the shadow UI menu system, not as overtake. They need consistent loading, input routing, and the ability to exit back to the tools menu. Today `host_exit_module()` and tool menu navigation are ad-hoc. `module_registry` standardizes this.
+- **No standalone mode** — Standalone mode was removed from 1.x (March 2026). 2.0 is shadow-only. Every module type (sound generator, audio FX, MIDI FX, overtake, tool) runs within the shadow mode shim architecture. There is no mode where Move Anything replaces MoveEngine.
 
 ---
 
@@ -457,6 +463,75 @@ Before any new architecture, remove dead weight from the existing codebase:
 
 Single PR. Everything still works after.
 
+### Phase 0.5: Clean-Room Shim Using ablspi Types and Constants
+
+**Goal:** Rewrite the LD_PRELOAD shim from scratch, without referencing any code from the bobbydigitales fork. The new shim uses Ableton's GPL-2.0 `ablspi` library as its authoritative reference for buffer layout, struct definitions, and protocol constants.
+
+**Background:** The `ablspi` library (obtained via GPL request from the jack2 Move driver, `SPDX-License-Identifier: GPL-2.0-or-later`) documents the complete SPI protocol for Move hardware. While the library itself is designed for direct device ownership (exclusive `/dev/ablspi0.0` access), it provides everything needed to write a correct LD_PRELOAD shim: struct layouts, buffer offsets, ioctl commands, MIDI encoding, display protocol, and hardware limits.
+
+**Why LD_PRELOAD (shadow mailbox coexistence):**
+Move Anything MUST coexist with stock Move. Shadow mode — where our shim intercepts MoveEngine's SPI transactions, reads Move's audio/MIDI, mixes in shadow slot audio, and writes back — is the core architecture. Users get stock Move pads, clips, sampling, AND Move Anything synths/FX simultaneously. This is non-negotiable.
+
+**What ablspi provides as reference (not called at runtime):**
+- **Struct definitions** — `AblSpiMidiMessage`, `AblSpiUsbMidiMessage`, `AblSpiMidiEvent` (replaces our hand-rolled buffer parsing)
+- **Buffer layout constants** — output MIDI at 0, output audio at 256, output display status at 80, output display data at 84, input data at 2048, input audio at 2304, frame size 768
+- **Ioctl command enum** — `ABLSPI_FILL_TX_BUFFER` through `ABLSPI_GET_SPEED` (replaces our reverse-engineered ioctl numbers)
+- **MIDI limits** — 20 out per transfer (`ABLSPI_MAX_MIDI_OUT_PER_TRANSFER`), 31 in per transfer (`ABLSPI_MAX_MIDI_IN_PER_TRANSFER`)
+- **`encodeAsUsbMidi()`** — USB-MIDI CIN encoding (can be used directly in our shim)
+- **Display protocol** — 6-chunk transfer, 172 bytes per chunk, double-buffered with dirty flag, status word handshake
+- **Audio format** — 128 frames (`ABLSPI_AUDIO_BUFFER_SIZE`), 44100 Hz, int16 interleaved stereo
+- **SPI frequency** — 20 MHz
+- **Cable assignments** — cable 0 = internal hardware, cable 2 = external USB MIDI, cable 14 = system events, cable 15 = SPI protocol events, cables 2-10 all treated as external
+
+**Architecture:** Same shadow mailbox technique as 1.x, but clean-room implementation:
+1. LD_PRELOAD shim intercepts `open()` / `ioctl()` / `mmap()` on `/dev/ablspi0.0`
+2. Shim gets a reference to MoveEngine's mmap'd SPI buffer
+3. On each `ABLSPI_WAIT_AND_SEND_MESSAGE_WITH_SIZE` ioctl (the transfer trigger):
+   - Read Move's audio output from the buffer, mix with shadow slot audio
+   - Read MIDI IN (cable 0 for controls, cable 2+ for external), route to shadow slots
+   - Write shadow MIDI OUT (LEDs, external MIDI) respecting the 20-message limit
+   - Handle display (shadow UI when active, pass through Move's display otherwise)
+4. Shadow audio rendered in a separate host process, exchanged via shared memory
+
+**Overtake module handling in the shim:**
+Overtake modules (Controller, M8, SID Control) take full control of Move's UI. The shim must:
+- Suppress Move's display output (zero the display region in Move's outbound buffer)
+- Route ALL MIDI IN to the overtake module — both cable 0 (internal hardware) and cables 2+ (external USB)
+- Give the overtake module full MIDI OUT budget (all 20 slots per transfer for LEDs + external MIDI)
+- Handle the progressive LED init sequence (overtake modules can't blast 64+ LED commands at once)
+- Provide Shift+Vol+Jog Click as a host-level escape hatch (always intercepted by shim, never forwarded)
+- On exit: progressively clear all LEDs, restore Move's display passthrough, return MIDI routing to shadow slots
+
+**Tool module handling:**
+Tool modules (File Browser, Song Mode, WAV Player) run within the shadow UI — they are NOT overtake. The shim treats them identically to shadow slot navigation. The `module_registry` and `menu_toolkit` domains handle tool lifecycle (loading, tick, input routing). Tools that declare `backgroundable: true` (Song Mode, WaveEdit) continue receiving audio/MIDI ticks when the user navigates away, managed by `module_registry` sessions.
+
+**What changes from 1.x shim:**
+- Written from scratch — no bobbydigitales code copied or referenced
+- Uses `AblSpiUsbMidiMessage` structs instead of raw byte offset arithmetic
+- Uses `AblSpiMidiEvent` for timestamped MIDI with proper CIN-based size detection
+- Enforces `ABLSPI_MAX_MIDI_OUT_PER_TRANSFER = 20` limit explicitly (fixes LED overflow crashes)
+- Uses `encodeAsUsbMidi()` for outbound MIDI encoding
+- Uses named ioctl constants from the enum instead of magic numbers
+- Handles EINTR on ioctl wait (as ablspi does)
+- Properly handles cables 2-10 for multi-device external USB MIDI
+
+**Steps:**
+1. Vendor `ablspi.h` into `src/hal/` as a header-only reference (structs, constants, ioctl enum)
+2. Optionally vendor `ablspi.c` for `encodeAsUsbMidi()` and interleave/deinterleave helpers
+3. Write `src/hal/shim.c` from scratch — LD_PRELOAD hooks for open/ioctl/mmap using ablspi types
+4. Write `src/hal/shadow_mailbox.c` — shadow audio mixing, MIDI routing, display multiplexing
+5. Write `src/hal/hal.h` — abstract interface consumed by domains above
+6. Prototype: shadow audio passthrough (Move plays, shadow slot adds a sine wave)
+7. Prototype: MIDI routing (pad press reaches shadow slot)
+8. Prototype: display switching (shift+vol shows shadow UI)
+9. Prototype: LED control (shadow slot sets pad colors)
+
+**Key constraint:** Zero reference to bobbydigitales's shim code. The shim is written from scratch using only:
+- The `ablspi` library headers and source (GPL-2.0, from Ableton via jack2 Move driver)
+- Standard Linux LD_PRELOAD / ioctl / mmap techniques (public knowledge)
+- Our own domain knowledge of Move hardware behavior
+- The CLAUDE.md documentation we've written ourselves
+
 ### Phase 1: Foundation Domains
 
 Build the domains that everything else depends on. New code in the new repo, tested on Mac.
@@ -573,6 +648,7 @@ See Section 5 for detailed migration plan and per-module instructions.
 | After | State |
 |---|---|
 | Phase 0 | Same system, less dead code |
+| Phase 0.5 | Clean-room shim using ablspi types, shadow mode coexistence preserved |
 | Phase 1 | Same system, knobs feel consistent everywhere |
 | Phase 2 | New framework running, 3 modules on v3 API, rest via adapter |
 | Phase 3 | God objects broken up, all modules still work |
@@ -763,11 +839,13 @@ Risk-based: start with lowest risk / highest learning, end with most complex.
 ```
 move-anything-2/
 ├── src/
-│   ├── hal/                        Hardware Abstraction Layer
-│   │   ├── shim.c                  Extracted from move_anything_shim.c
-│   │   ├── mailbox.c               Audio/MIDI buffer layout
-│   │   ├── spi.c                   Device communication
-│   │   └── hal.h                   Clean interface to hardware
+│   ├── hal/                        Hardware Abstraction Layer (clean-room, no bobbydigitales code)
+│   │   ├── hal.h                   Abstract interface (audio/MIDI/display callbacks)
+│   │   ├── shim.c                  LD_PRELOAD hooks (open/ioctl/mmap interception)
+│   │   ├── shadow_mailbox.c        Shadow audio mixing, MIDI routing, display mux
+│   │   └── ablspi/                 Vendored GPL-2.0 library from Ableton (types + helpers)
+│   │       ├── ablspi.h            Structs, constants, ioctl enum, MIDI limits
+│   │       └── ablspi.c            encodeAsUsbMidi(), interleave/deinterleave helpers
 │   │
 │   ├── domains/                    The 24 domains
 │   │   ├── midi_in/
@@ -1134,16 +1212,23 @@ The domain map was validated against these modules:
 
 ## Appendix B: What Gets Extracted vs Rewritten vs Deleted
 
-### Extracted (battle-tested hardware code, brought to new repo)
+### Rewritten from scratch using ablspi as reference (clean-room, no bobbydigitales code)
 
-- Shim ioctl interception (~500 lines of core hooking logic)
-- Audio mailbox layout and buffer format
-- MIDI buffer format and cable ID handling
-- SPI device communication
-- Setuid/capabilities handling
-- LED packet format and 60-packet buffer limit
-- Display protocol (128x64 1-bit)
+The LD_PRELOAD shim is rewritten from scratch. Ableton's GPL-2.0 `ablspi` library (obtained via GPL request from the jack2 Move driver) provides the authoritative struct definitions, buffer layout constants, ioctl commands, and MIDI encoding. No code from the bobbydigitales fork is referenced or used.
+
+- Shim ioctl interception → rewritten using ablspi's ioctl enum (`ABLSPI_WAIT_AND_SEND_MESSAGE_WITH_SIZE` etc.)
+- Audio mailbox layout → rewritten using ablspi's offset constants and interleave/deinterleave helpers
+- MIDI buffer format → rewritten using `AblSpiUsbMidiMessage` structs, `encodeAsUsbMidi()`, CIN-based size detection
+- SPI device communication → same LD_PRELOAD technique, but with documented constants instead of magic numbers
+- Setuid/capabilities handling → still required (LD_PRELOAD into MoveEngine), but cleanly implemented
+- LED packet limit → explicitly enforced via `ABLSPI_MAX_MIDI_OUT_PER_TRANSFER = 20`
+- Display protocol → rewritten using ablspi's 6-chunk / 172-byte / double-buffer protocol
+- MIDI limits → `ABLSPI_MAX_MIDI_IN_PER_TRANSFER = 31` enforced on input path
+
+### Extracted (brought to new repo)
+
 - All external DSP engines (third-party code: Surge, Dexed, JV880 emulator, etc.)
+- Domain knowledge: cable routing rules (0 = internal, 2-10 = external, 14 = system, 15 = SPI protocol), pad/knob note/CC mappings, LED color protocol
 
 ### Rewritten (new, clean implementations)
 
