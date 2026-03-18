@@ -6687,8 +6687,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
     }
 
-    /* When midi_fx_to_move is active, filter echoes of NOTE-ON events we injected.
-     * Note-offs must pass through so the MIDI FX can generate matching note-offs. */
+    /* When midi_fx_to_move is active, filter ALL echoes of notes we injected.
+     * Both note-on and note-off echoes must be skipped.
+     * The root note (not in injected[]) passes through naturally — its note-off
+     * will trigger MIDI FX to generate chord note-offs for injection. */
     if (inst->midi_fx_to_move && len >= 2) {
         uint8_t note = msg[1];
         uint8_t type = msg[0] & 0xF0;
@@ -6696,10 +6698,8 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
             if (is_note_off) {
                 inst->midi_fx_injected[note]--;
-                /* Let note-off pass through to MIDI FX for processing */
-            } else {
-                return;  /* Skip note-on echo — don't re-process */
             }
+            return;  /* Skip echo — both note-on and note-off */
         }
     }
 
