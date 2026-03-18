@@ -63,8 +63,6 @@ static int shadow_spi_fd = -1;           /* SPI file descriptor for MIDI/ioctl *
 extern int (*real_ioctl)(int, unsigned long, ...);  /* Forward declaration */
 static unsigned char shadow_mailbox[4096] __attribute__((aligned(64))); /* Shadow buffer for Move */
 
-/* Move MIDI FX injection: echo filter state for cable-2 note injection */
-static uint8_t move_mfx_injected_notes[128];  /* Per-note refcount of injected notes */
 
 /* ============================================================================
  * SHADOW INSTRUMENT SUPPORT
@@ -2067,7 +2065,6 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create midi_inject shm\n");
     }
 
-    memset(move_mfx_injected_notes, 0, sizeof(move_mfx_injected_notes));
 
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
     shm_screenreader_fd = shm_open(SHM_SHADOW_SCREENREADER, O_CREAT | O_RDWR, 0666);
@@ -4106,7 +4103,6 @@ do_ioctl:
                             mi[slot+2] = orig_note;
                             mi[slot+3] = 0;
                             memset(&mi[slot+4], 0, 4);
-                            if (orig_note < 128) move_mfx_injected_notes[orig_note]++;
                             break;
                         }
                     }
@@ -4120,16 +4116,9 @@ do_ioctl:
                     uint8_t out_vel = out_msgs[i][2];
                     uint8_t out_type = out_msgs[i][0] & 0xF0;
 
-                    /* Skip if same as original (Move already played it) */
+                    /* Skip note-ons that match original (Move already played it) */
                     if (out_note == orig_note && out_type == orig_type && is_note_on)
                         continue;
-
-                    /* Skip echoes of our own injected notes */
-                    if (out_note < 128 && move_mfx_injected_notes[out_note] > 0) {
-                        if (out_type == 0x80 || (out_type == 0x90 && out_vel == 0))
-                            move_mfx_injected_notes[out_note]--;
-                        continue;
-                    }
 
                     /* Find empty slot and inject */
                     for (int slot = 0; slot < MIDI_IN_MAX_BYTES; slot += MIDI_IN_EVENT_SIZE) {
@@ -4140,8 +4129,6 @@ do_ioctl:
                             mi[slot+2] = out_note;
                             mi[slot+3] = out_vel;
                             memset(&mi[slot+4], 0, 4);
-                            if (out_type == 0x90 && out_vel > 0 && out_note < 128)
-                                move_mfx_injected_notes[out_note]++;
                             break;
                         }
                     }
@@ -4157,25 +4144,6 @@ do_ioctl:
                 for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
                     if (shadow_chain_slots[s].instance) {
                         shadow_chain_set_midi_fx_to_move(shadow_chain_slots[s].instance, cur ? 1 : 0);
-                    }
-                }
-                if (!cur) {
-                    /* Turning off: send note-offs for all injected notes */
-                    uint8_t *mi = shadow_mailbox + MIDI_IN_OFFSET;
-                    for (int n = 0; n < 128; n++) {
-                        while (move_mfx_injected_notes[n] > 0) {
-                            for (int slot = 0; slot < MIDI_IN_MAX_BYTES; slot += MIDI_IN_EVENT_SIZE) {
-                                if ((mi[slot] & 0xFF) == 0) {
-                                    mi[slot]   = (2 << 4) | 0x08;
-                                    mi[slot+1] = 0x80;
-                                    mi[slot+2] = (uint8_t)n;
-                                    mi[slot+3] = 0;
-                                    memset(&mi[slot+4], 0, 4);
-                                    break;
-                                }
-                            }
-                            move_mfx_injected_notes[n]--;
-                        }
                     }
                 }
                 prev_chord_mode_flag = cur;
