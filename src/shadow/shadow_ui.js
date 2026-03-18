@@ -11022,16 +11022,11 @@ globalThis.tick = function() {
 
     refreshCounter++;
 
-    /* Skip all IPC polling and file I/O while an overtake module is running.
-     * Every getSlotParam() call is a synchronous shim round-trip (~3-10ms) and
-     * autosaveAllSlots() does file writes.  Together these caused consistent
-     * 12-26ms stalls on every %15 tick and ~104ms stalls every ~700ms, corrupting
-     * the timing of any overtake module that relies on tick() cadence.
-     * These tasks are deferred until the user returns to the normal shadow UI. */
+    /* Skip all IPC polling and file I/O while an overtake module is running. */
     const isOvertakeActive = (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU);
 
     if (!isOvertakeActive && refreshCounter % 120 === 0) {
-    refreshSlots();
+        refreshSlots();
     }
 
     /* Periodic autosave (suppressed briefly after set change) */
