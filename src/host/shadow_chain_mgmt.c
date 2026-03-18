@@ -38,6 +38,10 @@ const plugin_api_v2_t *shadow_plugin_v2 = NULL;
 void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) = NULL;
 void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
 void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
+void (*shadow_chain_set_midi_fx_to_move)(void *instance, int enable) = NULL;
+int (*shadow_chain_read_midi_fx_output)(void *instance,
+    uint8_t out_msgs[][3], int out_lens[],
+    uint8_t *original_note, uint8_t *original_status, uint8_t *channel) = NULL;
 host_api_v1_t shadow_host_api;
 int shadow_inprocess_ready = 0;
 
@@ -903,12 +907,16 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_set_external_fx_mode");
     shadow_chain_process_fx = (void (*)(void *, int16_t *, int))
         dlsym(shadow_dsp_handle, "chain_process_fx");
+    shadow_chain_set_midi_fx_to_move = (void (*)(void *, int))
+        dlsym(shadow_dsp_handle, "chain_set_midi_fx_to_move");
+    shadow_chain_read_midi_fx_output = (int (*)(void *, uint8_t [][3], int [],
+        uint8_t *, uint8_t *, uint8_t *))
+        dlsym(shadow_dsp_handle, "chain_read_midi_fx_output");
 
-    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d",
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p process_fx=%p midi_fx_to_move=%p",
             (void*)shadow_chain_set_inject_audio,
-            (void*)shadow_chain_set_external_fx_mode,
             (void*)shadow_chain_process_fx,
-            (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0);
+            (void*)shadow_chain_set_midi_fx_to_move);
 
     /* Set pages: read persisted page on boot */
     set_page_current = set_page_read_persisted();
