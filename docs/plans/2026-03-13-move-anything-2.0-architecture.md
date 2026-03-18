@@ -1257,3 +1257,166 @@ The LD_PRELOAD shim is rewritten from scratch. Ableton's GPL-2.0 `ablspi` librar
 - 14 local copies of plugin_api_v1.h
 - All hardcoded chain_params / ui_hierarchy JSON strings in C
 - compat_v2.c (after all modules ported)
+
+## Appendix C: Hardware Protocol Reference (from rnbo.move.control + ablspi)
+
+Documented protocols from Cycling '74's public `rnbo.move.control` repo (MIT license) and Ableton's `ablspi` library (GPL-2.0). These are the authoritative references for the clean-room shim rewrite.
+
+### SysEx Manufacturer and Device ID
+
+All Move SysEx messages use: `F0 00 21 1D 01 01 <command> ... F7`
+- Manufacturer: `00 21 1D` (Ableton)
+- Device: `01 01`
+
+### Display Protocol
+
+- **Format:** 128×64 pixels, 1-bit, SSD1306-style column-major bit-packing
+- **Pixel addressing:** `byte = x + (y / 8) * 128`, `bit = 1 << (y % 8)` — 8 horizontal strips of 128 bytes, each byte is an 8-pixel vertical column
+- **Total:** 1024 bytes pixel data
+- **JACK MIDI header:** 8-byte ASCII `MOVEDISP` prefix (1032 bytes total when sent as JACK MIDI)
+- **Frame period:** 23ms (~43.5 Hz refresh)
+- **SPI transfer:** 6 chunks of 172 bytes, double-buffered with dirty flag, status word handshake (from ablspi)
+
+### LED Protocols
+
+**Pad/Step/Button LEDs (via Note On, channel 16):**
+Standard velocity-based color palette on MIDI channel 16 (`0x9F` note on).
+
+**Button LED colors (via CC, channel 16, status `0xBF`):**
+
+| Value | Color |
+|-------|-------|
+| 0 | Black (off) |
+| 120 | Full White |
+| 122 | White |
+| 123 | Light Gray |
+| 124 | Dark Gray |
+| 125 | Blue |
+| 126 | Green |
+| 127 | Red |
+
+**Knob Ring LEDs (full RGB via SysEx):**
+```
+F0 00 21 1D 01 01 3B <chan> <index> <r_lo> <r_hi> <g_lo> <g_hi> <b_lo> <b_hi> F7
+```
+- `chan` = `0x10`
+- `index` = knob index + 71 (knob 0 = 71, knob 7 = 78)
+- RGB 8-bit values split: `lo = val & 0x7F`, `hi = val >> 7`
+- Values clamped to minimum 1
+
+**Display Brightness (via SysEx):**
+```
+F0 00 21 1D 01 01 06 <level> F7
+```
+- `level` = 0-127
+
+### MIDI Control Surface Mapping (all channel 16)
+
+**Encoders (relative: 1 = clockwise, 127 = counterclockwise):**
+
+| CC | Control |
+|----|---------|
+| 14 | Jog wheel turn |
+| 71-78 | Parameter knobs 1-8 |
+| 79 | Volume wheel |
+
+**Buttons (CC value: 127 = press, 0 = release):**
+
+| CC | Button |
+|----|--------|
+| 3 | Jog wheel click |
+| 49 | Shift |
+| 50 | Menu |
+| 51 | Back |
+
+**Capacitive touch (Note On/Off, channel 16):**
+
+| Note | Touch Source |
+|------|-------------|
+| 0-7 | Parameter knobs 1-8 |
+| 8 | Volume wheel |
+| 9 | Jog wheel |
+
+**Pads/Steps/Tracks:** As previously documented (Pads: Notes 68-99, Steps: Notes 16-31, Tracks: CCs 40-43).
+
+### Power Management SysEx
+
+**Query power state:**
+```
+F0 00 21 1D 01 01 3A F7
+```
+
+**Power state response:**
+```
+F0 00 21 1D 01 01 3A <status> <charge> F7
+```
+- `status` bit 3 (`0x08`) = short press
+- `status` bit 4 (`0x10`) = long press
+- `status` bit 5 (`0x20`) = PSU connected (charging)
+- `status` bit 6 (`0x40`) = battery low
+- `charge` = battery level (0-100)
+
+**Power commands:**
+```
+F0 00 21 1D 01 01 39 <cmd> F7
+```
+| cmd | Action |
+|-----|--------|
+| 1 | Power off (immediate, delayed 5s if no shutdown first) |
+| 2 | Clear short press state |
+| 3 | Request power state update |
+| 4 | Reboot (power off + auto power on after 1s) |
+| 5 | Clear long press state |
+| 6 | Shutdown (initiates XMOS shutdown animation; power off required after, auto after 30s) |
+
+### SPI Protocol Constants (from ablspi)
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `ABLSPI_AUDIO_BUFFER_SIZE` | 128 | Frames per block |
+| `ABLSPI_AUDIO_SAMPLE_RATE_HZ` | 44100 | Sample rate |
+| `ABLSPI_MAX_MIDI_IN_PER_TRANSFER` | 31 | Max MIDI events in per SPI transfer |
+| `ABLSPI_MAX_MIDI_OUT_PER_TRANSFER` | 20 | Max MIDI events out per SPI transfer |
+| `ABLSPI_DISPLAY_BYTES` | 1024 | Display framebuffer size |
+| `kSpiFrequency` | 20000000 | SPI bus speed (20 MHz) |
+| `kFrameSize` | 768 | Ioctl transfer size |
+| `kPageSize` | 4096 | Mmap page size (full mailbox) |
+
+**Mailbox buffer offsets:**
+
+| Offset | Region |
+|--------|--------|
+| 0 | MIDI OUT (output to hardware) |
+| 80 | Display status word (output) |
+| 84 | Display data (output, 172 bytes per chunk) |
+| 256 | Audio OUT (output, interleaved int16 stereo) |
+| 2048 | MIDI IN (input from hardware) |
+| 2248 | Display status word (input) |
+| 2304 | Audio IN (input, interleaved int16 stereo) |
+
+**Ioctl commands:**
+
+| Value | Command |
+|-------|---------|
+| 0 | `ABLSPI_FILL_TX_BUFFER` |
+| 1 | `ABLSPI_FILL_RX_BUFFER` |
+| 2 | `ABLSPI_READ_BUFFER` |
+| 3 | `ABLSPI_SEND_MESSAGE` |
+| 4 | `ABLSPI_SEND_MESSAGE_AND_WAIT` |
+| 5 | `ABLSPI_WAIT_AND_SEND_MESSAGE` |
+| 6 | `ABLSPI_GET_STATE` |
+| 7 | `ABLSPI_CAN_SEND` |
+| 8 | `ABLSPI_SET_MESSAGE_SIZE` |
+| 9 | `ABLSPI_GET_MESSAGE_SIZE` |
+| 10 | `ABLSPI_WAIT_AND_SEND_MESSAGE_WITH_SIZE` |
+| 11 | `ABLSPI_SET_SPEED` |
+| 12 | `ABLSPI_GET_SPEED` |
+
+**USB-MIDI cable assignments:**
+
+| Cable | Purpose |
+|-------|---------|
+| 0 | Internal Move hardware (pads, knobs, buttons, display) |
+| 2-10 | External USB MIDI devices |
+| 14 | System-level events |
+| 15 | SPI protocol events |
