@@ -4139,14 +4139,8 @@ do_ioctl:
                 }
             }
 
-            if (cable0_notes) {
-                mfx_defer_counter = 0;
-            } else if (mfx_defer_counter < MFX_DEFER_FRAMES + 1) {
-                mfx_defer_counter++;
-            }
-
-            /* Drain pending buffer when safe (no cable-0 notes for 2 frames) */
-            if (mfx_pending_count > 0 && mfx_defer_counter >= MFX_DEFER_FRAMES) {
+            /* Drain pending buffer when no cable-0 notes in THIS frame */
+            if (mfx_pending_count > 0 && !cable0_notes) {
                 uint8_t *mi = shadow_mailbox + MIDI_IN_OFFSET;
                 int injected = 0;
                 int hw_offset = 0;
