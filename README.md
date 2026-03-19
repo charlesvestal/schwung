@@ -172,6 +172,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor â€” granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
 | [Dragonfly Hall](https://github.com/wolfrenegade1976/move-anything-dragonfly-hall) | Dragonfly Hall Reverb â€” lush hall reverb with 25 presets and full parameter control | bradcoomber |
 | [Punch-In FX](https://github.com/fillioning/MovePunchFX) | PO-33 style punch-in effects with pressure control — 16 effects on left 4x4 pad grid | fillioning |
+| [Structor](https://github.com/fillioning/move-everything-structor) | Musique concrete sound deconstructor/reconstructor — 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer | fillioning |
 
 ### MIDI FX
 
