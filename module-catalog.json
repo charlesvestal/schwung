@@ -503,14 +503,14 @@
       "min_host_version": "0.3.0"
     },
     {
-      "id": "superboum",
-      "name": "Super Boum",
-      "description": "OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage",
+      "id": "superboom",
+      "name": "Super Boom",
+      "description": "Analog warming unit-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage",
       "author": "fillioning",
       "component_type": "audio_fx",
-      "github_repo": "fillioning/super-boum-move",
+      "github_repo": "fillioning/super-boom-move",
       "default_branch": "main",
-      "asset_name": "super-boum-module.tar.gz",
+      "asset_name": "super-boom-module.tar.gz",
       "min_host_version": "0.3.0"
     },
     {
