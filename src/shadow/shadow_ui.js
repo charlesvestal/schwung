@@ -11021,7 +11021,11 @@ globalThis.tick = function() {
     previewTick();
 
     refreshCounter++;
-    if (refreshCounter % 120 === 0) {
+
+    /* Skip all IPC polling and file I/O while an overtake module is running. */
+    const isOvertakeActive = (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU);
+
+    if (!isOvertakeActive && refreshCounter % 120 === 0) {
         refreshSlots();
     }
 
@@ -11031,14 +11035,14 @@ globalThis.tick = function() {
         autosaveCounter = 0;
     } else {
         autosaveCounter++;
-        if (autosaveCounter >= AUTOSAVE_INTERVAL) {
+        if (!isOvertakeActive && autosaveCounter >= AUTOSAVE_INTERVAL) {
             autosaveCounter = 0;
             autosaveAllSlots();
             saveMasterFxChainConfig();
         }
     }
     /* Refresh dirty cache frequently for responsive UI */
-    if (refreshCounter % 15 === 0) {
+    if (!isOvertakeActive && refreshCounter % 15 === 0) {
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
             const dirty = getSlotParam(i, "dirty");
             const isDirty = (dirty === "1");
@@ -11051,7 +11055,7 @@ globalThis.tick = function() {
 
     /* Poll FX display_name for change-based announcements (e.g. key detection).
      * Check every ~1 second (30 ticks at 30fps). Only poll slots that have FX loaded. */
-    if (refreshCounter % 30 === 0) {
+    if (!isOvertakeActive && refreshCounter % 30 === 0) {
         const fxComponents = ["fx1", "fx2"];
         /* Per-slot FX */
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
@@ -11092,7 +11096,7 @@ globalThis.tick = function() {
     if (typeof shadow_get_selected_slot === "function") {
         currentTargetSlot = shadow_get_selected_slot();
     }
-    if (refreshCounter % 30 === 0) {
+    if (!isOvertakeActive && refreshCounter % 30 === 0) {
         refreshSlotModuleSignature(selectedSlot);
         if (currentTargetSlot !== selectedSlot) {
             refreshSlotModuleSignature(currentTargetSlot);
