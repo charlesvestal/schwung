@@ -140,11 +140,10 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Webstream](https://github.com/charlesvestal/move-everything-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
 | [Radio Garden](https://github.com/charlesvestal/move-everything-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
 | [AirPlay](https://github.com/charlesvestal/move-everything-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
-| [SConnect](https://github.com/handcraftedcc/move-anything-sconnect) | Unofficial Spotify Connect receiver for personal listening | handcraftedcc |
 | [Chiptune](https://github.com/charlesvestal/move-everything-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
 | [Osirus](https://github.com/charlesvestal/move-everything-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
 | [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | handcraftedcc |
-| [Freak](https://github.com/handcraftedcc/move-everything-freak) | MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits | handcraftedcc |
+| [MrHyde](https://github.com/handcraftedcc/move-everything-mrhyde) | MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits | handcraftedcc |
 | [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | handcraftedcc |
 | [REX Player](https://github.com/charlesvestal/move-everything-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
 | [HUSH ONE](https://github.com/charlesvestal/move-everything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | charlesvestal |
