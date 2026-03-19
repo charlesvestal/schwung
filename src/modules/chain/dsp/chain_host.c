@@ -534,6 +534,7 @@ typedef struct chain_instance {
     uint8_t midi_fx_out_original_note;        /* The input note that produced this output */
     uint8_t midi_fx_out_original_status;      /* The input status byte */
     uint8_t midi_fx_out_channel;              /* MIDI channel */
+    uint8_t midi_fx_last_input_channel;       /* Channel of last note received (for tick output) */
     uint8_t midi_fx_injected[128];            /* Refcount of notes we generated (echo filter) */
 
     /* Channel settings from last load_file (autosave restore).
@@ -1685,22 +1686,30 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
 
         /* When midi_fx_to_move is set, redirect tick output to injection buffer */
         if (inst->midi_fx_to_move && count > 0) {
+            static int tick_log = 0;
+            if (tick_log < 5) {
+                char dbg[64];
+                snprintf(dbg, sizeof(dbg), "MFX-tick: count=%d buf_free=%d", count, inst->midi_fx_out_count == 0);
+                v2_chain_log(inst, dbg);
+                tick_log++;
+            }
             int n = count < 16 ? count : 16;
             if (inst->midi_fx_out_count == 0) {
+                /* Remap tick output to the channel of the last input note */
+                uint8_t tick_ch = inst->midi_fx_last_input_channel;
                 for (int i = 0; i < n; i++) {
-                    inst->midi_fx_out_buf[i][0] = out_msgs[i][0];
+                    inst->midi_fx_out_buf[i][0] = (out_msgs[i][0] & 0xF0) | tick_ch;
                     inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
                     inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
                     inst->midi_fx_out_lens[i] = out_lens[i];
-                    uint8_t ot = out_msgs[i][0] & 0xF0;
                     uint8_t on = out_msgs[i][1];
-                    if (on < 128 && ot == 0x90 && out_msgs[i][2] > 0) {
+                    if (on < 128) {
                         inst->midi_fx_injected[on]++;
                     }
                 }
                 inst->midi_fx_out_original_note = 255;
                 inst->midi_fx_out_original_status = 0;
-                inst->midi_fx_out_channel = out_msgs[0][0] & 0x0F;
+                inst->midi_fx_out_channel = tick_ch;
                 __sync_synchronize();
                 inst->midi_fx_out_count = n;
             }
@@ -6711,20 +6720,22 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
     }
 
-    /* When midi_fx_to_move is active, filter ALL echoes of notes we injected.
-     * Both note-on and note-off echoes must be skipped.
-     * The root note (not in injected[]) passes through naturally — its note-off
-     * will trigger MIDI FX to generate chord note-offs for injection. */
+    /* When midi_fx_to_move is active, skip notes that we recently injected.
+     * We track "expected echoes" — notes we output last cycle that will
+     * appear in MIDI_OUT after Move processes them. When we see them,
+     * consume (decrement) and skip. Fresh pad notes have no entry → pass through. */
+    if (inst->midi_fx_to_move && len >= 1) {
+        /* Save input channel for tick output remapping */
+        uint8_t in_type = msg[0] & 0xF0;
+        if (in_type == 0x90 || in_type == 0x80) {
+            inst->midi_fx_last_input_channel = msg[0] & 0x0F;
+        }
+    }
     if (inst->midi_fx_to_move && len >= 2) {
         uint8_t note = msg[1];
-        uint8_t type = msg[0] & 0xF0;
-        int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
-        int is_note_on = (type == 0x90 && len >= 3 && msg[2] > 0);
-
         if (note < 128 && inst->midi_fx_injected[note] > 0) {
-            /* Don't decrement on note-off — keep refcount high so
-             * subsequent note-off echoes are also caught */
-            return;  /* Skip ALL echoes */
+            inst->midi_fx_injected[note]--;
+            return;  /* Skip — this is an echo of what we injected */
         }
     }
 
@@ -6733,9 +6744,11 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     int out_lens[MIDI_FX_MAX_OUT_MSGS];
     int out_count = v2_process_midi_fx(inst, msg, len, out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
 
-    /* When midi_fx_to_move is set, write output to shared buffer for shim injection
-     * instead of sending to shadow synth (shadow synth will hear it via MIDI_OUT echo) */
-    if (inst->midi_fx_to_move && inst->midi_fx_count > 0) {
+    /* When midi_fx_to_move is set, write NOTE output to shared buffer for injection.
+     * Skip non-note messages (aftertouch, CC) — they flood the buffer and starve tick. */
+    uint8_t in_type = msg[0] & 0xF0;
+    if (inst->midi_fx_to_move && inst->midi_fx_count > 0 &&
+        (in_type == 0x90 || in_type == 0x80) && out_count > 0) {
         int n = out_count < 16 ? out_count : 16;
         {
             char dbg[128];
@@ -6753,14 +6766,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
             inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
             inst->midi_fx_out_lens[i] = out_lens[i];
-            /* Track note-ons we output for echo filtering */
-            uint8_t ot = out_msgs[i][0] & 0xF0;
+            /* Track every note we output that differs from input — expect 1 echo */
             uint8_t on = out_msgs[i][1];
-            if (ot == 0x90 && out_msgs[i][2] > 0 && on < 128) {
-                /* Only track notes that differ from input (those get injected) */
-                if (on != (len >= 2 ? msg[1] : 255)) {
-                    inst->midi_fx_injected[on]++;
-                }
+            if (on < 128 && on != (len >= 2 ? msg[1] : 255)) {
+                inst->midi_fx_injected[on]++;
             }
         }
         inst->midi_fx_out_original_note = len >= 2 ? msg[1] : 0;
@@ -8439,6 +8448,15 @@ int chain_read_midi_fx_output(void *instance,
     if (!inst || inst->midi_fx_out_count == 0) return 0;
 
     int count = inst->midi_fx_out_count;
+    {
+        static int read_log = 0;
+        if (read_log < 5) {
+            char dbg[64];
+            snprintf(dbg, sizeof(dbg), "MFX-read: count=%d inst=%p", count, (void*)inst);
+            v2_chain_log(inst, dbg);
+            read_log++;
+        }
+    }
     for (int i = 0; i < count; i++) {
         out_msgs[i][0] = inst->midi_fx_out_buf[i][0];
         out_msgs[i][1] = inst->midi_fx_out_buf[i][1];
