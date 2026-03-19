@@ -140,11 +140,10 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Webstream](https://github.com/charlesvestal/move-everything-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
 | [Radio Garden](https://github.com/charlesvestal/move-everything-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
 | [AirPlay](https://github.com/charlesvestal/move-everything-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
-| [SConnect](https://github.com/handcraftedcc/move-anything-sconnect) | Unofficial Spotify Connect receiver for personal listening | handcraftedcc |
 | [Chiptune](https://github.com/charlesvestal/move-everything-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
 | [Osirus](https://github.com/charlesvestal/move-everything-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
 | [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | handcraftedcc |
-| [Freak](https://github.com/handcraftedcc/move-everything-freak) | MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits | handcraftedcc |
+| [MrHyde](https://github.com/handcraftedcc/move-everything-mrhyde) | MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits | handcraftedcc |
 | [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | handcraftedcc |
 | [REX Player](https://github.com/charlesvestal/move-everything-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
 | [HUSH ONE](https://github.com/charlesvestal/move-everything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | charlesvestal |
@@ -169,9 +168,10 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Vocoder](https://github.com/charlesvestal/move-everything-vocoder) | Channel vocoder - uses mic/line-in as modulator to shape synth carrier | charlesvestal |
 | [Usefulity](https://github.com/charlesvestal/move-everything-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
 | [Boris Granular](https://github.com/fillioning/move-anything-boris) | Real-time granular audio effect with live input capture and MIDI sync | Alessandro Gaiba (port: fillioning) |
-| [Super Boum](https://github.com/fillioning/super-boum-move) | OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage | fillioning |
-| [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor — granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
-| [Dragonfly Hall](https://github.com/wolfrenegade1976/move-anything-dragonfly-hall) | Dragonfly Hall Reverb — lush hall reverb with 25 presets and full parameter control | bradcoomber |
+| [Super Boom](https://github.com/fillioning/super-boom-move) | OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage | fillioning |
+| [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor â€” granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
+| [Dragonfly Hall](https://github.com/wolfrenegade1976/move-anything-dragonfly-hall) | Dragonfly Hall Reverb â€” lush hall reverb with 25 presets and full parameter control | bradcoomber |
+| [Punch-In FX](https://github.com/fillioning/MovePunchFX) | PO-33 style punch-in effects with pressure control — 16 effects on left 4x4 pad grid | fillioning |
 
 ### MIDI FX
 
