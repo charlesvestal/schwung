@@ -579,6 +579,17 @@
       "default_branch": "main",
       "asset_name": "punchfx-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "structor",
+      "name": "Structor",
+      "description": "Musique concrete sound deconstructor/reconstructor — 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer",
+      "author": "fillioning",
+      "component_type": "audio_fx",
+      "github_repo": "fillioning/move-everything-structor",
+      "default_branch": "main",
+      "asset_name": "structor-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
