@@ -4127,15 +4127,47 @@ do_ioctl:
                 }
             }
 
+            /* Pad tracking: held state + pitch mapping for note-off injection */
+            static uint8_t pads_held[32];
+            static uint8_t pad_pitch[32];   /* pad_pitch[idx] = MIDI note, 255=unknown */
+            static uint8_t pad_channel[32];
+            static int pad_init = 0;
+            if (!pad_init) {
+                memset(pads_held, 0, sizeof(pads_held));
+                memset(pad_pitch, 255, sizeof(pad_pitch));
+                memset(pad_channel, 0, sizeof(pad_channel));
+                pad_init = 1;
+            }
+
+            /* Build pad-pitch map from cable-2 note-ons in MIDI_OUT */
+            {
+                const uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
+                for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+                    if (out_src[i] == 0 && out_src[i+1] == 0) continue;
+                    uint8_t c = (out_src[i] >> 4) & 0x0F;
+                    uint8_t st = out_src[i+1];
+                    uint8_t type = st & 0xF0;
+                    uint8_t note = out_src[i+2];
+                    uint8_t vel = out_src[i+3];
+                    if (c == 2 && type == 0x90 && vel > 0 && note < 128) {
+                        for (int p = 0; p < 32; p++) {
+                            if (pads_held[p] && pad_pitch[p] == 255) {
+                                pad_pitch[p] = note;
+                                pad_channel[p] = st & 0x0F;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             /* Zero non-pad cable-0 from MIDI_IN when pending.
              * Track NEW pad presses to skip drain (avoid cable mixing).
              * Repeated note-ons from held pads are zeroed — only first press matters. */
-            static uint8_t pads_held[32];  /* Track which pads (68-99) are currently held */
-            static int pads_held_init = 0;
-            if (!pads_held_init) { memset(pads_held, 0, sizeof(pads_held)); pads_held_init = 1; }
-
+            /* Always scan for pad events (need to track presses/releases).
+             * Zero non-pad cable-0 only when we have pending injections. */
             int cable0_new_press = 0;
-            if (mfx_pending_count > 0) {
+            {
                 uint8_t *sh_m = shadow_mailbox + MIDI_IN_OFFSET;
                 for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVENT_SIZE) {
                     if ((sh_m[j] & 0xFF) == 0) continue;
@@ -4151,6 +4183,7 @@ do_ioctl:
                             if (!pads_held[idx]) {
                                 /* First press — let through, skip drain this frame */
                                 pads_held[idx] = 1;
+                                pad_pitch[idx] = 255; /* Will be filled from MIDI_OUT */
                                 cable0_new_press = 1;
                                 continue;
                             }
@@ -4159,14 +4192,26 @@ do_ioctl:
                             continue;
                         }
                         if (type == 0x80 || (type == 0x90 && vel == 0)) {
-                            /* Pad release — let through, skip drain this frame */
+                            /* Pad release: inject note-off directly to chain for replacing FX */
+                            if (pad_pitch[idx] != 255 && shadow_chain_inject_note_off) {
+                                for (int s2 = 0; s2 < SHADOW_CHAIN_INSTANCES; s2++) {
+                                    if (shadow_chain_slots[s2].instance) {
+                                        shadow_chain_inject_note_off(
+                                            shadow_chain_slots[s2].instance,
+                                            pad_pitch[idx], pad_channel[idx]);
+                                    }
+                                }
+                            }
                             pads_held[idx] = 0;
+                            pad_pitch[idx] = 255;
                             cable0_new_press = 1;
                             continue;
                         }
                     }
-                    /* Zero everything else on cable-0 */
-                    memset(&sh_m[j], 0, MIDI_IN_EVENT_SIZE);
+                    /* Zero non-pad cable-0 only when we have pending injections */
+                    if (mfx_pending_count > 0) {
+                        memset(&sh_m[j], 0, MIDI_IN_EVENT_SIZE);
+                    }
                 }
             }
 

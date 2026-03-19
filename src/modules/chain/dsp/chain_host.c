@@ -535,6 +535,7 @@ typedef struct chain_instance {
     uint8_t midi_fx_out_original_status;      /* The input status byte */
     uint8_t midi_fx_out_channel;              /* MIDI channel */
     uint8_t midi_fx_last_input_channel;       /* Channel of last note received (for tick output) */
+    int midi_fx_is_replacing;                 /* 1 = replacing mode (arp, transpose), 0 = additive (chord) */
     uint8_t midi_fx_injected[128];            /* Refcount of notes we generated (echo filter) */
 
     /* Channel settings from last load_file (autosave restore).
@@ -1571,7 +1572,19 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
 
     inst->midi_fx_count++;
 
-    snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d)", fx_name, slot);
+    /* Query MIDI FX mode: additive (chord) or replacing (arp, transpose) */
+    inst->midi_fx_is_replacing = 0;  /* Default: additive */
+    if (api->get_param) {
+        char mode_buf[32] = {0};
+        if (api->get_param(instance, "midi_fx_mode", mode_buf, sizeof(mode_buf)) > 0) {
+            if (strcmp(mode_buf, "replacing") == 0) {
+                inst->midi_fx_is_replacing = 1;
+            }
+        }
+    }
+
+    snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d, %s)", fx_name, slot,
+             inst->midi_fx_is_replacing ? "replacing" : "additive");
     v2_chain_log(inst, msg);
     return 0;
 }
@@ -6733,9 +6746,25 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     }
     if (inst->midi_fx_to_move && len >= 2) {
         uint8_t note = msg[1];
-        if (note < 128 && inst->midi_fx_injected[note] > 0) {
-            inst->midi_fx_injected[note]--;
-            return;  /* Skip — this is an echo of what we injected */
+        uint8_t type = msg[0] & 0xF0;
+        int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
+
+        if (inst->midi_fx_is_replacing) {
+            /* Replacing mode (arp, transpose): skip ALL cable-2 note-offs.
+             * Pad releases are handled via chain_inject_note_off(). */
+            if (is_note_off) return;
+            /* Skip note-on echoes via refcount */
+            if (note < 128 && inst->midi_fx_injected[note] > 0) {
+                inst->midi_fx_injected[note]--;
+                return;
+            }
+        } else {
+            /* Additive mode (chord): skip only echoes via refcount.
+             * Note-offs pass through so chord FX generates chord note-offs. */
+            if (note < 128 && inst->midi_fx_injected[note] > 0) {
+                inst->midi_fx_injected[note]--;
+                return;
+            }
         }
     }
 
@@ -8423,6 +8452,17 @@ void chain_set_inject_audio(void *instance, int16_t *buf, int frames) {
 /* Exported: enable/disable external FX mode.
  * When enabled, render_block outputs raw synth only (no inject, no FX).
  * The caller is responsible for running chain_process_fx() separately. */
+/* Exported: inject a note-off directly into the MIDI FX pipeline.
+ * Used by shim when detecting cable-0 pad release in replacing mode. */
+void chain_inject_note_off(void *instance, uint8_t note, uint8_t channel) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || !inst->midi_fx_to_move || !inst->midi_fx_is_replacing) return;
+    uint8_t msg[3] = { 0x80 | channel, note, 0 };
+    uint8_t dummy_out[16][3];
+    int dummy_lens[16];
+    v2_process_midi_fx(inst, msg, 3, dummy_out, dummy_lens, 16);
+}
+
 /* Exported: enable/disable MIDI FX → Move routing.
  * When enabled, MIDI FX output goes to a buffer for shim injection
  * instead of being sent to the shadow synth. */

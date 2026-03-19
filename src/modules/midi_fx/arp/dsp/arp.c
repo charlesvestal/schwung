@@ -547,6 +547,9 @@ static int arp_get_param(void *instance, const char *key, char *buf, int buf_len
     else if (strcmp(key, "sync") == 0) {
         return snprintf(buf, buf_len, "%s", inst->sync_mode == SYNC_CLOCK ? "clock" : "internal");
     }
+    else if (strcmp(key, "midi_fx_mode") == 0) {
+        return snprintf(buf, buf_len, "replacing");
+    }
     else if (strcmp(key, "error") == 0) {
         return arp_get_sync_warning(inst, buf, buf_len);
     }
