@@ -3519,7 +3519,7 @@ function enterToolFileBrowser(toolModule) {
     /* Inject "Resume" item at top if a hidden session exists for this tool */
     debugLog("enterToolFileBrowser resume check: hiddenModulePath=" + toolHiddenModulePath +
              " id=" + toolModule.id + " hiddenFile=" + toolHiddenFile);
-    if (toolHiddenFile && toolHiddenModulePath.indexOf("/" + toolModule.id + "/") !== -1) {
+    if (toolHiddenFile && toolHiddenFile !== "_hidden_" && toolHiddenModulePath.indexOf("/" + toolModule.id + "/") !== -1) {
         const resumeLabel = "Resume: " + toolHiddenFile.substring(toolHiddenFile.lastIndexOf("/") + 1);
         toolBrowserState.items.splice(0, 0, { label: resumeLabel, kind: "resume", path: toolHiddenFile });
         toolBrowserState.selectedIndex = 0;
