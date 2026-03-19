@@ -3906,7 +3906,7 @@ function startInteractiveTool(toolModule, filePath) {
              * Do a fresh load with the hidden file — DSP will be reloaded.
              * Set host_tool_reconnect so Wave Edit checks sampler state. */
             debugLog("startInteractiveTool: hidden session DSP was replaced, doing fresh load with " + toolHiddenFile);
-            filePath = toolHiddenFile;
+            filePath = (toolHiddenFile === "_hidden_") ? "" : toolHiddenFile;
             toolSelectedFile = filePath;
             toolHiddenFile = "";
             toolHiddenModulePath = "";
