@@ -150,6 +150,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [NuSaw](https://github.com/charlesvestal/move-everything-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
+| [Weird Dreams](https://github.com/fillioning/move-everything-weird-drum) | 8-voice analog drum machine with 64 kits, 41 voice presets, 96 musical pitch scales, master bus FX, and per-voice pages | fillioning (DSP: dfilaretti) |
 
 ### Audio FX
 
@@ -169,8 +170,8 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Usefulity](https://github.com/charlesvestal/move-everything-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
 | [Boris Granular](https://github.com/fillioning/move-anything-boris) | Real-time granular audio effect with live input capture and MIDI sync | Alessandro Gaiba (port: fillioning) |
 | [Super Boom](https://github.com/fillioning/super-boom-move) | OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage | fillioning |
-| [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor â€” granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
-| [Dragonfly Hall](https://github.com/wolfrenegade1976/move-anything-dragonfly-hall) | Dragonfly Hall Reverb â€” lush hall reverb with 25 presets and full parameter control | bradcoomber |
+| [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor — granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
+| [Dragonfly Hall](https://github.com/wolfrenegade1976/move-anything-dragonfly-hall) | Dragonfly Hall Reverb — lush hall reverb with 25 presets and full parameter control | bradcoomber |
 | [Punch-In FX](https://github.com/fillioning/MovePunchFX) | PO-33 style punch-in effects with pressure control — 16 effects on left 4x4 pad grid | fillioning |
 | [Structor](https://github.com/fillioning/move-everything-structor) | Musique concrete sound deconstructor/reconstructor — 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer | fillioning |
 
