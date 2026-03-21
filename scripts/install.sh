@@ -845,8 +845,8 @@ chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrappe
   exit 0
 fi
 
-# Migrate from move-anything if needed
-if ssh_ableton_with_retry "test -d /data/UserData/move-anything" 2>/dev/null; then
+# Migrate from move-anything if needed (skip if already a symlink from prior migration)
+if ssh_ableton_with_retry "test -d /data/UserData/move-anything && ! test -L /data/UserData/move-anything" 2>/dev/null; then
   if ssh_ableton_with_retry "test -d /data/UserData/schwung" 2>/dev/null; then
     iecho "Warning: Both /data/UserData/move-anything and /data/UserData/schwung exist."
     iecho "  Keeping schwung, old data left at move-anything/."

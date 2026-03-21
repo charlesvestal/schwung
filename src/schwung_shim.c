@@ -1813,9 +1813,88 @@ static void crash_signal_handler(int sig)
     _exit(128 + sig);
 }
 
+/* One-time migration from move-anything → schwung directory layout.
+ * Handles upgrades from 0.7.x via Module Store, where files land in
+ * /data/UserData/move-anything/ with schwung binary names.
+ * Must run before any /data/UserData/schwung/ path access. */
+static void migrate_from_old_layout(void)
+{
+    struct stat st;
+    const char *new_dir = "/data/UserData/schwung";
+    const char *old_dir = "/data/UserData/move-anything";
+
+    /* Already migrated or fresh install — nothing to do */
+    if (stat(new_dir, &st) == 0) return;
+
+    /* Check if old directory exists and is a real directory (not a symlink) */
+    if (lstat(old_dir, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+
+    printf("Shadow: Migrating move-anything → schwung...\n");
+
+    /* Move directory */
+    if (rename(old_dir, new_dir) != 0) {
+        printf("Shadow: Migration failed (rename): %s\n", strerror(errno));
+        return;
+    }
+
+    /* Create backwards-compat symlink */
+    symlink(new_dir, old_dir);
+
+    /* Migrate sample/preset directories */
+    const char *old_samples = "/data/UserData/UserLibrary/Samples/Move Everything";
+    const char *new_samples = "/data/UserData/UserLibrary/Samples/Schwung";
+    if (lstat(old_samples, &st) == 0 && S_ISDIR(st.st_mode) && stat(new_samples, &st) != 0) {
+        if (rename(old_samples, new_samples) == 0)
+            symlink(new_samples, old_samples);
+    }
+
+    const char *old_presets = "/data/UserData/UserLibrary/Track Presets/Move Everything";
+    const char *new_presets = "/data/UserData/UserLibrary/Track Presets/Schwung";
+    if (lstat(old_presets, &st) == 0 && S_ISDIR(st.st_mode) && stat(new_presets, &st) != 0) {
+        if (rename(old_presets, new_presets) == 0)
+            symlink(new_presets, old_presets);
+    }
+
+    /* Update /usr/lib/ shim symlink to new path */
+    unlink("/usr/lib/schwung-shim.so");
+    symlink("/data/UserData/schwung/schwung-shim.so", "/usr/lib/schwung-shim.so");
+    unlink("/usr/lib/move-anything-shim.so");
+
+    /* Update /opt/move/Move entrypoint if it still references the old name */
+    FILE *f = fopen("/opt/move/Move", "r");
+    if (f) {
+        char buf[512];
+        int found_old = 0;
+        while (fgets(buf, sizeof(buf), f)) {
+            if (strstr(buf, "move-anything-shim.so")) { found_old = 1; break; }
+        }
+        fclose(f);
+
+        if (found_old) {
+            /* Copy the new entrypoint over */
+            FILE *src = fopen("/data/UserData/schwung/shim-entrypoint.sh", "r");
+            if (src) {
+                FILE *dst = fopen("/opt/move/Move", "w");
+                if (dst) {
+                    int ch;
+                    while ((ch = fgetc(src)) != EOF) fputc(ch, dst);
+                    fclose(dst);
+                    chmod("/opt/move/Move", 0755);
+                }
+                fclose(src);
+            }
+        }
+    }
+
+    printf("Shadow: Migration complete.\n");
+}
+
 static void init_shadow_shm(void)
 {
     if (shadow_shm_initialized) return;
+
+    /* Migrate from old directory layout before accessing any schwung paths */
+    migrate_from_old_layout();
 
     /* Initialize unified logging first so we can log during shm init */
     unified_log_init();
