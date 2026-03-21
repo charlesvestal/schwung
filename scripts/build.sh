@@ -534,11 +534,22 @@ fi
 cp ./src/shadow/shadow_ui.js ./build/shadow/
 cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
 
+# Copy image assets to host directory
+if [ -d "./assets" ]; then
+    cp -u ./assets/*.png ./build/host/ 2>/dev/null || true
+fi
+
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
 cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
+
+# Backwards-compat symlinks for 0.7.x → 0.8.x upgrades (Module Store + Shadow UI updater).
+# The old /usr/lib/move-anything-shim.so symlink needs a target to resolve,
+# and the 0.7.x shadow UI updater checks for 'move-anything' binary by name.
+ln -sf schwung-shim.so ./build/move-anything-shim.so
+ln -sf schwung ./build/move-anything
 
 # Copy all module files (js, mjs, json, sh) - preserves directory structure
 # Compiled .so files are built separately above
