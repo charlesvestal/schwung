@@ -26,7 +26,7 @@ Also: this code is heavily written by coding agents, with human supervision. If 
 
 ### Desktop Installer (Recommended)
 
-Download the [Schwung Installer](https://github.com/charlesvestal/move-everything-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface. The desktop installer is also accessible via screen reader.
+Download the [Schwung Installer](https://github.com/charlesvestal/schwung-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface. The desktop installer is also accessible via screen reader.
 
 ### Command Line
 
@@ -38,12 +38,12 @@ Download the [Schwung Installer](https://github.com/charlesvestal/move-everythin
 
 **Install:**
 ```bash
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/install.sh | sh
 ```
 
 **Screen reader only (accessible install):**
 ```bash
-curl -sL https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui
+curl -sL https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/install.sh | sh -s -- --enable-screen-reader --disable-shadow-ui
 ```
 _Note: Uses `-sL` (silent) for minimal output, suitable for screen readers._
 
@@ -72,7 +72,7 @@ For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).
 ## Uninstall
 
 ```bash
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uninstall.sh | sh
 ```
 
 By default, uninstall exports inactive Set Pages backups to `/data/UserData/UserLibrary/Schwung Backups/Set Pages/` before removing Schwung.
@@ -80,7 +80,7 @@ By default, uninstall exports inactive Set Pages backups to `/data/UserData/User
 To permanently delete Schwung data instead of exporting a backup:
 
 ```bash
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh -s -- --purge-data
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uninstall.sh | sh -s -- --purge-data
 ```
 
 ## Modes
@@ -128,26 +128,26 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [Dexed](https://github.com/charlesvestal/move-everything-dx7) | 6-operator FM synthesizer (Dexed/MSFA) with .syx patch support | Dexed/MSFA by google/asb2m10 (port: charlesvestal) |
-| [SF2 Synth](https://github.com/charlesvestal/move-everything-sf2) | SoundFont (.sf2) synthesizer using FluidLite | FluidLite by Robin Lobel (port: charlesvestal) |
-| [SFZ Player](https://github.com/charlesvestal/move-everything-sfz) | SFZ and DecentSampler (.dspreset) sample player using sfizz engine | sfizz by sfztools (port: charlesvestal) |
-| [Mini-JV](https://github.com/charlesvestal/move-everything-jv880) | ROM-based PCM rompler emulator | nukeykt/giulioz (port: charlesvestal) |
-| [OB-Xd](https://github.com/charlesvestal/move-everything-obxd) | Virtual analog synthesizer based on Oberheim OB-X | reales (port: charlesvestal) |
-| [Braids](https://github.com/charlesvestal/move-everything-braids) | Macro oscillator with 47 synthesis algorithms (Mutable Instruments) | Emilie Gillet (port: charlesvestal) |
-| [Hera](https://github.com/charlesvestal/move-everything-hera) | Juno-60 emulation synthesizer with BBD chorus | jpcima (port: charlesvestal) |
-| [Surge XT](https://github.com/charlesvestal/move-everything-surge) | Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets | Surge Synth Team (port: charlesvestal) |
-| [RaffoSynth](https://github.com/charlesvestal/move-everything-moog) | Monophonic synthesizer with 4 oscillators and Moog ladder filter | Nicolas Roulet, Julian Palladino (port: charlesvestal) |
-| [Webstream](https://github.com/charlesvestal/move-everything-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
-| [Radio Garden](https://github.com/charlesvestal/move-everything-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
-| [AirPlay](https://github.com/charlesvestal/move-everything-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
-| [Chiptune](https://github.com/charlesvestal/move-everything-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
-| [Osirus](https://github.com/charlesvestal/move-everything-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
+| [Dexed](https://github.com/charlesvestal/schwung-dx7) | 6-operator FM synthesizer (Dexed/MSFA) with .syx patch support | Dexed/MSFA by google/asb2m10 (port: charlesvestal) |
+| [SF2 Synth](https://github.com/charlesvestal/schwung-sf2) | SoundFont (.sf2) synthesizer using FluidLite | FluidLite by Robin Lobel (port: charlesvestal) |
+| [SFZ Player](https://github.com/charlesvestal/schwung-sfz) | SFZ and DecentSampler (.dspreset) sample player using sfizz engine | sfizz by sfztools (port: charlesvestal) |
+| [Mini-JV](https://github.com/charlesvestal/schwung-jv880) | ROM-based PCM rompler emulator | nukeykt/giulioz (port: charlesvestal) |
+| [OB-Xd](https://github.com/charlesvestal/schwung-obxd) | Virtual analog synthesizer based on Oberheim OB-X | reales (port: charlesvestal) |
+| [Braids](https://github.com/charlesvestal/schwung-braids) | Macro oscillator with 47 synthesis algorithms (Mutable Instruments) | Emilie Gillet (port: charlesvestal) |
+| [Hera](https://github.com/charlesvestal/schwung-hera) | Juno-60 emulation synthesizer with BBD chorus | jpcima (port: charlesvestal) |
+| [Surge XT](https://github.com/charlesvestal/schwung-surge) | Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets | Surge Synth Team (port: charlesvestal) |
+| [RaffoSynth](https://github.com/charlesvestal/schwung-moog) | Monophonic synthesizer with 4 oscillators and Moog ladder filter | Nicolas Roulet, Julian Palladino (port: charlesvestal) |
+| [Webstream](https://github.com/charlesvestal/schwung-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
+| [Radio Garden](https://github.com/charlesvestal/schwung-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
+| [AirPlay](https://github.com/charlesvestal/schwung-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
+| [Chiptune](https://github.com/charlesvestal/schwung-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
+| [Osirus](https://github.com/charlesvestal/schwung-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
 | [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | handcraftedcc |
 | [MrHyde](https://github.com/handcraftedcc/move-everything-mrhyde) | MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits | handcraftedcc |
 | [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | handcraftedcc |
-| [REX Player](https://github.com/charlesvestal/move-everything-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
-| [HUSH ONE](https://github.com/charlesvestal/move-everything-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | charlesvestal |
-| [NuSaw](https://github.com/charlesvestal/move-everything-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
+| [REX Player](https://github.com/charlesvestal/schwung-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
+| [HUSH ONE](https://github.com/charlesvestal/schwung-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | charlesvestal |
+| [NuSaw](https://github.com/charlesvestal/schwung-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
 | [Weird Dreams](https://github.com/fillioning/move-everything-weird-drum) | 8-voice analog drum machine with 64 kits, 41 voice presets, 96 musical pitch scales, master bus FX, and per-voice pages | fillioning (DSP: dfilaretti) |
@@ -156,18 +156,18 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [CloudSeed](https://github.com/charlesvestal/move-everything-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio (port: charlesvestal) |
-| [TAPESCAM](https://github.com/charlesvestal/move-everything-tapescam) | Tape saturation and degradation effect | Charles Vestal |
-| [PSX Verb](https://github.com/charlesvestal/move-everything-psxverb) | PlayStation 1 SPU reverb emulation | Charles Vestal |
-| [TapeDelay](https://github.com/charlesvestal/move-everything-space-delay) | Tape delay with flutter and tone shaping | Charles Vestal |
-| [Junologue Chorus](https://github.com/charlesvestal/move-everything-junologue-chorus) | Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes) | Peter Allwin (port: charlesvestal) |
-| [NAM](https://github.com/charlesvestal/move-everything-nam) | Neural Amp Modeler - neural network guitar amp/effect emulation | NeuralAudio by Mike Oliphant (port: charlesvestal) |
-| [Ducker](https://github.com/charlesvestal/move-everything-ducker) | MIDI-triggered sidechain ducker - classic pumping without an audio sidechain | charlesvestal |
-| [CLAP FX](https://github.com/charlesvestal/move-everything-clap) | Host for CLAP audio effect plugins | charlesvestal |
-| [Gate](https://github.com/charlesvestal/move-everything-gate) | Noise gate and downward expander | charlesvestal |
-| [Key Detect](https://github.com/charlesvestal/move-everything-keydetect) | Detects the musical key of audio passing through it | charlesvestal |
-| [Vocoder](https://github.com/charlesvestal/move-everything-vocoder) | Channel vocoder - uses mic/line-in as modulator to shape synth carrier | charlesvestal |
-| [Usefulity](https://github.com/charlesvestal/move-everything-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
+| [CloudSeed](https://github.com/charlesvestal/schwung-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio (port: charlesvestal) |
+| [TAPESCAM](https://github.com/charlesvestal/schwung-tapescam) | Tape saturation and degradation effect | Charles Vestal |
+| [PSX Verb](https://github.com/charlesvestal/schwung-psxverb) | PlayStation 1 SPU reverb emulation | Charles Vestal |
+| [TapeDelay](https://github.com/charlesvestal/schwung-space-delay) | Tape delay with flutter and tone shaping | Charles Vestal |
+| [Junologue Chorus](https://github.com/charlesvestal/schwung-junologue-chorus) | Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes) | Peter Allwin (port: charlesvestal) |
+| [NAM](https://github.com/charlesvestal/schwung-nam) | Neural Amp Modeler - neural network guitar amp/effect emulation | NeuralAudio by Mike Oliphant (port: charlesvestal) |
+| [Ducker](https://github.com/charlesvestal/schwung-ducker) | MIDI-triggered sidechain ducker - classic pumping without an audio sidechain | charlesvestal |
+| [CLAP FX](https://github.com/charlesvestal/schwung-clap) | Host for CLAP audio effect plugins | charlesvestal |
+| [Gate](https://github.com/charlesvestal/schwung-gate) | Noise gate and downward expander | charlesvestal |
+| [Key Detect](https://github.com/charlesvestal/schwung-keydetect) | Detects the musical key of audio passing through it | charlesvestal |
+| [Vocoder](https://github.com/charlesvestal/schwung-vocoder) | Channel vocoder - uses mic/line-in as modulator to shape synth carrier | charlesvestal |
+| [Usefulity](https://github.com/charlesvestal/schwung-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
 | [Boris Granular](https://github.com/fillioning/move-anything-boris) | Real-time granular audio effect with live input capture and MIDI sync | Alessandro Gaiba (port: fillioning) |
 | [Super Boom](https://github.com/fillioning/super-boom-move) | OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage | fillioning |
 | [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor — granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
@@ -186,19 +186,19 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [M8 LPP Emulator](https://github.com/charlesvestal/move-everything-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales (port: charlesvestal) |
-| [SID Control](https://github.com/charlesvestal/move-everything-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
+| [M8 LPP Emulator](https://github.com/charlesvestal/schwung-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales (port: charlesvestal) |
+| [SID Control](https://github.com/charlesvestal/schwung-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
 | [Custom MIDI Control](https://github.com/chaolue/move-anything-control) | Custom MIDI controller with 16 banks of configurable pads/knobs/buttons | chaolue |
-| [Performance FX](https://github.com/charlesvestal/move-everything-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
+| [Performance FX](https://github.com/charlesvestal/schwung-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
 
 ### Tools
 
 | Module | Description | Author |
 |--------|-------------|--------|
-| [AutoSample](https://github.com/charlesvestal/move-everything-autosample) | Autosample external MIDI gear to create multisampled SFZ instruments | charlesvestal |
-| [Wave Edit](https://github.com/charlesvestal/move-everything-waveform-editor) | Trim, gain adjust, and edit audio files on the Move | charlesvestal |
-| [Time Stretch](https://github.com/charlesvestal/move-everything-stretch) | Real-time audio time stretching with Bungee | charlesvestal |
-| [Stems](https://github.com/charlesvestal/move-everything-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
+| [AutoSample](https://github.com/charlesvestal/schwung-autosample) | Autosample external MIDI gear to create multisampled SFZ instruments | charlesvestal |
+| [Wave Edit](https://github.com/charlesvestal/schwung-waveform-editor) | Trim, gain adjust, and edit audio files on the Move | charlesvestal |
+| [Time Stretch](https://github.com/charlesvestal/schwung-stretch) | Real-time audio time stretching with Bungee | charlesvestal |
+| [Stems](https://github.com/charlesvestal/schwung-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
 | [DJ Deck](https://github.com/djhardrich/move-anything-dj) | CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift | DJ Hard Rich |
 | [Tuner](https://github.com/CatsAreCool710/Move-Everything-Tuner) | Chromatic and instrument tuner with step guide feedback | Jeremiah Ticket |
 
@@ -207,7 +207,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 ## Related Repositories
 
 **Installer:**
-- [move-everything-installer](https://github.com/charlesvestal/move-everything-installer) - Cross-platform desktop installer (macOS, Windows, Linux)
+- [move-everything-installer](https://github.com/charlesvestal/schwung-installer) - Cross-platform desktop installer (macOS, Windows, Linux)
 
 ## Community
 

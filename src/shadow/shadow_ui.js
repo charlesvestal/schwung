@@ -1119,7 +1119,7 @@ function checkForUpdatesInBackground() {
     /* Check core update */
     storeHostVersion = getHostVersion();
     debugLog("checkForUpdatesInBackground: hostVersion=" + storeHostVersion);
-    const coreRelease = fetchReleaseJsonQuick('charlesvestal/move-anything');
+    const coreRelease = fetchReleaseJsonQuick('charlesvestal/schwung');
     debugLog("checkForUpdatesInBackground: coreRelease=" + JSON.stringify(coreRelease));
     if (coreRelease && isNewerVersion(coreRelease.version, storeHostVersion)) {
         debugLog("checkForUpdatesInBackground: core update available " + storeHostVersion + " -> " + coreRelease.version);
@@ -8733,7 +8733,7 @@ function handleSelect() {
                 updateDetailModule = upd;
 
                 announce("Loading details for " + upd.name);
-                const repo = upd._isHostUpdate ? 'charlesvestal/move-anything' : upd.github_repo;
+                const repo = upd._isHostUpdate ? 'charlesvestal/schwung' : upd.github_repo;
                 const notes = repo ? fetchReleaseNotes(repo) : null;
 
                 const lines = [];

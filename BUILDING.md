@@ -255,12 +255,12 @@ Version is stored in `src/host/version.txt`. Follow semantic versioning:
 4. **Create GitHub release**
    ```bash
    gh release create v0.1.3 ./schwung.tar.gz \
-       --repo charlesvestal/move-anything \
+       --repo charlesvestal/schwung \
        --title "v0.1.3" \
        --notes "Release notes here"
    ```
 
-   **Note:** The `--repo charlesvestal/move-anything` flag is required because this repo has multiple remotes configured.
+   **Note:** The `--repo charlesvestal/schwung` flag is required because this repo has multiple remotes configured.
 
 ### Automated Releases
 
