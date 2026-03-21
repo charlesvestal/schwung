@@ -5,7 +5,7 @@ set -euo pipefail
 # native volume/track-volume overlays work. In overtake module mode (2),
 # cable 0 input should remain blocked from Move.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v perl >/dev/null 2>&1; then
   echo "perl is required to run this test" >&2

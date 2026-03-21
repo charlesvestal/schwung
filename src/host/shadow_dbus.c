@@ -227,22 +227,22 @@ static void shadow_dbus_handle_text(const char *text)
         in_set_overview = 0;
     }
 
-    /* Native overlay knobs: parse "ME S<slot> Knob<n> <value>" from screen reader */
+    /* Native overlay knobs: parse "Schwung S<slot> K<n> <value>" from screen reader */
     if (ctrl &&
         ctrl->overlay_knobs_mode == OVERLAY_KNOBS_NATIVE &&
         native_knob_any_touched) {
-        int me_slot = 0, me_knob = 0;
-        if (sscanf(text, "ME S%d Knob%d", &me_slot, &me_knob) == 2 &&
-            me_slot >= 1 && me_slot <= 4 && me_knob >= 1 && me_knob <= 8) {
-            int idx = me_knob - 1;
-            native_knob_slot[idx] = (int8_t)(me_slot - 1);
+        int sw_slot = 0, sw_knob = 0;
+        if (sscanf(text, "Schwung S%d K%d", &sw_slot, &sw_knob) == 2 &&
+            sw_slot >= 1 && sw_slot <= 4 && sw_knob >= 1 && sw_knob <= 8) {
+            int idx = sw_knob - 1;
+            native_knob_slot[idx] = (int8_t)(sw_slot - 1);
             native_knob_mapped[idx] = 1;
             {
                 char msg[128];
-                snprintf(msg, sizeof(msg), "Native knob: mapped knob %d -> slot %d", me_knob, me_slot - 1);
+                snprintf(msg, sizeof(msg), "Native knob: mapped knob %d -> slot %d", sw_knob, sw_slot - 1);
                 host.log(msg);
             }
-            return;  /* Suppress TTS for ME knob macro text */
+            return;  /* Suppress TTS for Schwung knob macro text */
         }
     }
 

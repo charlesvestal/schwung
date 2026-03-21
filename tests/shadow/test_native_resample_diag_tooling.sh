@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

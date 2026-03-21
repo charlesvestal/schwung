@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-shim_file="src/move_anything_shim.c"
+shim_file="src/schwung_shim.c"
 ui_file="src/shadow/shadow_ui.js"
 
 if ! command -v rg >/dev/null 2>&1; then

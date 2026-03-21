@@ -46,7 +46,7 @@ Write `src/shared/help_content.json` with all Schwung topics plus a Move Manual 
         {
           "title": "Connecting Tracks",
           "lines": [
-            "To hear ME synths,",
+            "To hear Schwung synths,",
             "connect Move tracks:",
             "",
             "1. Set a Move track's",
