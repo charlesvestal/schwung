@@ -1,0 +1,13 @@
+{
+    "id": "splash-test",
+    "name": "Splash Test",
+    "version": "0.1.0",
+    "description": "Preview and iterate on the splash screen animation",
+    "author": "Schwung",
+    "component_type": "tool",
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true,
+        "overtake": false
+    }
+}
