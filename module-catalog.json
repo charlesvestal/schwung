@@ -594,10 +594,10 @@
     {
       "id": "weird-dreams",
       "name": "Weird Dreams",
-      "description": "8-voice analog drum machine with 64 kits, 41 voice presets, 96 musical pitch scales, master bus FX, and per-voice pages",
+      "description": "8-voice analog drum machine — 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX",
       "author": "fillioning (DSP: dfilaretti)",
       "component_type": "sound_generator",
-      "github_repo": "fillioning/move-everything-weird-drum",
+      "github_repo": "fillioning/weird-dreams-move",
       "default_branch": "master",
       "asset_name": "weird-dreams-module.tar.gz",
       "min_host_version": "0.3.0"
