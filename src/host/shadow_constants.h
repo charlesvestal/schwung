@@ -42,7 +42,12 @@
  * Buffer Sizes
  * ============================================================================ */
 
-#define MIDI_BUFFER_SIZE    256   /* Hardware mailbox MIDI area: 64 USB-MIDI packets */
+#define MIDI_BUFFER_SIZE    256   /* Hardware mailbox MIDI area (legacy, used for MIDI_OUT) */
+#define MIDI_SPI_MAX_MESSAGES 20   /* SPI transfers max 20 USB-MIDI msgs in MIDI_OUT (4-byte stride) */
+#define MIDI_SPI_MAX_BYTES    (MIDI_SPI_MAX_MESSAGES * 4)  /* 80 bytes */
+#define MIDI_IN_EVENT_SIZE    8    /* MIDI_IN events are 8 bytes (4-byte USB-MIDI + 4 unknown) */
+#define MIDI_IN_MAX_EVENTS   31    /* MIDI_IN: 248 bytes / 8 = 31 events */
+#define MIDI_IN_MAX_BYTES    (MIDI_IN_MAX_EVENTS * MIDI_IN_EVENT_SIZE) /* 248 bytes */
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
@@ -133,7 +138,9 @@ typedef struct shadow_control_t {
     volatile uint8_t skipback_require_volume; /* 0=Shift+Capture, 1=Shift+Vol+Capture */
     volatile uint8_t preview_cmd;          /* 0=none, 1=play (path in file), 2=stop */
     volatile uint8_t pad_block;            /* 1=suppress pad notes (68-99) from reaching Move */
-    volatile uint8_t reserved[9];
+    volatile uint8_t chord_mode;           /* 0=off, 1=major, 2=minor, 3=dim, 4=aug, 5=sus2, 6=sus4, 7=dom7, 8=min7, 9=maj7, 10=power, 11=octave */
+    volatile uint8_t chord_defer_counter;  /* Internal: frames since last cable-0 note (shim writes) */
+    volatile uint8_t reserved[7];
 } shadow_control_t;
 
 /*

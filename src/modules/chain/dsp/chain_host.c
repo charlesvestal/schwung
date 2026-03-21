@@ -524,6 +524,20 @@ typedef struct chain_instance {
      * The shim calls chain_process_fx() separately for same-frame FX. */
     int external_fx_mode;
 
+    /* Move MIDI FX injection: when midi_fx_to_move is set, MIDI FX output
+     * is written here instead of being sent to the shadow synth.
+     * The shim reads this buffer and injects into MIDI_IN cable-2. */
+    int midi_fx_to_move;                      /* Flag: redirect MIDI FX output to Move */
+    uint8_t midi_fx_out_buf[16][3];           /* Output messages (up to 16) */
+    int midi_fx_out_lens[16];                 /* Message lengths */
+    volatile int midi_fx_out_count;           /* Number of messages (0 = empty/consumed) */
+    uint8_t midi_fx_out_original_note;        /* The input note that produced this output */
+    uint8_t midi_fx_out_original_status;      /* The input status byte */
+    uint8_t midi_fx_out_channel;              /* MIDI channel */
+    uint8_t midi_fx_last_input_channel;       /* Channel of last note received (for tick output) */
+    int midi_fx_is_replacing;                 /* 1 = replacing mode (arp, transpose), 0 = additive (chord) */
+    uint8_t midi_fx_injected[128];            /* Refcount of notes we generated (echo filter) */
+
     /* Channel settings from last load_file (autosave restore).
      * Used as fallback when current_patch == -1 (file-based load, not library). */
     int loaded_receive_channel;   /* 0=not set, 1-16=specific channel */
@@ -1558,7 +1572,19 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
 
     inst->midi_fx_count++;
 
-    snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d)", fx_name, slot);
+    /* Query MIDI FX mode: additive (chord) or replacing (arp, transpose) */
+    inst->midi_fx_is_replacing = 0;  /* Default: additive */
+    if (api->get_param) {
+        char mode_buf[32] = {0};
+        if (api->get_param(instance, "midi_fx_mode", mode_buf, sizeof(mode_buf)) > 0) {
+            if (strcmp(mode_buf, "replacing") == 0) {
+                inst->midi_fx_is_replacing = 1;
+            }
+        }
+    }
+
+    snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d, %s)", fx_name, slot,
+             inst->midi_fx_is_replacing ? "replacing" : "additive");
     v2_chain_log(inst, msg);
     return 0;
 }
@@ -1670,6 +1696,38 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
         int out_lens[MIDI_FX_MAX_OUT_MSGS];
         int count = api->tick(fx_inst, frames, SAMPLE_RATE,
                               out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
+
+        /* When midi_fx_to_move is set, redirect tick output to injection buffer */
+        if (inst->midi_fx_to_move && count > 0) {
+            static int tick_log = 0;
+            if (tick_log < 5) {
+                char dbg[64];
+                snprintf(dbg, sizeof(dbg), "MFX-tick: count=%d buf_free=%d", count, inst->midi_fx_out_count == 0);
+                v2_chain_log(inst, dbg);
+                tick_log++;
+            }
+            int n = count < 16 ? count : 16;
+            if (inst->midi_fx_out_count == 0) {
+                /* Remap tick output to the channel of the last input note */
+                uint8_t tick_ch = inst->midi_fx_last_input_channel;
+                for (int i = 0; i < n; i++) {
+                    inst->midi_fx_out_buf[i][0] = (out_msgs[i][0] & 0xF0) | tick_ch;
+                    inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
+                    inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
+                    inst->midi_fx_out_lens[i] = out_lens[i];
+                    uint8_t on = out_msgs[i][1];
+                    if (on < 128) {
+                        inst->midi_fx_injected[on]++;
+                    }
+                }
+                inst->midi_fx_out_original_note = 255;
+                inst->midi_fx_out_original_status = 0;
+                inst->midi_fx_out_channel = tick_ch;
+                __sync_synchronize();
+                inst->midi_fx_out_count = n;
+            }
+            continue;
+        }
 
         /* Send generated messages to synth */
         for (int i = 0; i < count; i++) {
@@ -6675,10 +6733,81 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
     }
 
+    /* When midi_fx_to_move is active, skip notes that we recently injected.
+     * We track "expected echoes" — notes we output last cycle that will
+     * appear in MIDI_OUT after Move processes them. When we see them,
+     * consume (decrement) and skip. Fresh pad notes have no entry -> pass through. */
+    if (inst->midi_fx_to_move && len >= 1) {
+        /* Save input channel for tick output remapping */
+        uint8_t in_type = msg[0] & 0xF0;
+        if (in_type == 0x90 || in_type == 0x80) {
+            inst->midi_fx_last_input_channel = msg[0] & 0x0F;
+        }
+    }
+    if (inst->midi_fx_to_move && len >= 2) {
+        uint8_t note = msg[1];
+        uint8_t type = msg[0] & 0xF0;
+        int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
+
+        if (inst->midi_fx_is_replacing) {
+            /* Replacing mode (arp, transpose): skip ALL cable-2 note-offs.
+             * Pad releases are handled via chain_inject_note_off(). */
+            if (is_note_off) return;
+            /* Skip note-on echoes via refcount */
+            if (note < 128 && inst->midi_fx_injected[note] > 0) {
+                inst->midi_fx_injected[note]--;
+                return;
+            }
+        } else {
+            /* Additive mode (chord): skip only echoes via refcount.
+             * Note-offs pass through so chord FX generates chord note-offs. */
+            if (note < 128 && inst->midi_fx_injected[note] > 0) {
+                inst->midi_fx_injected[note]--;
+                return;
+            }
+        }
+    }
+
     /* Process through MIDI FX modules (if any loaded) */
     uint8_t out_msgs[MIDI_FX_MAX_OUT_MSGS][3];
     int out_lens[MIDI_FX_MAX_OUT_MSGS];
     int out_count = v2_process_midi_fx(inst, msg, len, out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
+
+    /* When midi_fx_to_move is set, write NOTE output to shared buffer for injection.
+     * Skip non-note messages (aftertouch, CC) — they flood the buffer and starve tick. */
+    uint8_t in_type = msg[0] & 0xF0;
+    if (inst->midi_fx_to_move && inst->midi_fx_count > 0 &&
+        (in_type == 0x90 || in_type == 0x80) && out_count > 0) {
+        int n = out_count < 16 ? out_count : 16;
+        {
+            char dbg[128];
+            snprintf(dbg, sizeof(dbg), "MFX-out: %d msgs from FX (in: st=%02X n=%d v=%d)",
+                     n, msg[0], len>=2?msg[1]:0, len>=3?msg[2]:0);
+            v2_chain_log(inst, dbg);
+            for (int d = 0; d < n; d++) {
+                snprintf(dbg, sizeof(dbg), "  MFX-out[%d]: st=%02X n=%d v=%d",
+                         d, out_msgs[d][0], out_msgs[d][1], out_msgs[d][2]);
+                v2_chain_log(inst, dbg);
+            }
+        }
+        for (int i = 0; i < n; i++) {
+            inst->midi_fx_out_buf[i][0] = out_msgs[i][0];
+            inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
+            inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
+            inst->midi_fx_out_lens[i] = out_lens[i];
+            /* Track every note we output that differs from input — expect 1 echo */
+            uint8_t on = out_msgs[i][1];
+            if (on < 128 && on != (len >= 2 ? msg[1] : 255)) {
+                inst->midi_fx_injected[on]++;
+            }
+        }
+        inst->midi_fx_out_original_note = len >= 2 ? msg[1] : 0;
+        inst->midi_fx_out_original_status = msg[0];
+        inst->midi_fx_out_channel = msg[0] & 0x0F;
+        __sync_synchronize();
+        inst->midi_fx_out_count = n;
+        return;  /* Don't send to synth — shim will inject, shadow synth hears via MIDI_OUT */
+    }
 
     /* Send processed messages to synth */
     for (int i = 0; i < out_count; i++) {
@@ -8318,6 +8447,66 @@ void chain_set_inject_audio(void *instance, int16_t *buf, int frames) {
     if (!inst) return;
     inst->inject_audio = buf;
     inst->inject_audio_frames = frames;
+}
+
+/* Exported: inject a note-off directly into the MIDI FX pipeline.
+ * Used by shim when detecting cable-0 pad release in replacing mode. */
+void chain_inject_note_off(void *instance, uint8_t note, uint8_t channel) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || !inst->midi_fx_to_move || !inst->midi_fx_is_replacing) return;
+    uint8_t msg[3] = { 0x80 | channel, note, 0 };
+    uint8_t dummy_out[16][3];
+    int dummy_lens[16];
+    v2_process_midi_fx(inst, msg, 3, dummy_out, dummy_lens, 16);
+}
+
+/* Exported: enable/disable MIDI FX -> Move routing.
+ * When enabled, MIDI FX output goes to a buffer for shim injection
+ * instead of being sent to the shadow synth. */
+void chain_set_midi_fx_to_move(void *instance, int enable) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->midi_fx_to_move = enable;
+    if (!enable) {
+        inst->midi_fx_out_count = 0;
+        memset(inst->midi_fx_injected, 0, sizeof(inst->midi_fx_injected));
+    }
+}
+
+/* Exported: read MIDI FX output buffer.
+ * Returns number of messages. Clears the buffer after reading.
+ * out_msgs/out_lens must have room for 16 entries.
+ * Also returns original note info for note-off injection. */
+int chain_read_midi_fx_output(void *instance,
+                               uint8_t out_msgs[][3], int out_lens[],
+                               uint8_t *original_note, uint8_t *original_status,
+                               uint8_t *channel) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || inst->midi_fx_out_count == 0) return 0;
+
+    int count = inst->midi_fx_out_count;
+    {
+        static int read_log = 0;
+        if (read_log < 5) {
+            char dbg[64];
+            snprintf(dbg, sizeof(dbg), "MFX-read: count=%d inst=%p", count, (void*)inst);
+            v2_chain_log(inst, dbg);
+            read_log++;
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        out_msgs[i][0] = inst->midi_fx_out_buf[i][0];
+        out_msgs[i][1] = inst->midi_fx_out_buf[i][1];
+        out_msgs[i][2] = inst->midi_fx_out_buf[i][2];
+        out_lens[i] = inst->midi_fx_out_lens[i];
+    }
+    if (original_note) *original_note = inst->midi_fx_out_original_note;
+    if (original_status) *original_status = inst->midi_fx_out_original_status;
+    if (channel) *channel = inst->midi_fx_out_channel;
+
+    __sync_synchronize();
+    inst->midi_fx_out_count = 0;
+    return count;
 }
 
 /* Exported: enable/disable external FX mode.

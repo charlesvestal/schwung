@@ -828,6 +828,12 @@ const GLOBAL_SETTINGS_SECTIONS = [
         ]
     },
     {
+        id: "midi", label: "MIDI",
+        items: [
+            { key: "chord_mode", label: "MidiFX to Move", type: "bool" }
+        ]
+    },
+    {
         id: "services", label: "Services",
         items: [
             { key: "filebrowser_enabled", label: "File Browser", type: "bool" }
@@ -7613,6 +7619,10 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "filebrowser_enabled") {
         return filebrowserEnabled ? "On" : "Off";
     }
+    if (setting.key === "chord_mode") {
+        const val = typeof chord_mode_get === "function" ? chord_mode_get() : 0;
+        return val ? "On" : "Off";
+    }
     return "-";
 }
 
@@ -7757,6 +7767,12 @@ function adjustMasterFxSetting(setting, delta) {
         previewEnabled = !previewEnabled;
         if (!previewEnabled) previewStopIfPlaying();
         saveBrowserPreviewConfig();
+        return;
+    }
+
+    if (setting.key === "chord_mode" && typeof chord_mode_set === "function") {
+        const current = typeof chord_mode_get === "function" ? chord_mode_get() : 0;
+        chord_mode_set(current ? 0 : 1);
         return;
     }
 

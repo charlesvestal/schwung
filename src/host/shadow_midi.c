@@ -283,14 +283,14 @@ void shadow_inject_ui_midi_out(void)
         }
 
         /* All other messages: copy directly to mailbox */
-        while (hw_offset < MIDI_BUFFER_SIZE) {
+        while (hw_offset < MIDI_SPI_MAX_BYTES) {
             if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
                 midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
                 break;
             }
             hw_offset += 4;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+        if (hw_offset >= MIDI_SPI_MAX_BYTES) break;  /* Buffer full */
 
         memcpy(&midi_out[hw_offset], &local_buf[i], 4);
         hw_offset += 4;
@@ -298,8 +298,8 @@ void shadow_inject_ui_midi_out(void)
 }
 
 /* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl).
- * Copies USB-MIDI packets from SHM into empty slots in shadow_mailbox+MIDI_IN_OFFSET,
- * making Move process them as if they came from physical hardware.
+ * Copies USB-MIDI packets from SHM into empty 8-byte slots in shadow_mailbox+MIDI_IN_OFFSET.
+ * MIDI_IN uses 8-byte events (4-byte USB-MIDI + 4 bytes padding/flags).
  * Rate-limited to 8 packets per tick to avoid flooding. */
 void shadow_drain_midi_inject(void)
 {
@@ -325,7 +325,9 @@ void shadow_drain_midi_inject(void)
 
     if (copy_len <= 0) return;
 
-    /* Inject into shadow_mailbox at MIDI_IN_OFFSET */
+    /* Inject into shadow_mailbox at MIDI_IN_OFFSET.
+     * MIDI_IN events are 8 bytes: [USB-MIDI(4)] [padding(4)].
+     * Scan at 8-byte stride, write 4-byte packet + 4 zero bytes. */
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
 
     int hw_offset = 0;
@@ -334,26 +336,27 @@ void shadow_drain_midi_inject(void)
         /* Force cable 0 (internal hardware) */
         local_buf[i] = (local_buf[i] & 0x0F) | 0x00;
 
-        /* Find empty 4-byte slot */
-        while (hw_offset < MIDI_BUFFER_SIZE) {
-            if (midi_in[hw_offset] == 0 && midi_in[hw_offset+1] == 0 &&
-                midi_in[hw_offset+2] == 0 && midi_in[hw_offset+3] == 0) {
+        /* Find empty 8-byte slot (check low byte of first word) */
+        while (hw_offset < MIDI_IN_MAX_BYTES) {
+            if ((midi_in[hw_offset] & 0xFF) == 0) {
                 break;
             }
-            hw_offset += 4;
+            hw_offset += MIDI_IN_EVENT_SIZE;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+        if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* Buffer full */
 
+        /* Write 4-byte USB-MIDI packet + 4 zero bytes */
         memcpy(&midi_in[hw_offset], &local_buf[i], 4);
-        hw_offset += 4;
+        memset(&midi_in[hw_offset + 4], 0, 4);
+        hw_offset += MIDI_IN_EVENT_SIZE;
         injected++;
     }
 
     if (host_log && injected > 0) {
         char dbg[128];
-        snprintf(dbg, sizeof(dbg), "MIDI inject: drained %d/%d pkts at offset %d",
+        snprintf(dbg, sizeof(dbg), "MIDI inject: drained %d/%d pkts at offset %d (8-byte stride)",
                  injected, copy_len / 4,
-                 injected > 0 ? (hw_offset - injected * 4) : -1);
+                 injected > 0 ? (hw_offset - injected * MIDI_IN_EVENT_SIZE) : -1);
         host_log(dbg);
     }
 }
