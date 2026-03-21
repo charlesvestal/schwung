@@ -4548,8 +4548,8 @@ do_ioctl:
     }
 
     /* === POST-IOCTL: NATIVE OVERLAY KNOB INTERCEPTION (MOVE MODE) ===
-     * In Native mode, knob touches pass through to Move so the ME Slot preset
-     * macros fire and produce D-Bus screen reader text ("ME S1 Knob3 57.42").
+     * In Native mode, knob touches pass through to Move so the Schwung Slot preset
+     * macros fire and produce D-Bus screen reader text ("Schwung S1 K3 57.42").
      * The D-Bus handler parses the text and maps knob -> shadow slot.
      * Once mapped, subsequent CCs are intercepted and routed to shadow DSP. */
     if (!shadow_display_mode && overlay_knobs_mode == OVERLAY_KNOBS_NATIVE &&

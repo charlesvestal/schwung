@@ -4,7 +4,7 @@ set -euo pipefail
 # Regression test: sampler UI can be dismissed with Back and resumed with
 # Shift+Sample while sampler state remains active.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

@@ -123,7 +123,7 @@ ssh ableton@move.local 'tar -xf schwung.tar.gz'
 
 ```
 build/
-  move-anything              # Host binary
+  schwung                    # Host binary
   schwung-shim.so      # LD_PRELOAD shim
   host/menu_ui.js            # Host menu
   shared/                    # Shared JS utilities

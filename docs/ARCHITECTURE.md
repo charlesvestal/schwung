@@ -33,7 +33,7 @@ Schwung uses a four-layer approach to run custom code on Move:
 The `scripts/install.sh` script connects to Move via SSH (at `move.local`) and performs these steps:
 
 1. **Deploy files** to `/data/UserData/schwung/`:
-   - `move-anything` (host binary)
+   - `schwung` (host binary)
    - `schwung-shim.so` (LD_PRELOAD library)
    - `shim-entrypoint.sh` and `start.sh` (launcher scripts)
    - `host/`, `shared/`, `modules/` directories
@@ -101,7 +101,7 @@ The `start.sh` script:
 1. Kills any remaining Move processes (`MoveLauncher`, `Move`, etc.)
 2. Launches the Schwung host binary:
    ```bash
-   ./move-anything ./host/menu_ui.js
+   ./schwung ./host/menu_ui.js
    ```
 
 The host runtime (`src/schwung_host.c`):
@@ -699,7 +699,7 @@ globalThis.tick = function() {
 └────────┬────────┘
          ↓
 ┌─────────────────┐
-│ move-anything   │
+│ schwung         │
 │ (host runtime)  │
 └────────┬────────┘
          │

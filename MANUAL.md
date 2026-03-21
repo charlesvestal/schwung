@@ -237,7 +237,7 @@ The setting takes effect immediately (no restart needed) and persists across reb
 2. Set the corresponding slot's **Receive Ch** to match
 3. Play the Move track - its MIDI triggers the slot's synth
 
-**Tip:** To prevent the native Move synth from playing on top of your ME synth, load an empty Drum Rack or Sampler preset on the Move track. This silences the native sound while still sending MIDI to Schwung.
+**Tip:** To prevent the native Move synth from playing on top of your Schwung synth, load an empty Drum Rack or Sampler preset on the Move track. This silences the native sound while still sending MIDI to Schwung.
 
 Schwung also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
 
@@ -265,30 +265,30 @@ On Move firmware 2.0.0+, Link Audio lets you route Move's own track audio throug
 
 | | **Link Audio On** | **Link Audio Off** |
 |---|---|---|
-| **ME synths** | Processed through slot FX and Master FX | Processed through slot FX and Master FX |
-| **Native Move tracks** | Routed through ME slot FX per track | Stay on Move's native path |
-| **Move's native Master FX** | Bypassed — ME rebuilds the mix from per-track streams | Active — applied to Move tracks normally |
-| **ME Master FX** | Processes everything (Move tracks + ME synths) | Processes everything (Move post-native-FX + ME synths) |
+| **Schwung synth** | Processed through slot FX and Master FX | Processed through slot FX and Master FX |
+| **Native Move tracks** | Routed through Schwung slot FX per track | Stay on Move's native path |
+| **Move's native Master FX** | Bypassed — Schwung rebuilds the mix from per-track streams | Active — applied to Move tracks normally |
+| **Schwung Master FX** | Processes everything (Move tracks + Schwung synth) | Processes everything (Move post-native-FX + Schwung synth) |
 | **Play delay** | Brief delay when pressing Play (Link quantum sync) | No delay |
 
 ### How It Works
 
-**Link Audio On:** Move streams each track's audio separately via the Link protocol. Schwung intercepts these per-track streams, runs them through the corresponding slot's audio FX (combined with any ME synth in that slot), and reconstructs the final mix. Because ME is working with pre-mix audio, Move's native Master FX is bypassed entirely.
+**Link Audio On:** Move streams each track's audio separately via the Link protocol. Schwung intercepts these per-track streams, runs them through the corresponding slot's audio FX (combined with any Schwung synth in that slot), and reconstructs the final mix. Because Schwung is working with pre-mix audio, Move's native Master FX is bypassed entirely.
 
 ```
 Move Track 1 → Slot 1 FX → ┐
-Move Track 2 → Slot 2 FX → ├→ ME Master FX → Output
+Move Track 2 → Slot 2 FX → ├→ Schwung Master FX → Output
 Move Track 3 → Slot 3 FX → │
 Move Track 4 → Slot 4 FX → ┘
-(+ ME synths mixed in per slot)
+(+ Schwung synth mixed in per slot)
 ```
 
-**Link Audio Off:** Move's audio goes through its normal path including native Master FX. ME synths are processed through their slot FX and mixed in. Everything combined runs through ME Master FX.
+**Link Audio Off:** Move's audio goes through its normal path including native Master FX. Schwung synth are processed through their slot FX and mixed in. Everything combined runs through Schwung Master FX.
 
 ```
 Move (all tracks + native Master FX) → ┐
-ME Slot 1 (synth → FX) ────────────────├→ ME Master FX → Output
-ME Slot 2 (synth → FX) ────────────────│
+Schwung Slot 1 (synth → FX) ────────────────├→ Schwung Master FX → Output
+Schwung Slot 2 (synth → FX) ────────────────│
 ...                                     ┘
 ```
 
@@ -296,7 +296,7 @@ ME Slot 2 (synth → FX) ────────────────│
 
 1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
 2. **Install or update Schwung** — the installer enables Link Audio support, but routing is off by default.
-3. **Enable routing**: In **Global Settings > Audio** (**Shift+Vol + Step 2**), toggle **Route thru ME** on. This routes Move's per-track audio through ME's slot FX.
+3. **Enable routing**: In **Global Settings > Audio** (**Shift+Vol + Step 2**), toggle **Move->Schwung** on. This routes Move's per-track audio through Schwung's slot FX.
 
 **Note:** A restart of Move is sometimes required for the Link Audio subscriber to begin capturing audio. If you don't hear Move tracks being processed after enabling routing, restart Move.
 
@@ -326,10 +326,10 @@ In **Global Settings > Audio**, **Sample Src** controls this:
 | Option | Behavior |
 |--------|----------|
 | **Native** | Disabled — sampler uses Move's normal input (default) |
-| **ME Mix** | Replaces native sampler input with Schwung master output |
+| **Schwung Mix** | Replaces native sampler input with Schwung master output |
 
 Recommended setup to avoid feedback:
-1. Set **Sample Src** to **ME Mix**
+1. Set **Sample Src** to **Schwung Mix**
 2. In native Move Sampler, set source to **Line In**
 3. Set monitoring to **Off**
 

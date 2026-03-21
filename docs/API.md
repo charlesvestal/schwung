@@ -191,7 +191,7 @@ host_sampler_set_external_stop(bool)     // Set external stop flag for sampler
 
 ```javascript
 exit()                        // Exit Schwung, return to stock Move
-console.log(msg)              // Log to /data/UserData/schwung/move-anything.log
+console.log(msg)              // Log to /data/UserData/schwung/schwung.log
 ```
 
 ## Move Hardware MIDI Mapping

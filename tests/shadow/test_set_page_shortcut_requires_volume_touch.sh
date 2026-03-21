@@ -4,7 +4,7 @@ set -euo pipefail
 # Set-page navigation should only trigger with Shift+Vol+Left/Right.
 # Shift+Left/Right without volume touch must not trigger page changes.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v perl >/dev/null 2>&1; then
   echo "perl is required to run this test" >&2

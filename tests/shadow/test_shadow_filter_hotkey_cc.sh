@@ -5,7 +5,7 @@ set -euo pipefail
 # Hotkey detection uses the unfiltered MIDI_IN buffer, and the post-ioctl
 # filter should only remove jog/back/knobs (not shift CC 0x31).
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

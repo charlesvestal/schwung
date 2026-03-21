@@ -6,7 +6,7 @@ set -euo pipefail
 # Note: There's also pre-ioctl forwarding in shadow_filter_move_input, but the
 # critical post-ioctl filter is what ensures Move doesn't see shadow UI CCs.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

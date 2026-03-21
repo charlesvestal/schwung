@@ -1,4 +1,4 @@
-# Move Anything Build Environment
+# Schwung Build Environment
 # Targets: Ableton Move (aarch64 Linux)
 
 FROM debian:bookworm
@@ -32,7 +32,7 @@ ENV CXX=aarch64-linux-gnu-g++
 
 # Build script embedded in container
 CMD set -e && \
-    echo "=== Move Anything Build ===" && \
+    echo "=== Schwung Build ===" && \
     echo "Target: aarch64-linux-gnu" && \
     echo "" && \
     cd /build/libs/quickjs/quickjs-2025-04-26 && \

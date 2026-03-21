@@ -4,7 +4,7 @@ set -euo pipefail
 # Master-volume capture should run when Shadow UI is temporarily hidden by
 # plain volume touch (not Shift+Vol shortcut), even if shadow_display_mode=1.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2
