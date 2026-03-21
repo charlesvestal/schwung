@@ -707,10 +707,10 @@ const GLOBAL_SETTINGS_SECTIONS = [
     {
         id: "audio", label: "Audio",
         items: [
-            { key: "link_audio_routing", label: "Route thru ME", type: "bool" },
-            { key: "link_audio_publish", label: "ME->Link Audio", type: "bool" },
+            { key: "link_audio_routing", label: "Audio->Schwung", type: "bool" },
+            { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
             { key: "resample_bridge", label: "Sample Src", type: "enum",
-              options: ["Native", "ME Mix"], values: [0, 2] },
+              options: ["Native", "Schwung Mix"], values: [0, 2] },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
               options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
             { key: "browser_preview", label: "Browser Preview", type: "bool" }
@@ -878,7 +878,7 @@ function wavPlayerStop() {
     shadow_set_param(0, "overtake_dsp:playing", "0");
 }
 
-const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
+const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "Schwung Mix" };
 const RESAMPLE_BRIDGE_VALUES = [0, 2];
 
 /* Check Move's system Link setting via shim param (reads Settings.json) */
@@ -897,7 +897,7 @@ function warnIfLinkDisabled(settingName) {
         const routingOn = shadow_get_param(0, "master_fx:link_audio_routing") === "1";
         const publishOn = shadow_get_param(0, "master_fx:link_audio_publish") === "1";
         if (routingOn || publishOn) {
-            const name = settingName || (routingOn ? "Route thru ME" : "ME->Link Audio");
+            const name = settingName || (routingOn ? "Audio->Schwung" : "Schwung->Link");
             warningTitle = name;
             warningLines = wrapText("requires Link enabled in Move System Settings", 18);
             warningActive = true;
@@ -7541,7 +7541,7 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:link_audio_routing", newVal);
         cachedLinkAudioRouting = (newVal === "1");
         saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("Route thru ME");
+        if (newVal === "1") warnIfLinkDisabled("Audio->Schwung");
         return;
     }
     if (setting.key === "link_audio_publish") {
@@ -7550,7 +7550,7 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:link_audio_publish", newVal);
         cachedLinkAudioPublish = (newVal === "1");
         saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("ME->Link Audio");
+        if (newVal === "1") warnIfLinkDisabled("Schwung->Link");
         return;
     }
     if (setting.key === "resample_bridge") {
@@ -7565,7 +7565,7 @@ function adjustMasterFxSetting(setting, delta) {
         cachedResampleBridgeMode = values[nextIdx];
         saveMasterFxChainConfig();
         if (values[nextIdx] === 2) {
-            warningTitle = "ME Mix";
+            warningTitle = "Schwung Mix";
             warningLines = wrapText("Replaces Mic and Line-in with ME + Move Audio", 18);
             warningActive = true;
         }
