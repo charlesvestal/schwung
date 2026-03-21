@@ -2050,6 +2050,7 @@ static void init_shadow_shm(void)
             shadow_control->tts_engine = 0;     /* 0=espeak-ng (speak engine) */
             shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
             shadow_control->tts_debounce_ms = 50; /* default debounce ms */
+            shadow_control->chord_mode = 1;  /* Chain MIDI FX → Move on by default */
         }
     } else {
         printf("Shadow: Failed to create control shm\n");
@@ -4139,6 +4140,222 @@ do_ioctl:
 
         /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
         shadow_drain_midi_inject();
+
+        /* === MOVE MIDI FX: Read chain output → buffer → deferred inject === */
+        {
+            /* Pending buffer for deferred cable-2 injection */
+            static uint8_t mfx_pending[64][4];
+            static int mfx_pending_count = 0;
+            static int mfx_defer_counter = 2;  /* Start ready */
+            #define MFX_DEFER_FRAMES 2
+            #define MFX_INJECT_PER_TICK 16
+
+            /* Read chain's MIDI FX output into pending buffer */
+            if (shadow_control && shadow_control->chord_mode &&
+                shadow_chain_read_midi_fx_output) {
+                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                    if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+
+                    uint8_t out_msgs[16][3];
+                    int out_lens[16];
+                    uint8_t orig_note, orig_status, ch;
+                    int count = shadow_chain_read_midi_fx_output(
+                        shadow_chain_slots[s].instance,
+                        out_msgs, out_lens, &orig_note, &orig_status, &ch);
+
+                    if (count <= 0) continue;
+
+                    uint8_t orig_type = orig_status & 0xF0;
+                    int is_note_on = (orig_type == 0x90);
+
+                    /* If FX removed original note-on, queue note-off to cancel it */
+                    int original_present = 0;
+                    for (int i = 0; i < count; i++) {
+                        if (out_lens[i] >= 3 && out_msgs[i][1] == orig_note &&
+                            (out_msgs[i][0] & 0xF0) == orig_type) {
+                            original_present = 1;
+                            break;
+                        }
+                    }
+                    if (is_note_on && !original_present && mfx_pending_count < 64) {
+                        mfx_pending[mfx_pending_count][0] = (2 << 4) | 0x08;
+                        mfx_pending[mfx_pending_count][1] = 0x80 | ch;
+                        mfx_pending[mfx_pending_count][2] = orig_note;
+                        mfx_pending[mfx_pending_count][3] = 0;
+                        mfx_pending_count++;
+                    }
+
+                    /* Queue FX output notes (skip root — Move handles it via pad) */
+                    for (int i = 0; i < count; i++) {
+                        if (out_lens[i] < 3 || mfx_pending_count >= 64) continue;
+                        uint8_t out_note = out_msgs[i][1];
+                        uint8_t out_vel = out_msgs[i][2];
+                        uint8_t out_type = out_msgs[i][0] & 0xF0;
+
+                        if (out_note == orig_note) continue;
+
+                        uint8_t cin = (out_type == 0x90 && out_vel > 0) ? 0x09 : 0x08;
+                        mfx_pending[mfx_pending_count][0] = (2 << 4) | cin;
+                        mfx_pending[mfx_pending_count][1] = out_type | ch;
+                        mfx_pending[mfx_pending_count][2] = out_note;
+                        mfx_pending[mfx_pending_count][3] = out_vel;
+                        mfx_pending_count++;
+                    }
+                }
+            }
+
+            /* Pad tracking: held state + pitch mapping for note-off injection */
+            static uint8_t pads_held[32];
+            static uint8_t pad_pitch[32];   /* pad_pitch[idx] = MIDI note, 255=unknown */
+            static uint8_t pad_channel[32];
+            static int pad_init = 0;
+            if (!pad_init) {
+                memset(pads_held, 0, sizeof(pads_held));
+                memset(pad_pitch, 255, sizeof(pad_pitch));
+                memset(pad_channel, 0, sizeof(pad_channel));
+                pad_init = 1;
+            }
+
+            /* Build pad-pitch map from cable-2 note-ons in MIDI_OUT */
+            {
+                const uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
+                for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+                    if (out_src[i] == 0 && out_src[i+1] == 0) continue;
+                    uint8_t c = (out_src[i] >> 4) & 0x0F;
+                    uint8_t st = out_src[i+1];
+                    uint8_t type = st & 0xF0;
+                    uint8_t note = out_src[i+2];
+                    uint8_t vel = out_src[i+3];
+                    if (c == 2 && type == 0x90 && vel > 0 && note < 128) {
+                        for (int p = 0; p < 32; p++) {
+                            if (pads_held[p] && pad_pitch[p] == 255) {
+                                pad_pitch[p] = note;
+                                pad_channel[p] = st & 0x0F;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* Always scan for pad events (need to track presses/releases).
+             * Zero non-pad cable-0 only when we have pending injections. */
+            int cable0_new_press = 0;
+            {
+                uint8_t *sh_m = shadow_mailbox + MIDI_IN_OFFSET;
+                for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVENT_SIZE) {
+                    if ((sh_m[j] & 0xFF) == 0) continue;
+                    uint8_t c = (sh_m[j] >> 4) & 0x0F;
+                    if (c != 0) continue;
+                    uint8_t type = sh_m[j+1] & 0xF0;
+                    uint8_t d1 = sh_m[j+2];
+                    uint8_t vel = sh_m[j+3];
+
+                    if (d1 >= 68 && d1 <= 99) {
+                        int idx = d1 - 68;
+                        if (type == 0x90 && vel > 0) {
+                            if (!pads_held[idx]) {
+                                /* First press — let through, skip drain this frame */
+                                pads_held[idx] = 1;
+                                pad_pitch[idx] = 255; /* Will be filled from MIDI_OUT */
+                                cable0_new_press = 1;
+                                continue;
+                            }
+                            /* Repeated note-on from held pad — zero it */
+                            memset(&sh_m[j], 0, MIDI_IN_EVENT_SIZE);
+                            continue;
+                        }
+                        if (type == 0x80 || (type == 0x90 && vel == 0)) {
+                            /* Pad release: inject note-off directly to chain for replacing FX */
+                            if (pad_pitch[idx] != 255 && shadow_chain_inject_note_off) {
+                                for (int s2 = 0; s2 < SHADOW_CHAIN_INSTANCES; s2++) {
+                                    if (shadow_chain_slots[s2].instance) {
+                                        shadow_chain_inject_note_off(
+                                            shadow_chain_slots[s2].instance,
+                                            pad_pitch[idx], pad_channel[idx]);
+                                    }
+                                }
+                            }
+                            pads_held[idx] = 0;
+                            pad_pitch[idx] = 255;
+                            cable0_new_press = 1;
+                            continue;
+                        }
+                    }
+                    /* Zero non-pad cable-0 only when we have pending injections */
+                    if (mfx_pending_count > 0) {
+                        memset(&sh_m[j], 0, MIDI_IN_EVENT_SIZE);
+                    }
+                }
+            }
+
+            /* Drain pending buffer — skip if NEW cable-0 pad press/release this frame */
+            if (mfx_pending_count > 0 && !cable0_new_press) {
+                static int drain_log = 0;
+                if (drain_log < 5) {
+                    char dbg[64];
+                    snprintf(dbg, sizeof(dbg), "MFX-drain: pending=%d", mfx_pending_count);
+                    shadow_log(dbg);
+                    drain_log++;
+                }
+                uint8_t *mi = shadow_mailbox + MIDI_IN_OFFSET;
+                int injected = 0;
+                int hw_offset = 0;
+                int src = 0;
+
+                while (src < mfx_pending_count && injected < MFX_INJECT_PER_TICK) {
+                    while (hw_offset < MIDI_IN_MAX_BYTES) {
+                        if ((mi[hw_offset] & 0xFF) == 0) break;
+                        hw_offset += MIDI_IN_EVENT_SIZE;
+                    }
+                    if (hw_offset >= MIDI_IN_MAX_BYTES) break;
+
+                    memcpy(&mi[hw_offset], mfx_pending[src], 4);
+                    memset(&mi[hw_offset + 4], 0, 4);
+                    {
+                        static int inject_log = 0;
+                        if (inject_log < 10) {
+                            char dbg[80];
+                            snprintf(dbg, sizeof(dbg), "MFX-inject: [%02X %02X %02X %02X] at offset %d",
+                                     mfx_pending[src][0], mfx_pending[src][1],
+                                     mfx_pending[src][2], mfx_pending[src][3], hw_offset);
+                            shadow_log(dbg);
+                            inject_log++;
+                        }
+                    }
+                    hw_offset += MIDI_IN_EVENT_SIZE;
+                    src++;
+                    injected++;
+                }
+
+                /* Shift remaining */
+                if (src > 0 && src < mfx_pending_count) {
+                    memmove(&mfx_pending[0], &mfx_pending[src],
+                            (mfx_pending_count - src) * 4);
+                }
+                mfx_pending_count -= src;
+            }
+        }
+
+        /* Ensure midi_fx_to_move flag matches chord_mode on ALL active instances */
+        if (shadow_chain_set_midi_fx_to_move && shadow_chain_read_midi_fx_output) {
+            uint8_t cur = shadow_control ? shadow_control->chord_mode : 0;
+            for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                if (shadow_chain_slots[s].instance) {
+                    shadow_chain_set_midi_fx_to_move(shadow_chain_slots[s].instance, cur ? 1 : 0);
+                    /* One-shot log per slot to confirm flag is set */
+                    {
+                        static int flag_log[4] = {0,0,0,0};
+                        if (s < 4 && !flag_log[s] && cur) {
+                            char dbg[64];
+                            snprintf(dbg, sizeof(dbg), "MFX-flag: slot=%d inst=%p cur=%d", s, shadow_chain_slots[s].instance, cur);
+                            shadow_log(dbg);
+                            flag_log[s] = 1;
+                        }
+                    }
+                }
+            }
+        }
 
         /* Debug: dump raw HW MIDI_IN vs shadow MIDI_IN on inject */
         {
