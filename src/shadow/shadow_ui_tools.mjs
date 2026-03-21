@@ -67,7 +67,7 @@ export function scanForToolModules() {
                 const content = std.loadFile(modulePath);
                 if (!content) continue;
                 const json = JSON.parse(content);
-                if (json.component_type === "tool" && json.tool_config) {
+                if (json.component_type === "tool" && json.tool_config && !json.hidden) {
                     debugLog("FOUND tool: " + json.name);
                     result.push({
                         id: json.id || entry,
