@@ -28,6 +28,77 @@ let statusTimeout = 0;
 /* Settings state */
 let settingsVisible = false;
 
+/* Splash screen state */
+let splashActive = true;
+let splashTick = 0;
+
+/* Splash screen constants — matched to logo-splash.png */
+const SPLASH_BALL_RADIUS = 4;
+const SPLASH_BALL_Y = 26;
+const SPLASH_RAISED_Y = 17;
+const SPLASH_BALL_LIFT = SPLASH_BALL_Y - SPLASH_RAISED_Y;
+const SPLASH_NUM_BALLS = 5;
+const SPLASH_BALL_X = [40, 56, 67, 78, 89];
+
+/* Animation timing (in ticks, ~44/sec) */
+const SPLASH_TENSION_TICKS = 44;       /* ~1s from still to thwack */
+const SPLASH_SNAP_TICKS = 3;           /* ~0.07s — THWACK */
+const SPLASH_TRANSFER_TICKS = 1;       /* instant */
+const SPLASH_RELEASE_TICKS = 5;        /* ~0.11s — SHOOT up */
+const SPLASH_HOLD_TICKS = 35;          /* ~0.8s hold */
+
+const SPLASH_TOTAL_TICKS = SPLASH_TENSION_TICKS + SPLASH_SNAP_TICKS +
+    SPLASH_TRANSFER_TICKS + SPLASH_RELEASE_TICKS + SPLASH_HOLD_TICKS;
+
+/* Power of 5 — barely moves for ages, then WHIPS into action */
+function easeInHard(t) {
+    return t * t * t * t * t;
+}
+
+/* Fast snap out — shoots up and decelerates hard */
+function easeOutHard(t) {
+    return 1 - Math.pow(1 - t, 4);
+}
+
+function drawSplash() {
+    clear_screen();
+
+    let leftLift = 0;
+    let rightLift = 0;
+    const t = splashTick;
+
+    const tensionEnd = SPLASH_TENSION_TICKS;
+    const snapEnd = tensionEnd + SPLASH_SNAP_TICKS;
+    const transferEnd = snapEnd + SPLASH_TRANSFER_TICKS;
+    const releaseEnd = transferEnd + SPLASH_RELEASE_TICKS;
+
+    if (t < tensionEnd) {
+        const progress = t / SPLASH_TENSION_TICKS;
+        leftLift = 1 - easeInHard(progress);
+    } else if (t < snapEnd) {
+        const progress = (t - tensionEnd) / SPLASH_SNAP_TICKS;
+        leftLift = (1 - easeInHard(1.0)) * (1 - progress);
+    } else if (t < transferEnd) {
+        leftLift = 0;
+        rightLift = 0;
+    } else if (t < releaseEnd) {
+        const progress = (t - transferEnd) / SPLASH_RELEASE_TICKS;
+        rightLift = easeOutHard(progress);
+    } else {
+        rightLift = 1;
+    }
+
+    for (let i = 0; i < SPLASH_NUM_BALLS; i++) {
+        const x = SPLASH_BALL_X[i];
+        let y = SPLASH_BALL_Y;
+        if (i === 0) y = SPLASH_BALL_Y - leftLift * SPLASH_BALL_LIFT;
+        else if (i === SPLASH_NUM_BALLS - 1) y = SPLASH_BALL_Y - rightLift * SPLASH_BALL_LIFT;
+        fill_circle(x, Math.round(y), SPLASH_BALL_RADIUS, 1);
+    }
+
+    draw_image("/data/UserData/schwung/host/logo-text.png", 9, 37, 128, 0);
+}
+
 /* Error overlay state */
 let errorOverlayActive = false;
 let errorModuleName = '';
@@ -164,6 +235,13 @@ function handleCC(cc, value) {
         return;
     }
 
+    /* Skip splash on any button press */
+    if (splashActive && value > 0) {
+        splashActive = false;
+        host_announce_screenreader("Main Menu");
+        return;
+    }
+
     /* Dismiss error overlay on any button press */
     if (errorOverlayActive && value > 0) {
         errorOverlayActive = false;
@@ -283,12 +361,25 @@ globalThis.init = function() {
         }
     }
 
-    clear_screen();
-    print(2, 24, "Schwung", 1);
-    print(2, 36, "Host Ready", 1);
+    /* Start with splash screen */
+    splashActive = true;
+    splashTick = 0;
+    drawSplash();
 };
 
 globalThis.tick = function() {
+    /* Splash screen animation */
+    if (splashActive) {
+        splashTick++;
+        if (splashTick >= SPLASH_TOTAL_TICKS) {
+            splashActive = false;
+            host_announce_screenreader("Main Menu");
+        } else {
+            drawSplash();
+            return;
+        }
+    }
+
     if (errorOverlayActive) {
         /* Draw error overlay on top of whatever is behind */
         clear_screen();

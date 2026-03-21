@@ -50,6 +50,8 @@ int  js_display_get_pixel(int x, int y);
 void js_display_draw_rect(int x, int y, int w, int h, int value);
 void js_display_fill_rect(int x, int y, int w, int h, int value);
 void js_display_draw_line(int x0, int y0, int x1, int y1, int value);
+void js_display_fill_circle(int cx, int cy, int r, int value);
+int  js_display_draw_image(const char *filename, int dx, int dy, int threshold, int invert);
 void js_display_print(int x, int y, const char *string, int color);
 int  js_display_text_width(const char *string);
 void js_display_pack(uint8_t *dest);
