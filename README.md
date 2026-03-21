@@ -1,4 +1,4 @@
-# Schwung
+# Schwung (Formerly Move Everything)
 
 [![Schwung Video](https://img.youtube.com/vi/AQ-5RZlg6gw/0.jpg)](https://www.youtube.com/watch?v=AQ-5RZlg6gw)
 
