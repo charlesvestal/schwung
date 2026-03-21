@@ -58,27 +58,24 @@
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
 
+/* SPI protocol types, constants, and helpers from schwung-spi (MIT).
+ * https://github.com/charlesvestal/schwung-spi */
+#include "lib/schwung_spi_lib.h"
+
+/* Shadow buffer — Move reads/writes this, we copy to/from hardware */
+static unsigned char shadow_mailbox[SCHWUNG_PAGE_SIZE] __attribute__((aligned(64)));
 unsigned char *global_mmap_addr = NULL;  /* Points to shadow_mailbox (what Move sees) */
 unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
 static int shadow_spi_fd = -1;           /* SPI file descriptor for MIDI/ioctl */
 extern int (*real_ioctl)(int, unsigned long, ...);  /* Forward declaration */
-static unsigned char shadow_mailbox[4096] __attribute__((aligned(64))); /* Shadow buffer for Move */
 
-/* ============================================================================
- * SHADOW INSTRUMENT SUPPORT
- * ============================================================================
- * The shadow instrument allows a separate DSP process to run alongside stock
- * Move, mixing its audio output with Move's audio and optionally taking over
- * the display when in shadow mode.
- * ============================================================================ */
-
-/* Mailbox layout constants */
-#define MAILBOX_SIZE 4096
-#define MIDI_OUT_OFFSET 0
-#define AUDIO_OUT_OFFSET 256
-#define DISPLAY_OFFSET 768
-#define MIDI_IN_OFFSET 2048
-#define AUDIO_IN_OFFSET 2304
+/* Mailbox layout aliases — map old names to schwung-spi constants */
+#define MAILBOX_SIZE      SCHWUNG_PAGE_SIZE
+#define MIDI_OUT_OFFSET   SCHWUNG_OFF_OUT_MIDI
+#define AUDIO_OUT_OFFSET  SCHWUNG_OFF_OUT_AUDIO
+#define DISPLAY_OFFSET    768  /* schwung-spi doesn't define this (it's between audio regions) */
+#define MIDI_IN_OFFSET    SCHWUNG_OFF_IN_MIDI
+#define AUDIO_IN_OFFSET   SCHWUNG_OFF_IN_AUDIO
 
 #define AUDIO_BUFFER_SIZE 512      /* 128 frames * 2 channels * 2 bytes */
 /* Buffer sizes from shadow_constants.h: MIDI_BUFFER_SIZE, DISPLAY_BUFFER_SIZE,
