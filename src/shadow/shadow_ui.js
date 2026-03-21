@@ -707,7 +707,7 @@ const GLOBAL_SETTINGS_SECTIONS = [
     {
         id: "audio", label: "Audio",
         items: [
-            { key: "link_audio_routing", label: "Audio->Schwung", type: "bool" },
+            { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
             { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
             { key: "resample_bridge", label: "Sample Src", type: "enum",
               options: ["Native", "Schwung Mix"], values: [0, 2] },
@@ -897,7 +897,7 @@ function warnIfLinkDisabled(settingName) {
         const routingOn = shadow_get_param(0, "master_fx:link_audio_routing") === "1";
         const publishOn = shadow_get_param(0, "master_fx:link_audio_publish") === "1";
         if (routingOn || publishOn) {
-            const name = settingName || (routingOn ? "Audio->Schwung" : "Schwung->Link");
+            const name = settingName || (routingOn ? "Move->Schwung" : "Schwung->Link");
             warningTitle = name;
             warningLines = wrapText("requires Link enabled in Move System Settings", 18);
             warningActive = true;
@@ -7541,7 +7541,7 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:link_audio_routing", newVal);
         cachedLinkAudioRouting = (newVal === "1");
         saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("Audio->Schwung");
+        if (newVal === "1") warnIfLinkDisabled("Move->Schwung");
         return;
     }
     if (setting.key === "link_audio_publish") {
