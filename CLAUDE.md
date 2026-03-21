@@ -568,7 +568,7 @@ If your overtake module communicates with an external USB device that expects an
 ## Module Store
 
 The Module Store (`store` module) downloads and installs external modules from GitHub releases. The catalog is fetched from:
-`https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json`
+`https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`
 
 ### Catalog Format (v2)
 
@@ -577,7 +577,7 @@ The Module Store (`store` module) downloads and installs external modules from G
   "catalog_version": 2,
   "host": {
     "name": "Schwung",
-    "github_repo": "charlesvestal/move-anything",
+    "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
     "latest_version": "0.3.11",
     "download_url": "https://github.com/.../schwung.tar.gz",

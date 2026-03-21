@@ -1741,7 +1741,7 @@ The Schwung host can also be updated via the Module Store. When an update is ava
    {
      "host": {
        "name": "Schwung",
-       "github_repo": "charlesvestal/move-anything",
+       "github_repo": "charlesvestal/schwung",
        "asset_name": "schwung.tar.gz",
        "latest_version": "1.0.1",
        "min_host_version": "1.0.0"
@@ -1769,5 +1769,5 @@ The Schwung host can also be updated via the Module Store. When an update is ava
 
 The Module Store fetches the catalog from:
 ```
-https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json
+https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json
 ```

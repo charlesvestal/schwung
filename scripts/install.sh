@@ -504,19 +504,19 @@ if [ "$use_reenable" = false ] && [ -z "$module_action" ]; then
     fi
   else
     # Find latest binary release (v* tag, not installer-v*)
-    tag=$(curl -fsSL https://api.github.com/repos/charlesvestal/move-everything/releases \
+    tag=$(curl -fsSL https://api.github.com/repos/charlesvestal/schwung/releases \
       | grep '"tag_name"' | grep -v installer | head -1 | sed 's/.*"tag_name": "//;s/".*//' ) \
       || fail "Failed to query GitHub releases API"
     if [ -z "$tag" ]; then
-      fail "Could not find a binary release. Check https://github.com/charlesvestal/move-everything/releases"
+      fail "Could not find a binary release. Check https://github.com/charlesvestal/schwung/releases"
     fi
-    url="https://github.com/charlesvestal/move-everything/releases/download/${tag}/"
+    url="https://github.com/charlesvestal/schwung/releases/download/${tag}/"
     qecho "Downloading release $tag from $url$remote_filename"
     # Use silent curl in quiet mode (screen reader friendly)
     if [ "$quiet_mode" = true ]; then
-      curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-everything/releases"
+      curl -fsSLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/schwung/releases"
     else
-      curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/move-everything/releases"
+      curl -fLO "$url$remote_filename" || fail "Failed to download release. Check https://github.com/charlesvestal/schwung/releases"
     fi
     local_file="$remote_filename"
   fi
@@ -1214,7 +1214,7 @@ fi
 if [ -n "$install_mode" ]; then
     echo
     echo "Fetching module catalog..."
-    catalog_url="https://raw.githubusercontent.com/charlesvestal/move-everything/main/module-catalog.json"
+    catalog_url="https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json"
     catalog=$(curl -fsSL "$catalog_url") || { echo "Failed to fetch module catalog"; exit 1; }
 
     # Parse catalog with awk (no Python needed, works on Windows Git Bash)

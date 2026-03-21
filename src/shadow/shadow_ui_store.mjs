@@ -155,7 +155,7 @@ export function drawStorePickerDetail() {
         drawHeader(title, versionStr);
 
         if (!storeDetailScrollState || storeDetailScrollState.moduleId !== mod.id) {
-            const notes = fetchReleaseNotes('charlesvestal/move-anything');
+            const notes = fetchReleaseNotes('charlesvestal/schwung');
             const descLines = [];
             descLines.push(`${storeHostVersion} -> ${mod.latest_version}`);
             descLines.push('');

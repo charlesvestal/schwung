@@ -24,7 +24,7 @@ Move still works normally after installation - Schwung runs alongside it.
 
 ### Desktop Installer (Recommended)
 
-Download the [Schwung Installer](https://github.com/charlesvestal/move-everything-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface.
+Download the [Schwung Installer](https://github.com/charlesvestal/schwung-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface.
 
 ### Command Line
 
@@ -32,7 +32,7 @@ Download the [Schwung Installer](https://github.com/charlesvestal/move-everythin
 
 Run:
 ```
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/install.sh | sh
 ```
 
 The installer will guide you through SSH setup, download the framework, and offer to install modules.
@@ -71,14 +71,14 @@ The installer auto-detects the module's type (sound generator, audio FX, etc.) a
 
 Run:
 ```
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uninstall.sh | sh
 ```
 
 By default, uninstall exports inactive Set Pages backups to `/data/UserData/UserLibrary/Schwung Backups/Set Pages/` before removing Schwung.
 
 To skip that export and permanently delete Schwung data:
 ```
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh -s -- --purge-data
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uninstall.sh | sh -s -- --purge-data
 ```
 
 ---
