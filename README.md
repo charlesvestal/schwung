@@ -150,7 +150,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [NuSaw](https://github.com/charlesvestal/schwung-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
-| [Weird Dreams](https://github.com/fillioning/move-everything-weird-drum) | 8-voice analog drum machine with 64 kits, 41 voice presets, 96 musical pitch scales, master bus FX, and per-voice pages | fillioning (DSP: dfilaretti) |
+| [Weird Dreams](https://github.com/fillioning/weird-dreams-move) | 8-voice analog drum machine — 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX | fillioning (DSP: dfilaretti) |
 
 ### Audio FX
 
