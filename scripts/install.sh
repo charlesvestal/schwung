@@ -845,6 +845,32 @@ chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrappe
   exit 0
 fi
 
+# Migrate from move-anything if needed
+if ssh_ableton_with_retry "test -d /data/UserData/move-anything" 2>/dev/null; then
+  if ssh_ableton_with_retry "test -d /data/UserData/schwung" 2>/dev/null; then
+    iecho "Warning: Both /data/UserData/move-anything and /data/UserData/schwung exist."
+    iecho "  Keeping schwung, old data left at move-anything/."
+  else
+    iecho "Migrating data from move-anything → schwung..."
+    ssh_root_with_retry "mv /data/UserData/move-anything /data/UserData/schwung" || fail "Failed to migrate data directory"
+    iecho "  Done. Patches, slot state, and settings preserved."
+  fi
+fi
+
+# Migrate UserLibrary folders from old "Move Everything" name
+if ssh_ableton_with_retry "test -d '/data/UserData/UserLibrary/Samples/Move Everything'" 2>/dev/null; then
+  if ! ssh_ableton_with_retry "test -d '/data/UserData/UserLibrary/Samples/Schwung'" 2>/dev/null; then
+    ssh_ableton_with_retry "mv '/data/UserData/UserLibrary/Samples/Move Everything' '/data/UserData/UserLibrary/Samples/Schwung'" || true
+    iecho "Migrated samples folder → Schwung"
+  fi
+fi
+if ssh_ableton_with_retry "test -d '/data/UserData/UserLibrary/Track Presets/Move Everything'" 2>/dev/null; then
+  if ! ssh_ableton_with_retry "test -d '/data/UserData/UserLibrary/Track Presets/Schwung'" 2>/dev/null; then
+    ssh_ableton_with_retry "mv '/data/UserData/UserLibrary/Track Presets/Move Everything' '/data/UserData/UserLibrary/Track Presets/Schwung'" || true
+    iecho "Migrated track presets folder → Schwung"
+  fi
+fi
+
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
 scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
 # Validate tar payload layout before extraction.
