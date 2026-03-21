@@ -1,4 +1,4 @@
-# curl for Move Anything
+# curl for Schwung
 
 This directory contains a statically-linked curl binary for ARM (Move hardware).
 
@@ -48,7 +48,7 @@ cp src/curl /path/to/move-anything/libs/curl/
 
 A pre-built static ARM curl binary should be placed in this directory as `curl`.
 
-The binary will be installed to `/data/UserData/move-anything/bin/curl` on the device.
+The binary will be installed to `/data/UserData/schwung/bin/curl` on the device.
 
 ## License
 

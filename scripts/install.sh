@@ -24,7 +24,7 @@ if [ "$quiet_mode" = false ]; then
                                         |___/                   |___/
 EOM
 else
-  echo "Move Everything installer (screen reader mode)"
+  echo "Schwung installer (screen reader mode)"
 fi
 
 # uncomment to debug
@@ -343,7 +343,7 @@ ssh_ensure_connection() {
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
-remote_filename=move-anything.tar.gz
+remote_filename=schwung.tar.gz
 hostname=move.local
 username=ableton
 ssh_ableton="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
@@ -357,7 +357,7 @@ wait_for_move_shim_mapping() {
   for i in $(seq 1 "$attempts"); do
     ssh_ableton_with_retry "sleep 1" || true
     # Verify both env and actual mapped shim (env alone can be present while loader ignores preload).
-    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=move-anything-shim.so' && grep -q 'move-anything-shim.so' /proc/\$pid/maps" 2>/dev/null; then
+    if $ssh_root "pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}'); test -n \"\$pid\" && tr '\\0' '\\n' < /proc/\$pid/environ | grep -q 'LD_PRELOAD=schwung-shim.so' && grep -q 'schwung-shim.so' /proc/\$pid/maps" 2>/dev/null; then
       return 0
     fi
   done
@@ -368,7 +368,7 @@ wait_for_move_shim_mapping() {
 direct_start_move_with_shim() {
   qecho "Init service did not relaunch Move; trying direct launch fallback..."
 
-  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
   ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
   ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
   ssh_root_with_retry "su -s /bin/sh ableton -c 'nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &'" || return 1
@@ -477,7 +477,7 @@ if [ "$skip_confirmation" = false ]; then
   echo "*                                                            *"
   echo "*   WARNING:                                                 *"
   echo "*                                                            *"
-  echo "*   Are you sure you want to install Move Everything on your *"
+  echo "*   Are you sure you want to install Schwung on your *"
   echo "*   Move? This is UNSUPPORTED by Ableton.                    *"
   echo "*                                                            *"
   echo "*   The authors of this project accept no liability for      *"
@@ -577,9 +577,9 @@ else
   if [ -n "$module_action" ]; then
     : # Module subcommand will handle its own messaging
   elif [ "$use_reenable" = true ]; then
-    iecho "Re-enabling Move Everything..."
+    iecho "Re-enabling Schwung..."
   else
-    iecho "Installing Move Everything..."
+    iecho "Installing Schwung..."
   fi
 fi
 
@@ -606,7 +606,7 @@ if [ "$module_action" = "uninstall" ]; then
 
   # Search all category subdirectories for the module
   mod_path=$($ssh_ableton "for subdir in sound_generators audio_fx midi_fx utilities overtake tools other; do
-    if [ -d /data/UserData/move-anything/modules/\$subdir/$mod_id ]; then
+    if [ -d /data/UserData/schwung/modules/\$subdir/$mod_id ]; then
       echo \"modules/\$subdir/$mod_id\"
       exit 0
     fi
@@ -614,7 +614,7 @@ if [ "$module_action" = "uninstall" ]; then
 
   if [ -z "$mod_path" ]; then
     # Also check root-level modules (legacy location)
-    if $ssh_ableton "test -d /data/UserData/move-anything/modules/$mod_id" 2>/dev/null; then
+    if $ssh_ableton "test -d /data/UserData/schwung/modules/$mod_id" 2>/dev/null; then
       mod_path="modules/$mod_id"
     else
       fail "Module '$mod_id' not found on device"
@@ -631,7 +631,7 @@ if [ "$module_action" = "uninstall" ]; then
     fi
   fi
 
-  ssh_root_with_retry "rm -rf /data/UserData/move-anything/$mod_path" || fail "Failed to remove module"
+  ssh_root_with_retry "rm -rf /data/UserData/schwung/$mod_path" || fail "Failed to remove module"
   echo "Module '$mod_id' has been removed."
   echo "Restart Move or reload modules for the change to take effect."
   exit 0
@@ -666,11 +666,11 @@ if [ "$module_action" = "install-local" ]; then
 
   # Copy tarball to device and extract (use root for mkdir/extract since parent dirs may not be ableton-owned)
   tarball_name=$(basename "$tarball")
-  scp_with_retry "$tarball" "$username@$hostname:./move-anything/$tarball_name" || fail "Failed to copy tarball to device"
-  ssh_root_with_retry "cd /data/UserData/move-anything && mkdir -p $dest && tar -xzf $tarball_name -C $dest/ && rm $tarball_name" || fail "Failed to extract module on device"
+  scp_with_retry "$tarball" "$username@$hostname:./schwung/$tarball_name" || fail "Failed to copy tarball to device"
+  ssh_root_with_retry "cd /data/UserData/schwung && mkdir -p $dest && tar -xzf $tarball_name -C $dest/ && rm $tarball_name" || fail "Failed to extract module on device"
 
   # Fix ownership
-  ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything/$dest/$mod_id" || true
+  ssh_root_with_retry "chown -R ableton:users /data/UserData/schwung/$dest/$mod_id" || true
 
   echo "Module '$mod_id' installed to $dest/$mod_id/"
   echo "Restart Move or reload modules for the change to take effect."
@@ -739,14 +739,14 @@ if [ "$module_action" = "install-github" ]; then
   echo "Install to: $dest/$mod_id/"
 
   # Copy tarball to device and extract (use root for mkdir/extract since parent dirs may not be ableton-owned)
-  scp_with_retry "$tarball_name" "$username@$hostname:./move-anything/$tarball_name" || fail "Failed to copy tarball to device"
-  ssh_root_with_retry "cd /data/UserData/move-anything && mkdir -p $dest && tar -xzf $tarball_name -C $dest/ && rm $tarball_name" || fail "Failed to extract module on device"
+  scp_with_retry "$tarball_name" "$username@$hostname:./schwung/$tarball_name" || fail "Failed to copy tarball to device"
+  ssh_root_with_retry "cd /data/UserData/schwung && mkdir -p $dest && tar -xzf $tarball_name -C $dest/ && rm $tarball_name" || fail "Failed to extract module on device"
 
   # Clean up local tarball
   rm -f "$tarball_name"
 
   # Fix ownership
-  ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything/$dest/$mod_id" || true
+  ssh_root_with_retry "chown -R ableton:users /data/UserData/schwung/$dest/$mod_id" || true
 
   echo "Module '$mod_id' (v${version:-unknown}) installed to $dest/$mod_id/"
   echo "Restart Move or reload modules for the change to take effect."
@@ -762,35 +762,35 @@ if [ "$use_reenable" = true ]; then
   echo
 
   # Verify data partition payload is intact
-  if ! $ssh_ableton "test -f /data/UserData/move-anything/move-anything-shim.so" 2>/dev/null; then
+  if ! $ssh_ableton "test -f /data/UserData/schwung/schwung-shim.so" 2>/dev/null; then
     fail "Shim not found on data partition. Run a full install instead."
   fi
-  if ! $ssh_ableton "test -f /data/UserData/move-anything/shim-entrypoint.sh" 2>/dev/null; then
+  if ! $ssh_ableton "test -f /data/UserData/schwung/shim-entrypoint.sh" 2>/dev/null; then
     fail "Entrypoint not found on data partition. Run a full install instead."
   fi
 
   # Clean stale ld.so.preload entries
-  ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
+  ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
   # Symlink shim to /usr/lib/ + setuid
-  ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim"
-  ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
-  ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing"
+  ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && ln -s /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so" || fail "Failed to install shim"
+  ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
+  ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing"
 
   # Web shim symlink if present
-  if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+  if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
     qecho "Restoring web shim symlink..."
-    ssh_root_with_retry "rm -f /usr/lib/move-anything-web-shim.so && ln -s /data/UserData/move-anything/move-anything-web-shim.so /usr/lib/move-anything-web-shim.so" || echo "Warning: Failed to restore web shim"
+    ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so && ln -s /data/UserData/schwung/schwung-web-shim.so /usr/lib/schwung-web-shim.so" || echo "Warning: Failed to restore web shim"
   fi
 
   # TTS library symlinks if present
-  if $ssh_ableton "test -d /data/UserData/move-anything/lib" 2>/dev/null; then
+  if $ssh_ableton "test -d /data/UserData/schwung/lib" 2>/dev/null; then
     qecho "Restoring TTS library symlinks..."
-    ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in *.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || echo "Warning: Failed to restore TTS libraries"
+    ssh_root_with_retry "cd /data/UserData/schwung/lib && for lib in *.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/schwung/lib/\$lib /usr/lib/\$lib; done" || echo "Warning: Failed to restore TTS libraries"
   fi
 
   # Ensure entrypoint is executable
-  ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+  ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
 
   # Backup original Move binary if MoveOriginal doesn't exist yet
   if $ssh_root "test ! -f /opt/move/MoveOriginal" 2>/dev/null; then
@@ -800,10 +800,10 @@ if [ "$use_reenable" = true ]; then
   fi
 
   # Install shimmed entrypoint
-  ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
+  ssh_root_with_retry "cp /data/UserData/schwung/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
   # MoveWebService wrapper if web shim present
-  if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+  if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
     web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
     if [ -n "$web_svc_path" ]; then
       if ! $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
@@ -812,8 +812,8 @@ if [ "$use_reenable" = true ]; then
       if $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
         ssh_root_with_retry "cat > $web_svc_path << 'WEOF'
 #!/bin/sh
-export LD_LIBRARY_PATH=/data/UserData/move-anything/lib:\$LD_LIBRARY_PATH
-export LD_PRELOAD=/usr/lib/move-anything-web-shim.so
+export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
+export LD_PRELOAD=/usr/lib/schwung-web-shim.so
 exec ${web_svc_path}Original \"\$@\"
 WEOF
 chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
@@ -824,7 +824,7 @@ chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrappe
   # Stop and restart Move service
   iecho "Restarting Move..."
   ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
   ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
   ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
   ssh_ableton_with_retry "sleep 2" || true
@@ -840,7 +840,7 @@ chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrappe
   restart_move_with_fallback "Move started without active shim (LD_PRELOAD check failed)"
 
   iecho ""
-  iecho "Move Everything has been re-enabled!"
+  iecho "Schwung has been re-enabled!"
   iecho "All your modules, patches, and settings are intact."
   exit 0
 fi
@@ -850,8 +850,8 @@ scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "F
 # Validate tar payload layout before extraction.
 # Some host-side tar variants can encode large files under GNUSparseFile.0 paths
 # that BusyBox tar on Move does not restore correctly.
-ssh_ableton_with_retry "tar -tzf ./$remote_filename | grep -qx 'move-anything/move-anything-shim.so'" || \
-    fail "Invalid tar payload: missing move-anything/move-anything-shim.so entry"
+ssh_ableton_with_retry "tar -tzf ./$remote_filename | grep -qx 'schwung/schwung-shim.so'" || \
+    fail "Invalid tar payload: missing schwung/schwung-shim.so entry"
 # Use verbose tar only in non-quiet mode (screen reader friendly)
 if [ "$quiet_mode" = true ]; then
     ssh_ableton_with_retry "tar -xzof ./$remote_filename" || fail "Failed to extract tarball"
@@ -860,14 +860,14 @@ else
 fi
 
 # Verify expected payload exists before making system changes
-ssh_ableton_with_retry "test -f /data/UserData/move-anything/move-anything-shim.so" || fail "Payload missing: move-anything-shim.so"
-ssh_ableton_with_retry "test -f /data/UserData/move-anything/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-shim.so" || fail "Payload missing: schwung-shim.so"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
 
 # Verify modules directory exists
-if ssh_ableton_with_retry "test -d /data/UserData/move-anything/modules"; then
+if ssh_ableton_with_retry "test -d /data/UserData/schwung/modules"; then
   qecho "Modules directory found"
   if [ "$quiet_mode" = false ]; then
-    ssh_ableton_with_retry "ls /data/UserData/move-anything/modules/" || true
+    ssh_ableton_with_retry "ls /data/UserData/schwung/modules/" || true
   fi
 else
   echo "Warning: No modules directory found"
@@ -881,7 +881,7 @@ echo "Checking for migration needs..."
 deleted_modules=""
 
 # Find external modules in old location (modules/<id>/ instead of modules/<type>/<id>/)
-old_modules=$($ssh_ableton "cd /data/UserData/move-anything/modules 2>/dev/null && for d in */; do
+old_modules=$($ssh_ableton "cd /data/UserData/schwung/modules 2>/dev/null && for d in */; do
   d=\${d%/}
   case \"\$d\" in
     chain|controller|store|text-test|sound_generators|audio_fx|midi_fx|utilities|overtake|tools|other) continue ;;
@@ -893,12 +893,12 @@ done" 2>/dev/null || true)
 
 # Check for patches in old location
 old_patches=false
-if $ssh_ableton "test -d /data/UserData/move-anything/modules/chain/patches && ls /data/UserData/move-anything/modules/chain/patches/*.json >/dev/null 2>&1"; then
+if $ssh_ableton "test -d /data/UserData/schwung/modules/chain/patches && ls /data/UserData/schwung/modules/chain/patches/*.json >/dev/null 2>&1"; then
   old_patches=true
 fi
 
 # Check for modules in old chain subdirectories
-old_chain_modules=$($ssh_ableton "cd /data/UserData/move-anything/modules/chain 2>/dev/null && for subdir in audio_fx midi_fx sound_generators; do
+old_chain_modules=$($ssh_ableton "cd /data/UserData/schwung/modules/chain 2>/dev/null && for subdir in audio_fx midi_fx sound_generators; do
   if [ -d \"\$subdir\" ]; then
     for d in \"\$subdir\"/*/; do
       d=\${d%/}
@@ -951,13 +951,13 @@ if [ -n "$old_modules" ] || [ "$old_patches" = true ] || [ -n "$old_chain_module
     # Migrate patches first
     if [ "$old_patches" = true ]; then
       echo "  Moving patches to /patches/..."
-      $ssh_ableton "mkdir -p /data/UserData/move-anything/patches && mv /data/UserData/move-anything/modules/chain/patches/*.json /data/UserData/move-anything/patches/ 2>/dev/null || true"
+      $ssh_ableton "mkdir -p /data/UserData/schwung/patches && mv /data/UserData/schwung/modules/chain/patches/*.json /data/UserData/schwung/patches/ 2>/dev/null || true"
     fi
 
     # Delete old external modules (they have wrong import paths)
     for mod in $old_modules; do
       echo "  Removing old module: $mod"
-      $ssh_ableton "rm -rf /data/UserData/move-anything/modules/$mod"
+      $ssh_ableton "rm -rf /data/UserData/schwung/modules/$mod"
       deleted_modules="$deleted_modules $mod"
     done
 
@@ -969,7 +969,7 @@ if [ -n "$old_modules" ] || [ "$old_patches" = true ] || [ -n "$old_chain_module
         mod_id=$(basename "$chain_mod")
         deleted_modules="$deleted_modules $mod_id"
       done
-      $ssh_ableton "rm -rf /data/UserData/move-anything/modules/chain/audio_fx /data/UserData/move-anything/modules/chain/midi_fx /data/UserData/move-anything/modules/chain/sound_generators 2>/dev/null || true"
+      $ssh_ableton "rm -rf /data/UserData/schwung/modules/chain/audio_fx /data/UserData/schwung/modules/chain/midi_fx /data/UserData/schwung/modules/chain/sound_generators 2>/dev/null || true"
     fi
 
     echo
@@ -1005,32 +1005,32 @@ if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
 fi
 
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
-ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'move-anything-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-move-anything-\$ts; grep -v 'move-anything-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
+ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
 # Symlink shim to /usr/lib/ (root partition has no free space for copies)
-ssh_root_with_retry "rm -f /usr/lib/move-anything-shim.so && ln -s /data/UserData/move-anything/move-anything-shim.so /usr/lib/move-anything-shim.so" || fail "Failed to install shim after retries"
-ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || fail "Failed to set shim permissions"
-ssh_root_with_retry "test -u /data/UserData/move-anything/move-anything-shim.so" || fail "Shim setuid bit missing after install"
+ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && ln -s /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so" || fail "Failed to install shim after retries"
+ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
+ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing after install"
 
 # Symlink web shim to /usr/lib/ (for MoveWebService PIN challenge detection)
-if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
   qecho "Installing web shim for PIN readout..."
-  ssh_root_with_retry "rm -f /usr/lib/move-anything-web-shim.so && ln -s /data/UserData/move-anything/move-anything-web-shim.so /usr/lib/move-anything-web-shim.so" || echo "Warning: Failed to install web shim"
+  ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so && ln -s /data/UserData/schwung/schwung-web-shim.so /usr/lib/schwung-web-shim.so" || echo "Warning: Failed to install web shim"
 fi
 
 # Deploy TTS libraries (eSpeak-NG + Flite) from /data to /usr/lib via symlink.
 # Root partition is nearly full, so symlink libraries instead of copying.
 # Use direct predicate checks so expected test failures don't print misleading
 # "Connection retry" messages from the retry wrapper.
-if $ssh_ableton "test ! -d /data/UserData/move-anything/lib" 2>/dev/null; then
+if $ssh_ableton "test ! -d /data/UserData/schwung/lib" 2>/dev/null; then
   screen_reader_runtime_available=false
   iecho "Screen reader runtime not bundled; skipping TTS library deployment."
-elif $ssh_ableton "test -d /data/UserData/move-anything/lib" 2>/dev/null; then
+elif $ssh_ableton "test -d /data/UserData/schwung/lib" 2>/dev/null; then
   qecho "Deploying TTS libraries (eSpeak-NG + Flite)..."
   # Symlink all bundled TTS libraries to /usr/lib
-  ssh_root_with_retry "cd /data/UserData/move-anything/lib && for lib in *.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/move-anything/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install TTS libraries"
+  ssh_root_with_retry "cd /data/UserData/schwung/lib && for lib in *.so.*; do rm -f /usr/lib/\$lib && ln -s /data/UserData/schwung/lib/\$lib /usr/lib/\$lib; done" || fail "Failed to install TTS libraries"
   # eSpeak-NG data directory
-  if $ssh_ableton "test -d /data/UserData/move-anything/espeak-ng-data" 2>/dev/null; then
+  if $ssh_ableton "test -d /data/UserData/schwung/espeak-ng-data" 2>/dev/null; then
     qecho "eSpeak-NG data directory present"
   else
     qecho "Warning: eSpeak-NG data directory not found (eSpeak engine may not work)"
@@ -1040,7 +1040,7 @@ else
 fi
 
 # Ensure the replacement Move script exists and is executable
-ssh_root_with_retry "chmod +x /data/UserData/move-anything/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
 
 # Backup original only once, and only if current Move exists
 # IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
@@ -1054,11 +1054,11 @@ elif ! $ssh_root "test -f /opt/move/MoveOriginal" 2>/dev/null; then
 fi
 
 # Install the shimmed Move entrypoint
-ssh_root_with_retry "cp /data/UserData/move-anything/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
+ssh_root_with_retry "cp /data/UserData/schwung/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
 # Wrap MoveWebService with web shim (same pattern as Move → MoveOriginal + shim-entrypoint)
 # This enables PIN TTS readout when a browser connects to move.local
-if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so" 2>/dev/null; then
+if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
   qecho "Installing web shim for PIN readout..."
   # Find the MoveWebService binary path from init script (may be in a variable assignment or inline)
   web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
@@ -1071,8 +1071,8 @@ if $ssh_ableton "test -f /data/UserData/move-anything/move-anything-web-shim.so"
     if $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
       ssh_root_with_retry "cat > $web_svc_path << 'WEOF'
 #!/bin/sh
-export LD_LIBRARY_PATH=/data/UserData/move-anything/lib:\$LD_LIBRARY_PATH
-export LD_PRELOAD=/usr/lib/move-anything-web-shim.so
+export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
+export LD_PRELOAD=/usr/lib/schwung-web-shim.so
 exec ${web_svc_path}Original \"\$@\"
 WEOF
 chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
@@ -1085,13 +1085,13 @@ fi
 # Create feature configuration file
 qecho ""
 qecho "Configuring features..."
-ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/config" || true
+ssh_ableton_with_retry "mkdir -p /data/UserData/schwung/config" || true
 
 # Link Audio enabled by default (harmless on 1.x, activates on 2.0+ with Link)
 link_audio_val="true"
 
 # Read existing features.json from device (if any) to preserve user settings
-existing_features=$(ssh_ableton_with_retry "cat /data/UserData/move-anything/config/features.json 2>/dev/null" || echo "")
+existing_features=$(ssh_ableton_with_retry "cat /data/UserData/schwung/config/features.json 2>/dev/null" || echo "")
 
 # Helper: extract a JSON bool value from existing config, with fallback
 get_existing_feature() {
@@ -1125,7 +1125,7 @@ features_json="{
 }"
 
 # Write features.json
-ssh_ableton_with_retry "cat > /data/UserData/move-anything/config/features.json << 'EOF'
+ssh_ableton_with_retry "cat > /data/UserData/schwung/config/features.json << 'EOF'
 $features_json
 EOF" || echo "Warning: Failed to create features.json"
 
@@ -1133,7 +1133,7 @@ EOF" || echo "Warning: Failed to create features.json"
 if [ "$enable_screen_reader" = true ]; then
     if [ "$screen_reader_runtime_available" = true ]; then
       qecho "Enabling screen reader..."
-      ssh_ableton_with_retry "echo '1' > /data/UserData/move-anything/config/screen_reader_state.txt" || true
+      ssh_ableton_with_retry "echo '1' > /data/UserData/schwung/config/screen_reader_state.txt" || true
     else
       iecho "Screen reader requested, but this build does not include TTS runtime support."
       enable_screen_reader=false
@@ -1228,8 +1228,8 @@ BEGIN { id=""; name=""; repo=""; asset=""; ctype="" }
         url="https://github.com/${repo}/releases/latest/download/${asset}"
         if curl -fsSLO "$url"; then
             # Use retry for scp/ssh because Windows mDNS can be flaky
-            if scp_with_retry "$asset" "$username@$hostname:./move-anything/"; then
-                ssh_root_with_retry "cd /data/UserData/move-anything && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset && chown -R ableton:users $dest/$id" || echo "  Warning: Failed to extract $name"
+            if scp_with_retry "$asset" "$username@$hostname:./schwung/"; then
+                ssh_root_with_retry "cd /data/UserData/schwung && mkdir -p $dest && tar -xzf $asset -C $dest/ && rm $asset && chown -R ableton:users $dest/$id" || echo "  Warning: Failed to extract $name"
             else
                 echo "  Warning: Failed to copy $name to device"
             fi
@@ -1295,11 +1295,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         rom_path=$(echo "$rom_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rom_path" ]; then
             rom_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/sound_generators/minijv/roms" || true
             for rom in jv880_rom1.bin jv880_rom2.bin jv880_waverom1.bin jv880_waverom2.bin jv880_nvram.bin; do
                 if [ -f "$rom_path/$rom" ]; then
                     echo "  Copying $rom..."
-                    if scp_with_retry "$rom_path/$rom" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/"; then
+                    if scp_with_retry "$rom_path/$rom" "$username@$hostname:./schwung/modules/sound_generators/minijv/roms/"; then
                         rom_count=$((rom_count + 1))
                     else
                         asset_copy_failed=true
@@ -1309,11 +1309,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
             # Copy expansion ROMs if present
             if [ -d "$rom_path/expansions" ]; then
                 exp_count=0
-                ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/minijv/roms/expansions" || true
+                ssh_ableton_with_retry "mkdir -p schwung/modules/sound_generators/minijv/roms/expansions" || true
                 for exp in "$rom_path/expansions"/*.bin "$rom_path/expansions"/*.BIN; do
                     if [ -f "$exp" ]; then
                         echo "  Copying expansion: $(basename "$exp")..."
-                        if scp_with_retry "$exp" "$username@$hostname:./move-anything/modules/sound_generators/minijv/roms/expansions/"; then
+                        if scp_with_retry "$exp" "$username@$hostname:./schwung/modules/sound_generators/minijv/roms/expansions/"; then
                             exp_count=$((exp_count + 1))
                         else
                             asset_copy_failed=true
@@ -1346,11 +1346,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         sf2_path=$(echo "$sf2_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$sf2_path" ]; then
             sf2_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/sf2/soundfonts" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/sound_generators/sf2/soundfonts" || true
             for sf2 in "$sf2_path"/*.sf2 "$sf2_path"/*.SF2; do
                 if [ -f "$sf2" ]; then
                     echo "  Copying $(basename "$sf2")..."
-                    if scp_with_retry "$sf2" "$username@$hostname:./move-anything/modules/sound_generators/sf2/soundfonts/"; then
+                    if scp_with_retry "$sf2" "$username@$hostname:./schwung/modules/sound_generators/sf2/soundfonts/"; then
                         sf2_count=$((sf2_count + 1))
                     else
                         asset_copy_failed=true
@@ -1379,11 +1379,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         syx_path=$(echo "$syx_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$syx_path" ]; then
             syx_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/dexed/banks" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/sound_generators/dexed/banks" || true
             for syx in "$syx_path"/*.syx "$syx_path"/*.SYX; do
                 if [ -f "$syx" ]; then
                     echo "  Copying $(basename "$syx")..."
-                    if scp_with_retry "$syx" "$username@$hostname:./move-anything/modules/sound_generators/dexed/banks/"; then
+                    if scp_with_retry "$syx" "$username@$hostname:./schwung/modules/sound_generators/dexed/banks/"; then
                         syx_count=$((syx_count + 1))
                     else
                         asset_copy_failed=true
@@ -1413,11 +1413,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         rex_path=$(echo "$rex_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$rex_path" ]; then
             rex_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/rex/loops" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/sound_generators/rex/loops" || true
             for rex in "$rex_path"/*.rx2 "$rex_path"/*.RX2 "$rex_path"/*.rex "$rex_path"/*.REX "$rex_path"/*.rcy "$rex_path"/*.RCY; do
                 if [ -f "$rex" ]; then
                     echo "  Copying $(basename "$rex")..."
-                    if scp_with_retry "$rex" "$username@$hostname:./move-anything/modules/sound_generators/rex/loops/"; then
+                    if scp_with_retry "$rex" "$username@$hostname:./schwung/modules/sound_generators/rex/loops/"; then
                         rex_count=$((rex_count + 1))
                     else
                         asset_copy_failed=true
@@ -1447,11 +1447,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         nam_path=$(echo "$nam_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$nam_path" ]; then
             nam_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/audio_fx/nam/models" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/audio_fx/nam/models" || true
             for nam in "$nam_path"/*.nam "$nam_path"/*.NAM; do
                 if [ -f "$nam" ]; then
                     echo "  Copying $(basename "$nam")..."
-                    if scp_with_retry "$nam" "$username@$hostname:./move-anything/modules/audio_fx/nam/models/"; then
+                    if scp_with_retry "$nam" "$username@$hostname:./schwung/modules/audio_fx/nam/models/"; then
                         nam_count=$((nam_count + 1))
                     else
                         asset_copy_failed=true
@@ -1480,11 +1480,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         hush1_path=$(echo "$hush1_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$hush1_path" ]; then
             hush1_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/hush1/presets" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/sound_generators/hush1/presets" || true
             for preset in "$hush1_path"/*.vstpreset "$hush1_path"/*.bassline "$hush1_path"/*.VSTPRESET "$hush1_path"/*.BASSLINE; do
                 if [ -f "$preset" ]; then
                     echo "  Copying $(basename "$preset")..."
-                    if scp_with_retry "$preset" "$username@$hostname:./move-anything/modules/sound_generators/hush1/presets/"; then
+                    if scp_with_retry "$preset" "$username@$hostname:./schwung/modules/sound_generators/hush1/presets/"; then
                         hush1_count=$((hush1_count + 1))
                     else
                         asset_copy_failed=true
@@ -1513,11 +1513,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         clap_path=$(echo "$clap_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$clap_path" ]; then
             clap_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/audio_fx/clap/plugins" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/audio_fx/clap/plugins" || true
             for clap in "$clap_path"/*.clap "$clap_path"/*.CLAP; do
                 if [ -f "$clap" ]; then
                     echo "  Copying $(basename "$clap")..."
-                    if scp_with_retry "$clap" "$username@$hostname:./move-anything/modules/audio_fx/clap/plugins/"; then
+                    if scp_with_retry "$clap" "$username@$hostname:./schwung/modules/audio_fx/clap/plugins/"; then
                         clap_count=$((clap_count + 1))
                     else
                         asset_copy_failed=true
@@ -1547,11 +1547,11 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
         osirus_path=$(echo "$osirus_path" | sed "s|^~|$HOME|" | sed "s/\\\\ / /g; s/\\\\'/'/g" | sed "s/^['\"]//;s/['\"]$//")
         if [ -d "$osirus_path" ]; then
             osirus_count=0
-            ssh_ableton_with_retry "mkdir -p move-anything/modules/sound_generators/osirus/roms" || true
+            ssh_ableton_with_retry "mkdir -p schwung/modules/sound_generators/osirus/roms" || true
             for rom in "$osirus_path"/*.mid "$osirus_path"/*.MID "$osirus_path"/*.bin "$osirus_path"/*.BIN; do
                 if [ -f "$rom" ]; then
                     echo "  Copying $(basename "$rom")..."
-                    if scp_with_retry "$rom" "$username@$hostname:./move-anything/modules/sound_generators/osirus/roms/"; then
+                    if scp_with_retry "$rom" "$username@$hostname:./schwung/modules/sound_generators/osirus/roms/"; then
                         osirus_count=$((osirus_count + 1))
                     else
                         asset_copy_failed=true
@@ -1579,18 +1579,18 @@ if [ "$copy_assets" = "y" ] || [ "$copy_assets" = "Y" ]; then
     fi
 fi
 
-# Deploy track presets to UserLibrary/Move Everything subfolder
+# Deploy track presets to UserLibrary/Schwung subfolder
 qecho "Installing track presets..."
-ssh_ableton_with_retry "mkdir -p '/data/UserData/UserLibrary/Track Presets/Move Everything'" || true
-ssh_ableton_with_retry "cp /data/UserData/move-anything/presets/track_presets/*.json '/data/UserData/UserLibrary/Track Presets/Move Everything/' 2>/dev/null" || true
+ssh_ableton_with_retry "mkdir -p '/data/UserData/UserLibrary/Track Presets/Schwung'" || true
+ssh_ableton_with_retry "cp /data/UserData/schwung/presets/track_presets/*.json '/data/UserData/UserLibrary/Track Presets/Schwung/' 2>/dev/null" || true
 # Clean up old underscore-named presets from root Track Presets folder
 ssh_ableton_with_retry "rm -f '/data/UserData/UserLibrary/Track Presets/ME_Slot_'*.json" || true
 
 # Fetch fresh Move Manual on the installing computer and deploy to device cache
 qecho "Fetching Move Manual..."
 if [ -f "scripts/fetch_move_manual.sh" ] && scripts/fetch_move_manual.sh 2>/dev/null && [ -f ".cache/move_manual.json" ]; then
-    ssh_ableton_with_retry "mkdir -p /data/UserData/move-anything/cache" || true
-    scp_with_retry ".cache/move_manual.json" "$username@$hostname:./move-anything/cache/move_manual.json" || true
+    ssh_ableton_with_retry "mkdir -p /data/UserData/schwung/cache" || true
+    scp_with_retry ".cache/move_manual.json" "$username@$hostname:./schwung/cache/move_manual.json" || true
     qecho "Move Manual deployed ($(wc -c < .cache/move_manual.json | tr -d ' ') bytes)"
 else
     qecho "Manual fetch skipped (requires node + curl)"
@@ -1601,11 +1601,11 @@ fi
 # skipback, sets, etc.) end up root-owned. Move's UI runs as ableton and can't
 # see root-owned files. Fix everything we touch.
 qecho "Fixing file ownership..."
-ssh_root_with_retry "chown -R ableton:users /data/UserData/move-anything" || true
-ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Samples/Move Everything' 2>/dev/null" || true
-ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Track Presets/Move Everything' 2>/dev/null" || true
+ssh_root_with_retry "chown -R ableton:users /data/UserData/schwung" || true
+ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Samples/Schwung' 2>/dev/null" || true
+ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Track Presets/Schwung' 2>/dev/null" || true
 # Restore setuid on shim (chown clears it)
-ssh_root_with_retry "chmod u+s /data/UserData/move-anything/move-anything-shim.so" || true
+ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || true
 
 qecho ""
 iecho "Restarting Move..."
@@ -1613,7 +1613,7 @@ iecho "Restarting Move..."
 # Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
 # Use retry wrappers because Windows mDNS resolution can be flaky.
 ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui move-anything link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
 # Clean up stale shared memory so it's recreated with correct permissions
 ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
 # Free the SPI device if anything still holds it (prevents "communication error" on restart)
@@ -1646,8 +1646,8 @@ if [ "$quiet_mode" = true ]; then
 else
     # Verbose output for visual users
     echo
-    echo "Move Everything is now installed with the modular plugin system."
-    echo "Modules are located in: /data/UserData/move-anything/modules/"
+    echo "Schwung is now installed with the modular plugin system."
+    echo "Modules are located in: /data/UserData/schwung/modules/"
     echo
 
     # Show active features
@@ -1669,8 +1669,8 @@ else
     fi
 
     echo "Logging commands:"
-    echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/move-anything/debug_log_on'"
-    echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/move-anything/debug_log_on'"
-    echo "  View:    ssh ableton@move.local 'tail -f /data/UserData/move-anything/debug.log'"
+    echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/schwung/debug_log_on'"
+    echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/schwung/debug_log_on'"
+    echo "  View:    ssh ableton@move.local 'tail -f /data/UserData/schwung/debug.log'"
     echo
 fi

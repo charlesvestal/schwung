@@ -1,5 +1,5 @@
 /* shadow_resample.h - Native resample bridge
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_RESAMPLE_H
 #define SHADOW_RESAMPLE_H

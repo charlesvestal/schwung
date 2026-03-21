@@ -2,17 +2,17 @@
  * Settings screen using shared menu components.
  */
 
-import { createValue, createEnum, createToggle, createBack, createSubmenu, createInfo, capitalize } from '/data/UserData/move-anything/shared/menu_items.mjs';
-import { createMenuState, handleMenuInput } from '/data/UserData/move-anything/shared/menu_nav.mjs';
-import { createMenuStack } from '/data/UserData/move-anything/shared/menu_stack.mjs';
-import { drawStackMenu } from '/data/UserData/move-anything/shared/menu_render.mjs';
+import { createValue, createEnum, createToggle, createBack, createSubmenu, createInfo, capitalize } from '/data/UserData/schwung/shared/menu_items.mjs';
+import { createMenuState, handleMenuInput } from '/data/UserData/schwung/shared/menu_nav.mjs';
+import { createMenuStack } from '/data/UserData/schwung/shared/menu_stack.mjs';
+import { drawStackMenu } from '/data/UserData/schwung/shared/menu_render.mjs';
 
 import * as std from 'std';
 
 const VELOCITY_CURVES = ['linear', 'soft', 'hard', 'full'];
 const PAD_LAYOUTS = ['chromatic', 'fourth'];
 const CLOCK_MODES = ['off', 'internal', 'external'];
-const HOST_VERSION_FILE = '/data/UserData/move-anything/host/version.txt';
+const HOST_VERSION_FILE = '/data/UserData/schwung/host/version.txt';
 
 /**
  * Get host version from version.txt

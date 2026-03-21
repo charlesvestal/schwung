@@ -62,13 +62,13 @@ char g_menu_script_path[256] = "";
 int g_silence_blocks = 0;
 
 /* Default modules directory */
-#define DEFAULT_MODULES_DIR "/data/UserData/move-anything/modules"
+#define DEFAULT_MODULES_DIR "/data/UserData/schwung/modules"
 
 /* Base directory for path validation */
-#define BASE_DIR "/data/UserData/move-anything"
+#define BASE_DIR "/data/UserData/schwung"
 
 /* Bundled curl binary path */
-#define CURL_PATH "/data/UserData/move-anything/bin/curl"
+#define CURL_PATH "/data/UserData/schwung/bin/curl"
 
 typedef struct FontChar {
   unsigned char* data;
@@ -609,7 +609,7 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
     return 0;  /* Pass through so modules can also track it */
   }
 
-  /* Shift + Jog Click = Exit Move Anything */
+  /* Shift + Jog Click = Exit Schwung */
   if (cc == CC_JOG_CLICK && value == 127 && host_shift_held) {
     printf("Host: Shift+Wheel detected - exiting\n");
     global_exit_flag = 1;
@@ -2461,7 +2461,7 @@ int main(int argc, char *argv[])
 
     if (argc > 2)
     {
-        printf("usage: move-anything <script.js>");
+        printf("usage: schwung <script.js>");
         exit(1);
     }
 

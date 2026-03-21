@@ -1,5 +1,5 @@
 /* shadow_pin_scanner.h - PIN display scanner for screen reader
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_PIN_SCANNER_H
 #define SHADOW_PIN_SCANNER_H

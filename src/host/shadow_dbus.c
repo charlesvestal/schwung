@@ -1,5 +1,5 @@
 /* shadow_dbus.c - D-Bus monitoring, screen reader injection, volume/mute sync
- * Extracted from move_anything_shim.c for maintainability.
+ * Extracted from schwung_shim.c for maintainability.
  *
  * Handles:
  * - D-Bus signal monitoring (screen reader text, volume changes)
@@ -761,7 +761,7 @@ static void *shadow_dbus_thread_func(void *arg)
 
     /* Send test announcements via the new shadow buffer architecture.
      * These are queued and injected via send() hook with coordinated serial numbers. */
-    send_screenreader_announcement("Move Anything Screen Reader Test");
+    send_screenreader_announcement("Schwung Screen Reader Test");
     sleep(1);
     send_screenreader_announcement("Screen Reader Active");
 

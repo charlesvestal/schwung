@@ -4,7 +4,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 
 ## Prerequisites
 
-- Fresh Move device or uninstall existing Move Anything first:
+- Fresh Move device or uninstall existing Schwung first:
   ```bash
   ./scripts/uninstall.sh
   ```
@@ -26,12 +26,12 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 1. SSH to Move: `ssh ableton@move.local`
 2. Check state file:
    ```bash
-   cat /data/UserData/move-anything/config/screen_reader_state.txt
+   cat /data/UserData/schwung/config/screen_reader_state.txt
    ```
    - Expected: File should NOT exist (screen reader defaults to OFF)
 3. Check features config:
    ```bash
-   cat /data/UserData/move-anything/config/features.json
+   cat /data/UserData/schwung/config/features.json
    ```
    - Expected:
      ```json
@@ -61,7 +61,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 
 4. SSH to Move and check state file:
    ```bash
-   cat /data/UserData/move-anything/config/screen_reader_state.txt
+   cat /data/UserData/schwung/config/screen_reader_state.txt
    ```
    - Expected: `0` (OFF)
 
@@ -70,7 +70,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 
 6. SSH and check state file again:
    ```bash
-   cat /data/UserData/move-anything/config/screen_reader_state.txt
+   cat /data/UserData/schwung/config/screen_reader_state.txt
    ```
    - Expected: `1` (ON)
 
@@ -117,7 +117,7 @@ Test plan for screen reader rename, default-off behavior, and configurable featu
 
 3. SSH and check state file:
    ```bash
-   cat /data/UserData/move-anything/config/screen_reader_state.txt
+   cat /data/UserData/schwung/config/screen_reader_state.txt
    ```
    - Expected: `1` (ON)
 
@@ -266,8 +266,8 @@ Examples:
 1. Install with defaults
 2. SSH to Move and delete config files:
    ```bash
-   rm -f /data/UserData/move-anything/config/screen_reader_state.txt
-   rm -f /data/UserData/move-anything/config/features.json
+   rm -f /data/UserData/schwung/config/screen_reader_state.txt
+   rm -f /data/UserData/schwung/config/features.json
    ```
 3. Reboot Move
 4. Press Shift+Menu
@@ -278,12 +278,12 @@ Examples:
 1. Install with defaults
 2. SSH to Move and corrupt features.json:
    ```bash
-   echo "garbage" > /data/UserData/move-anything/config/features.json
+   echo "garbage" > /data/UserData/schwung/config/features.json
    ```
 3. Reboot Move
 4. Check log:
    ```bash
-   tail -f /data/UserData/move-anything/debug.log
+   tail -f /data/UserData/schwung/debug.log
    ```
    - Expected: Should log feature detection, default to all enabled
 
@@ -323,7 +323,7 @@ DISABLE_SCREEN_READER=1 ./scripts/build.sh
    ```bash
    ssh root@move.local 'pid=$(pidof MoveOriginal | awk "{print \$1}"); tr "\0" "\n" < /proc/$pid/environ | grep "^LD_PRELOAD="'
    ```
-   - Expected: `LD_PRELOAD=move-anything-shim.so`
+   - Expected: `LD_PRELOAD=schwung-shim.so`
 3. Verify Flite runtime is absent:
    ```bash
    ssh root@move.local 'ls -1 /usr/lib/libflite*.so* 2>/dev/null || echo absent'
@@ -333,7 +333,7 @@ DISABLE_SCREEN_READER=1 ./scripts/build.sh
 **Test 7.2: No Crash Loop When Screen Reader State Is Forced On**
 1. Force state file to `1` and restart Move:
    ```bash
-   ssh ableton@move.local 'echo 1 > /data/UserData/move-anything/config/screen_reader_state.txt'
+   ssh ableton@move.local 'echo 1 > /data/UserData/schwung/config/screen_reader_state.txt'
    ssh root@move.local '/etc/init.d/move stop >/dev/null 2>&1 || true; sleep 1; /etc/init.d/move start >/dev/null 2>&1'
    ```
 2. Check PID stability:

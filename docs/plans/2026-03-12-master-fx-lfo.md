@@ -52,7 +52,7 @@ Add param set/get handlers in `shadow_inprocess_handle_param_request()`:
 - GET: individual params + `config` key returns full JSON for persistence
 - Same auto-defaults as slot LFOs (rate_hz=1.0, depth=0.5 on fresh enable; rate_div=3 when sync first enabled)
 
-Wire tick into shim: In `move_anything_shim.c` after the master FX processing loop (line 1022), add `shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK)`.
+Wire tick into shim: In `schwung_shim.c` after the master FX processing loop (line 1022), add `shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK)`.
 
 Build and verify.
 

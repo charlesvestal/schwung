@@ -82,7 +82,7 @@ extern int (*real_ioctl)(int, unsigned long, ...);  /* Forward declaration */
    CONTROL_BUFFER_SIZE, SHADOW_UI_BUFFER_SIZE, SHADOW_PARAM_BUFFER_SIZE */
 /* FRAMES_PER_BLOCK is now defined in shadow_constants.h */
 
-/* Move host shortcut CCs (mirror move_anything.c) */
+/* Move host shortcut CCs (mirror schwung_host.c) */
 #define CC_SHIFT 49
 #define CC_JOG_CLICK 3
 #define CC_JOG_WHEEL 14
@@ -212,7 +212,7 @@ static int16_t shadow_slot_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2
 static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
 /* ---- Preview player: lightweight WAV playback for file browser ---- */
-#define PREVIEW_CMD_PATH "/data/UserData/move-anything/preview_cmd_path.txt"
+#define PREVIEW_CMD_PATH "/data/UserData/schwung/preview_cmd_path.txt"
 #define PREVIEW_WAV_FORMAT_PCM   1
 #define PREVIEW_WAV_FORMAT_FLOAT 3
 static int preview_fd = -1;
@@ -602,7 +602,7 @@ static int shim_run_command(const char *const argv[]) {
 /* Load feature configuration from config/features.json */
 static void load_feature_config(void)
 {
-    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    const char *config_path = "/data/UserData/schwung/config/features.json";
     FILE *f = fopen(config_path, "r");
     if (!f) {
         /* No config file - use defaults (all enabled) */
@@ -1671,7 +1671,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
             /* Start recording — path in file */
             shadow_control->sampler_cmd = 0;
             char path_buf[256] = "";
-            FILE *pf = fopen("/data/UserData/move-anything/sampler_cmd_path.txt", "r");
+            FILE *pf = fopen("/data/UserData/schwung/sampler_cmd_path.txt", "r");
             if (pf) {
                 if (fgets(path_buf, sizeof(path_buf), pf)) {
                     char *nl = strchr(path_buf, '\n');
@@ -3007,7 +3007,7 @@ static void log_hotkey_state(const char *tag)
 #if SHADOW_HOTKEY_DEBUG
     if (!hotkey_state_log)
     {
-        hotkey_state_log = fopen("/data/UserData/move-anything/hotkey_state.log", "a");
+        hotkey_state_log = fopen("/data/UserData/schwung/hotkey_state.log", "a");
     }
     if (hotkey_state_log)
     {
@@ -3282,7 +3282,7 @@ int ioctl(int fd, unsigned long request, ...)
     /* Skip all processing in baseline mode to measure pure Move ioctl time */
     if (baseline_mode) goto do_ioctl;
 
-    // TODO: Consider using move-anything host code and quickjs for flexibility
+    // TODO: Consider using schwung host code and quickjs for flexibility
     TIME_SECTION_START();
     midi_monitor();
     TIME_SECTION_END(midi_mon_sum, midi_mon_max);
@@ -3795,7 +3795,7 @@ do_ioctl:
         memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
                MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
 
-        /* Bridge Move Everything's total mix into native resampling path when selected. */
+        /* Bridge Schwung's total mix into native resampling path when selected. */
         native_resample_bridge_apply();
 
         /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
@@ -4924,7 +4924,7 @@ do_ioctl:
         /* Use restart script for clean restart (kill as root, start fresh).
          * Fork+exec won't work because MoveOriginal has file capabilities
          * that trigger AT_SECURE, blocking LD_PRELOAD from a non-root process. */
-        system("/data/UserData/move-anything/restart-move.sh");
+        system("/data/UserData/schwung/restart-move.sh");
     }
 
 do_timing:

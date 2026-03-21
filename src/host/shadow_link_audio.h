@@ -1,5 +1,5 @@
 /* shadow_link_audio.h - Link Audio interception, publishing, and channel reading
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_LINK_AUDIO_H
 #define SHADOW_LINK_AUDIO_H

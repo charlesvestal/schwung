@@ -1,5 +1,5 @@
 /* shadow_state.h - Shadow slot state persistence
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_STATE_H
 #define SHADOW_STATE_H
@@ -10,7 +10,7 @@
  * Constants
  * ============================================================================ */
 
-#define SHADOW_CONFIG_PATH "/data/UserData/move-anything/shadow_chain_config.json"
+#define SHADOW_CONFIG_PATH "/data/UserData/schwung/shadow_chain_config.json"
 
 /* ============================================================================
  * Callback struct

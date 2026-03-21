@@ -10,11 +10,11 @@ import * as os from 'os';
 
 /* Constants */
 export const CATALOG_URL = 'https://raw.githubusercontent.com/charlesvestal/move-everything/main/module-catalog.json';
-export const CATALOG_CACHE_PATH = '/data/UserData/move-anything/catalog-cache.json';
-export const MODULES_DIR = '/data/UserData/move-anything/modules';
-export const BASE_DIR = '/data/UserData/move-anything';
-export const TMP_DIR = '/data/UserData/move-anything/tmp';
-export const HOST_VERSION_FILE = '/data/UserData/move-anything/host/version.txt';
+export const CATALOG_CACHE_PATH = '/data/UserData/schwung/catalog-cache.json';
+export const MODULES_DIR = '/data/UserData/schwung/modules';
+export const BASE_DIR = '/data/UserData/schwung';
+export const TMP_DIR = '/data/UserData/schwung/tmp';
+export const HOST_VERSION_FILE = '/data/UserData/schwung/host/version.txt';
 
 /* Categories */
 export const CATEGORIES = [

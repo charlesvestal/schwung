@@ -45,7 +45,7 @@
 #define LINK_AUDIO_PUB_RING_MASK    (LINK_AUDIO_PUB_RING_SAMPLES - 1)
 
 /* Shared memory for publisher (shim → link_subscriber) */
-#define SHM_LINK_AUDIO_PUB  "/move-shadow-pub-audio"
+#define SHM_LINK_AUDIO_PUB  "/schwung-pub-audio"
 #define LINK_AUDIO_PUB_BLOCK_FRAMES  128   /* matches FRAMES_PER_BLOCK */
 #define LINK_AUDIO_PUB_BLOCK_SAMPLES (LINK_AUDIO_PUB_BLOCK_FRAMES * 2) /* stereo */
 

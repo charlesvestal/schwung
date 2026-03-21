@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Regression test: sampler and skipback saves should use dated subfolders:
-#   Samples/Move Everything/Resampler/YYYY-MM-DD/
-#   Samples/Move Everything/Skipback/YYYY-MM-DD/
+#   Samples/Schwung/Resampler/YYYY-MM-DD/
+#   Samples/Schwung/Skipback/YYYY-MM-DD/
 
 file_h="src/host/shadow_sampler.h"
 file_c="src/host/shadow_sampler.c"

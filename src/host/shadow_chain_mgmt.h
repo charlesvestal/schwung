@@ -1,5 +1,5 @@
 /* shadow_chain_mgmt.h - Chain management, master FX, param handling, boot init
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_CHAIN_MGMT_H
 #define SHADOW_CHAIN_MGMT_H
@@ -19,8 +19,8 @@
  * ============================================================================ */
 
 #define MASTER_FX_SLOTS 4
-#define SHADOW_CHAIN_MODULE_DIR "/data/UserData/move-anything/modules/chain"
-#define SHADOW_CHAIN_DSP_PATH "/data/UserData/move-anything/modules/chain/dsp.so"
+#define SHADOW_CHAIN_MODULE_DIR "/data/UserData/schwung/modules/chain"
+#define SHADOW_CHAIN_DSP_PATH "/data/UserData/schwung/modules/chain/dsp.so"
 
 /* Capture group alias definitions */
 #define CAPTURE_PADS_NOTE_MIN     68

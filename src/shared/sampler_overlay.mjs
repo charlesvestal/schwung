@@ -1,12 +1,12 @@
 /*
  * Sampler & Skipback overlay rendering for Shadow UI.
  *
- * The shim publishes state via /move-shadow-overlay SHM; this module
+ * The shim publishes state via /schwung-overlay SHM; this module
  * reads that state (passed in from shadow_ui.js) and draws the overlays
  * using the same TTF font and layout helpers as the rest of Shadow UI.
  */
 
-import { drawRect } from '/data/UserData/move-anything/shared/menu_layout.mjs';
+import { drawRect } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;

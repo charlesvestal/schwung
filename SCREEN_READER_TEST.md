@@ -29,7 +29,7 @@
 
 **Check logs:**
 ```bash
-ssh ableton@move.local "tail -f /data/UserData/move-anything/debug.log | grep 'Screen reader'"
+ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log | grep 'Screen reader'"
 ```
 
 ### Test 2: Category Navigation
@@ -76,7 +76,7 @@ ssh ableton@move.local "tail -f /data/UserData/move-anything/debug.log | grep 'S
 **Check 1: Are D-Bus signals being sent?**
 ```bash
 # Check debug log
-ssh ableton@move.local "tail -100 /data/UserData/move-anything/debug.log | grep 'Screen reader'"
+ssh ableton@move.local "tail -100 /data/UserData/schwung/debug.log | grep 'Screen reader'"
 ```
 
 If you see "Screen reader: ..." messages, signals ARE being sent.

@@ -7,10 +7,10 @@
  */
 
 const MANUAL_URL = "https://www.ableton.com/en/move/manual/";
-const CACHE_DIR = "/data/UserData/move-anything/cache";
+const CACHE_DIR = "/data/UserData/schwung/cache";
 const CACHE_PATH = CACHE_DIR + "/move_manual.json";
 const HTML_PATH = CACHE_DIR + "/move_manual.html";
-const BUNDLED_PATH = "/data/UserData/move-anything/shared/move_manual_bundled.json";
+const BUNDLED_PATH = "/data/UserData/schwung/shared/move_manual_bundled.json";
 const MAX_LINE_WIDTH = 20;
 const CACHE_MAX_AGE_DAYS = 1;
 const CACHE_VERSION = 2; /* Bump when notice text or parsing logic changes */

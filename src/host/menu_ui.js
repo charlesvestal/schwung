@@ -9,13 +9,13 @@ import {
     MoveMainKnob, MoveMainButton, MoveMainTouch,
     MoveShift, MoveMenu, MoveBack,
     MoveLeft, MoveRight, MoveUp, MoveDown
-} from '/data/UserData/move-anything/shared/constants.mjs';
+} from '/data/UserData/schwung/shared/constants.mjs';
 
-import { isCapacitiveTouchMessage, clearAllLEDs } from '/data/UserData/move-anything/shared/input_filter.mjs';
+import { isCapacitiveTouchMessage, clearAllLEDs } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { drawMainMenu, handleMainMenuCC, getSelectedItem, getSelectableCount, enterCategory, exitCategory, isInCategory, resetToMain } from './menu_main.mjs';
 import { drawSettings, handleSettingsCC, initSettings, isEditing } from './menu_settings.mjs';
-import { drawMessageOverlay } from '/data/UserData/move-anything/shared/menu_layout.mjs';
-import { wrapText } from '/data/UserData/move-anything/shared/scrollable_text.mjs';
+import { drawMessageOverlay } from '/data/UserData/schwung/shared/menu_layout.mjs';
+import { wrapText } from '/data/UserData/schwung/shared/scrollable_text.mjs';
 
 /* State */
 let modules = [];
@@ -284,7 +284,7 @@ globalThis.init = function() {
     }
 
     clear_screen();
-    print(2, 24, "Move Anything", 1);
+    print(2, 24, "Schwung", 1);
     print(2, 36, "Host Ready", 1);
 };
 

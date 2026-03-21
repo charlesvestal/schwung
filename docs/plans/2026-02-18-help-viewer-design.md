@@ -2,7 +2,7 @@
 
 ## Overview
 
-Add an on-device help system to Move Everything, accessible from Master FX Settings. Displays condensed manual content in a two-level hierarchy: topic list → scrollable text. All content is screen-reader accessible.
+Add an on-device help system to Schwung, accessible from Master FX Settings. Displays condensed manual content in a two-level hierarchy: topic list → scrollable text. All content is screen-reader accessible.
 
 ## Entry Point
 
@@ -26,7 +26,7 @@ MFX Settings → [Help] → Section List → Topic List → Scrollable Text
 ```
 
 Three boolean flags in shadow_ui.js (matching existing pattern):
-- `inHelpSectionList` - viewing section list ("Move Everything" / "Move Manual")
+- `inHelpSectionList` - viewing section list ("Schwung" / "Move Manual")
 - `inHelpTopicList` - viewing topic list for selected section
 - `inHelpTopicDetail` - reading a topic
 
@@ -37,7 +37,7 @@ Three boolean flags in shadow_ui.js (matching existing pattern):
 {
   "sections": [
     {
-      "title": "Move Everything",
+      "title": "Schwung",
       "topics": [
         {
           "title": "Shortcuts",
@@ -71,7 +71,7 @@ Three boolean flags in shadow_ui.js (matching existing pattern):
 
 Lines are pre-wrapped to 20 characters for the 128x64 display. No runtime word-wrapping needed.
 
-### Move Everything Topics
+### Schwung Topics
 
 1. Shortcuts
 2. Connecting Tracks

@@ -34,18 +34,18 @@ jobs:
 
       - name: Build with Docker
         run: |
-          docker build -t move-anything-builder .
-          docker run --rm -v "$PWD:/build" move-anything-builder
+          docker build -t schwung-builder .
+          docker run --rm -v "$PWD:/build" schwung-builder
 
       - name: Verify build
         run: |
-          ls -la move-anything.tar.gz
-          tar -tzvf move-anything.tar.gz | head -20
+          ls -la schwung.tar.gz
+          tar -tzvf schwung.tar.gz | head -20
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: move-anything.tar.gz
+          files: schwung.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -60,7 +60,7 @@ jobs:
           cat > release.json << EOF
           {
             "version": "${VERSION}",
-            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/move-anything.tar.gz"
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/schwung.tar.gz"
           }
           EOF
           git add release.json
