@@ -871,6 +871,10 @@ if ssh_ableton_with_retry "test -d '/data/UserData/UserLibrary/Track Presets/Mov
   fi
 fi
 
+# Create backwards-compat symlink so modules with old import paths still work
+# (e.g., import from '/data/UserData/move-anything/shared/constants.mjs')
+ssh_root_with_retry "if [ ! -L /data/UserData/move-anything ] && [ ! -d /data/UserData/move-anything ]; then ln -s /data/UserData/schwung /data/UserData/move-anything; fi" || true
+
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
 scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
 # Validate tar payload layout before extraction.
