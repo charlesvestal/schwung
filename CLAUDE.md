@@ -8,7 +8,7 @@ Keep CLAUDE.md up to date as the codebase evolves. When you add new JS host func
 
 ## Project Overview
 
-Move Anything is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. It provides access to pads, encoders, buttons, display (128x64 1-bit), audio I/O, and MIDI via USB-A.
+Schwung is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. It provides access to pads, encoders, buttons, display (128x64 1-bit), audio I/O, and MIDI via USB-A.
 
 ## Code Style
 
@@ -22,7 +22,7 @@ Move Anything is a framework for custom JavaScript and native DSP modules on Abl
 
 ```bash
 ./scripts/build.sh           # Build with Docker (auto-detects, recommended)
-./scripts/package.sh         # Create move-anything.tar.gz
+./scripts/package.sh         # Create schwung.tar.gz
 ./scripts/clean.sh           # Remove build/ and dist/
 ./scripts/install.sh         # Deploy from GitHub release
 ./scripts/install.sh local   # Deploy from local build
@@ -38,8 +38,8 @@ Cross-compilation uses `${CROSS_PREFIX}gcc` for the Move's ARM architecture.
 No automated test suite. Testing is done manually on hardware. After deploying, enable the unified logger and check logs on device:
 
 ```bash
-ssh ableton@move.local "touch /data/UserData/move-anything/debug_log_on"
-ssh ableton@move.local "tail -f /data/UserData/move-anything/debug.log"
+ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
+ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log"
 ```
 
 See `docs/LOGGING.md` for the full unified logging guide. In JS use `console.log()` (auto-routed) or import from `shared/logger.mjs`. In C use `LOG_DEBUG("source", "msg")` etc. from `host/unified_log.h`.
@@ -48,14 +48,14 @@ See `docs/LOGGING.md` for the full unified logging guide. In JS use `console.log
 
 **Never write to `/tmp` on the Move device.** The root filesystem (`/`) is tiny (~463MB) and nearly always 100% full. `/tmp` is on rootfs. Writing there **will** fill the disk and break things. Always use `/data/UserData/` which has ~49GB free.
 
-This applies to logs, recordings, temp files, test output — everything. Use paths under `/data/UserData/` (e.g., `/data/UserData/UserLibrary/Recordings/`). The unified logger already writes to `/data/UserData/move-anything/debug.log`.
+This applies to logs, recordings, temp files, test output — everything. Use paths under `/data/UserData/` (e.g., `/data/UserData/UserLibrary/Recordings/`). The unified logger already writes to `/data/UserData/schwung/debug.log`.
 
 ## Architecture
 
 ### Host + Module System
 
 ```
-Host (move-anything):
+Host (schwung):
   - Owns /dev/ablspi0.0 for hardware communication
   - Embeds QuickJS for JavaScript execution
   - Manages module discovery and lifecycle
@@ -70,8 +70,8 @@ Modules (src/modules/<id>/):
 
 ### Key Source Files
 
-- **src/move_anything.c**: Main host runtime
-- **src/move_anything_shim.c**: LD_PRELOAD shim
+- **src/schwung_host.c**: Main host runtime
+- **src/schwung_shim.c**: LD_PRELOAD shim
 - **src/host/plugin_api_v1.h**: DSP plugin C API
 - **src/host/module_manager.c**: Module loading
 - **src/host/menu_ui.js**: Host menu for module selection
@@ -276,9 +276,9 @@ Frame layout: [L0, R0, L1, R1, ..., L127, R127] as int16 little-endian.
 
 On-device layout:
 ```
-/data/UserData/move-anything/
-  move-anything               # Host binary
-  move-anything-shim.so       # Shim (also at /usr/lib/)
+/data/UserData/schwung/
+  schwung                     # Host binary
+  schwung-shim.so       # Shim (also at /usr/lib/)
   host/menu_ui.js
   shared/
   modules/
@@ -387,7 +387,7 @@ These provide metadata for the Shadow UI parameter editor alongside `ui_hierarch
 
 - Chain host (`modules/chain/dsp/chain_host.c`) loads sub-plugins via dlopen
 - Forwards MIDI to sound generator, routes audio through effects
-- Patch files stored in `/data/UserData/move-anything/patches/*.json` on device define chain configurations
+- Patch files stored in `/data/UserData/schwung/patches/*.json` on device define chain configurations
 - MIDI FX: chord generator, arpeggiator (up, down, up_down, random)
 - Audio FX: freeverb
 - MIDI sources (optional): DSP modules that generate MIDI; can provide `ui_chain.js` for full-screen chain UI
@@ -398,7 +398,7 @@ Signal Chain supports recording audio output to WAV files:
 
 - **Record Button** (CC 118): Toggles recording on/off
 - **LED States**: Off (no patch), White (patch loaded), Red (recording)
-- **Output**: Recordings saved to `/data/UserData/move-anything/recordings/rec_YYYYMMDD_HHMMSS.wav`
+- **Output**: Recordings saved to `/data/UserData/schwung/recordings/rec_YYYYMMDD_HHMMSS.wav`
 - **Format**: 44.1kHz, 16-bit stereo WAV
 
 Recording uses a background thread with a 2-second ring buffer to prevent audio dropouts during disk I/O. Recording requires a patch to be loaded.
@@ -446,30 +446,30 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 ### Quantized Sampler
 
 - Shift+Sample opens the sampler
-- Choose source: resample (including Move Everything synths), or Move Input (whatever is set in the regular sample flow)
+- Choose source: resample (including Schwung synths), or Move Input (whatever is set in the regular sample flow)
 - Choose duration in bars (or until stopped). Uses MIDI clock to determine tempo, falling back to project tempo if not found.
 - Starts on a note event or pressing play
-- Recordings are saved to `Samples/Move Everything/Resampler/YYYY-MM-DD/`
+- Recordings are saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`
 
-Works for resampling your Move, including Move Everything synths, or a line-in source or microphone. You can use Move's built-in count-in for line-in recordings too.
+Works for resampling your Move, including Schwung synths, or a line-in source or microphone. You can use Move's built-in count-in for line-in recordings too.
 
 ### Skipback
 
-Shift+Capture writes the last 30 seconds of audio to disk. Uses the same source as the quantized sampler (resample or Move Input). Saved to `Samples/Move Everything/Skipback/YYYY-MM-DD/`.
+Shift+Capture writes the last 30 seconds of audio to disk. Uses the same source as the quantized sampler (resample or Move Input). Saved to `Samples/Schwung/Skipback/YYYY-MM-DD/`.
 
 ### Shadow Architecture
 
 ```
-src/move_anything_shim.c    # LD_PRELOAD shim - intercepts ioctl, mixes audio
+src/schwung_shim.c    # LD_PRELOAD shim - intercepts ioctl, mixes audio
 src/shadow/shadow_ui.js     # Shadow UI - slot/patch management
 src/host/shadow_constants.h # Shared memory structures
 ```
 
 Key shared memory segments:
-- `/move-shadow-audio` - Shadow's mixed audio output
-- `/move-shadow-control` - Control flags and state (shadow_control_t)
-- `/move-shadow-param` - Parameter get/set requests (shadow_param_t)
-- `/move-shadow-ui` - UI state for slot info (shadow_ui_state_t)
+- `/schwung-audio` - Shadow's mixed audio output
+- `/schwung-control` - Control flags and state (shadow_control_t)
+- `/schwung-param` - Parameter get/set requests (shadow_param_t)
+- `/schwung-ui` - UI state for slot info (shadow_ui_state_t)
 
 ### Shadow UI Flags
 
@@ -576,11 +576,11 @@ The Module Store (`store` module) downloads and installs external modules from G
 {
   "catalog_version": 2,
   "host": {
-    "name": "Move Anything",
+    "name": "Schwung",
     "github_repo": "charlesvestal/move-anything",
-    "asset_name": "move-anything.tar.gz",
+    "asset_name": "schwung.tar.gz",
     "latest_version": "0.3.11",
-    "download_url": "https://github.com/.../move-anything.tar.gz",
+    "download_url": "https://github.com/.../schwung.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [

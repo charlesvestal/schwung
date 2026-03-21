@@ -1,6 +1,6 @@
-# Building Move Anything
+# Building Schwung
 
-Move Anything must be cross-compiled for the Ableton Move's ARM64 processor (aarch64 Linux).
+Schwung must be cross-compiled for the Ableton Move's ARM64 processor (aarch64 Linux).
 
 ## Quick Start
 
@@ -8,7 +8,7 @@ Move Anything must be cross-compiled for the Ableton Move's ARM64 processor (aar
 ./scripts/build.sh
 ```
 
-This builds everything and creates `move-anything.tar.gz`. The build script automatically uses Docker for cross-compilation if needed.
+This builds everything and creates `schwung.tar.gz`. The build script automatically uses Docker for cross-compilation if needed.
 
 Requirements: Docker Desktop (macOS/Windows) or Docker Engine (Linux)
 
@@ -49,7 +49,7 @@ ssh root@move.local 'ls -1 /usr/lib/libflite*.so* 2>/dev/null || echo absent'
 Optional hardening check:
 ```bash
 # Force "screen reader on" state file, restart Move, confirm no crash loop
-ssh ableton@move.local 'echo 1 > /data/UserData/move-anything/config/screen_reader_state.txt'
+ssh ableton@move.local 'echo 1 > /data/UserData/schwung/config/screen_reader_state.txt'
 ssh root@move.local '/etc/init.d/move stop >/dev/null 2>&1 || true; sleep 1; /etc/init.d/move start >/dev/null 2>&1'
 ssh root@move.local 'pid1=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid2=$(pidof MoveOriginal | awk "{print \$1}"); sleep 10; pid3=$(pidof MoveOriginal | awk "{print \$1}"); echo "$pid1 -> $pid2 -> $pid3"'
 ```
@@ -104,7 +104,7 @@ CROSS_PREFIX=aarch64-unknown-linux-gnu- ./scripts/build.sh
 
 ## Deployment
 
-After building, the tarball is at the repo root: `move-anything.tar.gz`
+After building, the tarball is at the repo root: `schwung.tar.gz`
 
 ### Install from local build
 
@@ -115,8 +115,8 @@ After building, the tarball is at the repo root: `move-anything.tar.gz`
 ### Manual deployment
 
 ```bash
-scp move-anything.tar.gz ableton@move.local:~/
-ssh ableton@move.local 'tar -xf move-anything.tar.gz'
+scp schwung.tar.gz ableton@move.local:~/
+ssh ableton@move.local 'tar -xf schwung.tar.gz'
 ```
 
 ## Build Outputs
@@ -124,7 +124,7 @@ ssh ableton@move.local 'tar -xf move-anything.tar.gz'
 ```
 build/
   move-anything              # Host binary
-  move-anything-shim.so      # LD_PRELOAD shim
+  schwung-shim.so      # LD_PRELOAD shim
   host/menu_ui.js            # Host menu
   shared/                    # Shared JS utilities
   patches/                   # Chain patches
@@ -141,7 +141,7 @@ build/
     tools/song-mode/         # Song arranger tool (UI only)
     tools/wav-player/        # WAV player tool (UI + DSP)
 
-move-anything.tar.gz         # Deployable package
+schwung.tar.gz         # Deployable package
 ```
 
 **Note:** Sound generators (SF2, Dexed, Mini-JV, OB-Xd) and audio effects (CloudSeed, PSX Verb, etc.) are external modules installed via the Module Store, not built with the host.
@@ -254,7 +254,7 @@ Version is stored in `src/host/version.txt`. Follow semantic versioning:
 
 4. **Create GitHub release**
    ```bash
-   gh release create v0.1.3 ./move-anything.tar.gz \
+   gh release create v0.1.3 ./schwung.tar.gz \
        --repo charlesvestal/move-anything \
        --title "v0.1.3" \
        --notes "Release notes here"

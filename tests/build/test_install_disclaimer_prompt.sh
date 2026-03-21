@@ -23,8 +23,8 @@ if ! grep -qi "accept no liability" "$SCRIPT"; then
   exit 1
 fi
 
-if ! grep -q "install Move Everything" "$SCRIPT"; then
-  echo "FAIL: install.sh disclaimer should refer to Move Everything" >&2
+if ! grep -q "install Schwung" "$SCRIPT"; then
+  echo "FAIL: install.sh disclaimer should refer to Schwung" >&2
   exit 1
 fi
 

@@ -1,9 +1,9 @@
 {
   "catalog_version": 2,
   "host": {
-    "name": "Move Anything",
+    "name": "Schwung",
     "github_repo": "charlesvestal/move-everything",
-    "asset_name": "move-everything.tar.gz",
+    "asset_name": "schwung.tar.gz",
     "latest_version": "0.7.13",
     "download_url": "https://github.com/charlesvestal/move-everything/releases/download/v0.7.13/move-everything.tar.gz",
     "min_host_version": "0.1.0"

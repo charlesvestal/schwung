@@ -1,5 +1,5 @@
 /*
- * js_display.c - Shared display functions for Move Anything
+ * js_display.c - Shared display functions for Schwung
  *
  * Provides display primitives used by both the main host and shadow UI.
  * Includes font loading (bitmap and TTF), glyph rendering, and QuickJS bindings.
@@ -363,7 +363,7 @@ void js_display_print(int x, int y, const char *string, int color) {
 
     /* Lazy load bitmap font on first use — single source of truth from generate_font.py */
     if (!g_font) {
-        g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
+        g_font = js_display_load_font("/data/UserData/schwung/host/font.png", 1);
     }
     if (!g_font) return;
 
@@ -381,7 +381,7 @@ int js_display_text_width(const char *string) {
     if (!string) return 0;
 
     if (!g_font) {
-        g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
+        g_font = js_display_load_font("/data/UserData/schwung/host/font.png", 1);
     }
     if (!g_font) return 0;
 

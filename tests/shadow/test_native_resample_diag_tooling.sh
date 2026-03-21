@@ -18,7 +18,7 @@ if ! rg -q "native_compute_audio_metrics\\(" "$file"; then
   exit 1
 fi
 
-if ! rg -q "/data/UserData/move-anything/native_resample_diag_on" "$file"; then
+if ! rg -q "/data/UserData/schwung/native_resample_diag_on" "$file"; then
   echo "FAIL: Missing native resample diag flag path" >&2
   exit 1
 fi

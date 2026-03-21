@@ -11,15 +11,15 @@ import {
     LIST_LABEL_X, LIST_VALUE_X,
     FOOTER_RULE_Y,
     truncateText
-} from '/data/UserData/move-anything/shared/chain_ui_views.mjs';
+} from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
     drawMenuList
-} from '/data/UserData/move-anything/shared/menu_layout.mjs';
+} from '/data/UserData/schwung/shared/menu_layout.mjs';
 import {
     announce
-} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+} from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 /* ---- Helpers ------------------------------------------------------------ */
 
@@ -162,7 +162,7 @@ export function drawStorePickerDetail() {
             if (notes) {
                 descLines.push(...buildReleaseNoteLines(notes));
             } else {
-                descLines.push('Update Move Anything');
+                descLines.push('Update Schwung');
                 descLines.push('core framework.');
                 descLines.push('');
                 descLines.push('Restart required');

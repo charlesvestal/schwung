@@ -1,5 +1,5 @@
 /*
- * js_display.h - Shared display functions for Move Anything
+ * js_display.h - Shared display functions for Schwung
  *
  * This header provides display primitives used by both the main host
  * and shadow UI. Each host links against js_display.c.

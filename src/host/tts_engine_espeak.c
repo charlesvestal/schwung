@@ -65,7 +65,7 @@ static volatile bool synth_thread_running = false;
 static volatile bool synth_cancel = false;  /* Signal callback to abort current synthesis */
 
 /* eSpeak-NG data path on device */
-#define ESPEAK_DATA_PATH "/data/UserData/move-anything"
+#define ESPEAK_DATA_PATH "/data/UserData/schwung"
 
 /*
  * eSpeak-NG synthesis callback - called from within espeak_Synth().
@@ -168,7 +168,7 @@ static void* espeak_synthesis_thread(void *arg) {
 }
 
 static void espeak_load_state(void) {
-    const char *state_path = "/data/UserData/move-anything/config/screen_reader_state.txt";
+    const char *state_path = "/data/UserData/schwung/config/screen_reader_state.txt";
     FILE *f = fopen(state_path, "r");
     if (!f) return;
 
@@ -186,7 +186,7 @@ static void espeak_load_state(void) {
 }
 
 static void espeak_save_state(void) {
-    const char *state_path = "/data/UserData/move-anything/config/screen_reader_state.txt";
+    const char *state_path = "/data/UserData/schwung/config/screen_reader_state.txt";
     FILE *f = fopen(state_path, "w");
     if (!f) {
         unified_log("tts_engine", LOG_LEVEL_ERROR, "Failed to save screen reader state");
@@ -199,7 +199,7 @@ static void espeak_save_state(void) {
 }
 
 static void espeak_save_config(void) {
-    const char *config_path = "/data/UserData/move-anything/config/tts.json";
+    const char *config_path = "/data/UserData/schwung/config/tts.json";
 
     /* Read existing engine choice to preserve it */
     char engine_name[16] = "espeak";
@@ -238,7 +238,7 @@ static void espeak_save_config(void) {
 }
 
 static void espeak_load_config(void) {
-    const char *config_path = "/data/UserData/move-anything/config/tts.json";
+    const char *config_path = "/data/UserData/schwung/config/tts.json";
     FILE *f = fopen(config_path, "r");
     if (!f) {
         unified_log("tts_engine", LOG_LEVEL_DEBUG, "No TTS config file found, using defaults");

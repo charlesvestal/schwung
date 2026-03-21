@@ -1,10 +1,10 @@
-# Architecture: How Move Anything Works
+# Architecture: How Schwung Works
 
-This document explains how Move Anything loads third-party code onto Ableton Move hardware.
+This document explains how Schwung loads third-party code onto Ableton Move hardware.
 
 ## Overview
 
-Move Anything uses a four-layer approach to run custom code on Move:
+Schwung uses a four-layer approach to run custom code on Move:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -32,9 +32,9 @@ Move Anything uses a four-layer approach to run custom code on Move:
 
 The `scripts/install.sh` script connects to Move via SSH (at `move.local`) and performs these steps:
 
-1. **Deploy files** to `/data/UserData/move-anything/`:
+1. **Deploy files** to `/data/UserData/schwung/`:
    - `move-anything` (host binary)
-   - `move-anything-shim.so` (LD_PRELOAD library)
+   - `schwung-shim.so` (LD_PRELOAD library)
    - `shim-entrypoint.sh` and `start.sh` (launcher scripts)
    - `host/`, `shared/`, `modules/` directories
 
@@ -45,16 +45,16 @@ The `scripts/install.sh` script connects to Move via SSH (at `move.local`) and p
 
 3. **Install the shim entrypoint** as the new `/opt/move/Move`:
    ```bash
-   LD_PRELOAD=move-anything-shim.so /opt/move/MoveOriginal
+   LD_PRELOAD=schwung-shim.so /opt/move/MoveOriginal
    ```
 
-4. **Copy shim library** to `/usr/lib/move-anything-shim.so`
+4. **Copy shim library** to `/usr/lib/schwung-shim.so`
 
 After installation, when Move boots normally, it runs the shim entrypoint instead of the original binary.
 
 ## Layer 2: LD_PRELOAD Shim
 
-The shim (`src/move_anything_shim.c`) is loaded via `LD_PRELOAD` before the original Move binary runs. It intercepts two system calls:
+The shim (`src/schwung_shim.c`) is loaded via `LD_PRELOAD` before the original Move binary runs. It intercepts two system calls:
 
 ### `mmap()` Interception
 
@@ -91,7 +91,7 @@ When all three are active simultaneously, the shim:
 
 1. Forks a child process
 2. Closes all file descriptors (releasing `/dev/ablspi0.0`)
-3. Executes `/data/UserData/move-anything/start.sh`
+3. Executes `/data/UserData/schwung/start.sh`
 4. Kills the parent (original Move) process
 
 ## Layer 3: Host Runtime
@@ -99,12 +99,12 @@ When all three are active simultaneously, the shim:
 The `start.sh` script:
 
 1. Kills any remaining Move processes (`MoveLauncher`, `Move`, etc.)
-2. Launches the Move Anything host binary:
+2. Launches the Schwung host binary:
    ```bash
    ./move-anything ./host/menu_ui.js
    ```
 
-The host runtime (`src/move_anything.c`):
+The host runtime (`src/schwung_host.c`):
 
 1. **Opens `/dev/ablspi0.0`** directly for hardware communication
 2. **Maps the SPI mailbox** (4KB shared memory for display, MIDI, audio)
@@ -207,9 +207,9 @@ int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
 
 ### Native Sampler Bridge (Shim)
 
-The shim can bridge Move Everything's mixed output into Move's native sampler input path when native sampling is in use. This is controlled by the Master FX setting `Resample Src` (`Off`, `Replace`).
+The shim can bridge Schwung's mixed output into Move's native sampler input path when native sampling is in use. This is controlled by the Master FX setting `Resample Src` (`Off`, `Replace`).
 
-In `Replace` mode, the bridge writes a snapshot of the combined Move + Move Everything mix into native `AUDIO_IN`. The snapshot tap point is:
+In `Replace` mode, the bridge writes a snapshot of the combined Move + Schwung mix into native `AUDIO_IN`. The snapshot tap point is:
 - after slot mix
 - after master FX
 - before master-volume attenuation
@@ -270,7 +270,7 @@ Each iteration of the main loop:
 
 ## Layer 4: Module Loading
 
-Modules live in `/data/UserData/move-anything/modules/<id>/`. Each module contains:
+Modules live in `/data/UserData/schwung/modules/<id>/`. Each module contains:
 
 | File | Purpose |
 |------|---------|
@@ -381,7 +381,7 @@ Example catalog entry:
 
 ## Returning to Stock Move
 
-When the user exits Move Anything (Shift + Jog click, or "Return to Move" in settings):
+When the user exits Schwung (Shift + Jog click, or "Return to Move" in settings):
 
 1. Host runtime exits
 2. `start.sh` restarts `/opt/move/MoveLauncher`
@@ -392,7 +392,7 @@ The cycle continues until the hotkey combo is pressed again.
 
 ## Shadow Mode
 
-Shadow Mode is an alternative operating mode that runs Move Anything's audio engine **alongside** stock Move, rather than replacing it. This allows users to layer additional synths and effects over Move's native instruments.
+Shadow Mode is an alternative operating mode that runs Schwung's audio engine **alongside** stock Move, rather than replacing it. This allows users to layer additional synths and effects over Move's native instruments.
 
 ### Activation
 
@@ -431,17 +431,17 @@ Shadow Mode uses several shared memory regions for IPC:
 
 | Region | Purpose |
 |--------|---------|
-| `/move-shadow-control` | Control flags, slot selection, request IDs |
-| `/move-shadow-audio` | Shadow's mixed audio output |
-| `/move-shadow-ui-midi` | MIDI messages forwarded to shadow UI |
-| `/move-shadow-display` | Display buffer for overlay rendering |
-| `/move-shadow-ui` | Slot state (names, channels, active status) |
-| `/move-shadow-param` | Parameter read/write requests |
-| `/move-shadow-midi-out` | MIDI output from shadow UI |
-| `/move-shadow-midi-dsp` | MIDI from shadow UI to DSP slots |
-| `/move-shadow-midi-inject` | MIDI inject into Move's MIDI_IN |
-| `/move-shadow-overlay` | Overlay state (sampler/skipback) |
-| `/move-shadow-screenreader` | Screen reader announcements |
+| `/schwung-control` | Control flags, slot selection, request IDs |
+| `/schwung-audio` | Shadow's mixed audio output |
+| `/schwung-ui-midi` | MIDI messages forwarded to shadow UI |
+| `/schwung-display` | Display buffer for overlay rendering |
+| `/schwung-ui` | Slot state (names, channels, active status) |
+| `/schwung-param` | Parameter read/write requests |
+| `/schwung-midi-out` | MIDI output from shadow UI |
+| `/schwung-midi-dsp` | MIDI from shadow UI to DSP slots |
+| `/schwung-midi-inject` | MIDI inject into Move's MIDI_IN |
+| `/schwung-overlay` | Overlay state (sampler/skipback) |
+| `/schwung-screenreader` | Screen reader announcements |
 | `/move-display-live` | Live display for remote viewer |
 
 ### MIDI Cables
@@ -571,7 +571,7 @@ The shadow UI process draws to a shared display buffer. The shim swaps this buff
 
 ### Configuration Persistence
 
-Shadow slot configuration is saved to `/data/UserData/move-anything/shadow_chain_config.json`:
+Shadow slot configuration is saved to `/data/UserData/schwung/shadow_chain_config.json`:
 
 ```json
 {
