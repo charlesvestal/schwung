@@ -305,6 +305,99 @@ let autosaveCounter = 0;
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
 
+/* Splash screen state */
+let splashActive = true;
+let splashTick = 0;
+
+const SPLASH_BALL_Y = 26;
+const SPLASH_RAISED_Y = 17;
+const SPLASH_NUM_BALLS = 5;
+const SPLASH_GROUP_X = [45, 56, 67, 78, 89];
+const SPLASH_LEFT_RAISED  = { x: 40, y: 17 };
+const SPLASH_RIGHT_RAISED = { x: 95, y: 17 };
+const SPLASH_IMPACT_LINE_LEN = 1;
+const SPLASH_IMPACT_GAP = 2;
+const SPLASH_IMPACT_FLASH_TICKS = 20;
+const SPLASH_PRE_HOLD_TICKS = 55;  /* ~1.25s — logo visible while Move boots */
+const SPLASH_TENSION_TICKS = 10;
+const SPLASH_RELEASE_TICKS = 5;
+const SPLASH_HOLD_TICKS = 79;  /* ~1.8s hold after hit */
+const SPLASH_TOTAL_TICKS = SPLASH_PRE_HOLD_TICKS + SPLASH_TENSION_TICKS +
+    SPLASH_RELEASE_TICKS + SPLASH_HOLD_TICKS;
+
+const SPLASH_CIRCLE_PATH = "/data/UserData/schwung/host/logo-circle.png";
+const SPLASH_LOGO_PATH = "/data/UserData/schwung/host/logo-text.png";
+
+function splashEaseInHard(t) { return t * t * t * t * t; }
+function splashEaseOutHard(t) { return 1 - Math.pow(1 - t, 4); }
+
+function splashArcPos(raised, restX, restY, progress) {
+    const x = raised.x + (restX - raised.x) * progress;
+    const angle = progress * Math.PI / 2;
+    const y = raised.y + (restY - raised.y) * Math.sin(angle);
+    return { x: Math.round(x), y: Math.round(y) };
+}
+
+function drawSplashScreen() {
+    clear_screen();
+
+    let leftProgress = 0;
+    let rightProgress = 0;
+    const t = splashTick;
+
+    const preHoldEnd = SPLASH_PRE_HOLD_TICKS;
+    const tensionEnd = preHoldEnd + SPLASH_TENSION_TICKS;
+    const releaseEnd = tensionEnd + SPLASH_RELEASE_TICKS;
+
+    if (t < preHoldEnd) {
+        leftProgress = 0;
+    } else if (t < tensionEnd) {
+        const p = (t - preHoldEnd) / SPLASH_TENSION_TICKS;
+        leftProgress = splashEaseInHard(p);
+    } else if (t < tensionEnd + 1) {
+        leftProgress = 1;
+        rightProgress = 0;
+    } else if (t < releaseEnd) {
+        const p = (t - tensionEnd) / SPLASH_RELEASE_TICKS;
+        leftProgress = 1;
+        rightProgress = splashEaseOutHard(p);
+    } else {
+        leftProgress = 1;
+        rightProgress = 1;
+    }
+
+    for (let i = 0; i < SPLASH_NUM_BALLS; i++) {
+        let x = SPLASH_GROUP_X[i];
+        let y = SPLASH_BALL_Y;
+        if (i === 0) {
+            const pos = splashArcPos(SPLASH_LEFT_RAISED, SPLASH_GROUP_X[0], SPLASH_BALL_Y, leftProgress);
+            x = pos.x; y = pos.y;
+        } else if (i === SPLASH_NUM_BALLS - 1) {
+            const pos = splashArcPos(SPLASH_RIGHT_RAISED, SPLASH_GROUP_X[4], SPLASH_BALL_Y, 1 - rightProgress);
+            x = pos.x; y = pos.y;
+        }
+        draw_image(SPLASH_CIRCLE_PATH, x - 4, y - 4, 128, 0);
+    }
+
+    /* Impact flash lines on ball 4 */
+    const impactStart = tensionEnd;
+    const ticksSinceImpact = t - impactStart;
+    if (ticksSinceImpact >= 0 && ticksSinceImpact < SPLASH_IMPACT_FLASH_TICKS) {
+        const rx = SPLASH_GROUP_X[3] + 4 + SPLASH_IMPACT_GAP;
+        const ry = SPLASH_BALL_Y;
+        const d45 = Math.round(SPLASH_IMPACT_LINE_LEN * 0.707);
+        draw_line(rx, ry, rx + SPLASH_IMPACT_LINE_LEN, ry, 1);
+        draw_line(rx, ry - 5, rx + d45, ry - 5 - d45, 1);
+        draw_line(rx, ry + 5, rx + d45, ry + 5 + d45, 1);
+    }
+
+    draw_image(SPLASH_LOGO_PATH, 9, 37, 128, 0);
+
+    const ver = "v0.8.3";
+    const verW = text_width(ver);
+    print(Math.round((128 - verW) / 2), 56, ver, 1);
+}
+
 /* Overlay state (sampler/skipback from shim via SHM) */
 let lastOverlaySeq = 0;
 let overlayState = null;
@@ -10759,6 +10852,21 @@ globalThis.shadow_save_state_now = function() {
 };
 
 globalThis.tick = function() {
+    /* Splash screen on boot */
+    if (splashActive) {
+        splashTick++;
+        if (splashTick >= SPLASH_TOTAL_TICKS) {
+            splashActive = false;
+            /* Dismiss shadow display mode — return to Move's native UI */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+        } else {
+            drawSplashScreen();
+            return;
+        }
+    }
+
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
         const flags = shadow_get_ui_flags();
@@ -11448,6 +11556,15 @@ globalThis.onMidiMessageInternal = function(data) {
     const status = data[0];
     const d1 = data[1];
     const d2 = data[2];
+
+    /* Skip splash on any button press */
+    if (splashActive && d2 > 0) {
+        splashActive = false;
+        if (typeof shadow_request_exit === "function") {
+            shadow_request_exit();
+        }
+        return;
+    }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
     if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {

@@ -2029,9 +2029,11 @@ static void init_shadow_shm(void)
             printf("Shadow: Failed to mmap control shm\n");
         }
         if (shadow_control) {
-            /* Avoid sticky shadow state across restarts. */
-            shadow_display_mode = 0;
-            shadow_control->display_mode = 0;
+            /* Enable shadow display on boot for splash screen.
+             * Shadow UI will set display_mode=0 when splash is done. */
+            shadow_display_mode = 1;
+            shadow_control->display_mode = 1;
+            shadow_control->shadow_ready = 1;
             shadow_control->should_exit = 0;
             shadow_control->midi_ready = 0;
             shadow_control->write_idx = 0;
