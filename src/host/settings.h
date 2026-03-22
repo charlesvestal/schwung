@@ -42,7 +42,7 @@ typedef struct {
 } host_settings_t;
 
 /* Default settings path */
-#define SETTINGS_PATH "/data/UserData/move-anything/settings.txt"
+#define SETTINGS_PATH "/data/UserData/schwung/settings.txt"
 
 /* Initialize settings to defaults */
 void settings_init(host_settings_t *s);

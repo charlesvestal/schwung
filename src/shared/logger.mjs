@@ -1,5 +1,5 @@
 /**
- * Unified logging module for Move Anything
+ * Unified logging module for Schwung
  *
  * Usage:
  *   import { log, debug, info, warn, error } from './logger.mjs';

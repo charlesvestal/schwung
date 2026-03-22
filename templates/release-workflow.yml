@@ -1,4 +1,4 @@
-# GitHub Actions workflow for releasing Move Anything external modules
+# GitHub Actions workflow for releasing Schwung external modules
 #
 # Copy this file to .github/workflows/release.yml in your module repository.
 # Customize MODULE_ID to match your module's ID in module.json.
@@ -34,14 +34,14 @@ jobs:
       - name: Build Docker image
         run: |
           if [ -f "scripts/Dockerfile" ]; then
-            docker build -t move-anything-builder -f scripts/Dockerfile .
+            docker build -t schwung-builder -f scripts/Dockerfile .
           elif [ -f "Dockerfile" ]; then
-            docker build -t move-anything-builder .
+            docker build -t schwung-builder .
           else
             echo "No Dockerfile found, using default cross-compiler"
             # Fall back to a simple ARM cross-compiler
             docker run --rm -v $(pwd):/build -w /build \
-              ghcr.io/charlesvestal/move-anything-builder:latest \
+              ghcr.io/charlesvestal/schwung-builder:latest \
               ./scripts/build.sh
             exit 0
           fi
@@ -51,7 +51,7 @@ jobs:
           docker run --rm \
             -v $(pwd):/build \
             -w /build \
-            move-anything-builder \
+            schwung-builder \
             ./scripts/build.sh
 
       - name: Create tarball

@@ -1,5 +1,5 @@
 /* shadow_state.c - Shadow slot state persistence
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #include <stdio.h>
 #include <stdlib.h>

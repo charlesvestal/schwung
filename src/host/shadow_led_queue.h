@@ -1,5 +1,5 @@
 /* shadow_led_queue.h - Rate-limited LED output queue
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_LED_QUEUE_H
 #define SHADOW_LED_QUEUE_H

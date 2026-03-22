@@ -32,7 +32,7 @@ static int open_inject_shm(void)
     int fd = shm_open(SHM_SHADOW_MIDI_INJECT, O_RDWR, 0666);
     if (fd < 0) {
         perror("shm_open");
-        fprintf(stderr, "Is Move Everything running?\n");
+        fprintf(stderr, "Is Schwung running?\n");
         return -1;
     }
     inject_shm = (shadow_midi_inject_t *)mmap(NULL, sizeof(shadow_midi_inject_t),

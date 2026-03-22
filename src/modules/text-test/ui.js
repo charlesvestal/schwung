@@ -16,7 +16,7 @@ import {
     tickTextEntry,
     setTextEntryTitle,
     padConfig
-} from '/data/UserData/move-anything/shared/text_entry.mjs';
+} from '/data/UserData/schwung/shared/text_entry.mjs';
 
 /* State */
 let lastEnteredText = "(none)";

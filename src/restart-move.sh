@@ -9,13 +9,13 @@
 # itself holds SPI open and fuser will find us as a holder.
 
 setsid sh -c '
-    LOG_HELPER=/data/UserData/move-anything/unified-log
+    LOG_HELPER=/data/UserData/schwung/unified-log
 
     log() {
         if [ -x "$LOG_HELPER" ]; then
             "$LOG_HELPER" restart-move "$*"
-        elif [ -f /data/UserData/move-anything/debug_log_on ]; then
-            printf "%s\n" "$*" >> /data/UserData/move-anything/debug.log
+        elif [ -f /data/UserData/schwung/debug_log_on ]; then
+            printf "%s\n" "$*" >> /data/UserData/schwung/debug.log
         fi
     }
 
@@ -29,7 +29,7 @@ setsid sh -c '
     sleep 1
 
     # Two-phase kill (matching install.sh): SIGTERM first, then SIGKILL
-    for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do
+    for name in MoveMessageDisplay MoveLauncher Move MoveOriginal schwung shadow_ui; do
         pids=$(pidof $name 2>/dev/null || true)
         if [ -n "$pids" ]; then
             log "SIGTERM $name: $pids"
@@ -38,7 +38,7 @@ setsid sh -c '
     done
     sleep 0.5
 
-    for name in MoveMessageDisplay MoveLauncher Move MoveOriginal move-anything shadow_ui; do
+    for name in MoveMessageDisplay MoveLauncher Move MoveOriginal schwung shadow_ui; do
         pids=$(pidof $name 2>/dev/null || true)
         if [ -n "$pids" ]; then
             log "SIGKILL $name: $pids"
@@ -57,7 +57,7 @@ setsid sh -c '
 
     log "Starting Move..."
     if [ -x "$LOG_HELPER" ]; then
-        nohup sh -c "/opt/move/Move 2>&1 | /data/UserData/move-anything/unified-log move-shim" >/dev/null 2>&1 &
+        nohup sh -c "/opt/move/Move 2>&1 | /data/UserData/schwung/unified-log move-shim" >/dev/null 2>&1 &
     else
         nohup /opt/move/Move >/dev/null 2>&1 &
     fi

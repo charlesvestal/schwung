@@ -3,7 +3,7 @@
     "name": "Module Store",
     "version": "0.5.2",
     "description": "Browse and install modules",
-    "author": "Move Anything",
+    "author": "Schwung",
     "ui": "ui.js",
     "api_version": 1,
     "raw_ui": true,
