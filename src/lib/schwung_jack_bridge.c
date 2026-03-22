@@ -64,7 +64,10 @@ static inline int16_t saturating_add_i16(int16_t a, int16_t b) {
 static inline int jack_is_active(SchwungJackShm *shm) {
     uint32_t fc = __atomic_load_n(&shm->frame_counter, __ATOMIC_ACQUIRE);
     uint32_t jd = __atomic_load_n(&shm->jack_frame_done, __ATOMIC_ACQUIRE);
-    return jd == fc;
+    // JACK sets jd = fc after processing. By the time bridge_pre runs
+    // next frame, fc has been incremented, so jd == fc-1 is normal.
+    // Consider JACK active if it processed within the last 2 frames.
+    return (fc - jd) <= 2;
 }
 
 // ============================================================================
@@ -126,16 +129,19 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
     }
 
     // --- Display: if active, copy correct chunk to shadow ---
+    // Display protocol: hardware sends index 1-6, we respond with the
+    // corresponding 172-byte chunk. Index 0 = no update.
+    // See ablspi.c handleDisplayOutput() for reference.
     if (shm->display_active) {
-        uint8_t *disp_stat_in = shadow + SCHWUNG_OFF_IN_DISP_STAT;
-        uint8_t disp_index = *disp_stat_in;
-
-        // Each chunk is SCHWUNG_OUT_DISP_CHUNK_LEN bytes from display_data
-        size_t offset = (size_t)disp_index * SCHWUNG_OUT_DISP_CHUNK_LEN;
-        if (offset + SCHWUNG_OUT_DISP_CHUNK_LEN <= SCHWUNG_JACK_DISPLAY_SIZE) {
+        uint32_t idx = *(uint32_t *)(shadow + SCHWUNG_OFF_IN_DISP_STAT);
+        if (idx >= 1 && idx <= 5) {
             memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
-                   shm->display_data + offset,
+                   shm->display_data + (idx - 1) * SCHWUNG_OUT_DISP_CHUNK_LEN,
                    SCHWUNG_OUT_DISP_CHUNK_LEN);
+        } else if (idx == 6) {
+            memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
+                   shm->display_data + 5 * SCHWUNG_OUT_DISP_CHUNK_LEN,
+                   SCHWUNG_JACK_DISPLAY_SIZE - 5 * SCHWUNG_OUT_DISP_CHUNK_LEN);
         }
     }
 }
