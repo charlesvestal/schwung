@@ -89,21 +89,34 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
     for (int i = 0; i < num_samples; i++)
         shadow_audio[i] = saturating_add_i16(shadow_audio[i], jack_audio[i]);
 
-    // --- MIDI: write JACK's MIDI output to shadow buffer ---
-    // When JACK has MIDI to send, REPLACE Move's MIDI output entirely.
-    // Move fills all 20 slots (with zero-padding), leaving no room to append.
-    // In overtake mode, JACK's MIDI (LEDs, etc) takes priority.
+    // --- MIDI: drain JACK's MIDI output into shadow buffer ---
+    // Send up to 20 messages per SPI frame (hardware limit).
+    // Track read position so large bursts drain across multiple frames.
     {
-        uint8_t jack_count = shm->midi_from_jack_count;
-        uint8_t ext_count = shm->ext_midi_from_jack_count;
+        static uint8_t midi_read_pos = 0;
+        static uint8_t midi_total = 0;
+        static uint8_t ext_read_pos = 0;
+        static uint8_t ext_total = 0;
 
-        if (jack_count > 0 || ext_count > 0) {
+        // Check for new data from JACK
+        uint8_t new_count = shm->midi_from_jack_count;
+        uint8_t new_ext = shm->ext_midi_from_jack_count;
+        if (new_count != midi_total || new_ext != ext_total) {
+            // New batch from JACK — reset read positions
+            midi_read_pos = 0;
+            midi_total = new_count;
+            ext_read_pos = 0;
+            ext_total = new_ext;
+        }
+
+        // Anything left to send?
+        if (midi_read_pos < midi_total || ext_read_pos < ext_total) {
             SchwungUsbMidiMsg *out_midi = (SchwungUsbMidiMsg *)(shadow + SCHWUNG_OFF_OUT_MIDI);
             int slot = 0;
 
-            // Write JACK's cable-0 MIDI messages
-            for (uint8_t i = 0; i < jack_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
-                SchwungJackUsbMidiMsg jmsg = shm->midi_from_jack[i];
+            // Send cable-0 MIDI (up to 20 per frame)
+            while (midi_read_pos < midi_total && slot < SCHWUNG_MIDI_OUT_MAX) {
+                SchwungJackUsbMidiMsg jmsg = shm->midi_from_jack[midi_read_pos++];
                 SchwungUsbMidiMsg smsg;
                 smsg.cin = jmsg.cin;
                 smsg.cable = jmsg.cable;
@@ -114,9 +127,9 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
                 out_midi[slot++] = smsg;
             }
 
-            // Write JACK's ext MIDI messages (cable 2+)
-            for (uint8_t i = 0; i < ext_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
-                SchwungJackUsbMidiMsg jmsg = shm->ext_midi_from_jack[i];
+            // Send ext MIDI with remaining slots
+            while (ext_read_pos < ext_total && slot < SCHWUNG_MIDI_OUT_MAX) {
+                SchwungJackUsbMidiMsg jmsg = shm->ext_midi_from_jack[ext_read_pos++];
                 SchwungUsbMidiMsg smsg;
                 smsg.cin = jmsg.cin;
                 smsg.cable = jmsg.cable;
@@ -127,7 +140,7 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
                 out_midi[slot++] = smsg;
             }
 
-            // Zero-pad remaining slots
+            // Zero-pad remaining
             SchwungUsbMidiMsg empty = {0};
             while (slot < SCHWUNG_MIDI_OUT_MAX) {
                 out_midi[slot++] = empty;
@@ -141,6 +154,9 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
     // See ablspi.c handleDisplayOutput() for reference.
     if (shm->display_active) {
         uint32_t idx = *(uint32_t *)(shadow + SCHWUNG_OFF_IN_DISP_STAT);
+        /* Debug: store display index at a known shm location */
+        ((uint8_t *)shm)[4090] = (uint8_t)(idx & 0xFF);
+        ((uint8_t *)shm)[4091]++; /* call counter */
         if (idx >= 1 && idx <= 5) {
             memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
                    shm->display_data + (idx - 1) * SCHWUNG_OUT_DISP_CHUNK_LEN,
