@@ -61,9 +61,13 @@
 /* SPI protocol types, constants, and helpers from schwung-spi (MIT).
  * https://github.com/charlesvestal/schwung-spi */
 #include "lib/schwung_spi_lib.h"
+#include "lib/schwung_jack_bridge.h"
 
 /* SPI library handle — provides shadow buffer, hardware buffer, and ioctl hooks */
 static SchwungSpi *g_spi_handle = NULL;
+
+/* JACK shadow driver shared memory (NULL until init, no-op if JACK never connects) */
+static SchwungJackShm *g_jack_shm = NULL;
 
 unsigned char *global_mmap_addr = NULL;  /* Points to library shadow buffer (what Move sees) */
 unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
@@ -3732,6 +3736,9 @@ pre_done:
         shadow_spi_fd = schwung_spi_get_fd(g_spi_handle);
     }
 
+    /* Mix JACK audio/MIDI/display into shadow (no-op if JACK not connected) */
+    schwung_jack_bridge_pre(g_jack_shm, shadow);
+
     /* Mute Move's audio output when requested (e.g. during silent clip switching).
      * Zero the audio region in shadow BEFORE the library copies shadow→hw. */
     if (shadow_control && shadow_control->mute_move_audio) {
@@ -3767,6 +3774,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
            DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
     memcpy(shadow + DISPLAY_OFFSET, hw + DISPLAY_OFFSET,
            MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
+
+    /* Copy capture data to JACK shared memory and wake JACK driver */
+    schwung_jack_bridge_post(g_jack_shm, shadow, hw);
 
     /* Bridge Schwung's total mix into native resampling path when selected. */
     native_resample_bridge_apply();
@@ -5011,4 +5021,7 @@ static void shim_spi_init(void)
     /* Initialize SPI library and register callbacks */
     g_spi_handle = schwung_spi_init();
     schwung_spi_set_callbacks(g_spi_handle, shim_pre_transfer, shim_post_transfer, NULL);
+
+    /* Create JACK shadow driver shared memory (optional — zero overhead if JACK never connects) */
+    g_jack_shm = schwung_jack_bridge_create();
 }
