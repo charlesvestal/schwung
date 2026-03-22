@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as std from 'std';
 
 /* Import unified logger */
-import { log as unifiedLog, installConsoleOverride } from '/data/UserData/move-anything/shared/logger.mjs';
+import { log as unifiedLog, installConsoleOverride } from '/data/UserData/schwung/shared/logger.mjs';
 
 /* Install console.log override to route to unified debug.log */
 installConsoleOverride('shadow');
@@ -25,7 +25,7 @@ import {
     MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob8Touch,  // Capacitive touch notes (0-7)
     MidiNoteOn
-} from '/data/UserData/move-anything/shared/constants.mjs';
+} from '/data/UserData/schwung/shared/constants.mjs';
 
 import {
     SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -34,9 +34,9 @@ import {
     LIST_LABEL_X, LIST_VALUE_X,
     FOOTER_TEXT_Y, FOOTER_RULE_Y,
     truncateText
-} from '/data/UserData/move-anything/shared/chain_ui_views.mjs';
+} from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
-import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
+import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 
 /* Volume touch note for Shift+Vol+Jog detection */
 const VOLUME_TOUCH_NOTE = 8;
@@ -52,7 +52,7 @@ import {
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults
-} from '/data/UserData/move-anything/shared/menu_layout.mjs';
+} from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 import {
     wrapText,
@@ -60,7 +60,7 @@ import {
     handleScrollableTextJog,
     isActionSelected,
     drawScrollableText
-} from '/data/UserData/move-anything/shared/scrollable_text.mjs';
+} from '/data/UserData/schwung/shared/scrollable_text.mjs';
 
 import {
     fetchCatalog, getModulesForCategory, getModuleStatus,
@@ -69,7 +69,7 @@ import {
     scanInstalledModules, getHostVersion, isNewerVersion,
     fetchReleaseJsonQuick, fetchReleaseNotes,
     CATEGORIES
-} from '/data/UserData/move-anything/shared/store_utils.mjs';
+} from '/data/UserData/schwung/shared/store_utils.mjs';
 
 import {
     openTextEntry,
@@ -81,20 +81,20 @@ import {
     setPadSelectGlobal,
     textPreviewGlobal,
     setTextPreviewGlobal
-} from '/data/UserData/move-anything/shared/text_entry.mjs';
+} from '/data/UserData/schwung/shared/text_entry.mjs';
 
 import {
     announce,
     announceMenuItem,
     announceParameter,
     announceView
-} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+} from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 import {
     fetchAndParseManual,
     refreshManualBackground,
     processDownloadedHtml
-} from '/data/UserData/move-anything/shared/parse_move_manual.mjs';
+} from '/data/UserData/schwung/shared/parse_move_manual.mjs';
 
 import {
     OVERLAY_NONE,
@@ -114,14 +114,14 @@ import {
     SET_PAGE_BOX_Y,
     SET_PAGE_BOX_W,
     SET_PAGE_BOX_H
-} from '/data/UserData/move-anything/shared/sampler_overlay.mjs';
+} from '/data/UserData/schwung/shared/sampler_overlay.mjs';
 
 import {
     buildFilepathBrowserState,
     refreshFilepathBrowser,
     moveFilepathBrowserSelection,
     activateFilepathBrowserItem
-} from '/data/UserData/move-anything/shared/filepath_browser.mjs';
+} from '/data/UserData/schwung/shared/filepath_browser.mjs';
 
 /* Shared context for view modules */
 import { ctx as _ctx } from './shadow_ui_ctx.mjs';
@@ -206,9 +206,9 @@ const NUM_KNOBS = 8;
 let overtakeKnobDelta = [0, 0, 0, 0, 0, 0, 0, 0];  // Accumulated delta per knob (CC 71-78)
 let overtakeJogDelta = 0;                             // Accumulated delta for jog wheel (CC 14)
 
-const CONFIG_PATH = "/data/UserData/move-anything/shadow_chain_config.json";
-const PATCH_DIR = "/data/UserData/move-anything/patches";
-const SLOT_STATE_DIR_DEFAULT = "/data/UserData/move-anything/slot_state";
+const CONFIG_PATH = "/data/UserData/schwung/shadow_chain_config.json";
+const PATCH_DIR = "/data/UserData/schwung/patches";
+const SLOT_STATE_DIR_DEFAULT = "/data/UserData/schwung/slot_state";
 let activeSlotStateDir = SLOT_STATE_DIR_DEFAULT;
 const AUTOSAVE_INTERVAL = 300;  /* ~10 seconds at 30fps */
 const DEFAULT_SLOTS = [
@@ -304,6 +304,99 @@ let refreshCounter = 0;
 let autosaveCounter = 0;
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
+
+/* Splash screen state */
+let splashActive = true;
+let splashTick = 0;
+
+const SPLASH_BALL_Y = 26;
+const SPLASH_RAISED_Y = 17;
+const SPLASH_NUM_BALLS = 5;
+const SPLASH_GROUP_X = [45, 56, 67, 78, 89];
+const SPLASH_LEFT_RAISED  = { x: 40, y: 17 };
+const SPLASH_RIGHT_RAISED = { x: 95, y: 17 };
+const SPLASH_IMPACT_LINE_LEN = 1;
+const SPLASH_IMPACT_GAP = 2;
+const SPLASH_IMPACT_FLASH_TICKS = 20;
+const SPLASH_PRE_HOLD_TICKS = 55;  /* ~1.25s — logo visible while Move boots */
+const SPLASH_TENSION_TICKS = 10;
+const SPLASH_RELEASE_TICKS = 5;
+const SPLASH_HOLD_TICKS = 79;  /* ~1.8s hold after hit */
+const SPLASH_TOTAL_TICKS = SPLASH_PRE_HOLD_TICKS + SPLASH_TENSION_TICKS +
+    SPLASH_RELEASE_TICKS + SPLASH_HOLD_TICKS;
+
+const SPLASH_CIRCLE_PATH = "/data/UserData/schwung/host/logo-circle.png";
+const SPLASH_LOGO_PATH = "/data/UserData/schwung/host/logo-text.png";
+
+function splashEaseInHard(t) { return t * t * t * t * t; }
+function splashEaseOutHard(t) { return 1 - Math.pow(1 - t, 4); }
+
+function splashArcPos(raised, restX, restY, progress) {
+    const x = raised.x + (restX - raised.x) * progress;
+    const angle = progress * Math.PI / 2;
+    const y = raised.y + (restY - raised.y) * Math.sin(angle);
+    return { x: Math.round(x), y: Math.round(y) };
+}
+
+function drawSplashScreen() {
+    clear_screen();
+
+    let leftProgress = 0;
+    let rightProgress = 0;
+    const t = splashTick;
+
+    const preHoldEnd = SPLASH_PRE_HOLD_TICKS;
+    const tensionEnd = preHoldEnd + SPLASH_TENSION_TICKS;
+    const releaseEnd = tensionEnd + SPLASH_RELEASE_TICKS;
+
+    if (t < preHoldEnd) {
+        leftProgress = 0;
+    } else if (t < tensionEnd) {
+        const p = (t - preHoldEnd) / SPLASH_TENSION_TICKS;
+        leftProgress = splashEaseInHard(p);
+    } else if (t < tensionEnd + 1) {
+        leftProgress = 1;
+        rightProgress = 0;
+    } else if (t < releaseEnd) {
+        const p = (t - tensionEnd) / SPLASH_RELEASE_TICKS;
+        leftProgress = 1;
+        rightProgress = splashEaseOutHard(p);
+    } else {
+        leftProgress = 1;
+        rightProgress = 1;
+    }
+
+    for (let i = 0; i < SPLASH_NUM_BALLS; i++) {
+        let x = SPLASH_GROUP_X[i];
+        let y = SPLASH_BALL_Y;
+        if (i === 0) {
+            const pos = splashArcPos(SPLASH_LEFT_RAISED, SPLASH_GROUP_X[0], SPLASH_BALL_Y, leftProgress);
+            x = pos.x; y = pos.y;
+        } else if (i === SPLASH_NUM_BALLS - 1) {
+            const pos = splashArcPos(SPLASH_RIGHT_RAISED, SPLASH_GROUP_X[4], SPLASH_BALL_Y, 1 - rightProgress);
+            x = pos.x; y = pos.y;
+        }
+        draw_image(SPLASH_CIRCLE_PATH, x - 4, y - 4, 128, 0);
+    }
+
+    /* Impact flash lines on ball 4 */
+    const impactStart = tensionEnd;
+    const ticksSinceImpact = t - impactStart;
+    if (ticksSinceImpact >= 0 && ticksSinceImpact < SPLASH_IMPACT_FLASH_TICKS) {
+        const rx = SPLASH_GROUP_X[3] + 4 + SPLASH_IMPACT_GAP;
+        const ry = SPLASH_BALL_Y;
+        const d45 = Math.round(SPLASH_IMPACT_LINE_LEN * 0.707);
+        draw_line(rx, ry, rx + SPLASH_IMPACT_LINE_LEN, ry, 1);
+        draw_line(rx, ry - 5, rx + d45, ry - 5 - d45, 1);
+        draw_line(rx, ry + 5, rx + d45, ry + 5 + d45, 1);
+    }
+
+    draw_image(SPLASH_LOGO_PATH, 9, 37, 128, 0);
+
+    const ver = "v" + getHostVersion();
+    const verW = text_width(ver);
+    print(Math.round((128 - verW) / 2), 56, ver, 1);
+}
 
 /* Overlay state (sampler/skipback from shim via SHM) */
 let lastOverlaySeq = 0;
@@ -707,10 +800,10 @@ const GLOBAL_SETTINGS_SECTIONS = [
     {
         id: "audio", label: "Audio",
         items: [
-            { key: "link_audio_routing", label: "Route thru ME", type: "bool" },
-            { key: "link_audio_publish", label: "ME->Link Audio", type: "bool" },
+            { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
+            { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
             { key: "resample_bridge", label: "Sample Src", type: "enum",
-              options: ["Native", "ME Mix"], values: [0, 2] },
+              options: ["Native", "Schwung Mix"], values: [0, 2] },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
               options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
             { key: "browser_preview", label: "Browser Preview", type: "bool" }
@@ -828,7 +921,7 @@ let toolSelectedSetName = "";    // Chosen set display name
 let wavPlayerLoaded = false;
 let wavPlayerPendingFile = "";  /* deferred file_path after DSP load */
 let wavPlayerLoadWait = 0;      /* ticks to wait after loading DSP */
-const WAV_PLAYER_DSP = "/data/UserData/move-anything/modules/tools/wav-player/dsp.so";
+const WAV_PLAYER_DSP = "/data/UserData/schwung/modules/tools/wav-player/dsp.so";
 
 function loadWavPlayerDsp() {
     if (wavPlayerLoaded) return;
@@ -878,7 +971,7 @@ function wavPlayerStop() {
     shadow_set_param(0, "overtake_dsp:playing", "0");
 }
 
-const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "ME Mix" };
+const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "Schwung Mix" };
 const RESAMPLE_BRIDGE_VALUES = [0, 2];
 
 /* Check Move's system Link setting via shim param (reads Settings.json) */
@@ -897,7 +990,7 @@ function warnIfLinkDisabled(settingName) {
         const routingOn = shadow_get_param(0, "master_fx:link_audio_routing") === "1";
         const publishOn = shadow_get_param(0, "master_fx:link_audio_publish") === "1";
         if (routingOn || publishOn) {
-            const name = settingName || (routingOn ? "Route thru ME" : "ME->Link Audio");
+            const name = settingName || (routingOn ? "Move->Schwung" : "Schwung->Link");
             warningTitle = name;
             warningLines = wrapText("requires Link enabled in Move System Settings", 18);
             warningActive = true;
@@ -984,7 +1077,7 @@ function getHostUpdateModule() {
     return {
         id: "__core_update__",
         name: "Core Update",
-        description: "Update Move Anything core",
+        description: "Update Schwung core",
         latest_version: host.latest_version,
         download_url: host.download_url,
         component_type: "core",
@@ -995,16 +1088,16 @@ function getHostUpdateModule() {
 /* Perform a staged core update with verification and backup.
  * Returns { success: bool, error: string? } */
 function performCoreUpdate(mod) {
-    const BASE = '/data/UserData/move-anything';
+    const BASE = '/data/UserData/schwung';
     const TMP = BASE + '/tmp';
     const STAGING = BASE + '/update-staging';
     const BACKUP = BASE + '/update-backup';
-    const tarPath = TMP + '/move-anything.tar.gz';
+    const tarPath = TMP + '/schwung.tar.gz';
 
     /* Required files that must exist after extraction */
     const REQUIRED_FILES = [
-        'move-anything',
-        'move-anything-shim.so',
+        'schwung',
+        'schwung-shim.so',
         'host/version.txt',
         'shadow/shadow_ui.js'
     ];
@@ -1067,17 +1160,17 @@ function performCoreUpdate(mod) {
 
     host_remove_dir(BACKUP);
     host_ensure_dir(BACKUP);
-    host_system_cmd('cp "' + BASE + '/move-anything" "' + BACKUP + '/"');
-    host_system_cmd('cp "' + BASE + '/move-anything-shim.so" "' + BACKUP + '/"');
+    host_system_cmd('cp "' + BASE + '/schwung" "' + BACKUP + '/"');
+    host_system_cmd('cp "' + BASE + '/schwung-shim.so" "' + BACKUP + '/"');
     host_system_cmd('cp -r "' + BASE + '/shadow" "' + BACKUP + '/"');
     host_system_cmd('cp -r "' + BASE + '/host" "' + BACKUP + '/"');
 
     /* Write restore script */
     const restoreScript = '#!/bin/sh\n'
         + 'cd "' + BASE + '"\n'
-        + 'cp "' + BACKUP + '/move-anything" .\n'
-        + 'cp "' + BACKUP + '/move-anything-shim.so" .\n'
-        + 'chmod u+s move-anything-shim.so\n'
+        + 'cp "' + BACKUP + '/schwung" .\n'
+        + 'cp "' + BACKUP + '/schwung-shim.so" .\n'
+        + 'chmod u+s schwung-shim.so\n'
         + 'cp -r "' + BACKUP + '/shadow" .\n'
         + 'cp -r "' + BACKUP + '/host" .\n'
         + 'echo "Restored. Restart Move to apply."\n';
@@ -1098,7 +1191,7 @@ function performCoreUpdate(mod) {
     /* Restore setuid bit on shim — required for LD_PRELOAD under AT_SECURE
      * (MoveOriginal has file capabilities that trigger secure-exec mode;
      *  without u+s the linker refuses to load the shim via symlink) */
-    host_system_cmd('chmod u+s "' + BASE + '/move-anything-shim.so"');
+    host_system_cmd('chmod u+s "' + BASE + '/schwung-shim.so"');
 
     /* --- Phase 7: Cleanup --- */
     host_remove_dir(STAGING);
@@ -1119,7 +1212,7 @@ function checkForUpdatesInBackground() {
     /* Check core update */
     storeHostVersion = getHostVersion();
     debugLog("checkForUpdatesInBackground: hostVersion=" + storeHostVersion);
-    const coreRelease = fetchReleaseJsonQuick('charlesvestal/move-anything');
+    const coreRelease = fetchReleaseJsonQuick('charlesvestal/schwung');
     debugLog("checkForUpdatesInBackground: coreRelease=" + JSON.stringify(coreRelease));
     if (coreRelease && isNewerVersion(coreRelease.version, storeHostVersion)) {
         debugLog("checkForUpdatesInBackground: core update available " + storeHostVersion + " -> " + coreRelease.version);
@@ -1457,7 +1550,7 @@ let warningShownForSlots = new Set();  // Track which chain slots have shown war
 let warningShownForMidiFxSlots = new Set();  // Track which slots have shown MIDI FX warnings
 let warningShownForMasterFx = new Set();  // Track which Master FX slots have shown warnings
 
-const MODULES_ROOT = "/data/UserData/move-anything/modules";
+const MODULES_ROOT = "/data/UserData/schwung/modules";
 
 /* Find UI path for a module - tries ui_chain.js first, then ui.js */
 function getModuleUiPath(moduleId) {
@@ -1836,7 +1929,7 @@ function clearSlotForEmptySetState(slot) {
 
 /* Scan modules directory for audio_fx modules */
 function scanForAudioFxModules() {
-    const MODULES_DIR = "/data/UserData/move-anything/modules";
+    const MODULES_DIR = "/data/UserData/schwung/modules";
     const AUDIO_FX_DIR = `${MODULES_DIR}/audio_fx`;
     const result = [{ id: "", name: "None", dspPath: "" }];
 
@@ -1890,7 +1983,7 @@ function scanForAudioFxModules() {
 
 /* Scan modules directory for overtake modules */
 function scanForOvertakeModules() {
-    const MODULES_DIR = "/data/UserData/move-anything/modules";
+    const MODULES_DIR = "/data/UserData/schwung/modules";
     const result = [];
 
     debugLog("scanForOvertakeModules starting");
@@ -3246,13 +3339,13 @@ function handleMasterFxSettingsAction(key) {
     if (key === "help") {
         if (!helpContent) {
             try {
-                const raw = host_read_file("/data/UserData/move-anything/shared/help_content.json");
+                const raw = host_read_file("/data/UserData/schwung/shared/help_content.json");
                 if (raw) {
                     helpContent = JSON.parse(raw);
-                    /* Append core version to Move Everything title */
+                    /* Append core version to Schwung title */
                     const coreVersion = getHostVersion();
-                    const meSection = helpContent.sections && helpContent.sections.find(s => s.title === "Move Everything");
-                    if (meSection) meSection.title = `Move Everything v${coreVersion}`;
+                    const meSection = helpContent.sections && helpContent.sections.find(s => s.title === "Schwung");
+                    if (meSection) meSection.title = `Schwung v${coreVersion}`;
                 }
             } catch (e) {
                 debugLog("Failed to load help content: " + e);
@@ -3287,7 +3380,7 @@ function handleMasterFxSettingsAction(key) {
                 if (oldIdx >= 0) helpContent.sections.splice(oldIdx, 1);
 
                 /* Build a map of help.json content keyed by module directory */
-                const MODULES_DIR = "/data/UserData/move-anything/modules";
+                const MODULES_DIR = "/data/UserData/schwung/modules";
                 const helpMap = {};
                 const entries = os.readdir(MODULES_DIR) || [];
                 const dirList = entries[0];
@@ -3332,7 +3425,7 @@ function handleMasterFxSettingsAction(key) {
                 if (moduleHelpChildren.length > 0) {
                     moduleHelpChildren.sort((a, b) => a.title.localeCompare(b.title));
                     const modulesSection = { title: "Modules", children: moduleHelpChildren };
-                    const meIdx = helpContent.sections.findIndex(s => s.title.startsWith("Move Everything"));
+                    const meIdx = helpContent.sections.findIndex(s => s.title.startsWith("Schwung"));
                     helpContent.sections.splice(meIdx >= 0 ? meIdx + 1 : 1, 0, modulesSection);
                     debugLog("Loaded module help: " + moduleHelpChildren.length + " modules");
                 }
@@ -3367,7 +3460,7 @@ function handleMasterFxSettingsAction(key) {
                         "trademarks of",
                         "Ableton AG.",
                         "",
-                        "Move Everything is",
+                        "Schwung is",
                         "an independent",
                         "product and has not",
                         "been authorized,",
@@ -3812,7 +3905,7 @@ function startToolProcess() {
     } else {
         const fileName = toolSelectedFile.substring(toolSelectedFile.lastIndexOf("/") + 1);
         const baseName = fileName.replace(/\.[^.]+$/, "");  /* Remove extension */
-        toolOutputDir = "/data/UserData/UserLibrary/Samples/Move Everything/Stems/" + baseName;
+        toolOutputDir = "/data/UserData/UserLibrary/Samples/Schwung/Stems/" + baseName;
     }
 
     /* Create output directory hierarchy */
@@ -3820,8 +3913,8 @@ function startToolProcess() {
         try { os.mkdir("/data/UserData/UserLibrary/Recordings", 0o755); } catch (e) {}
         try { os.mkdir("/data/UserData/UserLibrary/Recordings/Renders", 0o755); } catch (e) {}
     } else {
-        try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything", 0o755); } catch (e) {}
-        try { os.mkdir("/data/UserData/UserLibrary/Samples/Move Everything/Stems", 0o755); } catch (e) {}
+        try { os.mkdir("/data/UserData/UserLibrary/Samples/Schwung", 0o755); } catch (e) {}
+        try { os.mkdir("/data/UserData/UserLibrary/Samples/Schwung/Stems", 0o755); } catch (e) {}
         try { os.mkdir(toolOutputDir, 0o755); } catch (e) {}
     }
 
@@ -4373,7 +4466,7 @@ function applyMasterFxModuleSelection() {
 function saveMasterFxChainConfig() {
     /* The shim persists the state, but we also save to shadow config */
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         let config = {};
         try {
             const content = host_read_file(configPath);
@@ -4495,7 +4588,7 @@ function saveMasterFxChainConfig() {
 /* Save auto-update setting to shadow config */
 function saveAutoUpdateConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         let config = {};
         try {
             const content = host_read_file(configPath);
@@ -4511,7 +4604,7 @@ function saveAutoUpdateConfig() {
 /* Load auto-update setting from config */
 function loadAutoUpdateConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
         if (!content) return;
         const config = JSON.parse(content);
@@ -4525,7 +4618,7 @@ function loadAutoUpdateConfig() {
 
 function saveBrowserPreviewConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         let config = {};
         try {
             const content = host_read_file(configPath);
@@ -4538,7 +4631,7 @@ function saveBrowserPreviewConfig() {
 
 function loadBrowserPreviewConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
         if (!content) return;
         const config = JSON.parse(content);
@@ -4550,7 +4643,7 @@ function loadBrowserPreviewConfig() {
 
 function saveFilebrowserConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         let config = {};
         try {
             const content = host_read_file(configPath);
@@ -4563,14 +4656,14 @@ function saveFilebrowserConfig() {
 
 function loadFilebrowserConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
         if (!content) return;
         const config = JSON.parse(content);
         if (config.filebrowser_enabled !== undefined) {
             filebrowserEnabled = config.filebrowser_enabled;
             /* Sync flag file with config */
-            const flagPath = "/data/UserData/move-anything/filebrowser_enabled";
+            const flagPath = "/data/UserData/schwung/filebrowser_enabled";
             if (filebrowserEnabled) {
                 host_write_file(flagPath, "1");
             } else {
@@ -4582,7 +4675,7 @@ function loadFilebrowserConfig() {
 
 function savePadTypingConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         let config = {};
         try {
             const content = host_read_file(configPath);
@@ -4595,7 +4688,7 @@ function savePadTypingConfig() {
 
 function loadPadTypingConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
         if (!content) return;
         const config = JSON.parse(content);
@@ -4607,7 +4700,7 @@ function loadPadTypingConfig() {
 
 function saveTextPreviewConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         let config = {};
         try {
             const content = host_read_file(configPath);
@@ -4620,7 +4713,7 @@ function saveTextPreviewConfig() {
 
 function loadTextPreviewConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
         if (!content) return;
         const config = JSON.parse(content);
@@ -4636,7 +4729,7 @@ function loadTextPreviewConfig() {
  * syncs the JS-side masterFxConfig to reflect what the shim loaded. */
 function loadMasterFxChainFromConfig() {
     try {
-        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
         if (!content) return;
 
@@ -4739,7 +4832,7 @@ function enterChainEdit(slotIndex) {
 
 /* Scan modules directory for modules of a specific component type */
 function scanModulesForType(componentType) {
-    const MODULES_DIR = "/data/UserData/move-anything/modules";
+    const MODULES_DIR = "/data/UserData/schwung/modules";
     const result = [{ id: "", name: "None" }];
 
     /* Map component type to directory and expected component_type */
@@ -5115,7 +5208,7 @@ function handleStorePickerListSelect() {
     let detailAnnounce = mod.name;
     if (mod._isHostUpdate) {
         detailAnnounce += `, version ${storeHostVersion} to ${mod.latest_version}`;
-        detailAnnounce += ". Update Move Anything core framework. Restart required after update.";
+        detailAnnounce += ". Update Schwung core framework. Restart required after update.";
     } else {
         const detailStatus = getModuleStatus(mod, storeInstalledModules);
         if (detailStatus.installed && detailStatus.hasUpdate) {
@@ -7541,7 +7634,7 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:link_audio_routing", newVal);
         cachedLinkAudioRouting = (newVal === "1");
         saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("Route thru ME");
+        if (newVal === "1") warnIfLinkDisabled("Move->Schwung");
         return;
     }
     if (setting.key === "link_audio_publish") {
@@ -7550,7 +7643,7 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:link_audio_publish", newVal);
         cachedLinkAudioPublish = (newVal === "1");
         saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("ME->Link Audio");
+        if (newVal === "1") warnIfLinkDisabled("Schwung->Link");
         return;
     }
     if (setting.key === "resample_bridge") {
@@ -7565,7 +7658,7 @@ function adjustMasterFxSetting(setting, delta) {
         cachedResampleBridgeMode = values[nextIdx];
         saveMasterFxChainConfig();
         if (values[nextIdx] === 2) {
-            warningTitle = "ME Mix";
+            warningTitle = "Schwung Mix";
             warningLines = wrapText("Replaces Mic and Line-in with ME + Move Audio", 18);
             warningActive = true;
         }
@@ -7681,12 +7774,12 @@ function adjustMasterFxSetting(setting, delta) {
 
     if (setting.key === "filebrowser_enabled") {
         filebrowserEnabled = !filebrowserEnabled;
-        const flagPath = "/data/UserData/move-anything/filebrowser_enabled";
+        const flagPath = "/data/UserData/schwung/filebrowser_enabled";
         if (filebrowserEnabled) {
             host_write_file(flagPath, "1");
             /* Start filebrowser now */
             if (typeof host_system_cmd === "function") {
-                host_system_cmd("sh -c '/data/UserData/move-anything/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/move-anything/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
+                host_system_cmd("sh -c '/data/UserData/schwung/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/schwung/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
             }
         } else {
             host_remove_dir(flagPath);
@@ -8733,7 +8826,7 @@ function handleSelect() {
                 updateDetailModule = upd;
 
                 announce("Loading details for " + upd.name);
-                const repo = upd._isHostUpdate ? 'charlesvestal/move-anything' : upd.github_repo;
+                const repo = upd._isHostUpdate ? 'charlesvestal/schwung' : upd.github_repo;
                 const notes = repo ? fetchReleaseNotes(repo) : null;
 
                 const lines = [];
@@ -10712,12 +10805,12 @@ globalThis.init = function() {
     /* Read active set UUID to point autosave at the correct per-set directory.
      * File format: line 1 = UUID, line 2 = set name */
     {
-        const raw = host_read_file("/data/UserData/move-anything/active_set.txt");
+        const raw = host_read_file("/data/UserData/schwung/active_set.txt");
         if (raw) {
             const lines = raw.split("\n");
             const uuid = lines[0] ? lines[0].trim() : "";
             if (uuid) {
-                const setDir = "/data/UserData/move-anything/set_state/" + uuid;
+                const setDir = "/data/UserData/schwung/set_state/" + uuid;
                 if (host_file_exists(setDir + "/slot_0.json") || host_file_exists(setDir + "/shadow_chain_config.json")) {
                     activeSlotStateDir = setDir;
                     debugLog("Init: using per-set state dir " + setDir);
@@ -10759,6 +10852,21 @@ globalThis.shadow_save_state_now = function() {
 };
 
 globalThis.tick = function() {
+    /* Splash screen on boot */
+    if (splashActive) {
+        splashTick++;
+        if (splashTick >= SPLASH_TOTAL_TICKS) {
+            splashActive = false;
+            /* Dismiss shadow display mode — return to Move's native UI */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+        } else {
+            drawSplashScreen();
+            return;
+        }
+    }
+
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
         const flags = shadow_get_ui_flags();
@@ -10854,18 +10962,18 @@ globalThis.tick = function() {
 
             /* 2. Read new UUID and set name from active_set.txt
              *    Format: line 1 = UUID, line 2 = set name */
-            const activeSetRaw = host_read_file("/data/UserData/move-anything/active_set.txt");
+            const activeSetRaw = host_read_file("/data/UserData/schwung/active_set.txt");
             const activeSetLines = activeSetRaw ? activeSetRaw.split("\n") : [];
             const uuid = activeSetLines[0] ? activeSetLines[0].trim() : "";
             const setName = activeSetLines[1] ? activeSetLines[1].trim() : "";
 
             /* 3. Determine new directory */
             const newDir = uuid
-                ? "/data/UserData/move-anything/set_state/" + uuid
+                ? "/data/UserData/schwung/set_state/" + uuid
                 : SLOT_STATE_DIR_DEFAULT;
 
             if (uuid && typeof host_ensure_dir === "function") {
-                host_ensure_dir("/data/UserData/move-anything/set_state");
+                host_ensure_dir("/data/UserData/schwung/set_state");
                 host_ensure_dir(newDir);
             }
 
@@ -10876,7 +10984,7 @@ globalThis.tick = function() {
                 const copySourceUuid = host_read_file(newDir + "/copy_source.txt");
                 if (copySourceUuid && copySourceUuid.trim()) {
                     /* Set was duplicated — copy from the source set */
-                    const srcDir = "/data/UserData/move-anything/set_state/" + copySourceUuid.trim();
+                    const srcDir = "/data/UserData/schwung/set_state/" + copySourceUuid.trim();
                     if (host_file_exists(srcDir + "/slot_0.json")) {
                         debugLog("SET_CHANGED: duplicated set, copying from " + srcDir);
                         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
@@ -11448,6 +11556,15 @@ globalThis.onMidiMessageInternal = function(data) {
     const status = data[0];
     const d1 = data[1];
     const d2 = data[2];
+
+    /* Skip splash on any button press */
+    if (splashActive && d2 > 0) {
+        splashActive = false;
+        if (typeof shadow_request_exit === "function") {
+            shadow_request_exit();
+        }
+        return;
+    }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
     if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {

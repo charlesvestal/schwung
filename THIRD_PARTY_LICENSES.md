@@ -1,6 +1,6 @@
 # Third-Party Licenses
 
-Move Anything incorporates several third-party libraries and components. This document lists their licenses and attributions.
+Schwung incorporates several third-party libraries and components. This document lists their licenses and attributions.
 
 ---
 
@@ -154,7 +154,7 @@ No warranty implied; use at your own risk
 
 ## License Compatibility
 
-All third-party components use permissive licenses (MIT, BSD-style, Public Domain) that are compatible with Move Anything's CC BY-NC-SA 4.0 license.
+All third-party components use permissive licenses (MIT, BSD-style, Public Domain) that are compatible with Schwung's CC BY-NC-SA 4.0 license.
 
 **Key requirements:**
 - ✅ Attribution provided (this file)
@@ -165,7 +165,7 @@ All third-party components use permissive licenses (MIT, BSD-style, Public Domai
 
 **Notes:**
 - Flite, QuickJS, curl, and stb libraries retain their permissive licenses
-- Move Anything's original code is CC BY-NC-SA 4.0 (non-commercial)
+- Schwung's original code is CC BY-NC-SA 4.0 (non-commercial)
 - Combined work follows the most restrictive license (CC BY-NC-SA 4.0)
 - All third-party licenses permit this combination
 

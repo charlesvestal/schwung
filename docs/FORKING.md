@@ -1,6 +1,6 @@
-# Forking Move Anything
+# Forking Schwung
 
-Guide for maintaining a fork of Move Anything that tracks upstream while adding custom features.
+Guide for maintaining a fork of Schwung that tracks upstream while adding custom features.
 
 ## Flag Allocation
 
@@ -156,7 +156,7 @@ src/shadow/
 
 **Shared utilities** use absolute paths (resolved on device):
 ```javascript
-import { drawMenuHeader } from '/data/UserData/move-anything/shared/menu_layout.mjs';
+import { drawMenuHeader } from '/data/UserData/schwung/shared/menu_layout.mjs';
 ```
 
 **Local view modules** use relative paths:
@@ -179,7 +179,7 @@ The core `shadow_ui.js` imports these and routes to them in its `tick()` and `on
 1. Create `src/shadow/shadow_ui_myview.mjs`:
 ```javascript
 import { drawMenuHeader, drawMenuList, drawMenuFooter }
-    from '/data/UserData/move-anything/shared/menu_layout.mjs';
+    from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 /* View-specific state */
 let myIndex = 0;
@@ -271,7 +271,7 @@ If your fork uses git subtree to embed move-anything:
 
 ```bash
 # Add upstream as remote
-git remote add upstream https://github.com/charlesvestal/move-everything.git
+git remote add upstream https://github.com/charlesvestal/schwung.git
 
 # Pull upstream changes
 git subtree pull --prefix=move-anything-my-version upstream main --squash

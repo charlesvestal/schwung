@@ -13,7 +13,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/bootstrap-build-deps.sh [options]
 
-Installs Debian/Ubuntu cross-build dependencies for Move Anything and optionally
+Installs Debian/Ubuntu cross-build dependencies for Schwung and optionally
 builds QuickJS.
 
 Options:
