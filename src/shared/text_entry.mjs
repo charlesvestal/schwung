@@ -251,8 +251,32 @@ export function openTextEntry({ title = '', initialText = '', onConfirm, onCance
     state.lastAction = null;
     state.lastChar = '';
     state.onConfirm = onConfirm;
-    /* Use caller's explicit padSelect if provided, otherwise fall back to global setting */
-    state.padSelect = (padSelect !== undefined) ? !!padSelect : padSelectGlobal;
+    /* Use caller's explicit padSelect if provided, otherwise fall back to global setting.
+     * If global is false, check the config file as a fallback — external modules loaded
+     * via shadow_load_ui_module may have a separate module instance where the global
+     * was never set (different canonical import path). */
+    let effectivePadSelect = padSelectGlobal;
+    if (!effectivePadSelect && padSelect === undefined) {
+        try {
+            const cfgPaths = [
+                '/data/UserData/schwung/shadow_config.json',
+                '/data/UserData/move-anything/shadow_config.json'
+            ];
+            for (const p of cfgPaths) {
+                if (typeof host_read_file === 'function') {
+                    const content = host_read_file(p);
+                    if (content) {
+                        const cfg = JSON.parse(content);
+                        if (cfg.pad_typing) {
+                            effectivePadSelect = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (e) { /* ignore config read errors */ }
+    }
+    state.padSelect = (padSelect !== undefined) ? !!padSelect : effectivePadSelect;
     state.onCancel = onCancel || null;
     state.onAnnounce = (typeof onAnnounce === 'function') ? onAnnounce : null;
 

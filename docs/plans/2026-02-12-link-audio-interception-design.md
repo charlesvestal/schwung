@@ -33,7 +33,7 @@ Shadow publish thread ──── chnnlsv audio packets ────→ Live
 
 ## Part 1: sendto() Hook + Per-Channel Ring Buffers
 
-**File:** `move-anything/src/move_anything_shim.c`
+**File:** `move-anything/src/schwung_shim.c`
 
 ### 1a. New header: `src/host/link_audio.h`
 
@@ -138,7 +138,7 @@ int link_audio_read_channel(int idx, int16_t *out, int frames) {
 
 ## Part 2: Self-Subscriber
 
-**File:** `move-anything/src/move_anything_shim.c`
+**File:** `move-anything/src/schwung_shim.c`
 
 ### How it works
 
@@ -163,12 +163,12 @@ Move only sends audio when a peer subscribes via ChannelRequest (msg_type=3) hea
 
 ## Part 3: Shadow Audio Publishing
 
-**File:** `move-anything/src/move_anything_shim.c`
+**File:** `move-anything/src/schwung_shim.c`
 
 ### Architecture decision: Separate peer
 
 Publish shadow audio as a **separate Link Audio peer** (not modifying Move's packets):
-- Peer name: "ME" (or "Move Everything")
+- Peer name: "ME" (or "Schwung")
 - Up to 4 channels: "Shadow-1" through "Shadow-4"
 - Own PeerID, own socket, own session announcements
 - If shim crashes, Move's Link Audio continues unaffected
@@ -204,7 +204,7 @@ Publisher thread wakes on each ioctl tick (~344 Hz) via atomic flag set by the i
 - `src/host/link_audio.h` — protocol constants, ring buffer structs, state struct
 
 ### Modified files
-- `src/move_anything_shim.c` — sendto() hook, state init, ring buffer ops, subscriber thread, publisher thread, per-slot capture in mix path
+- `src/schwung_shim.c` — sendto() hook, state init, ring buffer ops, subscriber thread, publisher thread, per-slot capture in mix path
 - `src/host/shadow_constants.h` — (if needed) add SHM segment for sharing Link Audio channel list with shadow UI
 
 ### Not modified (this phase)

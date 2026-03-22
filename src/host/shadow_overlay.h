@@ -1,5 +1,5 @@
 /* shadow_overlay.h - Display overlay drawing and state sync
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_OVERLAY_H
 #define SHADOW_OVERLAY_H

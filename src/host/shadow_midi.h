@@ -1,5 +1,5 @@
 /* shadow_midi.h - MIDI routing, dispatch, and forwarding
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_MIDI_H
 #define SHADOW_MIDI_H

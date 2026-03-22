@@ -1,5 +1,5 @@
 /* shadow_sampler.h - Quantized sampler and skipback subsystem
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_SAMPLER_H
 #define SHADOW_SAMPLER_H
@@ -69,7 +69,7 @@ typedef struct {
 
 #define SAMPLER_DURATION_COUNT 6
 #define SAMPLER_CLOCK_STALE_THRESHOLD 200
-#define SAMPLER_SETTINGS_PATH "/data/UserData/move-anything/settings.txt"
+#define SAMPLER_SETTINGS_PATH "/data/UserData/schwung/settings.txt"
 #define SAMPLER_SETS_DIR "/data/UserData/UserLibrary/Sets"
 #define SAMPLER_OVERLAY_DONE_FRAMES 90
 #define SAMPLER_VU_HOLD_DURATION 8
@@ -80,12 +80,12 @@ typedef struct {
 #define SAMPLER_RING_BUFFER_SECONDS 2
 #define SAMPLER_RING_BUFFER_SAMPLES (SAMPLER_SAMPLE_RATE * SAMPLER_RING_BUFFER_SECONDS)
 #define SAMPLER_RING_BUFFER_SIZE (SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
-#define SAMPLER_RECORDINGS_DIR "/data/UserData/UserLibrary/Samples/Move Everything/Resampler"
+#define SAMPLER_RECORDINGS_DIR "/data/UserData/UserLibrary/Samples/Schwung/Resampler"
 
 #define SKIPBACK_SECONDS 30
 #define SKIPBACK_SAMPLES (SAMPLER_SAMPLE_RATE * SKIPBACK_SECONDS)
 #define SKIPBACK_BUFFER_SIZE (SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
-#define SKIPBACK_DIR "/data/UserData/UserLibrary/Samples/Move Everything/Skipback"
+#define SKIPBACK_DIR "/data/UserData/UserLibrary/Samples/Schwung/Skipback"
 #define SKIPBACK_OVERLAY_FRAMES 171
 
 /* ============================================================================
