@@ -3751,8 +3751,20 @@ pre_done:
         shadow_spi_fd = schwung_spi_get_fd(g_spi_handle);
     }
 
-    /* Mix JACK audio/MIDI/display into shadow (no-op if JACK not connected) */
+    /* Mix JACK audio/display into shadow (no-op if JACK not connected) */
     schwung_jack_bridge_pre(g_jack_shm, shadow);
+
+    /* Route JACK MIDI output through the rate-limited LED queue.
+     * This handles the 20-message-per-SPI-frame limit properly,
+     * spreading large LED bursts across multiple frames. */
+    if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0) {
+        uint8_t count = g_jack_shm->midi_from_jack_count;
+        for (uint8_t i = 0; i < count; i++) {
+            SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[i];
+            uint8_t status = (m.midi.type << 4) | m.midi.channel;
+            shadow_queue_led(m.cin, status, m.midi.data1, m.midi.data2);
+        }
+    }
 
     /* Mute Move's audio output when requested (e.g. during silent clip switching).
      * Zero the audio region in shadow BEFORE the library copies shadow→hw. */
