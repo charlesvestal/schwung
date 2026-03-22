@@ -14,7 +14,7 @@
 
 #define SCHWUNG_JACK_AUDIO_FRAMES   128
 #define SCHWUNG_JACK_MIDI_IN_MAX    31
-#define SCHWUNG_JACK_MIDI_OUT_MAX   20
+#define SCHWUNG_JACK_MIDI_OUT_MAX   64
 #define SCHWUNG_JACK_DISPLAY_SIZE   1024
 
 /* Raw SPI MIDI types — must match schwung_spi_lib.h */
@@ -36,8 +36,9 @@ typedef struct __attribute__((packed)) {
     uint32_t              timestamp;
 } SchwungJackMidiEvent;
 
-/* Shared memory layout — single 4096-byte page */
-typedef struct __attribute__((packed)) {
+/* Shared memory layout — single 4096-byte page.
+ * No packed on outer struct — all fields naturally aligned at page-aligned mmap. */
+typedef struct {
     /* Header (16 bytes) */
     uint32_t magic;
     uint32_t version;
@@ -66,7 +67,12 @@ typedef struct __attribute__((packed)) {
 
 } SchwungJackShm;
 
+#ifdef __cplusplus
+static_assert(sizeof(SchwungJackShm) <= SCHWUNG_JACK_SHM_SIZE,
+              "SchwungJackShm exceeds 4096 bytes");
+#else
 _Static_assert(sizeof(SchwungJackShm) <= SCHWUNG_JACK_SHM_SIZE,
                "SchwungJackShm exceeds 4096 bytes");
+#endif
 
 #endif /* SCHWUNG_JACK_SHM_H */
