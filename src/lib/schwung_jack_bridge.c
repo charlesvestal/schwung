@@ -1,0 +1,200 @@
+// schwung_jack_bridge.c — Shim-side JACK bridge
+// Manages shared memory and transfers audio/MIDI/display between
+// the SPI shadow buffer and the JACK shadow driver.
+
+#include "schwung_jack_bridge.h"
+#include "schwung_spi_lib.h"
+
+#include <fcntl.h>
+#include <linux/futex.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+// ============================================================================
+// Create / Destroy
+// ============================================================================
+
+SchwungJackShm *schwung_jack_bridge_create(void) {
+    int fd = shm_open(SCHWUNG_JACK_SHM_PATH, O_CREAT | O_RDWR, 0666);
+    if (fd < 0)
+        return NULL;
+
+    if (ftruncate(fd, SCHWUNG_JACK_SHM_SIZE) < 0) {
+        close(fd);
+        return NULL;
+    }
+
+    void *ptr = mmap(NULL, SCHWUNG_JACK_SHM_SIZE,
+                      PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+
+    if (ptr == MAP_FAILED)
+        return NULL;
+
+    SchwungJackShm *shm = (SchwungJackShm *)ptr;
+    memset(shm, 0, sizeof(*shm));
+    __atomic_store_n(&shm->magic, SCHWUNG_JACK_MAGIC, __ATOMIC_RELEASE);
+    __atomic_store_n(&shm->version, SCHWUNG_JACK_VERSION, __ATOMIC_RELEASE);
+    __atomic_store_n(&shm->frame_counter, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&shm->jack_frame_done, 0, __ATOMIC_RELEASE);
+
+    return shm;
+}
+
+void schwung_jack_bridge_destroy(SchwungJackShm *shm) {
+    if (!shm)
+        return;
+    munmap(shm, SCHWUNG_JACK_SHM_SIZE);
+    shm_unlink(SCHWUNG_JACK_SHM_PATH);
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+static inline int16_t saturating_add_i16(int16_t a, int16_t b) {
+    int32_t sum = (int32_t)a + (int32_t)b;
+    if (sum > 32767)  return 32767;
+    if (sum < -32768) return -32768;
+    return (int16_t)sum;
+}
+
+static inline int jack_is_active(SchwungJackShm *shm) {
+    uint32_t fc = __atomic_load_n(&shm->frame_counter, __ATOMIC_ACQUIRE);
+    uint32_t jd = __atomic_load_n(&shm->jack_frame_done, __ATOMIC_ACQUIRE);
+    return jd == fc;
+}
+
+// ============================================================================
+// Pre-transfer: mix JACK output into shadow before shadow→hardware copy
+// ============================================================================
+
+void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
+    if (!shm || !shadow)
+        return;
+
+    if (!jack_is_active(shm))
+        return;
+
+    // --- Audio: add JACK's audio_out into shadow output buffer (saturating) ---
+    int16_t *shadow_audio = (int16_t *)(shadow + SCHWUNG_OFF_OUT_AUDIO);
+    const int16_t *jack_audio = shm->audio_out;
+    int num_samples = SCHWUNG_AUDIO_FRAMES * 2; // stereo interleaved
+
+    for (int i = 0; i < num_samples; i++)
+        shadow_audio[i] = saturating_add_i16(shadow_audio[i], jack_audio[i]);
+
+    // --- MIDI cable 0: append JACK's midi_from_jack into Move's output ---
+    {
+        SchwungUsbMidiMsg *out_midi = (SchwungUsbMidiMsg *)(shadow + SCHWUNG_OFF_OUT_MIDI);
+
+        // Find first empty slot in Move's MIDI output
+        int slot = 0;
+        while (slot < SCHWUNG_MIDI_OUT_MAX &&
+               !schwung_usb_midi_msg_is_empty(out_midi[slot]))
+            slot++;
+
+        // Append JACK's cable-0 MIDI messages
+        uint8_t jack_count = shm->midi_from_jack_count;
+        for (uint8_t i = 0; i < jack_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
+            SchwungJackUsbMidiMsg jmsg = shm->midi_from_jack[i];
+            SchwungUsbMidiMsg smsg;
+            smsg.cin = jmsg.cin;
+            smsg.cable = jmsg.cable;
+            smsg.midi.channel = jmsg.midi.channel;
+            smsg.midi.type = jmsg.midi.type;
+            smsg.midi.data1 = jmsg.midi.data1;
+            smsg.midi.data2 = jmsg.midi.data2;
+            out_midi[slot++] = smsg;
+        }
+
+        // Append JACK's ext MIDI messages (cable 2+)
+        uint8_t ext_count = shm->ext_midi_from_jack_count;
+        for (uint8_t i = 0; i < ext_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
+            SchwungJackUsbMidiMsg jmsg = shm->ext_midi_from_jack[i];
+            SchwungUsbMidiMsg smsg;
+            smsg.cin = jmsg.cin;
+            smsg.cable = jmsg.cable;
+            smsg.midi.channel = jmsg.midi.channel;
+            smsg.midi.type = jmsg.midi.type;
+            smsg.midi.data1 = jmsg.midi.data1;
+            smsg.midi.data2 = jmsg.midi.data2;
+            out_midi[slot++] = smsg;
+        }
+    }
+
+    // --- Display: if active, copy correct chunk to shadow ---
+    if (shm->display_active) {
+        uint8_t *disp_stat_in = shadow + SCHWUNG_OFF_IN_DISP_STAT;
+        uint8_t disp_index = *disp_stat_in;
+
+        // Each chunk is SCHWUNG_OUT_DISP_CHUNK_LEN bytes from display_data
+        size_t offset = (size_t)disp_index * SCHWUNG_OUT_DISP_CHUNK_LEN;
+        if (offset + SCHWUNG_OUT_DISP_CHUNK_LEN <= SCHWUNG_JACK_DISPLAY_SIZE) {
+            memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
+                   shm->display_data + offset,
+                   SCHWUNG_OUT_DISP_CHUNK_LEN);
+        }
+    }
+}
+
+// ============================================================================
+// Post-transfer: copy capture data to shm, split MIDI, wake JACK
+// ============================================================================
+
+void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
+                               const uint8_t *hw) {
+    if (!shm || !shadow)
+        return;
+
+    // --- Audio: copy captured audio from shadow input to shm ---
+    const int16_t *capture = (const int16_t *)(shadow + SCHWUNG_OFF_IN_AUDIO);
+    memcpy(shm->audio_in, capture, SCHWUNG_JACK_AUDIO_FRAMES * 2 * sizeof(int16_t));
+
+    // --- MIDI: scan input events, split by cable ---
+    const SchwungMidiEvent *in_events =
+        (const SchwungMidiEvent *)(shadow + SCHWUNG_OFF_IN_MIDI);
+
+    uint8_t c0_count = 0;
+    uint8_t ext_count = 0;
+
+    for (int i = 0; i < SCHWUNG_MIDI_IN_MAX; i++) {
+        SchwungMidiEvent ev = in_events[i];
+        if (schwung_usb_midi_msg_is_empty(ev.message))
+            break;
+
+        uint8_t cable = ev.message.cable;
+
+        if (cable == 0 && c0_count < SCHWUNG_JACK_MIDI_IN_MAX) {
+            SchwungJackMidiEvent jev;
+            jev.message.cin = ev.message.cin;
+            jev.message.cable = ev.message.cable;
+            jev.message.midi.channel = ev.message.midi.channel;
+            jev.message.midi.type = ev.message.midi.type;
+            jev.message.midi.data1 = ev.message.midi.data1;
+            jev.message.midi.data2 = ev.message.midi.data2;
+            jev.timestamp = ev.timestamp;
+            shm->midi_to_jack[c0_count++] = jev;
+        } else if (cable >= 2 && ext_count < SCHWUNG_JACK_MIDI_IN_MAX) {
+            SchwungJackMidiEvent jev;
+            jev.message.cin = ev.message.cin;
+            jev.message.cable = ev.message.cable;
+            jev.message.midi.channel = ev.message.midi.channel;
+            jev.message.midi.type = ev.message.midi.type;
+            jev.message.midi.data1 = ev.message.midi.data1;
+            jev.message.midi.data2 = ev.message.midi.data2;
+            jev.timestamp = ev.timestamp;
+            shm->ext_midi_to_jack[ext_count++] = jev;
+        }
+    }
+
+    shm->midi_to_jack_count = c0_count;
+    shm->ext_midi_to_jack_count = ext_count;
+
+    // --- Increment frame_counter and wake JACK via futex ---
+    __atomic_add_fetch(&shm->frame_counter, 1, __ATOMIC_RELEASE);
+
+    syscall(SYS_futex, &shm->frame_counter, FUTEX_WAKE, 1, NULL, NULL, 0);
+}
