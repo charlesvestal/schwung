@@ -2433,6 +2433,10 @@ static void shadow_swap_display(void)
     if (!shadow_control || !shadow_control->shadow_ready) {
         return;
     }
+    /* External shim owns the display — skip all schwung display writes */
+    if (shadow_control->external_display) {
+        return;
+    }
     if (!shadow_display_mode) {
         display_phase = 0;
         display_hidden_for_volume = 0;
@@ -3396,7 +3400,8 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                                   !shadow_control->overtake_mode) ||
                                  pin_challenge;
 
-    if (global_mmap_addr && native_display_visible) {
+    int external_display = shadow_control && shadow_control->external_display;
+    if (global_mmap_addr && native_display_visible && !external_display) {
         uint8_t *mem = (uint8_t *)global_mmap_addr;
         uint8_t slice_num = mem[80];
 
@@ -3654,7 +3659,8 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* Capture final display to live shm for remote viewer.
      * Shadow mode: copy from shadow display shm (full composited frame).
      * Native mode: reconstruct from captured slices (written above). */
-    if (display_live_shm && shadow_control && shadow_control->display_mirror) {
+    if (display_live_shm && shadow_control && shadow_control->display_mirror
+        && !shadow_control->external_display) {
         if (shadow_display_mode && shadow_display_shm) {
             memcpy(display_live_shm, shadow_display_shm, DISPLAY_BUFFER_SIZE);
         } else {

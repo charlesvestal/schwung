@@ -133,7 +133,8 @@ typedef struct shadow_control_t {
     volatile uint8_t skipback_require_volume; /* 0=Shift+Capture, 1=Shift+Vol+Capture */
     volatile uint8_t preview_cmd;          /* 0=none, 1=play (path in file), 2=stop */
     volatile uint8_t pad_block;            /* 1=suppress pad notes (68-99) from reaching Move */
-    volatile uint8_t reserved[9];
+    volatile uint8_t external_display;     /* 1=external shim owns display, schwung skips display writes */
+    volatile uint8_t reserved[8];
 } shadow_control_t;
 
 /*
