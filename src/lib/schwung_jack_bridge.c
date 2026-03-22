@@ -89,42 +89,49 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
     for (int i = 0; i < num_samples; i++)
         shadow_audio[i] = saturating_add_i16(shadow_audio[i], jack_audio[i]);
 
-    // --- MIDI cable 0: append JACK's midi_from_jack into Move's output ---
+    // --- MIDI: write JACK's MIDI output to shadow buffer ---
+    // When JACK has MIDI to send, REPLACE Move's MIDI output entirely.
+    // Move fills all 20 slots (with zero-padding), leaving no room to append.
+    // In overtake mode, JACK's MIDI (LEDs, etc) takes priority.
     {
-        SchwungUsbMidiMsg *out_midi = (SchwungUsbMidiMsg *)(shadow + SCHWUNG_OFF_OUT_MIDI);
-
-        // Find first empty slot in Move's MIDI output
-        int slot = 0;
-        while (slot < SCHWUNG_MIDI_OUT_MAX &&
-               !schwung_usb_midi_msg_is_empty(out_midi[slot]))
-            slot++;
-
-        // Append JACK's cable-0 MIDI messages
         uint8_t jack_count = shm->midi_from_jack_count;
-        for (uint8_t i = 0; i < jack_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
-            SchwungJackUsbMidiMsg jmsg = shm->midi_from_jack[i];
-            SchwungUsbMidiMsg smsg;
-            smsg.cin = jmsg.cin;
-            smsg.cable = jmsg.cable;
-            smsg.midi.channel = jmsg.midi.channel;
-            smsg.midi.type = jmsg.midi.type;
-            smsg.midi.data1 = jmsg.midi.data1;
-            smsg.midi.data2 = jmsg.midi.data2;
-            out_midi[slot++] = smsg;
-        }
-
-        // Append JACK's ext MIDI messages (cable 2+)
         uint8_t ext_count = shm->ext_midi_from_jack_count;
-        for (uint8_t i = 0; i < ext_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
-            SchwungJackUsbMidiMsg jmsg = shm->ext_midi_from_jack[i];
-            SchwungUsbMidiMsg smsg;
-            smsg.cin = jmsg.cin;
-            smsg.cable = jmsg.cable;
-            smsg.midi.channel = jmsg.midi.channel;
-            smsg.midi.type = jmsg.midi.type;
-            smsg.midi.data1 = jmsg.midi.data1;
-            smsg.midi.data2 = jmsg.midi.data2;
-            out_midi[slot++] = smsg;
+
+        if (jack_count > 0 || ext_count > 0) {
+            SchwungUsbMidiMsg *out_midi = (SchwungUsbMidiMsg *)(shadow + SCHWUNG_OFF_OUT_MIDI);
+            int slot = 0;
+
+            // Write JACK's cable-0 MIDI messages
+            for (uint8_t i = 0; i < jack_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
+                SchwungJackUsbMidiMsg jmsg = shm->midi_from_jack[i];
+                SchwungUsbMidiMsg smsg;
+                smsg.cin = jmsg.cin;
+                smsg.cable = jmsg.cable;
+                smsg.midi.channel = jmsg.midi.channel;
+                smsg.midi.type = jmsg.midi.type;
+                smsg.midi.data1 = jmsg.midi.data1;
+                smsg.midi.data2 = jmsg.midi.data2;
+                out_midi[slot++] = smsg;
+            }
+
+            // Write JACK's ext MIDI messages (cable 2+)
+            for (uint8_t i = 0; i < ext_count && slot < SCHWUNG_MIDI_OUT_MAX; i++) {
+                SchwungJackUsbMidiMsg jmsg = shm->ext_midi_from_jack[i];
+                SchwungUsbMidiMsg smsg;
+                smsg.cin = jmsg.cin;
+                smsg.cable = jmsg.cable;
+                smsg.midi.channel = jmsg.midi.channel;
+                smsg.midi.type = jmsg.midi.type;
+                smsg.midi.data1 = jmsg.midi.data1;
+                smsg.midi.data2 = jmsg.midi.data2;
+                out_midi[slot++] = smsg;
+            }
+
+            // Zero-pad remaining slots
+            SchwungUsbMidiMsg empty = {0};
+            while (slot < SCHWUNG_MIDI_OUT_MAX) {
+                out_midi[slot++] = empty;
+            }
         }
     }
 
@@ -159,9 +166,11 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
     const int16_t *capture = (const int16_t *)(shadow + SCHWUNG_OFF_IN_AUDIO);
     memcpy(shm->audio_in, capture, SCHWUNG_JACK_AUDIO_FRAMES * 2 * sizeof(int16_t));
 
-    // --- MIDI: scan input events, split by cable ---
+    // --- MIDI: scan input events from RAW HARDWARE buffer, split by cable ---
+    // Use hw (not shadow) so JACK gets raw pad MIDI before Move's scale mapping.
+    // This is critical for rnbomovecontrol which expects raw chromatic pad notes.
     const SchwungMidiEvent *in_events =
-        (const SchwungMidiEvent *)(shadow + SCHWUNG_OFF_IN_MIDI);
+        (const SchwungMidiEvent *)(hw + SCHWUNG_OFF_IN_MIDI);
 
     uint8_t c0_count = 0;
     uint8_t ext_count = 0;
@@ -198,6 +207,27 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
 
     shm->midi_to_jack_count = c0_count;
     shm->ext_midi_to_jack_count = ext_count;
+
+    // Debug: store total event count and first event raw bytes for debugging
+    // Use unused bytes at end of shm (after display_active, before page boundary)
+    // Offset 2725+ is padding
+    {
+        uint8_t *dbg = ((uint8_t *)shm) + 2726;
+        int total = 0;
+        for (int i = 0; i < SCHWUNG_MIDI_IN_MAX; i++) {
+            SchwungMidiEvent ev = in_events[i];
+            if (schwung_usb_midi_msg_is_empty(ev.message)) break;
+            total++;
+        }
+        dbg[0] = (uint8_t)total;     // total events seen
+        dbg[1] = (uint8_t)c0_count;  // cable 0 count
+        dbg[2] = (uint8_t)ext_count; // ext count
+        // First event raw bytes
+        if (total > 0) {
+            const uint8_t *raw = (const uint8_t *)&in_events[0];
+            dbg[3] = raw[0]; dbg[4] = raw[1]; dbg[5] = raw[2]; dbg[6] = raw[3];
+        }
+    }
 
     // --- Increment frame_counter and wake JACK via futex ---
     __atomic_add_fetch(&shm->frame_counter, 1, __ATOMIC_RELEASE);
