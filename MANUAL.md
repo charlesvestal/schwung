@@ -1,8 +1,8 @@
-# Move Everything Manual
+# Schwung Manual
 
-## What is Move Everything?
+## What is Schwung?
 
-Move Everything adds four instrument slots that run in "shadow mode" alongside your normal Move tracks. Each slot can host synthesizers and effects that mix with Move's audio output.
+Schwung adds four instrument slots that run in "shadow mode" alongside your normal Move tracks. Each slot can host synthesizers and effects that mix with Move's audio output.
 
 **Key concepts:**
 - **Shadow Mode**: A custom UI accessed via keyboard shortcuts
@@ -16,7 +16,7 @@ Move Everything adds four instrument slots that run in "shadow mode" alongside y
 
 This is an unofficial project that modifies the software on your Ableton Move. Back up any important sets and samples before installing. Familiarize yourself with Move's DFU restore mode (on Centercode) in case you need to restore your device.
 
-Move still works normally after installation - Move Everything runs alongside it.
+Move still works normally after installation - Schwung runs alongside it.
 
 ---
 
@@ -24,7 +24,7 @@ Move still works normally after installation - Move Everything runs alongside it
 
 ### Desktop Installer (Recommended)
 
-Download the [Move Everything Installer](https://github.com/charlesvestal/move-everything-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface.
+Download the [Schwung Installer](https://github.com/charlesvestal/schwung-installer/releases/latest) for your platform (macOS, Windows, Linux). It handles SSH setup, module selection, and upgrades via a graphical interface.
 
 ### Command Line
 
@@ -32,7 +32,7 @@ Download the [Move Everything Installer](https://github.com/charlesvestal/move-e
 
 Run:
 ```
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/install.sh | sh
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/install.sh | sh
 ```
 
 The installer will guide you through SSH setup, download the framework, and offer to install modules.
@@ -71,14 +71,14 @@ The installer auto-detects the module's type (sound generator, audio FX, etc.) a
 
 Run:
 ```
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uninstall.sh | sh
 ```
 
-By default, uninstall exports inactive Set Pages backups to `/data/UserData/UserLibrary/Move Everything Backups/Set Pages/` before removing Move Everything.
+By default, uninstall exports inactive Set Pages backups to `/data/UserData/UserLibrary/Schwung Backups/Set Pages/` before removing Schwung.
 
-To skip that export and permanently delete Move Anything data:
+To skip that export and permanently delete Schwung data:
 ```
-curl -L https://raw.githubusercontent.com/charlesvestal/move-anything/main/scripts/uninstall.sh | sh -s -- --purge-data
+curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uninstall.sh | sh -s -- --purge-data
 ```
 
 ---
@@ -184,7 +184,7 @@ An indicator (`~1`, `~2`, or `~1+2`) appears above targeted components in the ch
 
 ## Per-Set Slot State
 
-Each Move Set maintains its own independent slot configurations. When you switch Sets, Move Everything automatically saves the current slots and loads the slots associated with the new Set. A brief "Set Loaded" overlay confirms the switch.
+Each Move Set maintains its own independent slot configurations. When you switch Sets, Schwung automatically saves the current slots and loads the slots associated with the new Set. A brief "Set Loaded" overlay confirms the switch.
 
 **How it works:**
 - Each Set remembers which synths, effects, and settings are loaded in each slot, plus Master FX
@@ -212,7 +212,7 @@ A toast overlay shows "Loading Page X/8..." during the switch. Move restarts aut
 
 ### How It Works
 
-When you switch pages, Move Everything:
+When you switch pages, Schwung:
 1. Saves the current set (if dirty)
 2. Moves all sets from `Sets/` into a stash directory for the current page
 3. Moves the target page's sets from its stash into `Sets/`
@@ -237,9 +237,9 @@ The setting takes effect immediately (no restart needed) and persists across reb
 2. Set the corresponding slot's **Receive Ch** to match
 3. Play the Move track - its MIDI triggers the slot's synth
 
-**Tip:** To prevent the native Move synth from playing on top of your ME synth, load an empty Drum Rack or Sampler preset on the Move track. This silences the native sound while still sending MIDI to Move Everything.
+**Tip:** To prevent the native Move synth from playing on top of your Schwung synth, load an empty Drum Rack or Sampler preset on the Move track. This silences the native sound while still sending MIDI to Schwung.
 
-Move Everything also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
+Schwung also forwards pitch bend, mod wheel, sustain, and other CCs from external MIDI controllers.
 
 **Tip:** Some synths and FX (i.e. Arp) utilize Midi Cloc for tempo sync. Make sure your Move is set to "Midi Clock: Out" for these to pick up sync correctly. 
 
@@ -259,44 +259,44 @@ Global settings (Display, Audio, Screen Reader, Set Pages, Services, Updates, He
 
 ## Link Audio (Move 2.0+)
 
-On Move firmware 2.0.0+, Link Audio lets you route Move's own track audio through Move Everything's effects. This gives you access to effects like CloudSeed reverb, TapeDelay, or NAM amp models on your native Move tracks — but it changes how audio is mixed. Understanding the tradeoffs helps you decide when to use it.
+On Move firmware 2.0.0+, Link Audio lets you route Move's own track audio through Schwung's effects. This gives you access to effects like CloudSeed reverb, TapeDelay, or NAM amp models on your native Move tracks — but it changes how audio is mixed. Understanding the tradeoffs helps you decide when to use it.
 
 ### Link Audio On vs Off
 
 | | **Link Audio On** | **Link Audio Off** |
 |---|---|---|
-| **ME synths** | Processed through slot FX and Master FX | Processed through slot FX and Master FX |
-| **Native Move tracks** | Routed through ME slot FX per track | Stay on Move's native path |
-| **Move's native Master FX** | Bypassed — ME rebuilds the mix from per-track streams | Active — applied to Move tracks normally |
-| **ME Master FX** | Processes everything (Move tracks + ME synths) | Processes everything (Move post-native-FX + ME synths) |
+| **Schwung synth** | Processed through slot FX and Master FX | Processed through slot FX and Master FX |
+| **Native Move tracks** | Routed through Schwung slot FX per track | Stay on Move's native path |
+| **Move's native Master FX** | Bypassed — Schwung rebuilds the mix from per-track streams | Active — applied to Move tracks normally |
+| **Schwung Master FX** | Processes everything (Move tracks + Schwung synth) | Processes everything (Move post-native-FX + Schwung synth) |
 | **Play delay** | Brief delay when pressing Play (Link quantum sync) | No delay |
 
 ### How It Works
 
-**Link Audio On:** Move streams each track's audio separately via the Link protocol. Move Everything intercepts these per-track streams, runs them through the corresponding slot's audio FX (combined with any ME synth in that slot), and reconstructs the final mix. Because ME is working with pre-mix audio, Move's native Master FX is bypassed entirely.
+**Link Audio On:** Move streams each track's audio separately via the Link protocol. Schwung intercepts these per-track streams, runs them through the corresponding slot's audio FX (combined with any Schwung synth in that slot), and reconstructs the final mix. Because Schwung is working with pre-mix audio, Move's native Master FX is bypassed entirely.
 
 ```
 Move Track 1 → Slot 1 FX → ┐
-Move Track 2 → Slot 2 FX → ├→ ME Master FX → Output
+Move Track 2 → Slot 2 FX → ├→ Schwung Master FX → Output
 Move Track 3 → Slot 3 FX → │
 Move Track 4 → Slot 4 FX → ┘
-(+ ME synths mixed in per slot)
+(+ Schwung synth mixed in per slot)
 ```
 
-**Link Audio Off:** Move's audio goes through its normal path including native Master FX. ME synths are processed through their slot FX and mixed in. Everything combined runs through ME Master FX.
+**Link Audio Off:** Move's audio goes through its normal path including native Master FX. Schwung synth are processed through their slot FX and mixed in. Everything combined runs through Schwung Master FX.
 
 ```
 Move (all tracks + native Master FX) → ┐
-ME Slot 1 (synth → FX) ────────────────├→ ME Master FX → Output
-ME Slot 2 (synth → FX) ────────────────│
+Schwung Slot 1 (synth → FX) ────────────────├→ Schwung Master FX → Output
+Schwung Slot 2 (synth → FX) ────────────────│
 ...                                     ┘
 ```
 
 ### Setup
 
 1. **Enable Link on Move**: Go to Move's Settings > Link and toggle it on. This runs entirely on-device — no WiFi or USB connection is needed.
-2. **Install or update Move Everything** — the installer enables Link Audio support, but routing is off by default.
-3. **Enable routing**: In **Global Settings > Audio** (**Shift+Vol + Step 2**), toggle **Route thru ME** on. This routes Move's per-track audio through ME's slot FX.
+2. **Install or update Schwung** — the installer enables Link Audio support, but routing is off by default.
+3. **Enable routing**: In **Global Settings > Audio** (**Shift+Vol + Step 2**), toggle **Move->Schwung** on. This routes Move's per-track audio through Schwung's slot FX.
 
 **Note:** A restart of Move is sometimes required for the Link Audio subscriber to begin capturing audio. If you don't hear Move tracks being processed after enabling routing, restart Move.
 
@@ -319,17 +319,17 @@ ME Slot 2 (synth → FX) ────────────────│
 
 ## Native Sampler Bridge
 
-Move Everything audio can be fed into Move's native sampler for resampling.
+Schwung audio can be fed into Move's native sampler for resampling.
 
 In **Global Settings > Audio**, **Sample Src** controls this:
 
 | Option | Behavior |
 |--------|----------|
 | **Native** | Disabled — sampler uses Move's normal input (default) |
-| **ME Mix** | Replaces native sampler input with Move Everything master output |
+| **Schwung Mix** | Replaces native sampler input with Schwung master output |
 
 Recommended setup to avoid feedback:
-1. Set **Sample Src** to **ME Mix**
+1. Set **Sample Src** to **Schwung Mix**
 2. In native Move Sampler, set source to **Line In**
 3. Set monitoring to **Off**
 
@@ -341,10 +341,10 @@ If monitoring is on or routing is configured differently, audio feedback may occ
 
 ### Quantized Sampler
 
-Access via **Shift+Sample**. Records Move's audio output (including Move Everything synths) to WAV files, quantized to bars.
+Access via **Shift+Sample**. Records Move's audio output (including Schwung synths) to WAV files, quantized to bars.
 
 **Options:**
-- **Source**: `Resample` (Move's mixed output including Move Everything) or `Move Input` (whatever is set in Move's sample input - line-in, mic, etc.)
+- **Source**: `Resample` (Move's mixed output including Schwung) or `Move Input` (whatever is set in Move's sample input - line-in, mic, etc.)
 - **Duration**: Until stopped, 1, 2, 4, 8, or 16 bars
 
 **Usage:**
@@ -353,7 +353,7 @@ Access via **Shift+Sample**. Records Move's audio output (including Move Everyth
 3. Recording starts on a note event or pressing Play
 4. Press **Sample** to stop (or it stops automatically at the set duration)
 
-Recordings are saved to `Samples/Move Everything/Resampler/YYYY-MM-DD/`.
+Recordings are saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`.
 
 Uses MIDI clock for accurate bar timing, falling back to project tempo if no clock is available. You can also use Move's built-in count-in for line-in recordings.
 
@@ -361,11 +361,11 @@ Uses MIDI clock for accurate bar timing, falling back to project tempo if no clo
 
 Press **Shift+Capture** (default) to save the last 30 seconds of audio to disk.
 
-Move Everything continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
+Schwung continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
 
 The shortcut can be changed in **Global Settings > Audio > Skipback** to **Sh+Vol+Cap** if Shift+Capture conflicts with other uses.
 
-Files are saved to `Samples/Move Everything/Skipback/YYYY-MM-DD/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
+Files are saved to `Samples/Schwung/Skipback/YYYY-MM-DD/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
 
 ---
 
@@ -373,7 +373,7 @@ Files are saved to `Samples/Move Everything/Skipback/YYYY-MM-DD/`. Uses the same
 
 ### Built-in
 
-These modules are included with Move Everything:
+These modules are included with Schwung:
 
 **Sound Generators:**
 - **Line In** - Line input with conditioning for Line, Guitar, and Phono sources
@@ -391,7 +391,7 @@ These modules are included with Move Everything:
 
 ### Module Store
 
-When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Move Everything itself, access Module Store via **Global Settings > Updates** (**Shift+Vol + Step 2**).
+When selecting a module, "[Get more...]" opens the Module Store to download additional modules. To update Schwung itself, access Module Store via **Global Settings > Updates** (**Shift+Vol + Step 2**).
 
 **Sound Generators:**
 - **AirPlay** - AirPlay audio receiver (stream from iPhone, iPad, or Mac)
@@ -454,7 +454,7 @@ Access via **Shift+Vol + Step 13**. Tools are standalone utilities that run outs
 
 Browse files and folders on your Move. Two starting roots:
 - **User Library**: Your samples, presets, and recordings
-- **System Files**: The Move Everything directory (shows a warning before entry)
+- **System Files**: The Schwung directory (shows a warning before entry)
 
 **Navigation:**
 - **Jog wheel**: Scroll through files and folders
@@ -521,7 +521,7 @@ Step LEDs: green = has content, red = now playing, white = selected. Pad LEDs hi
 
 ## File Browser (Web)
 
-Move Everything includes a web-based file browser for managing files on your Move from any device on the same network.
+Schwung includes a web-based file browser for managing files on your Move from any device on the same network.
 
 ### Setup
 
@@ -543,7 +543,7 @@ The file browser serves the `/data/UserData` directory, giving you access to sam
 
 ## Screen Reader
 
-Move Everything includes an optional screen reader for accessibility, using text-to-speech to announce UI elements.
+Schwung includes an optional screen reader for accessibility, using text-to-speech to announce UI elements.
 
 Toggle via **Global Settings > Screen Reader** (**Shift+Vol + Step 2**), or **Shift+Note/Session** when Shadow UI is disabled.
 
@@ -581,7 +581,7 @@ The display updates at ~30 fps and shows whatever is on screen - both normal Mov
 
 ## In-App Help
 
-Move Everything includes a built-in help viewer accessible from **Global Settings > [Help...]** (**Shift+Vol + Step 2**). It contains a quick reference for shortcuts, slot setup, recording, and other features — readable directly on Move's display.
+Schwung includes a built-in help viewer accessible from **Global Settings > [Help...]** (**Shift+Vol + Step 2**). It contains a quick reference for shortcuts, slot setup, recording, and other features — readable directly on Move's display.
 
 If the screen reader is enabled, help pages are read aloud automatically when opened.
 

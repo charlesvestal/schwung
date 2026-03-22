@@ -79,7 +79,7 @@ static void signal_handler(int sig)
 
 static bool is_link_audio_enabled()
 {
-    std::ifstream f("/data/UserData/move-anything/config/features.json");
+    std::ifstream f("/data/UserData/schwung/config/features.json");
     if (!f.is_open()) return false;
     std::string content((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());

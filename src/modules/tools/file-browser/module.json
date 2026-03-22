@@ -3,7 +3,7 @@
     "name": "File Browser",
     "version": "0.1.0",
     "description": "Browse files and folders on the device",
-    "author": "Move Anything",
+    "author": "Schwung",
     "component_type": "tool",
     "tool_config": {
         "interactive": true,

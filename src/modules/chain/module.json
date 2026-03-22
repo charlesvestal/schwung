@@ -3,7 +3,7 @@
     "name": "Signal Chain",
     "version": "0.5.2",
     "description": "Modular signal chain with MIDI FX, sound generators, and audio FX",
-    "author": "Move Anything",
+    "author": "Schwung",
     "ui": "ui.js",
     "dsp": "dsp.so",
     "api_version": 1,

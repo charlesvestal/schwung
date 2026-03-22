@@ -1,11 +1,11 @@
 {
   "catalog_version": 2,
   "host": {
-    "name": "Move Anything",
-    "github_repo": "charlesvestal/move-everything",
-    "asset_name": "move-everything.tar.gz",
-    "latest_version": "0.7.13",
-    "download_url": "https://github.com/charlesvestal/move-everything/releases/download/v0.7.13/move-everything.tar.gz",
+    "name": "Schwung",
+    "github_repo": "charlesvestal/schwung",
+    "asset_name": "schwung.tar.gz",
+    "latest_version": "0.8.4",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v0.8.4/schwung.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -15,7 +15,7 @@
       "description": "6-operator FM synthesizer (Dexed/MSFA) with .syx patch support",
       "author": "Dexed/MSFA by google/asb2m10 (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-dx7",
+      "github_repo": "charlesvestal/schwung-dx7",
       "default_branch": "main",
       "asset_name": "dexed-module.tar.gz",
       "min_host_version": "0.3.0",
@@ -27,7 +27,7 @@
       "description": "SoundFont (.sf2) synthesizer using FluidLite",
       "author": "FluidLite by Robin Lobel (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-sf2",
+      "github_repo": "charlesvestal/schwung-sf2",
       "default_branch": "main",
       "asset_name": "sf2-module.tar.gz",
       "min_host_version": "0.3.0",
@@ -39,7 +39,7 @@
       "description": "SFZ and DecentSampler (.dspreset) sample player using sfizz engine",
       "author": "sfizz by sfztools (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-sfz",
+      "github_repo": "charlesvestal/schwung-sfz",
       "default_branch": "main",
       "asset_name": "sfz-module.tar.gz",
       "min_host_version": "0.7.0",
@@ -51,7 +51,7 @@
       "description": "Novation Launchpad Pro emulation for Dirtywave M8",
       "author": "bobbydigitales (port: charlesvestal)",
       "component_type": "overtake",
-      "github_repo": "charlesvestal/move-everything-m8",
+      "github_repo": "charlesvestal/schwung-m8",
       "default_branch": "main",
       "asset_name": "m8-module.tar.gz",
       "min_host_version": "0.3.6"
@@ -62,7 +62,7 @@
       "description": "ROM-based PCM rompler emulator",
       "author": "nukeykt/giulioz (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-jv880",
+      "github_repo": "charlesvestal/schwung-jv880",
       "default_branch": "main",
       "asset_name": "minijv-module.tar.gz",
       "min_host_version": "0.3.0",
@@ -74,7 +74,7 @@
       "description": "Virtual analog synthesizer based on Oberheim OB-X",
       "author": "reales (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-obxd",
+      "github_repo": "charlesvestal/schwung-obxd",
       "default_branch": "main",
       "asset_name": "obxd-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -85,7 +85,7 @@
       "description": "Algorithmic reverb by Ghost Note Audio",
       "author": "Ghost Note Audio (port: charlesvestal)",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-cloudseed",
+      "github_repo": "charlesvestal/schwung-cloudseed",
       "default_branch": "main",
       "asset_name": "cloudseed-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -96,7 +96,7 @@
       "description": "Tape saturation and degradation effect",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-tapescam",
+      "github_repo": "charlesvestal/schwung-tapescam",
       "default_branch": "main",
       "asset_name": "tapescam-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -107,7 +107,7 @@
       "description": "PlayStation 1 SPU reverb emulation",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-psxverb",
+      "github_repo": "charlesvestal/schwung-psxverb",
       "default_branch": "main",
       "asset_name": "psxverb-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -118,7 +118,7 @@
       "description": "Tape delay with flutter and tone shaping",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-space-delay",
+      "github_repo": "charlesvestal/schwung-space-delay",
       "default_branch": "main",
       "asset_name": "tapedelay-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -129,7 +129,7 @@
       "description": "Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes)",
       "author": "Peter Allwin (port: charlesvestal)",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-junologue-chorus",
+      "github_repo": "charlesvestal/schwung-junologue-chorus",
       "default_branch": "main",
       "asset_name": "junologue-chorus-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -140,7 +140,7 @@
       "description": "MIDI controller for SIDaster III synthesizer",
       "author": "charlesvestal",
       "component_type": "overtake",
-      "github_repo": "charlesvestal/move-everything-sidcontrol",
+      "github_repo": "charlesvestal/schwung-sidcontrol",
       "default_branch": "main",
       "asset_name": "sidcontrol-module.tar.gz",
       "min_host_version": "0.3.6"
@@ -151,7 +151,7 @@
       "description": "Macro oscillator with 47 synthesis algorithms (Mutable Instruments)",
       "author": "Emilie Gillet (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-braids",
+      "github_repo": "charlesvestal/schwung-braids",
       "default_branch": "main",
       "asset_name": "braids-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -162,7 +162,7 @@
       "description": "Juno-60 emulation synthesizer with BBD chorus",
       "author": "jpcima (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-hera",
+      "github_repo": "charlesvestal/schwung-hera",
       "default_branch": "main",
       "asset_name": "hera-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -173,7 +173,7 @@
       "description": "Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets",
       "author": "Surge Synth Team (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-surge",
+      "github_repo": "charlesvestal/schwung-surge",
       "default_branch": "main",
       "asset_name": "surge-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -184,7 +184,7 @@
       "description": "Monophonic synthesizer with 4 oscillators and Moog ladder filter",
       "author": "Nicolas Roulet, Julian Palladino (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-moog",
+      "github_repo": "charlesvestal/schwung-moog",
       "default_branch": "main",
       "asset_name": "moog-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -195,7 +195,7 @@
       "description": "Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-webstream",
+      "github_repo": "charlesvestal/schwung-webstream",
       "default_branch": "main",
       "asset_name": "webstream-module.tar.gz",
       "min_host_version": "0.3.11"
@@ -206,7 +206,7 @@
       "description": "Neural Amp Modeler - neural network guitar amp/effect emulation",
       "author": "NeuralAudio by Mike Oliphant (port: charlesvestal)",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-nam",
+      "github_repo": "charlesvestal/schwung-nam",
       "default_branch": "main",
       "asset_name": "nam-module.tar.gz",
       "min_host_version": "0.3.0",
@@ -218,7 +218,7 @@
       "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain",
       "author": "charlesvestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-ducker",
+      "github_repo": "charlesvestal/schwung-ducker",
       "default_branch": "main",
       "asset_name": "ducker-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -229,7 +229,7 @@
       "description": "Browse and stream live radio from 200 cities worldwide via Radio Garden",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-radiogarden",
+      "github_repo": "charlesvestal/schwung-radiogarden",
       "default_branch": "main",
       "asset_name": "radiogarden-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -240,7 +240,7 @@
       "description": "AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-airplay",
+      "github_repo": "charlesvestal/schwung-airplay",
       "default_branch": "main",
       "asset_name": "airplay-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -251,7 +251,7 @@
       "description": "Host for CLAP audio effect plugins",
       "author": "charlesvestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-clap",
+      "github_repo": "charlesvestal/schwung-clap",
       "default_branch": "main",
       "asset_name": "clap-module.tar.gz",
       "min_host_version": "0.3.0",
@@ -263,7 +263,7 @@
       "description": "Noise gate and downward expander",
       "author": "charlesvestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-gate",
+      "github_repo": "charlesvestal/schwung-gate",
       "default_branch": "main",
       "asset_name": "gate-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -285,7 +285,7 @@
       "description": "NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets",
       "author": "blargg (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-chiptune",
+      "github_repo": "charlesvestal/schwung-chiptune",
       "default_branch": "main",
       "asset_name": "chiptune-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -296,7 +296,7 @@
       "description": "Detects the musical key of audio passing through it",
       "author": "charlesvestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-keydetect",
+      "github_repo": "charlesvestal/schwung-keydetect",
       "default_branch": "main",
       "asset_name": "keydetect-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -307,7 +307,7 @@
       "description": "Channel vocoder - uses mic/line-in as modulator to shape synth carrier",
       "author": "charlesvestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-vocoder",
+      "github_repo": "charlesvestal/schwung-vocoder",
       "default_branch": "main",
       "asset_name": "vocoder-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -318,7 +318,7 @@
       "description": "Access Virus DSP56300 emulator via Gearmulator JIT engine",
       "author": "dsp56300/gearmulator (port: charlesvestal)",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-virus",
+      "github_repo": "charlesvestal/schwung-virus",
       "default_branch": "main",
       "asset_name": "osirus-module.tar.gz",
       "min_host_version": "0.3.0",
@@ -385,7 +385,7 @@
       "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-rex",
+      "github_repo": "charlesvestal/schwung-rex",
       "default_branch": "main",
       "asset_name": "rex-module.tar.gz",
       "min_host_version": "0.3.0",
@@ -397,7 +397,7 @@
       "description": "Monophonic subtractive synthesizer emulating the Roland SH-101",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-hush1",
+      "github_repo": "charlesvestal/schwung-hush1",
       "default_branch": "main",
       "asset_name": "hush1-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -408,7 +408,7 @@
       "description": "Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "github_repo": "charlesvestal/move-everything-nusaw",
+      "github_repo": "charlesvestal/schwung-nusaw",
       "default_branch": "main",
       "asset_name": "nusaw-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -419,7 +419,7 @@
       "description": "Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter",
       "author": "charlesvestal",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/move-everything-usefulity",
+      "github_repo": "charlesvestal/schwung-usefulity",
       "default_branch": "main",
       "asset_name": "usefulity-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -430,7 +430,7 @@
       "description": "Autosample external MIDI gear to create multisampled SFZ instruments",
       "author": "charlesvestal",
       "component_type": "tool",
-      "github_repo": "charlesvestal/move-everything-autosample",
+      "github_repo": "charlesvestal/schwung-autosample",
       "default_branch": "main",
       "asset_name": "samplerobot-module.tar.gz",
       "min_host_version": "0.7.0",
@@ -442,7 +442,7 @@
       "description": "Trim, gain adjust, and edit audio files on the Move",
       "author": "charlesvestal",
       "component_type": "tool",
-      "github_repo": "charlesvestal/move-everything-waveform-editor",
+      "github_repo": "charlesvestal/schwung-waveform-editor",
       "default_branch": "main",
       "asset_name": "waveform-editor-module.tar.gz",
       "min_host_version": "0.7.0"
@@ -453,7 +453,7 @@
       "description": "Real-time audio time stretching with Bungee",
       "author": "charlesvestal",
       "component_type": "tool",
-      "github_repo": "charlesvestal/move-everything-stretch",
+      "github_repo": "charlesvestal/schwung-stretch",
       "default_branch": "main",
       "asset_name": "stretch-module.tar.gz",
       "min_host_version": "0.6.0"
@@ -464,7 +464,7 @@
       "description": "Separate audio into stems: drums, vocals, accompaniment (0.5x realtime)",
       "author": "charlesvestal",
       "component_type": "tool",
-      "github_repo": "charlesvestal/move-everything-stems",
+      "github_repo": "charlesvestal/schwung-stems",
       "default_branch": "main",
       "asset_name": "stems-module.tar.gz",
       "min_host_version": "0.6.0"
@@ -508,7 +508,7 @@
       "description": "32 punch-in audio FX with pressure control, latch, and tempo sync",
       "author": "charlesvestal",
       "component_type": "overtake",
-      "github_repo": "charlesvestal/move-everything-performance-fx",
+      "github_repo": "charlesvestal/schwung-performance-fx",
       "default_branch": "main",
       "asset_name": "performance-fx-module.tar.gz",
       "min_host_version": "0.7.0"
@@ -594,10 +594,10 @@
     {
       "id": "weird-dreams",
       "name": "Weird Dreams",
-      "description": "8-voice analog drum machine with 64 kits, 41 voice presets, 96 musical pitch scales, master bus FX, and per-voice pages",
+      "description": "8-voice analog drum machine — 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX",
       "author": "fillioning (DSP: dfilaretti)",
       "component_type": "sound_generator",
-      "github_repo": "fillioning/move-everything-weird-drum",
+      "github_repo": "fillioning/weird-dreams-move",
       "default_branch": "master",
       "asset_name": "weird-dreams-module.tar.gz",
       "min_host_version": "0.3.0"

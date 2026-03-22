@@ -1,4 +1,4 @@
-# Move Anything 2.0 Architecture Design
+# Schwung 2.0 Architecture Design
 
 **Date:** 2026-03-13
 **Status:** Draft
@@ -6,7 +6,7 @@
 
 ## Overview
 
-Move Anything 1.x grew organically from experiments into a 62,000-line framework running 31 modules on Ableton Move hardware. It works, but three god objects (shadow_ui.js at 10,969 lines, chain_host.c at 8,037 lines, move_anything_shim.c at 5,142 lines) account for 39% of the codebase and implement the same features 2-3 times independently.
+Schwung 1.x grew organically from experiments into a 62,000-line framework running 31 modules on Ableton Move hardware. It works, but three god objects (shadow_ui.js at 10,969 lines, chain_host.c at 8,037 lines, schwung_shim.c at 5,142 lines) account for 39% of the codebase and implement the same features 2-3 times independently.
 
 2.0 is a clean-room restructure that:
 - Replaces god objects with focused domains
@@ -15,7 +15,7 @@ Move Anything 1.x grew organically from experiments into a 62,000-line framework
 - Rewrites the LD_PRELOAD shim from scratch using Ableton's GPL-2.0 `ablspi` library as reference (no bobbydigitales code)
 - Lives in a new repo (`move-anything-2`) alongside the working 1.x system
 
-**Shadow mode is the only mode.** Standalone mode (removed in 1.x as of March 2026) does not return. Move Anything always coexists with stock Move via the LD_PRELOAD shim. There is no "replace MoveEngine" mode.
+**Shadow mode is the only mode.** Standalone mode (removed in 1.x as of March 2026) does not return. Schwung always coexists with stock Move via the LD_PRELOAD shim. There is no "replace MoveEngine" mode.
 
 ## Why a New Repo
 
@@ -159,7 +159,7 @@ Each domain was pressure-tested against real modules:
 - **screen_reader as observer** — Today every module manually calls announce(). If it doesn't, screen reader is silent. 2.0 auto-announces from param_system and menu_toolkit data.
 - **led_manager with batching** — Overtake modules need to set all 32 pad LEDs + step LEDs + track LEDs on init, but the SPI buffer holds only 20 MIDI OUT messages per transfer. Progressive init (8 LEDs/frame) is mandatory. Today each overtake module implements its own batching. `led_manager` handles this once.
 - **module_registry with tool lifecycle** — Tool modules run within the shadow UI menu system, not as overtake. They need consistent loading, input routing, and the ability to exit back to the tools menu. Today `host_exit_module()` and tool menu navigation are ad-hoc. `module_registry` standardizes this.
-- **No standalone mode** — Standalone mode was removed from 1.x (March 2026). 2.0 is shadow-only. Every module type (sound generator, audio FX, MIDI FX, overtake, tool) runs within the shadow mode shim architecture. There is no mode where Move Anything replaces MoveEngine.
+- **No standalone mode** — Standalone mode was removed from 1.x (March 2026). 2.0 is shadow-only. Every module type (sound generator, audio FX, MIDI FX, overtake, tool) runs within the shadow mode shim architecture. There is no mode where Schwung replaces MoveEngine.
 
 ---
 
@@ -470,7 +470,7 @@ Single PR. Everything still works after.
 **Background:** The `ablspi` library (obtained via GPL request from the jack2 Move driver, `SPDX-License-Identifier: GPL-2.0-or-later`) documents the complete SPI protocol for Move hardware. While the library itself is designed for direct device ownership (exclusive `/dev/ablspi0.0` access), it provides everything needed to write a correct LD_PRELOAD shim: struct layouts, buffer offsets, ioctl commands, MIDI encoding, display protocol, and hardware limits.
 
 **Why LD_PRELOAD (shadow mailbox coexistence):**
-Move Anything MUST coexist with stock Move. Shadow mode — where our shim intercepts MoveEngine's SPI transactions, reads Move's audio/MIDI, mixes in shadow slot audio, and writes back — is the core architecture. Users get stock Move pads, clips, sampling, AND Move Anything synths/FX simultaneously. This is non-negotiable.
+Schwung MUST coexist with stock Move. Shadow mode — where our shim intercepts MoveEngine's SPI transactions, reads Move's audio/MIDI, mixes in shadow slot audio, and writes back — is the core architecture. Users get stock Move pads, clips, sampling, AND Schwung synths/FX simultaneously. This is non-negotiable.
 
 **What ablspi provides as reference (not called at runtime):**
 - **Struct definitions** — `AblSpiMidiMessage`, `AblSpiUsbMidiMessage`, `AblSpiMidiEvent` (replaces our hand-rolled buffer parsing)

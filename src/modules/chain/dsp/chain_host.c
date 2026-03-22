@@ -27,7 +27,7 @@
 #include "../../../host/unified_log.h"
 
 /* Recording constants */
-#define RECORDINGS_DIR "/data/UserData/move-anything/recordings"
+#define RECORDINGS_DIR "/data/UserData/schwung/recordings"
 #define NUM_CHANNELS 2
 #define BITS_PER_SAMPLE 16
 #define CC_RECORD_BUTTON 118
@@ -65,8 +65,8 @@ typedef struct {
 #define MAX_NAME_LEN 64
 
 /* Optional file-based debug tracing for chain parsing/preset save diagnostics. */
-#define CHAIN_DEBUG_FLAG_PATH "/data/UserData/move-anything/chain_debug_on"
-#define CHAIN_DEBUG_LOG_PATH "/data/UserData/move-anything/chain_debug.log"
+#define CHAIN_DEBUG_FLAG_PATH "/data/UserData/schwung/chain_debug_on"
+#define CHAIN_DEBUG_LOG_PATH "/data/UserData/schwung/chain_debug.log"
 #define MOVE_SETTINGS_JSON_PATH "/data/UserData/settings/Settings.json"
 #define CLOCK_SETTINGS_MAX_BYTES (256 * 1024)
 #define CLOCK_SETTINGS_REFRESH_MS 1000
@@ -5348,7 +5348,7 @@ static int v2_delete_patch(chain_instance_t *inst, int index) {
 
 /* ========== Master Preset Functions ========== */
 
-#define PRESETS_MASTER_DIR "/data/UserData/move-anything/presets_master"
+#define PRESETS_MASTER_DIR "/data/UserData/schwung/presets_master"
 #define MAX_MASTER_PRESETS 64
 
 /* Master preset info storage (simpler than chain patches) */

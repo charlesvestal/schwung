@@ -13,7 +13,7 @@
 # Prerequisites:
 #   - Move device accessible at move.local
 #   - SSH key configured (run ./scripts/install.sh first)
-#   - Move Anything deployed on device
+#   - Schwung deployed on device
 #
 
 set -euo pipefail
@@ -27,7 +27,7 @@ SSH_CMD="ssh $SSH_OPTS $USERNAME@$HOSTNAME"
 SSH_ROOT="ssh $SSH_OPTS root@$HOSTNAME"
 SCP_CMD="scp -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
 
-BASE_DIR="/data/UserData/move-anything"
+BASE_DIR="/data/UserData/schwung"
 MODULES_DIR="$BASE_DIR/modules"
 RESULTS_FILE="$BASE_DIR/test-safety-results.txt"
 TEST_MODULE_ID="test-safety"
@@ -106,29 +106,29 @@ phase_binary() {
     local has_root=false
     $SSH_ROOT "echo ok" >/dev/null 2>&1 && has_root=true
 
-    # Check move-anything binary
-    if ssh_run "test -f $BASE_DIR/move-anything"; then
-        pass "move-anything binary exists"
+    # Check schwung binary
+    if ssh_run "test -f $BASE_DIR/schwung"; then
+        pass "schwung binary exists"
     else
-        fail "move-anything binary exists"
+        fail "schwung binary exists"
         return
     fi
 
-    # ELF check on move-anything
-    if ssh_run "file $BASE_DIR/move-anything" | grep -q "ELF"; then
-        pass "move-anything is valid ELF"
+    # ELF check on schwung
+    if ssh_run "file $BASE_DIR/schwung" | grep -q "ELF"; then
+        pass "schwung is valid ELF"
     else
-        fail "move-anything is valid ELF"
+        fail "schwung is valid ELF"
     fi
 
     # Check shim
-    if ssh_run "test -f $BASE_DIR/move-anything-shim.so"; then
-        pass "move-anything-shim.so exists"
+    if ssh_run "test -f $BASE_DIR/schwung-shim.so"; then
+        pass "schwung-shim.so exists"
     else
-        fail "move-anything-shim.so exists"
+        fail "schwung-shim.so exists"
     fi
 
-    if ssh_run "file $BASE_DIR/move-anything-shim.so" | grep -q "ELF"; then
+    if ssh_run "file $BASE_DIR/schwung-shim.so" | grep -q "ELF"; then
         pass "shim is valid ELF"
     else
         fail "shim is valid ELF"
@@ -149,14 +149,14 @@ phase_binary() {
     # ldd checks for missing libs (need root for ldd typically)
     if [ "$has_root" = true ]; then
         local missing
-        missing=$(ssh_root_run "ldd $BASE_DIR/move-anything 2>&1" | grep "not found" || true)
+        missing=$(ssh_root_run "ldd $BASE_DIR/schwung 2>&1" | grep "not found" || true)
         if [ -z "$missing" ]; then
-            pass "move-anything: no missing libraries"
+            pass "schwung: no missing libraries"
         else
-            fail "move-anything: missing libraries: $missing"
+            fail "schwung: missing libraries: $missing"
         fi
 
-        missing=$(ssh_root_run "ldd $BASE_DIR/move-anything-shim.so 2>&1" | grep "not found" || true)
+        missing=$(ssh_root_run "ldd $BASE_DIR/schwung-shim.so 2>&1" | grep "not found" || true)
         if [ -z "$missing" ]; then
             pass "shim: no missing libraries"
         else
@@ -164,11 +164,11 @@ phase_binary() {
         fi
 
         # Check libpthread linked (ring buffer atomics fix)
-        if ssh_root_run "ldd $BASE_DIR/move-anything-shim.so 2>&1" | grep -q "libpthread"; then
+        if ssh_root_run "ldd $BASE_DIR/schwung-shim.so 2>&1" | grep -q "libpthread"; then
             pass "shim links libpthread"
         else
             # On newer glibc, pthread is merged into libc
-            if ssh_root_run "ldd $BASE_DIR/move-anything-shim.so 2>&1" | grep -q "libc.so"; then
+            if ssh_root_run "ldd $BASE_DIR/schwung-shim.so 2>&1" | grep -q "libc.so"; then
                 pass "shim links libc (pthread merged)"
             else
                 fail "shim links libpthread or libc"
@@ -253,7 +253,7 @@ phase_js_tests() {
 
     if [ "$has_root" = true ]; then
         ssh_root_run "/etc/init.d/move stop >/dev/null 2>&1 || true"
-        ssh_root_run "for name in MoveOriginal Move move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
+        ssh_root_run "for name in MoveOriginal Move schwung shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
         ssh_root_run "rm -f /dev/shm/move-shadow-*"
         sleep 1
         ssh_root_run "/etc/init.d/move start >/dev/null 2>&1"
@@ -269,7 +269,7 @@ phase_js_tests() {
 
     # Prompt user to load the test module
     printf "\n${BOLD}${YELLOW}ACTION REQUIRED:${NC}\n"
-    printf "  1. On your Move, open Move Anything menu\n"
+    printf "  1. On your Move, open Schwung menu\n"
     printf "  2. Navigate to Utility category\n"
     printf "  3. Load '${BOLD}Safety Tests${NC}' module\n"
     printf "  4. Tests will run automatically\n"
@@ -346,7 +346,7 @@ phase_cleanup() {
     if [ "$has_root" = true ]; then
         printf "  Restarting Move service...\n"
         ssh_root_run "/etc/init.d/move stop >/dev/null 2>&1 || true"
-        ssh_root_run "for name in MoveOriginal Move move-anything shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
+        ssh_root_run "for name in MoveOriginal Move schwung shadow_ui; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done"
         ssh_root_run "rm -f /dev/shm/move-shadow-*"
         sleep 1
         ssh_root_run "/etc/init.d/move start >/dev/null 2>&1"
@@ -382,7 +382,7 @@ phase_summary() {
 # ===== Main =====
 
 main() {
-    printf "\n${BOLD}Move Anything - Safety Fix Verification${NC}\n"
+    printf "\n${BOLD}Schwung - Safety Fix Verification${NC}\n"
     printf "========================================\n"
 
     phase_ssh

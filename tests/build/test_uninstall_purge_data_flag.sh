@@ -29,14 +29,14 @@ chmod +x "$tmpdir/bin/ssh"
 
 PATH="$tmpdir/bin:$PATH" SSH_LOG="$logfile" MOVE_FORCE_UNINSTALL=1 bash "$script" --purge-data >/dev/null 2>&1
 
-if rg -q "/data/UserData/UserLibrary/Move Everything Backups/Set Pages" "$logfile"; then
+if rg -q "/data/UserData/UserLibrary/Schwung Backups/Set Pages" "$logfile"; then
   echo "FAIL: --purge-data should skip exporting set-page backups" >&2
   exit 1
 fi
 
 if ! rg -q "rm -rf ~/move-anything ~/move-anything.tar.gz" "$logfile"; then
-  echo "FAIL: --purge-data should still remove the Move Anything payload" >&2
+  echo "FAIL: --purge-data should still remove the Schwung payload" >&2
   exit 1
 fi
 
-echo "PASS: --purge-data skips set-page backup export and removes Move Anything"
+echo "PASS: --purge-data skips set-page backup export and removes Schwung"

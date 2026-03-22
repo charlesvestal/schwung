@@ -8,7 +8,7 @@ Protocol prefix: `chnnlsv` — likely "channel server" v1.
 To enable per-track audio processing on Move 2.0+ devices:
 
 1. **Enable Link on Move**: Settings > Link (toggle on)
-2. **Enable Link Audio feature**: Set `"link_audio_enabled": true` in `/data/UserData/move-anything/config/features.json` (the installer configures this)
+2. **Enable Link Audio feature**: Set `"link_audio_enabled": true` in `/data/UserData/schwung/config/features.json` (the installer configures this)
 3. **USB connection is sufficient** — WiFi is not required. The Link SDK discovers peers over any non-loopback network interface, including Move's USB gadget ethernet (`usb0`)
 
 Once enabled, the standalone `link-subscriber` binary joins Move's Link session and subscribes to all 5 audio channels. This triggers Move to stream per-track audio, which the shim's `sendto()` hook intercepts into ring buffers for shadow FX processing.
@@ -256,7 +256,7 @@ All 5 channels: ~ **1.0 MB/sec** (8.1 Mbps)
 |------|-------------|
 | `src/host/link_subscriber.cpp` | Standalone subscriber (C++17, Ableton Link SDK) |
 | `src/host/link_audio.h` | Ring buffer structures, protocol constants |
-| `src/move_anything_shim.c` | sendto() hook, session parser, ring buffers, FX routing |
+| `src/schwung_shim.c` | sendto() hook, session parser, ring buffers, FX routing |
 | `libs/link/` | Ableton Link SDK (git submodule, GPL v2+) |
 
 ## Implementation Status
@@ -269,7 +269,7 @@ All 5 channels: ~ **1.0 MB/sec** (8.1 Mbps)
 - **Auto-discovery fallback**: learns channels from audio packets if session parsing misses them (IPv4 loopback case)
 - **Per-channel SPSC ring buffers**: 512 frames, lock-free, with BE->LE byte swap
 - **Move audio -> shadow FX routing**: reads per-track audio from ring buffers, injects into shadow chain slots via `chain_set_inject_audio()` before FX processing
-- **Feature toggle**: `"link_audio_enabled": true` in `/data/UserData/move-anything/config/features.json`
+- **Feature toggle**: `"link_audio_enabled": true` in `/data/UserData/schwung/config/features.json`
 - **Heartbeat diagnostics**: `la_pkts` and `la_ch` counters in shim heartbeat log
 
 ### Not Yet Working
