@@ -393,7 +393,7 @@ function drawSplashScreen() {
 
     draw_image(SPLASH_LOGO_PATH, 9, 37, 128, 0);
 
-    const ver = "v0.8.3";
+    const ver = "v" + getHostVersion();
     const verW = text_width(ver);
     print(Math.round((128 - verW) / 2), 56, ver, 1);
 }
