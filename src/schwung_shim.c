@@ -3844,6 +3844,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             shadow_midi_inject_shm->ready++;
             shadow_log("Overtake exit: injected shift-off and volume-touch-off");
         }
+        /* Kill RNBO stack on overtake exit and clear display override */
+        if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {
+            g_jack_shm->display_active = 0;
+            system("pkill -f rnbomovecontrol 2>/dev/null &");
+        }
         prev_overtake_mode = overtake_mode;
     }
 
