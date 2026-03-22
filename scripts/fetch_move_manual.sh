@@ -15,7 +15,7 @@ PARSER_SCRIPT="src/shared/parse_move_manual.mjs"
 if [ "$1" = "--device" ]; then
     # Run on device
     MOVE_HOST="${MOVE_HOST:-move.local}"
-    CACHE_DIR="/data/UserData/move-anything/cache"
+    CACHE_DIR="/data/UserData/schwung/cache"
     HTML_PATH="/tmp/move_manual.html"
 
     echo "Fetching Move manual on device..."
@@ -124,6 +124,6 @@ console.log('Output: ${CACHE_DIR}/move_manual.json (' + Math.round(JSON.stringif
 
     echo ""
     echo "To deploy to device:"
-    echo "  ssh ableton@move.local 'mkdir -p /data/UserData/move-anything/cache'"
-    echo "  scp ${CACHE_DIR}/move_manual.json ableton@move.local:/data/UserData/move-anything/cache/"
+    echo "  ssh ableton@move.local 'mkdir -p /data/UserData/schwung/cache'"
+    echo "  scp ${CACHE_DIR}/move_manual.json ableton@move.local:/data/UserData/schwung/cache/"
 fi

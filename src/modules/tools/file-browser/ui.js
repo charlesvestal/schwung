@@ -3,7 +3,7 @@
  *
  * Browse files and folders on the device. Two roots:
  *   - User Library (/data/UserData/UserLibrary)
- *   - System Files (/data/UserData/move-anything) (with warning)
+ *   - System Files (/data/UserData/schwung) (with warning)
  *
  * Supports: Delete, Rename, Duplicate, Copy, Move, New Folder.
  *
@@ -22,18 +22,18 @@ import * as std from 'std';
 import {
     MidiCC, MidiNoteOn,
     MoveMainKnob, MoveMainButton, MoveBack
-} from '/data/UserData/move-anything/shared/constants.mjs';
+} from '/data/UserData/schwung/shared/constants.mjs';
 
 import {
     decodeDelta
-} from '/data/UserData/move-anything/shared/input_filter.mjs';
+} from '/data/UserData/schwung/shared/input_filter.mjs';
 
 import {
     buildFilepathBrowserState,
     refreshFilepathBrowser,
     moveFilepathBrowserSelection,
     activateFilepathBrowserItem
-} from '/data/UserData/move-anything/shared/filepath_browser.mjs';
+} from '/data/UserData/schwung/shared/filepath_browser.mjs';
 
 import {
     openTextEntry,
@@ -41,11 +41,11 @@ import {
     handleTextEntryMidi,
     drawTextEntry,
     tickTextEntry
-} from '/data/UserData/move-anything/shared/text_entry.mjs';
+} from '/data/UserData/schwung/shared/text_entry.mjs';
 
 import {
     announce
-} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+} from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 /* ============ Constants ============ */
 
@@ -62,7 +62,7 @@ var SCREEN_H = 64;
 var MAX_VISIBLE = 4;
 
 var ROOT_USER_LIBRARY = "/data/UserData/UserLibrary";
-var ROOT_SYSTEM = "/data/UserData/move-anything";
+var ROOT_SYSTEM = "/data/UserData/schwung";
 
 /* ============ State ============ */
 
@@ -93,7 +93,7 @@ var lastDestDir = "";       /* Remember last destination across operations */
 /* WAV Player preview state */
 var wavPlayerLoaded = false;
 var playingFilePath = "";
-var WAV_PLAYER_DSP = "/data/UserData/move-anything/modules/tools/wav-player/dsp.so";
+var WAV_PLAYER_DSP = "/data/UserData/schwung/modules/tools/wav-player/dsp.so";
 
 /* Status message */
 var statusMessage = "";
@@ -755,7 +755,7 @@ function handleCC(cc, val) {
                     announceBrowserFolder();
                 } else {
                     setView(VIEW_WARNING);
-                    announce("Warning: Changing system files may break Move Everything. Push to continue.");
+                    announce("Warning: Changing system files may break Schwung. Push to continue.");
                 }
                 break;
             case VIEW_WARNING:

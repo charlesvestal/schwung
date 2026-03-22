@@ -4,7 +4,7 @@ set -euo pipefail
 # Test: raw-ui modules must receive Shift+Up/Down (CC 55/54) untouched.
 # Host transpose shortcuts should be disabled while a raw-ui module is loaded.
 
-file="src/move_anything.c"
+file="src/schwung_host.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

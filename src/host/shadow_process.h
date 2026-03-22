@@ -1,5 +1,5 @@
 /* shadow_process.h - Shadow UI and Link subscriber process management
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_PROCESS_H
 #define SHADOW_PROCESS_H

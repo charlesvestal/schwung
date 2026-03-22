@@ -2,7 +2,8 @@
 // for Push2 and most the same Move internal MIDI commands
 
 
-/* from https://github.com/damian-/move-anything/blob/dev/src/move_virtual_knobs.mjs
+/* Reference: https://github.com/Cycling74/rnbo.move.control (MIT)
+ * See also: docs/reference/rnbo-move-control/NOTES.md, schwung_move.h
 ================================================================================
 RGB COLOR PALETTE (INDEXED 0–127)
 ================================================================================

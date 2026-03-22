@@ -3,7 +3,7 @@ set -euo pipefail
 
 ui_c="src/shadow/shadow_ui.c"
 ui_js="src/shadow/shadow_ui.js"
-shim_c="src/move_anything_shim.c"
+shim_c="src/schwung_shim.c"
 constants_h="src/host/shadow_constants.h"
 
 if ! command -v rg >/dev/null 2>&1; then

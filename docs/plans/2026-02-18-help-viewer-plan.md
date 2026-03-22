@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add an on-device help system accessible from Master FX Settings, with two sections (Move Everything / Move Manual), topic lists, scrollable text, and full screen-reader accessibility.
+**Goal:** Add an on-device help system accessible from Master FX Settings, with two sections (Schwung / Move Manual), topic lists, scrollable text, and full screen-reader accessibility.
 
 **Architecture:** Three-level hierarchy (Section → Topic → Scrollable Text) rendered using existing `drawMenuList` and `drawScrollableText` primitives. Help content lives in a separate JSON file loaded on first access. Scrollable text gets an `onActionSelected` callback for TTS. Module Store gets TTS on detail views.
 
@@ -17,13 +17,13 @@
 
 **Step 1: Create the help content file**
 
-Write `src/shared/help_content.json` with all Move Everything topics plus a Move Manual placeholder. Lines are pre-wrapped to 20 characters max. Content is condensed from MANUAL.md.
+Write `src/shared/help_content.json` with all Schwung topics plus a Move Manual placeholder. Lines are pre-wrapped to 20 characters max. Content is condensed from MANUAL.md.
 
 ```json
 {
   "sections": [
     {
-      "title": "Move Everything",
+      "title": "Schwung",
       "topics": [
         {
           "title": "Shortcuts",
@@ -46,7 +46,7 @@ Write `src/shared/help_content.json` with all Move Everything topics plus a Move
         {
           "title": "Connecting Tracks",
           "lines": [
-            "To hear ME synths,",
+            "To hear Schwung synths,",
             "connect Move tracks:",
             "",
             "1. Set a Move track's",
@@ -163,7 +163,7 @@ Write `src/shared/help_content.json` with all Move Everything topics plus a Move
             "  pressing Play",
             "",
             "Saved to Samples/",
-            "  Move Everything/",
+            "  Schwung/",
             "",
             "SKIPBACK",
             "Shift+Capture saves",
@@ -337,7 +337,7 @@ At the top of `src/modules/store/ui.js`, add screen_reader import alongside the 
 ```js
 import {
     announce
-} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+} from '/data/UserData/schwung/shared/screen_reader.mjs';
 ```
 
 **Step 2: Announce full description when entering module detail**
@@ -408,7 +408,7 @@ function handleMasterFxSettingsAction(key) {
         /* Load help content if not cached */
         if (!helpContent) {
             try {
-                const raw = host_read_file("/data/UserData/move-anything/shared/help_content.json");
+                const raw = host_read_file("/data/UserData/schwung/shared/help_content.json");
                 if (raw) helpContent = JSON.parse(raw);
             } catch (e) {
                 debugLog("Failed to load help content: " + e);
@@ -613,8 +613,8 @@ cd /Volumes/ExtFS/charlesvestal/github/move-everything-parent/move-anything
 1. Enter Shadow Mode, open Master FX (Shift+Vol+Menu)
 2. Scroll to Settings, enter it
 3. Scroll to [Help], click
-4. Verify section list shows "Move Everything" and "Move Manual"
-5. Click "Move Everything", verify topic list
+4. Verify section list shows "Schwung" and "Move Manual"
+5. Click "Schwung", verify topic list
 6. Click a topic, verify scrollable text
 7. Back button navigates correctly through all levels
 8. Test with Screen Reader enabled - verify announcements at each level

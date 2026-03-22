@@ -1,7 +1,7 @@
 {
   "$schema": "http://tech.ableton.com/schema/song/1.8.2/devicePreset.json",
   "kind": "instrumentRack",
-  "name": "ME Slot 1",
+  "name": "Schwung S1",
   "parameters": {
     "Enabled": true,
     "Macro0": 0.0,
@@ -21,40 +21,40 @@
         {
           "presetUri": null,
           "kind": "instrumentRack",
-          "name": "ME Slot 1",
+          "name": "Schwung S1",
           "parameters": {
             "Enabled": true,
             "Macro0": {
               "value": 0.0,
-              "customName": "ME S1 Knob1"
+              "customName": "Schwung S1 K1"
             },
             "Macro1": {
               "value": 0.0,
-              "customName": "ME S1 Knob2"
+              "customName": "Schwung S1 K2"
             },
             "Macro2": {
               "value": 0.0,
-              "customName": "ME S1 Knob3"
+              "customName": "Schwung S1 K3"
             },
             "Macro3": {
               "value": 0.0,
-              "customName": "ME S1 Knob4"
+              "customName": "Schwung S1 K4"
             },
             "Macro4": {
               "value": 0.0,
-              "customName": "ME S1 Knob5"
+              "customName": "Schwung S1 K5"
             },
             "Macro5": {
               "value": 0.0,
-              "customName": "ME S1 Knob6"
+              "customName": "Schwung S1 K6"
             },
             "Macro6": {
               "value": 0.0,
-              "customName": "ME S1 Knob7"
+              "customName": "Schwung S1 K7"
             },
             "Macro7": {
               "value": 0.0,
-              "customName": "ME S1 Knob8"
+              "customName": "Schwung S1 K8"
             }
           },
           "macroMappings": [

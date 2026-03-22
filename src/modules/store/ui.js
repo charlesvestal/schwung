@@ -12,10 +12,10 @@ import {
     MoveMainKnob, MoveMainButton,
     MoveShift, MoveBack,
     MoveUp, MoveDown
-} from '/data/UserData/move-anything/shared/constants.mjs';
+} from '/data/UserData/schwung/shared/constants.mjs';
 
-import { isCapacitiveTouchMessage } from '/data/UserData/move-anything/shared/input_filter.mjs';
-import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
+import { isCapacitiveTouchMessage } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import {
     drawMenuHeader,
     drawMenuList,
@@ -23,7 +23,7 @@ import {
     drawStatusOverlay,
     drawMessageOverlay,
     menuLayoutDefaults
-} from '/data/UserData/move-anything/shared/menu_layout.mjs';
+} from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 import {
     wrapText,
@@ -31,11 +31,11 @@ import {
     handleScrollableTextJog,
     isActionSelected,
     drawScrollableText
-} from '/data/UserData/move-anything/shared/scrollable_text.mjs';
+} from '/data/UserData/schwung/shared/scrollable_text.mjs';
 
 import {
     announce
-} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+} from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 import {
     CATALOG_URL, CATALOG_CACHE_PATH, MODULES_DIR, BASE_DIR, TMP_DIR, HOST_VERSION_FILE,
@@ -48,7 +48,7 @@ import {
     getHostVersion as sharedGetHostVersion,
     getModulesForCategory as sharedGetModulesForCategory,
     getModuleStatus as sharedGetModuleStatus
-} from '/data/UserData/move-anything/shared/store_utils.mjs';
+} from '/data/UserData/schwung/shared/store_utils.mjs';
 /* UI States */
 const STATE_LOADING = 'loading';
 const STATE_ERROR = 'error';
@@ -210,7 +210,7 @@ function updateHost() {
     loadingTitle = 'Updating Host';
     loadingMessage = `v${catalog.host.latest_version}`;
 
-    const tarPath = `${TMP_DIR}/move-anything.tar.gz`;
+    const tarPath = `${TMP_DIR}/schwung.tar.gz`;
 
     /* Download the host tarball */
     const downloadOk = host_http_download(catalog.host.download_url, tarPath);
@@ -220,7 +220,7 @@ function updateHost() {
         return;
     }
 
-    /* Extract over existing installation - strip move-anything/ prefix from tarball */
+    /* Extract over existing installation - strip schwung/ prefix from tarball */
     const extractOk = host_extract_tar_strip(tarPath, BASE_DIR, 1);
     if (!extractOk) {
         state = STATE_RESULT;
