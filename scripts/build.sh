@@ -179,6 +179,7 @@ fi
 # Build shim (with shared memory support for shadow instrument)
 if needs_rebuild build/schwung-shim.so \
     src/schwung_shim.c \
+    src/lib/schwung_spi_lib.c src/lib/schwung_spi_lib.h \
     src/host/shadow_sampler.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
@@ -196,6 +197,7 @@ if needs_rebuild build/schwung-shim.so \
     "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
         -o build/schwung-shim.so \
         src/schwung_shim.c \
+        src/lib/schwung_spi_lib.c \
         src/host/shadow_sampler.c \
         src/host/shadow_set_pages.c \
         src/host/shadow_dbus.c \
