@@ -2567,6 +2567,21 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         return 1;
     }
 
+    /* jack:display — enable/disable JACK display override */
+    if (strcmp(key, "jack:display") == 0) {
+        if (req_type == 1 && g_jack_shm) {  /* SET */
+            g_jack_shm->display_active = (shadow_param->value[0] == '1') ? 1 : 0;
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+        } else if (req_type == 2 && g_jack_shm) {  /* GET */
+            shadow_param->value[0] = g_jack_shm->display_active ? '1' : '0';
+            shadow_param->value[1] = '\0';
+            shadow_param->error = 0;
+            shadow_param->result_len = 1;
+        }
+        return 1;
+    }
+
     /* master_fx:resample_bridge */
     if (strncmp(key, "master_fx:", 10) == 0) {
         const char *fx_key = key + 10;
