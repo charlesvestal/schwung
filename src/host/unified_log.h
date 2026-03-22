@@ -14,8 +14,8 @@ extern "C" {
 #define LOG_LEVEL_DEBUG 3
 
 /* Default log file location */
-#define UNIFIED_LOG_PATH "/data/UserData/move-anything/debug.log"
-#define UNIFIED_LOG_FLAG "/data/UserData/move-anything/debug_log_on"
+#define UNIFIED_LOG_PATH "/data/UserData/schwung/debug.log"
+#define UNIFIED_LOG_FLAG "/data/UserData/schwung/debug_log_on"
 
 /* Initialize/shutdown logging system */
 void unified_log_init(void);

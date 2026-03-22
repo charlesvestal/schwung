@@ -1,5 +1,5 @@
 /* shadow_resample.c - Native resample bridge
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,7 +129,7 @@ native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *
 
 void native_resample_bridge_load_mode_from_shadow_config(void)
 {
-    const char *config_path = "/data/UserData/move-anything/shadow_config.json";
+    const char *config_path = "/data/UserData/schwung/shadow_config.json";
     FILE *f = fopen(config_path, "r");
     if (!f) return;
 
@@ -288,7 +288,7 @@ static int native_resample_diag_is_enabled(void)
     static int last_logged = -1;
 
     if (check_counter++ % 200 == 0) {
-        cached = (access("/data/UserData/move-anything/native_resample_diag_on", F_OK) == 0);
+        cached = (access("/data/UserData/schwung/native_resample_diag_on", F_OK) == 0);
         if (cached != last_logged) {
             if (host.log) {
                 char msg[128];

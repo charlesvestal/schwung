@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Move Anything for Ableton Move (ARM64)
+# Build Schwung for Ableton Move (ARM64)
 #
 # Automatically uses Docker for cross-compilation if needed.
 # Set CROSS_PREFIX to skip Docker (e.g., for native ARM builds).
@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-IMAGE_NAME="move-anything-builder"
+IMAGE_NAME="schwung-builder"
 DISABLE_SCREEN_READER="${DISABLE_SCREEN_READER:-0}"
 REBUILD_DOCKER_IMAGE="${REBUILD_DOCKER_IMAGE:-0}"
 REQUIRE_SCREEN_READER="${REQUIRE_SCREEN_READER:-0}"
@@ -15,7 +15,7 @@ BOOTSTRAP_SCRIPT="./scripts/bootstrap-build-deps.sh"
 
 # Check if we need Docker
 if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
-    echo "=== Move Anything Build (via Docker) ==="
+    echo "=== Schwung Build (via Docker) ==="
     echo ""
 
     # Build/rebuild Docker image if needed
@@ -53,7 +53,7 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
 
     echo ""
     echo "=== Done ==="
-    echo "Output: $REPO_ROOT/move-anything.tar.gz"
+    echo "Output: $REPO_ROOT/schwung.tar.gz"
     echo ""
     echo "To install on Move:"
     echo "  ./scripts/install.sh local"
@@ -158,16 +158,16 @@ else
 fi
 
 # Build host with module manager and settings
-if needs_rebuild build/move-anything \
-    src/move_anything.c src/host/module_manager.c src/host/settings.c src/host/unified_log.c \
+if needs_rebuild build/schwung \
+    src/schwung_host.c src/host/module_manager.c src/host/settings.c src/host/unified_log.c \
     src/host/module_manager.h src/host/settings.h src/host/plugin_api_v1.h src/host/unified_log.h; then
     echo "Building host..."
     "${CROSS_PREFIX}gcc" -g -O3 \
-        src/move_anything.c \
+        src/schwung_host.c \
         src/host/module_manager.c \
         src/host/settings.c \
         src/host/unified_log.c \
-        -o build/move-anything \
+        -o build/schwung \
         -Isrc -Isrc/lib \
         -Ilibs/quickjs/quickjs-2025-04-26 \
         -Llibs/quickjs/quickjs-2025-04-26 \
@@ -177,8 +177,9 @@ else
 fi
 
 # Build shim (with shared memory support for shadow instrument)
-if needs_rebuild build/move-anything-shim.so \
-    src/move_anything_shim.c \
+if needs_rebuild build/schwung-shim.so \
+    src/schwung_shim.c \
+    src/lib/schwung_spi_lib.c src/lib/schwung_spi_lib.h \
     src/host/shadow_sampler.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
@@ -194,8 +195,9 @@ if needs_rebuild build/move-anything-shim.so \
     src/host/link_audio.h; then
     echo "Building shim..."
     "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
-        -o build/move-anything-shim.so \
-        src/move_anything_shim.c \
+        -o build/schwung-shim.so \
+        src/schwung_shim.c \
+        src/lib/schwung_spi_lib.c \
         src/host/shadow_sampler.c \
         src/host/shadow_set_pages.c \
         src/host/shadow_dbus.c \
@@ -219,11 +221,11 @@ else
 fi
 
 # Build web shim (tiny LD_PRELOAD for MoveWebService PIN challenge detection)
-if needs_rebuild build/move-anything-web-shim.so \
+if needs_rebuild build/schwung-web-shim.so \
     src/host/web_shim.c src/host/unified_log.c src/host/unified_log.h; then
     echo "Building web shim..."
     "${CROSS_PREFIX}gcc" -g -shared -fPIC \
-        -o build/move-anything-web-shim.so \
+        -o build/schwung-web-shim.so \
         src/host/web_shim.c \
         src/host/unified_log.c \
         -Isrc -Isrc/host \
@@ -534,11 +536,22 @@ fi
 cp ./src/shadow/shadow_ui.js ./build/shadow/
 cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
 
+# Copy image assets to host directory
+if [ -d "./assets" ]; then
+    cp -u ./assets/*.png ./build/host/ 2>/dev/null || true
+fi
+
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
 cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
+
+# Backwards-compat symlinks for 0.7.x → 0.8.x upgrades (Module Store + Shadow UI updater).
+# The old /usr/lib/move-anything-shim.so symlink needs a target to resolve,
+# and the 0.7.x shadow UI updater checks for 'move-anything' binary by name.
+ln -sf schwung-shim.so ./build/move-anything-shim.so
+ln -sf schwung ./build/move-anything
 
 # Copy all module files (js, mjs, json, sh) - preserves directory structure
 # Compiled .so files are built separately above
@@ -579,5 +592,5 @@ fi
 # eSpeak-NG data directory is copied to build/espeak-ng-data/ above
 
 echo "Build complete!"
-echo "Host binary: build/move-anything"
+echo "Host binary: build/schwung"
 echo "Modules: build/modules/"

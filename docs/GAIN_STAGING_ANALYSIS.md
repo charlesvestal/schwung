@@ -20,8 +20,8 @@ In `shadow_inprocess_mix_from_buffer()`:
    - If Master FX chain is active: scale the full mailbox buffer.
 
 References:
-- `src/move_anything_shim.c` (`shadow_inprocess_mix_from_buffer`, `shadow_master_fx_chain_active`)
-- `src/move_anything_shim.c` (`native_capture_total_mix_snapshot_from_buffer` call after FX, before master-volume scaling)
+- `src/schwung_shim.c` (`shadow_inprocess_mix_from_buffer`, `shadow_master_fx_chain_active`)
+- `src/schwung_shim.c` (`native_capture_total_mix_snapshot_from_buffer` call after FX, before master-volume scaling)
 
 ### 2) Why OFF works but ON still fails
 

@@ -58,34 +58,32 @@
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
 
-unsigned char *global_mmap_addr = NULL;  /* Points to shadow_mailbox (what Move sees) */
+/* SPI protocol types, constants, and helpers from schwung-spi (MIT).
+ * https://github.com/charlesvestal/schwung-spi */
+#include "lib/schwung_spi_lib.h"
+
+/* SPI library handle — provides shadow buffer, hardware buffer, and ioctl hooks */
+static SchwungSpi *g_spi_handle = NULL;
+
+unsigned char *global_mmap_addr = NULL;  /* Points to library shadow buffer (what Move sees) */
 unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
 static int shadow_spi_fd = -1;           /* SPI file descriptor for MIDI/ioctl */
-extern int (*real_ioctl)(int, unsigned long, ...);  /* Forward declaration */
-static unsigned char shadow_mailbox[4096] __attribute__((aligned(64))); /* Shadow buffer for Move */
+int (*real_ioctl)(int, unsigned long, ...) = NULL;  /* Libc ioctl for non-hook calls */
 
-/* ============================================================================
- * SHADOW INSTRUMENT SUPPORT
- * ============================================================================
- * The shadow instrument allows a separate DSP process to run alongside stock
- * Move, mixing its audio output with Move's audio and optionally taking over
- * the display when in shadow mode.
- * ============================================================================ */
-
-/* Mailbox layout constants */
-#define MAILBOX_SIZE 4096
-#define MIDI_OUT_OFFSET 0
-#define AUDIO_OUT_OFFSET 256
-#define DISPLAY_OFFSET 768
-#define MIDI_IN_OFFSET 2048
-#define AUDIO_IN_OFFSET 2304
+/* Mailbox layout aliases — map old names to schwung-spi constants */
+#define MAILBOX_SIZE      SCHWUNG_PAGE_SIZE
+#define MIDI_OUT_OFFSET   SCHWUNG_OFF_OUT_MIDI
+#define AUDIO_OUT_OFFSET  SCHWUNG_OFF_OUT_AUDIO
+#define DISPLAY_OFFSET    768  /* schwung-spi doesn't define this (it's between audio regions) */
+#define MIDI_IN_OFFSET    SCHWUNG_OFF_IN_MIDI
+#define AUDIO_IN_OFFSET   SCHWUNG_OFF_IN_AUDIO
 
 #define AUDIO_BUFFER_SIZE 512      /* 128 frames * 2 channels * 2 bytes */
 /* Buffer sizes from shadow_constants.h: MIDI_BUFFER_SIZE, DISPLAY_BUFFER_SIZE,
    CONTROL_BUFFER_SIZE, SHADOW_UI_BUFFER_SIZE, SHADOW_PARAM_BUFFER_SIZE */
 /* FRAMES_PER_BLOCK is now defined in shadow_constants.h */
 
-/* Move host shortcut CCs (mirror move_anything.c) */
+/* Move host shortcut CCs (mirror schwung_host.c) */
 #define CC_SHIFT 49
 #define CC_JOG_CLICK 3
 #define CC_JOG_WHEEL 14
@@ -215,7 +213,7 @@ static int16_t shadow_slot_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2
 static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
 /* ---- Preview player: lightweight WAV playback for file browser ---- */
-#define PREVIEW_CMD_PATH "/data/UserData/move-anything/preview_cmd_path.txt"
+#define PREVIEW_CMD_PATH "/data/UserData/schwung/preview_cmd_path.txt"
 #define PREVIEW_WAV_FORMAT_PCM   1
 #define PREVIEW_WAV_FORMAT_FLOAT 3
 static int preview_fd = -1;
@@ -605,7 +603,7 @@ static int shim_run_command(const char *const argv[]) {
 /* Load feature configuration from config/features.json */
 static void load_feature_config(void)
 {
-    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    const char *config_path = "/data/UserData/schwung/config/features.json";
     FILE *f = fopen(config_path, "r");
     if (!f) {
         /* No config file - use defaults (all enabled) */
@@ -1674,7 +1672,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
             /* Start recording — path in file */
             shadow_control->sampler_cmd = 0;
             char path_buf[256] = "";
-            FILE *pf = fopen("/data/UserData/move-anything/sampler_cmd_path.txt", "r");
+            FILE *pf = fopen("/data/UserData/schwung/sampler_cmd_path.txt", "r");
             if (pf) {
                 if (fgets(path_buf, sizeof(path_buf), pf)) {
                     char *nl = strchr(path_buf, '\n');
@@ -1816,9 +1814,88 @@ static void crash_signal_handler(int sig)
     _exit(128 + sig);
 }
 
+/* One-time migration from move-anything → schwung directory layout.
+ * Handles upgrades from 0.7.x via Module Store, where files land in
+ * /data/UserData/move-anything/ with schwung binary names.
+ * Must run before any /data/UserData/schwung/ path access. */
+static void migrate_from_old_layout(void)
+{
+    struct stat st;
+    const char *new_dir = "/data/UserData/schwung";
+    const char *old_dir = "/data/UserData/move-anything";
+
+    /* Already migrated or fresh install — nothing to do */
+    if (stat(new_dir, &st) == 0) return;
+
+    /* Check if old directory exists and is a real directory (not a symlink) */
+    if (lstat(old_dir, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+
+    printf("Shadow: Migrating move-anything → schwung...\n");
+
+    /* Move directory */
+    if (rename(old_dir, new_dir) != 0) {
+        printf("Shadow: Migration failed (rename): %s\n", strerror(errno));
+        return;
+    }
+
+    /* Create backwards-compat symlink */
+    symlink(new_dir, old_dir);
+
+    /* Migrate sample/preset directories */
+    const char *old_samples = "/data/UserData/UserLibrary/Samples/Move Everything";
+    const char *new_samples = "/data/UserData/UserLibrary/Samples/Schwung";
+    if (lstat(old_samples, &st) == 0 && S_ISDIR(st.st_mode) && stat(new_samples, &st) != 0) {
+        if (rename(old_samples, new_samples) == 0)
+            symlink(new_samples, old_samples);
+    }
+
+    const char *old_presets = "/data/UserData/UserLibrary/Track Presets/Move Everything";
+    const char *new_presets = "/data/UserData/UserLibrary/Track Presets/Schwung";
+    if (lstat(old_presets, &st) == 0 && S_ISDIR(st.st_mode) && stat(new_presets, &st) != 0) {
+        if (rename(old_presets, new_presets) == 0)
+            symlink(new_presets, old_presets);
+    }
+
+    /* Update /usr/lib/ shim symlink to new path */
+    unlink("/usr/lib/schwung-shim.so");
+    symlink("/data/UserData/schwung/schwung-shim.so", "/usr/lib/schwung-shim.so");
+    unlink("/usr/lib/move-anything-shim.so");
+
+    /* Update /opt/move/Move entrypoint if it still references the old name */
+    FILE *f = fopen("/opt/move/Move", "r");
+    if (f) {
+        char buf[512];
+        int found_old = 0;
+        while (fgets(buf, sizeof(buf), f)) {
+            if (strstr(buf, "move-anything-shim.so")) { found_old = 1; break; }
+        }
+        fclose(f);
+
+        if (found_old) {
+            /* Copy the new entrypoint over */
+            FILE *src = fopen("/data/UserData/schwung/shim-entrypoint.sh", "r");
+            if (src) {
+                FILE *dst = fopen("/opt/move/Move", "w");
+                if (dst) {
+                    int ch;
+                    while ((ch = fgetc(src)) != EOF) fputc(ch, dst);
+                    fclose(dst);
+                    chmod("/opt/move/Move", 0755);
+                }
+                fclose(src);
+            }
+        }
+    }
+
+    printf("Shadow: Migration complete.\n");
+}
+
 static void init_shadow_shm(void)
 {
     if (shadow_shm_initialized) return;
+
+    /* Migrate from old directory layout before accessing any schwung paths */
+    migrate_from_old_layout();
 
     /* Initialize unified logging first so we can log during shm init */
     unified_log_init();
@@ -1953,9 +2030,11 @@ static void init_shadow_shm(void)
             printf("Shadow: Failed to mmap control shm\n");
         }
         if (shadow_control) {
-            /* Avoid sticky shadow state across restarts. */
-            shadow_display_mode = 0;
-            shadow_control->display_mode = 0;
+            /* Enable shadow display on boot for splash screen.
+             * Shadow UI will set display_mode=0 when splash is done. */
+            shadow_display_mode = 1;
+            shadow_control->display_mode = 1;
+            shadow_control->shadow_ready = 1;
             shadow_control->should_exit = 0;
             shadow_control->midi_ready = 0;
             shadow_control->write_idx = 0;
@@ -2583,355 +2662,235 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
     return 0;  /* Not handled */
 }
 
-void *(*real_mmap)(void *, size_t, int, int, int, off_t) = NULL;
-static int (*real_open)(const char *pathname, int flags, ...) = NULL;
-static int (*real_openat)(int dirfd, const char *pathname, int flags, ...) = NULL;
-static int (*real_open64)(const char *pathname, int flags, ...) = NULL;
-static int (*real_openat64)(int dirfd, const char *pathname, int flags, ...) = NULL;
+/* real_close and real_read retained for fd_trace hooks (not SPI-related) */
 static int (*real_close)(int fd) = NULL;
-static ssize_t (*real_write)(int fd, const void *buf, size_t count) = NULL;
 static ssize_t (*real_read)(int fd, void *buf, size_t count) = NULL;
 
-void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
+/* ============================================================================
+ * SUBSYSTEM INITIALIZATION
+ * ============================================================================
+ * Called once when the SPI library signals readiness (first post-transfer
+ * callback).  All the subsystem init that was previously in the mmap hook.
+ * ============================================================================ */
+static int shim_subsystems_initialized = 0;
+
+static void shim_init_subsystems(void)
 {
+    if (shim_subsystems_initialized) return;
+    shim_subsystems_initialized = 1;
 
-    printf(">>>>>>>>>>>>>>>>>>>>>>>> Hooked mmap...\n");
-    if (!real_mmap)
+    /* Point global pointers at library-managed buffers */
+    global_mmap_addr = schwung_spi_get_shadow(g_spi_handle);
+    hardware_mmap_addr = schwung_spi_get_hw(g_spi_handle);
+    shadow_spi_fd = schwung_spi_get_fd(g_spi_handle);
+
+    printf("Shadow mailbox: Move sees %p, hardware at %p\n",
+           (void*)global_mmap_addr, (void*)hardware_mmap_addr);
+
+    /* Initialize shadow shared memory when we detect the SPI mailbox */
+    init_shadow_shm();
+    /* Initialize link audio subsystem (before load_feature_config sets link_audio.enabled) */
     {
-        real_mmap = dlsym(RTLD_NEXT, "mmap");
-        if (!real_mmap)
-        {
-            fprintf(stderr, "Error: dlsym failed to find mmap\n");
-            exit(1);
-        }
+        link_audio_host_t la_host = {
+            .log = shadow_log,
+            .real_sendto_ptr = &real_sendto,
+            .chain_slots = shadow_chain_slots,
+        };
+        shadow_link_audio_init(&la_host);
     }
+    load_feature_config();  /* Load feature flags from config */
 
-    void *result = real_mmap(addr, length, prot, flags, fd, offset);
-
-    if (length == 4096)
+    /* Initialize chain management subsystem (must be before sampler - provides shadow_log) */
     {
-        /* Store the real hardware mailbox address */
-        hardware_mmap_addr = result;
-
-        /* Give Move our shadow buffer instead - we'll sync in ioctl hook */
-        global_mmap_addr = shadow_mailbox;
-        memset(shadow_mailbox, 0, sizeof(shadow_mailbox));
-
-        printf("Shadow mailbox: Move sees %p, hardware at %p\n",
-               (void*)shadow_mailbox, result);
-
-        /* Initialize shadow shared memory when we detect the SPI mailbox */
-        init_shadow_shm();
-        /* Initialize link audio subsystem (before load_feature_config sets link_audio.enabled) */
-        {
-            link_audio_host_t la_host = {
-                .log = shadow_log,
-                .real_sendto_ptr = &real_sendto,
-                .chain_slots = shadow_chain_slots,
-            };
-            shadow_link_audio_init(&la_host);
-        }
-        load_feature_config();  /* Load feature flags from config */
-
-        /* Initialize chain management subsystem (must be before sampler - provides shadow_log) */
-        {
-            chain_mgmt_host_t cm_host = {
-                .shadow_control_ptr = &shadow_control,
-                .shadow_param_ptr = &shadow_param,
-                .shadow_ui_state_ptr = &shadow_ui_state,
-                .global_mmap_addr_ptr = &global_mmap_addr,
-                .overlay_sync = shadow_overlay_sync,
-                .run_command = shim_run_command,
-                .launch_shadow_ui = launch_shadow_ui,
-                .shadow_ui_enabled = &shadow_ui_enabled,
-                .startup_modwheel_countdown = &shadow_startup_modwheel_countdown,
-                .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
-                .handle_param_special = shim_handle_param_special,
-                .get_bpm = shim_get_bpm,
-            };
-            chain_mgmt_init(&cm_host);
-        }
-        /* Initialize sampler subsystem with callbacks to shim functions */
-        {
-            sampler_host_t sampler_host = {
-                .log = shadow_log,
-                .announce = send_screenreader_announcement,
-                .overlay_sync = shadow_overlay_sync,
-                .run_command = shim_run_command,
-                .global_mmap_addr = &global_mmap_addr,
-                .hardware_mmap_addr = &hardware_mmap_addr,
-            };
-            sampler_init(&sampler_host, &sampler_set_tempo);
-        }
-        /* Initialize set pages subsystem with callbacks to shim functions */
-        {
-            set_pages_host_t sp_host = {
-                .log = shadow_log,
-                .announce = send_screenreader_announcement,
-                .overlay_sync = shadow_overlay_sync,
-                .run_command = shim_run_command,
-                .save_state = shadow_save_state,
-                .read_set_mute_states = shadow_read_set_mute_states,
-                .read_set_tempo = sampler_read_set_tempo,
-                .ui_state_update_slot = shadow_ui_state_update_slot,
-                .ui_state_refresh = shadow_ui_state_refresh,
-                .chain_parse_channel = shadow_chain_parse_channel,
-                .chain_slots = shadow_chain_slots,
-                .shadow_control_ptr = &shadow_control,
-                .solo_count = (volatile int *)&shadow_solo_count,
-            };
-            set_pages_init(&sp_host);
-        }
-        if (shadow_control) {
-            shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
-            shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
-            shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
-        }
-        /* Initialize process management subsystem */
-        {
-            process_host_t proc_host = {
-                .log = shadow_log,
-                .get_bpm = (float (*)(void *))sampler_get_bpm,
-                .link_audio = &link_audio,
-            };
-            process_init(&proc_host);
-        }
-        /* Initialize resample bridge */
-        {
-            resample_host_t res_host = {
-                .log = shadow_log,
-                .global_mmap_addr = &global_mmap_addr,
-                .shadow_master_volume = &shadow_master_volume,
-            };
-            resample_init(&res_host);
-        }
-        /* Initialize overlay drawing */
-        {
-            overlay_host_t ov_host = {
-                .log = shadow_log,
-                .announce = send_screenreader_announcement,
-                .shadow_control = &shadow_control,
-                .shadow_overlay_shm = &shadow_overlay_shm,
-                .chain_slots = shadow_chain_slots,
-                .plugin_v2 = &shadow_plugin_v2,
-            };
-            overlay_init(&ov_host);
-        }
-        /* Initialize PIN scanner */
-        {
-            pin_scanner_host_t pin_host = {
-                .log = shadow_log,
-                .tts_speak = tts_speak,
-                .shadow_control = &shadow_control,
-            };
-            pin_scanner_init(&pin_host);
-        }
-        /* Initialize LED queue */
-        {
-            led_queue_host_t led_host = {
-                .midi_out_buf = shadow_mailbox + MIDI_OUT_OFFSET,
-                .shadow_control = &shadow_control,
-                .shadow_ui_midi_shm = &shadow_ui_midi_shm,
-            };
-            led_queue_init(&led_host);
-        }
-        /* Initialize state persistence */
-        {
-            state_host_t st_host = {
-                .log = shadow_log,
-                .chain_slots = shadow_chain_slots,
-                .solo_count = &shadow_solo_count,
-            };
-            state_init(&st_host);
-        }
-        /* Initialize MIDI routing */
-        {
-            midi_host_t midi_host = {
-                .log = shadow_log,
-                .midi_out_logf = shadow_midi_out_logf,
-                .midi_out_log_enabled = shadow_midi_out_log_enabled,
-                .ui_state_update_slot = shadow_ui_state_update_slot,
-                .master_fx_forward_midi = shadow_master_fx_forward_midi,
-                .queue_led = shadow_queue_led,
-                .init_led_queue = shadow_init_led_queue,
-                .chain_slots = shadow_chain_slots,
-                .plugin_v2 = &shadow_plugin_v2,
-                .shadow_control = &shadow_control,
-                .global_mmap_addr = &global_mmap_addr,
-                .shadow_inprocess_ready = &shadow_inprocess_ready,
-                .shadow_display_mode = &shadow_display_mode,
-                .shadow_midi_shm = &shadow_midi_shm,
-                .shadow_midi_out_shm = &shadow_midi_out_shm,
-                .shadow_ui_midi_shm = &shadow_ui_midi_shm,
-                .shadow_midi_dsp_shm = &shadow_midi_dsp_shm,
-                .shadow_midi_inject_shm = &shadow_midi_inject_shm,
-                .shadow_mailbox = shadow_mailbox,
-                .master_fx_capture = &shadow_master_fx_capture,
-                .slot_idle = shadow_slot_idle,
-                .slot_silence_frames = shadow_slot_silence_frames,
-                .slot_fx_idle = shadow_slot_fx_idle,
-                .slot_fx_silence_frames = shadow_slot_fx_silence_frames,
-            };
-            midi_routing_init(&midi_host);
-        }
-        /* Start Link Audio monitor — it will launch the subscriber
-         * once link_audio_routing_enabled is set from config */
-        if (link_audio.enabled) {
-            start_link_sub_monitor();
-        }
-        native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
+        chain_mgmt_host_t cm_host = {
+            .shadow_control_ptr = &shadow_control,
+            .shadow_param_ptr = &shadow_param,
+            .shadow_ui_state_ptr = &shadow_ui_state,
+            .global_mmap_addr_ptr = &global_mmap_addr,
+            .overlay_sync = shadow_overlay_sync,
+            .run_command = shim_run_command,
+            .launch_shadow_ui = launch_shadow_ui,
+            .shadow_ui_enabled = &shadow_ui_enabled,
+            .startup_modwheel_countdown = &shadow_startup_modwheel_countdown,
+            .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
+            .handle_param_special = shim_handle_param_special,
+            .get_bpm = shim_get_bpm,
+        };
+        chain_mgmt_init(&cm_host);
+    }
+    /* Initialize sampler subsystem with callbacks to shim functions */
+    {
+        sampler_host_t sampler_host = {
+            .log = shadow_log,
+            .announce = send_screenreader_announcement,
+            .overlay_sync = shadow_overlay_sync,
+            .run_command = shim_run_command,
+            .global_mmap_addr = &global_mmap_addr,
+            .hardware_mmap_addr = &hardware_mmap_addr,
+        };
+        sampler_init(&sampler_host, &sampler_set_tempo);
+    }
+    /* Initialize set pages subsystem with callbacks to shim functions */
+    {
+        set_pages_host_t sp_host = {
+            .log = shadow_log,
+            .announce = send_screenreader_announcement,
+            .overlay_sync = shadow_overlay_sync,
+            .run_command = shim_run_command,
+            .save_state = shadow_save_state,
+            .read_set_mute_states = shadow_read_set_mute_states,
+            .read_set_tempo = sampler_read_set_tempo,
+            .ui_state_update_slot = shadow_ui_state_update_slot,
+            .ui_state_refresh = shadow_ui_state_refresh,
+            .chain_parse_channel = shadow_chain_parse_channel,
+            .chain_slots = shadow_chain_slots,
+            .shadow_control_ptr = &shadow_control,
+            .solo_count = (volatile int *)&shadow_solo_count,
+        };
+        set_pages_init(&sp_host);
+    }
+    if (shadow_control) {
+        shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
+        shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
+        shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
+    }
+    /* Initialize process management subsystem */
+    {
+        process_host_t proc_host = {
+            .log = shadow_log,
+            .get_bpm = (float (*)(void *))sampler_get_bpm,
+            .link_audio = &link_audio,
+        };
+        process_init(&proc_host);
+    }
+    /* Initialize resample bridge */
+    {
+        resample_host_t res_host = {
+            .log = shadow_log,
+            .global_mmap_addr = &global_mmap_addr,
+            .shadow_master_volume = &shadow_master_volume,
+        };
+        resample_init(&res_host);
+    }
+    /* Initialize overlay drawing */
+    {
+        overlay_host_t ov_host = {
+            .log = shadow_log,
+            .announce = send_screenreader_announcement,
+            .shadow_control = &shadow_control,
+            .shadow_overlay_shm = &shadow_overlay_shm,
+            .chain_slots = shadow_chain_slots,
+            .plugin_v2 = &shadow_plugin_v2,
+        };
+        overlay_init(&ov_host);
+    }
+    /* Initialize PIN scanner */
+    {
+        pin_scanner_host_t pin_host = {
+            .log = shadow_log,
+            .tts_speak = tts_speak,
+            .shadow_control = &shadow_control,
+        };
+        pin_scanner_init(&pin_host);
+    }
+    /* Initialize LED queue */
+    {
+        uint8_t *shadow_buf = schwung_spi_get_shadow(g_spi_handle);
+        led_queue_host_t led_host = {
+            .midi_out_buf = shadow_buf + MIDI_OUT_OFFSET,
+            .shadow_control = &shadow_control,
+            .shadow_ui_midi_shm = &shadow_ui_midi_shm,
+        };
+        led_queue_init(&led_host);
+    }
+    /* Initialize state persistence */
+    {
+        state_host_t st_host = {
+            .log = shadow_log,
+            .chain_slots = shadow_chain_slots,
+            .solo_count = &shadow_solo_count,
+        };
+        state_init(&st_host);
+    }
+    /* Initialize MIDI routing */
+    {
+        uint8_t *shadow_buf = schwung_spi_get_shadow(g_spi_handle);
+        midi_host_t midi_host = {
+            .log = shadow_log,
+            .midi_out_logf = shadow_midi_out_logf,
+            .midi_out_log_enabled = shadow_midi_out_log_enabled,
+            .ui_state_update_slot = shadow_ui_state_update_slot,
+            .master_fx_forward_midi = shadow_master_fx_forward_midi,
+            .queue_led = shadow_queue_led,
+            .init_led_queue = shadow_init_led_queue,
+            .chain_slots = shadow_chain_slots,
+            .plugin_v2 = &shadow_plugin_v2,
+            .shadow_control = &shadow_control,
+            .global_mmap_addr = &global_mmap_addr,
+            .shadow_inprocess_ready = &shadow_inprocess_ready,
+            .shadow_display_mode = &shadow_display_mode,
+            .shadow_midi_shm = &shadow_midi_shm,
+            .shadow_midi_out_shm = &shadow_midi_out_shm,
+            .shadow_ui_midi_shm = &shadow_ui_midi_shm,
+            .shadow_midi_dsp_shm = &shadow_midi_dsp_shm,
+            .shadow_midi_inject_shm = &shadow_midi_inject_shm,
+            .shadow_mailbox = shadow_buf,
+            .master_fx_capture = &shadow_master_fx_capture,
+            .slot_idle = shadow_slot_idle,
+            .slot_silence_frames = shadow_slot_silence_frames,
+            .slot_fx_idle = shadow_slot_fx_idle,
+            .slot_fx_silence_frames = shadow_slot_fx_silence_frames,
+        };
+        midi_routing_init(&midi_host);
+    }
+    /* Start Link Audio monitor — it will launch the subscriber
+     * once link_audio_routing_enabled is set from config */
+    if (link_audio.enabled) {
+        start_link_sub_monitor();
+    }
+    native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
 #if SHADOW_INPROCESS_POC
-        shadow_inprocess_load_chain();
-        /* Initialize D-Bus subsystem with callbacks to shim functions */
-        {
-            dbus_host_t dbus_host = {
-                .log = shadow_log,
-                .save_state = shadow_save_state,
-                .apply_mute = shadow_apply_mute,
-                .ui_state_update_slot = shadow_ui_state_update_slot,
-                .native_sampler_update = native_sampler_update_from_dbus_text,
-                .chain_slots = shadow_chain_slots,
-                .shadow_control_ptr = &shadow_control,
-                .display_mode = &shadow_display_mode,
-                .held_track = (volatile int *)&shadow_held_track,
-                .selected_slot = (volatile int *)&shadow_selected_slot,
-                .solo_count = (volatile int *)&shadow_solo_count,
-                .screenreader_shm = &shadow_screenreader_shm,
-            };
-            dbus_init(&dbus_host);
-        }
-        shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
-        shadow_read_initial_volume();  /* Read initial master volume from settings */
-        shadow_load_state();  /* Load saved slot volumes */
+    shadow_inprocess_load_chain();
+    /* Initialize D-Bus subsystem with callbacks to shim functions */
+    {
+        dbus_host_t dbus_host = {
+            .log = shadow_log,
+            .save_state = shadow_save_state,
+            .apply_mute = shadow_apply_mute,
+            .ui_state_update_slot = shadow_ui_state_update_slot,
+            .native_sampler_update = native_sampler_update_from_dbus_text,
+            .chain_slots = shadow_chain_slots,
+            .shadow_control_ptr = &shadow_control,
+            .display_mode = &shadow_display_mode,
+            .held_track = (volatile int *)&shadow_held_track,
+            .selected_slot = (volatile int *)&shadow_selected_slot,
+            .solo_count = (volatile int *)&shadow_solo_count,
+            .screenreader_shm = &shadow_screenreader_shm,
+        };
+        dbus_init(&dbus_host);
+    }
+    shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
+    shadow_read_initial_volume();  /* Read initial master volume from settings */
+    shadow_load_state();  /* Load saved slot volumes */
 
-        /* Mute/solo state is now fully managed by shadow_load_state() above.
-         * Previously we synced from Song.abl here, but Move's native track
-         * mute (speakerOn) is independent of shadow slot mute state. */
+    /* Mute/solo state is now fully managed by shadow_load_state() above.
+     * Previously we synced from Song.abl here, but Move's native track
+     * mute (speakerOn) is independent of shadow slot mute state. */
 
-        /* Initialize TTS and sync loaded state to shared memory */
-        tts_init(44100);
-        if (shadow_control) {
-            shadow_control->tts_enabled = tts_get_enabled() ? 1 : 0;
-            shadow_control->tts_volume = tts_get_volume();
-            shadow_control->tts_speed = tts_get_speed();
-            shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
-            shadow_control->tts_engine = (strcmp(tts_get_engine(), "flite") == 0) ? 1 : 0;
-            unified_log("shim", LOG_LEVEL_INFO,
-                       "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
-                       shadow_control->tts_enabled ? "ON" : "OFF",
-                       shadow_control->tts_speed, (float)shadow_control->tts_pitch, shadow_control->tts_volume);
-        }
+    /* Initialize TTS and sync loaded state to shared memory */
+    tts_init(44100);
+    if (shadow_control) {
+        shadow_control->tts_enabled = tts_get_enabled() ? 1 : 0;
+        shadow_control->tts_volume = tts_get_volume();
+        shadow_control->tts_speed = tts_get_speed();
+        shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
+        shadow_control->tts_engine = (strcmp(tts_get_engine(), "flite") == 0) ? 1 : 0;
+        unified_log("shim", LOG_LEVEL_INFO,
+                   "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
+                   shadow_control->tts_enabled ? "ON" : "OFF",
+                   shadow_control->tts_speed, (float)shadow_control->tts_pitch, shadow_control->tts_volume);
+    }
 #endif
-
-        /* Return shadow buffer to Move instead of hardware address */
-        printf("mmap hooked! addr=%p, length=%zu, prot=%d, flags=%d, fd=%d, offset=%lld, result=%p (returning shadow)\n",
-               addr, length, prot, flags, fd, (long long)offset, result);
-        return shadow_mailbox;
-    }
-
-    printf("mmap hooked! addr=%p, length=%zu, prot=%d, flags=%d, fd=%d, offset=%lld, result=%p\n",
-           addr, length, prot, flags, fd, (long long)offset, result);
-
-    return result;
-}
-
-static int open_common(const char *pathname, int flags, va_list ap, int use_openat, int dirfd)
-{
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        mode = (mode_t)va_arg(ap, int);
-    }
-
-    int fd;
-    if (use_openat) {
-        if (!real_openat) {
-            real_openat = dlsym(RTLD_NEXT, "openat");
-        }
-        fd = real_openat ? real_openat(dirfd, pathname, flags, mode) : -1;
-    } else {
-        if (!real_open) {
-            real_open = dlsym(RTLD_NEXT, "open");
-        }
-        fd = real_open ? real_open(pathname, flags, mode) : -1;
-    }
-
-
-
-    if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
-        track_fd(fd, pathname);
-        if (path_matches_midi(pathname) && trace_midi_fd_enabled())
-            fd_trace_log_midi("OPEN", fd, pathname);
-        if (path_matches_spi(pathname) && trace_spi_io_enabled())
-            fd_trace_log_spi("OPEN", fd, pathname);
-    }
-
-    return fd;
-}
-
-int open(const char *pathname, int flags, ...)
-{
-    va_list ap;
-    va_start(ap, flags);
-    int fd = open_common(pathname, flags, ap, 0, AT_FDCWD);
-    va_end(ap);
-    return fd;
-}
-
-int open64(const char *pathname, int flags, ...)
-{
-    if (!real_open64) {
-        real_open64 = dlsym(RTLD_NEXT, "open64");
-    }
-    va_list ap;
-    va_start(ap, flags);
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        mode = (mode_t)va_arg(ap, int);
-    }
-    int fd = real_open64 ? real_open64(pathname, flags, mode) : -1;
-    va_end(ap);
-
-    if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
-        track_fd(fd, pathname);
-        if (path_matches_midi(pathname) && trace_midi_fd_enabled())
-            fd_trace_log_midi("OPEN64", fd, pathname);
-        if (path_matches_spi(pathname) && trace_spi_io_enabled())
-            fd_trace_log_spi("OPEN64", fd, pathname);
-    }
-    return fd;
-}
-
-int openat(int dirfd, const char *pathname, int flags, ...)
-{
-    va_list ap;
-    va_start(ap, flags);
-    int fd = open_common(pathname, flags, ap, 1, dirfd);
-    va_end(ap);
-    return fd;
-}
-
-int openat64(int dirfd, const char *pathname, int flags, ...)
-{
-    if (!real_openat64) {
-        real_openat64 = dlsym(RTLD_NEXT, "openat64");
-    }
-    va_list ap;
-    va_start(ap, flags);
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        mode = (mode_t)va_arg(ap, int);
-    }
-    int fd = real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
-    va_end(ap);
-
-    if (fd >= 0 && (path_matches_midi(pathname) || path_matches_spi(pathname))) {
-        track_fd(fd, pathname);
-        if (path_matches_midi(pathname) && trace_midi_fd_enabled())
-            fd_trace_log_midi("OPENAT64", fd, pathname);
-        if (path_matches_spi(pathname) && trace_spi_io_enabled())
-            fd_trace_log_spi("OPENAT64", fd, pathname);
-    }
-    return fd;
 }
 
 int close(int fd)
@@ -2964,8 +2923,6 @@ ssize_t read(int fd, void *buf, size_t count)
     return ret;
 }
 
-
-int (*real_ioctl)(int, unsigned long, ...) = NULL;
 
 int shiftHeld = 0;
 int volumeTouched = 0;
@@ -3010,7 +2967,7 @@ static void log_hotkey_state(const char *tag)
 #if SHADOW_HOTKEY_DEBUG
     if (!hotkey_state_log)
     {
-        hotkey_state_log = fopen("/data/UserData/move-anything/hotkey_state.log", "a");
+        hotkey_state_log = fopen("/data/UserData/schwung/hotkey_state.log", "a");
     }
     if (hotkey_state_log)
     {
@@ -3138,87 +3095,94 @@ void midi_monitor()
     }
 }
 
-// unsigned long ioctlCounter = 0;
-int ioctl(int fd, unsigned long request, ...)
-{
-    if (!real_ioctl)
-    {
-        real_ioctl = dlsym(RTLD_NEXT, "ioctl");
-        if (!real_ioctl)
-        {
-            fprintf(stderr, "Error: dlsym failed to find ioctl\n");
-            exit(1);
-        }
-    }
+/* ============================================================================
+ * SPI CALLBACK SHARED STATE
+ * ============================================================================
+ * Timing and overrun detection statics shared between pre/post callbacks.
+ * These were previously local statics inside the monolithic ioctl() function.
+ * ============================================================================ */
 
-    va_list ap;
-    void *argp = NULL;
-    va_start(ap, request);
-    argp = va_arg(ap, void *);
-    va_end(ap);
+/* Comprehensive timing */
+static struct timespec spi_ioctl_start, spi_pre_end, spi_post_start, spi_ioctl_end;
+static uint64_t spi_total_sum = 0, spi_pre_sum = 0, spi_ioctl_sum = 0, spi_post_sum = 0;
+static uint64_t spi_total_max = 0, spi_pre_max = 0, spi_ioctl_max = 0, spi_post_max = 0;
+static int spi_timing_count = 0;
+static int spi_baseline_mode = -1;  /* -1 = unknown, 0 = full mode, 1 = baseline only */
 
-    /* === COMPREHENSIVE IOCTL TIMING === */
-    static struct timespec ioctl_start, pre_end, post_start, ioctl_end;
-    static uint64_t total_sum = 0, pre_sum = 0, ioctl_sum = 0, post_sum = 0;
-    static uint64_t total_max = 0, pre_max = 0, ioctl_max = 0, post_max = 0;
-    static int timing_count = 0;
-    static int baseline_mode = -1;  /* -1 = unknown, 0 = full mode, 1 = baseline only */
+/* Granular pre-ioctl timing */
+static struct timespec spi_section_start, spi_section_end;
+static uint64_t spi_midi_mon_sum = 0, spi_midi_mon_max = 0;
+static uint64_t spi_fwd_midi_sum = 0, spi_fwd_midi_max = 0;
+static uint64_t spi_mix_audio_sum = 0, spi_mix_audio_max = 0;
+static uint64_t spi_ui_req_sum = 0, spi_ui_req_max = 0;
+static uint64_t spi_param_req_sum = 0, spi_param_req_max = 0;
+static uint64_t spi_proc_midi_sum = 0, spi_proc_midi_max = 0;
+static uint64_t spi_inproc_mix_sum = 0, spi_inproc_mix_max = 0;
+static uint64_t spi_display_sum = 0, spi_display_max = 0;
+static int spi_granular_count = 0;
 
-    /* === GRANULAR PRE-IOCTL TIMING === */
-    static struct timespec section_start, section_end;
-    static uint64_t midi_mon_sum = 0, midi_mon_max = 0;
-    static uint64_t fwd_midi_sum = 0, fwd_midi_max = 0;
-    static uint64_t mix_audio_sum = 0, mix_audio_max = 0;
-    static uint64_t ui_req_sum = 0, ui_req_max = 0;
-    static uint64_t param_req_sum = 0, param_req_max = 0;
-    static uint64_t proc_midi_sum = 0, proc_midi_max = 0;
-    static uint64_t inproc_mix_sum = 0, inproc_mix_max = 0;
-    static uint64_t display_sum = 0, display_max = 0;
-    static int granular_count = 0;
-
-#define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &section_start)
+#define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &spi_section_start)
 #define TIME_SECTION_END(sum_var, max_var) do { \
-    clock_gettime(CLOCK_MONOTONIC, &section_end); \
-    uint64_t _section_us = (section_end.tv_sec - section_start.tv_sec) * 1000000 + \
-                   (section_end.tv_nsec - section_start.tv_nsec) / 1000; \
+    clock_gettime(CLOCK_MONOTONIC, &spi_section_end); \
+    uint64_t _section_us = (spi_section_end.tv_sec - spi_section_start.tv_sec) * 1000000 + \
+                   (spi_section_end.tv_nsec - spi_section_start.tv_nsec) / 1000; \
     sum_var += _section_us; \
     if (_section_us > max_var) max_var = _section_us; \
 } while(0)
 
-    /* === OVERRUN DETECTION AND RECOVERY === */
-    static int consecutive_overruns = 0;
-    static int skip_dsp_this_frame = 0;
-    static uint64_t last_frame_total_us = 0;
+/* Overrun detection */
+static int spi_consecutive_overruns = 0;
+static int spi_skip_dsp_this_frame = 0;
+static uint64_t spi_last_frame_total_us = 0;
 #define OVERRUN_THRESHOLD_US 2850  /* Start worrying at 2850µs (98% of budget) */
 #define SKIP_DSP_THRESHOLD 3       /* Skip DSP after 3 consecutive overruns */
 
+/* ============================================================================
+ * SPI PRE-TRANSFER CALLBACK
+ * ============================================================================
+ * Called by schwung_spi_lib before shadow→hardware copy on every SPI frame.
+ * Contains all domain logic that was previously in the ioctl() pre-ioctl section:
+ * MIDI monitoring, audio mixing, display compositing, LED injection, etc.
+ * ============================================================================ */
+static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
+{
+    (void)ctx;
+    (void)size;
+
+    /* Ensure subsystems are initialized on first call */
+    if (!shim_subsystems_initialized) {
+        shim_init_subsystems();
+    }
+
+    /* Timing and overrun statics are at file scope (shared between pre/post callbacks) */
+
     /* Check for baseline timing mode (set SHADOW_BASELINE=1 to disable all processing) */
-    if (baseline_mode < 0) {
+    if (spi_baseline_mode < 0) {
         const char *env = getenv("SHADOW_BASELINE");
-        baseline_mode = (env && env[0] == '1') ? 1 : 0;
+        spi_baseline_mode = (env && env[0] == '1') ? 1 : 0;
 #if SHADOW_TIMING_LOG
-        if (baseline_mode) {
+        if (spi_baseline_mode) {
             FILE *f = fopen("/tmp/ioctl_timing.log", "a");
             if (f) { fprintf(f, "=== BASELINE MODE: All processing disabled ===\n"); fclose(f); }
         }
 #endif
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &ioctl_start);
+    clock_gettime(CLOCK_MONOTONIC, &spi_ioctl_start);
 
     /* === IOCTL GAP DETECTION (always-on, no flag needed) === */
     {
         static struct timespec last_ioctl_time = {0, 0};
         if (last_ioctl_time.tv_sec > 0) {
-            uint64_t gap_ms = (ioctl_start.tv_sec - last_ioctl_time.tv_sec) * 1000 +
-                              (ioctl_start.tv_nsec - last_ioctl_time.tv_nsec) / 1000000;
+            uint64_t gap_ms = (spi_ioctl_start.tv_sec - last_ioctl_time.tv_sec) * 1000 +
+                              (spi_ioctl_start.tv_nsec - last_ioctl_time.tv_nsec) / 1000000;
             if (gap_ms > 1000) {
                 char gap_msg[64];
                 snprintf(gap_msg, sizeof(gap_msg), "Ioctl gap: %lu ms", (unsigned long)gap_ms);
                 unified_log_crash(gap_msg);
             }
         }
-        last_ioctl_time = ioctl_start;
+        last_ioctl_time = spi_ioctl_start;
     }
 
     /* === HEARTBEAT (every ~5700 frames / ~100s) === */
@@ -3232,7 +3196,7 @@ int ioctl(int fd, unsigned long request, ...)
                  * when the disk is busy, causing audio clicks. */
                 unified_log("shim", LOG_LEVEL_DEBUG,
                     "Heartbeat: pid=%d overruns=%d display_mode=%d la_pkts=%u la_ch=%d la_stale=%u la_sub_pid=%d la_restarts=%d pin_chal=%d",
-                    getpid(), consecutive_overruns,
+                    getpid(), spi_consecutive_overruns,
                     shadow_display_mode,
                     link_audio.packets_intercepted, link_audio.move_channel_count,
                     la_stale_frames, (int)link_sub_pid, link_sub_restart_count,
@@ -3261,34 +3225,34 @@ int ioctl(int fd, unsigned long request, ...)
     }
 
     /* Check if previous frame overran - if so, consider skipping expensive work */
-    if (last_frame_total_us > OVERRUN_THRESHOLD_US) {
-        consecutive_overruns++;
-        if (consecutive_overruns >= SKIP_DSP_THRESHOLD) {
-            skip_dsp_this_frame = 1;
+    if (spi_last_frame_total_us > OVERRUN_THRESHOLD_US) {
+        spi_consecutive_overruns++;
+        if (spi_consecutive_overruns >= SKIP_DSP_THRESHOLD) {
+            spi_skip_dsp_this_frame = 1;
 #if SHADOW_TIMING_LOG
             static int skip_log_count = 0;
             if (skip_log_count++ < 10 || skip_log_count % 100 == 0) {
                 FILE *f = fopen("/tmp/ioctl_timing.log", "a");
                 if (f) {
-                    fprintf(f, "SKIP_DSP: consecutive_overruns=%d, last_frame=%llu us\n",
-                            consecutive_overruns, (unsigned long long)last_frame_total_us);
+                    fprintf(f, "SKIP_DSP: spi_consecutive_overruns=%d, last_frame=%llu us\n",
+                            spi_consecutive_overruns, (unsigned long long)spi_last_frame_total_us);
                     fclose(f);
                 }
             }
 #endif
         }
     } else {
-        consecutive_overruns = 0;
-        skip_dsp_this_frame = 0;
+        spi_consecutive_overruns = 0;
+        spi_skip_dsp_this_frame = 0;
     }
 
     /* Skip all processing in baseline mode to measure pure Move ioctl time */
-    if (baseline_mode) goto do_ioctl;
+    if (spi_baseline_mode) goto pre_done;
 
-    // TODO: Consider using move-anything host code and quickjs for flexibility
+    // TODO: Consider using schwung host code and quickjs for flexibility
     TIME_SECTION_START();
     midi_monitor();
-    TIME_SECTION_END(midi_mon_sum, midi_mon_max);
+    TIME_SECTION_END(spi_midi_mon_sum, spi_midi_mon_max);
 
     /* Check if shadow UI requested exit via shared memory */
     if (shadow_control && shadow_display_mode && !shadow_control->display_mode) {
@@ -3303,21 +3267,21 @@ int ioctl(int fd, unsigned long request, ...)
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     TIME_SECTION_START();
     shadow_forward_midi();
-    TIME_SECTION_END(fwd_midi_sum, fwd_midi_max);
+    TIME_SECTION_END(spi_fwd_midi_sum, spi_fwd_midi_max);
 
     /* Mix shadow audio into mailbox BEFORE hardware transaction */
     TIME_SECTION_START();
     shadow_mix_audio();
-    TIME_SECTION_END(mix_audio_sum, mix_audio_max);
+    TIME_SECTION_END(spi_mix_audio_sum, spi_mix_audio_max);
 
 #if SHADOW_INPROCESS_POC
     TIME_SECTION_START();
     shadow_inprocess_handle_ui_request();
-    TIME_SECTION_END(ui_req_sum, ui_req_max);
+    TIME_SECTION_END(spi_ui_req_sum, spi_ui_req_max);
 
     TIME_SECTION_START();
     shadow_inprocess_handle_param_request();
-    TIME_SECTION_END(param_req_sum, param_req_max);
+    TIME_SECTION_END(spi_param_req_sum, spi_param_req_max);
 
     /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT
      * so DSP routing can pick them up (Move only echoes notes, not these) */
@@ -3325,7 +3289,7 @@ int ioctl(int fd, unsigned long request, ...)
 
     TIME_SECTION_START();
     shadow_inprocess_process_midi();
-    TIME_SECTION_END(proc_midi_sum, proc_midi_max);
+    TIME_SECTION_END(spi_proc_midi_sum, spi_proc_midi_max);
 
     /* Drain MIDI-to-DSP from shadow UI (overtake modules sending to chain slots) */
     shadow_drain_ui_midi_dsp();
@@ -3355,8 +3319,8 @@ int ioctl(int fd, unsigned long request, ...)
         if (mix_us > mix_time_max) mix_time_max = mix_us;
 
         /* Track in granular timing */
-        inproc_mix_sum += mix_us;
-        if (mix_us > inproc_mix_max) inproc_mix_max = mix_us;
+        spi_inproc_mix_sum += mix_us;
+        if (mix_us > spi_inproc_mix_max) spi_inproc_mix_max = mix_us;
     }
 
     /* Update publisher shm slot active flags (subscriber reads these).
@@ -3685,7 +3649,7 @@ int ioctl(int fd, unsigned long request, ...)
 
     /* Write display BEFORE ioctl - overwrites Move's content right before send */
     shadow_swap_display();
-    TIME_SECTION_END(display_sum, display_max);  /* End timing display section */
+    TIME_SECTION_END(spi_display_sum, spi_display_max);  /* End timing display section */
 
     /* Capture final display to live shm for remote viewer.
      * Shadow mode: copy from shadow display shm (full composited frame).
@@ -3724,11 +3688,11 @@ int ioctl(int fd, unsigned long request, ...)
     pin_check_and_speak();
 
     /* Mark end of pre-ioctl processing */
-    clock_gettime(CLOCK_MONOTONIC, &pre_end);
+    clock_gettime(CLOCK_MONOTONIC, &spi_pre_end);
 
-do_ioctl:
-    /* In baseline mode, pre_end wasn't set - set it now */
-    if (baseline_mode) clock_gettime(CLOCK_MONOTONIC, &pre_end);
+pre_done:
+    /* In baseline mode, spi_pre_end wasn't set - set it now */
+    if (spi_baseline_mode) clock_gettime(CLOCK_MONOTONIC, &spi_pre_end);
 
     /* === SHADOW UI MIDI OUT (PRE-IOCTL) ===
      * Inject any MIDI from shadow UI into the mailbox before sync.
@@ -3765,358 +3729,365 @@ do_ioctl:
 
     /* Capture the SPI fd for use by overtake_midi_send_external */
     if (shadow_spi_fd < 0 && hardware_mmap_addr) {
-        shadow_spi_fd = fd;
+        shadow_spi_fd = schwung_spi_get_fd(g_spi_handle);
     }
 
-    /* === SHADOW MAILBOX SYNC (PRE-IOCTL) ===
-     * Copy shadow mailbox to hardware before ioctl.
-     * Move has been writing to shadow_mailbox; now we send that to hardware. */
-    if (hardware_mmap_addr) {
-        memcpy(hardware_mmap_addr, shadow_mailbox, MAILBOX_SIZE);
-        /* Mute Move's audio output when requested (e.g. during silent clip switching) */
-        if (shadow_control && shadow_control->mute_move_audio) {
-            memset(hardware_mmap_addr + AUDIO_OUT_OFFSET, 0,
-                   DISPLAY_OFFSET - AUDIO_OUT_OFFSET);
-        }
+    /* Mute Move's audio output when requested (e.g. during silent clip switching).
+     * Zero the audio region in shadow BEFORE the library copies shadow→hw. */
+    if (shadow_control && shadow_control->mute_move_audio) {
+        memset(shadow + AUDIO_OUT_OFFSET, 0,
+               DISPLAY_OFFSET - AUDIO_OUT_OFFSET);
+    }
+}
+
+/* ============================================================================
+ * SPI POST-TRANSFER CALLBACK
+ * ============================================================================
+ * Called by schwung_spi_lib after hardware→shadow copy on every SPI frame.
+ * The library has already copied the input region (2048+) from hw→shadow.
+ * This callback handles:
+ *   - Syncing output regions (0-2047) from hw→shadow
+ *   - MIDI_IN filtering
+ *   - All post-ioctl domain logic (track detection, shortcuts, DSP rendering)
+ * ============================================================================ */
+static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, int size)
+{
+    (void)ctx;
+    (void)size;
+
+    /* Timing: reuse statics from pre-transfer (same translation unit) */
+    /* spi_post_start is at file scope */
+
+    /* Sync output regions from hardware→shadow.
+     * The library only copies the input region (SCHWUNG_OFF_IN_BASE+).
+     * The output region may have been modified by hardware during ioctl. */
+    memcpy(shadow + MIDI_OUT_OFFSET, hw + MIDI_OUT_OFFSET,
+           AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
+    memcpy(shadow + AUDIO_OUT_OFFSET, hw + AUDIO_OUT_OFFSET,
+           DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
+    memcpy(shadow + DISPLAY_OFFSET, hw + DISPLAY_OFFSET,
+           MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
+
+    /* Bridge Schwung's total mix into native resampling path when selected. */
+    native_resample_bridge_apply();
+
+    /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
+    if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {
+        sampler_capture_audio();
+        sampler_tick_preroll();
+        /* Skipback: always capture Move Input source into rolling buffer */
+        skipback_init();
+        skipback_capture((int16_t *)(hw + AUDIO_IN_OFFSET));
     }
 
-    /* === HARDWARE TRANSACTION === */
-    int result = real_ioctl(fd, request, argp);
+    /* Copy MIDI_IN with filtering when in shadow display mode.
+     * The library already copied the full input region (2048+) from hw→shadow.
+     * When shadow_display_mode is active, we re-filter the MIDI_IN portion. */
+    uint8_t *hw_midi = (uint8_t *)hw + MIDI_IN_OFFSET;
+    uint8_t *sh_midi = shadow + MIDI_IN_OFFSET;
+    int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
 
-    /* === SHADOW MAILBOX SYNC (POST-IOCTL) ===
-     * Copy hardware mailbox back to shadow, filtering MIDI_IN.
-     * Hardware has filled in new data; we filter it before Move sees it.
-     * This eliminates race conditions - Move only sees our shadow buffer. */
-    if (hardware_mmap_addr) {
-        /* Copy non-MIDI sections directly */
-        memcpy(shadow_mailbox + MIDI_OUT_OFFSET, hardware_mmap_addr + MIDI_OUT_OFFSET,
-               AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
-        memcpy(shadow_mailbox + AUDIO_OUT_OFFSET, hardware_mmap_addr + AUDIO_OUT_OFFSET,
-               DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
-        memcpy(shadow_mailbox + DISPLAY_OFFSET, hardware_mmap_addr + DISPLAY_OFFSET,
-               MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
-        memcpy(shadow_mailbox + AUDIO_IN_OFFSET, hardware_mmap_addr + AUDIO_IN_OFFSET,
-               MAILBOX_SIZE - AUDIO_IN_OFFSET);      /* AUDIO_IN: 2304-4095 */
-
-        /* Bridge Move Everything's total mix into native resampling path when selected. */
-        native_resample_bridge_apply();
-
-        /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
-        if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {
-            sampler_capture_audio();
-            sampler_tick_preroll();
-            /* Skipback: always capture Move Input source into rolling buffer */
-            skipback_init();
-            skipback_capture((int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET));
-        }
-
-        /* Copy MIDI_IN with filtering when in shadow display mode */
-        uint8_t *hw_midi = hardware_mmap_addr + MIDI_IN_OFFSET;
-        uint8_t *sh_midi = shadow_mailbox + MIDI_IN_OFFSET;
-        int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
-
-        /* Detect overtake mode exit and inject button releases into Move's MIDI_IN.
-         * During overtake, all cable-0 MIDI is filtered from reaching Move firmware,
-         * so if the user released Shift or the volume knob touch while in overtake,
-         * Move never saw the release. Inject shift-off and volume-touch-off to ensure
-         * Move doesn't think buttons are still held.
-         * This covers all exit paths: JS shadow_set_overtake_mode(0), D-Bus shutdown
-         * prompt, or any other direct write to shadow_control->overtake_mode. */
-        {
-            static int prev_overtake_mode = 0;
-            if (prev_overtake_mode != 0 && overtake_mode == 0 && shadow_midi_inject_shm) {
-                int wr = shadow_midi_inject_shm->write_idx;
-                /* Shift off: CC 49 value 0 */
-                if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-                    shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
-                    shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
-                    shadow_midi_inject_shm->buffer[wr + 2] = CC_SHIFT;
-                    shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
-                    wr += 4;
-                }
-                /* Volume touch off: Note-off note 8 */
-                if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-                    shadow_midi_inject_shm->buffer[wr]     = 0x08; /* CIN=NoteOff, cable=0 */
-                    shadow_midi_inject_shm->buffer[wr + 1] = 0x80; /* Note-off status, ch 0 */
-                    shadow_midi_inject_shm->buffer[wr + 2] = 8;    /* Volume touch note */
-                    shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* velocity 0 */
-                    wr += 4;
-                }
-                shadow_midi_inject_shm->write_idx = wr;
-                __sync_synchronize();
-                shadow_midi_inject_shm->ready++;
-                shadow_log("Overtake exit: injected shift-off and volume-touch-off");
+    /* Detect overtake mode exit and inject button releases into Move's MIDI_IN.
+     * During overtake, all cable-0 MIDI is filtered from reaching Move firmware,
+     * so if the user released Shift or the volume knob touch while in overtake,
+     * Move never saw the release. Inject shift-off and volume-touch-off to ensure
+     * Move doesn't think buttons are still held.
+     * This covers all exit paths: JS shadow_set_overtake_mode(0), D-Bus shutdown
+     * prompt, or any other direct write to shadow_control->overtake_mode. */
+    {
+        static int prev_overtake_mode = 0;
+        if (prev_overtake_mode != 0 && overtake_mode == 0 && shadow_midi_inject_shm) {
+            int wr = shadow_midi_inject_shm->write_idx;
+            /* Shift off: CC 49 value 0 */
+            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+                shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
+                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
+                shadow_midi_inject_shm->buffer[wr + 2] = CC_SHIFT;
+                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
+                wr += 4;
             }
-            prev_overtake_mode = overtake_mode;
-        }
-
-        if (shadow_display_mode && shadow_control) {
-            /* Filter MIDI_IN: zero out jog/back/knobs */
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
-                uint8_t cin = hw_midi[j] & 0x0F;
-                uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
-                uint8_t status = hw_midi[j + 1];
-                uint8_t type = status & 0xF0;
-                uint8_t d1 = hw_midi[j + 2];
-
-                int filter = 0;
-
-                /* Only filter internal cable (0x00) */
-                if (cable == 0x00) {
-                    /* Overtake mode split:
-                     * - mode 2 (module): block all cable 0 MIDI events from Move
-                     *   Only filter valid MIDI (status >= 0x80), preserve ASIC metadata
-                     *   (status == 0x00) which Move needs to recognize event validity.
-                     * - mode 1 (menu): allow only volume touch/turn passthrough */
-                    if (overtake_mode == 2) {
-                        if (status >= 0x80) filter = 1;
-                        /* Let volume knob CC and touch through so Move shows volume overlay */
-                        if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
-                            filter = 0;
-                        }
-                        if ((cin == 0x09 || cin == 0x08) &&
-                            (type == 0x90 || type == 0x80) &&
-                            d1 == 8) {
-                            filter = 0;
-                        }
-                    } else if (overtake_mode == 1) {
-                        filter = 1;
-                        if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
-                            filter = 0;
-                        }
-                        if ((cin == 0x09 || cin == 0x08) &&
-                            (type == 0x90 || type == 0x80) &&
-                            d1 == 8) {
-                            filter = 0;
-                        }
-                    } else {
-                        /* CC messages: filter jog/back controls (let up/down through for octave) */
-                        if (cin == 0x0B && type == 0xB0) {
-                            if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK || d1 == CC_MENU) {
-                                filter = 1;
-                            }
-                            /* Filter knob CCs when shift held */
-                            if (d1 >= CC_KNOB1 && d1 <= CC_KNOB8) {
-                                filter = 1;
-                            }
-                            /* Filter Menu and Jog Click CCs when Shift+Volume shortcut is active */
-                            if ((d1 == CC_MENU || d1 == CC_JOG_CLICK) && shadow_shift_held && shadow_volume_knob_touched) {
-                                filter = 1;
-                            }
-                        }
-                        /* Note messages: filter knob touches (0-7,9).
-                         * Keep note 8 (volume touch) so Move can do track+volume
-                         * and native volume workflows while shadow UI is active. */
-                        if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
-                            if (d1 <= 7 || d1 == 9) {
-                                filter = 1;
-                            }
-                            /* Block pad notes (68-99) from reaching Move when pad_block is set */
-                            if (shadow_control->pad_block && d1 >= 68 && d1 <= 99) {
-                                filter = 1;
-                            }
-                        }
-                        /* Block polyphonic aftertouch on pads when pad_block is set */
-                        if (cin == 0x0A && type == 0xA0 &&
-                            shadow_control->pad_block && d1 >= 68 && d1 <= 99) {
-                            filter = 1;
-                        }
-                    }
-                }
-
-                if (filter) {
-                    /* Zero the event in shadow buffer */
-                    sh_midi[j] = 0;
-                    sh_midi[j + 1] = 0;
-                    sh_midi[j + 2] = 0;
-                    sh_midi[j + 3] = 0;
-                } else {
-                    /* Copy event as-is */
-                    sh_midi[j] = hw_midi[j];
-                    sh_midi[j + 1] = hw_midi[j + 1];
-                    sh_midi[j + 2] = hw_midi[j + 2];
-                    sh_midi[j + 3] = hw_midi[j + 3];
-                }
+            /* Volume touch off: Note-off note 8 */
+            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+                shadow_midi_inject_shm->buffer[wr]     = 0x08; /* CIN=NoteOff, cable=0 */
+                shadow_midi_inject_shm->buffer[wr + 1] = 0x80; /* Note-off status, ch 0 */
+                shadow_midi_inject_shm->buffer[wr + 2] = 8;    /* Volume touch note */
+                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* velocity 0 */
+                wr += 4;
             }
-        } else {
-            /* Not in shadow mode - copy MIDI_IN directly */
-            memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
+            shadow_midi_inject_shm->write_idx = wr;
+            __sync_synchronize();
+            shadow_midi_inject_shm->ready++;
+            shadow_log("Overtake exit: injected shift-off and volume-touch-off");
         }
+        prev_overtake_mode = overtake_mode;
+    }
 
-        /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
-         * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
-         * This works regardless of shadow_display_mode.
-         * Skip entirely in overtake mode - overtake module owns all input. */
-        if (overtake_mode) goto skip_shift_menu;
+    if (shadow_display_mode && shadow_control) {
+        /* Filter MIDI_IN: zero out jog/back/knobs */
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = hw_midi[j] & 0x0F;
             uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
-            if (cable != 0x00) continue;  /* Only internal cable */
-            if (cin == 0x0B) {  /* Control Change */
-                uint8_t d1 = hw_midi[j + 2];
-                uint8_t d2 = hw_midi[j + 3];
+            uint8_t status = hw_midi[j + 1];
+            uint8_t type = status & 0xF0;
+            uint8_t d1 = hw_midi[j + 2];
 
-                /* Shift + Menu: single press = Master FX / screen reader settings
-                 *                double press = toggle screen reader on/off
-                 * First press is deferred 400ms to detect double-click. */
-                /* Block Menu CC entirely when Shift is held (both press and release) */
-                if (d1 == CC_MENU && shadow_shift_held) {
-                    if (d2 > 0 && shadow_control) {
-                        struct timespec sm_ts;
-                        clock_gettime(CLOCK_MONOTONIC, &sm_ts);
-                        uint64_t sm_now = (uint64_t)(sm_ts.tv_sec * 1000) + (sm_ts.tv_nsec / 1000000);
+            int filter = 0;
 
-                        if (shift_menu_pending && (sm_now - shift_menu_pending_ms) < 300) {
-                            /* Double-click: toggle screen reader */
-                            shift_menu_pending = 0;
-                            uint8_t was_on = shadow_control->tts_enabled;
-                            shadow_control->tts_enabled = was_on ? 0 : 1;
-                            tts_set_enabled(!was_on);
-                            tts_speak(was_on ? "Screen reader off" : "Screen reader on");
-                            shadow_log(was_on ? "Shift+Menu double-click: screen reader OFF"
-                                              : "Shift+Menu double-click: screen reader ON");
-                        } else {
-                            /* First press: defer action */
-                            shift_menu_pending = 1;
-                            shift_menu_pending_ms = sm_now;
-                        }
+            /* Only filter internal cable (0x00) */
+            if (cable == 0x00) {
+                /* Overtake mode split:
+                 * - mode 2 (module): block all cable 0 MIDI events from Move
+                 *   Only filter valid MIDI (status >= 0x80), preserve ASIC metadata
+                 *   (status == 0x00) which Move needs to recognize event validity.
+                 * - mode 1 (menu): allow only volume touch/turn passthrough */
+                if (overtake_mode == 2) {
+                    if (status >= 0x80) filter = 1;
+                    /* Let volume knob CC and touch through so Move shows volume overlay */
+                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
+                        filter = 0;
                     }
-                    /* Block Menu CC from reaching Move by zeroing in shadow buffer */
-                    char block_msg[128];
-                    snprintf(block_msg, sizeof(block_msg), "Blocking Menu CC (POST-IOCTL d2=%d)", d2);
-                    shadow_log(block_msg);
-                    sh_midi[j] = 0;
-                    sh_midi[j + 1] = 0;
-                    sh_midi[j + 2] = 0;
-                    sh_midi[j + 3] = 0;
-                }
-            }
-        }
-        skip_shift_menu:
-
-        /* Deferred Shift+Menu single-press action (fires 400ms after first press if no double-click) */
-        if (shift_menu_pending && shadow_control) {
-            struct timespec sm_ts2;
-            clock_gettime(CLOCK_MONOTONIC, &sm_ts2);
-            uint64_t sm_now2 = (uint64_t)(sm_ts2.tv_sec * 1000) + (sm_ts2.tv_nsec / 1000000);
-            if (sm_now2 - shift_menu_pending_ms >= 300) {
-                shift_menu_pending = 0;
-                char log_msg[128];
-                snprintf(log_msg, sizeof(log_msg), "Shift+Menu single-press (deferred), shadow_ui_enabled=%s",
-                         shadow_ui_enabled ? "true" : "false");
-                shadow_log(log_msg);
-
-                if (shadow_ui_enabled) {
-                    if (!shadow_display_mode) {
-                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
-                        shadow_display_mode = 1;
-                        shadow_control->display_mode = 1;
-                        launch_shadow_ui();
-                    } else {
-                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+                    if ((cin == 0x09 || cin == 0x08) &&
+                        (type == 0x90 || type == 0x80) &&
+                        d1 == 8) {
+                        filter = 0;
+                    }
+                } else if (overtake_mode == 1) {
+                    filter = 1;
+                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
+                        filter = 0;
+                    }
+                    if ((cin == 0x09 || cin == 0x08) &&
+                        (type == 0x90 || type == 0x80) &&
+                        d1 == 8) {
+                        filter = 0;
                     }
                 } else {
-                    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SCREENREADER;
+                    /* CC messages: filter jog/back controls (let up/down through for octave) */
+                    if (cin == 0x0B && type == 0xB0) {
+                        if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK || d1 == CC_MENU) {
+                            filter = 1;
+                        }
+                        /* Filter knob CCs when shift held */
+                        if (d1 >= CC_KNOB1 && d1 <= CC_KNOB8) {
+                            filter = 1;
+                        }
+                        /* Filter Menu and Jog Click CCs when Shift+Volume shortcut is active */
+                        if ((d1 == CC_MENU || d1 == CC_JOG_CLICK) && shadow_shift_held && shadow_volume_knob_touched) {
+                            filter = 1;
+                        }
+                    }
+                    /* Note messages: filter knob touches (0-7,9).
+                     * Keep note 8 (volume touch) so Move can do track+volume
+                     * and native volume workflows while shadow UI is active. */
+                    if ((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80)) {
+                        if (d1 <= 7 || d1 == 9) {
+                            filter = 1;
+                        }
+                        /* Block pad notes (68-99) from reaching Move when pad_block is set */
+                        if (shadow_control->pad_block && d1 >= 68 && d1 <= 99) {
+                            filter = 1;
+                        }
+                    }
+                    /* Block polyphonic aftertouch on pads when pad_block is set */
+                    if (cin == 0x0A && type == 0xA0 &&
+                        shadow_control->pad_block && d1 >= 68 && d1 <= 99) {
+                        filter = 1;
+                    }
+                }
+            }
+
+            if (filter) {
+                /* Zero the event in shadow buffer */
+                sh_midi[j] = 0;
+                sh_midi[j + 1] = 0;
+                sh_midi[j + 2] = 0;
+                sh_midi[j + 3] = 0;
+            } else {
+                /* Copy event as-is */
+                sh_midi[j] = hw_midi[j];
+                sh_midi[j + 1] = hw_midi[j + 1];
+                sh_midi[j + 2] = hw_midi[j + 2];
+                sh_midi[j + 3] = hw_midi[j + 3];
+            }
+        }
+    } else {
+        /* Not in shadow mode - copy MIDI_IN directly */
+        memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
+    }
+
+    /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
+     * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
+     * This works regardless of shadow_display_mode.
+     * Skip entirely in overtake mode - overtake module owns all input. */
+    if (overtake_mode) goto skip_shift_menu;
+    for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        uint8_t cin = hw_midi[j] & 0x0F;
+        uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+        if (cable != 0x00) continue;  /* Only internal cable */
+        if (cin == 0x0B) {  /* Control Change */
+            uint8_t d1 = hw_midi[j + 2];
+            uint8_t d2 = hw_midi[j + 3];
+
+            /* Shift + Menu: single press = Master FX / screen reader settings
+             *                double press = toggle screen reader on/off
+             * First press is deferred 400ms to detect double-click. */
+            /* Block Menu CC entirely when Shift is held (both press and release) */
+            if (d1 == CC_MENU && shadow_shift_held) {
+                if (d2 > 0 && shadow_control) {
+                    struct timespec sm_ts;
+                    clock_gettime(CLOCK_MONOTONIC, &sm_ts);
+                    uint64_t sm_now = (uint64_t)(sm_ts.tv_sec * 1000) + (sm_ts.tv_nsec / 1000000);
+
+                    if (shift_menu_pending && (sm_now - shift_menu_pending_ms) < 300) {
+                        /* Double-click: toggle screen reader */
+                        shift_menu_pending = 0;
+                        uint8_t was_on = shadow_control->tts_enabled;
+                        shadow_control->tts_enabled = was_on ? 0 : 1;
+                        tts_set_enabled(!was_on);
+                        tts_speak(was_on ? "Screen reader off" : "Screen reader on");
+                        shadow_log(was_on ? "Shift+Menu double-click: screen reader OFF"
+                                          : "Shift+Menu double-click: screen reader ON");
+                    } else {
+                        /* First press: defer action */
+                        shift_menu_pending = 1;
+                        shift_menu_pending_ms = sm_now;
+                    }
+                }
+                /* Block Menu CC from reaching Move by zeroing in shadow buffer */
+                char block_msg[128];
+                snprintf(block_msg, sizeof(block_msg), "Blocking Menu CC (POST-IOCTL d2=%d)", d2);
+                shadow_log(block_msg);
+                sh_midi[j] = 0;
+                sh_midi[j + 1] = 0;
+                sh_midi[j + 2] = 0;
+                sh_midi[j + 3] = 0;
+            }
+        }
+    }
+    skip_shift_menu:
+
+    /* Deferred Shift+Menu single-press action (fires 400ms after first press if no double-click) */
+    if (shift_menu_pending && shadow_control) {
+        struct timespec sm_ts2;
+        clock_gettime(CLOCK_MONOTONIC, &sm_ts2);
+        uint64_t sm_now2 = (uint64_t)(sm_ts2.tv_sec * 1000) + (sm_ts2.tv_nsec / 1000000);
+        if (sm_now2 - shift_menu_pending_ms >= 300) {
+            shift_menu_pending = 0;
+            char log_msg[128];
+            snprintf(log_msg, sizeof(log_msg), "Shift+Menu single-press (deferred), shadow_ui_enabled=%s",
+                     shadow_ui_enabled ? "true" : "false");
+            shadow_log(log_msg);
+
+            if (shadow_ui_enabled) {
+                if (!shadow_display_mode) {
+                    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                     shadow_display_mode = 1;
                     shadow_control->display_mode = 1;
                     launch_shadow_ui();
+                } else {
+                    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                 }
+            } else {
+                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SCREENREADER;
+                shadow_display_mode = 1;
+                shadow_control->display_mode = 1;
+                launch_shadow_ui();
             }
         }
-
-        /* === SAMPLER MIDI FILTERING ===
-         * Block events from reaching Move for sampler use.
-         * Always block Shift+Record so the first press doesn't leak through.
-         * Block jog while sampler is armed or recording. */
-        {
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
-                uint8_t cin = sh_midi[j] & 0x0F;
-                uint8_t cable = (sh_midi[j] >> 4) & 0x0F;
-                if (cable != 0x00) continue;
-                uint8_t s_type = sh_midi[j + 1] & 0xF0;
-                uint8_t s_d1 = sh_midi[j + 2];
-
-                if (cin == 0x0B && s_type == 0xB0) {
-                    /* Block Record (CC 118) from Move: always when Shift held,
-                     * and also when sampler is non-idle (armed or recording) */
-                    if (s_d1 == CC_RECORD && (shadow_shift_held || sampler_state != SAMPLER_IDLE)) {
-                        sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
-                    }
-                    /* Block Shift+Capture from reaching Move (only when skipback would trigger) */
-                    if (s_d1 == CC_CAPTURE && shadow_shift_held) {
-                        int require_vol = shadow_control ? shadow_control->skipback_require_volume : 0;
-                        if (!require_vol || shadow_volume_knob_touched) {
-                            sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
-                        }
-                    }
-                    /* Block jog/back while sampler UI is fullscreen and active */
-                    if (sampler_state != SAMPLER_IDLE && sampler_fullscreen_active) {
-                        if (s_d1 == CC_JOG_WHEEL || s_d1 == CC_JOG_CLICK || s_d1 == CC_BACK) {
-                            sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
-        shadow_drain_midi_inject();
-
-        /* Debug: dump raw HW MIDI_IN vs shadow MIDI_IN on inject */
-        {
-            static int inject_dump_count = 0;
-            uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
-            /* Check if there's any non-zero data in shadow MIDI_IN (injection happened) */
-            int has_inject = 0;
-            for (int d = 0; d < 32; d += 4) {
-                if (sh[d] || sh[d+1] || sh[d+2] || sh[d+3]) { has_inject = 1; break; }
-            }
-            if (has_inject && inject_dump_count < 5 && hardware_mmap_addr) {
-                inject_dump_count++;
-                uint8_t *hw = hardware_mmap_addr + MIDI_IN_OFFSET;
-                char msg[256];
-                snprintf(msg, sizeof(msg),
-                    "HW  MIDI_IN[0-31]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
-                    hw[0],hw[1],hw[2],hw[3], hw[4],hw[5],hw[6],hw[7],
-                    hw[8],hw[9],hw[10],hw[11], hw[12],hw[13],hw[14],hw[15],
-                    hw[16],hw[17],hw[18],hw[19], hw[20],hw[21],hw[22],hw[23],
-                    hw[24],hw[25],hw[26],hw[27], hw[28],hw[29],hw[30],hw[31]);
-                shadow_log(msg);
-                snprintf(msg, sizeof(msg),
-                    "SHD MIDI_IN[0-31]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
-                    sh[0],sh[1],sh[2],sh[3], sh[4],sh[5],sh[6],sh[7],
-                    sh[8],sh[9],sh[10],sh[11], sh[12],sh[13],sh[14],sh[15],
-                    sh[16],sh[17],sh[18],sh[19], sh[20],sh[21],sh[22],sh[23],
-                    sh[24],sh[25],sh[26],sh[27], sh[28],sh[29],sh[30],sh[31]);
-                shadow_log(msg);
-                /* Also dump last 16 bytes of both buffers (check for metadata) */
-                snprintf(msg, sizeof(msg),
-                    "HW  MIDI_IN[240-255]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
-                    hw[240],hw[241],hw[242],hw[243], hw[244],hw[245],hw[246],hw[247],
-                    hw[248],hw[249],hw[250],hw[251], hw[252],hw[253],hw[254],hw[255]);
-                shadow_log(msg);
-                snprintf(msg, sizeof(msg),
-                    "SHD MIDI_IN[240-255]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
-                    sh[240],sh[241],sh[242],sh[243], sh[244],sh[245],sh[246],sh[247],
-                    sh[248],sh[249],sh[250],sh[251], sh[252],sh[253],sh[254],sh[255]);
-                shadow_log(msg);
-            }
-        }
-
-        /* Memory barrier to ensure all writes are visible */
-        __sync_synchronize();
     }
 
+    /* === SAMPLER MIDI FILTERING ===
+     * Block events from reaching Move for sampler use.
+     * Always block Shift+Record so the first press doesn't leak through.
+     * Block jog while sampler is armed or recording. */
+    {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t cin = sh_midi[j] & 0x0F;
+            uint8_t cable = (sh_midi[j] >> 4) & 0x0F;
+            if (cable != 0x00) continue;
+            uint8_t s_type = sh_midi[j + 1] & 0xF0;
+            uint8_t s_d1 = sh_midi[j + 2];
+
+            if (cin == 0x0B && s_type == 0xB0) {
+                /* Block Record (CC 118) from Move: always when Shift held,
+                 * and also when sampler is non-idle (armed or recording) */
+                if (s_d1 == CC_RECORD && (shadow_shift_held || sampler_state != SAMPLER_IDLE)) {
+                    sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                }
+                /* Block Shift+Capture from reaching Move (only when skipback would trigger) */
+                if (s_d1 == CC_CAPTURE && shadow_shift_held) {
+                    int require_vol = shadow_control ? shadow_control->skipback_require_volume : 0;
+                    if (!require_vol || shadow_volume_knob_touched) {
+                        sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                    }
+                }
+                /* Block jog/back while sampler UI is fullscreen and active */
+                if (sampler_state != SAMPLER_IDLE && sampler_fullscreen_active) {
+                    if (s_d1 == CC_JOG_WHEEL || s_d1 == CC_JOG_CLICK || s_d1 == CC_BACK) {
+                        sh_midi[j] = 0; sh_midi[j+1] = 0; sh_midi[j+2] = 0; sh_midi[j+3] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
+    shadow_drain_midi_inject();
+
+    /* Debug: dump raw HW MIDI_IN vs shadow MIDI_IN on inject */
+    {
+        static int inject_dump_count = 0;
+        uint8_t *sh = shadow + MIDI_IN_OFFSET;
+        /* Check if there's any non-zero data in shadow MIDI_IN (injection happened) */
+        int has_inject = 0;
+        for (int d = 0; d < 32; d += 4) {
+            if (sh[d] || sh[d+1] || sh[d+2] || sh[d+3]) { has_inject = 1; break; }
+        }
+        if (has_inject && inject_dump_count < 5 && hardware_mmap_addr) {
+            inject_dump_count++;
+            uint8_t *hw = hardware_mmap_addr + MIDI_IN_OFFSET;
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                "HW  MIDI_IN[0-31]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                hw[0],hw[1],hw[2],hw[3], hw[4],hw[5],hw[6],hw[7],
+                hw[8],hw[9],hw[10],hw[11], hw[12],hw[13],hw[14],hw[15],
+                hw[16],hw[17],hw[18],hw[19], hw[20],hw[21],hw[22],hw[23],
+                hw[24],hw[25],hw[26],hw[27], hw[28],hw[29],hw[30],hw[31]);
+            shadow_log(msg);
+            snprintf(msg, sizeof(msg),
+                "SHD MIDI_IN[0-31]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                sh[0],sh[1],sh[2],sh[3], sh[4],sh[5],sh[6],sh[7],
+                sh[8],sh[9],sh[10],sh[11], sh[12],sh[13],sh[14],sh[15],
+                sh[16],sh[17],sh[18],sh[19], sh[20],sh[21],sh[22],sh[23],
+                sh[24],sh[25],sh[26],sh[27], sh[28],sh[29],sh[30],sh[31]);
+            shadow_log(msg);
+            /* Also dump last 16 bytes of both buffers (check for metadata) */
+            snprintf(msg, sizeof(msg),
+                "HW  MIDI_IN[240-255]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                hw[240],hw[241],hw[242],hw[243], hw[244],hw[245],hw[246],hw[247],
+                hw[248],hw[249],hw[250],hw[251], hw[252],hw[253],hw[254],hw[255]);
+            shadow_log(msg);
+            snprintf(msg, sizeof(msg),
+                "SHD MIDI_IN[240-255]: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                sh[240],sh[241],sh[242],sh[243], sh[244],sh[245],sh[246],sh[247],
+                sh[248],sh[249],sh[250],sh[251], sh[252],sh[253],sh[254],sh[255]);
+            shadow_log(msg);
+        }
+    }
+
+    /* Memory barrier to ensure all writes are visible */
+    __sync_synchronize();
+
     /* Mark start of post-ioctl processing */
-    clock_gettime(CLOCK_MONOTONIC, &post_start);
+    clock_gettime(CLOCK_MONOTONIC, &spi_post_start);
 
     /* Skip post-ioctl processing in baseline mode */
-    if (baseline_mode) goto do_timing;
+    if (spi_baseline_mode) goto post_timing;
 
     /* === POST-IOCTL: TRACK BUTTON AND VOLUME KNOB DETECTION ===
      * Scan for track button CCs (40-43) for D-Bus volume sync,
      * and volume knob touch (note 8) for master volume display reading.
-     * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow_mailbox is already filtered. */
+     * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow buffer is already filtered. */
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
@@ -4186,7 +4157,7 @@ do_ioctl:
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
                             /* Block Track CC from reaching Move */
-                            uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
                             sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                             src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                         }
@@ -4382,7 +4353,7 @@ do_ioctl:
                         shadow_control->display_mode = 1;
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
                         sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     }
@@ -4398,7 +4369,7 @@ do_ioctl:
                         shadow_control->display_mode = 1;
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow_mailbox + MIDI_IN_OFFSET;
+                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
                         sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     }
@@ -4551,8 +4522,8 @@ do_ioctl:
     }
 
     /* === POST-IOCTL: NATIVE OVERLAY KNOB INTERCEPTION (MOVE MODE) ===
-     * In Native mode, knob touches pass through to Move so the ME Slot preset
-     * macros fire and produce D-Bus screen reader text ("ME S1 Knob3 57.42").
+     * In Native mode, knob touches pass through to Move so the Schwung Slot preset
+     * macros fire and produce D-Bus screen reader text ("Schwung S1 K3 57.42").
      * The D-Bus handler parses the text and maps knob -> shadow slot.
      * Once mapped, subsequent CCs are intercepted and routed to shadow DSP. */
     if (!shadow_display_mode && overlay_knobs_mode == OVERLAY_KNOBS_NATIVE &&
@@ -4927,32 +4898,32 @@ do_ioctl:
         /* Use restart script for clean restart (kill as root, start fresh).
          * Fork+exec won't work because MoveOriginal has file capabilities
          * that trigger AT_SECURE, blocking LD_PRELOAD from a non-root process. */
-        system("/data/UserData/move-anything/restart-move.sh");
+        system("/data/UserData/schwung/restart-move.sh");
     }
 
-do_timing:
+post_timing:
     /* === COMPREHENSIVE IOCTL TIMING CALCULATIONS === */
-    clock_gettime(CLOCK_MONOTONIC, &ioctl_end);
+    clock_gettime(CLOCK_MONOTONIC, &spi_ioctl_end);
 
-    uint64_t pre_us = (pre_end.tv_sec - ioctl_start.tv_sec) * 1000000 +
-                      (pre_end.tv_nsec - ioctl_start.tv_nsec) / 1000;
-    uint64_t ioctl_us = (post_start.tv_sec - pre_end.tv_sec) * 1000000 +
-                        (post_start.tv_nsec - pre_end.tv_nsec) / 1000;
-    uint64_t post_us = (ioctl_end.tv_sec - post_start.tv_sec) * 1000000 +
-                       (ioctl_end.tv_nsec - post_start.tv_nsec) / 1000;
-    uint64_t total_us = (ioctl_end.tv_sec - ioctl_start.tv_sec) * 1000000 +
-                        (ioctl_end.tv_nsec - ioctl_start.tv_nsec) / 1000;
+    uint64_t pre_us = (spi_pre_end.tv_sec - spi_ioctl_start.tv_sec) * 1000000 +
+                      (spi_pre_end.tv_nsec - spi_ioctl_start.tv_nsec) / 1000;
+    uint64_t ioctl_us = (spi_post_start.tv_sec - spi_pre_end.tv_sec) * 1000000 +
+                        (spi_post_start.tv_nsec - spi_pre_end.tv_nsec) / 1000;
+    uint64_t post_us = (spi_ioctl_end.tv_sec - spi_post_start.tv_sec) * 1000000 +
+                       (spi_ioctl_end.tv_nsec - spi_post_start.tv_nsec) / 1000;
+    uint64_t total_us = (spi_ioctl_end.tv_sec - spi_ioctl_start.tv_sec) * 1000000 +
+                        (spi_ioctl_end.tv_nsec - spi_ioctl_start.tv_nsec) / 1000;
 
-    total_sum += total_us;
-    pre_sum += pre_us;
-    ioctl_sum += ioctl_us;
-    post_sum += post_us;
-    timing_count++;
+    spi_total_sum += total_us;
+    spi_pre_sum += pre_us;
+    spi_ioctl_sum += ioctl_us;
+    spi_post_sum += post_us;
+    spi_timing_count++;
 
-    if (total_us > total_max) total_max = total_us;
-    if (pre_us > pre_max) pre_max = pre_us;
-    if (ioctl_us > ioctl_max) ioctl_max = ioctl_us;
-    if (post_us > post_max) post_max = post_us;
+    if (total_us > spi_total_max) spi_total_max = total_us;
+    if (pre_us > spi_pre_max) spi_pre_max = pre_us;
+    if (ioctl_us > spi_ioctl_max) spi_ioctl_max = ioctl_us;
+    if (post_us > spi_post_max) spi_post_max = post_us;
 
 #if SHADOW_TIMING_LOG
     /* Warn immediately if total hook time >2ms */
@@ -4973,26 +4944,26 @@ do_timing:
 #endif
 
     /* Log every 1000 blocks (~23 seconds) */
-    if (timing_count >= 1000) {
+    if (spi_timing_count >= 1000) {
 #if SHADOW_TIMING_LOG
         FILE *f = fopen("/tmp/ioctl_timing.log", "a");
         if (f) {
             fprintf(f, "Ioctl timing (1000 blocks): total avg=%llu max=%llu | pre avg=%llu max=%llu | ioctl avg=%llu max=%llu | post avg=%llu max=%llu\n",
-                    (unsigned long long)(total_sum / timing_count), (unsigned long long)total_max,
-                    (unsigned long long)(pre_sum / timing_count), (unsigned long long)pre_max,
-                    (unsigned long long)(ioctl_sum / timing_count), (unsigned long long)ioctl_max,
-                    (unsigned long long)(post_sum / timing_count), (unsigned long long)post_max);
+                    (unsigned long long)(spi_total_sum / spi_timing_count), (unsigned long long)spi_total_max,
+                    (unsigned long long)(spi_pre_sum / spi_timing_count), (unsigned long long)spi_pre_max,
+                    (unsigned long long)(spi_ioctl_sum / spi_timing_count), (unsigned long long)spi_ioctl_max,
+                    (unsigned long long)(spi_post_sum / spi_timing_count), (unsigned long long)spi_post_max);
             fclose(f);
         }
 #endif
-        total_sum = pre_sum = ioctl_sum = post_sum = 0;
-        total_max = pre_max = ioctl_max = post_max = 0;
-        timing_count = 0;
+        spi_total_sum = spi_pre_sum = spi_ioctl_sum = spi_post_sum = 0;
+        spi_total_max = spi_pre_max = spi_ioctl_max = spi_post_max = 0;
+        spi_timing_count = 0;
     }
 
     /* Log granular pre-ioctl timing every 1000 blocks */
-    granular_count++;
-    if (granular_count >= 1000) {
+    spi_granular_count++;
+    if (spi_granular_count >= 1000) {
 #if SHADOW_TIMING_LOG
         FILE *f = fopen("/tmp/ioctl_timing.log", "a");
         if (f) {
@@ -5000,26 +4971,44 @@ do_timing:
                        "mix_audio avg=%llu max=%llu | ui_req avg=%llu max=%llu | "
                        "param_req avg=%llu max=%llu | proc_midi avg=%llu max=%llu | "
                        "inproc_mix avg=%llu max=%llu | display avg=%llu max=%llu\n",
-                    (unsigned long long)(midi_mon_sum / granular_count), (unsigned long long)midi_mon_max,
-                    (unsigned long long)(fwd_midi_sum / granular_count), (unsigned long long)fwd_midi_max,
-                    (unsigned long long)(mix_audio_sum / granular_count), (unsigned long long)mix_audio_max,
-                    (unsigned long long)(ui_req_sum / granular_count), (unsigned long long)ui_req_max,
-                    (unsigned long long)(param_req_sum / granular_count), (unsigned long long)param_req_max,
-                    (unsigned long long)(proc_midi_sum / granular_count), (unsigned long long)proc_midi_max,
-                    (unsigned long long)(inproc_mix_sum / granular_count), (unsigned long long)inproc_mix_max,
-                    (unsigned long long)(display_sum / granular_count), (unsigned long long)display_max);
+                    (unsigned long long)(spi_midi_mon_sum / spi_granular_count), (unsigned long long)spi_midi_mon_max,
+                    (unsigned long long)(spi_fwd_midi_sum / spi_granular_count), (unsigned long long)spi_fwd_midi_max,
+                    (unsigned long long)(spi_mix_audio_sum / spi_granular_count), (unsigned long long)spi_mix_audio_max,
+                    (unsigned long long)(spi_ui_req_sum / spi_granular_count), (unsigned long long)spi_ui_req_max,
+                    (unsigned long long)(spi_param_req_sum / spi_granular_count), (unsigned long long)spi_param_req_max,
+                    (unsigned long long)(spi_proc_midi_sum / spi_granular_count), (unsigned long long)spi_proc_midi_max,
+                    (unsigned long long)(spi_inproc_mix_sum / spi_granular_count), (unsigned long long)spi_inproc_mix_max,
+                    (unsigned long long)(spi_display_sum / spi_granular_count), (unsigned long long)spi_display_max);
             fclose(f);
         }
 #endif
-        midi_mon_sum = midi_mon_max = fwd_midi_sum = fwd_midi_max = 0;
-        mix_audio_sum = mix_audio_max = ui_req_sum = ui_req_max = 0;
-        param_req_sum = param_req_max = proc_midi_sum = proc_midi_max = 0;
-        inproc_mix_sum = inproc_mix_max = display_sum = display_max = 0;
-        granular_count = 0;
+        spi_midi_mon_sum = spi_midi_mon_max = spi_fwd_midi_sum = spi_fwd_midi_max = 0;
+        spi_mix_audio_sum = spi_mix_audio_max = spi_ui_req_sum = spi_ui_req_max = 0;
+        spi_param_req_sum = spi_param_req_max = spi_proc_midi_sum = spi_proc_midi_max = 0;
+        spi_inproc_mix_sum = spi_inproc_mix_max = spi_display_sum = spi_display_max = 0;
+        spi_granular_count = 0;
     }
 
     /* Record frame time for overrun detection in next iteration */
-    last_frame_total_us = total_us;
+    spi_last_frame_total_us = total_us;
+}
 
-    return result;
+/* ============================================================================
+ * SPI LIBRARY CONSTRUCTOR
+ * ============================================================================
+ * Initialize the schwung-spi library and register pre/post callbacks.
+ * Also obtain the real libc ioctl pointer for non-SPI ioctl calls
+ * (e.g., overtake_midi_send_external uses real_ioctl directly).
+ * ============================================================================ */
+__attribute__((constructor))
+static void shim_spi_init(void)
+{
+    /* Obtain real libc ioctl for non-SPI direct calls */
+    if (!real_ioctl) {
+        real_ioctl = dlsym(RTLD_NEXT, "ioctl");
+    }
+
+    /* Initialize SPI library and register callbacks */
+    g_spi_handle = schwung_spi_init();
+    schwung_spi_set_callbacks(g_spi_handle, shim_pre_transfer, shim_post_transfer, NULL);
 }

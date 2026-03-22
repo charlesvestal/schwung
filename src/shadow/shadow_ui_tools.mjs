@@ -14,15 +14,15 @@ import {
     LIST_LABEL_X, LIST_VALUE_X,
     FOOTER_RULE_Y,
     truncateText
-} from '/data/UserData/move-anything/shared/chain_ui_views.mjs';
+} from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
     drawMenuList
-} from '/data/UserData/move-anything/shared/menu_layout.mjs';
+} from '/data/UserData/schwung/shared/menu_layout.mjs';
 import {
     announce
-} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+} from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 /* ---- Helpers ------------------------------------------------------------ */
 
@@ -45,7 +45,7 @@ function getToolProcessingRatio() {
 /* ---- Scan --------------------------------------------------------------- */
 
 export function scanForToolModules() {
-    const TOOLS_DIR = "/data/UserData/move-anything/modules/tools";
+    const TOOLS_DIR = "/data/UserData/schwung/modules/tools";
     const result = [];
     const { debugLog } = ctx;
 
@@ -67,7 +67,7 @@ export function scanForToolModules() {
                 const content = std.loadFile(modulePath);
                 if (!content) continue;
                 const json = JSON.parse(content);
-                if (json.component_type === "tool" && json.tool_config) {
+                if (json.component_type === "tool" && json.tool_config && !json.hidden) {
                     debugLog("FOUND tool: " + json.name);
                     result.push({
                         id: json.id || entry,

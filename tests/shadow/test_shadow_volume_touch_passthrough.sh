@@ -4,7 +4,7 @@ set -euo pipefail
 # In shadow mode, Move must still receive volume touch (note 8) so
 # track+volume and native volume workflows keep working.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

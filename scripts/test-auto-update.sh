@@ -1,6 +1,6 @@
 #!/bin/sh
 # Test helper for auto-update feature
-# Run on Move via SSH: sh /data/UserData/move-anything/test-auto-update.sh
+# Run on Move via SSH: sh /data/UserData/schwung/test-auto-update.sh
 #
 # Usage:
 #   sh test-auto-update.sh status    - Show current state
@@ -9,7 +9,7 @@
 #   sh test-auto-update.sh reset     - Enable auto-update check in config
 #   sh test-auto-update.sh logs      - Tail shadow_ui logs
 
-BASE="/data/UserData/move-anything"
+BASE="/data/UserData/schwung"
 
 case "${1:-status}" in
     status)

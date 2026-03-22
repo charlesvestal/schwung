@@ -11,7 +11,7 @@ fi
 files=(
   src/shim-entrypoint.sh
   src/restart-move.sh
-  src/move_anything_shim.c
+  src/schwung_shim.c
   src/host/shadow_process.c
   src/host/web_shim.c
 )

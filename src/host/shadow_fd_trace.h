@@ -1,5 +1,5 @@
 /* shadow_fd_trace.h - MIDI/SPI file descriptor tracing for debug
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_FD_TRACE_H
 #define SHADOW_FD_TRACE_H

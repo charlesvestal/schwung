@@ -16,19 +16,19 @@ import {
     MoveUp, MoveDown, MoveLeft, MoveRight,
     MoveStep1, MoveStep16,
     Black, White, BrightRed, BrightGreen
-} from '/data/UserData/move-anything/shared/constants.mjs';
+} from '/data/UserData/schwung/shared/constants.mjs';
 
 import {
     isCapacitiveTouchMessage, decodeDelta
-} from '/data/UserData/move-anything/shared/input_filter.mjs';
+} from '/data/UserData/schwung/shared/input_filter.mjs';
 
 import {
     drawMessageOverlay
-} from '/data/UserData/move-anything/shared/menu_layout.mjs';
+} from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 import {
     announce, announceMenuItem, announceParameter, announceView, announceOverlay
-} from '/data/UserData/move-anything/shared/screen_reader.mjs';
+} from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
@@ -147,13 +147,13 @@ let stepParamsField = 0;    /* 0=repeats, 1=bar length mode, 2=custom bars */
 let stepParamsEditing = false; /* false=navigate fields with jog, true=edit field value */
 
 /* Persistence */
-const SET_STATE_DIR = "/data/UserData/move-anything/set_state";
+const SET_STATE_DIR = "/data/UserData/schwung/set_state";
 let lastSavedJson = "";     /* JSON snapshot for dirty detection */
 
 /* ── Song.abl Parsing ──────────────────────────────────────────────── */
 
 function loadSetData() {
-    const raw = host_read_file("/data/UserData/move-anything/active_set.txt");
+    const raw = host_read_file("/data/UserData/schwung/active_set.txt");
     if (!raw) {
         console.log("song-mode: no active_set.txt");
         return false;

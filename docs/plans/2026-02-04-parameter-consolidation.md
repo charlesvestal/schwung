@@ -852,11 +852,11 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ### Task 8: Update Knob Overlay Display
 
 **Files:**
-- Modify: `src/move_anything_shim.c` (knob overlay code around line 1354-1747)
+- Modify: `src/schwung_shim.c` (knob overlay code around line 1354-1747)
 
 **Step 1: Find knob overlay value formatting code**
 
-Search for `knob_N_value` queries in move_anything_shim.c. You'll find code that queries the DSP for formatted values.
+Search for `knob_N_value` queries in schwung_shim.c. You'll find code that queries the DSP for formatted values.
 
 **Step 2: Update chain_host.c knob value response**
 

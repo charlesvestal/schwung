@@ -1,4 +1,4 @@
-# Move Anything Build Environment
+# Schwung Build Environment
 # Targets: Ableton Move (aarch64 Linux)
 
 FROM debian:bookworm
@@ -32,7 +32,7 @@ ENV CXX=aarch64-linux-gnu-g++
 
 # Build script embedded in container
 CMD set -e && \
-    echo "=== Move Anything Build ===" && \
+    echo "=== Schwung Build ===" && \
     echo "Target: aarch64-linux-gnu" && \
     echo "" && \
     cd /build/libs/quickjs/quickjs-2025-04-26 && \
@@ -44,12 +44,12 @@ CMD set -e && \
         echo "QuickJS already built, skipping"; \
     fi && \
     echo "" && \
-    echo "Building Move Anything..." && \
+    echo "Building Schwung..." && \
     cd /build && \
     CROSS_PREFIX=aarch64-linux-gnu- ./scripts/build.sh && \
     echo "" && \
-    if [ ! -f /build/move-anything.tar.gz ] || \
-       [ -n "$(find /build/build -newer /build/move-anything.tar.gz -print -quit 2>/dev/null)" ]; then \
+    if [ ! -f /build/schwung.tar.gz ] || \
+       [ -n "$(find /build/build -newer /build/schwung.tar.gz -print -quit 2>/dev/null)" ]; then \
         echo "Packaging..." && \
         CROSS_PREFIX=aarch64-linux-gnu- ./scripts/package.sh; \
     else \
@@ -57,11 +57,11 @@ CMD set -e && \
     fi && \
     echo "" && \
     echo "=== Build Artifacts ===" && \
-    file /build/build/move-anything && \
-    file /build/build/move-anything-shim.so && \
+    file /build/build/schwung && \
+    file /build/build/schwung-shim.so && \
     file /build/build/modules/sf2/dsp.so 2>/dev/null || echo "SF2 module DSP: not found" && \
     echo "" && \
     echo "=== Package Created ===" && \
-    ls -lh /build/move-anything.tar.gz && \
+    ls -lh /build/schwung.tar.gz && \
     echo "" && \
     echo "Build complete!"

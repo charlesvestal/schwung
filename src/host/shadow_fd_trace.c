@@ -1,5 +1,5 @@
 /* shadow_fd_trace.c - MIDI/SPI file descriptor tracing for debug
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #include <stdio.h>
 #include <string.h>
@@ -46,7 +46,7 @@ int trace_midi_fd_enabled(void)
     static int enabled = -1;
     static int check_counter = 0;
     if (check_counter++ % 200 == 0 || enabled < 0) {
-        enabled = (access("/data/UserData/move-anything/midi_fd_trace_on", F_OK) == 0);
+        enabled = (access("/data/UserData/schwung/midi_fd_trace_on", F_OK) == 0);
     }
     return enabled;
 }
@@ -54,7 +54,7 @@ int trace_midi_fd_enabled(void)
 void midi_fd_trace_log_open(void)
 {
     if (!midi_fd_trace_log) {
-        midi_fd_trace_log = fopen("/data/UserData/move-anything/midi_fd_trace.log", "a");
+        midi_fd_trace_log = fopen("/data/UserData/schwung/midi_fd_trace.log", "a");
     }
 }
 
@@ -63,7 +63,7 @@ int trace_spi_io_enabled(void)
     static int enabled = -1;
     static int check_counter = 0;
     if (check_counter++ % 200 == 0 || enabled < 0) {
-        enabled = (access("/data/UserData/move-anything/spi_io_on", F_OK) == 0);
+        enabled = (access("/data/UserData/schwung/spi_io_on", F_OK) == 0);
     }
     return enabled;
 }
@@ -71,7 +71,7 @@ int trace_spi_io_enabled(void)
 void spi_io_log_open(void)
 {
     if (!spi_io_log) {
-        spi_io_log = fopen("/data/UserData/move-anything/spi_io.log", "a");
+        spi_io_log = fopen("/data/UserData/schwung/spi_io.log", "a");
     }
 }
 

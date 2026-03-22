@@ -1,5 +1,5 @@
 /* shadow_sampler.c - Quantized sampler and skipback subsystem
- * Extracted from move_anything_shim.c for maintainability.
+ * Extracted from schwung_shim.c for maintainability.
  *
  * This module handles:
  *   - Quantized sampler (Shift+Sample): record audio to WAV
@@ -255,7 +255,7 @@ float sampler_read_set_tempo(const char *set_name) {
     return tempo;
 }
 
-/* Read tempo_bpm from Move Anything settings file */
+/* Read tempo_bpm from Schwung settings file */
 static int sampler_read_settings_tempo(void) {
     FILE *f = fopen(SAMPLER_SETTINGS_PATH, "r");
     if (!f) return 0;

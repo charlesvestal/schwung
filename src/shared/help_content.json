@@ -1,7 +1,7 @@
 {
   "sections": [
     {
-      "title": "Move Everything",
+      "title": "Schwung",
       "children": [
         {
           "title": "Shortcuts",
@@ -194,14 +194,15 @@
             "Requires Move 2.0+.",
             "",
             "Routes Move track",
-            "audio through ME FX.",
+            "audio through Schwung",
+            "FX chains.",
             "",
             "Setup:",
             "1.Enable Link in",
             "  Move Settings",
             "2.Global Settings",
-            "  > Audio > Route",
-            "  thru ME: On",
+            "  > Audio >",
+            "  Move->Schwung: On",
             "",
             "Track N maps to",
             "Slot N audio input.",
@@ -227,7 +228,7 @@
             "Starts on note",
             "event or Play.",
             "Saved to Samples/",
-            "Move Everything/.",
+            "Schwung/.",
             "",
             "Skipback",
             "(Shift+Capture):",
@@ -381,7 +382,7 @@
             "trademarks of",
             "Ableton AG.",
             "",
-            "Move Everything is",
+            "Schwung is",
             "an independent",
             "product and has not",
             "been authorized,",

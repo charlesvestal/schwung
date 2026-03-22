@@ -1,5 +1,5 @@
 /* shadow_link_audio.c - Link Audio interception, publishing, and channel reading
- * Extracted from move_anything_shim.c for maintainability.
+ * Extracted from schwung_shim.c for maintainability.
  *
  * Move firmware 2.0 sends per-track audio over UDP/IPv6 using the "chnnlsv"
  * protocol.  This module intercepts those packets via the sendto() hook,
@@ -118,7 +118,7 @@ static void link_audio_parse_session(const uint8_t *pkt, size_t len,
             char local_str_ep[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &link_audio.move_local_addr.sin6_addr,
                       local_str_ep, sizeof(local_str_ep));
-            FILE *ep = fopen("/data/UserData/move-anything/link-audio-endpoint", "w");
+            FILE *ep = fopen("/data/UserData/schwung/link-audio-endpoint", "w");
             if (ep) {
                 fprintf(ep, "%s %d %u\n",
                         local_str_ep,

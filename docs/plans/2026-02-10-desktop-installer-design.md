@@ -1,4 +1,4 @@
-# Desktop Installer for Move Everything
+# Desktop Installer for Schwung
 
 **Date:** 2026-02-10
 **Status:** Design Complete
@@ -6,7 +6,7 @@
 
 ## Goal
 
-Provide a cross-platform desktop installer (macOS + Windows) that automates SSH setup and installation of Move Everything with minimal user friction.
+Provide a cross-platform desktop installer (macOS + Windows) that automates SSH setup and installation of Schwung with minimal user friction.
 
 **Target user flow:**
 1. Launch installer
@@ -52,8 +52,8 @@ User opens app
   → Poll SSH until connection succeeds
   ↓
 [Install Phase]
-  → Fetch latest Move Everything release from GitHub
-  → Download move-anything.tar.gz
+  → Fetch latest Schwung release from GitHub
+  → Download schwung.tar.gz
   → Validate tarball structure on device
   → Deploy via SSH (scp + extract)
   → Verify payload files exist
@@ -251,13 +251,13 @@ This can happen after firmware updates.
 **Main package validation:**
 ```bash
 # Validate structure before extraction
-ssh ableton@move.local "tar -tzf ./move-anything.tar.gz | grep -qx 'move-anything/move-anything-shim.so'"
-ssh ableton@move.local "tar -tzf ./move-anything.tar.gz | grep -qx 'move-anything/shim-entrypoint.sh'"
+ssh ableton@move.local "tar -tzf ./schwung.tar.gz | grep -qx 'move-anything/schwung-shim.so'"
+ssh ableton@move.local "tar -tzf ./schwung.tar.gz | grep -qx 'move-anything/shim-entrypoint.sh'"
 
 # After extraction, verify files exist
-ssh ableton@move.local "test -f /data/UserData/move-anything/move-anything-shim.so"
-ssh ableton@move.local "test -f /data/UserData/move-anything/shim-entrypoint.sh"
-ssh ableton@move.local "test -f /data/UserData/move-anything/move-anything"
+ssh ableton@move.local "test -f /data/UserData/schwung/schwung-shim.so"
+ssh ableton@move.local "test -f /data/UserData/schwung/shim-entrypoint.sh"
+ssh ableton@move.local "test -f /data/UserData/schwung/move-anything"
 ```
 
 **Module validation:**
@@ -347,7 +347,7 @@ ssh ableton@move.local "tar -tzf braids-module.tar.gz | grep -qx 'braids/dsp.so'
 ### 5. Installing
 ```
 ┌─────────────────────────────────────┐
-│ Installing Move Everything...       │
+│ Installing Schwung...       │
 │                                     │
 │ ✓ Downloaded core package           │
 │ ✓ Deployed to device                │

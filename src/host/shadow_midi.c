@@ -1,5 +1,5 @@
 /* shadow_midi.c - MIDI routing, dispatch, and forwarding
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #include <stdio.h>
 #include <string.h>
@@ -431,14 +431,14 @@ void shadow_forward_midi(void)
     /* Only check on first call and then every 200 calls */
     if (!cache_initialized || (cache_counter++ % 200 == 0)) {
         cache_initialized = 1;
-        cached_ch3_only = (access("/data/UserData/move-anything/shadow_midi_ch3_only", F_OK) == 0);
-        cached_block_ch1 = (access("/data/UserData/move-anything/shadow_midi_block_ch1", F_OK) == 0);
-        cached_allow_ch5_8 = (access("/data/UserData/move-anything/shadow_midi_allow_ch5_8", F_OK) == 0);
-        cached_notes_only = (access("/data/UserData/move-anything/shadow_midi_notes_only", F_OK) == 0);
-        cached_allow_cable0 = (access("/data/UserData/move-anything/shadow_midi_allow_cable0", F_OK) == 0);
-        cached_drop_cable_f = (access("/data/UserData/move-anything/shadow_midi_drop_cable_f", F_OK) == 0);
-        cached_log_on = (access("/data/UserData/move-anything/shadow_midi_log_on", F_OK) == 0);
-        cached_drop_ui = (access("/data/UserData/move-anything/shadow_midi_drop_ui", F_OK) == 0);
+        cached_ch3_only = (access("/data/UserData/schwung/shadow_midi_ch3_only", F_OK) == 0);
+        cached_block_ch1 = (access("/data/UserData/schwung/shadow_midi_block_ch1", F_OK) == 0);
+        cached_allow_ch5_8 = (access("/data/UserData/schwung/shadow_midi_allow_ch5_8", F_OK) == 0);
+        cached_notes_only = (access("/data/UserData/schwung/shadow_midi_notes_only", F_OK) == 0);
+        cached_allow_cable0 = (access("/data/UserData/schwung/shadow_midi_allow_cable0", F_OK) == 0);
+        cached_drop_cable_f = (access("/data/UserData/schwung/shadow_midi_drop_cable_f", F_OK) == 0);
+        cached_log_on = (access("/data/UserData/schwung/shadow_midi_log_on", F_OK) == 0);
+        cached_drop_ui = (access("/data/UserData/schwung/shadow_midi_drop_ui", F_OK) == 0);
     }
 
     uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
@@ -527,7 +527,7 @@ void shadow_forward_midi(void)
         filtered[i + 3] = src[i + 3];
         if (log_on) {
             if (!log) {
-                log = fopen("/data/UserData/move-anything/shadow_midi_forward.log", "a");
+                log = fopen("/data/UserData/schwung/shadow_midi_forward.log", "a");
             }
             if (log) {
                 fprintf(log, "fwd: idx=%d cable=%u cin=%u status=%02x d1=%02x d2=%02x\n",

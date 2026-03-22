@@ -1,5 +1,5 @@
 /* shadow_chain_types.h - Shared chain slot and capture rule types
- * Extracted from move_anything_shim.c so multiple modules can use them. */
+ * Extracted from schwung_shim.c so multiple modules can use them. */
 
 #ifndef SHADOW_CHAIN_TYPES_H
 #define SHADOW_CHAIN_TYPES_H

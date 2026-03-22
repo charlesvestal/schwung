@@ -1,5 +1,5 @@
 /*
- * Move Anything Plugin API v1
+ * Schwung Plugin API v1
  *
  * Stable ABI for DSP modules loaded by the host runtime.
  * Modules are .so files loaded via dlopen() and must export move_plugin_init_v1().

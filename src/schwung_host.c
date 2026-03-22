@@ -62,13 +62,13 @@ char g_menu_script_path[256] = "";
 int g_silence_blocks = 0;
 
 /* Default modules directory */
-#define DEFAULT_MODULES_DIR "/data/UserData/move-anything/modules"
+#define DEFAULT_MODULES_DIR "/data/UserData/schwung/modules"
 
 /* Base directory for path validation */
-#define BASE_DIR "/data/UserData/move-anything"
+#define BASE_DIR "/data/UserData/schwung"
 
 /* Bundled curl binary path */
-#define CURL_PATH "/data/UserData/move-anything/bin/curl"
+#define CURL_PATH "/data/UserData/schwung/bin/curl"
 
 typedef struct FontChar {
   unsigned char* data;
@@ -234,6 +234,42 @@ void fill_rect(int x, int y, int w, int h, int value) {
       set_pixel(xi, yi, value);
     }
   }
+}
+
+void fill_circle(int cx, int cy, int r, int value) {
+  for(int dy = -r; dy <= r; dy++) {
+    for(int dx = -r; dx <= r; dx++) {
+      if(dx*dx + dy*dy <= r*r) {
+        set_pixel(cx + dx, cy + dy, value);
+      }
+    }
+  }
+}
+
+int draw_image(const char *filename, int dx, int dy, int threshold, int invert) {
+  int w, h, comp;
+  unsigned char *image = stbi_load(filename, &w, &h, &comp, 1);
+  if (!image) {
+    printf("draw_image: failed to load %s\n", filename);
+    return 0;
+  }
+
+  for (int iy = 0; iy < h; iy++) {
+    for (int ix = 0; ix < w; ix++) {
+      int px = dx + ix;
+      int py = dy + iy;
+      if (px < 0 || px >= 128 || py < 0 || py >= 64) continue;
+      unsigned char val = image[iy * w + ix];
+      int lit = invert ? (val <= threshold) : (val > threshold);
+      if (lit) {
+        screen_buffer[py * 128 + px] = 1;
+      }
+    }
+  }
+
+  stbi_image_free(image);
+  dirty_screen();
+  return 1;
 }
 
 void draw_line(int x0, int y0, int x1, int y1, int value) {
@@ -609,7 +645,7 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
     return 0;  /* Pass through so modules can also track it */
   }
 
-  /* Shift + Jog Click = Exit Move Anything */
+  /* Shift + Jog Click = Exit Schwung */
   if (cc == CC_JOG_CLICK && value == 127 && host_shift_held) {
     printf("Host: Shift+Wheel detected - exiting\n");
     global_exit_flag = 1;
@@ -1015,6 +1051,42 @@ static JSValue js_fill_rect(JSContext *ctx, JSValueConst this_val, int argc, JSV
   }
   fill_rect(x,y,w,h,color);
   return JS_UNDEFINED;
+}
+
+static JSValue js_fill_circle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  if(argc < 3 || argc > 4) {
+    JS_ThrowTypeError(ctx, "fill_circle() expects 3 or 4 arguments, got %d", argc);
+    return JS_EXCEPTION;
+  }
+  int cx, cy, r, color;
+  if(JS_ToInt32(ctx, &cx, argv[0])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &cy, argv[1])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &r, argv[2])) return JS_EXCEPTION;
+  if(argc == 4) {
+    if(JS_ToInt32(ctx, &color, argv[3])) return JS_EXCEPTION;
+  } else {
+    color = 1;
+  }
+  fill_circle(cx, cy, r, color);
+  return JS_UNDEFINED;
+}
+
+static JSValue js_draw_image(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  if (argc < 3 || argc > 5) {
+    JS_ThrowTypeError(ctx, "draw_image() expects 3-5 arguments, got %d", argc);
+    return JS_EXCEPTION;
+  }
+  const char *path = JS_ToCString(ctx, argv[0]);
+  if (!path) return JS_EXCEPTION;
+  int x, y;
+  if (JS_ToInt32(ctx, &x, argv[1])) { JS_FreeCString(ctx, path); return JS_EXCEPTION; }
+  if (JS_ToInt32(ctx, &y, argv[2])) { JS_FreeCString(ctx, path); return JS_EXCEPTION; }
+  int threshold = 128, invert = 0;
+  if (argc >= 4) JS_ToInt32(ctx, &threshold, argv[3]);
+  if (argc >= 5) JS_ToInt32(ctx, &invert, argv[4]);
+  int result = draw_image(path, x, y, threshold, invert);
+  JS_FreeCString(ctx, path);
+  return JS_NewBool(ctx, result);
 }
 
 static JSValue js_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -2189,6 +2261,12 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     JSValue fill_rect_func = JS_NewCFunction(ctx, js_fill_rect, "fill_rect", 1);
     JS_SetPropertyStr(ctx, global_obj, "fill_rect", fill_rect_func);
 
+    JSValue fill_circle_func = JS_NewCFunction(ctx, js_fill_circle, "fill_circle", 1);
+    JS_SetPropertyStr(ctx, global_obj, "fill_circle", fill_circle_func);
+
+    JSValue draw_image_func = JS_NewCFunction(ctx, js_draw_image, "draw_image", 3);
+    JS_SetPropertyStr(ctx, global_obj, "draw_image", draw_image_func);
+
     JSValue clear_screen_func = JS_NewCFunction(ctx, js_clear_screen, "clear_screen", 0);
     JS_SetPropertyStr(ctx, global_obj, "clear_screen", clear_screen_func);
 
@@ -2310,6 +2388,10 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
         JS_NewCFunction(ctx, js_print, "drawText", 4));
     JS_SetPropertyStr(ctx, display_obj, "fillRect",
         JS_NewCFunction(ctx, js_fill_rect, "fillRect", 5));
+    JS_SetPropertyStr(ctx, display_obj, "fillCircle",
+        JS_NewCFunction(ctx, js_fill_circle, "fillCircle", 4));
+    JS_SetPropertyStr(ctx, display_obj, "drawImage",
+        JS_NewCFunction(ctx, js_draw_image, "drawImage", 5));
     JS_SetPropertyStr(ctx, display_obj, "drawRect",
         JS_NewCFunction(ctx, js_draw_rect, "drawRect", 5));
     JS_SetPropertyStr(ctx, display_obj, "drawLine",
@@ -2461,7 +2543,7 @@ int main(int argc, char *argv[])
 
     if (argc > 2)
     {
-        printf("usage: move-anything <script.js>");
+        printf("usage: schwung <script.js>");
         exit(1);
     }
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Move Anything TTS system provides accessibility by speaking screen reader announcements. It intercepts screen reader D-Bus signals from the stock Move firmware, synthesizes speech using Flite, and mixes the audio into the output stream.
+The Schwung TTS system provides accessibility by speaking screen reader announcements. It intercepts screen reader D-Bus signals from the stock Move firmware, synthesizes speech using Flite, and mixes the audio into the output stream.
 
 ## System Components
 
@@ -46,7 +46,7 @@ The Move sends these at **~50Hz** during knob adjustments (every 18-20ms).
 
 ### 2. D-Bus Signal Interception
 
-**Location:** `src/move_anything_shim.c` (lines ~1163-1210)
+**Location:** `src/schwung_shim.c` (lines ~1163-1210)
 
 The shim uses **LD_PRELOAD** to inject itself into the Move process and registers a D-Bus filter:
 
@@ -73,7 +73,7 @@ static DBusHandlerResult shadow_dbus_filter(DBusConnection *conn,
 
 ### 3. Message Buffering and Debouncing
 
-**Location:** `src/move_anything_shim.c:shadow_dbus_handle_text()` (lines ~1118-1136)
+**Location:** `src/schwung_shim.c:shadow_dbus_handle_text()` (lines ~1118-1136)
 
 When a D-Bus message arrives, it's written to **shared memory** for the audio thread:
 
@@ -88,7 +88,7 @@ static void shadow_dbus_handle_text(const char *text)
 
 The audio thread checks this shared memory **every audio frame** (~2.9ms):
 
-**Location:** `src/move_anything_shim.c:shadow_check_screenreader()` (lines ~4536-4570)
+**Location:** `src/schwung_shim.c:shadow_check_screenreader()` (lines ~4536-4570)
 
 ```c
 static void shadow_check_screenreader(void)
@@ -241,7 +241,7 @@ int tts_get_audio(int16_t *out_buffer, int max_frames)
 
 ### 7. Audio Mixing
 
-**Location:** `src/move_anything_shim.c:shadow_mix_audio()` (lines ~4616-4630)
+**Location:** `src/schwung_shim.c:shadow_mix_audio()` (lines ~4616-4630)
 
 This runs in the **Move's audio callback** (called by hardware every ~2.9ms):
 
@@ -296,7 +296,7 @@ The shim doesn't intercept this - it just modifies the buffer before the Move's 
 
 **Shared Memory:**
 ```
-/move-shadow-screenreader (256 bytes)
+/schwung-screenreader (256 bytes)
 ├── text[252]         // Screen reader message
 └── sequence          // Incremented on new message
 ```
@@ -394,7 +394,7 @@ if (!wav) {
 
 TTS voice parameters can be customized via a JSON config file:
 
-**Location:** `/data/UserData/move-anything/config/tts.json`
+**Location:** `/data/UserData/schwung/config/tts.json`
 
 **Example:**
 ```json

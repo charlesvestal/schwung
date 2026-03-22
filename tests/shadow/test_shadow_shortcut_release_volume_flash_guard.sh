@@ -5,7 +5,7 @@ set -euo pipefail
 # volume touch should NOT briefly reveal native volume UI. The shim should latch
 # a guard until volume touch is fully released.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v perl >/dev/null 2>&1; then
   echo "perl is required to run this test" >&2

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Uninstall Move Anything from Move and restore stock firmware
+# Uninstall Schwung from Move and restore stock firmware
 set -euo pipefail
 
 HOST=${MOVE_HOST:-move.local}
 SSH="ssh -o LogLevel=QUIET -o ConnectTimeout=5"
-SET_PAGE_BACKUP_ROOT="/data/UserData/UserLibrary/Move Everything Backups/Set Pages"
+SET_PAGE_BACKUP_ROOT="/data/UserData/UserLibrary/Schwung Backups/Set Pages"
 purge_data=false
 
 log() { printf "[uninstall] %s\n" "$*"; }
@@ -14,7 +14,7 @@ usage() {
 Usage: uninstall.sh [--purge-data]
 
 Options:
-  --purge-data   Permanently delete Move Anything data instead of exporting set-page backups
+  --purge-data   Permanently delete Schwung data instead of exporting set-page backups
 EOF
 }
 
@@ -65,9 +65,9 @@ parse_args() {
 confirm() {
     [[ "${MOVE_FORCE_UNINSTALL:-}" == "1" ]] && return
     if $purge_data; then
-        read -r -p "Remove Move Anything, restore stock firmware, and permanently delete Move Anything data? [y/N] " answer
+        read -r -p "Remove Schwung, restore stock firmware, and permanently delete Schwung data? [y/N] " answer
     else
-        read -r -p "Remove Move Anything and restore stock firmware? Inactive Set Pages will be backed up to ${SET_PAGE_BACKUP_ROOT}. [y/N] " answer
+        read -r -p "Remove Schwung and restore stock firmware? Inactive Set Pages will be backed up to ${SET_PAGE_BACKUP_ROOT}. [y/N] " answer
     fi
     [[ "$answer" =~ ^[Yy] ]] || { log "Aborted."; exit 0; }
 }
@@ -78,7 +78,7 @@ backup_set_pages() {
     log "Exporting inactive Set Pages backup..."
     local backup_cmd='
 backup_root="'"${SET_PAGE_BACKUP_ROOT}"'"
-src="/data/UserData/move-anything/set_pages"
+src="/data/UserData/schwung/set_pages"
 if [ ! -d "$src" ]; then
     exit 0
 fi
@@ -95,7 +95,7 @@ main() {
     confirm
 
     log "Stopping processes..."
-    ssh_with_retry "ableton" "killall move-anything MoveLauncher Move MoveOriginal 2>/dev/null || true" || true
+    ssh_with_retry "ableton" "killall schwung MoveLauncher Move MoveOriginal 2>/dev/null || true" || true
     sleep 1
 
     log "Restoring stock Move binary..."
@@ -104,9 +104,10 @@ main() {
     backup_set_pages
 
     log "Removing shim and files..."
-    ssh_with_retry "root" 'rm -f /usr/lib/move-anything-shim.so' || true
-    ssh_with_retry "root" 'rm -f /usr/lib/move-anything-web-shim.so' || true
-    ssh_with_retry "ableton" 'rm -rf ~/move-anything ~/move-anything.tar.gz' || true
+    ssh_with_retry "root" 'rm -f /usr/lib/schwung-shim.so' || true
+    ssh_with_retry "root" 'rm -f /usr/lib/schwung-web-shim.so' || true
+    ssh_with_retry "ableton" 'rm -rf ~/schwung ~/schwung.tar.gz' || true
+    ssh_with_retry "root" 'rm -f /data/UserData/move-anything' || true  # Remove backwards-compat symlink
 
     log "Restoring MoveWebService..."
     ssh_with_retry "root" 'for svc in /opt/move/MoveWebServiceOriginal /opt/move-web-service/MoveWebServiceOriginal; do if [ -f "$svc" ]; then dir=$(dirname "$svc"); base=$(basename "$svc" Original); mv "$svc" "$dir/$base"; fi; done' || true

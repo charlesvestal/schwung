@@ -1,10 +1,10 @@
 # TTS Voice Configuration
 
-The Move Anything TTS system supports voice customization via speed, pitch, and volume controls.
+The Schwung TTS system supports voice customization via speed, pitch, and volume controls.
 
 ## Configuration File
 
-**Location on device:** `/data/UserData/move-anything/config/tts.json`
+**Location on device:** `/data/UserData/schwung/config/tts.json`
 
 Create this file to customize the TTS voice. If the file doesn't exist, default settings are used.
 
@@ -29,7 +29,7 @@ Create this file to customize the TTS voice. If the file doesn't exist, default 
 ### When Changes Take Effect
 
 - Configuration file is loaded during TTS initialization (lazy init on first use)
-- To apply new settings: restart Move or reload the Move Anything host
+- To apply new settings: restart Move or reload the Schwung host
 
 ## Programmatic Control
 
@@ -83,12 +83,12 @@ To deploy a custom config file to your Move:
 
 ```bash
 # From your computer
-scp docs/tts-config.example.json root@move.local:/data/UserData/move-anything/config/tts.json
+scp docs/tts-config.example.json root@move.local:/data/UserData/schwung/config/tts.json
 
 # Or create directly on Move via SSH
 ssh root@move.local
-mkdir -p /data/UserData/move-anything/config
-cat > /data/UserData/move-anything/config/tts.json << 'EOF'
+mkdir -p /data/UserData/schwung/config
+cat > /data/UserData/schwung/config/tts.json << 'EOF'
 {
   "speed": 1.2,
   "pitch": 100.0,

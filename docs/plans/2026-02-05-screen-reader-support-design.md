@@ -5,7 +5,7 @@
 
 ## Problem Statement
 
-Blind users cannot use Move Anything because there's no screen reader support. Stock Move has a screen reader feature at `http://move.local/screen-reader` that works with VoiceOver on macOS, but Move Anything doesn't emit the necessary announcements.
+Blind users cannot use Schwung because there's no screen reader support. Stock Move has a screen reader feature at `http://move.local/screen-reader` that works with VoiceOver on macOS, but Schwung doesn't emit the necessary announcements.
 
 ## User Requirement
 
@@ -14,7 +14,7 @@ From Trey (blind user):
 
 ## Solution: Emit D-Bus Screen Reader Signals
 
-Move Anything will emit D-Bus signals that stock Move's web interface already listens for.
+Schwung will emit D-Bus signals that stock Move's web interface already listens for.
 
 ### Architecture
 
@@ -22,7 +22,7 @@ Move Anything will emit D-Bus signals that stock Move's web interface already li
 ```
 User Action (knob turn, menu nav)
     ↓
-Move Anything detects event
+Schwung detects event
     ↓
 Format announcement text
     ↓
@@ -76,7 +76,7 @@ VoiceOver reads announcement
 
 **1. D-Bus Sending Capability (Shim)**
 ```c
-// In move_anything_shim.c
+// In schwung_shim.c
 void send_screenreader_text(const char *text) {
     DBusMessage *msg = dbus_message_new_signal(
         "/com/ableton/move/screenreader",

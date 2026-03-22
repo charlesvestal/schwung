@@ -12,7 +12,7 @@ cd "$REPO_ROOT"
 cd ./build
 
 # Build list of items to package
-ITEMS="./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log"
+ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log"
 
 # Add bin directory if it exists (contains curl for store module)
 if [ -d "./bin" ]; then
@@ -45,18 +45,18 @@ if [ -f "./display-server" ]; then
 fi
 
 # Add web shim if it was built (PIN challenge TTS readout for MoveWebService)
-if [ -f "./move-anything-web-shim.so" ]; then
-    ITEMS="$ITEMS ./move-anything-web-shim.so"
+if [ -f "./schwung-web-shim.so" ]; then
+    ITEMS="$ITEMS ./schwung-web-shim.so"
 fi
 
 if tar --version 2>/dev/null | grep -q GNU; then
     # Use POSIX format to avoid GNUSparseFile.0 entries that BusyBox tar
     # on Move cannot extract (can happen with Docker volume mounts)
-    tar --format=posix -czf ../move-anything.tar.gz \
-        --transform 's,^\.,move-anything,' \
+    tar --format=posix -czf ../schwung.tar.gz \
+        --transform 's,^\.,schwung,' \
         $ITEMS
 else
-    tar -czf ../move-anything.tar.gz \
-        -s ',^\.,move-anything,' \
+    tar -czf ../schwung.tar.gz \
+        -s ',^\.,schwung,' \
         $ITEMS
 fi

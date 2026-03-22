@@ -1,4 +1,4 @@
-# Move Anything Logging Guide
+# Schwung Logging Guide
 
 ## Quick Start
 
@@ -7,7 +7,7 @@
 Create the flag file to enable logging:
 
 ```bash
-ssh ableton@move.local "touch /data/UserData/move-anything/debug_log_on"
+ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
 ```
 
 ### Disable Logging
@@ -15,18 +15,18 @@ ssh ableton@move.local "touch /data/UserData/move-anything/debug_log_on"
 Remove the flag file:
 
 ```bash
-ssh ableton@move.local "rm /data/UserData/move-anything/debug_log_on"
+ssh ableton@move.local "rm /data/UserData/schwung/debug_log_on"
 ```
 
 ### View Logs
 
 ```bash
-ssh ableton@move.local "tail -f /data/UserData/move-anything/debug.log"
+ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log"
 ```
 
 ## Log File Location
 
-All logs go to: `/data/UserData/move-anything/debug.log`
+All logs go to: `/data/UserData/schwung/debug.log`
 
 ## JavaScript Logging
 
@@ -43,7 +43,7 @@ console.error('Error!');            // Goes to debug.log with ERROR prefix
 ### Option 2: Use Logger Module Directly
 
 ```javascript
-import { log, debug, info, warn, error } from '/data/UserData/move-anything/shared/logger.mjs';
+import { log, debug, info, warn, error } from '/data/UserData/schwung/shared/logger.mjs';
 
 log('mymodule', 'Custom message');
 debug('mymodule', 'Debug info');
@@ -54,7 +54,7 @@ error('mymodule', 'Error message');
 ### Option 3: Install Console Override in Your Module
 
 ```javascript
-import { installConsoleOverride } from '/data/UserData/move-anything/shared/logger.mjs';
+import { installConsoleOverride } from '/data/UserData/schwung/shared/logger.mjs';
 
 // Call once at module startup
 installConsoleOverride('mymodule');
@@ -144,7 +144,7 @@ The unified logging system consists of:
 ### How It Works
 
 1. Logging is **disabled by default** for performance
-2. Create `/data/UserData/move-anything/debug_log_on` to enable
+2. Create `/data/UserData/schwung/debug_log_on` to enable
 3. The flag file is checked periodically (not every call) to minimize overhead
 4. All log entries include millisecond timestamps and source tags
 5. The log file is opened in append mode; entries are flushed immediately
@@ -153,22 +153,22 @@ The unified logging system consists of:
 
 ### Logs not appearing
 
-1. Check flag file exists: `ssh ableton@move.local "ls /data/UserData/move-anything/debug_log_on"`
-2. Check permissions: `ssh ableton@move.local "ls -la /data/UserData/move-anything/"`
+1. Check flag file exists: `ssh ableton@move.local "ls /data/UserData/schwung/debug_log_on"`
+2. Check permissions: `ssh ableton@move.local "ls -la /data/UserData/schwung/"`
 3. Restart shadow UI after enabling logging (exit and re-enter via Shift+Vol+Track)
 
 ### Log file too large
 
 Clear the log:
 ```bash
-ssh ableton@move.local "> /data/UserData/move-anything/debug.log"
+ssh ableton@move.local "> /data/UserData/schwung/debug.log"
 ```
 
 ### Checking if logging is enabled from code
 
 **JavaScript:**
 ```javascript
-import { isLoggingEnabled } from '/data/UserData/move-anything/shared/logger.mjs';
+import { isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 if (isLoggingEnabled()) {
     // logging is on
 }

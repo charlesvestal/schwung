@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Build a cross-platform desktop installer (macOS/Windows) using Tauri that automates SSH setup and Move Everything installation.
+**Goal:** Build a cross-platform desktop installer (macOS/Windows) using Tauri that automates SSH setup and Schwung installation.
 
 **Architecture:** Tauri app with Rust backend for system operations (SSH, HTTP, file management) and web frontend for UI. Backend exposes IPC commands for device discovery, authentication, SSH key management, and installation. Frontend manages multi-step state machine.
 
@@ -158,8 +158,8 @@ npx tauri init
 ```
 
 Configuration prompts:
-- App name: `Move Everything Installer`
-- Window title: `Move Everything Installer`
+- App name: `Schwung Installer`
+- Window title: `Schwung Installer`
 - Web assets: `./ui`
 - Dev server URL: `http://localhost:3000`
 - Frontend dev command: (leave empty for now)
@@ -292,7 +292,7 @@ Edit `installer/src-tauri/tauri.conf.json`:
 Create: `installer/README.md`
 
 ```markdown
-# Move Everything Installer
+# Schwung Installer
 
 ## Building
 
@@ -812,7 +812,7 @@ pub fn write_ssh_config() -> Result<(), String> {
     let config_path = home.join(".ssh/config");
 
     let config_entry = r#"
-# Added by Move Everything Installer
+# Added by Schwung Installer
 Host move
   HostName move.local
   User ableton
@@ -960,7 +960,7 @@ const GITHUB_API: &str = "https://api.github.com";
 const MAIN_REPO: &str = "charlesvestal/move-anything";
 const CATALOG_URL: &str = "https://raw.githubusercontent.com/charlesvestal/move-anything/main/module-catalog.json";
 
-/// Fetch latest Move Everything release
+/// Fetch latest Schwung release
 pub async fn fetch_latest_release() -> Result<Release, String> {
     let client = Client::new();
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API, MAIN_REPO);
@@ -993,8 +993,8 @@ pub async fn fetch_latest_release() -> Result<Release, String> {
         .map_err(|e| format!("Failed to parse release: {}", e))?;
 
     let asset = release.assets.iter()
-        .find(|a| a.name == "move-anything.tar.gz")
-        .ok_or("Release missing move-anything.tar.gz asset")?;
+        .find(|a| a.name == "schwung.tar.gz")
+        .ok_or("Release missing schwung.tar.gz asset")?;
 
     Ok(Release {
         tag_name: release.tag_name,
@@ -1096,20 +1096,20 @@ pub fn validate_tarball(hostname: &str, tarball: &str, expected_file: &str) -> R
         .map(|_| ())
 }
 
-/// Install Move Everything to device
+/// Install Schwung to device
 pub async fn install_main_package(hostname: &str, local_tarball: &PathBuf) -> Result<(), String> {
     // Upload tarball
-    scp_upload(local_tarball, hostname, "./move-anything.tar.gz")?;
+    scp_upload(local_tarball, hostname, "./schwung.tar.gz")?;
 
     // Validate tarball structure
-    validate_tarball(hostname, "move-anything.tar.gz", "move-anything/move-anything-shim.so")?;
+    validate_tarball(hostname, "schwung.tar.gz", "move-anything/schwung-shim.so")?;
 
     // Extract
-    ssh_exec(hostname, "tar -xzf ./move-anything.tar.gz")?;
+    ssh_exec(hostname, "tar -xzf ./schwung.tar.gz")?;
 
     // Verify payload
-    ssh_exec(hostname, "test -f /data/UserData/move-anything/move-anything-shim.so")?;
-    ssh_exec(hostname, "test -f /data/UserData/move-anything/shim-entrypoint.sh")?;
+    ssh_exec(hostname, "test -f /data/UserData/schwung/schwung-shim.so")?;
+    ssh_exec(hostname, "test -f /data/UserData/schwung/shim-entrypoint.sh")?;
 
     // Run installation steps (simplified - full logic from install.sh)
     // TODO: Port remaining install.sh logic
@@ -1222,7 +1222,7 @@ Expected: Compiles without errors
 
 ```bash
 git add src-tauri/src/install.rs src-tauri/src/main.rs
-git commit -m "feat: add installation module for Move Everything and modules"
+git commit -m "feat: add installation module for Schwung and modules"
 ```
 
 ---
@@ -1246,7 +1246,7 @@ Edit: `installer/ui/index.html`
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Move Everything Installer</title>
+    <title>Schwung Installer</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -1293,7 +1293,7 @@ Edit: `installer/ui/index.html`
 
         <!-- Screen: Installing -->
         <div id="screen-installing" class="screen hidden">
-            <h1>Installing Move Everything...</h1>
+            <h1>Installing Schwung...</h1>
             <div id="install-progress"></div>
             <progress id="progress-bar" value="0" max="100"></progress>
         </div>
@@ -1715,13 +1715,13 @@ async function performInstallation(modules) {
 
     try {
         // Download main package
-        progress.textContent = 'Downloading Move Everything...';
+        progress.textContent = 'Downloading Schwung...';
         const release = await invoke('get_latest_release');
-        const mainTarball = `/tmp/move-anything.tar.gz`; // TODO: Use proper temp directory
+        const mainTarball = `/tmp/schwung.tar.gz`; // TODO: Use proper temp directory
         await invoke('download_release', { url: release.download_url, destPath: mainTarball });
 
         // Install main package
-        progress.textContent = 'Installing Move Everything...';
+        progress.textContent = 'Installing Schwung...';
         bar.value = 10;
         await invoke('install_main', { hostname: state.device.hostname, tarballPath: mainTarball });
         bar.value = 30;
@@ -1981,9 +1981,9 @@ git commit -m "docs: add testing checklist"
 Edit: `installer/README.md`
 
 ```markdown
-# Move Everything Installer
+# Schwung Installer
 
-Cross-platform desktop installer for Move Everything.
+Cross-platform desktop installer for Schwung.
 
 ## For Users
 
@@ -2119,7 +2119,7 @@ git push --tags
 ```bash
 gh release create installer-v0.1.0 \
   --title "Desktop Installer v0.1.0" \
-  --notes "Cross-platform installer for Move Everything (macOS + Windows)" \
+  --notes "Cross-platform installer for Schwung (macOS + Windows)" \
   installer/src-tauri/target/release/bundle/dmg/*.dmg \
   installer/src-tauri/target/release/bundle/msi/*.msi
 ```

@@ -28,7 +28,7 @@
 #include "host/shadow_constants.h"
 #include "../host/unified_log.h"
 
-#define SAMPLER_CMD_PATH "/data/UserData/move-anything/sampler_cmd_path.txt"
+#define SAMPLER_CMD_PATH "/data/UserData/schwung/sampler_cmd_path.txt"
 
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
@@ -43,7 +43,7 @@ static shadow_overlay_state_t *shadow_overlay = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
-static const char *shadow_ui_pid_path = "/data/UserData/move-anything/shadow_ui.pid";
+static const char *shadow_ui_pid_path = "/data/UserData/schwung/shadow_ui.pid";
 
 /* Checksum helper for debug logging - unused in production */
 static uint32_t shadow_ui_checksum(const unsigned char *buf, size_t len) {
@@ -866,8 +866,8 @@ static JSValue js_unified_log_enabled(JSContext *ctx, JSValueConst this_val,
 /* === Host functions for store operations === */
 
 #define BASE_DIR "/data/UserData"
-#define MODULES_DIR "/data/UserData/move-anything/modules"
-#define CURL_PATH "/data/UserData/move-anything/bin/curl"
+#define MODULES_DIR "/data/UserData/schwung/modules"
+#define CURL_PATH "/data/UserData/schwung/bin/curl"
 
 /* Helper: validate path is within BASE_DIR to prevent directory traversal */
 /* Execute a command safely using fork/execvp instead of system() */
@@ -1514,7 +1514,7 @@ static JSValue js_display_mirror_set(JSContext *ctx, JSValueConst this_val,
     shadow_control->display_mirror = enabled ? 1 : 0;
 
     /* Persist to features.json */
-    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    const char *config_path = "/data/UserData/schwung/config/features.json";
     char buf[512];
     size_t len = 0;
     FILE *f = fopen(config_path, "r");
@@ -1580,7 +1580,7 @@ static JSValue js_set_pages_set(JSContext *ctx, JSValueConst this_val,
     shadow_control->set_pages_enabled = enabled ? 1 : 0;
 
     /* Persist to features.json */
-    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    const char *config_path = "/data/UserData/schwung/config/features.json";
     char buf[512];
     size_t len = 0;
     FILE *f = fopen(config_path, "r");
@@ -1642,7 +1642,7 @@ static JSValue js_skipback_shortcut_set(JSContext *ctx, JSValueConst this_val,
     shadow_control->skipback_require_volume = require_volume ? 1 : 0;
 
     /* Persist to features.json */
-    const char *config_path = "/data/UserData/move-anything/config/features.json";
+    const char *config_path = "/data/UserData/schwung/config/features.json";
     char buf[512];
     size_t len = 0;
     FILE *f = fopen(config_path, "r");
@@ -1924,7 +1924,7 @@ static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
-#define PREVIEW_CMD_PATH "/data/UserData/move-anything/preview_cmd_path.txt"
+#define PREVIEW_CMD_PATH "/data/UserData/schwung/preview_cmd_path.txt"
 
 /* host_pad_block(enable) - suppress pad notes from reaching Move firmware */
 static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
@@ -2222,7 +2222,7 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
 }
 
 int main(int argc, char *argv[]) {
-    const char *script = "/data/UserData/move-anything/shadow/shadow_ui.js";
+    const char *script = "/data/UserData/schwung/shadow/shadow_ui.js";
     if (argc > 1) {
         script = argv[1];
     }

@@ -2,7 +2,7 @@
  * shadow_constants.h - Shared constants for Shadow Instrument
  *
  * This header defines constants and structures shared between:
- * - move_anything_shim.c (the LD_PRELOAD shim)
+ * - schwung_shim.c (the LD_PRELOAD shim)
  * - shadow_ui.c (the shadow UI host)
  *
  * Single source of truth to prevent drift between components.
@@ -17,20 +17,20 @@
  * Shared Memory Segment Names
  * ============================================================================ */
 
-#define SHM_SHADOW_AUDIO    "/move-shadow-audio"    /* Shadow's mixed output */
-#define SHM_SHADOW_MIDI     "/move-shadow-midi"     /* MIDI to shadow DSP */
-#define SHM_SHADOW_UI_MIDI  "/move-shadow-ui-midi"  /* MIDI to shadow UI */
-#define SHM_SHADOW_DISPLAY  "/move-shadow-display"  /* Shadow display buffer */
-#define SHM_SHADOW_CONTROL  "/move-shadow-control"  /* Control flags/state */
-#define SHM_SHADOW_MOVEIN   "/move-shadow-movein"   /* Move's audio for shadow */
-#define SHM_SHADOW_UI       "/move-shadow-ui"       /* Shadow UI state */
-#define SHM_SHADOW_PARAM      "/move-shadow-param"        /* Shadow param requests */
-#define SHM_SHADOW_MIDI_OUT   "/move-shadow-midi-out"   /* MIDI output from shadow UI */
-#define SHM_SHADOW_MIDI_DSP   "/move-shadow-midi-dsp"   /* MIDI from shadow UI to DSP slots */
-#define SHM_SHADOW_MIDI_INJECT "/move-shadow-midi-inject" /* MIDI inject into Move's MIDI_IN */
-#define SHM_SHADOW_SCREENREADER "/move-shadow-screenreader" /* Screen reader announcements */
-#define SHM_SHADOW_OVERLAY  "/move-shadow-overlay"  /* Overlay state (sampler/skipback) */
-#define SHM_DISPLAY_LIVE    "/move-display-live"    /* Live display for remote viewer */
+#define SHM_SHADOW_AUDIO    "/schwung-audio"    /* Shadow's mixed output */
+#define SHM_SHADOW_MIDI     "/schwung-midi"     /* MIDI to shadow DSP */
+#define SHM_SHADOW_UI_MIDI  "/schwung-ui-midi"  /* MIDI to shadow UI */
+#define SHM_SHADOW_DISPLAY  "/schwung-display"  /* Shadow display buffer */
+#define SHM_SHADOW_CONTROL  "/schwung-control"  /* Control flags/state */
+#define SHM_SHADOW_MOVEIN   "/schwung-movein"   /* Move's audio for shadow */
+#define SHM_SHADOW_UI       "/schwung-ui"       /* Shadow UI state */
+#define SHM_SHADOW_PARAM      "/schwung-param"        /* Shadow param requests */
+#define SHM_SHADOW_MIDI_OUT   "/schwung-midi-out"   /* MIDI output from shadow UI */
+#define SHM_SHADOW_MIDI_DSP   "/schwung-midi-dsp"   /* MIDI from shadow UI to DSP slots */
+#define SHM_SHADOW_MIDI_INJECT "/schwung-midi-inject" /* MIDI inject into Move's MIDI_IN */
+#define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
+#define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */
+#define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
 
 /* ============================================================================
  * Audio Constants
