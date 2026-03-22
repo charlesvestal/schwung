@@ -5,7 +5,7 @@ set -euo pipefail
 # so native Move volume overlays remain visible (master and track volume lines),
 # but Shift+Vol shortcuts should still show Shadow UI.
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

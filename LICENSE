@@ -1,27 +1,36 @@
-Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+MIT License
 
-This work is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+Copyright (c) 2025-2026 Charles Vestal
 
-You are free to:
-- Share: copy and redistribute the material in any medium or format
-- Adapt: remix, transform, and build upon the material
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Under the following terms:
-- Attribution: You must give appropriate credit, provide a link to the license, and indicate if changes were made.
-- NonCommercial: You may not use the material for commercial purposes.
-- ShareAlike: If you remix, transform, or build upon the material, you must distribute your contributions under the same license.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-Full license text: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ---
 
 ## Fork Provenance
 
-This project (Move Everything) is forked from [Move Anything](https://github.com/bobbydigitales/move-anything) by Bobby Digitales. At the time of forking, the upstream repository was licensed solely under CC BY-NC-SA 4.0, without additional restrictions. The upstream repository has since added supplementary terms regarding AI training and AI-generated derivative works. Those additional terms were not part of the license at the time this fork was created, and this project does not incorporate any upstream changes made after the fork.
-
-This fork continues under CC BY-NC-SA 4.0 as it was received.
+Schwung (formerly Move Everything) is a ground-up rewrite that began as a fork
+of [Move Anything](https://github.com/bobbydigitales/move-anything) by Bobby
+Digitales. The original SPI communication techniques from that project provided
+the foundation for accessing Move's hardware. Thanks to @talktogreg, @impbox,
+@deets, and especially @bobbyd for those contributions.
 
 ---
 
 This project includes third-party code under various licenses.
-See THIRD_PARTY_LICENSES for details.
+See THIRD_PARTY_LICENSES.md for details.

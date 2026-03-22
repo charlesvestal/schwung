@@ -1,5 +1,5 @@
 /* shadow_set_pages.h - Set page switching and per-set state management
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_SET_PAGES_H
 #define SHADOW_SET_PAGES_H
@@ -12,17 +12,17 @@
  * Constants
  * ============================================================================ */
 
-#define SET_PAGES_DIR "/data/UserData/move-anything/set_pages"
+#define SET_PAGES_DIR "/data/UserData/schwung/set_pages"
 #define SET_PAGES_CURRENT_PATH SET_PAGES_DIR "/current_page.txt"
 #define SET_PAGES_TOTAL 8
 #define SET_PAGE_OVERLAY_FRAMES 120  /* ~2 seconds at 60fps */
 
 /* Path constants used by set/config management */
 #define SHADOW_CHAIN_CONFIG_FILENAME "shadow_chain_config.json"
-#define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/move-anything/" SHADOW_CHAIN_CONFIG_FILENAME
-#define SET_STATE_DIR  "/data/UserData/move-anything/set_state"
-#define SLOT_STATE_DIR "/data/UserData/move-anything/slot_state"
-#define ACTIVE_SET_PATH "/data/UserData/move-anything/active_set.txt"
+#define SHADOW_CHAIN_CONFIG_PATH "/data/UserData/schwung/" SHADOW_CHAIN_CONFIG_FILENAME
+#define SET_STATE_DIR  "/data/UserData/schwung/set_state"
+#define SLOT_STATE_DIR "/data/UserData/schwung/slot_state"
+#define ACTIVE_SET_PATH "/data/UserData/schwung/active_set.txt"
 
 /* ============================================================================
  * Callback struct - shim functions set pages needs

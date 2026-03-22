@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/move_anything_shim.c"
+file="src/schwung_shim.c"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2
@@ -13,7 +13,7 @@ if ! rg -q "native_resample_bridge_load_mode_from_shadow_config\\(" "$file"; the
   exit 1
 fi
 
-if ! rg -q "/data/UserData/move-anything/shadow_config.json" "$file"; then
+if ! rg -q "/data/UserData/schwung/shadow_config.json" "$file"; then
   echo "FAIL: Bridge startup load does not read shadow_config.json" >&2
   exit 1
 fi

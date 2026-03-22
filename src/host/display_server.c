@@ -2,7 +2,7 @@
  * display_server.c - Live display SSE server
  *
  * Streams Move's 128x64 1-bit OLED to a browser via Server-Sent Events.
- * Reads /dev/shm/move-display-live (1024 bytes, written by the shim)
+ * Reads /dev/shm/schwung-display-live (1024 bytes, written by the shim)
  * and pushes base64-encoded frames to connected browser clients at ~30 Hz.
  *
  * Usage: display-server [port]   (default port 7681)
@@ -26,7 +26,7 @@
 #include "unified_log.h"
 
 #define DEFAULT_PORT       7681
-#define SHM_PATH           "/dev/shm/move-display-live"
+#define SHM_PATH           "/dev/shm/schwung-display-live"
 #define DISPLAY_SIZE       1024
 #define MAX_CLIENTS        8
 #define POLL_INTERVAL_MS   33    /* ~30 Hz */

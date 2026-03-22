@@ -1,6 +1,6 @@
 # Move Hardware API Reference
 
-This document describes the JavaScript API available for developing Move Anything modules.
+This document describes the JavaScript API available for developing Schwung modules.
 
 ## Display
 
@@ -190,8 +190,8 @@ host_sampler_set_external_stop(bool)     // Set external stop flag for sampler
 ## Utility Functions
 
 ```javascript
-exit()                        // Exit Move Anything, return to stock Move
-console.log(msg)              // Log to /data/UserData/move-anything/move-anything.log
+exit()                        // Exit Schwung, return to stock Move
+console.log(msg)              // Log to /data/UserData/schwung/schwung.log
 ```
 
 ## Move Hardware MIDI Mapping
@@ -361,7 +361,7 @@ int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
 // audio_in contains 128 stereo samples in interleaved format
 ```
 
-Note: Audio input routing depends on the last selected input in the stock Move interface before launching Move Anything.
+Note: Audio input routing depends on the last selected input in the stock Move interface before launching Schwung.
 
 ### Chain Runtime Modulation Callbacks (DSP)
 

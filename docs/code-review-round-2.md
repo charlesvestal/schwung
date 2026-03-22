@@ -8,8 +8,8 @@
 
 Seven parallel review agents examined the entire codebase:
 
-1. Main host runtime (`move_anything.c`)
-2. LD_PRELOAD shim (`move_anything_shim.c`)
+1. Main host runtime (`schwung_host.c`)
+2. LD_PRELOAD shim (`schwung_shim.c`)
 3. Shadow UI (`shadow_ui.c` + `shadow_ui.js`)
 4. Host support files (`module_manager.c`, `tts_engine_flite.c`, `unified_log.c`, headers)
 5. Chain DSP host (`chain_host.c`)
@@ -22,8 +22,8 @@ Seven parallel review agents examined the entire codebase:
 
 | Area | Critical | Important | Minor |
 |------|----------|-----------|-------|
-| move_anything.c | 4 | 10 | 8 |
-| move_anything_shim.c | 4 | 9 | 9 |
+| schwung_host.c | 4 | 10 | 8 |
+| schwung_shim.c | 4 | 9 | 9 |
 | shadow_ui.c + shadow_ui.js | 3 | 7 | 9 |
 | Host support files | 2 | 8 | 10 |
 | chain_host.c | 4 | 8 | 6 |
@@ -35,7 +35,7 @@ Seven parallel review agents examined the entire codebase:
 
 ## CRITICAL Findings
 
-### C1. Uninitialized `cable` variable in `onMidiMessage` (move_anything.c:762)
+### C1. Uninitialized `cable` variable in `onMidiMessage` (schwung_host.c:762)
 
 ```c
 void onMidiMessage(unsigned char midi_message[4]) {
@@ -46,7 +46,7 @@ void onMidiMessage(unsigned char midi_message[4]) {
 
 Function appears unused (actual routing is in `main()` loop). **Fix: Delete the function or parse cable from `midi_message[0] >> 4`.**
 
-### C2. `get_pixel()` missing bounds check (move_anything.c:231)
+### C2. `get_pixel()` missing bounds check (schwung_host.c:231)
 
 ```c
 int get_pixel(int x, int y) {
@@ -56,11 +56,11 @@ int get_pixel(int x, int y) {
 
 Unlike `set_pixel()` which validates. Called from `glyph()`. **Fix: Add same bounds check as `set_pixel()`.**
 
-### C3. `js_print()` accesses `argv[3]` without checking `argc >= 4` (move_anything.c:1075)
+### C3. `js_print()` accesses `argv[3]` without checking `argc >= 4` (schwung_host.c:1075)
 
 Checks `argc < 3` but then unconditionally accesses `argv[3]`. When `argc == 3`, this is OOB. **Fix: Guard with `if (argc >= 4)`.**
 
-### C4. `load_font()` sprintf buffer overflow (move_anything.c:297)
+### C4. `load_font()` sprintf buffer overflow (schwung_host.c:297)
 
 ```c
 char charListFilename[100];
@@ -202,7 +202,7 @@ Can produce corrupt tarballs silently if any step fails.
 
 ## IMPORTANT Findings
 
-### Host Runtime (move_anything.c)
+### Host Runtime (schwung_host.c)
 
 - **I1.** Font `charData` array not zeroed -- `malloc` without `memset`, `glyph()` checks `fc.data == NULL` but garbage may look non-NULL (line 317). **Fix: Use `calloc` or `memset`.**
 - **I2.** Font memory leak -- `stbi_load` data never freed with `stbi_image_free()` (line 311). **Fix: Add `stbi_image_free(data)` before return.**
@@ -215,7 +215,7 @@ Can produce corrupt tarballs silently if any step fails.
 - **I9.** `validate_path()` TOCTOU race and `strstr("..")` overly broad (lines 1822-1834).
 - **I10.** `push_screen()` bounds fragile -- zero margin on 1024-byte buffer (lines 2418-2448).
 
-### Shim (move_anything_shim.c)
+### Shim (schwung_shim.c)
 
 - **I11.** File handle leaks -- ~11 debug `FILE*` handles opened but never closed (lines 138-560).
 - **I12.** Shared memory segments never cleaned up -- `shm_unlink()` never called, stale segments persist across restarts.
@@ -282,7 +282,7 @@ Can produce corrupt tarballs silently if any step fails.
 
 ## MINOR Findings
 
-### Host Runtime (move_anything.c)
+### Host Runtime (schwung_host.c)
 
 - m1. Unused variable `entry` in `js_move_midi_send` (line 1126)
 - m2. `module` parameter misuse -- using `-1` as boolean for module flag (line 2489)
@@ -293,7 +293,7 @@ Can produce corrupt tarballs silently if any step fails.
 - m7. Unchecked `fread` return in `load_ttf_font` (line 417)
 - m8. `js_host_load_ui_module()` no path validation (line 1372)
 
-### Shim (move_anything_shim.c)
+### Shim (schwung_shim.c)
 
 - m9. Duplicate `#include <unistd.h>` (lines 11, 15)
 - m10. Unused variable `ret` in `launchChildAndKillThisProcess` -- control flow bug after `execl()` (line 6295)
@@ -424,7 +424,7 @@ Can produce corrupt tarballs silently if any step fails.
 ## Notes
 
 - The target platform is an Ableton Move embedded ARM64 device running a custom Linux
-- The application is single-process (move_anything.c) or two-process (shim + shadow_ui)
+- The application is single-process (schwung_host.c) or two-process (shim + shadow_ui)
 - Real-time audio constraint: 128 frames/block at 44100 Hz = ~2.9ms per block
 - Security model assumes trusted local modules (installed via Module Store from GitHub)
 - Many "critical" thread safety issues haven't manifested as crashes because ARM64 stores are naturally aligned and coherent for small types, but they are technically UB

@@ -323,11 +323,11 @@ static int load_synth(const char *soundfont_path) {
     #define USE_DEXED 1
 
     #if USE_DEXED
-    const char *module_path = "/data/UserData/move-anything/modules/dexed/dsp.so";
-    const char *module_dir = "/data/UserData/move-anything/modules/dexed";
+    const char *module_path = "/data/UserData/schwung/modules/dexed/dsp.so";
+    const char *module_dir = "/data/UserData/schwung/modules/dexed";
     #else
-    const char *module_path = "/data/UserData/move-anything/modules/sf2/dsp.so";
-    const char *module_dir = "/data/UserData/move-anything/modules/sf2";
+    const char *module_path = "/data/UserData/schwung/modules/sf2/dsp.so";
+    const char *module_dir = "/data/UserData/schwung/modules/sf2";
     #endif
 
     printf("Loading synth from %s\n", module_path);
@@ -368,7 +368,7 @@ static int load_synth(const char *soundfont_path) {
     /* Call on_load with JSON defaults */
     if (synth_plugin->on_load) {
         #if USE_DEXED
-        const char *json_defaults = "{\"syx_path\":\"/data/UserData/move-anything/modules/dexed/patches.syx\",\"preset\":0}";
+        const char *json_defaults = "{\"syx_path\":\"/data/UserData/schwung/modules/dexed/patches.syx\",\"preset\":0}";
         #else
         const char *json_defaults = NULL;
         #endif
@@ -393,7 +393,7 @@ static int load_synth(const char *soundfont_path) {
     (void)soundfont_path;
     /* Load Dexed patches */
     if (synth_plugin->set_param) {
-        const char *syx_path = "/data/UserData/move-anything/modules/dexed/patches.syx";
+        const char *syx_path = "/data/UserData/schwung/modules/dexed/patches.syx";
         printf("Loading Dexed patches: %s\n", syx_path);
         synth_plugin->set_param("syx_path", syx_path);
     }
@@ -425,7 +425,7 @@ static void process_midi(void) {
 
     /* Open debug log once */
     if (!midi_debug_log) {
-        midi_debug_log = fopen("/data/UserData/move-anything/shadow_midi_debug.log", "a");
+        midi_debug_log = fopen("/data/UserData/schwung/shadow_midi_debug.log", "a");
     }
 
     /* Process all MIDI packets in the buffer */
@@ -578,7 +578,7 @@ int main(int argc, char *argv[]) {
         if (load_synth(soundfont_path) < 0) {
             fprintf(stderr, "Failed to load synth module.\n");
             fprintf(stderr, "Make sure the SF2 module is installed at:\n");
-            fprintf(stderr, "  /data/UserData/move-anything/modules/sf2/dsp.so\n");
+            fprintf(stderr, "  /data/UserData/schwung/modules/sf2/dsp.so\n");
             return 1;
         }
     }

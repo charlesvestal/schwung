@@ -13,12 +13,12 @@ import {
     MoveShift, MoveMainKnob, MoveUp, MoveDown,
     MovePads, MoveSteps,
     MoveKnob1, MoveKnob8, MoveMaster
-} from '/data/UserData/move-anything/shared/constants.mjs';
+} from '/data/UserData/schwung/shared/constants.mjs';
 
 import {
     isNoiseMessage, isCapacitiveTouchMessage,
     setLED, clearAllLEDs, decodeDelta
-} from '/data/UserData/move-anything/shared/input_filter.mjs';
+} from '/data/UserData/schwung/shared/input_filter.mjs';
 
 /* State */
 let bank = 0;

@@ -1,5 +1,5 @@
 /* shadow_set_pages.c - Set page switching and per-set state management
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #define _GNU_SOURCE
 
@@ -151,7 +151,7 @@ void shadow_batch_migrate_sets(void) {
         /* Also copy shadow_chain_config.json if it exists */
         {
             char src[512], dst[512];
-            snprintf(src, sizeof(src), "/data/UserData/move-anything/" SHADOW_CHAIN_CONFIG_FILENAME);
+            snprintf(src, sizeof(src), "/data/UserData/schwung/" SHADOW_CHAIN_CONFIG_FILENAME);
             snprintf(dst, sizeof(dst), "%s/" SHADOW_CHAIN_CONFIG_FILENAME, set_dir);
             shadow_copy_file(src, dst);
         }
@@ -926,7 +926,7 @@ static void *set_page_change_thread(void *arg)
 
     /* 9. Trigger restart via the existing mechanism */
     host.log("SetPage: triggering restart");
-    system("/data/UserData/move-anything/restart-move.sh");
+    system("/data/UserData/schwung/restart-move.sh");
 
     return NULL;
 }

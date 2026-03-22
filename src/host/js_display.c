@@ -1,5 +1,5 @@
 /*
- * js_display.c - Shared display functions for Move Anything
+ * js_display.c - Shared display functions for Schwung
  *
  * Provides display primitives used by both the main host and shadow UI.
  * Includes font loading (bitmap and TTF), glyph rendering, and QuickJS bindings.
@@ -108,6 +108,42 @@ void js_display_draw_line(int x0, int y0, int x1, int y1, int value) {
         if (e2 > -dy) { err -= dy; x0 += sx; }
         if (e2 < dx) { err += dx; y0 += sy; }
     }
+}
+
+void js_display_fill_circle(int cx, int cy, int r, int value) {
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            if (dx * dx + dy * dy <= r * r) {
+                js_display_set_pixel(cx + dx, cy + dy, value);
+            }
+        }
+    }
+}
+
+int js_display_draw_image(const char *filename, int dx, int dy, int threshold, int invert) {
+    int w, h, comp;
+    unsigned char *image = stbi_load(filename, &w, &h, &comp, 1);
+    if (!image) {
+        fprintf(stderr, "draw_image: failed to load %s\n", filename);
+        return 0;
+    }
+
+    for (int iy = 0; iy < h; iy++) {
+        for (int ix = 0; ix < w; ix++) {
+            int px = dx + ix;
+            int py = dy + iy;
+            if (px < 0 || px >= DISPLAY_WIDTH || py < 0 || py >= DISPLAY_HEIGHT) continue;
+            unsigned char val = image[iy * w + ix];
+            int lit = invert ? (val <= threshold) : (val > threshold);
+            if (lit) {
+                js_display_screen_buffer[py * DISPLAY_WIDTH + px] = 1;
+            }
+        }
+    }
+
+    stbi_image_free(image);
+    mark_dirty();
+    return 1;
 }
 
 void js_display_pack(uint8_t *dest) {
@@ -363,7 +399,7 @@ void js_display_print(int x, int y, const char *string, int color) {
 
     /* Lazy load bitmap font on first use — single source of truth from generate_font.py */
     if (!g_font) {
-        g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
+        g_font = js_display_load_font("/data/UserData/schwung/host/font.png", 1);
     }
     if (!g_font) return;
 
@@ -381,7 +417,7 @@ int js_display_text_width(const char *string) {
     if (!string) return 0;
 
     if (!g_font) {
-        g_font = js_display_load_font("/data/UserData/move-anything/host/font.png", 1);
+        g_font = js_display_load_font("/data/UserData/schwung/host/font.png", 1);
     }
     if (!g_font) return 0;
 
@@ -493,6 +529,36 @@ JSValue js_display_bind_text_width(JSContext *ctx, JSValueConst this_val, int ar
     return JS_NewInt32(ctx, w);
 }
 
+JSValue js_display_bind_fill_circle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) return JS_UNDEFINED;
+    int cx, cy, r, value = 1;
+    if (JS_ToInt32(ctx, &cx, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &cy, argv[1])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &r, argv[2])) return JS_UNDEFINED;
+    if (argc >= 4) {
+        if (JS_ToInt32(ctx, &value, argv[3])) return JS_UNDEFINED;
+    }
+    js_display_fill_circle(cx, cy, r, value);
+    return JS_UNDEFINED;
+}
+
+JSValue js_display_bind_draw_image(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) return JS_UNDEFINED;
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_UNDEFINED;
+    int x, y;
+    if (JS_ToInt32(ctx, &x, argv[1])) { JS_FreeCString(ctx, path); return JS_UNDEFINED; }
+    if (JS_ToInt32(ctx, &y, argv[2])) { JS_FreeCString(ctx, path); return JS_UNDEFINED; }
+    int threshold = 128, invert = 0;
+    if (argc >= 4) JS_ToInt32(ctx, &threshold, argv[3]);
+    if (argc >= 5) JS_ToInt32(ctx, &invert, argv[4]);
+    int result = js_display_draw_image(path, x, y, threshold, invert);
+    JS_FreeCString(ctx, path);
+    return JS_NewBool(ctx, result);
+}
+
 void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
     JS_SetPropertyStr(ctx, global_obj, "set_pixel",
         JS_NewCFunction(ctx, js_display_bind_set_pixel, "set_pixel", 3));
@@ -508,4 +574,8 @@ void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
         JS_NewCFunction(ctx, js_display_bind_print, "print", 4));
     JS_SetPropertyStr(ctx, global_obj, "text_width",
         JS_NewCFunction(ctx, js_display_bind_text_width, "text_width", 1));
+    JS_SetPropertyStr(ctx, global_obj, "fill_circle",
+        JS_NewCFunction(ctx, js_display_bind_fill_circle, "fill_circle", 4));
+    JS_SetPropertyStr(ctx, global_obj, "draw_image",
+        JS_NewCFunction(ctx, js_display_bind_draw_image, "draw_image", 5));
 }

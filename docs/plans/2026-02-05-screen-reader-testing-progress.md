@@ -7,7 +7,7 @@
 
 ### 1. D-Bus Signal Infrastructure ✅
 
-**Shim (move_anything_shim.c):**
+**Shim (schwung_shim.c):**
 - Added `send_screenreader_announcement()` function
 - Creates D-Bus signal messages on `com.ableton.move.ScreenReader.text`
 - Integrated into main ioctl loop via `shadow_check_screenreader_announcements()`
@@ -18,7 +18,7 @@
 - Added `SHM_SHADOW_SCREENREADER` shared memory segment
 - Host writes text, shim reads and emits D-Bus signal
 
-**Host (move_anything.c):**
+**Host (schwung_host.c):**
 - Added `host_announce_screenreader(text)` JavaScript function
 - Opens shared memory, writes text, toggles ready flag
 - Available to all JavaScript modules
@@ -27,9 +27,9 @@
 
 Successfully built on 2026-02-05 06:15:
 - move-anything: `BuildID[sha1]=5c73b7cd74811aedf2f5e26ced65cbee9fff37ee`
-- move-anything-shim.so: `BuildID[sha1]=f6d5a6db218699ab1bd4519420f5de4c96efe290`
+- schwung-shim.so: `BuildID[sha1]=f6d5a6db218699ab1bd4519420f5de4c96efe290`
 
-Package ready at: `move-anything.tar.gz`
+Package ready at: `schwung.tar.gz`
 
 ## What Needs Testing
 
@@ -38,7 +38,7 @@ Package ready at: `move-anything.tar.gz`
 **Manual test:**
 1. Install the new build
 2. Open browser to `http://move.local/screen-reader`
-3. From Move Anything host, call:
+3. From Schwung host, call:
    ```javascript
    host_announce_screenreader("Test announcement");
    ```
@@ -54,7 +54,7 @@ Package ready at: `move-anything.tar.gz`
 
 **Check logs:**
 ```bash
-tail -f /data/UserData/move-anything/debug.log | grep "Screen reader"
+tail -f /data/UserData/schwung/debug.log | grep "Screen reader"
 ```
 
 **Expected output:**
@@ -176,8 +176,8 @@ D-Bus might block our signals due to policy.
 
 ```
 src/host/shadow_constants.h     - Added shadow_screenreader_t structure
-src/move_anything_shim.c        - D-Bus signal emission
-src/move_anything.c             - host_announce_screenreader() function
+src/schwung_shim.c        - D-Bus signal emission
+src/schwung_host.c             - host_announce_screenreader() function
 docs/plans/2026-02-05-screen-reader-support-design.md - Design doc
 ```
 

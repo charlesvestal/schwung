@@ -1,5 +1,5 @@
 /* shadow_dbus.h - D-Bus monitoring, screen reader injection, volume/mute sync
- * Extracted from move_anything_shim.c for maintainability. */
+ * Extracted from schwung_shim.c for maintainability. */
 
 #ifndef SHADOW_DBUS_H
 #define SHADOW_DBUS_H
