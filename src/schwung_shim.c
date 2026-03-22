@@ -3736,11 +3736,11 @@ pre_done:
                 uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
                 int slot = 0;
                 /* Find first empty slot */
-                while (slot < 80 && (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
+                while (slot < MIDI_BUFFER_SIZE && (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
                     slot += 4;
                 /* Write up to remaining empty slots */
                 int written = 0;
-                while (jack_midi_pos < jack_midi_total && slot < 80 && written < 20) {
+                while (jack_midi_pos < jack_midi_total && slot < MIDI_BUFFER_SIZE && written < 20) {
                     SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[jack_midi_pos++];
                     midi_out[slot]   = m.cin | (m.cable << 4);
                     midi_out[slot+1] = (m.midi.type << 4) | m.midi.channel;
