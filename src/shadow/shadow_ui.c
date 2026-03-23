@@ -1430,6 +1430,30 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
                 char packs_dir[1024];
                 snprintf(packs_dir, sizeof(packs_dir), "%s/%s/%s",
                          dir_path, ent->d_name, scan_packs);
+
+                /* Auto-extract any .rnbopack tarballs */
+                DIR *rpdir = opendir(packs_dir);
+                if (rpdir) {
+                    struct dirent *rpent;
+                    while ((rpent = readdir(rpdir)) != NULL) {
+                        const char *ext = strstr(rpent->d_name, ".rnbopack");
+                        if (!ext || ext[9] != '\0') continue;
+                        char stem[128];
+                        strncpy(stem, rpent->d_name, sizeof(stem) - 1);
+                        stem[sizeof(stem) - 1] = '\0';
+                        char *dot = strstr(stem, ".rnbopack");
+                        if (dot) *dot = '\0';
+                        char check_info[1024];
+                        snprintf(check_info, sizeof(check_info), "%s/%s/info.json", packs_dir, stem);
+                        if (stat(check_info, &st) == 0) continue; /* already extracted */
+                        char cmd[2048];
+                        snprintf(cmd, sizeof(cmd), "mkdir -p '%s/%s' && tar -xf '%s/%s' -C '%s/%s' --strip-components=1 2>/dev/null",
+                                 packs_dir, stem, packs_dir, rpent->d_name, packs_dir, stem);
+                        system(cmd);
+                    }
+                    closedir(rpdir);
+                }
+
                 DIR *pdir = opendir(packs_dir);
                 if (pdir) {
                     struct dirent *pent;
