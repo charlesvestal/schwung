@@ -45,7 +45,7 @@ typedef struct {
     uint32_t frame_counter;
     uint32_t jack_frame_done;
 
-    /* Audio — stereo interleaved int16 (1024 bytes) */
+    /* Audio — stereo interleaved int16 */
     int16_t audio_out[SCHWUNG_JACK_AUDIO_FRAMES * 2];
     int16_t audio_in[SCHWUNG_JACK_AUDIO_FRAMES * 2];
 
