@@ -3221,9 +3221,37 @@ static int load_patch(int index) {
                             /* Found the pack — use parent module path */
                             snprintf(synth_path, sizeof(synth_path),
                                      "%s/%s", sg_dir, ent->d_name);
-                            snprintf(pack_config_buf, sizeof(pack_config_buf),
-                                     "{\"pack\":\"%s/%s/packs/%s\"}",
-                                     sg_dir, ent->d_name, pack_name);
+                            /* Check if this is a Runner DB export (has cache paths) */
+                            FILE *info_f = fopen(check_path, "r");
+                            int is_runner_db = 0;
+                            char info_name[256] = "";
+                            if (info_f) {
+                                char ibuf[4096];
+                                size_t nr = fread(ibuf, 1, sizeof(ibuf) - 1, info_f);
+                                ibuf[nr] = '\0';
+                                fclose(info_f);
+                                if (strstr(ibuf, "/data/UserData/Documents/rnbo/cache/so/") ||
+                                    strstr(ibuf, "\"runner_db\""))
+                                    is_runner_db = 1;
+                                /* Extract name from info.json */
+                                const char *np = strstr(ibuf, "\"name\"");
+                                if (np) {
+                                    np = strchr(np + 6, '"'); if (np) { np++;
+                                    const char *ne = strchr(np, '"');
+                                    if (ne && (ne - np) < (int)sizeof(info_name)) {
+                                        memcpy(info_name, np, ne - np);
+                                        info_name[ne - np] = '\0';
+                                    }}
+                                }
+                            }
+                            if (is_runner_db && info_name[0]) {
+                                snprintf(pack_config_buf, sizeof(pack_config_buf),
+                                         "{\"runner_set\":\"%s\"}", info_name);
+                            } else {
+                                snprintf(pack_config_buf, sizeof(pack_config_buf),
+                                         "{\"pack\":\"%s/%s/packs/%s\"}",
+                                         sg_dir, ent->d_name, pack_name);
+                            }
                             pack_config = pack_config_buf;
                             snprintf(msg, sizeof(msg), "Resolved pack: %s -> %s",
                                      patch->synth_module, synth_path);

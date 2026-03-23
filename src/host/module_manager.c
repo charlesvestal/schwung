@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include "module_manager.h"
 
+#include "rnbo_db_export.h"
+
 /* Simple JSON parsing helpers (minimal, for module.json only) */
 static int json_get_string(const char *json, const char *key, char *out, int out_len) {
     char search[128];
@@ -280,6 +282,9 @@ static int scan_packs_dir(module_manager_t *mm, const module_info_t *parent) {
     /* Auto-extract any .rnbopack tarballs */
     extract_rnbopacks(packs_path);
 
+    /* Import RNBO Runner sets from sqlite DB (if available) */
+    export_rnbo_runner_sets(packs_path);
+
     DIR *dir = opendir(packs_path);
     if (!dir) return 0;
 
@@ -297,7 +302,10 @@ static int scan_packs_dir(module_manager_t *mm, const module_info_t *parent) {
         /* Must have info.json */
         char info_path[MAX_PATH_LEN];
         snprintf(info_path, sizeof(info_path), "%s/info.json", pack_dir);
-        if (stat(info_path, &st) != 0) continue;
+        if (stat(info_path, &st) != 0) {
+            printf("mm: pack '%s' skipped (no info.json)\n", entry->d_name);
+            continue;
+        }
 
         /* Create virtual module entry */
         module_info_t *info = &mm->modules[mm->module_count];
