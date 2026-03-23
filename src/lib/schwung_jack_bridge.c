@@ -83,11 +83,30 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
 
     // --- Audio: add JACK's audio_out into shadow output buffer (saturating) ---
     int16_t *shadow_audio = (int16_t *)(shadow + SCHWUNG_OFF_OUT_AUDIO);
-    const int16_t *jack_audio = shm->audio_out;
     int num_samples = SCHWUNG_AUDIO_FRAMES * 2; // stereo interleaved
 
+    /* Wake the JACK driver and wait for it to write fresh audio.
+     * Clear audio_ready flag, wake driver, busywait for driver to set it.
+     * This ensures we never read stale audio from the previous cycle. */
+    volatile uint8_t *audio_ready = (volatile uint8_t *)(((uint8_t *)shm) + 3940);
+    *audio_ready = 0;
+    __sync_synchronize();
+
+    __atomic_add_fetch(&shm->frame_counter, 1, __ATOMIC_RELEASE);
+    syscall(SYS_futex, &shm->frame_counter, FUTEX_WAKE, 1, NULL, NULL, 0);
+
+    /* Busywait for the driver to write audio and set audio_ready.
+     * The driver writes audio as the first thing after waking (~1μs).
+     * Allow up to ~2ms of spinning (well within the 2.9ms frame). */
+    {
+        int spins = 0;
+        while (!*audio_ready && spins < 2000000) {
+            spins++;
+        }
+    }
+
     for (int i = 0; i < num_samples; i++)
-        shadow_audio[i] = saturating_add_i16(shadow_audio[i], jack_audio[i]);
+        shadow_audio[i] = saturating_add_i16(shadow_audio[i], shm->audio_out[i]);
 
     // --- MIDI output is handled by the shim via shadow_queue_led() ---
     // The shim routes JACK's midi_from_jack through the existing
@@ -190,8 +209,6 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
         }
     }
 
-    // --- Increment frame_counter and wake JACK via futex ---
-    __atomic_add_fetch(&shm->frame_counter, 1, __ATOMIC_RELEASE);
-
-    syscall(SYS_futex, &shm->frame_counter, FUTEX_WAKE, 1, NULL, NULL, 0);
+    // --- frame_counter increment and futex wake moved to bridge_pre ---
+    // (audio is now synchronous: wake → wait for write → mix → SPI send)
 }
