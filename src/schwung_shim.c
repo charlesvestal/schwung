@@ -3718,19 +3718,21 @@ pre_done:
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
     shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
 
-    /* Route JACK MIDI output directly to SPI buffer.
-     * In overtake mode, zero the buffer first so Move's packets don't
-     * compete for slots. Write JACK's packets from slot 0. */
+    /* Route JACK MIDI output to SPI buffer.
+     * Write after shadow_clear_move_leds_if_overtake() has freed cable-0
+     * note/CC slots. Write JACK's packets into first available empty slots. */
     if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0) {
         uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
         uint8_t count = g_jack_shm->midi_from_jack_count;
-
-        /* Clear Move's MIDI output — JACK owns the buffer in overtake */
-        memset(midi_out, 0, MIDI_BUFFER_SIZE);
-
-        /* Write JACK's packets from slot 0 */
         int slot = 0;
+
         for (uint8_t i = 0; i < count && slot < MIDI_BUFFER_SIZE; i++) {
+            /* Find next empty slot */
+            while (slot < MIDI_BUFFER_SIZE &&
+                   (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
+                slot += 4;
+            if (slot >= MIDI_BUFFER_SIZE) break;
+
             SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[i];
             midi_out[slot]   = m.cin | (m.cable << 4);
             midi_out[slot+1] = (m.midi.type << 4) | m.midi.channel;
