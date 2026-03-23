@@ -261,17 +261,32 @@ else
     echo "Skipping Shadow POC (up to date)"
 fi
 
+# Build sqlite3 object (for RNBO Runner DB access in shadow UI)
+if needs_rebuild build/sqlite3.o libs/sqlite3/sqlite3.c; then
+    echo "Compiling sqlite3..."
+    "${CROSS_PREFIX}gcc" -g -O2 -c \
+        -DSQLITE_OMIT_LOAD_EXTENSION \
+        -DSQLITE_THREADSAFE=0 \
+        libs/sqlite3/sqlite3.c \
+        -o build/sqlite3.o
+else
+    echo "Skipping sqlite3 (up to date)"
+fi
+
 # Build Shadow UI host (uses shared display bindings from js_display.c)
 if needs_rebuild build/shadow/shadow_ui \
     src/shadow/shadow_ui.c src/host/js_display.c src/host/unified_log.c \
-    src/host/js_display.h src/host/shadow_constants.h src/host/unified_log.h; then
+    src/host/js_display.h src/host/shadow_constants.h src/host/unified_log.h \
+    build/sqlite3.o; then
     echo "Building Shadow UI..."
     "${CROSS_PREFIX}gcc" -g -O3 \
         src/shadow/shadow_ui.c \
         src/host/js_display.c \
         src/host/unified_log.c \
+        build/sqlite3.o \
         -o build/shadow/shadow_ui \
         -Isrc -Isrc/lib \
+        -Ilibs/sqlite3 \
         -Ilibs/quickjs/quickjs-2025-04-26 \
         -Llibs/quickjs/quickjs-2025-04-26 \
         -lquickjs -lm -ldl -lrt -lpthread

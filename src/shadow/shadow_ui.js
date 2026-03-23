@@ -4890,6 +4890,8 @@ function scanModulesForType(componentType) {
                                     }
                                 }
                             } catch (e2) { /* packs dir may not exist yet */ }
+                            /* Import sets from RNBO Runner database if available */
+                            try { host_export_rnbo_runner_sets(packsDir); } catch (e2) { /* binding may not exist */ }
                             try {
                                 const packEntries = os.readdir(packsDir) || [];
                                 const packList = packEntries[0];
