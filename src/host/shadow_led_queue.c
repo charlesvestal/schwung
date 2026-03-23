@@ -24,6 +24,12 @@ static uint8_t shadow_pending_cc_status[128];
 static uint8_t shadow_pending_cc_cin[128];
 static int shadow_led_queue_initialized = 0;
 
+/* Raw packet queue for sysex and other non-note/CC messages */
+#define RAW_QUEUE_SIZE 128
+static uint8_t raw_queue[RAW_QUEUE_SIZE][4];  /* 4 bytes per USB-MIDI packet */
+static int raw_queue_head = 0;
+static int raw_queue_tail = 0;
+
 /* Move LED state cache — continuously accumulated from Move's MIDI_OUT.
  * When entering overtake we snapshot this, and on exit we restore it. */
 static int move_note_led_state[128];         /* -1 = unknown, else color */
@@ -116,15 +122,25 @@ void shadow_init_led_queue(void) {
 void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2) {
     uint8_t type = status & 0xF0;
     if (type == 0x90) {
-        /* Note-on: queue by note number */
+        /* Note-on: queue by note number (last-writer-wins) */
         shadow_pending_note_color[data1] = data2;
         shadow_pending_note_status[data1] = status;
         shadow_pending_note_cin[data1] = cin;
     } else if (type == 0xB0) {
-        /* CC: queue by CC number */
+        /* CC: queue by CC number (last-writer-wins) */
         shadow_pending_cc_color[data1] = data2;
         shadow_pending_cc_status[data1] = status;
         shadow_pending_cc_cin[data1] = cin;
+    } else {
+        /* Sysex and other messages: FIFO queue */
+        int next = (raw_queue_head + 1) % RAW_QUEUE_SIZE;
+        if (next != raw_queue_tail) {
+            raw_queue[raw_queue_head][0] = cin;
+            raw_queue[raw_queue_head][1] = status;
+            raw_queue[raw_queue_head][2] = data1;
+            raw_queue[raw_queue_head][3] = data2;
+            raw_queue_head = next;
+        }
     }
 }
 
@@ -398,6 +414,26 @@ void shadow_flush_pending_leds(void) {
     }
     for (int i = 0; i < 128; i++) {
         if (shadow_pending_cc_color[i] >= 0) { ccs_remaining = 1; break; }
+    }
+
+    /* Flush raw packet queue (sysex, etc.) */
+    while (raw_queue_tail != raw_queue_head && sent < budget) {
+        while (hw_offset < MIDI_BUFFER_SIZE) {
+            if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
+                midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
+                break;
+            }
+            hw_offset += 4;
+        }
+        if (hw_offset >= MIDI_BUFFER_SIZE) break;
+
+        midi_out[hw_offset]   = raw_queue[raw_queue_tail][0];
+        midi_out[hw_offset+1] = raw_queue[raw_queue_tail][1];
+        midi_out[hw_offset+2] = raw_queue[raw_queue_tail][2];
+        midi_out[hw_offset+3] = raw_queue[raw_queue_tail][3];
+        hw_offset += 4;
+        raw_queue_tail = (raw_queue_tail + 1) % RAW_QUEUE_SIZE;
+        sent++;
     }
 
     /* When a pass completes, either queue the next pass or clear the flags */

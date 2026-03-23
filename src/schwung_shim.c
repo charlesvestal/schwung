@@ -61,9 +61,13 @@
 /* SPI protocol types, constants, and helpers from schwung-spi (MIT).
  * https://github.com/charlesvestal/schwung-spi */
 #include "lib/schwung_spi_lib.h"
+#include "lib/schwung_jack_bridge.h"
 
 /* SPI library handle — provides shadow buffer, hardware buffer, and ioctl hooks */
 static SchwungSpi *g_spi_handle = NULL;
+
+/* JACK shadow driver shared memory (NULL until init, no-op if JACK never connects) */
+static SchwungJackShm *g_jack_shm = NULL;
 
 unsigned char *global_mmap_addr = NULL;  /* Points to library shadow buffer (what Move sees) */
 unsigned char *hardware_mmap_addr = NULL; /* Points to real hardware mailbox */
@@ -2563,6 +2567,21 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         return 1;
     }
 
+    /* jack:display — enable/disable JACK display override */
+    if (strcmp(key, "jack:display") == 0) {
+        if (req_type == 1 && g_jack_shm) {  /* SET */
+            g_jack_shm->display_active = (shadow_param->value[0] == '1') ? 1 : 0;
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+        } else if (req_type == 2 && g_jack_shm) {  /* GET */
+            shadow_param->value[0] = g_jack_shm->display_active ? '1' : '0';
+            shadow_param->value[1] = '\0';
+            shadow_param->error = 0;
+            shadow_param->result_len = 1;
+        }
+        return 1;
+    }
+
     /* master_fx:resample_bridge */
     if (strncmp(key, "master_fx:", 10) == 0) {
         const char *fx_key = key + 10;
@@ -2686,6 +2705,9 @@ static void shim_init_subsystems(void)
 
     printf("Shadow mailbox: Move sees %p, hardware at %p\n",
            (void*)global_mmap_addr, (void*)hardware_mmap_addr);
+
+    /* NOTE: Do NOT pin Move's CPU affinity here — child processes
+     * (including jackd via rnbomovecontrol) inherit the mask. */
 
     /* Initialize shadow shared memory when we detect the SPI mailbox */
     init_shadow_shm();
@@ -3698,6 +3720,51 @@ pre_done:
      * Inject any MIDI from shadow UI into the mailbox before sync.
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
     shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
+
+    /* Route JACK MIDI output to SPI buffer.
+     * The JACK driver writes packets to midi_from_jack[] and sets count.
+     * We read ALL of them each frame (up to 20 = SPI hardware limit).
+     * The driver clears count to 0 when queue is empty, so we only
+     * process fresh data. */
+    if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0) {
+        uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+        uint8_t count = g_jack_shm->midi_from_jack_count;
+        const int HW_MIDI_LIMIT = 80;
+        int slot = 0;
+        int written = 0;
+        int empty_found = 0;
+
+        /* Count empty slots before writing */
+        for (int s = 0; s < HW_MIDI_LIMIT; s += 4) {
+            if (!midi_out[s] && !midi_out[s+1] && !midi_out[s+2] && !midi_out[s+3])
+                empty_found++;
+        }
+
+        for (uint8_t i = 0; i < count && i < 20; i++) {
+            /* Find empty slot */
+            while (slot < HW_MIDI_LIMIT &&
+                   (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
+                slot += 4;
+            if (slot >= HW_MIDI_LIMIT) break;
+
+            SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[i];
+            midi_out[slot]   = m.cin | (m.cable << 4);
+            midi_out[slot+1] = (m.midi.type << 4) | m.midi.channel;
+            midi_out[slot+2] = m.midi.data1;
+            midi_out[slot+3] = m.midi.data2;
+            slot += 4;
+            written++;
+        }
+
+        /* Debug: store at offset 3900 */
+        ((uint8_t *)g_jack_shm)[3900] = (uint8_t)count;
+        ((uint8_t *)g_jack_shm)[3901] = (uint8_t)written;
+        ((uint8_t *)g_jack_shm)[3902] = (uint8_t)empty_found;
+        ((uint8_t *)g_jack_shm)[3903]++;  /* frame counter */
+        /* Copy first 80 bytes of shadow MIDI out */
+        memcpy(((uint8_t *)g_jack_shm) + 3800, midi_out, 80);
+    }
+
     /* Copy pad LED colors (notes 68-99) to overlay SHM for shadow_ui to read */
     if (shadow_overlay_shm) {
         for (int i = 0; i < 32; i++) {
@@ -3732,6 +3799,9 @@ pre_done:
         shadow_spi_fd = schwung_spi_get_fd(g_spi_handle);
     }
 
+    /* Mix JACK audio/display into shadow (no-op if JACK not connected) */
+    schwung_jack_bridge_pre(g_jack_shm, shadow);
+
     /* Mute Move's audio output when requested (e.g. during silent clip switching).
      * Zero the audio region in shadow BEFORE the library copies shadow→hw. */
     if (shadow_control && shadow_control->mute_move_audio) {
@@ -3763,10 +3833,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * The output region may have been modified by hardware during ioctl. */
     memcpy(shadow + MIDI_OUT_OFFSET, hw + MIDI_OUT_OFFSET,
            AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
-    memcpy(shadow + AUDIO_OUT_OFFSET, hw + AUDIO_OUT_OFFSET,
-           DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
+    /* Skip hw→shadow copy for AUDIO_OUT — prevents stale mixed audio
+     * from accumulating when Move firmware doesn't overwrite the region. */
+    /* memcpy(shadow + AUDIO_OUT_OFFSET, hw + AUDIO_OUT_OFFSET,
+           DISPLAY_OFFSET - AUDIO_OUT_OFFSET); */
     memcpy(shadow + DISPLAY_OFFSET, hw + DISPLAY_OFFSET,
            MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
+
+    /* Copy capture data to JACK shared memory and wake JACK driver */
+    schwung_jack_bridge_post(g_jack_shm, shadow, hw);
 
     /* Bridge Schwung's total mix into native resampling path when selected. */
     native_resample_bridge_apply();
@@ -3818,6 +3893,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             __sync_synchronize();
             shadow_midi_inject_shm->ready++;
             shadow_log("Overtake exit: injected shift-off and volume-touch-off");
+        }
+        /* Clear JACK display override on overtake exit */
+        if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {
+            g_jack_shm->display_active = 0;
+            g_jack_shm->midi_from_jack_count = 0;
+        }
+        /* Run overtake exit hook if it exists (modules install their own cleanup) */
+        if (prev_overtake_mode != 0 && overtake_mode == 0) {
+            system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
+                   "/data/UserData/schwung/hooks/overtake-exit.sh' &");
         }
         prev_overtake_mode = overtake_mode;
     }
@@ -5011,4 +5096,7 @@ static void shim_spi_init(void)
     /* Initialize SPI library and register callbacks */
     g_spi_handle = schwung_spi_init();
     schwung_spi_set_callbacks(g_spi_handle, shim_pre_transfer, shim_post_transfer, NULL);
+
+    /* Create JACK shadow driver shared memory (optional — zero overhead if JACK never connects) */
+    g_jack_shm = schwung_jack_bridge_create();
 }
