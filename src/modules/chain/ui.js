@@ -297,11 +297,29 @@ function scanChainableModules() {
     };
 
     /* Scan installed modules using host_list_modules() */
-    const installedModules = getInstalledModules();
-    for (const moduleId of installedModules) {
-        if (moduleId === "chain") continue; /* Skip chain module itself */
+    let hostModules = [];
+    if (typeof host_list_modules === "function") {
+        try {
+            hostModules = host_list_modules() || [];
+        } catch (e) {}
+    }
+    for (const m of hostModules) {
+        const moduleId = m.id || m.name;
+        if (!moduleId || moduleId === "chain") continue;
 
-        const mod = scanModuleDir(`${root}/${moduleId}`);
+        /* Try filesystem first, fall back to host_list_modules data */
+        let mod = scanModuleDir(`${root}/${moduleId}`);
+        if (!mod && m.component_type) {
+            /* Virtual module (e.g. scan_packs entry) — use host data directly */
+            mod = {
+                id: moduleId,
+                name: m.name || moduleId,
+                component_type: m.component_type,
+                params: [],
+                builtin: false
+            };
+            console.log(`chain: virtual module '${mod.name}' (${mod.id}) type=${mod.component_type}`);
+        }
         if (!mod) continue;
 
         switch (mod.component_type) {
@@ -591,7 +609,15 @@ function getSlotValue(slotType) {
 
 function getComponentName(slotType, componentId) {
     const component = findComponent(slotType, componentId);
-    return component ? component.name : componentId;
+    if (component) return component.name;
+    /* Pack entries: strip parent module prefix and add (RNBO) suffix */
+    if (componentId && componentId.startsWith("rnbo-synth-")) {
+        return componentId.substring("rnbo-synth-".length) + " (RNBO)";
+    }
+    if (componentId && componentId.startsWith("rnbo-fx-")) {
+        return componentId.substring("rnbo-fx-".length) + " (RNBO)";
+    }
+    return componentId;
 }
 
 function getAssignedKnobCount() {
@@ -1915,7 +1941,13 @@ function drawComponentSelector() {
             bottomY: menuLayoutDefaults.listBottomNoFooter
         },
         getLabel: (item) => item.label,
-        getValue: (item) => item.value
+        getValue: (item) => {
+            if (item.value && item.mode) {
+                const comp = findComponent(item.mode, item.value);
+                if (comp) return comp.name;
+            }
+            return item.value;
+        }
     });
 }
 
@@ -2188,11 +2220,12 @@ function drawUI() {
     fill_rect(0, 14, SCREEN_WIDTH, 1, 1);
 
     /* Synth module info with bank name */
+    const synthDisplay = getComponentName("synth", synthModule) || "SF2";
     const bankName = host_module_get_param("bank_name");
     if (bankName) {
-        print(2, 20, `${synthModule || "SF2"}  ${bankName}`, 1);
+        print(2, 20, `${synthDisplay}  ${bankName}`, 1);
     } else {
-        print(2, 20, synthModule || "SF2", 1);
+        print(2, 20, synthDisplay, 1);
     }
 
     /* Preset from synth with number */
