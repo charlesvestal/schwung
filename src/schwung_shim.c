@@ -3728,6 +3728,14 @@ pre_done:
         uint8_t count = g_jack_shm->midi_from_jack_count;
         const int HW_MIDI_LIMIT = 80;
         int slot = 0;
+        int written = 0;
+        int empty_found = 0;
+
+        /* Count empty slots before writing */
+        for (int s = 0; s < HW_MIDI_LIMIT; s += 4) {
+            if (!midi_out[s] && !midi_out[s+1] && !midi_out[s+2] && !midi_out[s+3])
+                empty_found++;
+        }
 
         for (uint8_t i = 0; i < count && i < 20; i++) {
             /* Find empty slot */
@@ -3742,7 +3750,16 @@ pre_done:
             midi_out[slot+2] = m.midi.data1;
             midi_out[slot+3] = m.midi.data2;
             slot += 4;
+            written++;
         }
+
+        /* Debug: store at offset 3900 */
+        ((uint8_t *)g_jack_shm)[3900] = (uint8_t)count;
+        ((uint8_t *)g_jack_shm)[3901] = (uint8_t)written;
+        ((uint8_t *)g_jack_shm)[3902] = (uint8_t)empty_found;
+        ((uint8_t *)g_jack_shm)[3903]++;  /* frame counter */
+        /* Copy first 80 bytes of shadow MIDI out */
+        memcpy(((uint8_t *)g_jack_shm) + 3800, midi_out, 80);
     }
 
     /* Copy pad LED colors (notes 68-99) to overlay SHM for shadow_ui to read */
