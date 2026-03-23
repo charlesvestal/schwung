@@ -49,13 +49,13 @@ typedef struct {
     int16_t audio_out[SCHWUNG_JACK_AUDIO_FRAMES * 2];
     int16_t audio_in[SCHWUNG_JACK_AUDIO_FRAMES * 2];
 
-    /* MIDI cable 0 — Move hardware (330 bytes) */
+    /* MIDI cable 0 — Move hardware */
     SchwungJackMidiEvent    midi_to_jack[SCHWUNG_JACK_MIDI_IN_MAX];
     uint8_t                 midi_to_jack_count;
     SchwungJackUsbMidiMsg   midi_from_jack[SCHWUNG_JACK_MIDI_OUT_MAX];
     uint8_t                 midi_from_jack_count;
 
-    /* MIDI cable 2+ — external USB (330 bytes) */
+    /* MIDI cable 2+ — external USB */
     SchwungJackMidiEvent    ext_midi_to_jack[SCHWUNG_JACK_MIDI_IN_MAX];
     uint8_t                 ext_midi_to_jack_count;
     SchwungJackUsbMidiMsg   ext_midi_from_jack[SCHWUNG_JACK_MIDI_OUT_MAX];
