@@ -1409,16 +1409,64 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
 
             /* Read module.json */
             char id[128] = "", name[256] = "", version[64] = "";
+            char scan_packs[128] = "", component_type[32] = "";
             read_json_string(module_json_path, "id", id, sizeof(id));
             read_json_string(module_json_path, "name", name, sizeof(name));
             read_json_string(module_json_path, "version", version, sizeof(version));
+            read_json_string(module_json_path, "scan_packs", scan_packs, sizeof(scan_packs));
+            read_json_string(module_json_path, "component_type", component_type, sizeof(component_type));
 
             if (id[0] == '\0') continue;  /* Skip if no id */
+
+            /* Debug: log every module scanned */
+            {
+                FILE *dbgf = fopen("/tmp/schwung-scan-packs.log", "a");
+                if (dbgf) { fprintf(dbgf, "module id='%s' scan_packs='%s' path='%s'\n", id, scan_packs, module_json_path); fclose(dbgf); }
+            }
+            if (scan_packs[0]) {
+                /* Expand packs: scan subdirectory for extracted pack directories
+                 * with info.json. Each pack becomes a separate module entry.
+                 * The base module is hidden. */
+                char packs_dir[1024];
+                snprintf(packs_dir, sizeof(packs_dir), "%s/%s/%s",
+                         dir_path, ent->d_name, scan_packs);
+                DIR *pdir = opendir(packs_dir);
+                if (pdir) {
+                    struct dirent *pent;
+                    while ((pent = readdir(pdir)) != NULL) {
+                        if (pent->d_name[0] == '.') continue;
+                        char pack_info[1024];
+                        snprintf(pack_info, sizeof(pack_info), "%s/%s/info.json",
+                                 packs_dir, pent->d_name);
+                        if (stat(pack_info, &st) != 0) continue;
+
+                        char pack_name[256] = "";
+                        read_json_string(pack_info, "name", pack_name, sizeof(pack_name));
+                        if (pack_name[0] == '\0')
+                            strncpy(pack_name, pent->d_name, sizeof(pack_name) - 1);
+
+                        char pack_id[128];
+                        snprintf(pack_id, sizeof(pack_id), "%s-%s", id, pent->d_name);
+
+                        JSValue obj = JS_NewObject(ctx);
+                        JS_SetPropertyStr(ctx, obj, "id", JS_NewString(ctx, pack_id));
+                        JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, pack_name));
+                        JS_SetPropertyStr(ctx, obj, "version", JS_NewString(ctx, version[0] ? version : "0.0.0"));
+                        if (component_type[0])
+                            JS_SetPropertyStr(ctx, obj, "component_type", JS_NewString(ctx, component_type));
+                        JS_SetPropertyUint32(ctx, arr, idx++, obj);
+                    }
+                    closedir(pdir);
+                }
+                continue;  /* Don't add the base module */
+            }
 
             JSValue obj = JS_NewObject(ctx);
             JS_SetPropertyStr(ctx, obj, "id", JS_NewString(ctx, id));
             JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, name[0] ? name : id));
             JS_SetPropertyStr(ctx, obj, "version", JS_NewString(ctx, version[0] ? version : "0.0.0"));
+            if (component_type[0])
+                JS_SetPropertyStr(ctx, obj, "component_type", JS_NewString(ctx, component_type));
             JS_SetPropertyUint32(ctx, arr, idx++, obj);
         }
         closedir(dir);
