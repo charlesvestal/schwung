@@ -3719,19 +3719,22 @@ pre_done:
     shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
 
     /* Route JACK MIDI output to SPI buffer.
-     * Write after shadow_clear_move_leds_if_overtake() has freed cable-0
-     * note/CC slots. Write JACK's packets into first available empty slots. */
+     * Hardware only reads first 80 bytes (20 USB-MIDI packets).
+     * shadow_clear_move_leds_if_overtake() already cleared cable-0
+     * note/CC slots. Write JACK's packets into empty slots within
+     * the hardware-visible region only. */
     if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0) {
         uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
         uint8_t count = g_jack_shm->midi_from_jack_count;
         int slot = 0;
+        const int HW_MIDI_LIMIT = 80;  /* 20 packets × 4 bytes */
 
-        for (uint8_t i = 0; i < count && slot < MIDI_BUFFER_SIZE; i++) {
-            /* Find next empty slot */
-            while (slot < MIDI_BUFFER_SIZE &&
+        for (uint8_t i = 0; i < count && slot < HW_MIDI_LIMIT; i++) {
+            /* Find next empty slot within hardware-visible region */
+            while (slot < HW_MIDI_LIMIT &&
                    (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
                 slot += 4;
-            if (slot >= MIDI_BUFFER_SIZE) break;
+            if (slot >= HW_MIDI_LIMIT) break;
 
             SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[i];
             midi_out[slot]   = m.cin | (m.cable << 4);
