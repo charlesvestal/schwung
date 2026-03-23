@@ -4870,13 +4870,40 @@ function scanModulesForType(componentType) {
                                    (json.capabilities && json.capabilities.component_type);
 
                     if (expectedTypes.includes(modType)) {
-                        /* Check if already in result to avoid duplicates */
-                        const id = json.id || entry;
-                        if (!result.find(m => m.id === id)) {
-                            result.push({
-                                id: id,
-                                name: json.name || entry
-                            });
+                        const scanPacks = json.scan_packs;
+                        if (scanPacks) {
+                            /* Expand packs: scan subdirectory for extracted
+                             * pack directories with info.json */
+                            const packsDir = `${dirPath}/${entry}/${scanPacks}`;
+                            try {
+                                const packEntries = os.readdir(packsDir) || [];
+                                const packList = packEntries[0];
+                                if (Array.isArray(packList)) {
+                                    for (const pe of packList) {
+                                        if (pe === '.' || pe === '..') continue;
+                                        const infoPath = `${packsDir}/${pe}/info.json`;
+                                        try {
+                                            const infoContent = std.loadFile(infoPath);
+                                            if (!infoContent) continue;
+                                            const info = JSON.parse(infoContent);
+                                            const packId = (json.id || entry) + '-' + pe;
+                                            const packName = info.name || pe;
+                                            if (!result.find(m => m.id === packId)) {
+                                                result.push({ id: packId, name: packName });
+                                            }
+                                        } catch (e2) { /* skip */ }
+                                    }
+                                }
+                            } catch (e2) { /* packs dir not found */ }
+                        } else {
+                            /* Regular module — add directly */
+                            const id = json.id || entry;
+                            if (!result.find(m => m.id === id)) {
+                                result.push({
+                                    id: id,
+                                    name: json.name || entry
+                                });
+                            }
                         }
                     }
                 } catch (e) {
