@@ -3719,37 +3719,24 @@ pre_done:
     shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
 
     /* Route JACK MIDI output directly to SPI buffer.
-     * Write up to 20 per frame from the shm buffer, tracking position
-     * so large bursts drain across multiple frames. */
-    {
-        static uint8_t jack_midi_pos = 0;
-        static uint8_t jack_midi_total = 0;
+     * In overtake mode, zero the buffer first so Move's packets don't
+     * compete for slots. Write JACK's packets from slot 0. */
+    if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0) {
+        uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+        uint8_t count = g_jack_shm->midi_from_jack_count;
 
-        if (g_jack_shm) {
-            uint8_t new_total = g_jack_shm->midi_from_jack_count;
-            if (new_total != jack_midi_total) {
-                jack_midi_pos = 0;
-                jack_midi_total = new_total;
-            }
+        /* Clear Move's MIDI output — JACK owns the buffer in overtake */
+        memset(midi_out, 0, MIDI_BUFFER_SIZE);
 
-            if (jack_midi_pos < jack_midi_total) {
-                uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
-                int slot = 0;
-                /* Find first empty slot */
-                while (slot < MIDI_BUFFER_SIZE && (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
-                    slot += 4;
-                /* Write up to remaining empty slots */
-                int written = 0;
-                while (jack_midi_pos < jack_midi_total && slot < MIDI_BUFFER_SIZE && written < 20) {
-                    SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[jack_midi_pos++];
-                    midi_out[slot]   = m.cin | (m.cable << 4);
-                    midi_out[slot+1] = (m.midi.type << 4) | m.midi.channel;
-                    midi_out[slot+2] = m.midi.data1;
-                    midi_out[slot+3] = m.midi.data2;
-                    slot += 4;
-                    written++;
-                }
-            }
+        /* Write JACK's packets from slot 0 */
+        int slot = 0;
+        for (uint8_t i = 0; i < count && slot < MIDI_BUFFER_SIZE; i++) {
+            SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[i];
+            midi_out[slot]   = m.cin | (m.cable << 4);
+            midi_out[slot+1] = (m.midi.type << 4) | m.midi.channel;
+            midi_out[slot+2] = m.midi.data1;
+            midi_out[slot+3] = m.midi.data2;
+            slot += 4;
         }
     }
 
