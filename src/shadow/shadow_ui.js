@@ -4875,6 +4875,21 @@ function scanModulesForType(componentType) {
                             /* Expand packs: scan subdirectory for extracted
                              * pack directories with info.json */
                             const packsDir = `${dirPath}/${entry}/${scanPacks}`;
+                            /* Auto-extract any .rnbopack tarballs */
+                            try {
+                                const rawEntries = os.readdir(packsDir) || [];
+                                const rawList = rawEntries[0];
+                                if (Array.isArray(rawList)) {
+                                    for (const fn of rawList) {
+                                        if (!fn.endsWith('.rnbopack')) continue;
+                                        const stem = fn.slice(0, -9);
+                                        const infoCheck = `${packsDir}/${stem}/info.json`;
+                                        /* Skip if already extracted */
+                                        if (std.loadFile(infoCheck)) continue;
+                                        host_system_cmd(`mkdir -p '${packsDir}/${stem}' && tar -xf '${packsDir}/${fn}' -C '${packsDir}/${stem}' --strip-components=1 2>/dev/null`);
+                                    }
+                                }
+                            } catch (e2) { /* packs dir may not exist yet */ }
                             try {
                                 const packEntries = os.readdir(packsDir) || [];
                                 const packList = packEntries[0];
