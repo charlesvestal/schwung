@@ -3883,7 +3883,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         /* Kill RNBO stack on overtake exit and clear display override */
         if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {
             g_jack_shm->display_active = 0;
-            system("pkill -f rnbomovecontrol 2>/dev/null &");
+            g_jack_shm->midi_from_jack_count = 0;
+            /* Kill rnbomovecontrol (it kills its children: jackd, rnbooscquery, etc).
+             * Use a script that waits and force-kills stragglers. */
+            system("sh -c '"
+                   "kill $(pgrep rnbomovecontrol) 2>/dev/null; "
+                   "sleep 2; "
+                   "kill -9 $(pgrep -f \"jackd.*shadow\") 2>/dev/null; "
+                   "kill -9 $(pgrep rnbooscquery) 2>/dev/null; "
+                   "kill -9 $(pgrep jack_transport_link) 2>/dev/null; "
+                   "kill -9 $(pgrep rnbo-runner-pan) 2>/dev/null"
+                   "' &");
+            shadow_log("Overtake exit: killing RNBO stack");
         }
         prev_overtake_mode = overtake_mode;
     }
