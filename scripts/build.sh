@@ -160,6 +160,7 @@ fi
 # Build host with module manager and settings
 if needs_rebuild build/schwung \
     src/schwung_host.c src/host/module_manager.c src/host/settings.c src/host/unified_log.c \
+    src/host/rnbo_db_export.c \
     src/host/module_manager.h src/host/settings.h src/host/plugin_api_v1.h src/host/unified_log.h; then
     echo "Building host..."
     "${CROSS_PREFIX}gcc" -g -O3 \
@@ -167,8 +168,11 @@ if needs_rebuild build/schwung \
         src/host/module_manager.c \
         src/host/settings.c \
         src/host/unified_log.c \
+        src/host/rnbo_db_export.c \
+        build/sqlite3.o \
         -o build/schwung \
         -Isrc -Isrc/lib \
+        -Ilibs/sqlite3 \
         -Ilibs/quickjs/quickjs-2025-04-26 \
         -Llibs/quickjs/quickjs-2025-04-26 \
         -lquickjs -lm -ldl -lrt -lpthread
