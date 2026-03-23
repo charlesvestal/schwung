@@ -2706,6 +2706,9 @@ static void shim_init_subsystems(void)
     printf("Shadow mailbox: Move sees %p, hardware at %p\n",
            (void*)global_mmap_addr, (void*)hardware_mmap_addr);
 
+    /* NOTE: Do NOT pin Move's CPU affinity here — child processes
+     * (including jackd via rnbomovecontrol) inherit the mask. */
+
     /* Initialize shadow shared memory when we detect the SPI mailbox */
     init_shadow_shm();
     /* Initialize link audio subsystem (before load_feature_config sets link_audio.enabled) */
@@ -3830,8 +3833,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * The output region may have been modified by hardware during ioctl. */
     memcpy(shadow + MIDI_OUT_OFFSET, hw + MIDI_OUT_OFFSET,
            AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
-    memcpy(shadow + AUDIO_OUT_OFFSET, hw + AUDIO_OUT_OFFSET,
-           DISPLAY_OFFSET - AUDIO_OUT_OFFSET);   /* AUDIO_OUT: 256-767 */
+    /* Skip hw→shadow copy for AUDIO_OUT — prevents stale mixed audio
+     * from accumulating when Move firmware doesn't overwrite the region. */
+    /* memcpy(shadow + AUDIO_OUT_OFFSET, hw + AUDIO_OUT_OFFSET,
+           DISPLAY_OFFSET - AUDIO_OUT_OFFSET); */
     memcpy(shadow + DISPLAY_OFFSET, hw + DISPLAY_OFFSET,
            MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
 
