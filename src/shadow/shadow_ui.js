@@ -9783,7 +9783,12 @@ function drawChainEdit() {
         if (moduleData) {
             /* Get display name from DSP if available */
             const prefix = selectedComp.key === "midiFx" ? "midi_fx1" : selectedComp.key;
-            const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
+            let displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
+            /* Friendly name for RNBO pack entries */
+            if (displayName === moduleData.module) {
+                if (displayName.startsWith("rnbo-synth-")) displayName = displayName.substring(11) + " (RNBO)";
+                else if (displayName.startsWith("rnbo-fx-")) displayName = displayName.substring(8) + " (RNBO)";
+            }
             const preset = getSlotParam(selectedSlot, `${prefix}:preset_name`) ||
                           getSlotParam(selectedSlot, `${prefix}:preset`) || "";
             infoLine = preset ? `${displayName} (${truncateText(preset, 8)})` : displayName;
@@ -10506,7 +10511,12 @@ function makeSlotLfoCtx(slot, lfoIdx) {
             const comps = [];
             const synthModule = getSlotParam(slot, "synth_module");
             if (synthModule) {
-                const name = getSlotParam(slot, "synth:name") || synthModule;
+                let name = getSlotParam(slot, "synth:name") || synthModule;
+                if (name === synthModule && name.startsWith("rnbo-synth-")) {
+                    name = name.substring("rnbo-synth-".length) + " (RNBO)";
+                } else if (name === synthModule && name.startsWith("rnbo-fx-")) {
+                    name = name.substring("rnbo-fx-".length) + " (RNBO)";
+                }
                 comps.push({ key: "synth", label: "Synth: " + name });
             }
             for (let i = 1; i <= 2; i++) {
