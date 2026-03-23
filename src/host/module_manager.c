@@ -301,14 +301,25 @@ static int scan_packs_dir(module_manager_t *mm, const module_info_t *parent) {
 
         /* Create virtual module entry */
         module_info_t *info = &mm->modules[mm->module_count];
+        /* When module_count hasn't advanced yet, info == parent (same slot).
+         * Copy parent id/name before overwriting to avoid overlapping snprintf. */
+        char parent_id[MAX_MODULE_ID_LEN];
+        char parent_name[MAX_MODULE_NAME_LEN];
+        strncpy(parent_id, parent->id, MAX_MODULE_ID_LEN - 1);
+        parent_id[MAX_MODULE_ID_LEN - 1] = '\0';
+        strncpy(parent_name, parent->name, MAX_MODULE_NAME_LEN - 1);
+        parent_name[MAX_MODULE_NAME_LEN - 1] = '\0';
         *info = *parent;  /* inherit everything */
         info->scan_packs[0] = '\0';  /* don't recurse */
 
-        snprintf(info->id, MAX_MODULE_ID_LEN, "%s-%s", parent->id, entry->d_name);
+        snprintf(info->id, MAX_MODULE_ID_LEN, "%s-%s", parent_id, entry->d_name);
 
         /* Get name from info.json, fall back to directory name */
-        if (get_pack_name(pack_dir, info->name, MAX_MODULE_NAME_LEN) != 0) {
-            strncpy(info->name, entry->d_name, MAX_MODULE_NAME_LEN - 1);
+        char pack_name[MAX_MODULE_NAME_LEN];
+        if (get_pack_name(pack_dir, pack_name, MAX_MODULE_NAME_LEN) == 0) {
+            snprintf(info->name, MAX_MODULE_NAME_LEN, "%s (RNBO)", pack_name);
+        } else {
+            snprintf(info->name, MAX_MODULE_NAME_LEN, "%s (RNBO)", entry->d_name);
         }
 
         snprintf(info->defaults_json, sizeof(info->defaults_json),
