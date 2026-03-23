@@ -322,7 +322,9 @@ static int scan_packs_dir(module_manager_t *mm, const module_info_t *parent) {
             snprintf(info->name, MAX_MODULE_NAME_LEN, "%s (RNBO)", entry->d_name);
         }
 
-        /* Check if this is a Runner DB export */
+        /* Check if this is a Runner DB export by looking for RNBO cache paths
+         * in info.json. DB exports use absolute paths to /data/UserData/Documents/rnbo/cache/so/,
+         * while rnbopack extracts use relative paths. */
         int is_runner_db = 0;
         {
             FILE *info_f = fopen(info_path, "r");
@@ -331,7 +333,9 @@ static int scan_packs_dir(module_manager_t *mm, const module_info_t *parent) {
                 size_t nread = fread(info_buf, 1, sizeof(info_buf) - 1, info_f);
                 info_buf[nread] = '\0';
                 fclose(info_f);
-                if (strstr(info_buf, "\"runner_db\"")) is_runner_db = 1;
+                if (strstr(info_buf, "\"runner_db\"") ||
+                    strstr(info_buf, "/data/UserData/Documents/rnbo/cache/so/"))
+                    is_runner_db = 1;
             }
         }
 
