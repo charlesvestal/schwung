@@ -1568,7 +1568,7 @@ static void export_rnbo_runner_sets(const char *packs_path) {
 
         append_raw(&buf, &len, &cap, "{\n  \"name\": \"");
         append_json_escaped(&buf, &len, &cap, set_name);
-        append_raw(&buf, &len, &cap, "\",\n  \"patchers\": [\n");
+        append_raw(&buf, &len, &cap, "\",\n  \"runner_db\": true,\n  \"patchers\": [\n");
 
         int first_patcher = 1;
         for (int i = 0; i < inst_count; i++) {

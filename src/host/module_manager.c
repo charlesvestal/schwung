@@ -322,8 +322,26 @@ static int scan_packs_dir(module_manager_t *mm, const module_info_t *parent) {
             snprintf(info->name, MAX_MODULE_NAME_LEN, "%s (RNBO)", entry->d_name);
         }
 
-        snprintf(info->defaults_json, sizeof(info->defaults_json),
-                 "{\"pack\":\"%s\"}", pack_dir);
+        /* Check if this is a Runner DB export */
+        int is_runner_db = 0;
+        {
+            FILE *info_f = fopen(info_path, "r");
+            if (info_f) {
+                char info_buf[4096];
+                size_t nread = fread(info_buf, 1, sizeof(info_buf) - 1, info_f);
+                info_buf[nread] = '\0';
+                fclose(info_f);
+                if (strstr(info_buf, "\"runner_db\"")) is_runner_db = 1;
+            }
+        }
+
+        if (is_runner_db) {
+            snprintf(info->defaults_json, sizeof(info->defaults_json),
+                     "{\"runner_set\":\"%s\"}", pack_name[0] ? pack_name : entry->d_name);
+        } else {
+            snprintf(info->defaults_json, sizeof(info->defaults_json),
+                     "{\"pack\":\"%s\"}", pack_dir);
+        }
 
         printf("mm: pack '%s' (%s)\n", info->name, info->id);
         mm->module_count++;
