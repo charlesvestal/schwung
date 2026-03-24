@@ -82,6 +82,8 @@ static const int hw_cc_leds[] = {
     40, 41, 42, 43,
     /* White LED buttons */
     49, 50, 51, 52, 54, 55, 56, 58, 60, 62, 63,
+    /* Encoder/knob LEDs (RGB, set via CC on ch16) */
+    71, 72, 73, 74, 75, 76, 77, 78,
     /* Transport / record (RGB) */
     85, 86, 88, 118, 119
 };
@@ -467,10 +469,11 @@ void shadow_flush_pending_leds(void) {
         }
     }
 
-    /* Progressive sysex LED restore — 2 LEDs per tick (12 packets).
-     * Writes directly to MIDI_OUT, bypassing the raw queue.
-     * Limited to avoid filling the 20-slot SPI MIDI buffer. */
-    led_queue_flush_jack_sysex_restore(2);
+    /* Progressive sysex LED restore — 1 LED per tick (6 packets).
+     * The hardware's sysex parser appears to only process one complete
+     * sysex message per SPI frame. Sending 2 causes the second to be
+     * dropped. We do multiple passes for reliability. */
+    led_queue_flush_jack_sysex_restore(1);
 }
 
 /* ============================================================================
@@ -583,6 +586,7 @@ void shadow_flush_pending_input_leds(void) {
 
 #define JACK_SYSEX_MAX_LEDS 128
 #define JACK_SYSEX_PACKETS_PER_LED 6  /* 16 bytes = 6 USB-MIDI packets */
+#define JACK_SYSEX_SUBCMD_COUNT 2     /* subcmd 0x00 and 0x10 cached separately */
 
 /* Each cached LED entry: 6 raw USB-MIDI packets (4 bytes each) */
 typedef struct {
@@ -590,7 +594,17 @@ typedef struct {
     int valid;
 } jack_sysex_led_entry_t;
 
-static jack_sysex_led_entry_t jack_sysex_led_cache[JACK_SYSEX_MAX_LEDS];
+/* Cache indexed by [subcmd_slot][led_index].
+ * Slot 0 = subcmd 0x00 (palette/mode), slot 1 = subcmd 0x10 (RGB).
+ * Both subcmds are needed for full LED restore — 0x00 sets the mode,
+ * 0x10 sets the RGB override. */
+static jack_sysex_led_entry_t jack_sysex_led_cache[JACK_SYSEX_SUBCMD_COUNT][JACK_SYSEX_MAX_LEDS];
+
+/* Freeze flag: set on suspend, cleared after restore completes.
+ * While frozen, sysex caching is skipped so RNBO's init batch
+ * (which sends dim/off values for all LEDs) doesn't overwrite
+ * the pre-suspend cache with stale initialization values. */
+static int sysex_cache_frozen = 0;
 
 /* Sysex reassembly state */
 static uint8_t sysex_buf[32];
@@ -673,14 +687,16 @@ void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3
             sysex_buf[6] == 0x3B &&
             (sysex_buf[7] == 0x10 || sysex_buf[7] == 0x00) &&
             sysex_raw_count == JACK_SYSEX_PACKETS_PER_LED) {
+            uint8_t subcmd = sysex_buf[7];
             uint8_t idx = sysex_buf[8];
-            if (idx < JACK_SYSEX_MAX_LEDS) {
+            int slot = (subcmd == 0x10) ? 1 : 0;
+            if (idx < JACK_SYSEX_MAX_LEDS && !sysex_cache_frozen) {
                 for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
                     for (int b = 0; b < 4; b++) {
-                        jack_sysex_led_cache[idx].packets[p][b] = sysex_raw_packets[p][b];
+                        jack_sysex_led_cache[slot][idx].packets[p][b] = sysex_raw_packets[p][b];
                     }
                 }
-                jack_sysex_led_cache[idx].valid = 1;
+                jack_sysex_led_cache[slot][idx].valid = 1;
                 sysex_leds_cached++;
             }
         }
@@ -692,8 +708,10 @@ void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3
 }
 
 void led_queue_clear_jack_sysex_cache(void) {
-    for (int i = 0; i < JACK_SYSEX_MAX_LEDS; i++) {
-        jack_sysex_led_cache[i].valid = 0;
+    for (int s = 0; s < JACK_SYSEX_SUBCMD_COUNT; s++) {
+        for (int i = 0; i < JACK_SYSEX_MAX_LEDS; i++) {
+            jack_sysex_led_cache[s][i].valid = 0;
+        }
     }
     sysex_active = 0;
     sysex_buf_len = 0;
@@ -707,95 +725,148 @@ int led_queue_jack_sysex_debug_info(int *starts, int *cached, int *last_cin) {
     return sysex_packets_seen;
 }
 
-/* Progressive sysex LED restore state */
+/* Progressive sysex LED restore state.
+ * Iterates subcmd slots (0x00 first, then 0x10) × LED indices. */
 static int sysex_restore_pending = 0;
-static int sysex_restore_index = 0;  /* Next LED index to restore */
+static int sysex_restore_subcmd = 0;  /* Current subcmd slot (0 or 1) */
+static int sysex_restore_index = 0;   /* Next LED index to restore */
+static int sysex_restore_pass = 0;    /* Current pass (0=first, 1=repeat) */
+#define SYSEX_RESTORE_PASSES 2        /* Repeat for reliability */
 
 void led_queue_restore_jack_sysex_leds(void) {
-    /* Start progressive restore — actual work done in flush function */
+    /* Start progressive restore — actual work done in flush function.
+     * Send subcmd 0x00 (palette/mode) first, then 0x10 (RGB). */
     sysex_restore_pending = 1;
+    sysex_restore_subcmd = 0;
     sysex_restore_index = 0;
+    sysex_restore_pass = 0;
+}
+
+void led_queue_freeze_jack_sysex_cache(void) {
+    sysex_cache_frozen = 1;
+}
+
+int led_queue_jack_sysex_restore_pending(void) {
+    return sysex_restore_pending;
+}
+
+/* Find a contiguous block of `count` empty 4-byte slots starting at or after
+ * `from` in midi_out. Returns the byte offset of the block, or -1 if not found. */
+static int find_contiguous_empty_block(const uint8_t *midi_out, int from, int count) {
+    int need = count * 4;  /* bytes needed */
+    for (int s = from; s <= MIDI_BUFFER_SIZE - need; s += 4) {
+        int ok = 1;
+        for (int p = 0; p < count; p++) {
+            int pos = s + p * 4;
+            if (midi_out[pos] || midi_out[pos+1] || midi_out[pos+2] || midi_out[pos+3]) {
+                ok = 0;
+                s = pos;  /* outer loop will += 4 past this */
+                break;
+            }
+        }
+        if (ok) return s;
+    }
+    return -1;
 }
 
 /* Called from shadow_flush_pending_leds to progressively drain sysex restore.
- * Restores up to max_leds LEDs per call (each LED = 6 raw packets). */
+ * Restores 1 LED per call (6 raw packets per sysex command).
+ * Iterates both subcmd slots (0x00 then 0x10) for each pass.
+ *
+ * IMPORTANT: All 6 USB-MIDI packets for a sysex LED command must be
+ * contiguous in the buffer. We clear existing cable-0 sysex first
+ * to prevent interleaving with RNBO's live sysex on the same cable. */
 int led_queue_flush_jack_sysex_restore(int max_leds) {
     if (!sysex_restore_pending) return 0;
 
     uint8_t *midi_out = host.midi_out_buf;
     if (!midi_out) return 0;
 
-    int leds_sent = 0;
-    int hw_offset = 0;  /* Scan position for empty slots */
-    int empty_slots = 0;
-    int used_slots = 0;
-
-    /* Count buffer state before writing */
+    /* Clear any cable-0 sysex packets already in the buffer. */
+    int cleared = 0;
     for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
-        if (!midi_out[s] && !midi_out[s+1] && !midi_out[s+2] && !midi_out[s+3])
-            empty_slots++;
-        else
-            used_slots++;
+        uint8_t cin_type = midi_out[s] & 0x0F;
+        uint8_t cable = (midi_out[s] >> 4) & 0x0F;
+        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {
+            midi_out[s] = 0;
+            midi_out[s+1] = 0;
+            midi_out[s+2] = 0;
+            midi_out[s+3] = 0;
+            cleared++;
+        }
     }
 
-    while (sysex_restore_index < JACK_SYSEX_MAX_LEDS && leds_sent < max_leds) {
-        if (!jack_sysex_led_cache[sysex_restore_index].valid) {
-            sysex_restore_index++;
-            continue;
-        }
+    int leds_sent = 0;
+    int search_from = 0;
 
-        /* Write 6 packets for this LED, finding individual empty slots */
-        int wrote_all = 1;
-        for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
-            /* Find next empty slot */
-            while (hw_offset < MIDI_BUFFER_SIZE &&
-                   (midi_out[hw_offset] || midi_out[hw_offset+1] ||
-                    midi_out[hw_offset+2] || midi_out[hw_offset+3])) {
-                hw_offset += 4;
+    /* Walk (subcmd_slot, led_index) pairs. subcmd 0x00 before 0x10. */
+    while (leds_sent < max_leds) {
+        /* Advance past invalid entries */
+        while (sysex_restore_subcmd < JACK_SYSEX_SUBCMD_COUNT) {
+            if (sysex_restore_index >= JACK_SYSEX_MAX_LEDS) {
+                sysex_restore_subcmd++;
+                sysex_restore_index = 0;
+                continue;
             }
-            if (hw_offset >= MIDI_BUFFER_SIZE) { wrote_all = 0; break; }
-
-            midi_out[hw_offset]   = jack_sysex_led_cache[sysex_restore_index].packets[p][0];
-            midi_out[hw_offset+1] = jack_sysex_led_cache[sysex_restore_index].packets[p][1];
-            midi_out[hw_offset+2] = jack_sysex_led_cache[sysex_restore_index].packets[p][2];
-            midi_out[hw_offset+3] = jack_sysex_led_cache[sysex_restore_index].packets[p][3];
-            hw_offset += 4;
+            if (jack_sysex_led_cache[sysex_restore_subcmd][sysex_restore_index].valid)
+                break;
+            sysex_restore_index++;
         }
+        if (sysex_restore_subcmd >= JACK_SYSEX_SUBCMD_COUNT)
+            break;  /* All entries done for this pass */
 
-        if (!wrote_all) {
-            unified_log("led_queue", LOG_LEVEL_DEBUG,
-                "sysex restore FULL at idx=%d, empty=%d used=%d leds_sent=%d hw_offset=%d",
-                sysex_restore_index, empty_slots, used_slots, leds_sent, hw_offset);
-            break;  /* Buffer full, try next tick */
+        /* Find a contiguous block of 6 empty slots */
+        int block = find_contiguous_empty_block(midi_out, search_from,
+                                                 JACK_SYSEX_PACKETS_PER_LED);
+        if (block < 0) break;  /* No room, try next tick */
+
+        /* Write all 6 packets contiguously */
+        jack_sysex_led_entry_t *entry =
+            &jack_sysex_led_cache[sysex_restore_subcmd][sysex_restore_index];
+        for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
+            int pos = block + p * 4;
+            midi_out[pos]   = entry->packets[p][0];
+            midi_out[pos+1] = entry->packets[p][1];
+            midi_out[pos+2] = entry->packets[p][2];
+            midi_out[pos+3] = entry->packets[p][3];
         }
+        search_from = block + JACK_SYSEX_PACKETS_PER_LED * 4;
 
-        /* Log first few restored LEDs with raw packet data */
-        if (leds_sent < 3) {
-            uint8_t *p0 = jack_sysex_led_cache[sysex_restore_index].packets[0];
-            uint8_t *p1 = jack_sysex_led_cache[sysex_restore_index].packets[1];
-            uint8_t *p2 = jack_sysex_led_cache[sysex_restore_index].packets[2];
+        /* Log all knob LED entries (71-78) with full packet dump,
+         * plus first 3 entries of each subcmd for general debugging */
+        if (leds_sent < 3 ||
+            (sysex_restore_index >= 71 && sysex_restore_index <= 78)) {
             unified_log("led_queue", LOG_LEVEL_DEBUG,
-                "sysex restore LED idx=%d pkt0=[%02X %02X %02X %02X] pkt1=[%02X %02X %02X %02X] pkt2=[%02X %02X %02X %02X]",
-                sysex_restore_index,
-                p0[0], p0[1], p0[2], p0[3],
-                p1[0], p1[1], p1[2], p1[3],
-                p2[0], p2[1], p2[2], p2[3]);
+                "sysex restore s%d idx=%d @%d [%02X%02X%02X%02X][%02X%02X%02X%02X]"
+                "[%02X%02X%02X%02X][%02X%02X%02X%02X][%02X%02X%02X%02X][%02X%02X%02X%02X]",
+                sysex_restore_subcmd, sysex_restore_index, block,
+                entry->packets[0][0], entry->packets[0][1], entry->packets[0][2], entry->packets[0][3],
+                entry->packets[1][0], entry->packets[1][1], entry->packets[1][2], entry->packets[1][3],
+                entry->packets[2][0], entry->packets[2][1], entry->packets[2][2], entry->packets[2][3],
+                entry->packets[3][0], entry->packets[3][1], entry->packets[3][2], entry->packets[3][3],
+                entry->packets[4][0], entry->packets[4][1], entry->packets[4][2], entry->packets[4][3],
+                entry->packets[5][0], entry->packets[5][1], entry->packets[5][2], entry->packets[5][3]);
         }
 
         sysex_restore_index++;
         leds_sent++;
     }
 
-    if (leds_sent > 0 || sysex_restore_index >= JACK_SYSEX_MAX_LEDS) {
-        unified_log("led_queue", LOG_LEVEL_DEBUG,
-            "sysex restore tick: sent=%d idx=%d/%d empty=%d used=%d pending=%d",
-            leds_sent, sysex_restore_index, JACK_SYSEX_MAX_LEDS,
-            empty_slots, used_slots, sysex_restore_pending);
-    }
-
-    if (sysex_restore_index >= JACK_SYSEX_MAX_LEDS) {
-        sysex_restore_pending = 0;
-        unified_log("led_queue", LOG_LEVEL_DEBUG, "sysex restore COMPLETE");
+    /* Check if this pass is done (walked both subcmd slots) */
+    if (sysex_restore_subcmd >= JACK_SYSEX_SUBCMD_COUNT) {
+        sysex_restore_pass++;
+        if (sysex_restore_pass < SYSEX_RESTORE_PASSES) {
+            sysex_restore_subcmd = 0;
+            sysex_restore_index = 0;
+            unified_log("led_queue", LOG_LEVEL_DEBUG,
+                "sysex restore pass %d/%d done, starting next",
+                sysex_restore_pass, SYSEX_RESTORE_PASSES);
+        } else {
+            sysex_restore_pending = 0;
+            sysex_cache_frozen = 0;  /* Unfreeze — RNBO's live updates can cache again */
+            unified_log("led_queue", LOG_LEVEL_DEBUG,
+                "sysex restore COMPLETE (%d passes), cache unfrozen", SYSEX_RESTORE_PASSES);
+        }
     }
 
     return leds_sent;
