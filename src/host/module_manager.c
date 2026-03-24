@@ -180,6 +180,9 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     /* Defaults */
     json_get_defaults(json, info->defaults_json, sizeof(info->defaults_json));
 
+    /* Pack scanning */
+    json_get_string(json, "scan_packs", info->scan_packs, sizeof(info->scan_packs));
+
     free(json);
 
     printf("mm: parsed module '%s' (%s) v%s\n", info->name, info->id, info->version);
@@ -205,6 +208,130 @@ void mm_init(module_manager_t *mm, uint8_t *mapped_memory,
     mm->host_api.log = host_log;
     mm->host_api.midi_send_internal = midi_send_internal;
     mm->host_api.midi_send_external = midi_send_external;
+}
+
+/* Extract pack name from info.json in an extracted pack directory.
+ * Returns 0 on success, -1 on failure. */
+static int get_pack_name(const char *pack_dir, char *name, int name_len) {
+    char info_path[MAX_PATH_LEN];
+    snprintf(info_path, sizeof(info_path), "%s/info.json", pack_dir);
+
+    FILE *f = fopen(info_path, "r");
+    if (!f) return -1;
+
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    if (json_get_string(buf, "name", name, name_len) == 0 && name[0])
+        return 0;
+
+    return -1;
+}
+
+/* Auto-extract .rnbopack tarballs in the packs directory.
+ * Each .rnbopack is extracted to a subdirectory named after the file. */
+static void extract_rnbopacks(const char *packs_path) {
+    DIR *dir = opendir(packs_path);
+    if (!dir) return;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        const char *ext = strstr(entry->d_name, ".rnbopack");
+        if (!ext || ext[9] != '\0') continue;
+
+        /* Derive directory name from filename (strip extension) */
+        char stem[128];
+        strncpy(stem, entry->d_name, sizeof(stem) - 1);
+        stem[sizeof(stem) - 1] = '\0';
+        char *dot = strstr(stem, ".rnbopack");
+        if (dot) *dot = '\0';
+
+        char pack_dir[MAX_PATH_LEN];
+        snprintf(pack_dir, sizeof(pack_dir), "%s/%s", packs_path, stem);
+
+        char pack_file[MAX_PATH_LEN];
+        snprintf(pack_file, sizeof(pack_file), "%s/%s", packs_path, entry->d_name);
+
+        /* Skip if already extracted (directory exists and is newer than tarball) */
+        struct stat dir_st, file_st;
+        if (stat(pack_dir, &dir_st) == 0 && S_ISDIR(dir_st.st_mode) &&
+            stat(pack_file, &file_st) == 0 && dir_st.st_mtime >= file_st.st_mtime) {
+            continue;
+        }
+
+        printf("mm: extracting %s\n", entry->d_name);
+        char cmd[MAX_PATH_LEN * 2];
+        snprintf(cmd, sizeof(cmd), "mkdir -p '%s' && tar -xf '%s' -C '%s' 2>/dev/null",
+                 pack_dir, pack_file, pack_dir);
+        system(cmd);
+    }
+    closedir(dir);
+}
+
+/* Scan a packs subdirectory for extracted pack directories.
+ * Each directory with info.json becomes a virtual module entry.
+ * Also auto-extracts any .rnbopack tarballs found. */
+static int scan_packs_dir(module_manager_t *mm, const module_info_t *parent) {
+    char packs_path[MAX_PATH_LEN];
+    snprintf(packs_path, sizeof(packs_path), "%s/%s", parent->module_dir, parent->scan_packs);
+
+    /* Auto-extract any .rnbopack tarballs */
+    extract_rnbopacks(packs_path);
+
+    DIR *dir = opendir(packs_path);
+    if (!dir) return 0;
+
+    int found = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && mm->module_count < MAX_MODULES) {
+        if (entry->d_name[0] == '.') continue;
+
+        char pack_dir[MAX_PATH_LEN];
+        snprintf(pack_dir, sizeof(pack_dir), "%s/%s", packs_path, entry->d_name);
+
+        struct stat st;
+        if (stat(pack_dir, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+        /* Must have info.json */
+        char info_path[MAX_PATH_LEN];
+        snprintf(info_path, sizeof(info_path), "%s/info.json", pack_dir);
+        if (stat(info_path, &st) != 0) continue;
+
+        /* Create virtual module entry */
+        module_info_t *info = &mm->modules[mm->module_count];
+        /* When module_count hasn't advanced yet, info == parent (same slot).
+         * Copy parent id/name before overwriting to avoid overlapping snprintf. */
+        char parent_id[MAX_MODULE_ID_LEN];
+        char parent_name[MAX_MODULE_NAME_LEN];
+        strncpy(parent_id, parent->id, MAX_MODULE_ID_LEN - 1);
+        parent_id[MAX_MODULE_ID_LEN - 1] = '\0';
+        strncpy(parent_name, parent->name, MAX_MODULE_NAME_LEN - 1);
+        parent_name[MAX_MODULE_NAME_LEN - 1] = '\0';
+        *info = *parent;  /* inherit everything */
+        info->scan_packs[0] = '\0';  /* don't recurse */
+
+        snprintf(info->id, MAX_MODULE_ID_LEN, "%s-%s", parent_id, entry->d_name);
+
+        /* Get name from info.json, fall back to directory name */
+        char pack_name[MAX_MODULE_NAME_LEN];
+        if (get_pack_name(pack_dir, pack_name, MAX_MODULE_NAME_LEN) == 0) {
+            snprintf(info->name, MAX_MODULE_NAME_LEN, "%s (RNBO)", pack_name);
+        } else {
+            snprintf(info->name, MAX_MODULE_NAME_LEN, "%s (RNBO)", entry->d_name);
+        }
+
+        snprintf(info->defaults_json, sizeof(info->defaults_json),
+                 "{\"pack\":\"%s\"}", pack_dir);
+
+        printf("mm: pack '%s' (%s)\n", info->name, info->id);
+        mm->module_count++;
+        found++;
+    }
+
+    closedir(dir);
+    return found;
 }
 
 /* Helper to scan a single directory for modules */
@@ -234,8 +361,18 @@ static int scan_directory(module_manager_t *mm, const char *dir_path) {
         if (stat(json_path, &st) != 0) continue;
 
         if (parse_module_json(module_path, &mm->modules[mm->module_count]) == 0) {
-            mm->module_count++;
-            found++;
+            module_info_t *parsed = &mm->modules[mm->module_count];
+            if (parsed->scan_packs[0]) {
+                /* Module has scan_packs — expand into virtual entries.
+                 * Don't add the base module itself (hidden). */
+                int packs = scan_packs_dir(mm, parsed);
+                if (packs > 0) found += packs;
+                /* Clear the parsed slot (it was used as a template) */
+                memset(parsed, 0, sizeof(*parsed));
+            } else {
+                mm->module_count++;
+                found++;
+            }
         }
     }
 

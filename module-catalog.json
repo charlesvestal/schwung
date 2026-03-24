@@ -4,8 +4,13 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
+<<<<<<< HEAD
     "latest_version": "0.8.3",
     "download_url": "https://github.com/charlesvestal/schwung/releases/download/v0.8.3/schwung.tar.gz",
+=======
+    "latest_version": "0.8.4",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v0.8.4/schwung.tar.gz",
+>>>>>>> main
     "min_host_version": "0.1.0"
   },
   "modules": [
