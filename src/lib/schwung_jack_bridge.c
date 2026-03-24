@@ -138,7 +138,8 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
 // ============================================================================
 
 void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
-                               const uint8_t *hw) {
+                               const uint8_t *hw,
+                               const volatile uint8_t *overtake_mode_ptr) {
     if (!shm || !shadow)
         return;
 
@@ -162,7 +163,8 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
 
         uint8_t cable = ev.message.cable;
 
-        if (cable == 0 && c0_count < SCHWUNG_JACK_MIDI_IN_MAX) {
+        if (cable == 0 && c0_count < SCHWUNG_JACK_MIDI_IN_MAX
+            && overtake_mode_ptr && *overtake_mode_ptr >= 2) {
             SchwungJackMidiEvent jev;
             jev.message.cin = ev.message.cin;
             jev.message.cable = ev.message.cable;

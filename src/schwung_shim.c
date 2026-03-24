@@ -2582,6 +2582,28 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         return 1;
     }
 
+    if (strcmp(key, "suspend_overtake") == 0) {
+        if (req_type == 1 && shadow_control) {  /* SET */
+            shadow_control->suspend_overtake = (shadow_param->value[0] == '1') ? 1 : 0;
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+        }
+        shadow_param->response_ready = 1;
+        shadow_param->response_id = shadow_param->request_id;
+        return 1;
+    }
+
+    if (strcmp(key, "jack:restore_leds") == 0) {
+        if (req_type == 1) {  /* SET */
+            led_queue_restore_jack_leds();
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+        }
+        shadow_param->response_ready = 1;
+        shadow_param->response_id = shadow_param->request_id;
+        return 1;
+    }
+
     /* master_fx:resample_bridge */
     if (strncmp(key, "master_fx:", 10) == 0) {
         const char *fx_key = key + 10;
@@ -3754,6 +3776,17 @@ pre_done:
             midi_out[slot+3] = m.midi.data2;
             slot += 4;
             written++;
+
+            /* Cache LED state from JACK output for suspend/resume */
+            uint8_t jack_status = (m.midi.type << 4) | m.midi.channel;
+            uint8_t jack_type = jack_status & 0xF0;
+            if (jack_type == 0x90 || jack_type == 0xB0) {
+                led_queue_cache_jack_led(
+                    m.cin | (m.cable << 4),
+                    jack_status,
+                    m.midi.data1,
+                    m.midi.data2);
+            }
         }
 
         /* Debug: store at offset 3900 */
@@ -3841,7 +3874,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
            MIDI_IN_OFFSET - DISPLAY_OFFSET);     /* DISPLAY: 768-2047 */
 
     /* Copy capture data to JACK shared memory and wake JACK driver */
-    schwung_jack_bridge_post(g_jack_shm, shadow, hw);
+    schwung_jack_bridge_post(g_jack_shm, shadow, hw,
+                             shadow_control ? &shadow_control->overtake_mode : NULL);
 
     /* Bridge Schwung's total mix into native resampling path when selected. */
     native_resample_bridge_apply();
@@ -3894,15 +3928,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             shadow_midi_inject_shm->ready++;
             shadow_log("Overtake exit: injected shift-off and volume-touch-off");
         }
-        /* Clear JACK display override on overtake exit */
+        /* Clear JACK display override on overtake exit (skip on suspend) */
         if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {
-            g_jack_shm->display_active = 0;
+            if (!(shadow_control && shadow_control->suspend_overtake)) {
+                g_jack_shm->display_active = 0;
+            }
             g_jack_shm->midi_from_jack_count = 0;
         }
-        /* Run overtake exit hook if it exists (modules install their own cleanup) */
+        /* Run overtake exit hook if it exists (modules install their own cleanup).
+         * Skip if suspend_overtake is set — JACK keeps running. */
         if (prev_overtake_mode != 0 && overtake_mode == 0) {
-            system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
-                   "/data/UserData/schwung/hooks/overtake-exit.sh' &");
+            if (shadow_control && shadow_control->suspend_overtake) {
+                shadow_control->suspend_overtake = 0;  /* consumed */
+            } else {
+                system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
+                       "/data/UserData/schwung/hooks/overtake-exit.sh' &");
+                /* Clear JACK LED cache on clean exit */
+                led_queue_clear_jack_cache();
+            }
         }
         prev_overtake_mode = overtake_mode;
     }
