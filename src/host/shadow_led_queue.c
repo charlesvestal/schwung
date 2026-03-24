@@ -652,10 +652,26 @@ void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3
         /* Check if this is an Ableton LED color sysex:
          * F0 00 21 1D 01 01 3B 10 <idx> <r_lo> <r_hi> <g_lo> <g_hi> <b_lo> <b_hi> F7
          * That's 16 bytes, 6 USB-MIDI packets */
+        if (sysex_active && sysex_buf[0] == 0xF0 && sysex_buf_len >= 9 &&
+            sysex_buf[1] == 0x00 && sysex_buf[2] == 0x21 &&
+            sysex_buf[3] == 0x1D && sysex_buf[4] == 0x01 && sysex_buf[5] == 0x01 &&
+            sysex_buf[6] == 0x3B) {
+            /* Log ALL Ableton sysex commands we see, not just the ones we cache */
+            static int ableton_sysex_seen = 0;
+            ableton_sysex_seen++;
+            if (ableton_sysex_seen <= 10 || (ableton_sysex_seen % 50) == 0) {
+                unified_log("led_queue", LOG_LEVEL_DEBUG,
+                    "ableton sysex #%d: len=%d raw_count=%d cmd=0x%02X subcmd=0x%02X buf[8]=0x%02X",
+                    ableton_sysex_seen, sysex_buf_len, sysex_raw_count,
+                    sysex_buf[6], sysex_buf_len > 7 ? sysex_buf[7] : 0,
+                    sysex_buf_len > 8 ? sysex_buf[8] : 0);
+            }
+        }
         if (sysex_active && sysex_buf_len >= 16 &&
             sysex_buf[0] == 0xF0 && sysex_buf[1] == 0x00 && sysex_buf[2] == 0x21 &&
             sysex_buf[3] == 0x1D && sysex_buf[4] == 0x01 && sysex_buf[5] == 0x01 &&
-            sysex_buf[6] == 0x3B && sysex_buf[7] == 0x10 &&
+            sysex_buf[6] == 0x3B &&
+            (sysex_buf[7] == 0x10 || sysex_buf[7] == 0x00) &&
             sysex_raw_count == JACK_SYSEX_PACKETS_PER_LED) {
             uint8_t idx = sysex_buf[8];
             if (idx < JACK_SYSEX_MAX_LEDS) {
