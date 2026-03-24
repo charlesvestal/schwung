@@ -39,6 +39,15 @@ static int move_cc_led_state[128];           /* -1 = unknown, else color */
 static uint8_t move_cc_led_cin[128];
 static uint8_t move_cc_led_status[128];
 
+/* JACK LED state cache — continuously accumulated from JACK MIDI output.
+ * On suspend we keep this intact; on resume we replay it to restore RNBO's LEDs. */
+static int jack_note_led_state[128];
+static uint8_t jack_note_led_cin[128];
+static uint8_t jack_note_led_status[128];
+static int jack_cc_led_state[128];
+static uint8_t jack_cc_led_cin[128];
+static uint8_t jack_cc_led_status[128];
+
 /* Snapshot taken at overtake entry — this is what we restore on exit */
 static int snapshot_note_color[128];
 static uint8_t snapshot_note_cin[128];
@@ -102,6 +111,10 @@ void led_queue_init(const led_queue_host_t *h) {
         move_cc_led_state[i] = -1;
         snapshot_note_color[i] = -1;
         snapshot_cc_color[i] = -1;
+    }
+    for (int i = 0; i < 128; i++) {
+        jack_note_led_state[i] = -1;
+        jack_cc_led_state[i] = -1;
     }
     led_queue_module_initialized = 1;
 }
@@ -479,6 +492,46 @@ void shadow_queue_input_led(uint8_t cin, uint8_t status, uint8_t note, uint8_t v
 int led_queue_get_note_led_color(int note) {
     if (note < 0 || note >= 128) return -1;
     return move_note_led_state[note];
+}
+
+void led_queue_cache_jack_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2) {
+    uint8_t type = status & 0xF0;
+    if (type == 0x90) {
+        jack_note_led_state[data1] = data2;
+        jack_note_led_status[data1] = status;
+        jack_note_led_cin[data1] = cin;
+    } else if (type == 0xB0) {
+        jack_cc_led_state[data1] = data2;
+        jack_cc_led_status[data1] = status;
+        jack_cc_led_cin[data1] = cin;
+    }
+}
+
+void led_queue_clear_jack_cache(void) {
+    for (int i = 0; i < 128; i++) {
+        jack_note_led_state[i] = -1;
+        jack_cc_led_state[i] = -1;
+    }
+}
+
+void led_queue_restore_jack_leds(void) {
+    shadow_init_led_queue();
+    for (int j = 0; j < (int)HW_NOTE_LED_COUNT; j++) {
+        int i = hw_note_leds[j];
+        if (jack_note_led_state[i] >= 0) {
+            shadow_pending_note_color[i] = jack_note_led_state[i];
+            shadow_pending_note_status[i] = jack_note_led_status[i];
+            shadow_pending_note_cin[i] = jack_note_led_cin[i];
+        }
+    }
+    for (int j = 0; j < (int)HW_CC_LED_COUNT; j++) {
+        int i = hw_cc_leds[j];
+        if (jack_cc_led_state[i] >= 0) {
+            shadow_pending_cc_color[i] = jack_cc_led_state[i];
+            shadow_pending_cc_status[i] = jack_cc_led_status[i];
+            shadow_pending_cc_cin[i] = jack_cc_led_cin[i];
+        }
+    }
 }
 
 void shadow_flush_pending_input_leds(void) {
