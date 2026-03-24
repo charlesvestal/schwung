@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include "shadow_led_queue.h"
+#include "unified_log.h"
 
 /* ============================================================================
  * Static host callbacks
@@ -710,6 +711,16 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
 
     int leds_sent = 0;
     int hw_offset = 0;  /* Scan position for empty slots */
+    int empty_slots = 0;
+    int used_slots = 0;
+
+    /* Count buffer state before writing */
+    for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
+        if (!midi_out[s] && !midi_out[s+1] && !midi_out[s+2] && !midi_out[s+3])
+            empty_slots++;
+        else
+            used_slots++;
+    }
 
     while (sysex_restore_index < JACK_SYSEX_MAX_LEDS && leds_sent < max_leds) {
         if (!jack_sysex_led_cache[sysex_restore_index].valid) {
@@ -735,14 +746,27 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
             hw_offset += 4;
         }
 
-        if (!wrote_all) break;  /* Buffer full, try next tick */
+        if (!wrote_all) {
+            unified_log("led_queue", LOG_LEVEL_DEBUG,
+                "sysex restore FULL at idx=%d, empty=%d used=%d leds_sent=%d hw_offset=%d",
+                sysex_restore_index, empty_slots, used_slots, leds_sent, hw_offset);
+            break;  /* Buffer full, try next tick */
+        }
 
         sysex_restore_index++;
         leds_sent++;
     }
 
+    if (leds_sent > 0 || sysex_restore_index >= JACK_SYSEX_MAX_LEDS) {
+        unified_log("led_queue", LOG_LEVEL_DEBUG,
+            "sysex restore tick: sent=%d idx=%d/%d empty=%d used=%d pending=%d",
+            leds_sent, sysex_restore_index, JACK_SYSEX_MAX_LEDS,
+            empty_slots, used_slots, sysex_restore_pending);
+    }
+
     if (sysex_restore_index >= JACK_SYSEX_MAX_LEDS) {
         sysex_restore_pending = 0;
+        unified_log("led_queue", LOG_LEVEL_DEBUG, "sysex restore COMPLETE");
     }
 
     return leds_sent;
