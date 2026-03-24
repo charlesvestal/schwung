@@ -1725,8 +1725,7 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                 inst->midi_fx_out_original_note = 255;
                 inst->midi_fx_out_original_status = 0;
                 inst->midi_fx_out_channel = tick_ch;
-                /* Set skip counter: expect N echoes from this injection */
-                inst->midi_fx_skip_echoes = n;
+                /* Tick tracks all notes in injected[] (line above) for echo filtering */
                 __sync_synchronize();
                 inst->midi_fx_out_count = n;
             }
@@ -6834,27 +6833,16 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             inst->midi_fx_last_input_channel = msg[0] & 0x0F;
         }
     }
-    if (inst->midi_fx_to_move && len >= 2) {
+    if (inst->midi_fx_to_move && len >= 3) {
         uint8_t note = msg[1];
         uint8_t type = msg[0] & 0xF0;
-        int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
+        uint8_t vel = msg[2];
 
-        if (inst->midi_fx_is_replacing) {
-            /* Replacing mode (arp, transpose):
-             * Skip exactly N events after each injection (echoes arrive next frame).
-             * All other cable-2 events pass through (retriggers, real releases). */
-            if (inst->midi_fx_skip_echoes > 0) {
-                inst->midi_fx_skip_echoes--;
-                return;
-            }
-            /* Everything else passes through to MIDI FX (including retrigger note-off/on) */
-        } else {
-            /* Additive mode (chord): skip only echoes via refcount.
-             * Note-offs pass through so chord FX generates chord note-offs. */
-            if (note < 128 && inst->midi_fx_injected[note] > 0) {
-                inst->midi_fx_injected[note]--;
-                return;
-            }
+        /* Echo filter: refcount per pitch. Each injected note increments,
+         * each echo decrements and is skipped. Both note-ons and note-offs tracked. */
+        if (note < 128 && inst->midi_fx_injected[note] > 0) {
+            inst->midi_fx_injected[note]--;
+            return;
         }
     }
 
@@ -6885,21 +6873,20 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
             inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
             inst->midi_fx_out_lens[i] = out_lens[i];
-            /* Track every note we output that differs from input — expect 1 echo */
+            /* Track what the shim will actually inject (must match exactly).
+             * Shim skips root note-ONs. Injects everything else. */
             uint8_t on = out_msgs[i][1];
-            if (on < 128 && on != (len >= 2 ? msg[1] : 255)) {
+            uint8_t ot = out_msgs[i][0] & 0xF0;
+            uint8_t ov = out_msgs[i][2];
+            uint8_t in_note = (len >= 2) ? msg[1] : 255;
+            int is_root_note_on = (on == in_note && ot == 0x90 && ov > 0);
+            if (!is_root_note_on && on < 128) {
                 inst->midi_fx_injected[on]++;
             }
         }
         inst->midi_fx_out_original_note = len >= 2 ? msg[1] : 0;
         inst->midi_fx_out_original_status = msg[0];
         inst->midi_fx_out_channel = msg[0] & 0x0F;
-        /* Skip counter: expect echoes equal to notes that differ from input */
-        int skip = 0;
-        for (int i = 0; i < n; i++) {
-            if (out_msgs[i][1] != (len >= 2 ? msg[1] : 255)) skip++;
-        }
-        inst->midi_fx_skip_echoes = skip;
         __sync_synchronize();
         inst->midi_fx_out_count = n;
         /* Fall through — also send to shadow synth */
