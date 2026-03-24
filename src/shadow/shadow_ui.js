@@ -2127,6 +2127,43 @@ function exitOvertakeMode() {
     needsRedraw = true;
 }
 
+/* Suspend overtake mode — leave background processes running */
+function suspendOvertakeMode() {
+    debugLog("suspendOvertakeMode: suspending overtake, JACK keeps running");
+
+    /* Deactivate LED queue */
+    deactivateLedQueue();
+
+    /* Do NOT unload overtake DSP — JACK stays running */
+
+    /* Clean up JS state */
+    delete globalThis.host_module_set_param;
+    delete globalThis.host_module_set_param_blocking;
+    delete globalThis.host_module_get_param;
+
+    overtakeModuleLoaded = false;
+    overtakeModulePath = "";
+    overtakeModuleCallbacks = null;
+
+    /* Reset encoder accumulation */
+    for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+    overtakeJogDelta = 0;
+
+    /* Tell shim to skip exit hook on overtake_mode transition */
+    if (typeof shadow_set_param === "function") {
+        shadow_set_param(0, "suspend_overtake", "1");
+    }
+
+    /* Disable JACK display override — Move reclaims display */
+    if (typeof shadow_set_param === "function") {
+        shadow_set_param(0, "jack:display", "0");
+    }
+
+    /* Begin LED clearing ceremony, then return to Move */
+    overtakeExitPending = true;
+    needsRedraw = true;
+}
+
 /* Direct exit for interactive tools - skip LED clearing ceremony */
 function exitToolOvertake() {
     debugLog("exitToolOvertake: direct tool exit, nonOvertake=" + toolNonOvertake);
@@ -11693,6 +11730,20 @@ globalThis.onMidiMessageInternal = function(data) {
                     exitToolOvertake();
                 } else {
                     exitOvertakeMode();
+                }
+                return;
+            }
+        }
+
+        /* HOST-LEVEL SUSPEND: Shift+Vol+Back suspends overtake mode
+         * JACK and RNBO keep running, re-entry resumes with cached LEDs */
+        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0) {
+            if (hostShiftHeld && hostVolumeKnobTouched) {
+                debugLog("HOST: Shift+Vol+Back detected, suspending overtake mode");
+                if (toolOvertakeActive) {
+                    exitToolOvertake();  /* tools don't support suspend */
+                } else {
+                    suspendOvertakeMode();
                 }
                 return;
             }
