@@ -2463,15 +2463,8 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen.
          * Non-overtake tools don't own LEDs, so call init() immediately.
          * Modules with skip_led_clear capability skip LED clearing and init immediately
-         * (e.g. song-mode wants Move's pad colors to stay visible).
-         * JACK suspend/resume: if jack_running flag exists, this is a resume —
-         * skip LED clearing to preserve cached RNBO LED state. */
-        let skipLedClear = moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear;
-        if (!skipLedClear && typeof host_file_exists === "function" &&
-            host_file_exists("/data/UserData/schwung/jack_running")) {
-            skipLedClear = true;
-            debugLog("loadOvertakeModule: JACK resume detected, skipping LED clear");
-        }
+         * (e.g. song-mode wants Move's pad colors to stay visible). */
+        const skipLedClear = moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear;
         if (skipOvertake || skipLedClear) {
             overtakeInitPending = false;
             debugLog("loadOvertakeModule: " + (skipOvertake ? "non-overtake" : "skip_led_clear") + ", calling init() immediately");
