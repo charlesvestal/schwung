@@ -4118,14 +4118,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                     if (count <= 0) continue;
 
-                    /* Queue FX output notes (skip root — Move already plays it via pad) */
+                    /* Queue FX output notes.
+                     * Skip root note-ONs (Move plays root via pad press).
+                     * Always inject root note-OFFs (shared pitch between chords
+                     * needs note-off even if it was another chord's root). */
                     for (int i = 0; i < count; i++) {
                         if (out_lens[i] < 3 || mfx_pending_count >= 256) continue;
                         uint8_t out_note = out_msgs[i][1];
                         uint8_t out_vel = out_msgs[i][2];
                         uint8_t out_type = out_msgs[i][0] & 0xF0;
 
-                        if (out_note == orig_note) continue;
+                        /* Skip root note-ons only (not note-offs) */
+                        if (out_note == orig_note && out_type == 0x90 && out_vel > 0) continue;
 
                         uint8_t cin = (out_type == 0x90 && out_vel > 0) ? 0x09 : 0x08;
                         mfx_pending[mfx_pending_count][0] = (2 << 4) | cin;
