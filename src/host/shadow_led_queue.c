@@ -25,7 +25,7 @@ static uint8_t shadow_pending_cc_cin[128];
 static int shadow_led_queue_initialized = 0;
 
 /* Raw packet queue for sysex and other non-note/CC messages */
-#define RAW_QUEUE_SIZE 128
+#define RAW_QUEUE_SIZE 256
 static uint8_t raw_queue[RAW_QUEUE_SIZE][4];  /* 4 bytes per USB-MIDI packet */
 static int raw_queue_head = 0;
 static int raw_queue_tail = 0;
