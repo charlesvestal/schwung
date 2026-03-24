@@ -466,9 +466,10 @@ void shadow_flush_pending_leds(void) {
         }
     }
 
-    /* Progressive sysex LED restore — 3 LEDs per tick (18 packets).
-     * Writes directly to MIDI_OUT, bypassing the raw queue. */
-    led_queue_flush_jack_sysex_restore(3);
+    /* Progressive sysex LED restore — 2 LEDs per tick (12 packets).
+     * Writes directly to MIDI_OUT, bypassing the raw queue.
+     * Limited to avoid filling the 20-slot SPI MIDI buffer. */
+    led_queue_flush_jack_sysex_restore(2);
 }
 
 /* ============================================================================
@@ -708,34 +709,33 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
     if (!midi_out) return 0;
 
     int leds_sent = 0;
+    int hw_offset = 0;  /* Scan position for empty slots */
+
     while (sysex_restore_index < JACK_SYSEX_MAX_LEDS && leds_sent < max_leds) {
         if (!jack_sysex_led_cache[sysex_restore_index].valid) {
             sysex_restore_index++;
             continue;
         }
 
-        /* Find 6 consecutive empty slots for this LED's sysex packets */
-        int start_slot = -1;
-        for (int s = 0; s <= MIDI_BUFFER_SIZE - JACK_SYSEX_PACKETS_PER_LED * 4; s += 4) {
-            int found = 1;
-            for (int k = 0; k < JACK_SYSEX_PACKETS_PER_LED * 4; k += 4) {
-                if (midi_out[s+k] || midi_out[s+k+1] || midi_out[s+k+2] || midi_out[s+k+3]) {
-                    found = 0;
-                    break;
-                }
-            }
-            if (found) { start_slot = s; break; }
-        }
-        if (start_slot < 0) break;  /* No room, try next tick */
-
-        /* Write all 6 packets for this LED */
+        /* Write 6 packets for this LED, finding individual empty slots */
+        int wrote_all = 1;
         for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
-            int slot = start_slot + p * 4;
-            midi_out[slot]   = jack_sysex_led_cache[sysex_restore_index].packets[p][0];
-            midi_out[slot+1] = jack_sysex_led_cache[sysex_restore_index].packets[p][1];
-            midi_out[slot+2] = jack_sysex_led_cache[sysex_restore_index].packets[p][2];
-            midi_out[slot+3] = jack_sysex_led_cache[sysex_restore_index].packets[p][3];
+            /* Find next empty slot */
+            while (hw_offset < MIDI_BUFFER_SIZE &&
+                   (midi_out[hw_offset] || midi_out[hw_offset+1] ||
+                    midi_out[hw_offset+2] || midi_out[hw_offset+3])) {
+                hw_offset += 4;
+            }
+            if (hw_offset >= MIDI_BUFFER_SIZE) { wrote_all = 0; break; }
+
+            midi_out[hw_offset]   = jack_sysex_led_cache[sysex_restore_index].packets[p][0];
+            midi_out[hw_offset+1] = jack_sysex_led_cache[sysex_restore_index].packets[p][1];
+            midi_out[hw_offset+2] = jack_sysex_led_cache[sysex_restore_index].packets[p][2];
+            midi_out[hw_offset+3] = jack_sysex_led_cache[sysex_restore_index].packets[p][3];
+            hw_offset += 4;
         }
+
+        if (!wrote_all) break;  /* Buffer full, try next tick */
 
         sysex_restore_index++;
         leds_sent++;
