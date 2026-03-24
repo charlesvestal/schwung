@@ -326,9 +326,19 @@ void shadow_drain_midi_inject(void)
     if (copy_len <= 0) return;
 
     /* Inject into shadow_mailbox at MIDI_IN_OFFSET.
-     * MIDI_IN events are 8 bytes: [USB-MIDI(4)] [padding(4)].
-     * Scan at 8-byte stride, write 4-byte packet + 4 zero bytes. */
+     * MIDI_IN events are 8 bytes: [USB-MIDI(4)] [timestamp(4)].
+     * Timestamps must be monotonically increasing (Move asserts this). */
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
+
+    /* Find max timestamp from existing events */
+    uint32_t max_ts = 0;
+    for (int t = 0; t < MIDI_IN_MAX_BYTES; t += MIDI_IN_EVENT_SIZE) {
+        if ((midi_in[t] & 0xFF) == 0) continue;
+        uint32_t ts;
+        memcpy(&ts, &midi_in[t + 4], 4);
+        if (ts > max_ts) max_ts = ts;
+    }
+    uint32_t inject_ts = max_ts + 1;
 
     int hw_offset = 0;
     int injected = 0;
@@ -345,9 +355,10 @@ void shadow_drain_midi_inject(void)
         }
         if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* Buffer full */
 
-        /* Write 4-byte USB-MIDI packet + 4 zero bytes */
+        /* Write 4-byte USB-MIDI packet + monotonically increasing timestamp */
         memcpy(&midi_in[hw_offset], &local_buf[i], 4);
-        memset(&midi_in[hw_offset + 4], 0, 4);
+        memcpy(&midi_in[hw_offset + 4], &inject_ts, 4);
+        inject_ts++;
         hw_offset += MIDI_IN_EVENT_SIZE;
         injected++;
     }

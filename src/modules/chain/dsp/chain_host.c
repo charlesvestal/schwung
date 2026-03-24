@@ -1730,7 +1730,7 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                 __sync_synchronize();
                 inst->midi_fx_out_count = n;
             }
-            continue;
+            /* Fall through — also send to shadow synth */
         }
 
         /* Send generated messages to synth */
@@ -6902,7 +6902,7 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         inst->midi_fx_skip_echoes = skip;
         __sync_synchronize();
         inst->midi_fx_out_count = n;
-        return;  /* Don't send to synth — shim will inject, shadow synth hears via MIDI_OUT */
+        /* Fall through — also send to shadow synth */
     }
 
     /* Send processed messages to synth */
