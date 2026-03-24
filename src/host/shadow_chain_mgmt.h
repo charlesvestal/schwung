@@ -97,6 +97,7 @@ extern void (*shadow_chain_set_external_fx_mode)(void *instance, int mode);
 extern void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames);
 extern void (*shadow_chain_set_midi_fx_to_move)(void *instance, int enable);
 extern void (*shadow_chain_inject_note_off)(void *instance, uint8_t note, uint8_t channel);
+extern void (*shadow_chain_signal_new_pad)(void *instance);
 extern int (*shadow_chain_read_midi_fx_output)(void *instance,
     uint8_t out_msgs[][3], int out_lens[],
     uint8_t *original_note, uint8_t *original_status, uint8_t *channel);

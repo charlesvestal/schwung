@@ -4191,10 +4191,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         int idx = d1 - 68;
                         if (type == 0x90 && vel > 0) {
                             if (!pads_held[idx]) {
-                                /* First press — let through, skip drain this frame */
+                                /* First press — let through, skip drain this frame.
+                                 * Signal chain so echo filter lets the note-on through. */
                                 pads_held[idx] = 1;
-                                pad_pitch[idx] = 255; /* Will be filled from MIDI_OUT */
+                                pad_pitch[idx] = 255;
                                 cable0_new_press = 1;
+                                if (shadow_chain_signal_new_pad) {
+                                    for (int s2 = 0; s2 < SHADOW_CHAIN_INSTANCES; s2++) {
+                                        if (shadow_chain_slots[s2].instance)
+                                            shadow_chain_signal_new_pad(shadow_chain_slots[s2].instance);
+                                    }
+                                }
                                 continue;
                             }
                             /* Repeated note-on from held pad — zero it */
