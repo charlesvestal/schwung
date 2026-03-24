@@ -594,8 +594,16 @@ static int sysex_active = 0;
 static uint8_t sysex_raw_packets[8][4];
 static int sysex_raw_count = 0;
 
+/* Debug counters for sysex cache */
+static int sysex_packets_seen = 0;
+static int sysex_starts_seen = 0;
+static int sysex_leds_cached = 0;
+static int sysex_last_cin = 0;
+
 void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3) {
     uint8_t cin_type = cin & 0x0F;
+    sysex_packets_seen++;
+    sysex_last_cin = cin_type;
 
     /* CIN 0x04 = sysex start or continue (3 data bytes) */
     if (cin_type == 0x04) {
@@ -604,6 +612,7 @@ void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3
             sysex_buf_len = 0;
             sysex_active = 1;
             sysex_raw_count = 0;
+            sysex_starts_seen++;
         }
         if (sysex_active && sysex_buf_len + 3 <= (int)sizeof(sysex_buf)) {
             sysex_buf[sysex_buf_len++] = b1;
@@ -650,6 +659,7 @@ void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3
                     }
                 }
                 jack_sysex_led_cache[idx].valid = 1;
+                sysex_leds_cached++;
             }
         }
 
@@ -666,6 +676,13 @@ void led_queue_clear_jack_sysex_cache(void) {
     sysex_active = 0;
     sysex_buf_len = 0;
     sysex_raw_count = 0;
+}
+
+int led_queue_jack_sysex_debug_info(int *starts, int *cached, int *last_cin) {
+    if (starts) *starts = sysex_starts_seen;
+    if (cached) *cached = sysex_leds_cached;
+    if (last_cin) *last_cin = sysex_last_cin;
+    return sysex_packets_seen;
 }
 
 void led_queue_restore_jack_sysex_leds(void) {

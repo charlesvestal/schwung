@@ -2595,6 +2595,15 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
 
     if (strcmp(key, "jack:restore_leds") == 0) {
         if (req_type == 1) {  /* SET */
+            {
+                int starts = 0, cached = 0, last_cin = 0;
+                int total = led_queue_jack_sysex_debug_info(&starts, &cached, &last_cin);
+                char dbg[128];
+                snprintf(dbg, sizeof(dbg),
+                    "jack:restore_leds sysex debug: packets=%d starts=%d cached=%d last_cin=0x%02X",
+                    total, starts, cached, last_cin);
+                shadow_log(dbg);
+            }
             led_queue_restore_jack_leds();
             led_queue_restore_jack_sysex_leds();
             shadow_param->error = 0;
