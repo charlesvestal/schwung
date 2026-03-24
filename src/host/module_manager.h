@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include "plugin_api_v1.h"
 
-#define MAX_MODULES 32
+#define MAX_MODULES 64
 #define MAX_MODULE_ID_LEN 64
 #define MAX_MODULE_NAME_LEN 128
 #define MAX_PATH_LEN 512
@@ -36,6 +36,10 @@ typedef struct module_info {
 
     /* Defaults JSON string (for passing to plugin) */
     char defaults_json[1024];
+
+    /* Pack scanning: if set, scan this subdirectory for .rnbopack files
+     * and create virtual module entries. Base module is hidden. */
+    char scan_packs[128];
 } module_info_t;
 
 /* Module manager state */

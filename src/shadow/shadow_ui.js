@@ -393,7 +393,7 @@ function drawSplashScreen() {
 
     draw_image(SPLASH_LOGO_PATH, 9, 37, 128, 0);
 
-    const ver = "v0.8.3";
+    const ver = "v" + getHostVersion();
     const verW = text_width(ver);
     print(Math.round((128 - verW) / 2), 56, ver, 1);
 }
@@ -4876,13 +4876,55 @@ function scanModulesForType(componentType) {
                                    (json.capabilities && json.capabilities.component_type);
 
                     if (expectedTypes.includes(modType)) {
-                        /* Check if already in result to avoid duplicates */
-                        const id = json.id || entry;
-                        if (!result.find(m => m.id === id)) {
-                            result.push({
-                                id: id,
-                                name: json.name || entry
-                            });
+                        const scanPacks = json.scan_packs;
+                        if (scanPacks) {
+                            /* Expand packs: scan subdirectory for extracted
+                             * pack directories with info.json */
+                            const packsDir = `${dirPath}/${entry}/${scanPacks}`;
+                            /* Auto-extract any .rnbopack tarballs */
+                            try {
+                                const rawEntries = os.readdir(packsDir) || [];
+                                const rawList = rawEntries[0];
+                                if (Array.isArray(rawList)) {
+                                    for (const fn of rawList) {
+                                        if (!fn.endsWith('.rnbopack')) continue;
+                                        const stem = fn.slice(0, -9);
+                                        const infoCheck = `${packsDir}/${stem}/info.json`;
+                                        /* Skip if already extracted */
+                                        if (std.loadFile(infoCheck)) continue;
+                                        host_system_cmd(`mkdir -p '${packsDir}/${stem}' && tar -xf '${packsDir}/${fn}' -C '${packsDir}/${stem}' --strip-components=1 2>/dev/null`);
+                                    }
+                                }
+                            } catch (e2) { /* packs dir may not exist yet */ }
+                            try {
+                                const packEntries = os.readdir(packsDir) || [];
+                                const packList = packEntries[0];
+                                if (Array.isArray(packList)) {
+                                    for (const pe of packList) {
+                                        if (pe === '.' || pe === '..') continue;
+                                        const infoPath = `${packsDir}/${pe}/info.json`;
+                                        try {
+                                            const infoContent = std.loadFile(infoPath);
+                                            if (!infoContent) continue;
+                                            const info = JSON.parse(infoContent);
+                                            const packId = (json.id || entry) + '-' + pe;
+                                            const packName = info.name || pe;
+                                            if (!result.find(m => m.id === packId)) {
+                                                result.push({ id: packId, name: packName });
+                                            }
+                                        } catch (e2) { /* skip */ }
+                                    }
+                                }
+                            } catch (e2) { /* packs dir not found */ }
+                        } else {
+                            /* Regular module — add directly */
+                            const id = json.id || entry;
+                            if (!result.find(m => m.id === id)) {
+                                result.push({
+                                    id: id,
+                                    name: json.name || entry
+                                });
+                            }
                         }
                     }
                 } catch (e) {
@@ -9772,7 +9814,12 @@ function drawChainEdit() {
         if (moduleData) {
             /* Get display name from DSP if available */
             const prefix = selectedComp.key === "midiFx" ? "midi_fx1" : selectedComp.key;
-            const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
+            let displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
+            /* Friendly name for RNBO pack entries */
+            if (displayName === moduleData.module) {
+                if (displayName.startsWith("rnbo-synth-")) displayName = displayName.substring(11) + " (RNBO)";
+                else if (displayName.startsWith("rnbo-fx-")) displayName = displayName.substring(8) + " (RNBO)";
+            }
             const preset = getSlotParam(selectedSlot, `${prefix}:preset_name`) ||
                           getSlotParam(selectedSlot, `${prefix}:preset`) || "";
             infoLine = preset ? `${displayName} (${truncateText(preset, 8)})` : displayName;
@@ -10495,7 +10542,12 @@ function makeSlotLfoCtx(slot, lfoIdx) {
             const comps = [];
             const synthModule = getSlotParam(slot, "synth_module");
             if (synthModule) {
-                const name = getSlotParam(slot, "synth:name") || synthModule;
+                let name = getSlotParam(slot, "synth:name") || synthModule;
+                if (name === synthModule && name.startsWith("rnbo-synth-")) {
+                    name = name.substring("rnbo-synth-".length) + " (RNBO)";
+                } else if (name === synthModule && name.startsWith("rnbo-fx-")) {
+                    name = name.substring("rnbo-fx-".length) + " (RNBO)";
+                }
                 comps.push({ key: "synth", label: "Synth: " + name });
             }
             for (let i = 1; i <= 2; i++) {

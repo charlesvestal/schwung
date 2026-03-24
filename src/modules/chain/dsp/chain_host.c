@@ -3243,13 +3243,59 @@ static int load_patch(int index) {
         /* Unload current synth */
         unload_synth();
 
-        /* Build path to new synth module - all sound generators in modules/sound_generators/ */
+        /* Build path to new synth module - all sound generators in modules/sound_generators/.
+         * For pack entries (e.g. "rnbo-synth-graph-Test"), resolve to the parent module
+         * directory and pass the pack path as config JSON. */
         char synth_path[MAX_PATH_LEN];
+        char *pack_config = NULL;
+        char pack_config_buf[1024];
+
+        /* Check if module directory exists directly */
         snprintf(synth_path, sizeof(synth_path), "%s/../sound_generators/%s",
                  g_module_dir, patch->synth_module);
 
+        struct stat st;
+        if (stat(synth_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            /* Directory not found — try to resolve as a pack entry.
+             * Scan sound_generators for a parent module with scan_packs
+             * that contains a matching pack subdirectory. */
+            char sg_dir[MAX_PATH_LEN];
+            snprintf(sg_dir, sizeof(sg_dir), "%s/../sound_generators", g_module_dir);
+            DIR *sgd = opendir(sg_dir);
+            if (sgd) {
+                struct dirent *ent;
+                while ((ent = readdir(sgd)) != NULL) {
+                    if (ent->d_name[0] == '.') continue;
+                    /* Check if module ID starts with this directory name */
+                    size_t prefix_len = strlen(ent->d_name);
+                    if (strncmp(patch->synth_module, ent->d_name, prefix_len) == 0 &&
+                        patch->synth_module[prefix_len] == '-') {
+                        /* Found potential parent — check for pack subdir */
+                        const char *pack_name = patch->synth_module + prefix_len + 1;
+                        char check_path[MAX_PATH_LEN];
+                        snprintf(check_path, sizeof(check_path),
+                                 "%s/%s/packs/%s/info.json", sg_dir, ent->d_name, pack_name);
+                        if (stat(check_path, &st) == 0) {
+                            /* Found the pack — use parent module path */
+                            snprintf(synth_path, sizeof(synth_path),
+                                     "%s/%s", sg_dir, ent->d_name);
+                            snprintf(pack_config_buf, sizeof(pack_config_buf),
+                                     "{\"pack\":\"%s/%s/packs/%s\"}",
+                                     sg_dir, ent->d_name, pack_name);
+                            pack_config = pack_config_buf;
+                            snprintf(msg, sizeof(msg), "Resolved pack: %s -> %s",
+                                     patch->synth_module, synth_path);
+                            chain_log(msg);
+                            break;
+                        }
+                    }
+                }
+                closedir(sgd);
+            }
+        }
+
         /* Load new synth */
-        if (load_synth(synth_path, NULL) != 0) {
+        if (load_synth(synth_path, pack_config) != 0) {
             snprintf(msg, sizeof(msg), "Failed to load synth: %s", patch->synth_module);
             chain_log(msg);
             return -1;
@@ -4970,9 +5016,49 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     module_name_copy[MAX_NAME_LEN - 1] = '\0';
     module_name = module_name_copy;  /* Use local copy from now on */
 
-    /* Build path to synth module - all sound generators in modules/sound_generators/ */
+    /* Build path to synth module - all sound generators in modules/sound_generators/.
+     * For pack entries (e.g. "rnbo-synth-graph-Test"), resolve to the parent module
+     * directory and pass the pack path as config JSON. */
+    char *pack_config = NULL;
+    char pack_config_buf[1024];
+
     snprintf(synth_path, sizeof(synth_path), "%s/../sound_generators/%s",
              inst->module_dir, module_name);
+
+    struct stat path_st;
+    if (stat(synth_path, &path_st) != 0 || !S_ISDIR(path_st.st_mode)) {
+        /* Directory not found — resolve as pack entry */
+        char sg_dir[MAX_PATH_LEN];
+        snprintf(sg_dir, sizeof(sg_dir), "%s/../sound_generators", inst->module_dir);
+        DIR *sgd = opendir(sg_dir);
+        if (sgd) {
+            struct dirent *ent;
+            while ((ent = readdir(sgd)) != NULL) {
+                if (ent->d_name[0] == '.') continue;
+                size_t plen = strlen(ent->d_name);
+                if (strncmp(module_name, ent->d_name, plen) == 0 &&
+                    module_name[plen] == '-') {
+                    const char *pack_name = module_name + plen + 1;
+                    char check[MAX_PATH_LEN];
+                    snprintf(check, sizeof(check), "%s/%s/packs/%s/info.json",
+                             sg_dir, ent->d_name, pack_name);
+                    if (stat(check, &path_st) == 0) {
+                        snprintf(synth_path, sizeof(synth_path),
+                                 "%s/%s", sg_dir, ent->d_name);
+                        snprintf(pack_config_buf, sizeof(pack_config_buf),
+                                 "{\"pack\":\"%s/%s/packs/%s\"}",
+                                 sg_dir, ent->d_name, pack_name);
+                        pack_config = pack_config_buf;
+                        snprintf(msg, sizeof(msg), "Resolved pack: %s -> %s",
+                                 module_name, synth_path);
+                        v2_chain_log(inst, msg);
+                        break;
+                    }
+                }
+            }
+            closedir(sgd);
+        }
+    }
 
     char dsp_path[MAX_PATH_LEN];
     snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", synth_path);
@@ -5005,7 +5091,7 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         return -1;
     }
 
-    void *synth_inst = api->create_instance(synth_path, NULL);
+    void *synth_inst = api->create_instance(synth_path, pack_config);
     if (!synth_inst) {
         snprintf(msg, sizeof(msg), "Synth %s V2 create_instance failed", module_name);
         v2_chain_log(inst, msg);
