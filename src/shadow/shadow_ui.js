@@ -11019,9 +11019,17 @@ globalThis.tick = function() {
                 debugLog("OVERTAKE flag detected, view=" + view);
                 /* Toggle overtake mode */
                 if (view === VIEWS.OVERTAKE_MODULE) {
-                    /* In a running overtake module - exit back to Move */
-                    debugLog("exiting overtake mode");
-                    exitOvertakeMode();
+                    /* Check if shim set suspend_overtake (Shift+Vol+Back) */
+                    const isSuspend = (typeof shadow_get_suspend_overtake === "function") &&
+                                      shadow_get_suspend_overtake() !== 0;
+                    if (isSuspend) {
+                        debugLog("suspending overtake mode (shim-initiated)");
+                        suspendOvertakeMode();
+                    } else {
+                        /* In a running overtake module - exit back to Move */
+                        debugLog("exiting overtake mode");
+                        exitOvertakeMode();
+                    }
                 } else {
                     /* Enter (or re-enter) overtake menu — always rescan */
                     /* Enter overtake menu */
@@ -11735,19 +11743,10 @@ globalThis.onMidiMessageInternal = function(data) {
             }
         }
 
-        /* HOST-LEVEL SUSPEND: Shift+Vol+Back suspends overtake mode
-         * JACK and RNBO keep running, re-entry resumes with cached LEDs */
-        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0) {
-            if (hostShiftHeld && hostVolumeKnobTouched) {
-                debugLog("HOST: Shift+Vol+Back detected, suspending overtake mode");
-                if (toolOvertakeActive) {
-                    exitToolOvertake();  /* tools don't support suspend */
-                } else {
-                    suspendOvertakeMode();
-                }
-                return;
-            }
-        }
+        /* NOTE: Shift+Vol+Back suspend is handled at the shim level (C side)
+         * to ensure the Back CC is blocked from reaching Move immediately.
+         * The shim sets suspend_overtake=1 and SHADOW_UI_FLAG_JUMP_TO_OVERTAKE,
+         * which is checked in the flag handler above. */
 
         /* Accumulate encoder/jog CCs instead of forwarding immediately.
          * Deltas are flushed as synthetic messages before tick(). */
