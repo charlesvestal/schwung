@@ -60,9 +60,16 @@ void shadow_flush_pending_input_leds(void);
  * Returns -1 if unknown, else the velocity/color value. */
 int led_queue_get_note_led_color(int note);
 
-/* JACK LED cache — track LED state from JACK MIDI output */
+/* JACK LED cache — track LED state from JACK MIDI output (note/CC) */
 void led_queue_cache_jack_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2);
 void led_queue_clear_jack_cache(void);
 void led_queue_restore_jack_leds(void);
+
+/* JACK sysex LED cache — cache RNBO's sysex LED commands for suspend/resume.
+ * Call led_queue_jack_sysex_packet() for every USB-MIDI packet from JACK.
+ * It reassembles sysex and caches LED color commands (3B 10 <idx> ...). */
+void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3);
+void led_queue_clear_jack_sysex_cache(void);
+void led_queue_restore_jack_sysex_leds(void);
 
 #endif /* SHADOW_LED_QUEUE_H */
