@@ -3776,14 +3776,31 @@ pre_done:
                 empty_found++;
         }
 
+        /* During sysex restore, gate RNBO's sysex output from the buffer.
+         * Both share cable 0 — interleaved sysex on the same cable corrupts
+         * the hardware's sysex parser. After restore completes, RNBO's live
+         * sysex flows normally and re-establishes its LED state. */
+        int gate_sysex = led_queue_jack_sysex_restore_pending();
+
         for (uint8_t i = 0; i < count && i < 20; i++) {
+            SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[i];
+            uint8_t cin_type = m.cin & 0x0F;
+
+            /* Skip sysex packets during restore to prevent interleaving */
+            if (gate_sysex && cin_type >= 0x04 && cin_type <= 0x07) {
+                /* Still cache the sysex for future suspend/resume cycles */
+                uint8_t raw_cin = m.cin | (m.cable << 4);
+                uint8_t jack_status = (m.midi.type << 4) | m.midi.channel;
+                led_queue_jack_sysex_packet(raw_cin, jack_status, m.midi.data1, m.midi.data2);
+                continue;
+            }
+
             /* Find empty slot */
             while (slot < HW_MIDI_LIMIT &&
                    (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
                 slot += 4;
             if (slot >= HW_MIDI_LIMIT) break;
 
-            SchwungJackUsbMidiMsg m = g_jack_shm->midi_from_jack[i];
             midi_out[slot]   = m.cin | (m.cable << 4);
             midi_out[slot+1] = (m.midi.type << 4) | m.midi.channel;
             midi_out[slot+2] = m.midi.data1;
@@ -3972,6 +3989,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         if (prev_overtake_mode != 0 && overtake_mode == 0) {
             if (shadow_control && shadow_control->suspend_overtake) {
                 shadow_control->suspend_overtake = 0;  /* consumed */
+                /* Freeze sysex cache so RNBO's init batch on resume
+                 * doesn't overwrite pre-suspend LED state */
+                led_queue_freeze_jack_sysex_cache();
             } else {
                 system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
                        "/data/UserData/schwung/hooks/overtake-exit.sh' &");
