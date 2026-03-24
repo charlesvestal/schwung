@@ -4249,7 +4249,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             /* Drain pending buffer — skip if NEW cable-0 pad press/release this frame */
             if (mfx_pending_count > 0 && !cable0_new_press) {
                 static int drain_log = 0;
-                if (drain_log < 5) {
+                if (drain_log < 50) {
                     char dbg[64];
                     snprintf(dbg, sizeof(dbg), "MFX-drain: pending=%d", mfx_pending_count);
                     shadow_log(dbg);
@@ -4271,7 +4271,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     memset(&mi[hw_offset + 4], 0, 4);
                     {
                         static int inject_log = 0;
-                        if (inject_log < 10) {
+                        if (inject_log < 50) {
                             char dbg[80];
                             snprintf(dbg, sizeof(dbg), "MFX-inject: [%02X %02X %02X %02X] at offset %d",
                                      mfx_pending[src][0], mfx_pending[src][1],
