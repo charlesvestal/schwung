@@ -536,7 +536,8 @@ typedef struct chain_instance {
     uint8_t midi_fx_out_channel;              /* MIDI channel */
     uint8_t midi_fx_last_input_channel;       /* Channel of last note received (for tick output) */
     int midi_fx_is_replacing;                 /* 1 = replacing mode (arp, transpose), 0 = additive (chord) */
-    uint8_t midi_fx_injected[128];            /* Refcount of notes we generated (echo filter) */
+    volatile uint8_t midi_fx_new_pad;         /* Set by shim when new pad press detected, cleared after on_midi */
+    uint8_t midi_fx_injected[128];            /* Refcount: additive mode echo filter */
 
     /* Channel settings from last load_file (autosave restore).
      * Used as fallback when current_patch == -1 (file-based load, not library). */
@@ -6836,14 +6837,14 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         int is_note_off = (type == 0x80 || (type == 0x90 && (len < 3 || msg[2] == 0)));
 
         if (inst->midi_fx_is_replacing) {
-            /* Replacing mode (arp, transpose): skip ALL cable-2 note-offs.
-             * Pad releases are handled via chain_inject_note_off(). */
+            /* Replacing mode (arp, transpose):
+             * - Skip ALL cable-2 note-offs (pad releases via chain_inject_note_off)
+             * - Skip ALL cable-2 note-ons UNLESS a new pad press just happened
+             * Move echoes notes repeatedly on cable-2 while held — only the
+             * FIRST note-on (from a real pad press) should reach the MIDI FX. */
             if (is_note_off) return;
-            /* Skip note-on echoes via refcount */
-            if (note < 128 && inst->midi_fx_injected[note] > 0) {
-                inst->midi_fx_injected[note]--;
-                return;
-            }
+            if (!inst->midi_fx_new_pad) return;  /* No new pad → skip echo */
+            inst->midi_fx_new_pad = 0;  /* Consume the flag */
         } else {
             /* Additive mode (chord): skip only echoes via refcount.
              * Note-offs pass through so chord FX generates chord note-offs. */
@@ -8537,6 +8538,14 @@ void chain_set_inject_audio(void *instance, int16_t *buf, int frames) {
 
 /* Exported: inject a note-off directly into the MIDI FX pipeline.
  * Used by shim when detecting cable-0 pad release in replacing mode. */
+/* Exported: signal that a new pad press happened.
+ * Called by shim when it detects a first cable-0 pad press.
+ * Sets the flag so the next cable-2 note-on passes through the echo filter. */
+void chain_signal_new_pad(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (inst) inst->midi_fx_new_pad = 1;
+}
+
 void chain_inject_note_off(void *instance, uint8_t note, uint8_t channel) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || !inst->midi_fx_to_move || !inst->midi_fx_is_replacing) return;

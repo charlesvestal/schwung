@@ -40,6 +40,7 @@ void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
 void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
 void (*shadow_chain_set_midi_fx_to_move)(void *instance, int enable) = NULL;
 void (*shadow_chain_inject_note_off)(void *instance, uint8_t note, uint8_t channel) = NULL;
+void (*shadow_chain_signal_new_pad)(void *instance) = NULL;
 int (*shadow_chain_read_midi_fx_output)(void *instance,
     uint8_t out_msgs[][3], int out_lens[],
     uint8_t *original_note, uint8_t *original_status, uint8_t *channel) = NULL;
@@ -912,6 +913,8 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_set_midi_fx_to_move");
     shadow_chain_inject_note_off = (void (*)(void *, uint8_t, uint8_t))
         dlsym(shadow_dsp_handle, "chain_inject_note_off");
+    shadow_chain_signal_new_pad = (void (*)(void *))
+        dlsym(shadow_dsp_handle, "chain_signal_new_pad");
     shadow_chain_read_midi_fx_output = (int (*)(void *, uint8_t [][3], int [],
         uint8_t *, uint8_t *, uint8_t *))
         dlsym(shadow_dsp_handle, "chain_read_midi_fx_output");
