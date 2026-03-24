@@ -3923,10 +3923,26 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* velocity 0 */
                 wr += 4;
             }
+            /* Back off: CC 51 value 0 */
+            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+                shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
+                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
+                shadow_midi_inject_shm->buffer[wr + 2] = CC_BACK;
+                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
+                wr += 4;
+            }
+            /* Jog click off: CC 3 value 0 */
+            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+                shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
+                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
+                shadow_midi_inject_shm->buffer[wr + 2] = CC_JOG_CLICK;
+                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
+                wr += 4;
+            }
             shadow_midi_inject_shm->write_idx = wr;
             __sync_synchronize();
             shadow_midi_inject_shm->ready++;
-            shadow_log("Overtake exit: injected shift-off and volume-touch-off");
+            shadow_log("Overtake exit: injected shift-off, volume-touch-off, back-off, jog-click-off");
         }
         /* Clear JACK display override on overtake exit (always — Move needs display back) */
         if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {
