@@ -4074,8 +4074,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 launch_shadow_ui();
             }
         }
-        /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
-        shadow_drain_midi_inject();
+    }
+
+    /* Drain MIDI inject SHM into MIDI_IN (after all filtering, before barrier) */
+    shadow_drain_midi_inject();
 
         /* === MOVE MIDI FX: Read chain output → buffer → deferred inject === */
         {
@@ -4087,6 +4089,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             #define MFX_INJECT_PER_TICK 16
 
             /* Read chain's MIDI FX output into pending buffer */
+            {
+                static int mfx_diag = 0;
+                if (mfx_diag < 3) {
+                    char dbg[128];
+                    snprintf(dbg, sizeof(dbg), "MFX-diag: ctrl=%p chord=%d read=%p",
+                             (void*)shadow_control,
+                             shadow_control ? shadow_control->chord_mode : -1,
+                             (void*)shadow_chain_read_midi_fx_output);
+                    shadow_log(dbg);
+                    mfx_diag++;
+                }
+            }
             if (shadow_control && shadow_control->chord_mode &&
                 shadow_chain_read_midi_fx_output) {
                 for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
@@ -4341,9 +4355,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             }
         }
 
-        /* Memory barrier to ensure all writes are visible */
-        __sync_synchronize();
-    }
+    /* Memory barrier to ensure all writes are visible */
+    __sync_synchronize();
 
     /* === SAMPLER MIDI FILTERING ===
      * Block events from reaching Move for sampler use.

@@ -919,10 +919,13 @@ int shadow_inprocess_load_chain(void) {
         uint8_t *, uint8_t *, uint8_t *))
         dlsym(shadow_dsp_handle, "chain_read_midi_fx_output");
 
-    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p process_fx=%p midi_fx_to_move=%p",
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p process_fx=%p mfx_to_move=%p read_mfx=%p inject_off=%p signal_pad=%p",
             (void*)shadow_chain_set_inject_audio,
             (void*)shadow_chain_process_fx,
-            (void*)shadow_chain_set_midi_fx_to_move);
+            (void*)shadow_chain_set_midi_fx_to_move,
+            (void*)shadow_chain_read_midi_fx_output,
+            (void*)shadow_chain_inject_note_off,
+            (void*)shadow_chain_signal_new_pad);
 
     /* Set pages: read persisted page on boot */
     set_page_current = set_page_read_persisted();
