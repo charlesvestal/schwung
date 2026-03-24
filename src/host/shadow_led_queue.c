@@ -465,6 +465,10 @@ void shadow_flush_pending_leds(void) {
             move_led_clear_pending = 0;
         }
     }
+
+    /* Progressive sysex LED restore — 3 LEDs per tick (18 packets).
+     * Writes directly to MIDI_OUT, bypassing the raw queue. */
+    led_queue_flush_jack_sysex_restore(3);
 }
 
 /* ============================================================================
@@ -685,17 +689,61 @@ int led_queue_jack_sysex_debug_info(int *starts, int *cached, int *last_cin) {
     return sysex_packets_seen;
 }
 
+/* Progressive sysex LED restore state */
+static int sysex_restore_pending = 0;
+static int sysex_restore_index = 0;  /* Next LED index to restore */
+
 void led_queue_restore_jack_sysex_leds(void) {
-    shadow_init_led_queue();
-    /* Replay cached sysex LED packets through the raw queue */
-    for (int i = 0; i < JACK_SYSEX_MAX_LEDS; i++) {
-        if (!jack_sysex_led_cache[i].valid) continue;
-        for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
-            shadow_queue_led(
-                jack_sysex_led_cache[i].packets[p][0],
-                jack_sysex_led_cache[i].packets[p][1],
-                jack_sysex_led_cache[i].packets[p][2],
-                jack_sysex_led_cache[i].packets[p][3]);
+    /* Start progressive restore — actual work done in flush function */
+    sysex_restore_pending = 1;
+    sysex_restore_index = 0;
+}
+
+/* Called from shadow_flush_pending_leds to progressively drain sysex restore.
+ * Restores up to max_leds LEDs per call (each LED = 6 raw packets). */
+int led_queue_flush_jack_sysex_restore(int max_leds) {
+    if (!sysex_restore_pending) return 0;
+
+    uint8_t *midi_out = host.midi_out_buf;
+    if (!midi_out) return 0;
+
+    int leds_sent = 0;
+    while (sysex_restore_index < JACK_SYSEX_MAX_LEDS && leds_sent < max_leds) {
+        if (!jack_sysex_led_cache[sysex_restore_index].valid) {
+            sysex_restore_index++;
+            continue;
         }
+
+        /* Find 6 consecutive empty slots for this LED's sysex packets */
+        int start_slot = -1;
+        for (int s = 0; s <= MIDI_BUFFER_SIZE - JACK_SYSEX_PACKETS_PER_LED * 4; s += 4) {
+            int found = 1;
+            for (int k = 0; k < JACK_SYSEX_PACKETS_PER_LED * 4; k += 4) {
+                if (midi_out[s+k] || midi_out[s+k+1] || midi_out[s+k+2] || midi_out[s+k+3]) {
+                    found = 0;
+                    break;
+                }
+            }
+            if (found) { start_slot = s; break; }
+        }
+        if (start_slot < 0) break;  /* No room, try next tick */
+
+        /* Write all 6 packets for this LED */
+        for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
+            int slot = start_slot + p * 4;
+            midi_out[slot]   = jack_sysex_led_cache[sysex_restore_index].packets[p][0];
+            midi_out[slot+1] = jack_sysex_led_cache[sysex_restore_index].packets[p][1];
+            midi_out[slot+2] = jack_sysex_led_cache[sysex_restore_index].packets[p][2];
+            midi_out[slot+3] = jack_sysex_led_cache[sysex_restore_index].packets[p][3];
+        }
+
+        sysex_restore_index++;
+        leds_sent++;
     }
+
+    if (sysex_restore_index >= JACK_SYSEX_MAX_LEDS) {
+        sysex_restore_pending = 0;
+    }
+
+    return leds_sent;
 }
