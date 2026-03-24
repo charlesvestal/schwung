@@ -528,17 +528,17 @@ typedef struct chain_instance {
      * is written here instead of being sent to the shadow synth.
      * The shim reads this buffer and injects into MIDI_IN cable-2. */
     int midi_fx_to_move;                      /* Flag: redirect MIDI FX output to Move */
-    uint8_t midi_fx_out_buf[16][3];           /* Output messages (up to 16) */
-    int midi_fx_out_lens[16];                 /* Message lengths */
+    uint8_t midi_fx_out_buf[32][3];           /* Output messages (accumulated, up to 32) */
+    int midi_fx_out_lens[32];                 /* Message lengths */
     volatile int midi_fx_out_count;           /* Number of messages (0 = empty/consumed) */
-    uint8_t midi_fx_out_original_note;        /* The input note that produced this output */
-    uint8_t midi_fx_out_original_status;      /* The input status byte */
     uint8_t midi_fx_out_channel;              /* MIDI channel */
     uint8_t midi_fx_last_input_channel;       /* Channel of last note received (for tick output) */
     int midi_fx_is_replacing;                 /* 1 = replacing mode (arp, transpose), 0 = additive (chord) */
-    volatile uint8_t midi_fx_new_pad;         /* Set by shim when new pad press detected, cleared after on_midi */
-    volatile int midi_fx_skip_echoes;         /* Skip next N cable-2 events (echoes of our injection) */
-    uint8_t midi_fx_injected[128];            /* Refcount: additive mode echo filter */
+    volatile uint8_t midi_fx_new_pad;         /* Set by shim when new pad press detected */
+    volatile int midi_fx_skip_echoes;         /* (legacy, unused) */
+    uint8_t midi_fx_injected[128];            /* Per-pitch echo refcount */
+    uint32_t midi_fx_inject_frame[128];       /* Frame when refcount was set (for timing) */
+    uint32_t midi_fx_frame_counter;           /* Incremented each render_block */
 
     /* Channel settings from last load_file (autosave restore).
      * Used as fallback when current_patch == -1 (file-based load, not library). */
@@ -1689,6 +1689,9 @@ static int v2_process_midi_fx(chain_instance_t *inst,
 static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
     if (!inst) return;
 
+    /* Increment frame counter for echo timing */
+    inst->midi_fx_frame_counter++;
+
     for (int fx = 0; fx < inst->midi_fx_count; fx++) {
         midi_fx_api_v1_t *api = inst->midi_fx_plugins[fx];
         void *fx_inst = inst->midi_fx_instances[fx];
@@ -1717,15 +1720,9 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
                     inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
                     inst->midi_fx_out_lens[i] = out_lens[i];
-                    uint8_t on = out_msgs[i][1];
-                    if (on < 128) {
-                        inst->midi_fx_injected[on]++;
-                    }
+                    /* Refcount tracking done in chain_read_midi_fx_output */
                 }
-                inst->midi_fx_out_original_note = 255;
-                inst->midi_fx_out_original_status = 0;
                 inst->midi_fx_out_channel = tick_ch;
-                /* Tick tracks all notes in injected[] (line above) for echo filtering */
                 __sync_synchronize();
                 inst->midi_fx_out_count = n;
             }
@@ -6833,62 +6830,39 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             inst->midi_fx_last_input_channel = msg[0] & 0x0F;
         }
     }
-    if (inst->midi_fx_to_move && len >= 3) {
-        uint8_t note = msg[1];
-        uint8_t type = msg[0] & 0xF0;
-        uint8_t vel = msg[2];
-
-        /* Echo filter: refcount per pitch. Each injected note increments,
-         * each echo decrements and is skipped. Both note-ons and note-offs tracked. */
-        if (note < 128 && inst->midi_fx_injected[note] > 0) {
-            inst->midi_fx_injected[note]--;
-            return;
-        }
-    }
+    /* Echo filtering is done in the shim (mfx_echo_refcount) before dispatch.
+     * No echo filter needed here — all events reaching v2_on_midi are real. */
 
     /* Process through MIDI FX modules (if any loaded) */
     uint8_t out_msgs[MIDI_FX_MAX_OUT_MSGS][3];
     int out_lens[MIDI_FX_MAX_OUT_MSGS];
     int out_count = v2_process_midi_fx(inst, msg, len, out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
 
-    /* When midi_fx_to_move is set, write NOTE output to shared buffer for injection.
-     * Skip non-note messages (aftertouch, CC) — they flood the buffer and starve tick. */
+    /* When midi_fx_to_move is set, ACCUMULATE note output into shared buffer.
+     * Root note-ONs skipped here (Move already plays root from pad press).
+     * Refcount tracking done in chain_read_midi_fx_output (not here). */
     uint8_t in_type = msg[0] & 0xF0;
     if (inst->midi_fx_to_move && inst->midi_fx_count > 0 &&
         (in_type == 0x90 || in_type == 0x80) && out_count > 0) {
-        int n = out_count < 16 ? out_count : 16;
-        {
-            char dbg[128];
-            snprintf(dbg, sizeof(dbg), "MFX-out: %d msgs from FX (in: st=%02X n=%d v=%d)",
-                     n, msg[0], len>=2?msg[1]:0, len>=3?msg[2]:0);
-            v2_chain_log(inst, dbg);
-            for (int d = 0; d < n; d++) {
-                snprintf(dbg, sizeof(dbg), "  MFX-out[%d]: st=%02X n=%d v=%d",
-                         d, out_msgs[d][0], out_msgs[d][1], out_msgs[d][2]);
-                v2_chain_log(inst, dbg);
-            }
-        }
-        for (int i = 0; i < n; i++) {
-            inst->midi_fx_out_buf[i][0] = out_msgs[i][0];
-            inst->midi_fx_out_buf[i][1] = out_msgs[i][1];
-            inst->midi_fx_out_buf[i][2] = out_msgs[i][2];
-            inst->midi_fx_out_lens[i] = out_lens[i];
-            /* Track what the shim will actually inject (must match exactly).
-             * Shim skips root note-ONs. Injects everything else. */
+        uint8_t in_note = (len >= 2) ? msg[1] : 255;
+        int base = inst->midi_fx_out_count;
+        int added = 0;
+        for (int i = 0; i < out_count && (base + added) < 32; i++) {
             uint8_t on = out_msgs[i][1];
             uint8_t ot = out_msgs[i][0] & 0xF0;
             uint8_t ov = out_msgs[i][2];
-            uint8_t in_note = (len >= 2) ? msg[1] : 255;
-            int is_root_note_on = (on == in_note && ot == 0x90 && ov > 0);
-            if (!is_root_note_on && on < 128) {
-                inst->midi_fx_injected[on]++;
-            }
+            /* Skip root note-ONs — Move already plays root from pad press */
+            if (on == in_note && ot == 0x90 && ov > 0) continue;
+            int idx = base + added;
+            inst->midi_fx_out_buf[idx][0] = out_msgs[i][0];
+            inst->midi_fx_out_buf[idx][1] = out_msgs[i][1];
+            inst->midi_fx_out_buf[idx][2] = out_msgs[i][2];
+            inst->midi_fx_out_lens[idx] = out_lens[i];
+            added++;
         }
-        inst->midi_fx_out_original_note = len >= 2 ? msg[1] : 0;
-        inst->midi_fx_out_original_status = msg[0];
         inst->midi_fx_out_channel = msg[0] & 0x0F;
         __sync_synchronize();
-        inst->midi_fx_out_count = n;
+        inst->midi_fx_out_count = base + added;
         /* Fall through — also send to shadow synth */
     }
 
@@ -8591,8 +8565,8 @@ int chain_read_midi_fx_output(void *instance,
         out_msgs[i][2] = inst->midi_fx_out_buf[i][2];
         out_lens[i] = inst->midi_fx_out_lens[i];
     }
-    if (original_note) *original_note = inst->midi_fx_out_original_note;
-    if (original_status) *original_status = inst->midi_fx_out_original_status;
+    if (original_note) *original_note = 255;  /* Root skip done at write time */
+    if (original_status) *original_status = 0;
     if (channel) *channel = inst->midi_fx_out_channel;
 
     __sync_synchronize();

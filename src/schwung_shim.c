@@ -540,6 +540,11 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 
 /* Master volume for all shadow audio output (0.0 - 1.0) */
 static volatile float shadow_master_volume = 1.0f;
+
+/* MFX echo filter: per-pitch refcount of injected notes awaiting echo.
+ * Incremented when we inject into MIDI_IN, decremented when we see the
+ * echo on MIDI_OUT cable-2 (before dispatching to chain). */
+static uint8_t mfx_echo_refcount[128] = {0};
 /* Is volume knob currently being touched? (note 8) */
 static volatile int shadow_volume_knob_touched = 0;
 /* Is jog encoder currently being touched? (note 9) */
@@ -888,6 +893,17 @@ static void shadow_inprocess_process_midi(void) {
                 continue;
             }
 
+            /* Echo filter: when chord_mode is on, skip cable-2 note events
+             * that we recently injected. mfx_echo_refcount[] tracks exactly
+             * what we inject — one refcount per pitch per injection.
+             * This is the ONLY echo filter; chain_host no longer filters. */
+            if (shadow_control && shadow_control->chord_mode &&
+                (type == 0x90 || type == 0x80) && p2 < 128) {
+                if (mfx_echo_refcount[p2] > 0) {
+                    mfx_echo_refcount[p2]--;
+                    continue;  /* Skip dispatch — this is an echo of our injection */
+                }
+            }
 
             shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
 
@@ -4103,14 +4119,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             static uint8_t mfx_pending[256][4];
             static int mfx_pending_count = 0;
 
-            /* Read chain's MIDI FX output into pending buffer */
+            /* Read chain's MIDI FX output into pending buffer.
+             * Root note-on skip done in chain_host — inject everything here. */
             if (shadow_control && shadow_control->chord_mode &&
                 shadow_chain_read_midi_fx_output) {
                 for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
                     if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
-                    uint8_t out_msgs[16][3];
-                    int out_lens[16];
+                    uint8_t out_msgs[32][3];
+                    int out_lens[32];
                     uint8_t orig_note, orig_status, ch;
                     int count = shadow_chain_read_midi_fx_output(
                         shadow_chain_slots[s].instance,
@@ -4118,18 +4135,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                     if (count <= 0) continue;
 
-                    /* Queue FX output notes.
-                     * Skip root note-ONs (Move plays root via pad press).
-                     * Always inject root note-OFFs (shared pitch between chords
-                     * needs note-off even if it was another chord's root). */
                     for (int i = 0; i < count; i++) {
                         if (out_lens[i] < 3 || mfx_pending_count >= 256) continue;
                         uint8_t out_note = out_msgs[i][1];
                         uint8_t out_vel = out_msgs[i][2];
                         uint8_t out_type = out_msgs[i][0] & 0xF0;
-
-                        /* Skip root note-ons only (not note-offs) */
-                        if (out_note == orig_note && out_type == 0x90 && out_vel > 0) continue;
 
                         uint8_t cin = (out_type == 0x90 && out_vel > 0) ? 0x09 : 0x08;
                         mfx_pending[mfx_pending_count][0] = (2 << 4) | cin;
@@ -4171,7 +4181,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                     memcpy(&mi[hw_offset], mfx_pending[src], 4);
                     memcpy(&mi[hw_offset + 4], &inject_ts, 4);
-                    inject_ts++;  /* Each subsequent event gets increasing timestamp */
+                    inject_ts++;
+                    /* Track this injection for echo filtering */
+                    uint8_t inj_note = mfx_pending[src][2];
+                    if (inj_note < 128) {
+                        mfx_echo_refcount[inj_note]++;
+                    }
                     hw_offset += MIDI_IN_EVENT_SIZE;
                     src++;
                     injected++;
