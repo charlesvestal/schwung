@@ -3758,7 +3758,11 @@ pre_done:
      * We read ALL of them each frame (up to 20 = SPI hardware limit).
      * The driver clears count to 0 when queue is empty, so we only
      * process fresh data. */
-    if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0) {
+    /* Only write JACK MIDI output to hardware during overtake mode.
+     * During suspend (mode 0), RNBO's sysex LED commands would conflict
+     * with Move's LEDs and the cache would be overwritten with stale data. */
+    if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0 &&
+        shadow_control && shadow_control->overtake_mode >= 2) {
         uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
         uint8_t count = g_jack_shm->midi_from_jack_count;
         const int HW_MIDI_LIMIT = 80;
@@ -3787,8 +3791,10 @@ pre_done:
             slot += 4;
             written++;
 
-            /* Cache LED state from JACK output for suspend/resume */
-            {
+            /* Cache LED state from JACK output for suspend/resume.
+             * Only cache during overtake (mode >= 2). During suspend (mode 0),
+             * RNBO may send LED-off commands that would overwrite the cache. */
+            if (shadow_control && shadow_control->overtake_mode >= 2) {
                 uint8_t raw_cin = m.cin | (m.cable << 4);
                 uint8_t jack_status = (m.midi.type << 4) | m.midi.channel;
                 uint8_t jack_type = jack_status & 0xF0;
