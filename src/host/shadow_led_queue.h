@@ -72,6 +72,8 @@ void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3
 void led_queue_clear_jack_sysex_cache(void);
 void led_queue_restore_jack_sysex_leds(void);
 int led_queue_flush_jack_sysex_restore(int max_leds);
+int led_queue_jack_sysex_restore_pending(void);
+void led_queue_freeze_jack_sysex_cache(void);  /* Call on suspend */
 int led_queue_jack_sysex_debug_info(int *starts, int *cached, int *last_cin);
 
 #endif /* SHADOW_LED_QUEUE_H */
