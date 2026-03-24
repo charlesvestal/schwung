@@ -4245,8 +4245,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
             /* CC messages (CIN 0x0B) */
             if (cin == 0x0B && type == 0xB0) {
-                /* In overtake mode, skip all shortcuts except Shift+Vol+Jog Click (exit) */
-                if (overtake_active && !(d1 == CC_JOG_CLICK && shadow_shift_held && shadow_volume_knob_touched)) {
+                /* In overtake mode, skip all shortcuts except Shift+Vol+Jog Click (exit)
+                 * and Shift+Vol+Back (suspend) */
+                if (overtake_active &&
+                    !(d1 == CC_JOG_CLICK && shadow_shift_held && shadow_volume_knob_touched) &&
+                    !(d1 == CC_BACK && shadow_shift_held && shadow_volume_knob_touched)) {
                     continue;
                 }
                 /* DEBUG: log CCs while shift held */
@@ -4318,6 +4321,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Mute button (CC 88): track held state */
                 if (d1 == CC_MUTE) {
                     shadow_mute_held = (d2 > 0) ? 1 : 0;
+                }
+
+                /* Shift + Volume + Back = suspend overtake (JACK keeps running) */
+                if (d1 == CC_BACK && d2 > 0) {
+                    if (shadow_shift_held && shadow_volume_knob_touched && shadow_control &&
+                        shadow_ui_enabled && shadow_control->overtake_mode >= 2) {
+                        shadow_control->suspend_overtake = 1;
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
+                        /* Block Back from reaching Move */
+                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    }
                 }
 
                 /* Shift + Volume + Jog Click = toggle overtake module menu (if shadow UI enabled) */
