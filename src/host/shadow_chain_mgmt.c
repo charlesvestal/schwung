@@ -1688,6 +1688,18 @@ void shadow_inprocess_handle_param_request(void) {
     if (req_type == 0) return;
     uint32_t req_id = shadow_param->request_id;
 
+    /* Handle shim-specific params (jack:*, suspend_overtake) before slot dispatch */
+    if (host.handle_param_special) {
+        const char *key = shadow_param->key;
+        if (strncmp(key, "jack:", 5) == 0 ||
+            strcmp(key, "suspend_overtake") == 0) {
+            if (host.handle_param_special(req_type, req_id)) {
+                shadow_param_publish_response(req_id);
+                return;
+            }
+        }
+    }
+
     /* Handle master FX chain params */
     if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
         const char *fx_key = shadow_param->key + 10;
