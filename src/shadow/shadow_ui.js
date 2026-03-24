@@ -2149,9 +2149,11 @@ function suspendOvertakeMode() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Tell shim to skip exit hook on overtake_mode transition */
-    if (typeof shadow_set_param === "function") {
-        shadow_set_param(0, "suspend_overtake", "1");
+    /* Tell shim to skip exit hook on overtake_mode transition.
+     * Must write directly to shadow_control (not via param interface)
+     * to guarantee the flag is set before overtake_mode drops to 0. */
+    if (typeof shadow_set_suspend_overtake === "function") {
+        shadow_set_suspend_overtake(1);
     }
 
     /* Disable JACK display override — Move reclaims display */
