@@ -77,8 +77,8 @@ static const int hw_note_leds[] = {
 #define HW_NOTE_LED_COUNT (sizeof(hw_note_leds) / sizeof(hw_note_leds[0]))
 
 static const int hw_cc_leds[] = {
-    /* NOTE: Track rows (40-43) excluded — snapshot captures wrong color.
-     * Move doesn't re-assert them, so we leave them alone for now. */
+    /* Track row LEDs */
+    40, 41, 42, 43,
     /* White LED buttons */
     49, 50, 51, 52, 54, 55, 56, 58, 60, 62, 63,
     /* Transport / record (RGB) */

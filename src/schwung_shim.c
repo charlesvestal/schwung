@@ -3928,11 +3928,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             shadow_midi_inject_shm->ready++;
             shadow_log("Overtake exit: injected shift-off and volume-touch-off");
         }
-        /* Clear JACK display override on overtake exit (skip on suspend) */
+        /* Clear JACK display override on overtake exit (always — Move needs display back) */
         if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {
-            if (!(shadow_control && shadow_control->suspend_overtake)) {
-                g_jack_shm->display_active = 0;
-            }
+            g_jack_shm->display_active = 0;
             g_jack_shm->midi_from_jack_count = 0;
         }
         /* Run overtake exit hook if it exists (modules install their own cleanup).

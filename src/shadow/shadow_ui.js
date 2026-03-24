@@ -2156,10 +2156,8 @@ function suspendOvertakeMode() {
         shadow_set_suspend_overtake(1);
     }
 
-    /* Disable JACK display override — Move reclaims display */
-    if (typeof shadow_set_param === "function") {
-        shadow_set_param(0, "jack:display", "0");
-    }
+    /* JACK display override is cleared by the shim on overtake_mode transition.
+     * No need to set jack:display here — the shim always clears it on exit. */
 
     /* Begin LED clearing ceremony, then return to Move */
     overtakeExitPending = true;
