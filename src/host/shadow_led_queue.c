@@ -753,6 +753,19 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
             break;  /* Buffer full, try next tick */
         }
 
+        /* Log first few restored LEDs with raw packet data */
+        if (leds_sent < 3) {
+            uint8_t *p0 = jack_sysex_led_cache[sysex_restore_index].packets[0];
+            uint8_t *p1 = jack_sysex_led_cache[sysex_restore_index].packets[1];
+            uint8_t *p2 = jack_sysex_led_cache[sysex_restore_index].packets[2];
+            unified_log("led_queue", LOG_LEVEL_DEBUG,
+                "sysex restore LED idx=%d pkt0=[%02X %02X %02X %02X] pkt1=[%02X %02X %02X %02X] pkt2=[%02X %02X %02X %02X]",
+                sysex_restore_index,
+                p0[0], p0[1], p0[2], p0[3],
+                p1[0], p1[1], p1[2], p1[3],
+                p2[0], p2[1], p2[2], p2[3]);
+        }
+
         sysex_restore_index++;
         leds_sent++;
     }
