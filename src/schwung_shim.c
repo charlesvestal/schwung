@@ -2596,6 +2596,7 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
     if (strcmp(key, "jack:restore_leds") == 0) {
         if (req_type == 1) {  /* SET */
             led_queue_restore_jack_leds();
+            led_queue_restore_jack_sysex_leds();
             shadow_param->error = 0;
             shadow_param->result_len = 0;
         }
@@ -3778,14 +3779,16 @@ pre_done:
             written++;
 
             /* Cache LED state from JACK output for suspend/resume */
-            uint8_t jack_status = (m.midi.type << 4) | m.midi.channel;
-            uint8_t jack_type = jack_status & 0xF0;
-            if (jack_type == 0x90 || jack_type == 0xB0) {
-                led_queue_cache_jack_led(
-                    m.cin | (m.cable << 4),
-                    jack_status,
-                    m.midi.data1,
-                    m.midi.data2);
+            {
+                uint8_t raw_cin = m.cin | (m.cable << 4);
+                uint8_t jack_status = (m.midi.type << 4) | m.midi.channel;
+                uint8_t jack_type = jack_status & 0xF0;
+                /* Note/CC LEDs */
+                if (jack_type == 0x90 || jack_type == 0xB0) {
+                    led_queue_cache_jack_led(raw_cin, jack_status, m.midi.data1, m.midi.data2);
+                }
+                /* Sysex LED commands (RNBO uses sysex for LED colors) */
+                led_queue_jack_sysex_packet(raw_cin, jack_status, m.midi.data1, m.midi.data2);
             }
         }
 
