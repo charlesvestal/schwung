@@ -512,6 +512,7 @@ void led_queue_clear_jack_cache(void) {
         jack_note_led_state[i] = -1;
         jack_cc_led_state[i] = -1;
     }
+    led_queue_clear_jack_sysex_cache();
 }
 
 void led_queue_restore_jack_leds(void) {
@@ -561,6 +562,123 @@ void shadow_flush_pending_input_leds(void) {
             if (!found) break;  /* Buffer full, try again next tick */
             shadow_input_pending_note_color[i] = -1;
             sent++;
+        }
+    }
+}
+
+/* ============================================================================
+ * JACK Sysex LED Cache
+ *
+ * RNBO sends LED colors via Ableton sysex: F0 00 21 1D 01 01 3B 10 <idx> <rgb...> F7
+ * These arrive as USB-MIDI packets (CIN 0x04 = sysex continue, 0x05-07 = sysex end).
+ * We reassemble the sysex stream, detect LED color commands, and cache the raw
+ * USB-MIDI packets per LED index. On resume, replay the cached packets.
+ * ============================================================================ */
+
+#define JACK_SYSEX_MAX_LEDS 128
+#define JACK_SYSEX_PACKETS_PER_LED 6  /* 16 bytes = 6 USB-MIDI packets */
+
+/* Each cached LED entry: 6 raw USB-MIDI packets (4 bytes each) */
+typedef struct {
+    uint8_t packets[JACK_SYSEX_PACKETS_PER_LED][4];
+    int valid;
+} jack_sysex_led_entry_t;
+
+static jack_sysex_led_entry_t jack_sysex_led_cache[JACK_SYSEX_MAX_LEDS];
+
+/* Sysex reassembly state */
+static uint8_t sysex_buf[32];
+static int sysex_buf_len = 0;
+static int sysex_active = 0;
+/* Raw packet accumulator for the current sysex message */
+static uint8_t sysex_raw_packets[8][4];
+static int sysex_raw_count = 0;
+
+void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3) {
+    uint8_t cin_type = cin & 0x0F;
+
+    /* CIN 0x04 = sysex start or continue (3 data bytes) */
+    if (cin_type == 0x04) {
+        if (b1 == 0xF0) {
+            /* Sysex start */
+            sysex_buf_len = 0;
+            sysex_active = 1;
+            sysex_raw_count = 0;
+        }
+        if (sysex_active && sysex_buf_len + 3 <= (int)sizeof(sysex_buf)) {
+            sysex_buf[sysex_buf_len++] = b1;
+            sysex_buf[sysex_buf_len++] = b2;
+            sysex_buf[sysex_buf_len++] = b3;
+        }
+        if (sysex_active && sysex_raw_count < 8) {
+            sysex_raw_packets[sysex_raw_count][0] = cin;
+            sysex_raw_packets[sysex_raw_count][1] = b1;
+            sysex_raw_packets[sysex_raw_count][2] = b2;
+            sysex_raw_packets[sysex_raw_count][3] = b3;
+            sysex_raw_count++;
+        }
+    }
+    /* CIN 0x05 = sysex end (1 byte), 0x06 = sysex end (2 bytes), 0x07 = sysex end (3 bytes) */
+    else if (cin_type >= 0x05 && cin_type <= 0x07) {
+        int end_bytes = cin_type - 0x04;  /* 1, 2, or 3 */
+        if (sysex_active && sysex_buf_len + end_bytes <= (int)sizeof(sysex_buf)) {
+            sysex_buf[sysex_buf_len++] = b1;
+            if (end_bytes >= 2) sysex_buf[sysex_buf_len++] = b2;
+            if (end_bytes >= 3) sysex_buf[sysex_buf_len++] = b3;
+        }
+        if (sysex_active && sysex_raw_count < 8) {
+            sysex_raw_packets[sysex_raw_count][0] = cin;
+            sysex_raw_packets[sysex_raw_count][1] = b1;
+            sysex_raw_packets[sysex_raw_count][2] = b2;
+            sysex_raw_packets[sysex_raw_count][3] = b3;
+            sysex_raw_count++;
+        }
+
+        /* Check if this is an Ableton LED color sysex:
+         * F0 00 21 1D 01 01 3B 10 <idx> <r_lo> <r_hi> <g_lo> <g_hi> <b_lo> <b_hi> F7
+         * That's 16 bytes, 6 USB-MIDI packets */
+        if (sysex_active && sysex_buf_len >= 16 &&
+            sysex_buf[0] == 0xF0 && sysex_buf[1] == 0x00 && sysex_buf[2] == 0x21 &&
+            sysex_buf[3] == 0x1D && sysex_buf[4] == 0x01 && sysex_buf[5] == 0x01 &&
+            sysex_buf[6] == 0x3B && sysex_buf[7] == 0x10 &&
+            sysex_raw_count == JACK_SYSEX_PACKETS_PER_LED) {
+            uint8_t idx = sysex_buf[8];
+            if (idx < JACK_SYSEX_MAX_LEDS) {
+                for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
+                    for (int b = 0; b < 4; b++) {
+                        jack_sysex_led_cache[idx].packets[p][b] = sysex_raw_packets[p][b];
+                    }
+                }
+                jack_sysex_led_cache[idx].valid = 1;
+            }
+        }
+
+        sysex_active = 0;
+        sysex_buf_len = 0;
+        sysex_raw_count = 0;
+    }
+}
+
+void led_queue_clear_jack_sysex_cache(void) {
+    for (int i = 0; i < JACK_SYSEX_MAX_LEDS; i++) {
+        jack_sysex_led_cache[i].valid = 0;
+    }
+    sysex_active = 0;
+    sysex_buf_len = 0;
+    sysex_raw_count = 0;
+}
+
+void led_queue_restore_jack_sysex_leds(void) {
+    shadow_init_led_queue();
+    /* Replay cached sysex LED packets through the raw queue */
+    for (int i = 0; i < JACK_SYSEX_MAX_LEDS; i++) {
+        if (!jack_sysex_led_cache[i].valid) continue;
+        for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
+            shadow_queue_led(
+                jack_sysex_led_cache[i].packets[p][0],
+                jack_sysex_led_cache[i].packets[p][1],
+                jack_sysex_led_cache[i].packets[p][2],
+                jack_sysex_led_cache[i].packets[p][3]);
         }
     }
 }
