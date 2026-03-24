@@ -4223,16 +4223,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             continue;
                         }
                         if (type == 0x80 || (type == 0x90 && vel == 0)) {
-                            /* Pad release: inject note-off directly to chain for replacing FX */
-                            if (pad_pitch[idx] != 255 && shadow_chain_inject_note_off) {
-                                for (int s2 = 0; s2 < SHADOW_CHAIN_INSTANCES; s2++) {
-                                    if (shadow_chain_slots[s2].instance) {
-                                        shadow_chain_inject_note_off(
-                                            shadow_chain_slots[s2].instance,
-                                            pad_pitch[idx], pad_channel[idx]);
-                                    }
-                                }
-                            }
+                            /* Pad release — let through to Move. The cable-2
+                             * note-off from MIDI_OUT will reach the arp naturally
+                             * (same path as shadow synth). Skip drain this frame. */
                             pads_held[idx] = 0;
                             pad_pitch[idx] = 255;
                             cable0_new_press = 1;

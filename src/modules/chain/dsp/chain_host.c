@@ -537,6 +537,7 @@ typedef struct chain_instance {
     uint8_t midi_fx_last_input_channel;       /* Channel of last note received (for tick output) */
     int midi_fx_is_replacing;                 /* 1 = replacing mode (arp, transpose), 0 = additive (chord) */
     volatile uint8_t midi_fx_new_pad;         /* Set by shim when new pad press detected, cleared after on_midi */
+    volatile int midi_fx_skip_echoes;         /* Skip next N cable-2 events (echoes of our injection) */
     uint8_t midi_fx_injected[128];            /* Refcount: additive mode echo filter */
 
     /* Channel settings from last load_file (autosave restore).
@@ -1724,6 +1725,8 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                 inst->midi_fx_out_original_note = 255;
                 inst->midi_fx_out_original_status = 0;
                 inst->midi_fx_out_channel = tick_ch;
+                /* Set skip counter: expect N echoes from this injection */
+                inst->midi_fx_skip_echoes = n;
                 __sync_synchronize();
                 inst->midi_fx_out_count = n;
             }
@@ -6838,13 +6841,13 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
 
         if (inst->midi_fx_is_replacing) {
             /* Replacing mode (arp, transpose):
-             * - Skip ALL cable-2 note-offs (pad releases via chain_inject_note_off)
-             * - Skip ALL cable-2 note-ons UNLESS a new pad press just happened
-             * Move echoes notes repeatedly on cable-2 while held — only the
-             * FIRST note-on (from a real pad press) should reach the MIDI FX. */
-            if (is_note_off) return;
-            if (!inst->midi_fx_new_pad) return;  /* No new pad → skip echo */
-            inst->midi_fx_new_pad = 0;  /* Consume the flag */
+             * Skip exactly N events after each injection (echoes arrive next frame).
+             * All other cable-2 events pass through (retriggers, real releases). */
+            if (inst->midi_fx_skip_echoes > 0) {
+                inst->midi_fx_skip_echoes--;
+                return;
+            }
+            /* Everything else passes through to MIDI FX (including retrigger note-off/on) */
         } else {
             /* Additive mode (chord): skip only echoes via refcount.
              * Note-offs pass through so chord FX generates chord note-offs. */
@@ -6891,6 +6894,12 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         inst->midi_fx_out_original_note = len >= 2 ? msg[1] : 0;
         inst->midi_fx_out_original_status = msg[0];
         inst->midi_fx_out_channel = msg[0] & 0x0F;
+        /* Skip counter: expect echoes equal to notes that differ from input */
+        int skip = 0;
+        for (int i = 0; i < n; i++) {
+            if (out_msgs[i][1] != (len >= 2 ? msg[1] : 255)) skip++;
+        }
+        inst->midi_fx_skip_echoes = skip;
         __sync_synchronize();
         inst->midi_fx_out_count = n;
         return;  /* Don't send to synth — shim will inject, shadow synth hears via MIDI_OUT */
