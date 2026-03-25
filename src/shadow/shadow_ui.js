@@ -7135,6 +7135,36 @@ function getParamMetadata(key) {
     return normalizeExpandedParamMeta(key, merged);
 }
 
+function getStepPrecision(step, fallback) {
+    const num = Number(step);
+    if (!Number.isFinite(num) || num <= 0) return fallback;
+    const text = String(num).toLowerCase();
+    const expIdx = text.indexOf("e-");
+    if (expIdx >= 0) {
+        const exp = parseInt(text.slice(expIdx + 2), 10);
+        if (Number.isFinite(exp)) return Math.max(0, Math.min(6, exp));
+        return fallback;
+    }
+    const dotIdx = text.indexOf(".");
+    if (dotIdx < 0) return 0;
+    return Math.max(0, Math.min(6, text.length - dotIdx - 1));
+}
+
+function getWavPositionSetPrecision(meta) {
+    const unit = String(meta && meta.display_unit || "percent").toLowerCase();
+    if (unit === "ms") return 0;
+
+    const baseStep = Math.abs(parseMetaNumber(meta && meta.step, 0.01));
+    const shiftMult = getWavPositionShiftMultiplier(meta);
+    const fineStep = baseStep > 0 ? Math.abs(baseStep * shiftMult) : 0;
+    const effectiveStep = fineStep > 0
+        ? Math.min(baseStep || fineStep, fineStep)
+        : baseStep;
+    const fallback = (unit === "sec" || unit === "s") ? 3 : 2;
+    const precision = getStepPrecision(effectiveStep, fallback);
+    return Math.max(fallback, precision);
+}
+
 /* Format a param value for setting (respects type) */
 function formatParamForSet(val, meta) {
     if (meta && meta.type === "int") {
@@ -7142,8 +7172,8 @@ function formatParamForSet(val, meta) {
     }
     if (meta && meta.ui_type === "wav_position") {
         if (meta.display_unit === "ms") return Math.round(val).toString();
-        if (meta.display_unit === "sec" || meta.display_unit === "s") return Number(val).toFixed(3);
-        return Number(val).toFixed(2);
+        const precision = getWavPositionSetPrecision(meta);
+        return Number(val).toFixed(precision);
     }
     return val.toFixed(3);
 }
