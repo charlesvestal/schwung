@@ -1589,10 +1589,10 @@ function buildWavPositionParamMeta(meta) {
     const mode = (modeRaw === "trim_front" || modeRaw === "start")
         ? "start"
         : ((modeRaw === "trim_end" || modeRaw === "end") ? "end" : "position");
-    const defaultMax = displayUnit === "percent" ? 100 : 1;
+    const defaultMax = 1;
     const min = parseMetaNumber(getMetaOption(meta, "min", 0), 0);
     const max = parseMetaNumber(getMetaOption(meta, "max", defaultMax), defaultMax);
-    const defaultStep = displayUnit === "ms" ? 1 : ((displayUnit === "sec" || displayUnit === "s") ? 0.01 : 1);
+    const defaultStep = displayUnit === "ms" ? 1 : 0.01;
     const step = parseMetaNumber(getMetaOption(meta, "step", defaultStep), defaultStep);
     const shiftMultiplierRaw = parseMetaNumber(
         getMetaOption(
@@ -1669,7 +1669,7 @@ function formatWavPositionDisplayValue(rawValue, meta) {
     if (unit === "sec" || unit === "s") return `${num.toFixed(3)} s`;
 
     const min = parseMetaNumber(meta && meta.min, 0);
-    const max = parseMetaNumber(meta && meta.max, 100);
+    const max = parseMetaNumber(meta && meta.max, 1);
     const span = max - min;
     if (span <= 0) return "0%";
     const pct = Math.max(0, Math.min(100, Math.round(((num - min) / span) * 100)));
@@ -7967,7 +7967,7 @@ function normalizeWavPositionRatio(rawValue, meta, durationSec) {
     }
 
     const min = parseMetaNumber(meta && meta.min, 0);
-    const max = parseMetaNumber(meta && meta.max, 100);
+    const max = parseMetaNumber(meta && meta.max, 1);
     const span = max - min;
     if (span <= 0) return 0;
     return Math.max(0, Math.min(1, (num - min) / span));
@@ -8017,7 +8017,7 @@ function getWavPositionEndDefaultValue(meta, durationSec) {
     }
 
     const min = parseMetaNumber(meta && meta.min, 0);
-    const max = parseMetaNumber(meta && meta.max, 100);
+    const max = parseMetaNumber(meta && meta.max, 1);
     return String(Math.max(min, max));
 }
 
