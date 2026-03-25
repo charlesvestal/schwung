@@ -812,17 +812,17 @@ Use `type: "wav_position"` for numeric position/trim controls with waveform visu
 - `key` (required): Parameter key passed to `set_param`.
 - `name` (required): Label shown in Shadow UI.
 - `type` (required): Must be `"wav_position"`.
-- `display_unit` (optional): `percent`, `ms`, `sec`/`s` (default `percent`).
+- `display_unit` (optional): `percent`, `ms`, `sec`/`s` (default `percent`). In `percent` mode values are stored internally as normalized `0..1` and displayed as `0..100%`.
 - `mode` (optional): `position`, `start`, `end` (legacy aliases: `trim_front`, `trim_end`).
 - `filepath_param` (recommended): Key of the linked filepath parameter containing the WAV source.
-- `min`, `max`, `step` (optional): Numeric range and increment for editing.
+- `min`, `max`, `step` (optional): Numeric range and increment for editing. Defaults: `percent` uses `0..1` with `step: 0.01`; `ms` uses `step: 1`; `sec` uses `step: 0.01`.
 - `shift_increment_multiplier` (optional): Multiplier for Shift fine-step (default `0.1`; alias `shift_step_multiplier`).
 
 Behavior notes:
 
 - Waveform view opens only while the parameter is in edit mode.
 - `mode: start` and `mode: end` use side-aware waveform rendering for trim workflows.
-- On filepath selection commit, empty linked `mode: end` params are initialized to file end (`100%` in percent mode, WAV duration for `ms`/`sec`).
+- On filepath selection commit, empty linked `mode: end` params are initialized to file end (`1.0` internal / `100%` displayed in percent mode, WAV duration for `ms`/`sec`).
 
 #### `canvas` in module.json
 

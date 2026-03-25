@@ -99,6 +99,16 @@ if ! rg -F -q "shift_increment_multiplier" "$shadow_file"; then
   exit 1
 fi
 
+if ! rg -F -q "const defaultMax = 1;" "$shadow_file"; then
+  echo "FAIL: wav_position percent mode should default to normalized 0..1 range" >&2
+  exit 1
+fi
+
+if ! rg -F -q "const defaultStep = displayUnit === \"ms\" ? 1 : 0.01;" "$shadow_file"; then
+  echo "FAIL: wav_position percent/sec default step should be 0.01" >&2
+  exit 1
+fi
+
 if ! rg -F -q "Math.abs(baseStep) * getWavPositionShiftMultiplier(ctx.meta)" "$shadow_file"; then
   echo "FAIL: wav_position knob shift step should use metadata multiplier" >&2
   exit 1
@@ -236,6 +246,11 @@ fi
 
 if ! rg -F -q "Waveform view opens only while the parameter is in edit mode" "$docs_file"; then
   echo "FAIL: docs/MODULES.md is missing wav_position edit-mode waveform behavior" >&2
+  exit 1
+fi
+
+if ! rg -F -q "In \`percent\` mode values are stored internally as normalized \`0..1\` and displayed as \`0..100%\`." "$docs_file"; then
+  echo "FAIL: docs/MODULES.md should document wav_position percent internal value range" >&2
   exit 1
 fi
 
