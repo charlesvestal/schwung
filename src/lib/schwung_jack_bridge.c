@@ -7,6 +7,7 @@
 
 #include <fcntl.h>
 #include <linux/futex.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -134,6 +135,57 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
 }
 
 // ============================================================================
+// MIDI_OUT stash — pre-transfer buffer for sequencer notes
+// ============================================================================
+
+/* MIDI_OUT is consumed by SPI ioctl, so we stash cable-2 events pre-transfer
+ * and the bridge picks them up post-transfer. */
+static SchwungJackMidiEvent g_midi_out_stash[SCHWUNG_JACK_MIDI_IN_MAX];
+static uint8_t g_midi_out_stash_count = 0;
+
+static int g_midi_out_stash_log_count = 0;
+
+void schwung_jack_bridge_stash_midi_out(const uint8_t *midi_out_buf, int overtake_mode) {
+    (void)overtake_mode;  /* Always stash — JACK may be running while suspended */
+    g_midi_out_stash_count = 0;
+
+    for (int i = 0; i < 256 && g_midi_out_stash_count < SCHWUNG_JACK_MIDI_IN_MAX; i += 4) {
+        uint8_t p0 = midi_out_buf[i], p1 = midi_out_buf[i+1];
+        uint8_t p2 = midi_out_buf[i+2], p3 = midi_out_buf[i+3];
+        if (!p0 && !p1 && !p2 && !p3) continue;
+        uint8_t cable = (p0 >> 4) & 0x0F;
+        if (cable != 2) continue;
+        uint8_t cin = p0 & 0x0F;
+        if (cin < 0x8 || cin > 0xE) continue;
+        /* Ch16 (0xF) → ch1 (0x0) */
+        uint8_t ch = p1 & 0x0F;
+        SchwungJackMidiEvent jev;
+        jev.message.cin = cin;
+        jev.message.cable = cable;
+        jev.message.midi.type = (p1 >> 4) & 0x0F;
+        jev.message.midi.channel = (ch == 0xF) ? 0x0 : ch;
+        jev.message.midi.data1 = p2;
+        jev.message.midi.data2 = p3;
+        jev.timestamp = 0;
+        g_midi_out_stash[g_midi_out_stash_count++] = jev;
+    }
+    /* Debug: log first few stash events */
+    if (g_midi_out_stash_count > 0 && g_midi_out_stash_log_count < 50) {
+        FILE *f = fopen("/data/UserData/schwung/debug.log", "a");
+        if (f) {
+            fprintf(f, "[DEBUG] [jack_bridge] stash: %d events, first: type=0x%X ch=%d d1=%d d2=%d\n",
+                g_midi_out_stash_count,
+                g_midi_out_stash[0].message.midi.type,
+                g_midi_out_stash[0].message.midi.channel,
+                g_midi_out_stash[0].message.midi.data1,
+                g_midi_out_stash[0].message.midi.data2);
+            fclose(f);
+        }
+        g_midi_out_stash_log_count++;
+    }
+}
+
+// ============================================================================
 // Post-transfer: copy capture data to shm, split MIDI, wake JACK
 // ============================================================================
 
@@ -208,6 +260,14 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
             shm->ext_midi_to_jack[ext_count++] = jev;
         }
     }
+
+    /* Append any buffered MIDI_OUT events (stashed in pre-transfer).
+     * MIDI_OUT is consumed by SPI ioctl, so post-transfer it's empty — the shim
+     * calls schwung_jack_bridge_stash_midi_out() before transfer. */
+    for (uint8_t i = 0; i < g_midi_out_stash_count && ext_count < SCHWUNG_JACK_MIDI_IN_MAX; i++) {
+        shm->ext_midi_to_jack[ext_count++] = g_midi_out_stash[i];
+    }
+    g_midi_out_stash_count = 0;
 
     shm->midi_to_jack_count = c0_count;
     shm->ext_midi_to_jack_count = ext_count;
