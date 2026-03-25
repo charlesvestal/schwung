@@ -94,6 +94,16 @@ if ! rg -F -q "function getWavPositionShiftMultiplier(meta) {" "$shadow_file"; t
   exit 1
 fi
 
+if ! rg -F -q "function getWavPositionSetPrecision(meta) {" "$shadow_file"; then
+  echo "FAIL: wav_position set precision helper is missing" >&2
+  exit 1
+fi
+
+if ! rg -F -q "const precision = getWavPositionSetPrecision(meta);" "$shadow_file"; then
+  echo "FAIL: wav_position should compute write precision from step/fine-step" >&2
+  exit 1
+fi
+
 if ! rg -F -q "shift_increment_multiplier" "$shadow_file"; then
   echo "FAIL: wav_position shift increment multiplier metadata is missing" >&2
   exit 1
