@@ -883,6 +883,7 @@ static void shadow_inprocess_process_midi(void) {
                 uint8_t msg[3] = { p1, p2, p3 };
                 overtake_dsp_fx->on_midi(overtake_dsp_fx_inst, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
             }
+
         }
     }
 }
@@ -3344,6 +3345,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     TIME_SECTION_START();
     shadow_inprocess_process_midi();
     TIME_SECTION_END(spi_proc_midi_sum, spi_proc_midi_max);
+
+    /* Stash MIDI_OUT cable-2 sequencer notes before SPI ioctl consumes them.
+     * The bridge picks these up post-transfer and appends to ext_midi_to_jack. */
+    if (g_jack_shm && shadow_control) {
+        schwung_jack_bridge_stash_midi_out(
+            global_mmap_addr + MIDI_OUT_OFFSET,
+            shadow_control->overtake_mode);
+    }
 
     /* Drain MIDI-to-DSP from shadow UI (overtake modules sending to chain slots) */
     shadow_drain_ui_midi_dsp();
