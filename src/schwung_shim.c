@@ -3910,7 +3910,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Copy capture data to JACK shared memory and wake JACK driver */
     schwung_jack_bridge_post(g_jack_shm, shadow, hw,
-                             shadow_control ? &shadow_control->overtake_mode : NULL);
+                             shadow_control ? &shadow_control->overtake_mode : NULL,
+                             shadow_control ? &shadow_control->shift_held : NULL);
 
     /* Bridge Schwung's total mix into native resampling path when selected. */
     native_resample_bridge_apply();
