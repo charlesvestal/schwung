@@ -166,16 +166,26 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
 
         if (cable == 0 && c0_count < SCHWUNG_JACK_MIDI_IN_MAX
             && overtake_mode_ptr && *overtake_mode_ptr >= 2) {
-            /* When Shift is held, block volume knob events from reaching
-             * JACK/RNBO. These are part of Shift+Vol shortcuts — passing
-             * them through causes RNBO to hide knob LEDs on volume touch. */
+            /* When Shift is held, block system shortcut events from reaching
+             * JACK/RNBO. These are Shift+Vol combos (suspend, exit, slot
+             * select, etc.) — not intended for the module. Passing volume
+             * touch causes RNBO to hide knob LEDs; passing Back/Jog causes
+             * RNBO to navigate when it should just be suspending/exiting. */
             if (shift_held_ptr && *shift_held_ptr) {
                 uint8_t msg_type = ev.message.midi.type;   /* upper nibble of status */
                 uint8_t d1 = ev.message.midi.data1;
                 /* Note 8 = volume touch (type 0x9=NoteOn, 0x8=NoteOff) */
                 if ((msg_type == 0x9 || msg_type == 0x8) && d1 == 8) continue;
-                /* CC 79 = volume knob value (type 0xB=CC) */
-                if (msg_type == 0xB && d1 == 79) continue;
+                if (msg_type == 0xB) {
+                    /* CC 79 = volume knob value */
+                    if (d1 == 79) continue;
+                    /* CC 51 = back button (Shift+Vol+Back = suspend) */
+                    if (d1 == 51) continue;
+                    /* CC 3 = jog click (Shift+Vol+Jog = exit overtake) */
+                    if (d1 == 3) continue;
+                    /* CC 40-43 = track buttons (Shift+Vol+Track = slot select) */
+                    if (d1 >= 40 && d1 <= 43) continue;
+                }
             }
             SchwungJackMidiEvent jev;
             jev.message.cin = ev.message.cin;
