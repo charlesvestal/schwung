@@ -139,7 +139,8 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
 
 void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
                                const uint8_t *hw,
-                               const volatile uint8_t *overtake_mode_ptr) {
+                               const volatile uint8_t *overtake_mode_ptr,
+                               const volatile uint8_t *shift_held_ptr) {
     if (!shm || !shadow)
         return;
 
@@ -165,6 +166,17 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
 
         if (cable == 0 && c0_count < SCHWUNG_JACK_MIDI_IN_MAX
             && overtake_mode_ptr && *overtake_mode_ptr >= 2) {
+            /* When Shift is held, block volume knob events from reaching
+             * JACK/RNBO. These are part of Shift+Vol shortcuts — passing
+             * them through causes RNBO to hide knob LEDs on volume touch. */
+            if (shift_held_ptr && *shift_held_ptr) {
+                uint8_t msg_type = ev.message.midi.type;   /* upper nibble of status */
+                uint8_t d1 = ev.message.midi.data1;
+                /* Note 8 = volume touch (type 0x9=NoteOn, 0x8=NoteOff) */
+                if ((msg_type == 0x9 || msg_type == 0x8) && d1 == 8) continue;
+                /* CC 79 = volume knob value (type 0xB=CC) */
+                if (msg_type == 0xB && d1 == 79) continue;
+            }
             SchwungJackMidiEvent jev;
             jev.message.cin = ev.message.cin;
             jev.message.cable = ev.message.cable;
