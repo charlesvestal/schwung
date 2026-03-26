@@ -3718,7 +3718,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * Shadow mode: copy from shadow display shm (full composited frame).
      * Native mode: reconstruct from captured slices (written above). */
     if (display_live_shm && shadow_control && shadow_control->display_mirror) {
-        if (shadow_display_mode && shadow_display_shm) {
+        if (g_jack_shm && g_jack_shm->display_active) {
+            /* JACK/RNBO display: copy full frame directly from JACK shm */
+            memcpy(display_live_shm, g_jack_shm->display_data, DISPLAY_BUFFER_SIZE);
+        } else if (shadow_display_mode && shadow_display_shm) {
             memcpy(display_live_shm, shadow_display_shm, DISPLAY_BUFFER_SIZE);
         } else {
             static uint8_t live_native[DISPLAY_BUFFER_SIZE];
