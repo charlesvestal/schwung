@@ -274,10 +274,10 @@ void schwung_jack_bridge_post(SchwungJackShm *shm, uint8_t *shadow,
     shm->ext_midi_to_jack_count = ext_count;
 
     // Debug: store total event count and first event raw bytes for debugging
-    // Use unused bytes at end of shm (after display_active, before page boundary)
-    // Offset 2725+ is padding
+    // Use bytes after display_active (end of struct), before page boundary.
+    // display_data ends at offsetof(display_active)+1; safe area starts ~3080.
     {
-        uint8_t *dbg = ((uint8_t *)shm) + 2726;
+        uint8_t *dbg = ((uint8_t *)shm) + 3080;
         int total = 0;
         for (int i = 0; i < SCHWUNG_MIDI_IN_MAX; i++) {
             SchwungMidiEvent ev = in_events[i];
