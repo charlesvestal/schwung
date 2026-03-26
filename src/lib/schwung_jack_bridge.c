@@ -75,12 +75,12 @@ static inline int jack_is_active(SchwungJackShm *shm) {
 // Pre-transfer: mix JACK output into shadow before shadow→hardware copy
 // ============================================================================
 
-void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
+int schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
     if (!shm || !shadow)
-        return;
+        return 0;
 
     if (!jack_is_active(shm))
-        return;
+        return 0;
 
     // --- Audio: add JACK's audio_out into shadow output buffer (saturating) ---
     int16_t *shadow_audio = (int16_t *)(shadow + SCHWUNG_OFF_OUT_AUDIO);
@@ -132,6 +132,7 @@ void schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
                    SCHWUNG_JACK_DISPLAY_SIZE - 5 * SCHWUNG_OUT_DISP_CHUNK_LEN);
         }
     }
+    return 1;
 }
 
 // ============================================================================
