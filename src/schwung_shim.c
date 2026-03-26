@@ -1651,6 +1651,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
+    /* Tick Master FX LFOs after processing so updated params apply next block.
+     * This mirrors the legacy in-process mix path behavior. */
+    shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK);
+
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */

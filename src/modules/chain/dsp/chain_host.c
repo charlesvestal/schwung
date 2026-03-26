@@ -1728,6 +1728,29 @@ static int json_get_int(const char *json, const char *key, int *out) {
     return 0;
 }
 
+/* Simple JSON float extraction - finds "key": number */
+static int json_get_float(const char *json, const char *key, float *out) {
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+
+    const char *pos = strstr(json, search);
+    if (!pos) return -1;
+
+    /* Find the colon after the key */
+    pos = strchr(pos + strlen(search), ':');
+    if (!pos) return -1;
+
+    /* Skip whitespace */
+    while (*pos && (*pos == ' ' || *pos == '\t' || *pos == ':')) pos++;
+
+    char *endptr = NULL;
+    float value = strtof(pos, &endptr);
+    if (endptr == pos) return -1;
+
+    *out = value;
+    return 0;
+}
+
 static int json_get_section_bounds(const char *json, const char *section_key,
                                    const char **out_start, const char **out_end) {
     char search[64];
@@ -4506,6 +4529,34 @@ static int chain_mod_get_base_for_subkey(chain_instance_t *inst,
     return chain_mod_get_param_string(inst, target, param, buf, buf_len);
 }
 
+/* Optional getter helper: key suffix ':modulated' returns whether a target
+ * currently has at least one active modulation source. */
+static int chain_mod_get_modulated_for_subkey(chain_instance_t *inst,
+                                              const char *target,
+                                              const char *subkey,
+                                              char *buf,
+                                              int buf_len) {
+    if (!inst || !target || !subkey || !buf || buf_len < 2) return -1;
+
+    const size_t suffix_len = 10; /* ":modulated" */
+    const size_t subkey_len = strlen(subkey);
+    if (subkey_len <= suffix_len || strcmp(subkey + subkey_len - suffix_len, ":modulated") != 0) {
+        return -1;
+    }
+
+    char param[64];
+    const size_t param_len = subkey_len - suffix_len;
+    if (param_len == 0 || param_len >= sizeof(param)) return -1;
+    memcpy(param, subkey, param_len);
+    param[param_len] = '\0';
+
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    if (entry && entry->active && chain_mod_has_active_sources(entry)) {
+        return snprintf(buf, buf_len, "1");
+    }
+    return snprintf(buf, buf_len, "0");
+}
+
 /* Runtime modulation callback (initial stateful implementation).
  * Applies non-destructive contribution math and stores effective values. */
 static int chain_mod_emit_value(void *ctx,
@@ -6336,17 +6387,13 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
             json_get_int(obj, "sync", &lfo->sync);
             json_get_int(obj, "rate_div", &lfo->rate_div);
 
-            /* Parse floats using json_get_string + strtof */
-            char tmpf[32];
-            if (json_get_string(obj, "rate_hz", tmpf, sizeof(tmpf)) == 0)
-                lfo->rate_hz = strtof(tmpf, NULL);
-            if (json_get_string(obj, "depth", tmpf, sizeof(tmpf)) == 0)
-                lfo->depth = strtof(tmpf, NULL);
-            if (json_get_string(obj, "phase_offset", tmpf, sizeof(tmpf)) == 0)
-                lfo->phase_offset = strtof(tmpf, NULL);
+            json_get_float(obj, "rate_hz", &lfo->rate_hz);
+            json_get_float(obj, "depth", &lfo->depth);
+            json_get_float(obj, "phase_offset", &lfo->phase_offset);
 
             json_get_string(obj, "target", lfo->target, sizeof(lfo->target));
             json_get_string(obj, "target_param", lfo->param, sizeof(lfo->param));
+            json_get_int(obj, "polarity", &lfo->bipolar);
             json_get_int(obj, "retrigger", &lfo->retrigger);
 
             lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
@@ -7068,7 +7115,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 if (lfo->rate_hz < 0.1f && !lfo->sync) {
                     lfo->rate_hz = 1.0f;
                 }
-                if (lfo->depth <= 0.0f) {
+                if (lfo->depth == 0.0f && !lfo->target[0] && !lfo->param[0]) {
                     lfo->depth = 0.5f;
                 }
                 lfo->active = (lfo->target[0] && lfo->param[0]);
@@ -7087,12 +7134,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             if (lfo->rate_div >= LFO_NUM_DIVISIONS) lfo->rate_div = LFO_NUM_DIVISIONS - 1;
         } else if (strcmp(subkey, "sync") == 0) {
             lfo->sync = atoi(val);
-            /* Default to 1/1 (index 3) if rate_div is still at 0 (8bar) */
-            if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 3;
+            /* Default to 1/1 (index 15) if rate_div is still at 0 (16bar) */
+            if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 15;
         } else if (strcmp(subkey, "depth") == 0) {
             lfo->depth = strtof(val, NULL);
-            if (lfo->depth < 0.0f) lfo->depth = 0.0f;
+            if (lfo->depth < -1.0f) lfo->depth = -1.0f;
             if (lfo->depth > 1.0f) lfo->depth = 1.0f;
+        } else if (strcmp(subkey, "polarity") == 0) {
+            lfo->bipolar = atoi(val) ? 1 : 0;
         } else if (strcmp(subkey, "phase_offset") == 0) {
             lfo->phase_offset = strtof(val, NULL);
             if (lfo->phase_offset < 0.0f) lfo->phase_offset = 0.0f;
@@ -7656,6 +7705,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return snprintf(buf, buf_len, "%d", lfo->sync);
         if (strcmp(subkey, "depth") == 0)
             return snprintf(buf, buf_len, "%.2f", lfo->depth);
+        if (strcmp(subkey, "polarity") == 0)
+            return snprintf(buf, buf_len, "%d", lfo->bipolar);
         if (strcmp(subkey, "phase_offset") == 0)
             return snprintf(buf, buf_len, "%.2f", lfo->phase_offset);
         if (strcmp(subkey, "target") == 0)
@@ -7678,11 +7729,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             } else {
                 off += snprintf(buf + off, buf_len - off,
                     "\"lfo%d\":{\"enabled\":%d,\"shape\":%d,\"sync\":%d,"
-                    "\"rate_hz\":%.1f,\"rate_div\":%d,\"depth\":%.2f,"
+                    "\"rate_hz\":%.1f,\"rate_div\":%d,\"depth\":%.2f,\"polarity\":%d,"
                     "\"phase_offset\":%.2f,\"target\":\"%s\",\"target_param\":\"%s\","
                     "\"retrigger\":%d}",
                     i + 1, lfo->enabled, lfo->shape, lfo->sync,
-                    lfo->rate_hz, lfo->rate_div, lfo->depth,
+                    lfo->rate_hz, lfo->rate_div, lfo->depth, lfo->bipolar,
                     lfo->phase_offset, lfo->target, lfo->param,
                     lfo->retrigger);
             }
@@ -7814,6 +7865,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 6;
         int base_result = chain_mod_get_base_for_subkey(inst, "synth", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, "synth", subkey, buf, buf_len);
+        if (mod_result >= 0) return mod_result;
 
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {
@@ -7881,6 +7934,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 4;
         int base_result = chain_mod_get_base_for_subkey(inst, "fx1", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, "fx1", subkey, buf, buf_len);
+        if (mod_result >= 0) return mod_result;
 
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 0) {
@@ -7957,6 +8012,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 4;
         int base_result = chain_mod_get_base_for_subkey(inst, "fx2", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, "fx2", subkey, buf, buf_len);
+        if (mod_result >= 0) return mod_result;
 
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 1) {
@@ -8033,6 +8090,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 9;
         int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
+        if (mod_result >= 0) return mod_result;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 0) {
             if (inst->midi_fx_ui_hierarchy[0][0]) {
@@ -8099,6 +8158,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 9;
         int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
+        if (mod_result >= 0) return mod_result;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 1) {
             if (inst->midi_fx_ui_hierarchy[1][0]) {
@@ -8182,7 +8243,7 @@ typedef struct {
 } slot_lfo_param_meta_t;
 
 static const slot_lfo_param_meta_t slot_lfo_param_meta[] = {
-    { "depth",        0.0f, 1.0f  },
+    { "depth",       -1.0f, 1.0f  },
     { "rate_hz",      0.1f, 20.0f },
     { "phase_offset", 0.0f, 1.0f  },
 };
@@ -8262,7 +8323,7 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
             char source_id[8];
             snprintf(source_id, sizeof(source_id), "lfo%d", i + 1);
             chain_mod_emit_value(inst, source_id, lfo->target, lfo->param,
-                                 signal, lfo->depth, 0.0f, 1 /*bipolar*/, 1 /*enabled*/);
+                                 signal, lfo->depth, 0.0f, lfo->bipolar, 1 /*enabled*/);
         }
         /* target_lfo == i: self-targeting, skip */
     }
