@@ -45,7 +45,7 @@ if ! rg -q 'lfoConfig\.rate_div\)\)\s*$' "$ui_file"; then
   exit 1
 fi
 
-if ! rg -q 'cfg\.rate_div\)\) \? Number\(cfg\.rate_div\) : 15;' "$ui_file"; then
+if ! rg -U -q 'Number\.isFinite\(Number\((cfg|lfoConfig)\.rate_div\)\)\s*\n\s*\?\s*Number\((cfg|lfoConfig)\.rate_div\)\s*\n\s*:\s*15;' "$ui_file"; then
   echo "FAIL: applied config fallback rate_div should be index 15 (1/1)" >&2
   exit 1
 fi
