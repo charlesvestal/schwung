@@ -3880,7 +3880,31 @@ pre_done:
     }
 
     /* Mix JACK audio/display into shadow (no-op if JACK not connected) */
-    schwung_jack_bridge_pre(g_jack_shm, shadow);
+    int jack_mixed = schwung_jack_bridge_pre(g_jack_shm, shadow);
+
+    /* JACK audio was mixed after skipback/sampler captured the mailbox.
+     * Amend those captures so RNBO audio appears in skipback and recordings.
+     * Also add to resampler snapshot + ME component for native resample bridge. */
+    if (jack_mixed) {
+        const int16_t *jack_audio = g_jack_shm->audio_out;
+        if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
+            skipback_amend(jack_audio);
+            sampler_amend_audio(jack_audio);
+        }
+        if (native_total_mix_snapshot_valid) {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int32_t s = (int32_t)native_total_mix_snapshot[i] + (int32_t)jack_audio[i];
+                if (s > 32767) s = 32767;
+                if (s < -32768) s = -32768;
+                native_total_mix_snapshot[i] = (int16_t)s;
+
+                s = (int32_t)native_bridge_me_component[i] + (int32_t)jack_audio[i];
+                if (s > 32767) s = 32767;
+                if (s < -32768) s = -32768;
+                native_bridge_me_component[i] = (int16_t)s;
+            }
+        }
+    }
 
     /* Mute Move's audio output when requested (e.g. during silent clip switching).
      * Zero the audio region in shadow BEFORE the library copies shadow→hw. */

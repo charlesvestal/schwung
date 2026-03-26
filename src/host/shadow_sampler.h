@@ -188,7 +188,11 @@ void sampler_on_clock(uint8_t status);
 /* Skipback: allocate buffer, capture audio, trigger save */
 void skipback_init(void);
 void skipback_capture(int16_t *audio);
+void skipback_amend(const int16_t *audio);
 void skipback_trigger_save(void);
+
+/* Amend: mix additional audio into the last captured sampler block */
+void sampler_amend_audio(const int16_t *audio);
 
 /* Update VU meter from audio source */
 void sampler_update_vu(void);

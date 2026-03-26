@@ -701,6 +701,24 @@ void sampler_capture_audio(void) {
     }
 }
 
+void sampler_amend_audio(const int16_t *audio) {
+    if (sampler_state != SAMPLER_RECORDING || !sampler_ring_buffer || !audio) return;
+    if (sampler_source != SAMPLER_SOURCE_RESAMPLE) return;
+
+    size_t block_samples = SAMPLER_FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
+    size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t wp = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
+    /* Mix into the block that was just written by sampler_capture_audio */
+    size_t start = (wp + buffer_samples - block_samples) % buffer_samples;
+    for (size_t i = 0; i < block_samples; i++) {
+        size_t pos = (start + i) % buffer_samples;
+        int32_t sum = (int32_t)sampler_ring_buffer[pos] + (int32_t)audio[i];
+        if (sum > 32767) sum = 32767;
+        if (sum < -32768) sum = -32768;
+        sampler_ring_buffer[pos] = (int16_t)sum;
+    }
+}
+
 void sampler_on_clock(uint8_t status) {
     if (status == 0xF8) {
         /* MIDI Clock tick */
@@ -809,6 +827,22 @@ void skipback_capture(int16_t *audio) {
     if (!skipback_buffer_full && wp < skipback_write_pos)
         skipback_buffer_full = 1;
     skipback_write_pos = wp;
+}
+
+void skipback_amend(const int16_t *audio) {
+    if (!skipback_buffer || !audio || __atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE)) return;
+
+    size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t block_samples = SAMPLER_FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
+    /* Mix into the block that was just written by skipback_capture */
+    size_t start = (skipback_write_pos + total_samples - block_samples) % total_samples;
+    for (size_t i = 0; i < block_samples; i++) {
+        size_t pos = (start + i) % total_samples;
+        int32_t sum = (int32_t)skipback_buffer[pos] + (int32_t)audio[i];
+        if (sum > 32767) sum = 32767;
+        if (sum < -32768) sum = -32768;
+        skipback_buffer[pos] = (int16_t)sum;
+    }
 }
 
 static void *skipback_writer_func(void *arg) {
