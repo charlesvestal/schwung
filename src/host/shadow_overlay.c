@@ -233,6 +233,26 @@ void overlay_draw_shift_knob(uint8_t *buf)
     overlay_draw_string(buf, text_x, text_y + 18, shift_knob_overlay_value, 1);
 }
 
+void overlay_draw_skipback_toast(uint8_t *buf)
+{
+    /* Centered 110x20 toast matching the JS version in sampler_overlay.mjs */
+    int box_w = 110;
+    int box_h = 20;
+    int box_x = (128 - box_w) / 2;
+    int box_y = (64 - box_h) / 2;
+
+    overlay_fill_rect(buf, box_x, box_y, box_w, box_h, 0);             /* Black fill */
+    overlay_fill_rect(buf, box_x, box_y, box_w, 1, 1);                 /* Top border */
+    overlay_fill_rect(buf, box_x, box_y + box_h - 1, box_w, 1, 1);    /* Bottom border */
+    overlay_fill_rect(buf, box_x, box_y, 1, box_h, 1);                 /* Left border */
+    overlay_fill_rect(buf, box_x + box_w - 1, box_y, 1, box_h, 1);    /* Right border */
+
+    const char *msg = "Skipback saved!";
+    int msg_len = 15;  /* strlen("Skipback saved!") */
+    int msg_x = (128 - msg_len * 6) / 2;
+    overlay_draw_string(buf, msg_x, box_y + 7, msg, 1);
+}
+
 void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
 {
     (void)cc_value;  /* No longer used - we show "Unmapped" instead */
