@@ -64,6 +64,9 @@ void overlay_fill_rect(uint8_t *buf, int x, int y, int w, int h, int color);
 /* Draw the shift+knob overlay onto a display buffer */
 void overlay_draw_shift_knob(uint8_t *buf);
 
+/* Draw the skipback toast onto a display buffer */
+void overlay_draw_skipback_toast(uint8_t *buf);
+
 /* Update overlay state when a knob CC is processed in Move mode with Shift held */
 void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value);
 
