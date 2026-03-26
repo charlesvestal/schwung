@@ -3714,13 +3714,27 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     shadow_swap_display();
     TIME_SECTION_END(spi_display_sum, spi_display_max);  /* End timing display section */
 
+    /* Composite JACK display with skipback toast overlay when active.
+     * Used for both the remote mirror and the physical OLED (via bridge_pre). */
+    static uint8_t composited_jack_display[DISPLAY_BUFFER_SIZE];
+    int jack_display_composited = 0;
+    if (g_jack_shm && g_jack_shm->display_active) {
+        memcpy(composited_jack_display, g_jack_shm->display_data, DISPLAY_BUFFER_SIZE);
+        if (skipback_overlay_timeout > 0) {
+            overlay_draw_skipback_toast(composited_jack_display);
+        }
+        if (sampler_state == SAMPLER_RECORDING && rec_dot_visible()) {
+            overlay_fill_rect(composited_jack_display, 123, 1, 4, 4, 1);
+        }
+        jack_display_composited = 1;
+    }
+
     /* Capture final display to live shm for remote viewer.
      * Shadow mode: copy from shadow display shm (full composited frame).
      * Native mode: reconstruct from captured slices (written above). */
     if (display_live_shm && shadow_control && shadow_control->display_mirror) {
-        if (g_jack_shm && g_jack_shm->display_active) {
-            /* JACK/RNBO display: copy full frame directly from JACK shm */
-            memcpy(display_live_shm, g_jack_shm->display_data, DISPLAY_BUFFER_SIZE);
+        if (jack_display_composited) {
+            memcpy(display_live_shm, composited_jack_display, DISPLAY_BUFFER_SIZE);
         } else if (shadow_display_mode && shadow_display_shm) {
             memcpy(display_live_shm, shadow_display_shm, DISPLAY_BUFFER_SIZE);
         } else {
@@ -3881,6 +3895,22 @@ pre_done:
 
     /* Mix JACK audio/display into shadow (no-op if JACK not connected) */
     int jack_mixed = schwung_jack_bridge_pre(g_jack_shm, shadow);
+
+    /* Overwrite display chunk with composited version (includes skipback toast).
+     * bridge_pre already wrote a chunk from shm->display_data; replace it
+     * with the same chunk from our composited buffer. */
+    if (jack_display_composited && g_jack_shm->display_active) {
+        uint32_t idx = *(uint32_t *)(shadow + SCHWUNG_OFF_IN_DISP_STAT);
+        if (idx >= 1 && idx <= 5) {
+            memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
+                   composited_jack_display + (idx - 1) * SCHWUNG_OUT_DISP_CHUNK_LEN,
+                   SCHWUNG_OUT_DISP_CHUNK_LEN);
+        } else if (idx == 6) {
+            memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
+                   composited_jack_display + 5 * SCHWUNG_OUT_DISP_CHUNK_LEN,
+                   DISPLAY_BUFFER_SIZE - 5 * SCHWUNG_OUT_DISP_CHUNK_LEN);
+        }
+    }
 
     /* JACK audio was mixed after skipback/sampler captured the mailbox.
      * Amend those captures so RNBO audio appears in skipback and recordings.
@@ -4324,7 +4354,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * and Shift+Vol+Back (suspend) */
                 if (overtake_active &&
                     !(d1 == CC_JOG_CLICK && shadow_shift_held && shadow_volume_knob_touched) &&
-                    !(d1 == CC_BACK && shadow_shift_held && shadow_volume_knob_touched)) {
+                    !(d1 == CC_BACK && shadow_shift_held && shadow_volume_knob_touched) &&
+                    !(d1 == CC_CAPTURE && shadow_shift_held)) {
                     continue;
                 }
                 /* DEBUG: log CCs while shift held */
