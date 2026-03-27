@@ -158,8 +158,10 @@ void schwung_jack_bridge_stash_midi_out(const uint8_t *midi_out_buf, int overtak
         if (cable != 2) continue;
         uint8_t cin = p0 & 0x0F;
         if (cin < 0x8 || cin > 0xE) continue;
-        /* Ch16 (0xF) → ch1 (0x0) */
+        /* Only forward ch16 — that's the dedicated RNBO channel.
+         * Other channels are Move tracks and shouldn't reach JACK. */
         uint8_t ch = p1 & 0x0F;
+        if (ch != 0xF) continue;
         SchwungJackMidiEvent jev;
         jev.message.cin = cin;
         jev.message.cable = cable;
