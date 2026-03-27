@@ -246,6 +246,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "streamrtsp",
+      "name": "StreamRTSP",
+      "description": "Local RTSP audio receiver for Android ScreenStream and other RTSP senders",
+      "author": "dom",
+      "component_type": "sound_generator",
+      "github_repo": "handcraftedcc/schwung-StreamRTSP",
+      "default_branch": "main",
+      "asset_name": "streamrtsp-module.tar.gz",
+      "min_host_version": "0.8.4"
+    },
+    {
       "id": "clap",
       "name": "CLAP FX",
       "description": "Host for CLAP audio effect plugins",
