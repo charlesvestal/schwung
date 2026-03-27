@@ -3918,21 +3918,28 @@ pre_done:
 
     /* JACK audio was mixed after skipback/sampler captured the mailbox.
      * Amend those captures so RNBO audio appears in skipback and recordings.
+     * Scale by master volume so RNBO matches Move's level in captures
+     * (Move's audio in the mailbox is already at mv level).
      * Also add to resampler snapshot + ME component for native resample bridge. */
     if (jack_mixed) {
-        const int16_t *jack_audio = g_jack_shm->audio_out;
+        const int16_t *jack_raw = g_jack_shm->audio_out;
+        float mv = shadow_master_volume;
+        int16_t jack_scaled[FRAMES_PER_BLOCK * 2];
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+            jack_scaled[i] = (int16_t)lroundf((float)jack_raw[i] * mv);
+
         if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
-            skipback_amend(jack_audio);
-            sampler_amend_audio(jack_audio);
+            skipback_amend(jack_scaled);
+            sampler_amend_audio(jack_scaled);
         }
         if (native_total_mix_snapshot_valid) {
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                int32_t s = (int32_t)native_total_mix_snapshot[i] + (int32_t)jack_audio[i];
+                int32_t s = (int32_t)native_total_mix_snapshot[i] + (int32_t)jack_scaled[i];
                 if (s > 32767) s = 32767;
                 if (s < -32768) s = -32768;
                 native_total_mix_snapshot[i] = (int16_t)s;
 
-                s = (int32_t)native_bridge_me_component[i] + (int32_t)jack_audio[i];
+                s = (int32_t)native_bridge_me_component[i] + (int32_t)jack_scaled[i];
                 if (s > 32767) s = 32767;
                 if (s < -32768) s = -32768;
                 native_bridge_me_component[i] = (int16_t)s;
