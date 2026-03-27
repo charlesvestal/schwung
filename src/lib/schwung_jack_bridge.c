@@ -6,7 +6,6 @@
 #include "schwung_spi_lib.h"
 
 #include <fcntl.h>
-#include <math.h>
 #include <linux/futex.h>
 #include <stdio.h>
 #include <string.h>
@@ -73,58 +72,56 @@ static inline int jack_is_active(SchwungJackShm *shm) {
 }
 
 // ============================================================================
-// Pre-transfer: mix JACK output into shadow before shadow→hardware copy
+// Phase 1: Wake JACK — called early in pre-ioctl so JACK computes audio
+// in parallel with the shim's DSP render.
 // ============================================================================
 
-int schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow, float master_volume) {
-    if (!shm || !shadow)
-        return 0;
+void schwung_jack_bridge_wake(SchwungJackShm *shm) {
+    if (!shm) return;
+    if (!jack_is_active(shm)) return;
 
-    if (!jack_is_active(shm))
-        return 0;
-
-    // --- Audio: add JACK's audio_out into shadow output buffer (saturating) ---
-    int16_t *shadow_audio = (int16_t *)(shadow + SCHWUNG_OFF_OUT_AUDIO);
-    int num_samples = SCHWUNG_AUDIO_FRAMES * 2; // stereo interleaved
-
-    /* Wake the JACK driver and wait for it to write fresh audio.
-     * Clear audio_ready flag, wake driver, busywait for driver to set it.
-     * This ensures we never read stale audio from the previous cycle. */
     volatile uint8_t *audio_ready = (volatile uint8_t *)(((uint8_t *)shm) + 3940);
     *audio_ready = 0;
     __sync_synchronize();
 
     __atomic_add_fetch(&shm->frame_counter, 1, __ATOMIC_RELEASE);
     syscall(SYS_futex, &shm->frame_counter, FUTEX_WAKE, 1, NULL, NULL, 0);
+}
 
-    /* Busywait for the driver to write audio and set audio_ready.
-     * The driver writes audio as the first thing after waking (~1μs).
-     * Allow up to ~2ms of spinning (well within the 2.9ms frame). */
-    {
-        int spins = 0;
-        while (!*audio_ready && spins < 2000000) {
-            spins++;
-        }
+// ============================================================================
+// Phase 2: Read JACK audio — called inside mix_from_buffer.  Waits for JACK
+// to finish writing, returns pointer to 128-frame stereo interleaved int16.
+// Returns NULL if JACK is not active.
+// ============================================================================
+
+const int16_t *schwung_jack_bridge_read_audio(SchwungJackShm *shm) {
+    if (!shm) return NULL;
+    if (!jack_is_active(shm)) return NULL;
+
+    volatile uint8_t *audio_ready = (volatile uint8_t *)(((uint8_t *)shm) + 3940);
+    int spins = 0;
+    while (!*audio_ready && spins < 2000000) {
+        spins++;
     }
 
-    for (int i = 0; i < num_samples; i++) {
-        int16_t scaled = (int16_t)lroundf((float)shm->audio_out[i] * master_volume);
-        shadow_audio[i] = saturating_add_i16(shadow_audio[i], scaled);
-    }
+    return shm->audio_out;
+}
 
-    // --- MIDI output is handled by the shim via shadow_queue_led() ---
-    // The shim routes JACK's midi_from_jack through the existing
-    // rate-limited LED queue, which handles the 20-per-frame SPI limit.
+// ============================================================================
+// Phase 3: Display — called late in pre-ioctl.  Audio is handled above.
+// ============================================================================
 
-    // --- Display: if active, copy correct chunk to shadow ---
-    // Display protocol: hardware sends index 1-6, we respond with the
-    // corresponding 172-byte chunk. Index 0 = no update.
-    // See ablspi.c handleDisplayOutput() for reference.
+int schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
+    if (!shm || !shadow)
+        return 0;
+
+    if (!jack_is_active(shm))
+        return 0;
+
     if (shm->display_active) {
         uint32_t idx = *(uint32_t *)(shadow + SCHWUNG_OFF_IN_DISP_STAT);
-        /* Debug: store display index at a known shm location */
         ((uint8_t *)shm)[4090] = (uint8_t)(idx & 0xFF);
-        ((uint8_t *)shm)[4091]++; /* call counter */
+        ((uint8_t *)shm)[4091]++;
         if (idx >= 1 && idx <= 5) {
             memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
                    shm->display_data + (idx - 1) * SCHWUNG_OUT_DISP_CHUNK_LEN,
