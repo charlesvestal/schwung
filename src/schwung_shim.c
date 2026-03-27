@@ -3553,7 +3553,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                         amplitude = powf(10.0f, db / 20.0f);
                     }
 
-                    if (fabsf(amplitude - shadow_master_volume) > 0.003f) {
+                    if (amplitude == 0.0f || fabsf(amplitude - shadow_master_volume) > 0.003f) {
                         shadow_master_volume = amplitude;
                         float db_val = (amplitude > 0.0f) ? (20.0f * log10f(amplitude)) : -99.0f;
                         char msg[112];
@@ -3898,7 +3898,7 @@ pre_done:
     }
 
     /* Mix JACK audio/display into shadow (no-op if JACK not connected) */
-    int jack_mixed = schwung_jack_bridge_pre(g_jack_shm, shadow);
+    int jack_mixed = schwung_jack_bridge_pre(g_jack_shm, shadow, shadow_master_volume);
 
     /* Overwrite display chunk with composited version (includes skipback toast).
      * bridge_pre already wrote a chunk from shm->display_data; replace it

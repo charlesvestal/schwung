@@ -6,6 +6,7 @@
 #include "schwung_spi_lib.h"
 
 #include <fcntl.h>
+#include <math.h>
 #include <linux/futex.h>
 #include <stdio.h>
 #include <string.h>
@@ -75,7 +76,7 @@ static inline int jack_is_active(SchwungJackShm *shm) {
 // Pre-transfer: mix JACK output into shadow before shadow→hardware copy
 // ============================================================================
 
-int schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
+int schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow, float master_volume) {
     if (!shm || !shadow)
         return 0;
 
@@ -106,8 +107,10 @@ int schwung_jack_bridge_pre(SchwungJackShm *shm, uint8_t *shadow) {
         }
     }
 
-    for (int i = 0; i < num_samples; i++)
-        shadow_audio[i] = saturating_add_i16(shadow_audio[i], shm->audio_out[i]);
+    for (int i = 0; i < num_samples; i++) {
+        int16_t scaled = (int16_t)lroundf((float)shm->audio_out[i] * master_volume);
+        shadow_audio[i] = saturating_add_i16(shadow_audio[i], scaled);
+    }
 
     // --- MIDI output is handled by the shim via shadow_queue_led() ---
     // The shim routes JACK's midi_from_jack through the existing
