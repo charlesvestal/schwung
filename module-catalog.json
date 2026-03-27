@@ -601,6 +601,28 @@
       "default_branch": "master",
       "asset_name": "weird-dreams-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "dissolver",
+      "name": "Dissolver",
+      "description": "Spectral smearing pad generator — dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction",
+      "author": "fillioning",
+      "component_type": "audio_fx",
+      "github_repo": "fillioning/dissolver-move",
+      "default_branch": "master",
+      "asset_name": "dissolver-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "spectra",
+      "name": "Spectra",
+      "description": "Multiband spectral resonator — pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift",
+      "author": "fillioning",
+      "component_type": "audio_fx",
+      "github_repo": "fillioning/spectra-move",
+      "default_branch": "master",
+      "asset_name": "spectra-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
