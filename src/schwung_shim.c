@@ -1427,8 +1427,23 @@ static void shadow_inprocess_mix_from_buffer(void) {
                            link_audio.move_channel_count >= 4 &&
                            la_receiving);
 
-    /* When NOT rebuilding from Link Audio, the mailbox has Move's audio at
-     * mv level.  Prescale to unity so the mix (and capture) is at full gain. */
+    /* Mix JACK/RNBO audio at mv level to match Move's attenuated audio.
+     * Both sources then prescale to unity together, go through master FX,
+     * and get captured by skipback/sampler at the same consistent level. */
+    {
+        const int16_t *jack_audio = schwung_jack_bridge_read_audio(g_jack_shm);
+        if (jack_audio) {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int32_t scaled_jack = (int32_t)lroundf((float)jack_audio[i] * mv);
+                int32_t mixed = (int32_t)mailbox_audio[i] + scaled_jack;
+                if (mixed > 32767) mixed = 32767;
+                if (mixed < -32768) mixed = -32768;
+                mailbox_audio[i] = (int16_t)mixed;
+            }
+        }
+    }
+
+    /* Prescale mailbox (Move + JACK audio, both at mv) to unity. */
     if (!rebuild_from_la && mv > 0.001f && mv < 0.9999f) {
         float inv = 1.0f / mv;
         if (inv > 20.0f) inv = 20.0f;
@@ -3361,6 +3376,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* Drain MIDI-to-DSP from shadow UI (overtake modules sending to chain slots) */
     shadow_drain_ui_midi_dsp();
 
+    /* Wake JACK early so it computes audio in parallel with DSP render.
+     * Audio is read inside mix_from_buffer (before master FX/volume). */
+    schwung_jack_bridge_wake(g_jack_shm);
+
     /* Pre-ioctl: Mix from pre-rendered buffer (FAST, ~5µs)
      * DSP was rendered post-ioctl in the previous frame.
      * This adds ~3ms latency but lets Move process pad events faster.
@@ -3897,12 +3916,10 @@ pre_done:
         shadow_spi_fd = schwung_spi_get_fd(g_spi_handle);
     }
 
-    /* Mix JACK audio/display into shadow (no-op if JACK not connected) */
-    int jack_mixed = schwung_jack_bridge_pre(g_jack_shm, shadow, shadow_master_volume);
+    /* Handle JACK display (audio is mixed earlier in mix_from_buffer) */
+    schwung_jack_bridge_pre(g_jack_shm, shadow);
 
-    /* Overwrite display chunk with composited version (includes skipback toast).
-     * bridge_pre already wrote a chunk from shm->display_data; replace it
-     * with the same chunk from our composited buffer. */
+    /* Overwrite display chunk with composited version (includes skipback toast). */
     if (jack_display_composited && g_jack_shm->display_active) {
         uint32_t idx = *(uint32_t *)(shadow + SCHWUNG_OFF_IN_DISP_STAT);
         if (idx >= 1 && idx <= 5) {
@@ -3913,37 +3930,6 @@ pre_done:
             memcpy(shadow + SCHWUNG_OFF_OUT_DISP_DATA,
                    composited_jack_display + 5 * SCHWUNG_OUT_DISP_CHUNK_LEN,
                    DISPLAY_BUFFER_SIZE - 5 * SCHWUNG_OUT_DISP_CHUNK_LEN);
-        }
-    }
-
-    /* JACK audio was mixed after skipback/sampler captured the mailbox.
-     * Amend those captures so RNBO audio appears in skipback and recordings.
-     * Scale by master volume so RNBO matches Move's level in captures
-     * (Move's audio in the mailbox is already at mv level).
-     * Also add to resampler snapshot + ME component for native resample bridge. */
-    if (jack_mixed) {
-        const int16_t *jack_raw = g_jack_shm->audio_out;
-        float mv = shadow_master_volume;
-        int16_t jack_scaled[FRAMES_PER_BLOCK * 2];
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
-            jack_scaled[i] = (int16_t)lroundf((float)jack_raw[i] * mv);
-
-        if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
-            skipback_amend(jack_scaled);
-            sampler_amend_audio(jack_scaled);
-        }
-        if (native_total_mix_snapshot_valid) {
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                int32_t s = (int32_t)native_total_mix_snapshot[i] + (int32_t)jack_scaled[i];
-                if (s > 32767) s = 32767;
-                if (s < -32768) s = -32768;
-                native_total_mix_snapshot[i] = (int16_t)s;
-
-                s = (int32_t)native_bridge_me_component[i] + (int32_t)jack_scaled[i];
-                if (s > 32767) s = 32767;
-                if (s < -32768) s = -32768;
-                native_bridge_me_component[i] = (int16_t)s;
-            }
         }
     }
 
