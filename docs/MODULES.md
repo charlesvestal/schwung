@@ -601,6 +601,7 @@ Modules expose a navigable parameter hierarchy to the Shadow UI via `ui_hierarch
 | `list_param` / `count_param` / `name_param` | For preset browser levels |
 | `items_param` / `select_param` | For dynamic item selection levels |
 | `child_prefix` / `child_count` / `child_label` | For repeated elements (see below) |
+| `visible_if` | Optional conditional visibility rule for this level |
 
 ### Parameter Item Types
 
@@ -618,7 +619,44 @@ Each entry in `params` is either:
 | `int` | `min`, `max` | Integer value with knob control |
 | `float` | `min`, `max`, `step` | Float value (0.0-1.0 typical) |
 | `enum` | `options` | List of string options |
+| `filepath` | `root`, `start_path`, `filter` | Opens Shadow UI file browser and stores selected path |
+| `module_picker` | `allow_none`, `allow_self`, `allowed_targets`, `param_key` | Dynamic enum from loaded chain components |
+| `parameter_picker` | `target_key`, `numeric_only`, `allow_none` | Dynamic enum from selected target's exposed params |
 | `mode` | `options` | Mode selector (like enum, triggers mode switch) |
+| `note` | `mode`, `min_note`, `max_note` | Generated note selector (`single` uses note names only, `multi` includes octaves) |
+| `rate` | `include_bars`, `bars_mode`, `include_triplets` | Generated musical rate list (divisions, triplets, bars) |
+| `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step`, `shift_increment_multiplier` | Numeric position/trim param with waveform preview and marker |
+| `string` | none (or `default`/`value`) | Opens on-screen text entry keyboard on edit |
+| `canvas` | `display_value_type`, `canvas_script`, `canvas_overlay`, `show_footer`, `show_value` | Opens fullscreen module-defined canvas UI when clicked |
+
+`rate.bars_mode` values:
+- `bars-every` (default): every bar count from `16` down to `1`
+- `bars-simple`: `16, 8, 4, 2, 1`
+- Legacy aliases are still accepted: `pow2` -> `bars-simple`, `all` -> `bars-every`
+
+Rate options are emitted from slowest to fastest timing, for example:
+`16 bars, ... 2 bars, 1 bar, 1/1T, 1/2, 1/2T, 1/4, ...`
+
+`wav_position` and `canvas` behavior details are documented in dedicated subsections below:
+- `wav_position` in module.json
+- `canvas` in module.json
+
+`visible_if` can be attached to level entries and param entries:
+
+```json
+{
+  "param": "sync",
+  "equals": true
+}
+```
+
+Supported condition fields:
+- `equals`, `not_equals`
+- `gt`/`greater_than`/`greater`
+- `lt`/`smaller_than`/`smaller`
+- `truthy`, `falsey`/`falsy`
+
+Visibility is evaluated dynamically; hidden entries are removed from list navigation and knob mappings for that level.
 
 ### Child Selectors (for repeated elements)
 
@@ -717,14 +755,8 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 
 ### Parameter Types
 
-| Type | Fields | Description |
-|------|--------|-------------|
-| `int` | `min`, `max`, `default`/`value` | Integer value |
-| `float` | `min`, `max`, `default`/`value` | Float value |
-| `enum` | `options`, `default`/`value` | List of string options |
-| `filepath` | `root`, `start_path`, `filter`, `default`/`value` | Opens Shadow UI file browser and stores selected path |
-| `module_picker` | `allow_none`, `allow_self`, `allowed_targets`, `param_key` | Dynamic enum from loaded chain components |
-| `parameter_picker` | `target_key`, `numeric_only`, `allow_none` | Dynamic enum from selected target's exposed params |
+Use the canonical type list in `Shadow UI Parameter Hierarchy -> Parameter Types`.
+For `chain_params`, the same types apply, and `default`/`value` can be used to provide initial values.
 
 #### `filepath` in module.json
 
@@ -771,6 +803,48 @@ Behavior notes:
 - For pad samplers, you can suspend auto-pad switching while browsing by adding `{"key":"ui_auto_select_pad","value":"off","restore":true}` to `browser_hooks.on_open`.
 - Example user sample file path: `/data/UserData/UserLibrary/Samples/Drums/Kick01.wav`.
 
+#### `wav_position` in module.json
+
+Use `type: "wav_position"` for numeric position/trim controls with waveform visualization in edit mode.
+
+`wav_position` fields:
+
+- `key` (required): Parameter key passed to `set_param`.
+- `name` (required): Label shown in Shadow UI.
+- `type` (required): Must be `"wav_position"`.
+- `display_unit` (optional): `percent`, `ms`, `sec`/`s` (default `percent`). In `percent` mode values are stored internally as normalized `0..1` and displayed as `0..100%`.
+- `mode` (optional): `position`, `start`, `end` (legacy aliases: `trim_front`, `trim_end`).
+- `filepath_param` (recommended): Key of the linked filepath parameter containing the WAV source.
+- `min`, `max`, `step` (optional): Numeric range and increment for editing. Defaults: `percent` uses `0..1` with `step: 0.01`; `ms` uses `step: 1`; `sec` uses `step: 0.01`.
+- `shift_increment_multiplier` (optional): Multiplier for Shift fine-step (default `0.1`; alias `shift_step_multiplier`).
+
+Behavior notes:
+
+- Waveform view opens only while the parameter is in edit mode.
+- `mode: start` and `mode: end` use side-aware waveform rendering for trim workflows.
+- On filepath selection commit, empty linked `mode: end` params are initialized to file end (`1.0` internal / `100%` displayed in percent mode, WAV duration for `ms`/`sec`).
+
+#### `canvas` in module.json
+
+Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hierarchy editor.
+
+`canvas` fields:
+
+- `key` (required): Parameter key passed to `set_param`.
+- `name` (required): Label shown in Shadow UI.
+- `type` (required): Must be `"canvas"`.
+- `display_value_type` (optional): `string`, `int`, `float`, or `percent` formatting for value display.
+- `canvas_script` (optional): Script path relative to module root (default `canvas.js`), supports `file.js#overlay_name`.
+- `canvas_overlay` (optional): Named overlay object selector (aliases: `canvas_target`, `overlay`).
+- `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
+- `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
+
+Behavior notes:
+
+- Clicking the parameter enters a dedicated fullscreen canvas view.
+- Set `show_value: false` for button-style canvas entries that should not show a value.
+- The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
+
 #### Dynamic Target Pickers
 
 Use `module_picker` and `parameter_picker` for chain-aware target routing without custom UI code.
@@ -785,6 +859,45 @@ Use `module_picker` and `parameter_picker` for chain-aware target routing withou
 - `numeric_only` (parameter_picker, optional, default true): Restricts options to float/int parameters.
 
 These map to knobs 1-8 in the Shadow UI for quick access.
+
+#### Additional Type Examples
+
+```json
+{
+  "capabilities": {
+    "chain_params": [
+      { "key": "root_note", "name": "Root", "type": "note", "mode": "multi", "min_note": 24, "max_note": 96 },
+      { "key": "lfo_rate", "name": "Rate", "type": "rate", "include_bars": true, "bars_mode": "bars-every", "include_triplets": true },
+      { "key": "sample_file", "name": "Sample", "type": "filepath", "root": "/data/UserData/UserLibrary/Samples", "filter": [".wav", ".aif"] },
+      { "key": "start_ms", "name": "Start", "type": "wav_position", "display_unit": "ms", "mode": "start", "filepath_param": "sample_file", "min": 0, "max": 5000, "step": 1, "shift_increment_multiplier": 0.05 },
+      { "key": "label", "name": "Label", "type": "string", "default": "Init" },
+      { "key": "draw", "name": "Draw", "type": "canvas", "display_value_type": "percent", "canvas_script": "canvas.js#draw_overlay", "canvas_overlay": "draw_overlay", "show_footer": false }
+    ]
+  }
+}
+```
+
+```json
+{
+  "ui_hierarchy": {
+    "levels": {
+      "root": {
+        "params": [
+          { "key": "sync", "name": "Sync", "type": "enum", "options": ["Off", "On"] },
+          { "key": "lfo_rate", "name": "Rate", "visible_if": { "param": "sync", "equals": "On" } },
+          { "level": "advanced", "label": "Advanced" }
+        ]
+      },
+      "advanced": {
+        "visible_if": { "param": "sync", "truthy": true },
+        "params": [
+          { "key": "label", "name": "Label", "type": "string" }
+        ]
+      }
+    }
+  }
+}
+```
 
 ## Shared Utilities
 
