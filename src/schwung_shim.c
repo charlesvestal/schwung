@@ -4057,8 +4057,37 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * doesn't overwrite pre-suspend LED state */
                 led_queue_freeze_jack_sysex_cache();
             } else {
-                system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
-                       "/data/UserData/schwung/hooks/overtake-exit.sh' &");
+                /* Read exiting module ID and run per-module hook if it exists,
+                 * otherwise fall back to the global hook for backward compat. */
+                {
+                    char module_id[64] = {0};
+                    FILE *f = fopen("/data/UserData/schwung/hooks/.exiting-module-id", "r");
+                    if (f) {
+                        if (fgets(module_id, sizeof(module_id), f)) {
+                            char *nl = strchr(module_id, '\n');
+                            if (nl) *nl = '\0';
+                        }
+                        fclose(f);
+                        unlink("/data/UserData/schwung/hooks/.exiting-module-id");
+                    }
+
+                    char hook_path[256];
+                    int have_per_module = 0;
+                    if (module_id[0]) {
+                        snprintf(hook_path, sizeof(hook_path),
+                                 "/data/UserData/schwung/hooks/overtake-exit-%s.sh", module_id);
+                        have_per_module = (access(hook_path, X_OK) == 0);
+                    }
+
+                    if (have_per_module) {
+                        char cmd[512];
+                        snprintf(cmd, sizeof(cmd), "%s &", hook_path);
+                        system(cmd);
+                    } else {
+                        system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
+                               "/data/UserData/schwung/hooks/overtake-exit.sh' &");
+                    }
+                }
                 /* Clear JACK LED cache on clean exit */
                 led_queue_clear_jack_cache();
             }
