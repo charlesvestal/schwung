@@ -1463,6 +1463,119 @@ void shadow_inprocess_handle_ui_request(void) {
 }
 
 /* ============================================================================
+ * Fade Completion Handler
+ * ============================================================================ */
+
+void shadow_process_fade_completions(void) {
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->set_param) return;
+
+    for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES; slot++) {
+        slot_fade_t *fade = &shadow_chain_slots[slot].fade;
+
+        /* Only act when gain has reached zero and there's a pending action */
+        if (fade->gain > 0.0f) continue;
+        if (!fade->pending_clear && fade->pending_patch < 0) continue;
+        if (!shadow_chain_slots[slot].instance) continue;
+
+        if (fade->pending_clear) {
+            /* Deferred clear: tear down DSP modules */
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "synth:module", "");
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx1:module", "");
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx2:module", "");
+            shadow_chain_slots[slot].active = 0;
+            shadow_chain_slots[slot].patch_index = -1;
+            capture_clear(&shadow_chain_slots[slot].capture);
+            strncpy(shadow_chain_slots[slot].patch_name, "", sizeof(shadow_chain_slots[slot].patch_name) - 1);
+            shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
+            shadow_ui_state_t *ui_state = host.shadow_ui_state_ptr ? *host.shadow_ui_state_ptr : NULL;
+            if (ui_state && slot < SHADOW_UI_SLOTS) {
+                strncpy(ui_state->slot_names[slot], "", SHADOW_UI_NAME_LEN - 1);
+                ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
+            }
+            fade->pending_clear = 0;
+            shadow_log("Fade completion: slot cleared");
+
+        } else if (fade->pending_patch >= 0) {
+            int patch_index = fade->pending_patch;
+            fade->pending_patch = -1;
+
+            /* Validate patch index */
+            if (shadow_plugin_v2->get_param) {
+                char buf[32];
+                int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                      "patch_count", buf, sizeof(buf));
+                if (len > 0) {
+                    buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                    int patch_count = atoi(buf);
+                    if (patch_count > 0 && patch_index >= patch_count) {
+                        shadow_log("Fade completion: patch index out of range");
+                        continue;
+                    }
+                }
+            }
+
+            /* Load the patch */
+            char idx_str[16];
+            snprintf(idx_str, sizeof(idx_str), "%d", patch_index);
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "load_patch", idx_str);
+            shadow_chain_slots[slot].patch_index = patch_index;
+            shadow_chain_slots[slot].active = 1;
+
+            /* Read back patch name */
+            if (shadow_plugin_v2->get_param) {
+                char key[32];
+                char buf[128];
+                int len = 0;
+                snprintf(key, sizeof(key), "patch_name_%d", patch_index);
+                len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
+                if (len > 0) {
+                    buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                    strncpy(shadow_chain_slots[slot].patch_name, buf, sizeof(shadow_chain_slots[slot].patch_name) - 1);
+                    shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
+                }
+            }
+
+            shadow_slot_load_capture(slot, patch_index);
+
+            /* Apply channel settings saved in patch */
+            if (shadow_plugin_v2->get_param) {
+                char ch_buf[16];
+                int len;
+                len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                    "patch:receive_channel", ch_buf, sizeof(ch_buf));
+                if (len > 0) {
+                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+                    int recv_ch = atoi(ch_buf);
+                    if (recv_ch != 0) {
+                        shadow_chain_slots[slot].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
+                    }
+                }
+                len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                    "patch:forward_channel", ch_buf, sizeof(ch_buf));
+                if (len > 0) {
+                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+                    int fwd_ch = atoi(ch_buf);
+                    if (fwd_ch != 0) {
+                        shadow_chain_slots[slot].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
+                    }
+                }
+            }
+
+            shadow_ui_state_update_slot(slot);
+
+            /* Begin fade-in */
+            fade->target = 1.0f;
+
+            {
+                char dbg[128];
+                snprintf(dbg, sizeof(dbg), "Fade completion: slot %d loaded patch %d, fading in", slot, patch_index);
+                shadow_log(dbg);
+            }
+        }
+    }
+}
+
+/* ============================================================================
  * Param Handling
  * ============================================================================ */
 
