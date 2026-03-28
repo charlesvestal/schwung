@@ -2539,6 +2539,43 @@ function exitOvertakeMode() {
     needsRedraw = true;
 }
 
+/* Suspend overtake mode — leave background processes running */
+function suspendOvertakeMode() {
+    debugLog("suspendOvertakeMode: suspending overtake, JACK keeps running");
+
+    /* Deactivate LED queue */
+    deactivateLedQueue();
+
+    /* Do NOT unload overtake DSP — JACK stays running */
+
+    /* Clean up JS state */
+    delete globalThis.host_module_set_param;
+    delete globalThis.host_module_set_param_blocking;
+    delete globalThis.host_module_get_param;
+
+    overtakeModuleLoaded = false;
+    overtakeModulePath = "";
+    overtakeModuleCallbacks = null;
+
+    /* Reset encoder accumulation */
+    for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+    overtakeJogDelta = 0;
+
+    /* Tell shim to skip exit hook on overtake_mode transition.
+     * Must write directly to shadow_control (not via param interface)
+     * to guarantee the flag is set before overtake_mode drops to 0. */
+    if (typeof shadow_set_suspend_overtake === "function") {
+        shadow_set_suspend_overtake(1);
+    }
+
+    /* JACK display override is cleared by the shim on overtake_mode transition.
+     * No need to set jack:display here — the shim always clears it on exit. */
+
+    /* Begin LED clearing ceremony, then return to Move */
+    overtakeExitPending = true;
+    needsRedraw = true;
+}
+
 /* Direct exit for interactive tools - skip LED clearing ceremony */
 function exitToolOvertake() {
     debugLog("exitToolOvertake: direct tool exit, nonOvertake=" + toolNonOvertake);
@@ -12666,9 +12703,16 @@ globalThis.tick = function() {
                 debugLog("OVERTAKE flag detected, view=" + view);
                 /* Toggle overtake mode */
                 if (view === VIEWS.OVERTAKE_MODULE) {
-                    /* In a running overtake module - exit back to Move */
-                    debugLog("exiting overtake mode");
-                    exitOvertakeMode();
+                    /* Check if shim set suspend_overtake (Shift+Vol+Back) */
+                    const isSuspend = (typeof shadow_get_suspend_overtake === "function") &&
+                                      shadow_get_suspend_overtake() !== 0;
+                    if (isSuspend) {
+                        debugLog("suspending overtake mode (shim-initiated)");
+                        suspendOvertakeMode();
+                    } else {
+                        debugLog("exiting overtake mode");
+                        exitOvertakeMode();
+                    }
                 } else {
                     /* Enter (or re-enter) overtake menu — always rescan */
                     /* Enter overtake menu */
