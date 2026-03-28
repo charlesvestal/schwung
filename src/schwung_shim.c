@@ -954,9 +954,9 @@ static void shadow_inprocess_mix_audio(void) {
             shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                            render_buffer,
                                            MOVE_FRAMES_PER_BLOCK);
-            /* Capture per-slot audio for Link Audio publisher (with slot volume) */
+            /* Capture per-slot audio for Link Audio publisher (with slot volume + fade) */
             if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                float cap_vol = shadow_effective_volume(s);
+                float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
                 }
@@ -981,11 +981,12 @@ static void shadow_inprocess_mix_audio(void) {
                 any_injected = 1;
             }
 
-            float vol = shadow_effective_volume(s);
-            float gain = vol * me_input_scale;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                float gain = vol * me_input_scale;
                 mix[i] += (int32_t)lroundf((float)render_buffer[i] * gain);
                 me_full[i] += (int32_t)lroundf((float)render_buffer[i] * vol);
+                if (i & 1) shadow_fade_advance(s);
             }
         }
     }
@@ -1288,7 +1289,7 @@ static void shadow_inprocess_render_to_buffer(void) {
                 shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                                render_buffer, MOVE_FRAMES_PER_BLOCK);
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                    float cap_vol = shadow_effective_volume(s);
+                    float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
                     /* Write to publisher shared memory for link_subscriber */
@@ -1304,12 +1305,13 @@ static void shadow_inprocess_render_to_buffer(void) {
                         ps->active = 1;
                     }
                 }
-                float vol = shadow_effective_volume(s);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
                     int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
+                    if (i & 1) shadow_fade_advance(s);
                 }
             }
 
@@ -1517,7 +1519,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
                 /* Capture for Link Audio publisher */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS) {
-                    float cap_vol = shadow_effective_volume(s);
+                    float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
                     /* Write to publisher shared memory for link_subscriber */
@@ -1534,14 +1536,15 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
 
                 /* Add FX output to mailbox */
-                float vol = shadow_effective_volume(s);
-                float gain = vol;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float gain = vol;
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    if (i & 1) shadow_fade_advance(s);
                 }
             } else if (have_move_track) {
                 /* Inactive slot: pass Link Audio through at unity level.
@@ -1581,7 +1584,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
             /* Write to publisher shared memory for link_subscriber */
             if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
-                float cap_vol = shadow_effective_volume(s);
+                float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
                 link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
                 uint32_t wp = ps->write_pos;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -1611,14 +1614,15 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 shadow_slot_fx_idle[s] = 0;
             }
 
-            float vol = shadow_effective_volume(s);
-            float gain = vol;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                float gain = vol;
                 int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                 if (mixed > 32767) mixed = 32767;
                 if (mixed < -32768) mixed = -32768;
                 mailbox_audio[i] = (int16_t)mixed;
                 me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                if (i & 1) shadow_fade_advance(s);
             }
         }
     }
