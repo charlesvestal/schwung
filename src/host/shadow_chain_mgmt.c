@@ -362,6 +362,11 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
         capture_clear(&shadow_chain_slots[i].capture);
+        shadow_chain_slots[i].fade.gain = 0.0f;
+        shadow_chain_slots[i].fade.target = 0.0f;
+        shadow_chain_slots[i].fade.step = SLOT_FADE_STEP;
+        shadow_chain_slots[i].fade.pending_patch = -1;
+        shadow_chain_slots[i].fade.pending_clear = 0;
         strncpy(shadow_chain_slots[i].patch_name,
                 shadow_chain_default_patches[i],
                 sizeof(shadow_chain_slots[i].patch_name) - 1);
