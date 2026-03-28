@@ -461,6 +461,7 @@ let overtakeModules = [];        // List of available overtake modules
 let selectedOvertakeModule = 0;  // Currently selected module in menu
 let overtakeModuleLoaded = false; // True if an overtake module is running
 let overtakeModulePath = "";      // Path to loaded overtake module
+let overtakeModuleId = "";         // ID of loaded overtake module (for per-module exit hooks)
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
 let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
 
@@ -2478,6 +2479,7 @@ function enterOvertakeMenu() {
     if (!toolHiddenFile) {
         overtakeModuleLoaded = false;
         overtakeModulePath = "";
+        overtakeModuleId = "";
     }
     overtakeModuleCallbacks = null;
     overtakeExitPending = false;
@@ -2521,8 +2523,14 @@ function exitOvertakeMode() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
 
+    /* Write exiting module ID so shim runs the correct per-module hook */
+    if (overtakeModuleId && typeof host_write_file === "function") {
+        host_write_file("/data/UserData/schwung/hooks/.exiting-module-id", overtakeModuleId);
+    }
+
     overtakeModuleLoaded = false;
     overtakeModulePath = "";
+    overtakeModuleId = "";
     overtakeModuleCallbacks = null;
 
     /* Reset encoder accumulation */
@@ -2555,6 +2563,7 @@ function suspendOvertakeMode() {
 
     overtakeModuleLoaded = false;
     overtakeModulePath = "";
+    overtakeModuleId = "";
     overtakeModuleCallbacks = null;
 
     /* Reset encoder accumulation */
@@ -2595,9 +2604,15 @@ function exitToolOvertake() {
     delete globalThis.host_exit_module;
     delete globalThis.host_hide_module;
 
+    /* Write exiting module ID so shim runs the correct per-module hook */
+    if (overtakeModuleId && typeof host_write_file === "function") {
+        host_write_file("/data/UserData/schwung/hooks/.exiting-module-id", overtakeModuleId);
+    }
+
     /* Reset overtake state */
     overtakeModuleLoaded = false;
     overtakeModulePath = "";
+    overtakeModuleId = "";
     overtakeModuleCallbacks = null;
     overtakeExitPending = false;
     overtakeInitPending = false;
@@ -2746,6 +2761,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         const savedMidi = globalThis.onMidiMessageInternal;
 
         overtakeModulePath = moduleInfo.uiPath;
+        overtakeModuleId = moduleInfo.id || "";
         setView(VIEWS.OVERTAKE_MODULE);
         needsRedraw = true;
 
@@ -4431,6 +4447,7 @@ function startInteractiveTool(toolModule, filePath) {
             }
             overtakeModuleLoaded = false;
             overtakeModulePath = "";
+            overtakeModuleId = "";
             toolHiddenFile = "";
             toolHiddenModulePath = "";
             /* Fall through to normal fresh load below */
