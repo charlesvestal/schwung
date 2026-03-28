@@ -1362,6 +1362,15 @@ void shadow_inprocess_handle_ui_request(void) {
 
     /* Handle "none" special value */
     if (patch_index == SHADOW_PATCH_INDEX_NONE) {
+        if (shadow_chain_slots[slot].fade.gain > 0.0f) {
+            /* Slot is audible — defer clear until fade-out completes */
+            shadow_chain_slots[slot].fade.target = 0.0f;
+            shadow_chain_slots[slot].fade.pending_clear = 1;
+            shadow_chain_slots[slot].fade.pending_patch = -1;
+            shadow_log("UI request: deferring clear until fade-out");
+            return;
+        }
+        /* Already silent — immediate teardown */
         if (shadow_plugin_v2->set_param && shadow_chain_slots[slot].instance) {
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "synth:module", "");
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx1:module", "");
@@ -1377,6 +1386,15 @@ void shadow_inprocess_handle_ui_request(void) {
             strncpy(ui_state->slot_names[slot], "", SHADOW_UI_NAME_LEN - 1);
             ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
         }
+        return;
+    }
+
+    /* If slot is currently audible, defer load until fade-out completes */
+    if (shadow_chain_slots[slot].fade.gain > 0.0f) {
+        shadow_chain_slots[slot].fade.target = 0.0f;
+        shadow_chain_slots[slot].fade.pending_patch = patch_index;
+        shadow_chain_slots[slot].fade.pending_clear = 0;
+        shadow_log("UI request: deferring load until fade-out");
         return;
     }
 
@@ -1439,6 +1457,9 @@ void shadow_inprocess_handle_ui_request(void) {
     }
 
     shadow_ui_state_update_slot(slot);
+
+    /* Slot was silent — begin fade-in */
+    shadow_chain_slots[slot].fade.target = 1.0f;
 }
 
 /* ============================================================================
