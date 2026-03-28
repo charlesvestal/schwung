@@ -53,6 +53,9 @@ globalThis.tick = function() {
         // Frame 2: install exit hook (in case it was removed)
         if (phase === 2) {
             host_system_cmd('mkdir -p ' + HOOKS_DIR);
+            host_system_cmd('cp /data/UserData/schwung/modules/overtake/rnbo-runner/exit-hook.sh ' + HOOKS_DIR + '/overtake-exit-rnbo-runner.sh');
+            host_system_cmd('chmod +x ' + HOOKS_DIR + '/overtake-exit-rnbo-runner.sh');
+            /* Also install global hook as fallback for older host versions */
             host_system_cmd('cp /data/UserData/schwung/modules/overtake/rnbo-runner/exit-hook.sh ' + HOOKS_DIR + '/overtake-exit.sh');
             host_system_cmd('chmod +x ' + HOOKS_DIR + '/overtake-exit.sh');
         }
@@ -100,6 +103,9 @@ globalThis.tick = function() {
     // Frame 2: install exit cleanup hook
     if (phase === 2) {
         host_system_cmd('mkdir -p ' + HOOKS_DIR);
+        host_system_cmd('cp /data/UserData/schwung/modules/overtake/rnbo-runner/exit-hook.sh ' + HOOKS_DIR + '/overtake-exit-rnbo-runner.sh');
+        host_system_cmd('chmod +x ' + HOOKS_DIR + '/overtake-exit-rnbo-runner.sh');
+        /* Also install global hook as fallback for older host versions */
         host_system_cmd('cp /data/UserData/schwung/modules/overtake/rnbo-runner/exit-hook.sh ' + HOOKS_DIR + '/overtake-exit.sh');
         host_system_cmd('chmod +x ' + HOOKS_DIR + '/overtake-exit.sh');
     }
