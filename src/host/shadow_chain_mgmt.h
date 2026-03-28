@@ -130,6 +130,18 @@ static inline float shadow_effective_volume(int slot) {
     return shadow_chain_slots[slot].volume;
 }
 
+/* Advance the fade envelope by one sample. Call once per stereo frame in mix loop. */
+static inline void shadow_fade_advance(int slot) {
+    slot_fade_t *f = &shadow_chain_slots[slot].fade;
+    if (f->gain < f->target) {
+        f->gain += f->step;
+        if (f->gain > f->target) f->gain = f->target;
+    } else if (f->gain > f->target) {
+        f->gain -= f->step;
+        if (f->gain < f->target) f->gain = f->target;
+    }
+}
+
 /* Check if any master FX slot is active */
 static inline int shadow_master_fx_chain_active(void) {
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
