@@ -1518,6 +1518,15 @@ else
     qecho "Manual fetch skipped (requires node + curl)"
 fi
 
+# Install JACK shadow driver to RNBO lib path (where jackd looks for drivers)
+echo "  Setting up JACK shadow driver symlinks..."
+ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/lib/jack && \
+    ln -sf /data/UserData/schwung/lib/jack/jack_shadow.so /data/UserData/rnbo/lib/jack/jack_shadow.so" || true
+
+# Install display_ctl to RNBO scripts path (used by RNBO Runner module)
+ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/scripts && \
+    ln -sf /data/UserData/schwung/bin/display_ctl /data/UserData/rnbo/scripts/display_ctl" || true
+
 # Fix ownership of all files under UserData.
 # The shim runs as root (setuid), so any files it creates (recordings, config,
 # skipback, sets, etc.) end up root-owned. Move's UI runs as ableton and can't

@@ -134,6 +134,7 @@ mkdir -p ./build/modules/midi_fx/arp/
 mkdir -p ./build/modules/midi_fx/velocity_scale/
 mkdir -p ./build/modules/sound_generators/linein/
 mkdir -p ./build/modules/tools/wav-player/
+mkdir -p ./build/lib/jack
 
 # Generate bitmap font for host display (single source of truth: scripts/generate_font.py)
 if needs_rebuild build/host/font.png scripts/generate_font.py; then
@@ -532,6 +533,41 @@ if needs_rebuild build/display-server \
         -lrt
 else
     echo "Skipping display server (up to date)"
+fi
+
+# Build JACK shadow driver (loaded by jackd when RNBO/JACK is used)
+if needs_rebuild build/lib/jack/jack_shadow.so \
+    src/lib/jack2/shadow/JackShadowDriver.cpp \
+    src/lib/jack2/shadow/JackShadowDriver.h \
+    src/lib/schwung_jack_shm.h; then
+    echo "Building JACK shadow driver..."
+    "${CROSS_PREFIX}g++" -g -O2 -fPIC -std=c++17 \
+        -DSERVER_SIDE \
+        -Isrc/lib/jack2 -Isrc/lib/jack2/common -Isrc/lib/jack2/common/jack \
+        -Isrc/lib/jack2/linux -Isrc/lib/jack2/shadow -Isrc/lib/jack2/posix \
+        -Isrc/lib \
+        -c src/lib/jack2/shadow/JackShadowDriver.cpp \
+        -o build/jack_shadow_driver.o
+    "${CROSS_PREFIX}g++" -shared \
+        build/jack_shadow_driver.o \
+        -o build/lib/jack/jack_shadow.so \
+        -lrt -lpthread
+    rm -f build/jack_shadow_driver.o
+else
+    echo "Skipping JACK shadow driver (up to date)"
+fi
+
+# Build display_ctl (toggles RNBO display override via shared memory)
+if needs_rebuild build/bin/display_ctl \
+    src/tools/display_ctl.c src/lib/schwung_jack_shm.h; then
+    echo "Building display_ctl..."
+    "${CROSS_PREFIX}gcc" -g -O2 \
+        src/tools/display_ctl.c \
+        -o build/bin/display_ctl \
+        -Isrc \
+        -lrt
+else
+    echo "Skipping display_ctl (up to date)"
 fi
 
 # Copy shadow UI files (always — ExFAT timestamps can confuse cp -u)
