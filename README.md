@@ -140,6 +140,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Webstream](https://github.com/charlesvestal/schwung-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
 | [Radio Garden](https://github.com/charlesvestal/schwung-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
 | [AirPlay](https://github.com/charlesvestal/schwung-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
+| [StreamRTSP](https://github.com/handcraftedcc/schwung-StreamRTSP) | Local RTSP audio receiver for Android ScreenStream and other RTSP senders | dom |
 | [Chiptune](https://github.com/charlesvestal/schwung-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
 | [Osirus](https://github.com/charlesvestal/schwung-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
 | [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | handcraftedcc |
@@ -174,6 +175,8 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Dragonfly Hall](https://github.com/wolfrenegade1976/move-anything-dragonfly-hall) | Dragonfly Hall Reverb — lush hall reverb with 25 presets and full parameter control | bradcoomber |
 | [Punch-In FX](https://github.com/fillioning/MovePunchFX) | PO-33 style punch-in effects with pressure control — 16 effects on left 4x4 pad grid | fillioning |
 | [Structor](https://github.com/fillioning/move-everything-structor) | Musique concrete sound deconstructor/reconstructor — 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer | fillioning |
+| [Dissolver](https://github.com/fillioning/dissolver-move) | Spectral smearing pad generator — dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction | fillioning |
+| [Spectra](https://github.com/fillioning/spectra-move) | Multiband spectral resonator — pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift | fillioning |
 
 ### MIDI FX
 
