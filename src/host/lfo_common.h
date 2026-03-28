@@ -105,6 +105,35 @@ static const lfo_division_t lfo_divisions[LFO_NUM_DIVISIONS] = {
     { "1/32T",  0.083f },
 };
 
+/* Migration: old 14-entry table index -> new 27-entry table index.
+ * Dotted divisions (1/4D, 1/8D) were removed; map to straight equivalent. */
+static const int lfo_division_migrate_14_to_27[14] = {
+    8,   /* old 0  (8bar)  -> new 8  */
+    12,  /* old 1  (4bar)  -> new 12 */
+    14,  /* old 2  (2bar)  -> new 14 */
+    15,  /* old 3  (1/1)   -> new 15 */
+    17,  /* old 4  (1/2)   -> new 17 */
+    19,  /* old 5  (1/4)   -> new 19 */
+    21,  /* old 6  (1/8)   -> new 21 */
+    23,  /* old 7  (1/16)  -> new 23 */
+    25,  /* old 8  (1/32)  -> new 25 */
+    20,  /* old 9  (1/4T)  -> new 20 */
+    22,  /* old 10 (1/8T)  -> new 22 */
+    24,  /* old 11 (1/16T) -> new 24 */
+    19,  /* old 12 (1/4D)  -> new 19 (1/4, nearest straight) */
+    21,  /* old 13 (1/8D)  -> new 21 (1/8, nearest straight) */
+};
+
+static inline int lfo_migrate_division_index(int old_idx) {
+    if (old_idx >= 0 && old_idx < 14) {
+        return lfo_division_migrate_14_to_27[old_idx];
+    }
+    /* Already a new-table index or out of range - clamp */
+    if (old_idx < 0) return 0;
+    if (old_idx >= LFO_NUM_DIVISIONS) return LFO_NUM_DIVISIONS - 1;
+    return old_idx;
+}
+
 static const char *lfo_shape_names[LFO_NUM_SHAPES] = {
     "sine", "tri", "saw", "square", "s&h", "swishy"
 };
