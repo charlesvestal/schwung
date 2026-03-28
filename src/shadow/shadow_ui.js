@@ -1347,7 +1347,12 @@ let selectedLfoItem = 0;
 let editingLfoValue = false;
 
 const LFO_SHAPES = ["Sine", "Tri", "Saw", "Square", "S&H", "Swishy"];
-const LFO_DIVISIONS = ["8bar", "4bar", "2bar", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4T", "1/8T", "1/16T", "1/4D", "1/8D"];
+const LFO_DIVISIONS = [
+    "16bar", "15bar", "14bar", "13bar", "12bar", "11bar", "10bar", "9bar",
+    "8bar", "7bar", "6bar", "5bar", "4bar", "3bar", "2bar",
+    "1/1", "1/1T", "1/2", "1/2T", "1/4", "1/4T", "1/8", "1/8T",
+    "1/16", "1/16T", "1/32", "1/32T"
+];
 
 /* LFO target picker state */
 let lfoTargetComponents = [];  /* Available components [{key, label}] */
@@ -3240,9 +3245,13 @@ function loadMasterPreset(index, presetName) {
                 if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
                 if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
                 shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
+                shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
                 shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
                 shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
-                shadow_set_param(0, pfx + "rate_div", String(lfoConfig.rate_div || 3));
+                const presetRateDiv = Number.isFinite(Number(lfoConfig.rate_div))
+                    ? Number(lfoConfig.rate_div)
+                    : 15;
+                shadow_set_param(0, pfx + "rate_div", String(presetRateDiv));
                 shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
                 shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
                 shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
@@ -4514,6 +4523,21 @@ function saveMasterFxChainConfig() {
         config.master_fx_chain = {
             preset_name: currentMasterPresetName || ""
         };
+        let masterFxLfoConfig = null;
+        if (typeof shadow_get_param === "function") {
+            const lfos = {};
+            for (let li = 1; li <= 2; li++) {
+                try {
+                    const configJson = shadow_get_param(0, "master_fx:lfo" + li + ":config");
+                    if (configJson) {
+                        lfos["lfo" + li] = JSON.parse(configJson);
+                    }
+                } catch (e) {}
+            }
+            if (Object.keys(lfos).length > 0) {
+                masterFxLfoConfig = lfos;
+            }
+        }
         for (let i = 1; i <= 4; i++) {
             const key = `fx${i}`;
             const slotIdx = i - 1;
@@ -4521,8 +4545,12 @@ function saveMasterFxChainConfig() {
             const stateFilePath = activeSlotStateDir + "/master_fx_" + slotIdx + ".json";
 
             if (!moduleId) {
-                /* Empty slot - write empty marker */
-                host_write_file(stateFilePath, "{}\n");
+                /* Empty slot - keep LFO snapshot with fx1 state for per-set restore */
+                if (slotIdx === 0 && masterFxLfoConfig) {
+                    host_write_file(stateFilePath, JSON.stringify({ lfos: masterFxLfoConfig }, null, 2) + "\n");
+                } else {
+                    host_write_file(stateFilePath, "{}\n");
+                }
                 continue;
             }
 
@@ -4586,6 +4614,9 @@ function saveMasterFxChainConfig() {
             } else if (paramsObj) {
                 stateFile.params = paramsObj;
             }
+            if (slotIdx === 0 && masterFxLfoConfig) {
+                stateFile.lfos = masterFxLfoConfig;
+            }
             host_write_file(stateFilePath, JSON.stringify(stateFile, null, 2) + "\n");
         }
 
@@ -4603,18 +4634,6 @@ function saveMasterFxChainConfig() {
         config.resample_bridge_mode = cachedResampleBridgeMode;
         config.link_audio_routing = cachedLinkAudioRouting;
         config.link_audio_publish = cachedLinkAudioPublish;
-
-        /* Save master FX LFO configs */
-        if (typeof shadow_get_param === "function") {
-            for (let li = 1; li <= 2; li++) {
-                try {
-                    const configJson = shadow_get_param(0, "master_fx:lfo" + li + ":config");
-                    if (configJson) {
-                        config.master_fx_chain["lfo" + li] = JSON.parse(configJson);
-                    }
-                } catch (e) {}
-            }
-        }
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -4768,9 +4787,7 @@ function loadMasterFxChainFromConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
-        if (!content) return;
-
-        const config = JSON.parse(content);
+        const config = content ? JSON.parse(content) : {};
 
         /* Restore overlay knobs mode */
         if (typeof config.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
@@ -4794,10 +4811,8 @@ function loadMasterFxChainFromConfig() {
             cachedLinkAudioPublish = !!config.link_audio_publish;
         }
 
-        if (!config.master_fx_chain) return;
-
         /* Restore loaded preset name */
-        if (config.master_fx_chain.preset_name) {
+        if (config.master_fx_chain && config.master_fx_chain.preset_name) {
             currentMasterPresetName = config.master_fx_chain.preset_name;
         }
 
@@ -4813,28 +4828,29 @@ function loadMasterFxChainFromConfig() {
                         masterFxConfig[key].module = stateFile.module_id;
                         debugLog(`MFX sync ${key}: module=${stateFile.module_id} (loaded by shim)`);
                     }
+                    if (i === 0 && stateFile.lfos && typeof shadow_set_param === "function") {
+                        for (let li = 1; li <= 2; li++) {
+                            const lfoConfig = stateFile.lfos["lfo" + li];
+                            if (!lfoConfig) continue;
+                            const pfx = "master_fx:lfo" + li + ":";
+                            if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
+                            if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
+                            shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
+                            shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
+                            shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
+                            shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
+                            const configRateDiv = Number.isFinite(Number(lfoConfig.rate_div))
+                                ? Number(lfoConfig.rate_div)
+                                : 15;
+                            shadow_set_param(0, pfx + "rate_div", String(configRateDiv));
+                            shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
+                            shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
+                            shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
+                            debugLog(`MFX LFO ${li}: restored target=${lfoConfig.target || "none"}`);
+                        }
+                    }
                 }
             } catch (e) {}
-        }
-
-        /* Restore master FX LFO configs from shadow_config */
-        if (config.master_fx_chain && typeof shadow_set_param === "function") {
-            for (let li = 1; li <= 2; li++) {
-                const lfoConfig = config.master_fx_chain["lfo" + li];
-                if (lfoConfig) {
-                    const pfx = "master_fx:lfo" + li + ":";
-                    if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
-                    if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
-                    shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
-                    shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
-                    shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
-                    shadow_set_param(0, pfx + "rate_div", String(lfoConfig.rate_div || 3));
-                    shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
-                    shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
-                    shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
-                    debugLog(`MFX LFO ${li}: restored target=${lfoConfig.target || "none"}`);
-                }
-            }
         }
     } catch (e) {
         /* Ignore errors */
@@ -6777,6 +6793,24 @@ function buildHierarchyParamKey(key) {
     return `${prefix}:${key}`;
 }
 
+function getHierarchyDisplayRawValue(slot, fullKey) {
+    const baseVal = getSlotParam(slot, `${fullKey}:base`);
+    if (baseVal !== null && baseVal !== undefined) return baseVal;
+    return getSlotParam(slot, fullKey);
+}
+
+function isHierarchyParamModulated(slot, fullKey) {
+    const modulated = getSlotParam(slot, `${fullKey}:modulated`);
+    if (modulated === "1") return true;
+    if (modulated === "0") return false;
+
+    /* Fallback for targets that don't implement :modulated. */
+    const baseVal = getSlotParam(slot, `${fullKey}:base`);
+    if (baseVal === null || baseVal === undefined) return false;
+    const liveVal = getSlotParam(slot, fullKey);
+    return liveVal !== null && liveVal !== undefined && liveVal !== baseVal;
+}
+
 function resetHierarchyEditState() {
     hierEditorEditKey = "";
     hierEditorEditValue = null;
@@ -7143,13 +7177,14 @@ function showKnobOverlay(knobIndex, value) {
             showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
         } else if (ctx.fullKey) {
             /* Mapped knob - show value */
+            const title = isHierarchyParamModulated(ctx.slot, ctx.fullKey) ? `${ctx.title}~` : ctx.title;
             let displayVal;
             const isEnum = ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool");
             if (value !== undefined) {
                 /* For enums, show string directly; for numbers, format */
                 displayVal = isEnum ? String(value) : formatParamForOverlay(value, ctx.meta);
             } else {
-                const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
+                const currentVal = getHierarchyDisplayRawValue(ctx.slot, ctx.fullKey);
                 /* For enums, show string directly; for numbers, parse and format */
                 if (isEnum) {
                     if (isTriggerEnumMeta(ctx.meta)) {
@@ -7162,7 +7197,7 @@ function showKnobOverlay(knobIndex, value) {
                     displayVal = !isNaN(num) ? formatParamForOverlay(num, ctx.meta) : (currentVal || "-");
                 }
             }
-            showOverlay(ctx.title, displayVal);
+            showOverlay(title, displayVal);
         }
         needsRedraw = true;
         return true;
@@ -7224,22 +7259,7 @@ function processPendingHierKnob() {
     if (pendingHierKnobIndex < 0 || pendingHierKnobDelta === 0) {
         /* No pending adjustment, but still show overlay if knob active */
         if (pendingHierKnobIndex >= 0) {
-            const ctx = getKnobContext(pendingHierKnobIndex);
-            if (ctx && ctx.fullKey) {
-                const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
-                if (currentVal !== null) {
-                    /* For enums, pass string directly; for numbers, parse */
-                    if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
-                        if (isTriggerEnumMeta(ctx.meta)) {
-                            showOverlay(ctx.title, getTriggerEnumOverlayValue(pendingHierKnobIndex));
-                        } else {
-                            showOverlay(ctx.title, currentVal);
-                        }
-                    } else {
-                        showKnobOverlay(pendingHierKnobIndex, parseFloat(currentVal));
-                    }
-                }
-            }
+            showKnobOverlay(pendingHierKnobIndex);
         }
         return;
     }
@@ -7252,8 +7272,10 @@ function processPendingHierKnob() {
     debugLog(`processPendingHierKnob: ctx=${ctx ? JSON.stringify({slot: ctx.slot, key: ctx.key, fullKey: ctx.fullKey, noMapping: ctx.noMapping, meta: ctx.meta ? 'present' : 'null'}) : 'null'}`);
     if (!ctx || ctx.noMapping || !ctx.fullKey) return;
 
-    /* Get current value */
-    const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
+    /* Use stable base value when modulation is active, matching jog edit mode.
+     * Fallback to live value when no base value is available. */
+    const baseVal = getSlotParam(ctx.slot, `${ctx.fullKey}:base`);
+    const currentVal = (baseVal !== null) ? baseVal : getSlotParam(ctx.slot, ctx.fullKey);
     debugLog(`processPendingHierKnob: currentVal=${currentVal}`);
     if (currentVal === null) return;
 
@@ -7549,6 +7571,7 @@ function drawHierarchyEditor() {
 
                 const meta = getParamMetadata(key);
                 const label = meta && meta.name ? meta.name : key.replace(/_/g, " ");
+                let displayLabel = label;
 
                 /* Only fetch param value if this item is visible on screen */
                 let displayVal = "";
@@ -7556,10 +7579,13 @@ function drawHierarchyEditor() {
                     const fullKey = buildHierarchyParamKey(key);
                     const usingStableEditVal = hierEditorEditMode &&
                                                hierEditorEditKey === fullKey && hierEditorEditValue !== null;
-                    const val = usingStableEditVal ? String(hierEditorEditValue) : getSlotParam(hierEditorSlot, fullKey);
+                    const val = usingStableEditVal ? String(hierEditorEditValue) : getHierarchyDisplayRawValue(hierEditorSlot, fullKey);
                     displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
+                    if (isHierarchyParamModulated(hierEditorSlot, fullKey)) {
+                        displayLabel = `${label}~`;
+                    }
                 }
-                return { label, value: displayVal, key };
+                return { label: displayLabel, value: displayVal, key };
             });
 
             drawMenuList({
@@ -8061,9 +8087,10 @@ function handleJog(delta) {
                     const fullKey = buildHierarchyParamKey(key);
                     const freshVal = (hierEditorEditKey === fullKey && hierEditorEditValue !== null)
                         ? String(hierEditorEditValue)
-                        : getSlotParam(hierEditorSlot, fullKey);
+                        : getHierarchyDisplayRawValue(hierEditorSlot, fullKey);
                     const displayVal = freshVal !== null ? formatHierDisplayValue(key, freshVal) : "";
-                    announceParameter(param.label || key, displayVal);
+                    const modSuffix = isHierarchyParamModulated(hierEditorSlot, fullKey) ? "~" : "";
+                    announceParameter((param.label || key) + modSuffix, displayVal);
                 }
             } else {
                 /* Scroll param list (includes preset edit mode) */
@@ -8071,7 +8098,16 @@ function handleJog(delta) {
                 /* Announce selected parameter */
                 if (hierEditorParams.length > 0 && hierEditorSelectedIdx >= 0 && hierEditorSelectedIdx < hierEditorParams.length) {
                     const param = hierEditorParams[hierEditorSelectedIdx];
-                    announceMenuItem(param.label || param.key, param.value || "");
+                    const key = typeof param === "string" ? param : param.key || param;
+                    if (typeof key !== "string" || key.startsWith("nav_") || key.startsWith("item_") || key === SWAP_MODULE_ACTION) {
+                        announceMenuItem(param.label || param.key, param.value || "");
+                    } else {
+                        const fullKey = buildHierarchyParamKey(key);
+                        const val = getHierarchyDisplayRawValue(hierEditorSlot, fullKey);
+                        const displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
+                        const modSuffix = isHierarchyParamModulated(hierEditorSlot, fullKey) ? "~" : "";
+                        announceMenuItem((param.label || key) + modSuffix, displayVal);
+                    }
                 }
             }
             break;
@@ -10671,7 +10707,7 @@ function makeMfxLfoCtx(lfoIdx) {
             return result;
         },
         title: "MFX LFO " + (lfoIdx + 1),
-        returnView: VIEWS.MASTER_FX_SETTINGS,
+        returnView: VIEWS.MASTER_FX,
         returnAnnounce: "Master FX Settings",
     };
 }
@@ -10686,6 +10722,7 @@ function getLfoItems() {
         { key: "target", label: "Target", type: "action" },
         { key: "enabled", label: "Enabled", type: "enum", options: ["Off", "On"] },
         { key: "shape", label: "Shape", type: "enum", options: LFO_SHAPES },
+        { key: "polarity", label: "Mode", type: "enum", options: ["Unipolar", "Bipolar"] },
         { key: "sync", label: "Sync", type: "enum", options: ["Free", "Sync"] },
     ];
 
@@ -10695,7 +10732,7 @@ function getLfoItems() {
         items.push({ key: "rate_hz", label: "Rate", type: "float", min: 0.1, max: 20.0, step: 0.1, unit: "Hz" });
     }
 
-    items.push({ key: "depth", label: "Depth", type: "float", min: 0, max: 1, step: 0.01, unit: "%" });
+    items.push({ key: "depth", label: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%" });
     items.push({ key: "phase_offset", label: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "deg" });
     if (lfoCtx && lfoCtx.supportsRetrigger) {
         items.push({ key: "retrigger", label: "Retrigger", type: "enum", options: ["Off", "On"] });
@@ -10714,6 +10751,7 @@ function getLfoDisplayValue(item) {
         const idx = parseInt(raw);
         return (idx >= 0 && idx < LFO_SHAPES.length) ? LFO_SHAPES[idx] : raw;
     }
+    if (item.key === "polarity") return raw === "1" ? "Bipolar" : "Unipolar";
     if (item.key === "sync") return raw === "1" ? "Sync" : "Free";
     if (item.key === "rate_div") {
         const idx = parseInt(raw);
@@ -10866,9 +10904,6 @@ globalThis.init = function() {
     /* Scan for audio FX modules so display names are available */
     MASTER_FX_OPTIONS = scanForAudioFxModules();
 
-    /* Load and apply master FX chain from config */
-    loadMasterFxChainFromConfig();
-
     /* Load auto-update preference */
     loadAutoUpdateConfig();
     loadBrowserPreviewConfig();
@@ -10907,6 +10942,8 @@ globalThis.init = function() {
             }
         }
     }
+    /* Re-apply Master FX sync after activeSlotStateDir resolves to the active set. */
+    loadMasterFxChainFromConfig();
 
     /* Sync dirty cache and slot names from autosave files (shim loaded them on startup) */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
@@ -11141,7 +11178,6 @@ globalThis.tick = function() {
                     debugLog("SET_CHANGED: slot " + (i + 1) + " no state file (already cleared)");
                 }
             }
-
             /* Refresh UI state immediately so display reflects new slot contents */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 lastSlotModuleSignatures[i] = "";  /* force refresh */
@@ -11157,11 +11193,12 @@ globalThis.tick = function() {
                 const mfxPath = activeSlotStateDir + "/master_fx_" + mfxi + ".json";
                 let mfxDspPath = "";
                 let mfxModuleId = "";
+                let mfxData = null;
                 if (host_file_exists(mfxPath)) {
                     try {
                         const mfxRaw = host_read_file(mfxPath);
                         if (mfxRaw && mfxRaw.length > 10) {
-                            const mfxData = JSON.parse(mfxRaw);
+                            mfxData = JSON.parse(mfxRaw);
                             mfxDspPath = mfxData.module_path || "";
                             mfxModuleId = mfxData.module_id || "";
                         }
@@ -11173,23 +11210,40 @@ globalThis.tick = function() {
                 masterFxConfig[key].module = mfxModuleId;
 
                 /* Restore plugin state/params if available */
-                if (mfxDspPath && host_file_exists(mfxPath)) {
+                if (mfxData) {
                     try {
-                        const mfxRaw = host_read_file(mfxPath);
-                        const mfxData = JSON.parse(mfxRaw);
-                        if (mfxData.state) {
+                        if (mfxDspPath && mfxData.state) {
                             shadow_set_param(0, `master_fx:fx${mfxi + 1}:state`, JSON.stringify(mfxData.state));
                         }
-                        if (mfxData.params) {
+                        if (mfxDspPath && mfxData.params) {
                             for (const [pk, pv] of Object.entries(mfxData.params)) {
                                 shadow_set_param(0, `master_fx:fx${mfxi + 1}:${pk}`, String(pv));
+                            }
+                        }
+                        if (mfxi === 0 && mfxData.lfos && typeof shadow_set_param === "function") {
+                            for (let li = 1; li <= 2; li++) {
+                                const lfoConfig = mfxData.lfos["lfo" + li];
+                                if (!lfoConfig) continue;
+                                const pfx = "master_fx:lfo" + li + ":";
+                                if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
+                                if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
+                                shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
+                                shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
+                                shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
+                                shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
+                                const configRateDiv = Number.isFinite(Number(lfoConfig.rate_div))
+                                    ? Number(lfoConfig.rate_div)
+                                    : 15;
+                                shadow_set_param(0, pfx + "rate_div", String(configRateDiv));
+                                shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
+                                shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
+                                shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
                             }
                         }
                     } catch (e) {}
                 }
                 debugLog("SET_CHANGED: MFX " + mfxi + " -> " + (mfxModuleId || "(none)"));
             }
-
             /* 8. Refresh slot names from new autosave files */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 slots[i].name = "";
