@@ -198,6 +198,9 @@ int shadow_inprocess_load_chain(void);
 /* --- UI requests --- */
 void shadow_inprocess_handle_ui_request(void);
 
+/* --- Fade completions --- */
+void shadow_process_fade_completions(void);
+
 /* --- Param handling --- */
 int shadow_handle_slot_param_set(int slot, const char *key, const char *value);
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len);
