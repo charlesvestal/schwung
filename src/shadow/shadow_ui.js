@@ -1451,6 +1451,7 @@ let filepathBrowserParamKey = "";
 let canvasParamKey = "";
 let canvasParamMeta = null;
 let canvasRuntime = null;
+let canvasTickCounter = 0;
 const FILEPATH_BROWSER_FS = {
     readdir(path) {
         const entries = os.readdir(path) || [];
@@ -8553,6 +8554,7 @@ function resetCanvasState() {
     canvasParamKey = "";
     canvasParamMeta = null;
     canvasRuntime = null;
+    canvasTickCounter = 0;
 }
 
 function moduleFileExists(path) {
@@ -12981,7 +12983,8 @@ globalThis.tick = function() {
 
     if (view === VIEWS.CANVAS) {
         tickCanvasPreview();
-        needsRedraw = true;
+        canvasTickCounter = (canvasTickCounter || 0) + 1;
+        if (canvasTickCounter % 3 === 0) needsRedraw = true;
     }
 
     /* Refresh knob mappings if track-selected slot changed */
@@ -13321,6 +13324,11 @@ globalThis.onMidiMessageInternal = function(data) {
             shadow_request_exit();
         }
         return;
+    }
+
+    /* Always track shift state (CC 49), even when canvas or other views consume MIDI */
+    if ((status & 0xF0) === 0xB0 && d1 === 49) {
+        hostShiftHeld = (d2 > 0);
     }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
