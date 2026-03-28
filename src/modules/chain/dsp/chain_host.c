@@ -472,9 +472,6 @@ typedef struct chain_instance {
     float lfo_base_values[LFO_COUNT];  /* Base value snapshot for LFO-to-LFO modulation */
     int lfo_base_valid[LFO_COUNT];     /* Whether base has been snapshotted */
 
-    /* Mute countdown after patch switch */
-    int mute_countdown;
-
     /* Recording state */
     int recording;
     FILE *wav_file;
@@ -626,10 +623,6 @@ static int g_js_midi_fx_enabled = 0;
 static knob_mapping_t g_knob_mappings[MAX_KNOB_MAPPINGS];
 static int g_knob_mapping_count = 0;
 static uint64_t g_knob_last_time_ms[MAX_KNOB_MAPPINGS] = {0};  /* For acceleration */
-
-/* Mute countdown after patch switch (in blocks) to drain old audio */
-static int g_mute_countdown = 0;
-#define MUTE_BLOCKS_AFTER_SWITCH 8  /* ~23ms at 44100Hz, 128 frames/block */
 
 /* Recording state */
 static int g_recording = 0;
@@ -3179,7 +3172,6 @@ static void unload_patch(void) {
     g_midi_input = MIDI_INPUT_ANY;
     g_knob_mapping_count = 0;
     g_source_ui_active = 0;
-    g_mute_countdown = 0;
     chain_log("Unloaded current patch");
     /* Update record button LED (off when no patch) */
     update_record_led();
@@ -3427,9 +3419,6 @@ static int load_patch(int index) {
             }
         }
     }
-
-    /* Mute briefly to drain any old synth audio before FX process it */
-    g_mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
 
     snprintf(msg, sizeof(msg), "Loaded patch %d: %s (%d FX)",
              index, patch->name, g_fx_count);
@@ -4059,13 +4048,6 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
 
     if (g_source_plugin && g_source_plugin->render_block) {
         g_source_plugin->render_block(scratch, frames);
-    }
-
-    /* Mute output briefly after patch switch to drain old synth audio */
-    if (g_mute_countdown > 0) {
-        g_mute_countdown--;
-        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
-        return;
     }
 
     if (synth_loaded()) {
@@ -6631,8 +6613,6 @@ static int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) 
         }
     }
 
-    inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
-
     snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
     v2_chain_log(inst, msg);
 
@@ -6940,7 +6920,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
         if (strcmp(subkey, "module") == 0) {
-            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_synth_panic(inst);
             v2_unload_synth(inst);
             smoother_reset(&inst->synth_smoother);  /* Reset smoother on module change */
@@ -6983,7 +6962,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 4;
         /* Intercept module change to swap FX1 dynamically */
         if (strcmp(subkey, "module") == 0) {
-            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 0, val);
             smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
             inst->dirty = 1;
@@ -7021,7 +6999,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 4;
         /* Intercept module change to swap FX2 dynamically */
         if (strcmp(subkey, "module") == 0) {
-            inst->mute_countdown = MUTE_BLOCKS_AFTER_SWITCH;
             v2_load_audio_fx_slot(inst, 1, val);
             smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
             inst->dirty = 1;
@@ -8340,13 +8317,6 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
 static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int frames) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) {
-        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
-        return;
-    }
-
-    /* Mute briefly after patch switch */
-    if (inst->mute_countdown > 0) {
-        inst->mute_countdown--;
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         return;
     }
