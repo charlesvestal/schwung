@@ -11,7 +11,7 @@
  * ============================================================================ */
 
 #define LFO_COUNT 2
-#define LFO_NUM_DIVISIONS 14
+#define LFO_NUM_DIVISIONS 27
 #define LFO_SHAPE_SINE   0
 #define LFO_SHAPE_TRI    1
 #define LFO_SHAPE_SAW    2
@@ -31,7 +31,8 @@ typedef struct {
     float rate_hz;        /* Free-running rate (0.1-20.0 Hz) */
     int rate_div;         /* Tempo-synced division index */
     int sync;             /* 0=free, 1=tempo-sync */
-    float depth;          /* 0.0-1.0 */
+    float depth;          /* -1.0..1.0 */
+    int bipolar;          /* 0=unipolar (default), 1=bipolar */
     float phase_offset;   /* 0.0-1.0 (displayed as 0-360 degrees) */
     char target[16];      /* Component key (e.g. "synth", "fx1", "fx2") */
     char param[32];       /* Parameter key within target */
@@ -75,20 +76,33 @@ typedef struct {
 } lfo_division_t;
 
 static const lfo_division_t lfo_divisions[LFO_NUM_DIVISIONS] = {
-    { "8bar", 32.0f  },
-    { "4bar", 16.0f  },
-    { "2bar",  8.0f  },
-    { "1/1",   4.0f  },
-    { "1/2",   2.0f  },
-    { "1/4",   1.0f  },
-    { "1/8",   0.5f  },
-    { "1/16",  0.25f },
-    { "1/32",  0.125f },
-    { "1/4T",  1.333f },
-    { "1/8T",  0.667f },
-    { "1/16T", 0.333f },
-    { "1/4D",  1.5f  },
-    { "1/8D",  0.75f },
+    { "16bar", 64.0f   },
+    { "15bar", 60.0f   },
+    { "14bar", 56.0f   },
+    { "13bar", 52.0f   },
+    { "12bar", 48.0f   },
+    { "11bar", 44.0f   },
+    { "10bar", 40.0f   },
+    { "9bar",  36.0f   },
+    { "8bar",  32.0f   },
+    { "7bar",  28.0f   },
+    { "6bar",  24.0f   },
+    { "5bar",  20.0f   },
+    { "4bar",  16.0f   },
+    { "3bar",  12.0f   },
+    { "2bar",   8.0f   },
+    { "1/1",    4.0f   },
+    { "1/1T",   2.667f },
+    { "1/2",    2.0f   },
+    { "1/2T",   1.333f },
+    { "1/4",    1.0f   },
+    { "1/4T",   0.667f },
+    { "1/8",    0.5f   },
+    { "1/8T",   0.333f },
+    { "1/16",   0.25f  },
+    { "1/16T",  0.167f },
+    { "1/32",   0.125f },
+    { "1/32T",  0.083f },
 };
 
 static const char *lfo_shape_names[LFO_NUM_SHAPES] = {
