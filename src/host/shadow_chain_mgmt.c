@@ -2141,10 +2141,11 @@ void shadow_inprocess_handle_param_request(void) {
                     snprintf(result, sizeof(result),
                         "{\"enabled\":%d,\"shape\":%d,\"rate_hz\":%.2f,\"rate_div\":%d,"
                         "\"sync\":%d,\"depth\":%.2f,\"polarity\":%d,\"phase_offset\":%.2f,"
-                        "\"target\":\"%s\",\"target_param\":\"%s\"}",
+                        "\"target\":\"%s\",\"target_param\":\"%s\","
+                        "\"division_table_version\":%d}",
                         lfo->enabled, lfo->shape, lfo->rate_hz, lfo->rate_div,
                         lfo->sync, lfo->depth, lfo->bipolar, lfo->phase_offset,
-                        lfo->target, lfo->param);
+                        lfo->target, lfo->param, LFO_NUM_DIVISIONS);
                 }
                 strncpy(shadow_param->value, result, SHADOW_PARAM_VALUE_LEN - 1);
                 shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
