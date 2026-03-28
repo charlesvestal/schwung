@@ -23,15 +23,18 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "norns_display_shm.h"
 #include "unified_log.h"
 
 #define DEFAULT_PORT       7681
 #define SHM_PATH           "/dev/shm/schwung-display-live"
 #define DISPLAY_SIZE       1024
+#define NORNS_SHM_PATH     "/dev/shm/schwung-norns-display-live"
 #define MAX_CLIENTS        8
 #define POLL_INTERVAL_MS   33    /* ~30 Hz */
 #define SHM_RETRY_MS       2000
 #define CLIENT_BUF_SIZE    4096
+#define SSE_BUF_SIZE       7000
 
 #define DISPLAY_LOG_SOURCE "display_server"
 
@@ -63,9 +66,21 @@ static int base64_encode(const uint8_t *in, int len, char *out) {
 }
 
 /* Client tracking */
+typedef enum {
+    STREAM_MODE_NONE = 0,
+    STREAM_MODE_LEGACY = 1,
+    STREAM_MODE_AUTO = 2,
+} stream_mode_t;
+
+typedef enum {
+    AUTO_SOURCE_NONE = 0,
+    AUTO_SOURCE_MOVE = 1,
+    AUTO_SOURCE_NORNS = 2,
+} auto_source_t;
+
 typedef struct {
     int fd;
-    int streaming;   /* 1 = SSE client, receiving frames */
+    stream_mode_t stream_mode;
     char buf[CLIENT_BUF_SIZE];
     int buf_len;
 } client_t;
@@ -80,53 +95,114 @@ static const char HTML_PAGE[] =
     "<!DOCTYPE html>\n"
     "<html><head>\n"
     "<meta charset=\"utf-8\">\n"
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, "
+        "maximum-scale=1, user-scalable=no\">\n"
+    "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">\n"
+    "<meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black\">\n"
     "<title>Move Display</title>\n"
     "<style>\n"
-    "  body { background: #111; margin: 0; display: flex; flex-direction: column;\n"
-    "         align-items: center; justify-content: center; height: 100vh; }\n"
+    "  body { background: #000; margin: 0; display: flex; flex-direction: column;\n"
+    "         align-items: center; justify-content: center; height: 100vh;\n"
+    "         height: 100dvh; touch-action: manipulation;\n"
+    "         user-select: none; -webkit-user-select: none;\n"
+    "         -webkit-touch-callout: none; overflow: hidden; }\n"
     "  canvas { image-rendering: pixelated; image-rendering: crisp-edges;\n"
-    "           width: 512px; height: 256px; border: 2px solid #333; }\n"
+    "           width: 512px; height: 256px; border: 2px solid #333;\n"
+    "           cursor: pointer; }\n"
+    "  body.fs canvas { border: none; }\n"
+    "  body.fs #status { display: none; }\n"
     "  #status { color: #888; font: 12px monospace; margin-top: 8px; }\n"
     "  #status.connected { color: #4a4; }\n"
     "</style>\n"
     "</head><body>\n"
     "<canvas id=\"c\" width=\"128\" height=\"64\"></canvas>\n"
-    "<div id=\"status\">connecting...</div>\n"
+    "<div id=\"status\">connecting... (tap to fullscreen)</div>\n"
     "<script>\n"
     "const canvas = document.getElementById('c');\n"
     "const ctx = canvas.getContext('2d');\n"
     "const statusEl = document.getElementById('status');\n"
     "const img = ctx.createImageData(128, 64);\n"
-    "let frames = 0, lastFrame = Date.now();\n"
+    "let frames = 0, lastFrame = Date.now(), lastMode = 'waiting';\n"
     "\n"
-    "function connect() {\n"
-    "  const es = new EventSource('/stream');\n"
-    "  es.onopen = () => { statusEl.textContent = 'connected'; statusEl.className = 'connected'; };\n"
-    "  es.onerror = () => { statusEl.textContent = 'disconnected - reconnecting...';\n"
-    "                        statusEl.className = ''; };\n"
-    "  es.onmessage = (e) => {\n"
-    "    const raw = atob(e.data);\n"
-    "    const d = img.data;\n"
-    "    for (let page = 0; page < 8; page++) {\n"
-    "      for (let col = 0; col < 128; col++) {\n"
-    "        const b = raw.charCodeAt(page * 128 + col);\n"
-    "        for (let bit = 0; bit < 8; bit++) {\n"
-    "          const y = page * 8 + bit;\n"
-    "          const idx = (y * 128 + col) * 4;\n"
-    "          const on = (b >> bit) & 1;\n"
-    "          d[idx] = d[idx+1] = d[idx+2] = on ? 255 : 0;\n"
-    "          d[idx+3] = 255;\n"
-    "        }\n"
+    "function resizeFS() {\n"
+    "  if (!document.body.classList.contains('fs')) {\n"
+    "    canvas.style.width = '512px'; canvas.style.height = '256px';\n"
+    "    return;\n"
+    "  }\n"
+    "  var w = window.innerWidth, h = window.innerHeight;\n"
+    "  if (w / h > 2) { canvas.style.height = h+'px'; canvas.style.width = (h*2)+'px'; }\n"
+    "  else { canvas.style.width = w+'px'; canvas.style.height = (w/2)+'px'; }\n"
+    "}\n"
+    "canvas.addEventListener('click', function() {\n"
+    "  document.body.classList.toggle('fs'); resizeFS();\n"
+    "});\n"
+    "window.addEventListener('resize', resizeFS);\n"
+    "\n"
+    "function drawMono(raw) {\n"
+    "  const d = img.data;\n"
+    "  for (let page = 0; page < 8; page++) {\n"
+    "    for (let col = 0; col < 128; col++) {\n"
+    "      const b = raw.charCodeAt(page * 128 + col);\n"
+    "      for (let bit = 0; bit < 8; bit++) {\n"
+    "        const y = page * 8 + bit;\n"
+    "        const idx = (y * 128 + col) * 4;\n"
+    "        const on = (b >> bit) & 1;\n"
+    "        d[idx] = d[idx+1] = d[idx+2] = on ? 255 : 0;\n"
+    "        d[idx+3] = 255;\n"
     "      }\n"
     "    }\n"
-    "    ctx.putImageData(img, 0, 0);\n"
-    "    frames++;\n"
-    "    const now = Date.now();\n"
-    "    if (now - lastFrame > 1000) {\n"
-    "      statusEl.textContent = 'connected - ' + frames + ' fps';\n"
-    "      frames = 0; lastFrame = now;\n"
+    "  }\n"
+    "}\n"
+    "\n"
+    "function drawGray4(raw) {\n"
+    "  const d = img.data;\n"
+    "  for (let y = 0; y < 64; y++) {\n"
+    "    for (let x = 0; x < 128; x += 2) {\n"
+    "      const b = raw.charCodeAt(y * 64 + (x >> 1));\n"
+    "      const left = ((b >> 4) & 0x0f) * 17;\n"
+    "      const right = (b & 0x0f) * 17;\n"
+    "      let idx = (y * 128 + x) * 4;\n"
+    "      d[idx] = d[idx+1] = d[idx+2] = left;\n"
+    "      d[idx+3] = 255;\n"
+    "      idx += 4;\n"
+    "      d[idx] = d[idx+1] = d[idx+2] = right;\n"
+    "      d[idx+3] = 255;\n"
     "    }\n"
+    "  }\n"
+    "}\n"
+    "\n"
+    "function updateStatus(mode) {\n"
+    "  frames++;\n"
+    "  lastMode = mode;\n"
+    "  const now = Date.now();\n"
+    "  if (now - lastFrame > 1000) {\n"
+    "    statusEl.textContent = 'connected - ' + lastMode + ' - ' + frames + ' fps';\n"
+    "    frames = 0;\n"
+    "    lastFrame = now;\n"
+    "  }\n"
+    "}\n"
+    "\n"
+    "function connect() {\n"
+    "  const es = new EventSource('/stream-auto');\n"
+    "  es.onopen = () => {\n"
+    "    statusEl.textContent = 'connected';\n"
+    "    statusEl.className = 'connected';\n"
+    "  };\n"
+    "  es.onerror = () => {\n"
+    "    statusEl.textContent = 'disconnected - reconnecting...';\n"
+    "    statusEl.className = '';\n"
+    "  };\n"
+    "  es.onmessage = (e) => {\n"
+    "    let payload;\n"
+    "    try { payload = JSON.parse(e.data); } catch (_) { return; }\n"
+    "    const raw = atob(payload.data || '');\n"
+    "    if (payload.format === 'gray4' || payload.format === 'gray4_packed') {\n"
+    "      drawGray4(raw);\n"
+    "    } else {\n"
+    "      drawMono(raw);\n"
+    "    }\n"
+    "    ctx.putImageData(img, 0, 0);\n"
+    "    updateStatus(payload.source || payload.format || 'display');\n"
     "  };\n"
     "}\n"
     "connect();\n"
@@ -140,15 +216,31 @@ static long long now_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static int norns_frame_is_live(const norns_display_shm_t *shm, long long now) {
+    long long age_ms;
+
+    if (!shm) return 0;
+    if (memcmp(shm->magic, NORNS_DISPLAY_MAGIC, sizeof(shm->magic)) != 0) return 0;
+    if (strncmp(shm->format, NORNS_DISPLAY_FORMAT, sizeof(shm->format)) != 0) return 0;
+    if (shm->version != 1) return 0;
+    if (shm->header_size != sizeof(norns_display_shm_t) - NORNS_FRAME_SIZE) return 0;
+    if (shm->width != 128 || shm->height != 64) return 0;
+    if (shm->bytes_per_frame != NORNS_FRAME_SIZE) return 0;
+    if (shm->active != 1) return 0;
+    if (shm->last_update_ms == 0) return 0;
+    age_ms = now - (long long)shm->last_update_ms;
+    return age_ms >= 0 && age_ms <= NORNS_STALE_MS;
+}
+
 /* Close and clear a client slot */
 static void client_remove(int idx) {
     if (clients[idx].fd >= 0) {
-        if (clients[idx].streaming)
+        if (clients[idx].stream_mode != STREAM_MODE_NONE)
             LOG_INFO(DISPLAY_LOG_SOURCE, "SSE client disconnected (slot %d)", idx);
         close(clients[idx].fd);
     }
     clients[idx].fd = -1;
-    clients[idx].streaming = 0;
+    clients[idx].stream_mode = STREAM_MODE_NONE;
     clients[idx].buf_len = 0;
 }
 
@@ -175,7 +267,21 @@ static void send_response(int idx, int code, const char *ctype,
 static void handle_http(int idx) {
     clients[idx].buf[clients[idx].buf_len] = '\0';
 
-    if (strncmp(clients[idx].buf, "GET /stream", 11) == 0) {
+    if (strncmp(clients[idx].buf, "GET /stream-auto", 16) == 0) {
+        const char *sse_header =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: keep-alive\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "\r\n";
+        if (write(clients[idx].fd, sse_header, strlen(sse_header)) > 0) {
+            clients[idx].stream_mode = STREAM_MODE_AUTO;
+            LOG_INFO(DISPLAY_LOG_SOURCE, "auto SSE client connected (slot %d)", idx);
+        } else {
+            client_remove(idx);
+        }
+    } else if (strncmp(clients[idx].buf, "GET /stream", 11) == 0) {
         /* SSE endpoint */
         const char *sse_header =
             "HTTP/1.1 200 OK\r\n"
@@ -185,8 +291,8 @@ static void handle_http(int idx) {
             "Access-Control-Allow-Origin: *\r\n"
             "\r\n";
         if (write(clients[idx].fd, sse_header, strlen(sse_header)) > 0) {
-            clients[idx].streaming = 1;
-            printf("display: SSE client connected (slot %d)\n", idx);
+            clients[idx].stream_mode = STREAM_MODE_LEGACY;
+            LOG_INFO(DISPLAY_LOG_SOURCE, "legacy SSE client connected (slot %d)", idx);
         } else {
             client_remove(idx);
         }
@@ -212,7 +318,7 @@ int main(int argc, char *argv[]) {
     /* Init client slots */
     for (int i = 0; i < MAX_CLIENTS; i++) {
         clients[i].fd = -1;
-        clients[i].streaming = 0;
+        clients[i].stream_mode = STREAM_MODE_NONE;
         clients[i].buf_len = 0;
     }
 
@@ -220,6 +326,9 @@ int main(int argc, char *argv[]) {
     uint8_t *shm_ptr = NULL;
     int shm_fd = -1;
     long long last_shm_attempt = 0;
+    norns_display_shm_t *norns_shm_ptr = NULL;
+    int norns_shm_fd = -1;
+    long long last_norns_shm_attempt = 0;
 
     /* Listen socket */
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -249,11 +358,14 @@ int main(int argc, char *argv[]) {
 
     uint8_t last_display[DISPLAY_SIZE];
     memset(last_display, 0, sizeof(last_display));
+    uint8_t last_auto_frame[NORNS_FRAME_SIZE];
+    size_t last_auto_size = 0;
+    auto_source_t last_auto_source = AUTO_SOURCE_NONE;
     long long last_push = 0;
 
-    /* Base64 output buffer: 4/3 * 1024 + padding + SSE framing */
-    char b64_buf[2048];
-    char sse_buf[2200];
+    /* Large enough for 4096-byte base64 + JSON SSE framing. */
+    char b64_buf[SSE_BUF_SIZE];
+    char sse_buf[SSE_BUF_SIZE];
 
     while (running) {
         /* Try to open shm if not yet mapped */
@@ -274,6 +386,24 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+        if (!norns_shm_ptr) {
+            long long now = now_ms();
+            if (now - last_norns_shm_attempt >= SHM_RETRY_MS) {
+                last_norns_shm_attempt = now;
+                norns_shm_fd = open(NORNS_SHM_PATH, O_RDONLY);
+                if (norns_shm_fd >= 0) {
+                    norns_shm_ptr = mmap(NULL, sizeof(norns_display_shm_t),
+                                         PROT_READ, MAP_SHARED, norns_shm_fd, 0);
+                    if (norns_shm_ptr == MAP_FAILED) {
+                        norns_shm_ptr = NULL;
+                        close(norns_shm_fd);
+                        norns_shm_fd = -1;
+                    } else {
+                        LOG_INFO(DISPLAY_LOG_SOURCE, "opened %s", NORNS_SHM_PATH);
+                    }
+                }
+            }
+        }
 
         /* Build fd_set for select */
         fd_set rfds;
@@ -282,7 +412,7 @@ int main(int argc, char *argv[]) {
         int maxfd = srv;
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].fd >= 0 && !clients[i].streaming) {
+            if (clients[i].fd >= 0 && clients[i].stream_mode == STREAM_MODE_NONE) {
                 FD_SET(clients[i].fd, &rfds);
                 if (clients[i].fd > maxfd) maxfd = clients[i].fd;
             }
@@ -302,7 +432,7 @@ int main(int argc, char *argv[]) {
                 for (int i = 0; i < MAX_CLIENTS; i++) {
                     if (clients[i].fd < 0) {
                         clients[i].fd = cfd;
-                        clients[i].streaming = 0;
+                        clients[i].stream_mode = STREAM_MODE_NONE;
                         clients[i].buf_len = 0;
                         placed = 1;
                         break;
@@ -314,7 +444,7 @@ int main(int argc, char *argv[]) {
 
         /* Read from non-streaming clients */
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].fd < 0 || clients[i].streaming) continue;
+            if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_NONE) continue;
             if (nready > 0 && FD_ISSET(clients[i].fd, &rfds)) {
                 int space = CLIENT_BUF_SIZE - clients[i].buf_len - 1;
                 if (space <= 0) { client_remove(i); continue; }
@@ -330,24 +460,85 @@ int main(int argc, char *argv[]) {
         }
 
         /* Push display frames to SSE clients */
-        if (shm_ptr) {
+        {
             long long now = now_ms();
             if (now - last_push >= POLL_INTERVAL_MS) {
+                int legacy_changed = 0;
+                const uint8_t *auto_frame = NULL;
+                size_t auto_frame_size = 0;
+                const char *auto_format = NULL;
+                const char *auto_source_label = NULL;
+                auto_source_t auto_source = AUTO_SOURCE_NONE;
+
                 last_push = now;
 
-                if (memcmp(shm_ptr, last_display, DISPLAY_SIZE) != 0) {
+                if (shm_ptr && memcmp(shm_ptr, last_display, DISPLAY_SIZE) != 0) {
                     memcpy(last_display, shm_ptr, DISPLAY_SIZE);
+                    legacy_changed = 1;
+                }
 
-                    /* Encode frame */
-                    int b64_len = base64_encode(last_display, DISPLAY_SIZE, b64_buf);
-                    int sse_len = snprintf(sse_buf, sizeof(sse_buf),
-                                           "data: %s\n\n", b64_buf);
+                static uint8_t norns_frame_copy[NORNS_FRAME_SIZE];
+                int norns_torn_read = 0;
 
-                    /* Send to all streaming clients */
+                if (norns_frame_is_live(norns_shm_ptr, now)) {
+                    /* Snapshot frame_counter before and after reading frame
+                     * to detect torn reads */
+                    uint32_t counter_before = norns_shm_ptr->frame_counter;
+                    __sync_synchronize(); /* memory barrier */
+                    memcpy(norns_frame_copy, norns_shm_ptr->frame, NORNS_FRAME_SIZE);
+                    __sync_synchronize();
+                    uint32_t counter_after = norns_shm_ptr->frame_counter;
+                    if (counter_before != counter_after) {
+                        /* Frame was being written during our read - skip */
+                        norns_torn_read = 1;
+                    }
+                    if (!norns_torn_read) {
+                        auto_frame = norns_frame_copy;
+                        auto_frame_size = NORNS_FRAME_SIZE;
+                        auto_format = NORNS_DISPLAY_FORMAT;
+                        auto_source_label = "norns 4-bit";
+                        auto_source = AUTO_SOURCE_NORNS;
+                    }
+                } else if (shm_ptr) {
+                    auto_frame = shm_ptr;
+                    auto_frame_size = DISPLAY_SIZE;
+                    auto_format = "mono1_packed";
+                    auto_source_label = "move 1-bit";
+                    auto_source = AUTO_SOURCE_MOVE;
+                }
+
+                if (legacy_changed) {
+                    int sse_len;
+                    (void)base64_encode(last_display, DISPLAY_SIZE, b64_buf);
+                    sse_len = snprintf(sse_buf, sizeof(sse_buf), "data: %s\n\n", b64_buf);
                     for (int i = 0; i < MAX_CLIENTS; i++) {
-                        if (clients[i].fd < 0 || !clients[i].streaming) continue;
-                        int sent = write(clients[i].fd, sse_buf, sse_len);
-                        if (sent <= 0) client_remove(i);
+                        if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_LEGACY) continue;
+                        if (write(clients[i].fd, sse_buf, sse_len) <= 0) client_remove(i);
+                    }
+                }
+
+                if (auto_frame) {
+                    int auto_changed =
+                        (auto_source != last_auto_source) ||
+                        (auto_frame_size != last_auto_size) ||
+                        (memcmp(auto_frame, last_auto_frame, auto_frame_size) != 0);
+                    if (auto_changed) {
+                        int sse_len;
+                        (void)base64_encode(auto_frame, (int)auto_frame_size, b64_buf);
+                        sse_len = snprintf(sse_buf, sizeof(sse_buf),
+                                           "data: {\"format\":\"%s\",\"encoding\":\"base64\","
+                                           "\"width\":128,\"height\":64,\"source\":\"%s\","
+                                           "\"data\":\"%s\"}\n\n",
+                                           auto_format, auto_source_label, b64_buf);
+                        if (sse_len < (int)sizeof(sse_buf)) {
+                            for (int i = 0; i < MAX_CLIENTS; i++) {
+                                if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_AUTO) continue;
+                                if (write(clients[i].fd, sse_buf, sse_len) <= 0) client_remove(i);
+                            }
+                            memcpy(last_auto_frame, auto_frame, auto_frame_size);
+                            last_auto_size = auto_frame_size;
+                            last_auto_source = auto_source;
+                        }
                     }
                 }
             }
@@ -361,6 +552,8 @@ int main(int argc, char *argv[]) {
     close(srv);
     if (shm_ptr) munmap(shm_ptr, DISPLAY_SIZE);
     if (shm_fd >= 0) close(shm_fd);
+    if (norns_shm_ptr) munmap(norns_shm_ptr, sizeof(norns_display_shm_t));
+    if (norns_shm_fd >= 0) close(norns_shm_fd);
     unified_log_shutdown();
     return 0;
 }
