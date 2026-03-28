@@ -477,24 +477,28 @@ int main(int argc, char *argv[]) {
                     legacy_changed = 1;
                 }
 
+                static uint8_t norns_frame_copy[NORNS_FRAME_SIZE];
+                int norns_torn_read = 0;
+
                 if (norns_frame_is_live(norns_shm_ptr, now)) {
                     /* Snapshot frame_counter before and after reading frame
                      * to detect torn reads */
                     uint32_t counter_before = norns_shm_ptr->frame_counter;
                     __sync_synchronize(); /* memory barrier */
-                    static uint8_t norns_frame_copy[NORNS_FRAME_SIZE];
                     memcpy(norns_frame_copy, norns_shm_ptr->frame, NORNS_FRAME_SIZE);
                     __sync_synchronize();
                     uint32_t counter_after = norns_shm_ptr->frame_counter;
                     if (counter_before != counter_after) {
                         /* Frame was being written during our read - skip */
-                        goto skip_auto;
+                        norns_torn_read = 1;
                     }
-                    auto_frame = norns_frame_copy;
-                    auto_frame_size = NORNS_FRAME_SIZE;
-                    auto_format = NORNS_DISPLAY_FORMAT;
-                    auto_source_label = "norns 4-bit";
-                    auto_source = AUTO_SOURCE_NORNS;
+                    if (!norns_torn_read) {
+                        auto_frame = norns_frame_copy;
+                        auto_frame_size = NORNS_FRAME_SIZE;
+                        auto_format = NORNS_DISPLAY_FORMAT;
+                        auto_source_label = "norns 4-bit";
+                        auto_source = AUTO_SOURCE_NORNS;
+                    }
                 } else if (shm_ptr) {
                     auto_frame = shm_ptr;
                     auto_frame_size = DISPLAY_SIZE;
@@ -526,20 +530,17 @@ int main(int argc, char *argv[]) {
                                            "\"width\":128,\"height\":64,\"source\":\"%s\","
                                            "\"data\":\"%s\"}\n\n",
                                            auto_format, auto_source_label, b64_buf);
-                        if (sse_len >= (int)sizeof(sse_buf)) {
-                            /* Truncated - skip this frame */
-                            goto skip_auto;
+                        if (sse_len < (int)sizeof(sse_buf)) {
+                            for (int i = 0; i < MAX_CLIENTS; i++) {
+                                if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_AUTO) continue;
+                                if (write(clients[i].fd, sse_buf, sse_len) <= 0) client_remove(i);
+                            }
+                            memcpy(last_auto_frame, auto_frame, auto_frame_size);
+                            last_auto_size = auto_frame_size;
+                            last_auto_source = auto_source;
                         }
-                        for (int i = 0; i < MAX_CLIENTS; i++) {
-                            if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_AUTO) continue;
-                            if (write(clients[i].fd, sse_buf, sse_len) <= 0) client_remove(i);
-                        }
-                        memcpy(last_auto_frame, auto_frame, auto_frame_size);
-                        last_auto_size = auto_frame_size;
-                        last_auto_source = auto_source;
                     }
                 }
-                skip_auto: ;
             }
         }
     }
