@@ -3351,6 +3351,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 #if SHADOW_INPROCESS_POC
     TIME_SECTION_START();
     shadow_inprocess_handle_ui_request();
+    shadow_process_fade_completions();
     TIME_SECTION_END(spi_ui_req_sum, spi_ui_req_max);
 
     TIME_SECTION_START();
