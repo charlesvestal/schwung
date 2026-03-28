@@ -7221,16 +7221,24 @@ function formatParamForSet(val, meta) {
 }
 
 /* Format a param value for overlay display (respects type and range) */
-function applyDisplayFormat(fmt, num) {
+function applyDisplayFormat(fmt, num, meta) {
     if (!fmt) return null;
     /* Support printf-inspired format strings: .4f, .2%, %.2f, etc. */
     const match = fmt.match(/^%?\.?(\d+)(f|%)$/);
     if (!match) return null;
     const decimals = parseInt(match[1]);
+    /* Replicate C-side scaling: if unit is "%" and max <= 1, scale to 0-100 */
+    let displayVal = num;
+    if (meta && meta.unit === "%" && typeof meta.max === "number" && meta.max <= 1) {
+        displayVal = num * 100.0;
+    }
     if (match[2] === "%") {
         return (num * 100).toFixed(decimals) + "%";
     }
-    return num.toFixed(decimals);
+    const formatted = displayVal.toFixed(decimals);
+    /* Append unit suffix if present (matching C-side behavior) */
+    if (meta && meta.unit) return formatted + (meta.unit === "%" ? "%" : " " + meta.unit);
+    return formatted;
 }
 
 function formatParamForOverlay(val, meta) {
@@ -7255,7 +7263,7 @@ function formatParamForOverlay(val, meta) {
     }
     /* Use display_format if provided by module metadata */
     if (meta && meta.display_format) {
-        const formatted = applyDisplayFormat(meta.display_format, val);
+        const formatted = applyDisplayFormat(meta.display_format, val, meta);
         if (formatted !== null) return formatted;
     }
     /* Float: show as percentage if 0-1 or 0-2 range */
@@ -7931,7 +7939,7 @@ function formatHierDisplayValue(key, val) {
 
     /* Use display_format if provided by module metadata */
     if (meta && meta.display_format) {
-        const formatted = applyDisplayFormat(meta.display_format, num);
+        const formatted = applyDisplayFormat(meta.display_format, num, meta);
         if (formatted !== null) return formatted;
     }
 
