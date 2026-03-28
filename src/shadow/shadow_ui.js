@@ -1356,6 +1356,36 @@ const LFO_DIVISIONS = [
     "1/16", "1/16T", "1/32", "1/32T"
 ];
 
+/* Migration: old 14-entry division table index -> new 27-entry index.
+ * Dotted divisions (1/4D, 1/8D) were removed; map to straight equivalent. */
+const LFO_MIGRATE_14_TO_27 = [8, 12, 14, 15, 17, 19, 21, 23, 25, 20, 22, 24, 19, 21];
+
+function migrateLfoDivisionIndex(idx, lfoConfig) {
+    if (lfoConfig.division_table_version) return idx; /* already new format */
+    if (idx >= 0 && idx < 14) return LFO_MIGRATE_14_TO_27[idx];
+    return idx;
+}
+
+/* Restore a master FX LFO from a saved config object.
+ * lfoIndex: 1 or 2, lfoConfig: parsed JSON config for this LFO. */
+function restoreMasterFxLfo(lfoIndex, lfoConfig) {
+    const pfx = "master_fx:lfo" + lfoIndex + ":";
+    if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
+    if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
+    shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
+    shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
+    shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
+    shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
+    let rateDiv = Number.isFinite(Number(lfoConfig.rate_div))
+        ? Number(lfoConfig.rate_div)
+        : 15;
+    rateDiv = migrateLfoDivisionIndex(rateDiv, lfoConfig);
+    shadow_set_param(0, pfx + "rate_div", String(rateDiv));
+    shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
+    shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
+    shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
+}
+
 /* LFO target picker state */
 let lfoTargetComponents = [];  /* Available components [{key, label}] */
 let selectedLfoTargetComp = 0;
@@ -3581,20 +3611,7 @@ function loadMasterPreset(index, presetName) {
         for (let li = 1; li <= 2; li++) {
             const lfoConfig = preset["lfo" + li];
             if (lfoConfig && typeof shadow_set_param === "function") {
-                const pfx = "master_fx:lfo" + li + ":";
-                if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
-                if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
-                shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
-                shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
-                shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
-                shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
-                const presetRateDiv = Number.isFinite(Number(lfoConfig.rate_div))
-                    ? Number(lfoConfig.rate_div)
-                    : 15;
-                shadow_set_param(0, pfx + "rate_div", String(presetRateDiv));
-                shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
-                shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
-                shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
+                restoreMasterFxLfo(li, lfoConfig);
             } else {
                 /* No LFO in preset — disable */
                 if (typeof shadow_set_param === "function") {
@@ -5172,20 +5189,7 @@ function loadMasterFxChainFromConfig() {
                         for (let li = 1; li <= 2; li++) {
                             const lfoConfig = stateFile.lfos["lfo" + li];
                             if (!lfoConfig) continue;
-                            const pfx = "master_fx:lfo" + li + ":";
-                            if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
-                            if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
-                            shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
-                            shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
-                            shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
-                            shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
-                            const configRateDiv = Number.isFinite(Number(lfoConfig.rate_div))
-                                ? Number(lfoConfig.rate_div)
-                                : 15;
-                            shadow_set_param(0, pfx + "rate_div", String(configRateDiv));
-                            shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
-                            shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
-                            shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
+                            restoreMasterFxLfo(li, lfoConfig);
                             debugLog(`MFX LFO ${li}: restored target=${lfoConfig.target || "none"}`);
                         }
                     }
@@ -12822,20 +12826,7 @@ globalThis.tick = function() {
                             for (let li = 1; li <= 2; li++) {
                                 const lfoConfig = mfxData.lfos["lfo" + li];
                                 if (!lfoConfig) continue;
-                                const pfx = "master_fx:lfo" + li + ":";
-                                if (lfoConfig.target) shadow_set_param(0, pfx + "target", lfoConfig.target);
-                                if (lfoConfig.target_param) shadow_set_param(0, pfx + "target_param", lfoConfig.target_param);
-                                shadow_set_param(0, pfx + "shape", String(lfoConfig.shape || 0));
-                                shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
-                                shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
-                                shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
-                                const configRateDiv = Number.isFinite(Number(lfoConfig.rate_div))
-                                    ? Number(lfoConfig.rate_div)
-                                    : 15;
-                                shadow_set_param(0, pfx + "rate_div", String(configRateDiv));
-                                shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
-                                shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
-                                shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
+                                restoreMasterFxLfo(li, lfoConfig);
                             }
                         }
                     } catch (e) {}
