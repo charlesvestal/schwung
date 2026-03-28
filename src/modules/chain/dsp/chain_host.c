@@ -6387,6 +6387,13 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
             json_get_int(obj, "sync", &lfo->sync);
             json_get_int(obj, "rate_div", &lfo->rate_div);
 
+            /* Migrate old 14-entry division table index to new 27-entry table */
+            int div_version = 0;
+            if (json_get_int(obj, "division_table_version", &div_version) != 0) {
+                /* No version field means old format - migrate */
+                lfo->rate_div = lfo_migrate_division_index(lfo->rate_div);
+            }
+
             json_get_float(obj, "rate_hz", &lfo->rate_hz);
             json_get_float(obj, "depth", &lfo->depth);
             json_get_float(obj, "phase_offset", &lfo->phase_offset);
@@ -7731,11 +7738,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     "\"lfo%d\":{\"enabled\":%d,\"shape\":%d,\"sync\":%d,"
                     "\"rate_hz\":%.1f,\"rate_div\":%d,\"depth\":%.2f,\"polarity\":%d,"
                     "\"phase_offset\":%.2f,\"target\":\"%s\",\"target_param\":\"%s\","
-                    "\"retrigger\":%d}",
+                    "\"retrigger\":%d,\"division_table_version\":%d}",
                     i + 1, lfo->enabled, lfo->shape, lfo->sync,
                     lfo->rate_hz, lfo->rate_div, lfo->depth, lfo->bipolar,
                     lfo->phase_offset, lfo->target, lfo->param,
-                    lfo->retrigger);
+                    lfo->retrigger, LFO_NUM_DIVISIONS);
             }
         }
         off += snprintf(buf + off, buf_len - off, "}");
