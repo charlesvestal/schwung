@@ -183,6 +183,9 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     /* Pack scanning */
     json_get_string(json, "scan_packs", info->scan_packs, sizeof(info->scan_packs));
 
+    /* Runtime visibility gate */
+    json_get_string(json, "requires_path", info->requires_path, sizeof(info->requires_path));
+
     free(json);
 
     printf("mm: parsed module '%s' (%s) v%s\n", info->name, info->id, info->version);
@@ -362,6 +365,18 @@ static int scan_directory(module_manager_t *mm, const char *dir_path) {
 
         if (parse_module_json(module_path, &mm->modules[mm->module_count]) == 0) {
             module_info_t *parsed = &mm->modules[mm->module_count];
+
+            /* Runtime visibility: skip if requires_path doesn't exist */
+            if (parsed->requires_path[0]) {
+                struct stat rp_st;
+                if (stat(parsed->requires_path, &rp_st) != 0) {
+                    printf("mm: skipping '%s' (requires_path not found: %s)\n",
+                           parsed->id, parsed->requires_path);
+                    memset(parsed, 0, sizeof(*parsed));
+                    continue;
+                }
+            }
+
             if (parsed->scan_packs[0]) {
                 /* Module has scan_packs — expand into virtual entries.
                  * Don't add the base module itself (hidden). */
