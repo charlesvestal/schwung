@@ -7221,6 +7221,18 @@ function formatParamForSet(val, meta) {
 }
 
 /* Format a param value for overlay display (respects type and range) */
+function applyDisplayFormat(fmt, num) {
+    if (!fmt) return null;
+    /* Support printf-inspired format strings: .4f, .2%, %.2f, etc. */
+    const match = fmt.match(/^%?\.?(\d+)(f|%)$/);
+    if (!match) return null;
+    const decimals = parseInt(match[1]);
+    if (match[2] === "%") {
+        return (num * 100).toFixed(decimals) + "%";
+    }
+    return num.toFixed(decimals);
+}
+
 function formatParamForOverlay(val, meta) {
     if (meta && meta.type === "int") {
         return Math.round(val).toString();
@@ -7240,6 +7252,11 @@ function formatParamForOverlay(val, meta) {
     }
     if (meta && meta.type === "canvas") {
         return formatCanvasDisplayValue(val, meta);
+    }
+    /* Use display_format if provided by module metadata */
+    if (meta && meta.display_format) {
+        const formatted = applyDisplayFormat(meta.display_format, val);
+        if (formatted !== null) return formatted;
     }
     /* Float: show as percentage if 0-1 or 0-2 range */
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
@@ -7911,6 +7928,12 @@ function formatHierDisplayValue(key, val) {
 
     const num = parseFloat(val);
     if (isNaN(num)) return val;
+
+    /* Use display_format if provided by module metadata */
+    if (meta && meta.display_format) {
+        const formatted = applyDisplayFormat(meta.display_format, num);
+        if (formatted !== null) return formatted;
+    }
 
     /* Show as percentage for 0-1 float values */
     if (meta && meta.type === "float") {
