@@ -40,6 +40,9 @@ typedef struct module_info {
     /* Pack scanning: if set, scan this subdirectory for .rnbopack files
      * and create virtual module entries. Base module is hidden. */
     char scan_packs[128];
+
+    /* Runtime visibility: if set, module is only registered when this path exists */
+    char requires_path[MAX_PATH_LEN];
 } module_info_t;
 
 /* Module manager state */
