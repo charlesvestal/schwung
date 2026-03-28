@@ -16,6 +16,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate and fix catalog encoding
+        run: |
+          python3 -c "
+          with open('module-catalog.json', 'rb') as f:
+              data = f.read()
+          # Replace Windows-1252 em-dash (0x97) with UTF-8 em-dash
+          fixed = data.replace(b'\x97', b'\xe2\x80\x94')
+          if fixed != data:
+              with open('module-catalog.json', 'wb') as f:
+                  f.write(fixed)
+              print('Fixed non-UTF-8 bytes in module-catalog.json')
+          # Validate the result parses as UTF-8 JSON
+          import json
+          with open('module-catalog.json', 'r', encoding='utf-8') as f:
+              json.load(f)
+          print('module-catalog.json is valid UTF-8 JSON')
+          "
+
       - name: Generate module table
         run: |
           python3 scripts/generate_module_table.py > module_table.md
@@ -53,6 +71,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
+          git add README.md module-catalog.json
           git commit -m "docs: update module catalog table in README"
           git push

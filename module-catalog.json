@@ -616,7 +616,7 @@
     {
       "id": "dissolver",
       "name": "Dissolver",
-      "description": "Spectral smearing pad generator — dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction",
+      "description": "Spectral smearing pad generator â€” dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction",
       "author": "fillioning",
       "component_type": "audio_fx",
       "github_repo": "fillioning/dissolver-move",
@@ -627,7 +627,7 @@
     {
       "id": "spectra",
       "name": "Spectra",
-      "description": "Multiband spectral resonator — pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift",
+      "description": "Multiband spectral resonator â€” pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift",
       "author": "fillioning",
       "component_type": "audio_fx",
       "github_repo": "fillioning/spectra-move",
