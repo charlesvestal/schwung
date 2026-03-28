@@ -2524,8 +2524,12 @@ function exitOvertakeMode() {
     delete globalThis.host_module_get_param;
 
     /* Write exiting module ID so shim runs the correct per-module hook */
+    debugLog("exitOvertakeMode: overtakeModuleId=" + overtakeModuleId + " host_write_file=" + (typeof host_write_file));
     if (overtakeModuleId && typeof host_write_file === "function") {
-        host_write_file("/data/UserData/schwung/hooks/.exiting-module-id", overtakeModuleId);
+        var writeResult = host_write_file("/data/UserData/schwung/hooks/.exiting-module-id", overtakeModuleId);
+        debugLog("exitOvertakeMode: wrote module ID file, result=" + writeResult);
+    } else {
+        debugLog("exitOvertakeMode: SKIPPED file write - id=" + overtakeModuleId + " fn=" + (typeof host_write_file));
     }
 
     overtakeModuleLoaded = false;
