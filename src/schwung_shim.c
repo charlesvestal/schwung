@@ -4083,10 +4083,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         char cmd[512];
                         snprintf(cmd, sizeof(cmd), "%s &", hook_path);
                         system(cmd);
-                    } else {
+                    } else if (!module_id[0]) {
+                        /* No module ID file — old-style exit, run global hook for backward compat */
                         system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
                                "/data/UserData/schwung/hooks/overtake-exit.sh' &");
                     }
+                    /* If module ID was set but no per-module hook exists, skip cleanup —
+                     * don't run the global hook which may belong to another module */
                 }
                 /* Clear JACK LED cache on clean exit */
                 led_queue_clear_jack_cache();
