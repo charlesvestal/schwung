@@ -3302,22 +3302,33 @@ function rnboSendOsc(path, value) {
         '" &');
 }
 
-/* Save current RNBO graph name and set preset to a per-set directory.
+/* Save current RNBO graph name and state to a per-set directory.
+ * Auto-saves the current RNBO state as a set preset named _schwung_{uuid}
+ * so all parameter tweaks are captured without manual preset saves.
  * Only writes if RNBO is running and returns valid values. */
 function saveRnboGraphToDir(dir) {
     if (!dir || typeof host_system_cmd !== "function") return;
     const graphName = rnboGetValue("/rnbo/inst/control/sets/current/name");
     if (!graphName || typeof graphName !== "string") return;
-    const presetName = rnboGetValue("/rnbo/inst/control/sets/presets/loaded");
-    const state = { graph: graphName };
-    if (presetName && typeof presetName === "string" && presetName.length > 0) {
-        state.preset = presetName;
+    /* Extract UUID from dir path (last path component) */
+    const parts = dir.split("/");
+    const uuid = parts[parts.length - 1];
+    if (!uuid || uuid.length < 8) return;
+    /* Auto-save current RNBO state as a set preset tied to this Schwung set */
+    const autoPresetName = "_schwung_" + uuid;
+    rnboSendOsc("/rnbo/inst/control/sets/presets/save", autoPresetName);
+    const state = { graph: graphName, auto_preset: autoPresetName };
+    /* Also record the user's last loaded preset (if any) for reference */
+    const userPreset = rnboGetValue("/rnbo/inst/control/sets/presets/loaded");
+    if (userPreset && typeof userPreset === "string" && userPreset.length > 0 && !userPreset.startsWith("_schwung_")) {
+        state.user_preset = userPreset;
     }
     host_write_file(dir + "/rnbo_state.json", JSON.stringify(state) + "\n");
-    debugLog("SET_CHANGED: saved RNBO state: " + graphName + (state.preset ? " preset=" + state.preset : ""));
+    debugLog("SET_CHANGED: saved RNBO state: " + graphName + " auto_preset=" + autoPresetName);
 }
 
-/* Load RNBO graph and set preset from a per-set directory via OSC.
+/* Load RNBO graph and state from a per-set directory via OSC.
+ * Loads the auto-saved preset (_schwung_{uuid}) to restore full state.
  * Only sends if there's saved state and RNBO is running. */
 function loadRnboGraphFromDir(dir) {
     if (!dir || typeof host_system_cmd !== "function") return;
@@ -3329,7 +3340,8 @@ function loadRnboGraphFromDir(dir) {
         try {
             const state = JSON.parse(stateRaw);
             graphName = state.graph || null;
-            presetName = state.preset || null;
+            /* Prefer auto_preset (full state), fall back to user_preset */
+            presetName = state.auto_preset || state.user_preset || state.preset || null;
         } catch (e) {}
     }
     if (!graphName) {
