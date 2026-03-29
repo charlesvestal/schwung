@@ -94,6 +94,7 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 | **Shift+Vol + Step 2** | Open Global Settings |
 | **Shift+Vol + Step 13** | Open Tools Menu |
 | **Shift+Vol + Jog Click** | Open Overtake menu (or exit Overtake mode) |
+| **Shift+Vol + Back** | Suspend Overtake module (keep running in background) |
 | **Shift+Sample** | Open Quantized Sampler |
 | **Shift+Capture** | Skipback (save last 30 seconds) |
 | **Shift+Vol + Left/Right** | Switch set page (when enabled) |
@@ -165,8 +166,9 @@ Each slot has two independent LFOs that can modulate any parameter of any module
 - **Target**: Which component and parameter to modulate
 - **Enabled**: On/Off
 - **Shape**: Sine, Tri, Saw, Square, S&H (sample & hold), Swishy (smooth random walk)
-- **Sync**: Free-running (Hz) or tempo-synced (musical divisions from 8 bars to 1/32)
+- **Sync**: Free-running (Hz) or tempo-synced (musical divisions from 16 bars to 1/32T, including triplet variants)
 - **Depth**: Modulation amount (0-100%)
+- **Polarity**: Unipolar (0 to depth) or Bipolar (-depth to +depth)
 - **Phase**: Phase offset (0-360 degrees)
 - **Retrigger**: Reset LFO phase on the first note-on of a new phrase
 
@@ -189,13 +191,15 @@ Each Move Set maintains its own independent slot configurations. When you switch
 **How it works:**
 - Each Set remembers which synths, effects, and settings are loaded in each slot, plus Master FX
 - Switching Sets saves the outgoing state and restores the incoming Set's state
+- Slot audio fades smoothly during transitions to avoid clicks
 - Changes you make to a slot are local to the current Set — they don't affect other Sets
+- If RNBO Runner is active, the current RNBO graph and parameter state are saved/restored per Set
 
 **Presets vs Set State:**
 - **Set State** is automatic: whatever you have loaded in your slots is saved when you leave a Set and restored when you come back
 - **Slot Presets** are separate: loading a preset copies it into the Set's state. If you tweak it afterwards, the tweaks live in the Set, not back in the preset. Loading the same preset in another Set gives you a fresh copy.
 
-**New Sets** start with empty slots. To carry a configuration to a new Set, save it as a slot preset first, then load it in the new Set.
+**New Sets** start with empty slots. **Duplicated Sets** (name contains "Copy") inherit the source Set's Schwung state automatically. To carry a configuration to a brand new Set, save it as a slot preset first, then load it in the new Set.
 
 ---
 
@@ -442,7 +446,28 @@ Overtake modules take full control of Move's display and controls. Access via **
 
 To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
 
+To suspend an overtake module (keep it running in background): **Shift+Vol + Back**
+
 **Note:** After exiting an overtake module, Move's pad and button LEDs won't refresh automatically. Change tracks or sets and they'll come back as they light back on.
+
+### RNBO Runner
+
+Requires [RNBO for Move](https://rnbo.cycling74.com) to be installed separately. RNBO Runner launches RNBO graphs as an overtake module, running on top of Move with full pad/knob control.
+
+**Getting started:**
+1. Install RNBO for Move (follow Cycling '74 instructions)
+2. Open Overtake menu (Shift+Vol + Jog Click)
+3. Select RNBO Runner
+
+**Features:**
+- **Suspend/Resume**: Shift+Vol+Back suspends RNBO Runner — it keeps running in the background. Re-enter via the Overtake menu to resume with LED state restored.
+- **MIDI from Move**: RNBO receives MIDI from Move's sequencer on Channel 16. You can sequence RNBO devices from Move, use MIDI capture, etc.
+- **Per-set state**: The current RNBO graph and all parameter tweaks are saved automatically with each Schwung set. Switch sets and your RNBO sound follows.
+- **Display mirroring**: Works with Schwung's display mirror feature.
+- **Resampling and Skipback**: RNBO audio is included in resampling and skipback captures.
+- **Master FX and Volume**: RNBO audio routes through the master FX chain and master volume.
+
+**Note:** Schwung includes a JACK shadow driver (but not JACK itself — RNBO provides it). If you want to build other JACK applications for Move, the driver is available.
 
 ---
 
