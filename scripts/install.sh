@@ -1527,6 +1527,11 @@ ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/lib/jack && \
 ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/scripts && \
     ln -sf /data/UserData/schwung/bin/display_ctl /data/UserData/rnbo/scripts/display_ctl" || true
 
+# Install RNBO shadow config (used by RNBO Runner to launch without its own JACK)
+ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/config && \
+    ln -sf /data/UserData/schwung/modules/overtake/rnbo-runner/control-startup-shadow-nojack.json \
+    /data/UserData/rnbo/config/control-startup-shadow.json" || true
+
 # Fix ownership of all files under UserData.
 # The shim runs as root (setuid), so any files it creates (recordings, config,
 # skipback, sets, etc.) end up root-owned. Move's UI runs as ableton and can't
