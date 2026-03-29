@@ -1532,6 +1532,17 @@ ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/config && \
     ln -sf /data/UserData/schwung/modules/overtake/rnbo-runner/control-startup-shadow.json \
     /data/UserData/rnbo/config/control-startup-shadow.json" || true
 
+# Enable RNBO MIDI auto-connect (required for pad MIDI to reach patcher instances)
+ssh_ableton_with_retry "python3 -c \"
+import json, os
+p='/data/UserData/.config/rnbo/runner.json'
+if os.path.exists(p):
+    with open(p) as f: cfg=json.load(f)
+    if not cfg.get('instance_auto_connect_midi'):
+        cfg['instance_auto_connect_midi']=True
+        with open(p,'w') as f: json.dump(cfg,f,indent=4)
+\"" || true
+
 # Fix ownership of all files under UserData.
 # The shim runs as root (setuid), so any files it creates (recordings, config,
 # skipback, sets, etc.) end up root-owned. Move's UI runs as ableton and can't
