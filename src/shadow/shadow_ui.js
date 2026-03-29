@@ -2413,6 +2413,11 @@ function scanForOvertakeModules() {
             /* Check if this is an overtake module */
             if (json.component_type === "overtake" ||
                 (json.capabilities && json.capabilities.component_type === "overtake")) {
+                /* Skip modules whose required path doesn't exist on device */
+                if (json.requires_path && !host_file_exists(json.requires_path)) {
+                    debugLog("SKIP overtake (requires_path missing): " + json.name + " needs " + json.requires_path);
+                    return;
+                }
                 debugLog("FOUND overtake: " + json.name);
                 result.push({
                     id: json.id || name,
