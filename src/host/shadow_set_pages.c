@@ -374,7 +374,12 @@ static int shadow_detect_copy_source(const char *set_name, const char *new_uuid,
 
 /* Handle a Set being loaded — called from Settings.json poll.
  * set_name: human-readable name (e.g. "My Song")
- * uuid: UUID directory name from Sets/<UUID>/<Name>/ path */
+ * uuid: UUID directory name from Sets/<UUID>/<Name>/ path
+ *
+ * IMPORTANT: This runs on the audio thread. All file I/O (save config,
+ * load config, copy detection, mkdir) is deferred to the UI thread via
+ * SHADOW_UI_FLAG_SET_CHANGED. Only in-memory updates and the tiny
+ * active_set.txt write happen here. */
 void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     if (!set_name || !set_name[0]) return;
 
@@ -384,23 +389,14 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
         return;
     }
 
-    /* Save outgoing set's config before switching */
-    if (uuid && sampler_current_set_uuid[0]) {
-        char outgoing_dir[512];
-        snprintf(outgoing_dir, sizeof(outgoing_dir), SET_STATE_DIR "/%s",
-                 sampler_current_set_uuid);
-        shadow_save_config_to_dir(outgoing_dir);
-        char m[256];
-        snprintf(m, sizeof(m), "Set switch: saved config to %s", outgoing_dir);
-        host.log(m);
-    }
-
+    /* Update in-memory state */
     snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", set_name);
     if (uuid) {
         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
     }
 
     /* Write active set UUID + name to file for shadow UI and boot persistence.
+     * This is a tiny write (~100 bytes) — acceptable on the audio thread.
      * Format: line 1 = UUID, line 2 = set name */
     if (uuid && uuid[0]) {
         FILE *af = fopen(ACTIVE_SET_PATH, "w");
@@ -411,67 +407,26 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
             fclose(af);
             chown_to_ableton(ACTIVE_SET_PATH);
         }
-        /* Ensure per-set state directory exists */
-        char incoming_dir[512];
-        snprintf(incoming_dir, sizeof(incoming_dir), SET_STATE_DIR "/%s", uuid);
-        shadow_ensure_dir(incoming_dir);
-
-        /* Detect if this is a copied set — write source UUID for JS copy-on-first-use */
-        char copy_source_path[512];
-        snprintf(copy_source_path, sizeof(copy_source_path), "%s/copy_source.txt", incoming_dir);
-        {
-            /* Only detect copy for sets that don't already have state */
-            char test_path[512];
-            snprintf(test_path, sizeof(test_path), "%s/slot_0.json", incoming_dir);
-            struct stat tst;
-            if (stat(test_path, &tst) != 0) {
-                /* No existing state — check if this is a copy */
-                char source_uuid[64];
-                if (shadow_detect_copy_source(set_name, uuid, source_uuid, sizeof(source_uuid))) {
-                    /* Write copy source UUID so JS can copy from the right dir */
-                    FILE *csf = fopen(copy_source_path, "w");
-                    if (csf) {
-                        fputs(source_uuid, csf);
-                        fclose(csf);
-                        chown_to_ableton(copy_source_path);
-                    }
-                    /* Also copy the source's chain config to the new dir */
-                    {
-                        char source_dir[512];
-                        snprintf(source_dir, sizeof(source_dir), SET_STATE_DIR "/%s", source_uuid);
-                        char src_cfg[512], dst_cfg[512];
-                        snprintf(src_cfg, sizeof(src_cfg), "%s/" SHADOW_CHAIN_CONFIG_FILENAME, source_dir);
-                        snprintf(dst_cfg, sizeof(dst_cfg), "%s/" SHADOW_CHAIN_CONFIG_FILENAME, incoming_dir);
-                        shadow_copy_file(src_cfg, dst_cfg);
-                    }
-                    char m[256];
-                    snprintf(m, sizeof(m), "Set copy detected: source=%s -> new=%s", source_uuid, uuid);
-                    host.log(m);
-                }
-            }
-        }
-
-        /* Load incoming set's config (volumes, channels) */
-        shadow_load_config_from_dir(incoming_dir);
     }
 
-    /* Signal shadow UI to save outgoing state and reload from new set dir */
+    /* Signal shadow UI to handle all heavy file I/O:
+     * - Save outgoing slot/config state
+     * - Ensure incoming set directory exists
+     * - Detect and handle copied sets
+     * - Load incoming slot state and config
+     * - Refresh UI */
     if (*host.shadow_control_ptr) {
         (*host.shadow_control_ptr)->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
     }
 
+    /* Read tempo from set's Song.abl — involves file I/O but is needed
+     * for sampler quantization. TODO: defer to background thread. */
     sampler_set_tempo = host.read_set_tempo(set_name);
+
     char msg[256];
-    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s tempo=%.1f",
+    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s tempo=%.1f (deferred to UI)",
              set_name, uuid ? uuid : "?", sampler_set_tempo);
     host.log(msg);
-
-    /* Mute/solo state is now managed by per-set config (loaded via
-     * shadow_load_config_from_dir above). Move's Song.abl speakerOn
-     * is independent of shadow slot mute state. */
-    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
-        host.ui_state_update_slot(i);
-    }
 }
 
 /* Poll Settings.json for currentSongIndex changes, then match via xattr.
