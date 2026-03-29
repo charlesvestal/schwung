@@ -12846,12 +12846,15 @@ globalThis.tick = function() {
             /* Save chain config (volumes, channels, mute/solo) to outgoing set dir */
             saveChainConfigToDir(activeSlotStateDir);
 
-            /* 2. Read new UUID and set name from active_set.txt
-             *    Format: line 1 = UUID, line 2 = set name */
-            const activeSetRaw = host_read_file("/data/UserData/schwung/active_set.txt");
+            /* 2. Get UUID and set name from shim (in-memory, no file I/O on audio thread) */
+            const activeSetRaw = getSlotParam(0, "active_set");
             const activeSetLines = activeSetRaw ? activeSetRaw.split("\n") : [];
             const uuid = activeSetLines[0] ? activeSetLines[0].trim() : "";
             const setName = activeSetLines[1] ? activeSetLines[1].trim() : "";
+            /* Write active_set.txt for boot persistence (UI thread, not audio thread) */
+            if (uuid) {
+                host_write_file("/data/UserData/schwung/active_set.txt", uuid + "\n" + setName);
+            }
 
             /* 3. Determine new directory */
             const newDir = uuid
