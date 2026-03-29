@@ -1008,6 +1008,7 @@ int shadow_inprocess_load_chain(void) {
                 shadow_plugin_v2->set_param(
                     shadow_chain_slots[i].instance, "load_file", autosave_path);
                 shadow_chain_slots[i].active = 1;
+                shadow_chain_slots[i].fade.target = 1.0f;
                 shadow_chain_slots[i].patch_index = -1;
                 /* Query channel settings from loaded autosave */
                 if (shadow_chain_slots[i].forward_channel == -1 && shadow_plugin_v2->get_param) {
@@ -1416,6 +1417,7 @@ void shadow_inprocess_handle_ui_request(void) {
     shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "load_patch", idx_str);
     shadow_chain_slots[slot].patch_index = patch_index;
     shadow_chain_slots[slot].active = 1;
+    shadow_chain_slots[slot].fade.target = 1.0f;
 
     if (shadow_plugin_v2->get_param) {
         char key[32];
@@ -1520,6 +1522,7 @@ void shadow_process_fade_completions(void) {
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "load_patch", idx_str);
             shadow_chain_slots[slot].patch_index = patch_index;
             shadow_chain_slots[slot].active = 1;
+    shadow_chain_slots[slot].fade.target = 1.0f;
 
             /* Read back patch name */
             if (shadow_plugin_v2->get_param) {
@@ -2609,6 +2612,7 @@ void shadow_inprocess_handle_param_request(void) {
             if (strcmp(key_copy, "synth:module") == 0) {
                 if (value_copy[0] != '\0') {
                     shadow_chain_slots[slot].active = 1;
+    shadow_chain_slots[slot].fade.target = 1.0f;
                     if (shadow_chain_slots[slot].forward_channel == -1 && shadow_plugin_v2->get_param) {
                         char fwd_buf[16];
                         int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
@@ -2629,6 +2633,7 @@ void shadow_inprocess_handle_param_request(void) {
                  strcmp(key_copy, "fx2:module") == 0) &&
                 value_copy[0] != '\0') {
                 shadow_chain_slots[slot].active = 1;
+    shadow_chain_slots[slot].fade.target = 1.0f;
             }
             if (strcmp(key_copy, "load_patch") == 0 ||
                 strcmp(key_copy, "patch") == 0) {
@@ -2640,6 +2645,7 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_chain_slots[slot].patch_name[0] = '\0';
                 } else {
                     shadow_chain_slots[slot].active = 1;
+    shadow_chain_slots[slot].fade.target = 1.0f;
                     shadow_chain_slots[slot].patch_index = idx;
                     shadow_slot_load_capture(slot, idx);
 
