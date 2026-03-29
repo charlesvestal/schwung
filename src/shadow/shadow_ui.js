@@ -3195,6 +3195,53 @@ function saveSlotsToConfig(nextSlots) {
     }
 }
 
+/* Save chain config (volumes, channels, mute/solo) to a per-set directory.
+ * Mirrors what shadow_save_config_to_dir() did on the C side, but runs
+ * on the UI thread to avoid blocking the audio thread. */
+function saveChainConfigToDir(dir) {
+    if (!dir) return;
+    const path = dir + "/shadow_chain_config.json";
+    try {
+        const cfgSlots = [];
+        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+            const vol = parseFloat(getSlotParam(i, "slot:volume") || "1");
+            const ch = parseInt(getSlotParam(i, "slot:receive_channel") || "0");
+            const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
+            const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
+            const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
+            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, forward_channel: fwd, muted: muted, soloed: soloed });
+        }
+        host_write_file(path, JSON.stringify({ slots: cfgSlots }, null, 2) + "\n");
+    } catch (e) {
+        debugLog("saveChainConfigToDir error: " + e);
+    }
+}
+
+/* Load chain config (volumes, channels, mute/solo) from a per-set directory.
+ * Mirrors what shadow_load_config_from_dir() did on the C side, but runs
+ * on the UI thread to avoid blocking the audio thread. */
+function loadChainConfigFromDir(dir) {
+    if (!dir) return;
+    const path = dir + "/shadow_chain_config.json";
+    try {
+        const raw = host_read_file(path);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        if (!data || !Array.isArray(data.slots)) return;
+        for (let i = 0; i < SHADOW_UI_SLOTS && i < data.slots.length; i++) {
+            const s = data.slots[i];
+            if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
+            if (typeof s.channel === "number") setSlotParamWithTimeout(i, "slot:receive_channel", String(s.channel), 500);
+            if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
+            if (typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
+            if (typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
+        }
+        debugLog("SET_CHANGED: loaded chain config from " + path);
+    } catch (e) {
+        debugLog("loadChainConfigFromDir error: " + e);
+    }
+}
+
 function saveConfigMasterFx() {
     /* Save just the master FX setting to config, preserving all other fields */
     const existing = safeLoadJson(CONFIG_PATH) || {};
@@ -12796,6 +12843,8 @@ globalThis.tick = function() {
             /* 1. Save current state to outgoing directory */
             autosaveAllSlots();
             saveMasterFxChainConfig();
+            /* Save chain config (volumes, channels, mute/solo) to outgoing set dir */
+            saveChainConfigToDir(activeSlotStateDir);
 
             /* 2. Read new UUID and set name from active_set.txt
              *    Format: line 1 = UUID, line 2 = set name */
@@ -12841,10 +12890,11 @@ globalThis.tick = function() {
                 }
             }
 
-            /* 5. Switch directory */
+            /* 5. Switch directory and load chain config (volumes/channels/mute/solo) */
             const oldDir = activeSlotStateDir;
             activeSlotStateDir = newDir;
             debugLog("SET_CHANGED: " + oldDir + " -> " + newDir);
+            loadChainConfigFromDir(newDir);
 
             /* 6. Two-pass reload: clear ALL old slots first (freeing memory),
              *    then load new slots. This reduces peak memory when switching
