@@ -110,8 +110,24 @@ globalThis.tick = function() {
         host_system_cmd('chmod +x ' + HOOKS_DIR + '/overtake-exit.sh');
     }
 
-    // Frame 3: launch rnbomovecontrol + create running flag
+    // Frame 3: ensure RNBO MIDI auto-connect is enabled, then launch
     if (phase === 3) {
+        /* Enable instance_auto_connect_midi in RNBO runner.json.
+         * Required for pad MIDI to reach patcher instances.
+         * Uses host_read_file/host_write_file to avoid quoting hell. */
+        var RUNNER_CFG = '/data/UserData/.config/rnbo/runner.json';
+        if (typeof host_read_file === "function" && typeof host_write_file === "function") {
+            var cfgRaw = host_read_file(RUNNER_CFG);
+            if (cfgRaw) {
+                try {
+                    var cfg = JSON.parse(cfgRaw);
+                    if (!cfg.instance_auto_connect_midi) {
+                        cfg.instance_auto_connect_midi = true;
+                        host_write_file(RUNNER_CFG, JSON.stringify(cfg, null, 4));
+                    }
+                } catch (e) {}
+            }
+        }
         clear_screen();
         print(0, 10, 'RNBO Runner', 2);
         print(0, 35, 'Loading...', 1);
