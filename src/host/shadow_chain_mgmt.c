@@ -1646,6 +1646,11 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
         int ch = shadow_chain_slots[slot].channel;
         return snprintf(buf, buf_len, "%d", (ch < 0) ? 0 : ch + 1);
     }
+    if (strcmp(key, "active_set") == 0) {
+        /* Return "uuid\nname" for UI thread to write active_set.txt */
+        return snprintf(buf, buf_len, "%s\n%s",
+                        sampler_current_set_uuid, sampler_current_set_name);
+    }
     return -1;
 }
 

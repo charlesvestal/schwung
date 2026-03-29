@@ -395,29 +395,11 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
     }
 
-    /* Write active set UUID + name for shadow UI and boot persistence (~100 bytes) */
-    if (uuid && uuid[0]) {
-        FILE *af = fopen(ACTIVE_SET_PATH, "w");
-        if (af) {
-            fputs(uuid, af);
-            fputc('\n', af);
-            fputs(set_name ? set_name : "", af);
-            fclose(af);
-            chown_to_ableton(ACTIVE_SET_PATH);
-        }
-    }
-
-    /* Signal shadow UI to handle heavy file I/O */
+    /* Signal shadow UI to handle ALL file I/O (active_set.txt, config,
+     * tempo read, etc.) — zero file ops on the audio thread. */
     if (*host.shadow_control_ptr) {
         (*host.shadow_control_ptr)->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
     }
-
-    sampler_set_tempo = host.read_set_tempo(set_name);
-
-    char msg[256];
-    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s tempo=%.1f",
-             set_name, uuid ? uuid : "?", sampler_set_tempo);
-    host.log(msg);
 }
 
 /* Poll Settings.json for currentSongIndex changes, then match via xattr.
