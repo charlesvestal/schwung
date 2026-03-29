@@ -3224,7 +3224,7 @@ function saveChainConfigToDir(dir) {
  * Compares Song.abl file sizes between the new set UUID and all
  * existing set_state directories. Returns source dir path or null. */
 function detectCopySource(newUuid) {
-    const SETS_DIR = "/data/UserData/sampler/Sets";
+    const SETS_DIR = "/data/UserData/UserLibrary/Sets";
     const STATE_DIR = "/data/UserData/schwung/set_state";
 
     /* Get new set's Song.abl size */
