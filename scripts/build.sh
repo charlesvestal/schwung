@@ -570,6 +570,18 @@ else
     echo "Skipping display_ctl (up to date)"
 fi
 
+# Build jack_midi_connect (connects system:midi_capture_ext to RNBO patcher MIDI inputs)
+if needs_rebuild build/bin/jack_midi_connect \
+    src/tools/jack_midi_connect.c; then
+    echo "Building jack_midi_connect..."
+    "${CROSS_PREFIX}gcc" -g -O2 \
+        src/tools/jack_midi_connect.c \
+        -o build/bin/jack_midi_connect \
+        -ldl
+else
+    echo "Skipping jack_midi_connect (up to date)"
+fi
+
 # Copy shadow UI files (always — ExFAT timestamps can confuse cp -u)
 cp ./src/shadow/shadow_ui.js ./build/shadow/
 cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
