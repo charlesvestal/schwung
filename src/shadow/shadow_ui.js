@@ -3274,6 +3274,45 @@ function detectCopySource(newUuid) {
     return null;
 }
 
+/* Save current RNBO graph name to a per-set directory.
+ * Only writes if RNBO is running and returns a graph name. */
+function saveRnboGraphToDir(dir) {
+    if (!dir || typeof host_system_cmd !== "function") return;
+    const tmpFile = "/data/UserData/schwung/tmp_rnbo_graph.json";
+    host_system_cmd('wget -q -O "' + tmpFile + '" http://localhost:5678/rnbo/inst/control/sets/current/name 2>/dev/null');
+    const raw = host_read_file(tmpFile);
+    if (!raw) return;
+    try {
+        const data = JSON.parse(raw);
+        if (data && data.VALUE && typeof data.VALUE === "string" && data.VALUE.length > 0) {
+            host_write_file(dir + "/rnbo_graph.txt", data.VALUE);
+            debugLog("SET_CHANGED: saved RNBO graph: " + data.VALUE);
+        }
+    } catch (e) {
+        /* RNBO not running or parse error — skip silently */
+    }
+}
+
+/* Load RNBO graph from a per-set directory via OSC.
+ * Only sends if there's a saved graph and RNBO is running. */
+function loadRnboGraphFromDir(dir) {
+    if (!dir || typeof host_system_cmd !== "function") return;
+    const graphName = host_read_file(dir + "/rnbo_graph.txt");
+    if (!graphName || !graphName.trim()) return;
+    const name = graphName.trim();
+    /* Send OSC via Python to load the graph */
+    host_system_cmd('python3 -c "' +
+        "import socket,struct;" +
+        "def S(s):\\n" +
+        " b=s.encode()+b'\\x00'\\n" +
+        " while len(b)%4:b+=b'\\x00'\\n" +
+        " return b\\n" +
+        "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);" +
+        "sock.sendto(S('/rnbo/inst/control/sets/load')+S(',s')+S('" + name.replace(/'/g, "") + "'),('" + "127.0.0.1" + "',1234))" +
+        '" &');
+    debugLog("SET_CHANGED: loading RNBO graph: " + name);
+}
+
 function loadChainConfigFromDir(dir) {
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
@@ -12899,6 +12938,8 @@ globalThis.tick = function() {
             saveMasterFxChainConfig();
             /* Save chain config (volumes, channels, mute/solo) to outgoing set dir */
             saveChainConfigToDir(activeSlotStateDir);
+            /* Save current RNBO graph (if RNBO is running) */
+            saveRnboGraphToDir(activeSlotStateDir);
 
             /* 2. Get UUID and set name from shim (in-memory, no file I/O on audio thread) */
             const activeSetRaw = getSlotParam(0, "active_set");
@@ -13071,7 +13112,10 @@ globalThis.tick = function() {
                 showOverlay("Set Loaded", setName, 60);
             }
 
-            /* 10. Clear flag */
+            /* 10. Load RNBO graph for this set (if RNBO is running) */
+            loadRnboGraphFromDir(activeSlotStateDir);
+
+            /* 11. Clear flag */
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
             }
