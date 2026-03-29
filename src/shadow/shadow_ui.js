@@ -3289,8 +3289,10 @@ function rnboGetValue(urlPath) {
     return null;
 }
 
-/* Helper: send an OSC message with a string argument via UDP. */
-function rnboSendOsc(path, value) {
+/* Helper: send an OSC message with a string argument via UDP.
+ * async=true (default) runs in background, async=false blocks until sent. */
+function rnboSendOsc(path, value, async) {
+    const bg = (async !== false) ? " &" : "";
     host_system_cmd('sh -c "python3 -c \\"' +
         "import socket;" +
         "def S(s):\\n" +
@@ -3299,7 +3301,7 @@ function rnboSendOsc(path, value) {
         " return b\\n" +
         "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);" +
         "sock.sendto(S('" + path + "')+S(',s')+S('" + value.replace(/'/g, "") + "'),('127.0.0.1',1234))" +
-        '\\" &"');
+        '\\"' + bg + '"');
 }
 
 /* Save current RNBO graph name and state to a per-set directory.
@@ -3307,16 +3309,23 @@ function rnboSendOsc(path, value) {
  * so all parameter tweaks are captured without manual preset saves.
  * Only writes if RNBO is running and returns valid values. */
 function saveRnboGraphToDir(dir) {
-    if (!dir || typeof host_system_cmd !== "function") return;
+    if (!dir || typeof host_system_cmd !== "function") {
+        debugLog("saveRnboGraphToDir: skipped (no dir or no host_system_cmd)");
+        return;
+    }
     const graphName = rnboGetValue("/rnbo/inst/control/sets/current/name");
+    debugLog("saveRnboGraphToDir: graphName=" + JSON.stringify(graphName));
     if (!graphName || typeof graphName !== "string") return;
     /* Extract UUID from dir path (last path component) */
     const parts = dir.split("/");
     const uuid = parts[parts.length - 1];
     if (!uuid || uuid.length < 8) return;
-    /* Auto-save current RNBO state as a set preset tied to this Schwung set */
+    /* Auto-save current RNBO state as a set preset tied to this Schwung set.
+     * Synchronous — must complete before we load the next set's preset. */
     const autoPresetName = "_schwung_" + uuid;
-    rnboSendOsc("/rnbo/inst/control/sets/presets/save", autoPresetName);
+    rnboSendOsc("/rnbo/inst/control/sets/presets/save", autoPresetName, false);
+    /* Brief pause to let RNBO persist the preset before we proceed */
+    host_system_cmd('sh -c "sleep 0.2"');
     const state = { graph: graphName, auto_preset: autoPresetName };
     /* Also record the user's last loaded preset (if any) for reference */
     const userPreset = rnboGetValue("/rnbo/inst/control/sets/presets/loaded");
