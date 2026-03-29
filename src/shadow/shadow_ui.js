@@ -3276,41 +3276,93 @@ function detectCopySource(newUuid) {
 
 /* Save current RNBO graph name to a per-set directory.
  * Only writes if RNBO is running and returns a graph name. */
-function saveRnboGraphToDir(dir) {
-    if (!dir || typeof host_system_cmd !== "function") return;
-    const tmpFile = "/data/UserData/schwung/tmp_rnbo_graph.json";
-    host_system_cmd('wget -q -O "' + tmpFile + '" http://localhost:5678/rnbo/inst/control/sets/current/name 2>/dev/null');
+/* Helper: query an RNBO OSCQuery endpoint and return parsed VALUE, or null. */
+function rnboGetValue(urlPath) {
+    const tmpFile = "/data/UserData/schwung/tmp_rnbo_query.json";
+    host_system_cmd('wget -q -O "' + tmpFile + '" http://localhost:5678' + urlPath + ' 2>/dev/null');
     const raw = host_read_file(tmpFile);
-    if (!raw) return;
+    if (!raw) return null;
     try {
         const data = JSON.parse(raw);
-        if (data && data.VALUE && typeof data.VALUE === "string" && data.VALUE.length > 0) {
-            host_write_file(dir + "/rnbo_graph.txt", data.VALUE);
-            debugLog("SET_CHANGED: saved RNBO graph: " + data.VALUE);
-        }
-    } catch (e) {
-        /* RNBO not running or parse error — skip silently */
-    }
+        if (data && data.VALUE !== undefined && data.VALUE !== null) return data.VALUE;
+    } catch (e) {}
+    return null;
 }
 
-/* Load RNBO graph from a per-set directory via OSC.
- * Only sends if there's a saved graph and RNBO is running. */
-function loadRnboGraphFromDir(dir) {
-    if (!dir || typeof host_system_cmd !== "function") return;
-    const graphName = host_read_file(dir + "/rnbo_graph.txt");
-    if (!graphName || !graphName.trim()) return;
-    const name = graphName.trim();
-    /* Send OSC via Python to load the graph */
+/* Helper: send an OSC message with a string argument via UDP. */
+function rnboSendOsc(path, value) {
     host_system_cmd('python3 -c "' +
-        "import socket,struct;" +
+        "import socket;" +
         "def S(s):\\n" +
         " b=s.encode()+b'\\x00'\\n" +
         " while len(b)%4:b+=b'\\x00'\\n" +
         " return b\\n" +
         "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);" +
-        "sock.sendto(S('/rnbo/inst/control/sets/load')+S(',s')+S('" + name.replace(/'/g, "") + "'),('" + "127.0.0.1" + "',1234))" +
+        "sock.sendto(S('" + path + "')+S(',s')+S('" + value.replace(/'/g, "") + "'),('127.0.0.1',1234))" +
         '" &');
-    debugLog("SET_CHANGED: loading RNBO graph: " + name);
+}
+
+/* Save current RNBO graph name and set preset to a per-set directory.
+ * Only writes if RNBO is running and returns valid values. */
+function saveRnboGraphToDir(dir) {
+    if (!dir || typeof host_system_cmd !== "function") return;
+    const graphName = rnboGetValue("/rnbo/inst/control/sets/current/name");
+    if (!graphName || typeof graphName !== "string") return;
+    const presetName = rnboGetValue("/rnbo/inst/control/sets/presets/loaded");
+    const state = { graph: graphName };
+    if (presetName && typeof presetName === "string" && presetName.length > 0) {
+        state.preset = presetName;
+    }
+    host_write_file(dir + "/rnbo_state.json", JSON.stringify(state) + "\n");
+    debugLog("SET_CHANGED: saved RNBO state: " + graphName + (state.preset ? " preset=" + state.preset : ""));
+}
+
+/* Load RNBO graph and set preset from a per-set directory via OSC.
+ * Only sends if there's saved state and RNBO is running. */
+function loadRnboGraphFromDir(dir) {
+    if (!dir || typeof host_system_cmd !== "function") return;
+    /* Support both new format (rnbo_state.json) and old format (rnbo_graph.txt) */
+    let graphName = null;
+    let presetName = null;
+    const stateRaw = host_read_file(dir + "/rnbo_state.json");
+    if (stateRaw) {
+        try {
+            const state = JSON.parse(stateRaw);
+            graphName = state.graph || null;
+            presetName = state.preset || null;
+        } catch (e) {}
+    }
+    if (!graphName) {
+        /* Fallback to old format */
+        const old = host_read_file(dir + "/rnbo_graph.txt");
+        if (old) graphName = old.trim();
+    }
+    if (!graphName) return;
+    /* Check if RNBO is running */
+    const currentGraph = rnboGetValue("/rnbo/inst/control/sets/current/name");
+    if (currentGraph === null) return;  /* RNBO not running */
+    /* Load graph (skip if already loaded) */
+    if (currentGraph !== graphName) {
+        rnboSendOsc("/rnbo/inst/control/sets/load", graphName);
+        debugLog("SET_CHANGED: loading RNBO graph: " + graphName);
+        /* Wait for graph to load before loading preset */
+        if (presetName) {
+            host_system_cmd('sh -c "sleep 3 && python3 -c \\"' +
+                "import socket;" +
+                "def S(s):\\n" +
+                " b=s.encode()+b'\\x00'\\n" +
+                " while len(b)%4:b+=b'\\x00'\\n" +
+                " return b\\n" +
+                "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);" +
+                "sock.sendto(S('/rnbo/inst/control/sets/presets/load')+S(',s')+S('" + presetName.replace(/'/g, "") + "'),('127.0.0.1',1234))" +
+                '\\" &"');
+            debugLog("SET_CHANGED: queued RNBO preset: " + presetName + " (3s delay)");
+        }
+    } else if (presetName) {
+        /* Same graph, just load preset immediately */
+        rnboSendOsc("/rnbo/inst/control/sets/presets/load", presetName);
+        debugLog("SET_CHANGED: loading RNBO preset: " + presetName);
+    }
 }
 
 function loadChainConfigFromDir(dir) {
