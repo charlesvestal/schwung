@@ -3279,7 +3279,7 @@ function detectCopySource(newUuid) {
 /* Helper: query an RNBO OSCQuery endpoint and return parsed VALUE, or null. */
 function rnboGetValue(urlPath) {
     const tmpFile = "/data/UserData/schwung/tmp_rnbo_query.json";
-    host_system_cmd('wget -q -O "' + tmpFile + '" http://localhost:5678' + urlPath + ' 2>/dev/null');
+    host_system_cmd('sh -c "wget -q -O ' + tmpFile + ' http://localhost:5678' + urlPath + ' 2>/dev/null"');
     const raw = host_read_file(tmpFile);
     if (!raw) return null;
     try {
@@ -3291,7 +3291,7 @@ function rnboGetValue(urlPath) {
 
 /* Helper: send an OSC message with a string argument via UDP. */
 function rnboSendOsc(path, value) {
-    host_system_cmd('python3 -c "' +
+    host_system_cmd('sh -c "python3 -c \\"' +
         "import socket;" +
         "def S(s):\\n" +
         " b=s.encode()+b'\\x00'\\n" +
@@ -3299,7 +3299,7 @@ function rnboSendOsc(path, value) {
         " return b\\n" +
         "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);" +
         "sock.sendto(S('" + path + "')+S(',s')+S('" + value.replace(/'/g, "") + "'),('127.0.0.1',1234))" +
-        '" &');
+        '\\" &"');
 }
 
 /* Save current RNBO graph name and state to a per-set directory.
