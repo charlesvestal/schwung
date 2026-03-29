@@ -3292,16 +3292,10 @@ function rnboGetValue(urlPath) {
 /* Helper: send an OSC message with a string argument via UDP.
  * async=true (default) runs in background, async=false blocks until sent. */
 function rnboSendOsc(path, value, async) {
+    const script = "/data/UserData/schwung/modules/overtake/rnbo-runner/osc_send.py";
+    const safeValue = value.replace(/"/g, "").replace(/'/g, "");
     const bg = (async !== false) ? " &" : "";
-    host_system_cmd('sh -c "python3 -c \\"' +
-        "import socket;" +
-        "def S(s):\\n" +
-        " b=s.encode()+b'\\x00'\\n" +
-        " while len(b)%4:b+=b'\\x00'\\n" +
-        " return b\\n" +
-        "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);" +
-        "sock.sendto(S('" + path + "')+S(',s')+S('" + value.replace(/'/g, "") + "'),('127.0.0.1',1234))" +
-        '\\"' + bg + '"');
+    host_system_cmd('sh -c "python3 ' + script + ' \'' + path + '\' \'' + safeValue + '\'' + bg + '"');
 }
 
 /* Save current RNBO graph name and state to a per-set directory.
@@ -3368,15 +3362,9 @@ function loadRnboGraphFromDir(dir) {
         debugLog("SET_CHANGED: loading RNBO graph: " + graphName);
         /* Wait for graph to load before loading preset */
         if (presetName) {
-            host_system_cmd('sh -c "sleep 3 && python3 -c \\"' +
-                "import socket;" +
-                "def S(s):\\n" +
-                " b=s.encode()+b'\\x00'\\n" +
-                " while len(b)%4:b+=b'\\x00'\\n" +
-                " return b\\n" +
-                "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);" +
-                "sock.sendto(S('/rnbo/inst/control/sets/presets/load')+S(',s')+S('" + presetName.replace(/'/g, "") + "'),('127.0.0.1',1234))" +
-                '\\" &"');
+            const script = "/data/UserData/schwung/modules/overtake/rnbo-runner/osc_send.py";
+            const safeName = presetName.replace(/"/g, "").replace(/'/g, "");
+            host_system_cmd('sh -c "sleep 3 && python3 ' + script + ' /rnbo/inst/control/sets/presets/load \'' + safeName + '\' &"');
             debugLog("SET_CHANGED: queued RNBO preset: " + presetName + " (3s delay)");
         }
     } else if (presetName) {
