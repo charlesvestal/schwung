@@ -1,0 +1,22 @@
+{
+  "jack": {
+    "cmd": "/data/UserData/rnbo/bin/jackd",
+    "args": ["-d", "shadow"]
+  },
+  "apps": [
+    {
+      "cmd": "/data/UserData/rnbo/bin/rnbooscquery",
+      "args": ["--wait-for-audio", "--delay-start", "--config", "/data/UserData/.config/rnbo/runner.json"]
+    },
+    {
+      "cmd": "/data/UserData/rnbo/bin/jack_transport_link"
+    },
+    {
+      "cmd": "/data/UserData/rnbo/bin/rnbo-runner-panel",
+      "args": [
+        "--static-dir", "/data/UserData/rnbo/share/rnbo-runner-panel/www/",
+        "--template-dir", "/data/UserData/rnbo/share/rnbo-runner-panel/templates/"
+      ]
+    }
+  ]
+}
