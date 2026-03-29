@@ -1529,7 +1529,7 @@ ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/scripts && \
 
 # Install RNBO shadow config (used by RNBO Runner to launch without its own JACK)
 ssh_ableton_with_retry "mkdir -p /data/UserData/rnbo/config && \
-    ln -sf /data/UserData/schwung/modules/overtake/rnbo-runner/control-startup-shadow-nojack.json \
+    ln -sf /data/UserData/schwung/modules/overtake/rnbo-runner/control-startup-shadow.json \
     /data/UserData/rnbo/config/control-startup-shadow.json" || true
 
 # Fix ownership of all files under UserData.
