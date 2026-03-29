@@ -557,13 +557,38 @@ void shadow_poll_current_set(void)
     shadow_handle_set_loaded(pending_name, pending_uuid);
 }
 
-/* Background thread wrapper for shadow_poll_current_set.
- * arg points to a volatile int flag that is cleared when done. */
-void *shadow_poll_current_set_bg(void *arg) {
-    shadow_poll_current_set();
-    volatile int *running = (volatile int *)arg;
-    *running = 0;
+/* Persistent background worker for set polling.
+ * Avoids pthread_create on the audio thread (kernel alloc = spike). */
+static volatile int set_poll_requested = 0;
+static pthread_t set_poll_thread_id;
+static int set_poll_thread_started = 0;
+
+static void *set_poll_worker(void *arg) {
+    (void)arg;
+    while (1) {
+        /* Spin-sleep: check flag every 10ms */
+        struct timespec ts = { 0, 10000000 };  /* 10ms */
+        nanosleep(&ts, NULL);
+        if (set_poll_requested) {
+            set_poll_requested = 0;
+            shadow_poll_current_set();
+        }
+    }
     return NULL;
+}
+
+/* Start the persistent poll worker thread (call once at init) */
+void shadow_start_set_poll_worker(void) {
+    if (set_poll_thread_started) return;
+    if (pthread_create(&set_poll_thread_id, NULL, set_poll_worker, NULL) == 0) {
+        pthread_detach(set_poll_thread_id);
+        set_poll_thread_started = 1;
+    }
+}
+
+/* Request a poll from the audio thread (non-blocking, no syscall) */
+void shadow_request_set_poll(void) {
+    set_poll_requested = 1;
 }
 
 /* ============================================================================
