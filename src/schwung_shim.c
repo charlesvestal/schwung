@@ -2826,6 +2826,7 @@ static void shim_init_subsystems(void)
             .solo_count = (volatile int *)&shadow_solo_count,
         };
         set_pages_init(&sp_host);
+        shadow_start_set_poll_worker();
     }
     if (shadow_control) {
         shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
@@ -3286,19 +3287,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* === SET DETECTION (poll every ~1.5s, off audio thread) === */
     {
         static uint32_t set_poll_counter = 0;
-        static volatile int set_poll_running = 0;
         set_poll_counter++;
         if (set_poll_counter >= 500) {  /* ~1.5s at 44100/128 */
             set_poll_counter = 0;
-            if (!set_poll_running) {
-                set_poll_running = 1;
-                pthread_t tid;
-                if (pthread_create(&tid, NULL, shadow_poll_current_set_bg, (void *)&set_poll_running) == 0) {
-                    pthread_detach(tid);
-                } else {
-                    set_poll_running = 0;
-                }
-            }
+            shadow_request_set_poll();  /* just sets a flag, no syscall */
         }
     }
 
