@@ -3220,6 +3220,60 @@ function saveChainConfigToDir(dir) {
 /* Load chain config (volumes, channels, mute/solo) from a per-set directory.
  * Mirrors what shadow_load_config_from_dir() did on the C side, but runs
  * on the UI thread to avoid blocking the audio thread. */
+/* Detect if a new set is a copy of an existing tracked set.
+ * Compares Song.abl file sizes between the new set UUID and all
+ * existing set_state directories. Returns source dir path or null. */
+function detectCopySource(newUuid) {
+    const SETS_DIR = "/data/UserData/sampler/Sets";
+    const STATE_DIR = "/data/UserData/schwung/set_state";
+
+    /* Get new set's Song.abl size */
+    function getSongAblSize(uuid) {
+        try {
+            const uuidPath = SETS_DIR + "/" + uuid;
+            const entries = os.readdir(uuidPath);
+            const dirList = entries[0];
+            if (!Array.isArray(dirList)) return -1;
+            for (const sub of dirList) {
+                if (sub === "." || sub === "..") continue;
+                const songPath = uuidPath + "/" + sub + "/Song.abl";
+                try {
+                    const st = os.stat(songPath);
+                    if (st[0] && st[0].size > 0) return st[0].size;
+                } catch (e) {}
+            }
+        } catch (e) {}
+        return -1;
+    }
+
+    const newSize = getSongAblSize(newUuid);
+    if (newSize <= 0) return null;
+
+    /* Scan set_state/ for tracked sets with matching Song.abl size */
+    try {
+        const entries = os.readdir(STATE_DIR);
+        const dirList = entries[0];
+        if (!Array.isArray(dirList)) return null;
+        let matchUuid = null;
+        let matchCount = 0;
+        for (const entry of dirList) {
+            if (entry === "." || entry === ".." || entry === newUuid) continue;
+            if (!host_file_exists(STATE_DIR + "/" + entry + "/slot_0.json")) continue;
+            const existingSize = getSongAblSize(entry);
+            if (existingSize === newSize) {
+                matchUuid = entry;
+                matchCount++;
+            }
+        }
+        if (matchCount === 1 && matchUuid) {
+            return STATE_DIR + "/" + matchUuid;
+        }
+    } catch (e) {
+        debugLog("detectCopySource error: " + e);
+    }
+    return null;
+}
+
 function loadChainConfigFromDir(dir) {
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
@@ -12867,24 +12921,37 @@ globalThis.tick = function() {
             }
 
             /* 4. First visit to this set: seed its state directory.
-             *    Batch migration (shim boot) already copied default state to all existing sets.
-             *    Here we only handle: (a) duplicated sets, (b) newly created sets (start clean). */
+             *    Detect if this is a duplicated set by comparing Song.abl sizes,
+             *    then copy state from the source. Otherwise start with empty slots. */
             if (uuid && !host_file_exists(newDir + "/slot_0.json")) {
+                let copySourceDir = null;
+                /* Check for pre-existing copy_source.txt (from older shim) */
                 const copySourceUuid = host_read_file(newDir + "/copy_source.txt");
                 if (copySourceUuid && copySourceUuid.trim()) {
-                    /* Set was duplicated — copy from the source set */
                     const srcDir = "/data/UserData/schwung/set_state/" + copySourceUuid.trim();
                     if (host_file_exists(srcDir + "/slot_0.json")) {
-                        debugLog("SET_CHANGED: duplicated set, copying from " + srcDir);
-                        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-                            const src = host_read_file(srcDir + "/slot_" + i + ".json");
-                            if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
-                            const mfx = host_read_file(srcDir + "/master_fx_" + i + ".json");
-                            if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
-                        }
+                        copySourceDir = srcDir;
                     }
+                }
+                /* Detect copy by comparing Song.abl sizes (if name suggests a copy) */
+                if (!copySourceDir && setName &&
+                    (setName.toLowerCase().indexOf("copy") >= 0 ||
+                     setName.toLowerCase().indexOf("duplicate") >= 0)) {
+                    copySourceDir = detectCopySource(uuid);
+                }
+                if (copySourceDir) {
+                    debugLog("SET_CHANGED: duplicated set, copying from " + copySourceDir);
+                    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                        const src = host_read_file(copySourceDir + "/slot_" + i + ".json");
+                        if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
+                        const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
+                        if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
+                    }
+                    /* Also copy chain config */
+                    const chainCfg = host_read_file(copySourceDir + "/shadow_chain_config.json");
+                    if (chainCfg) host_write_file(newDir + "/shadow_chain_config.json", chainCfg);
                 } else {
-                    /* New set created after migration — start with empty slots */
+                    /* New set — start with empty slots */
                     debugLog("SET_CHANGED: new set, starting with empty slots");
                     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                         host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
