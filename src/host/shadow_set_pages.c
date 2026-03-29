@@ -372,43 +372,14 @@ static int shadow_detect_copy_source(const char *set_name, const char *new_uuid,
     return 0;
 }
 
-/* Background thread args for deferred file I/O during set change */
-typedef struct {
-    char uuid[64];
-    char set_name[128];
-} set_change_io_args_t;
-
-static void *set_change_io_thread(void *arg) {
-    set_change_io_args_t *a = (set_change_io_args_t *)arg;
-
-    /* Write active_set.txt for UI thread and boot persistence */
-    if (a->uuid[0]) {
-        FILE *af = fopen(ACTIVE_SET_PATH, "w");
-        if (af) {
-            fputs(a->uuid, af);
-            fputc('\n', af);
-            fputs(a->set_name, af);
-            fclose(af);
-            chown_to_ableton(ACTIVE_SET_PATH);
-        }
-    }
-
-    /* Read tempo from set's Song.abl */
-    if (a->set_name[0]) {
-        sampler_set_tempo = host.read_set_tempo(a->set_name);
-    }
-
-    free(a);
-    return NULL;
-}
-
 /* Handle a Set being loaded — called from Settings.json poll.
  * set_name: human-readable name (e.g. "My Song")
  * uuid: UUID directory name from Sets/<UUID>/<Name>/ path
  *
- * IMPORTANT: This runs on the audio thread. Zero file I/O happens here.
- * All disk work is either deferred to the UI thread (via SET_CHANGED flag)
- * or to a detached background thread. */
+ * This runs on the audio thread during the periodic set poll.
+ * Heavy file I/O (config save/load, copy detection, mkdir) has been
+ * removed and is handled by the UI thread via SHADOW_UI_FLAG_SET_CHANGED.
+ * Only small writes (active_set.txt) and tempo read remain here. */
 void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     if (!set_name || !set_name[0]) return;
 
@@ -424,36 +395,28 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
     }
 
-    /* Spawn detached thread for file I/O (active_set.txt write + tempo read).
-     * These are small operations but still involve fopen/fclose/opendir which
-     * can block on disk I/O and must not run on the audio thread. */
-    {
-        set_change_io_args_t *a = malloc(sizeof(set_change_io_args_t));
-        if (a) {
-            snprintf(a->uuid, sizeof(a->uuid), "%s", uuid ? uuid : "");
-            snprintf(a->set_name, sizeof(a->set_name), "%s", set_name);
-            pthread_t tid;
-            if (pthread_create(&tid, NULL, set_change_io_thread, a) == 0) {
-                pthread_detach(tid);
-            } else {
-                free(a);
-            }
+    /* Write active set UUID + name for shadow UI and boot persistence (~100 bytes) */
+    if (uuid && uuid[0]) {
+        FILE *af = fopen(ACTIVE_SET_PATH, "w");
+        if (af) {
+            fputs(uuid, af);
+            fputc('\n', af);
+            fputs(set_name ? set_name : "", af);
+            fclose(af);
+            chown_to_ableton(ACTIVE_SET_PATH);
         }
     }
 
-    /* Signal shadow UI to handle heavy file I/O:
-     * - Save outgoing slot/config state
-     * - Ensure incoming set directory exists
-     * - Detect and handle copied sets
-     * - Load incoming slot state and config
-     * - Refresh UI */
+    /* Signal shadow UI to handle heavy file I/O */
     if (*host.shadow_control_ptr) {
         (*host.shadow_control_ptr)->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
     }
 
+    sampler_set_tempo = host.read_set_tempo(set_name);
+
     char msg[256];
-    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s (deferred all I/O)",
-             set_name, uuid ? uuid : "?");
+    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s tempo=%.1f",
+             set_name, uuid ? uuid : "?", sampler_set_tempo);
     host.log(msg);
 }
 
@@ -555,40 +518,6 @@ void shadow_poll_current_set(void)
     snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%u",
              song_index, (unsigned)sampler_pending_set_seq);
     shadow_handle_set_loaded(pending_name, pending_uuid);
-}
-
-/* Persistent background worker for set polling.
- * Avoids pthread_create on the audio thread (kernel alloc = spike). */
-static volatile int set_poll_requested = 0;
-static pthread_t set_poll_thread_id;
-static int set_poll_thread_started = 0;
-
-static void *set_poll_worker(void *arg) {
-    (void)arg;
-    while (1) {
-        /* Spin-sleep: check flag every 10ms */
-        struct timespec ts = { 0, 10000000 };  /* 10ms */
-        nanosleep(&ts, NULL);
-        if (set_poll_requested) {
-            set_poll_requested = 0;
-            shadow_poll_current_set();
-        }
-    }
-    return NULL;
-}
-
-/* Start the persistent poll worker thread (call once at init) */
-void shadow_start_set_poll_worker(void) {
-    if (set_poll_thread_started) return;
-    if (pthread_create(&set_poll_thread_id, NULL, set_poll_worker, NULL) == 0) {
-        pthread_detach(set_poll_thread_id);
-        set_poll_thread_started = 1;
-    }
-}
-
-/* Request a poll from the audio thread (non-blocking, no syscall) */
-void shadow_request_set_poll(void) {
-    set_poll_requested = 1;
 }
 
 /* ============================================================================

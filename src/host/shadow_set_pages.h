@@ -92,11 +92,6 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid);
 /* Poll Settings.json for set changes */
 void shadow_poll_current_set(void);
 
-/* Start persistent background worker for set polling (call once at init) */
-void shadow_start_set_poll_worker(void);
-
-/* Request a set poll from the audio thread (non-blocking, no syscall) */
-void shadow_request_set_poll(void);
 
 /* Read current page from disk (returns 0 if not found) */
 int set_page_read_persisted(void);
