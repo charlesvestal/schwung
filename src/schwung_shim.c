@@ -1260,6 +1260,12 @@ static void shadow_inprocess_render_to_buffer(void) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
+            /* Wake slot from idle if fade is ramping (otherwise gain stays at 0) */
+            if (shadow_chain_slots[s].fade.gain != shadow_chain_slots[s].fade.target) {
+                shadow_slot_idle[s] = 0;
+                shadow_slot_silence_frames[s] = 0;
+            }
+
             /* Idle gate: skip render_block if synth output has been silent.
              * Buffer is already zeroed, so FX chain in mix_from_buffer still runs
              * on zeros to let reverb/delay tails decay naturally.
