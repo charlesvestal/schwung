@@ -372,14 +372,43 @@ static int shadow_detect_copy_source(const char *set_name, const char *new_uuid,
     return 0;
 }
 
+/* Background thread args for deferred file I/O during set change */
+typedef struct {
+    char uuid[64];
+    char set_name[128];
+} set_change_io_args_t;
+
+static void *set_change_io_thread(void *arg) {
+    set_change_io_args_t *a = (set_change_io_args_t *)arg;
+
+    /* Write active_set.txt for UI thread and boot persistence */
+    if (a->uuid[0]) {
+        FILE *af = fopen(ACTIVE_SET_PATH, "w");
+        if (af) {
+            fputs(a->uuid, af);
+            fputc('\n', af);
+            fputs(a->set_name, af);
+            fclose(af);
+            chown_to_ableton(ACTIVE_SET_PATH);
+        }
+    }
+
+    /* Read tempo from set's Song.abl */
+    if (a->set_name[0]) {
+        sampler_set_tempo = host.read_set_tempo(a->set_name);
+    }
+
+    free(a);
+    return NULL;
+}
+
 /* Handle a Set being loaded — called from Settings.json poll.
  * set_name: human-readable name (e.g. "My Song")
  * uuid: UUID directory name from Sets/<UUID>/<Name>/ path
  *
- * IMPORTANT: This runs on the audio thread. All file I/O (save config,
- * load config, copy detection, mkdir) is deferred to the UI thread via
- * SHADOW_UI_FLAG_SET_CHANGED. Only in-memory updates and the tiny
- * active_set.txt write happen here. */
+ * IMPORTANT: This runs on the audio thread. Zero file I/O happens here.
+ * All disk work is either deferred to the UI thread (via SET_CHANGED flag)
+ * or to a detached background thread. */
 void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     if (!set_name || !set_name[0]) return;
 
@@ -395,21 +424,24 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
     }
 
-    /* Write active set UUID + name to file for shadow UI and boot persistence.
-     * This is a tiny write (~100 bytes) — acceptable on the audio thread.
-     * Format: line 1 = UUID, line 2 = set name */
-    if (uuid && uuid[0]) {
-        FILE *af = fopen(ACTIVE_SET_PATH, "w");
-        if (af) {
-            fputs(uuid, af);
-            fputc('\n', af);
-            fputs(set_name ? set_name : "", af);
-            fclose(af);
-            chown_to_ableton(ACTIVE_SET_PATH);
+    /* Spawn detached thread for file I/O (active_set.txt write + tempo read).
+     * These are small operations but still involve fopen/fclose/opendir which
+     * can block on disk I/O and must not run on the audio thread. */
+    {
+        set_change_io_args_t *a = malloc(sizeof(set_change_io_args_t));
+        if (a) {
+            snprintf(a->uuid, sizeof(a->uuid), "%s", uuid ? uuid : "");
+            snprintf(a->set_name, sizeof(a->set_name), "%s", set_name);
+            pthread_t tid;
+            if (pthread_create(&tid, NULL, set_change_io_thread, a) == 0) {
+                pthread_detach(tid);
+            } else {
+                free(a);
+            }
         }
     }
 
-    /* Signal shadow UI to handle all heavy file I/O:
+    /* Signal shadow UI to handle heavy file I/O:
      * - Save outgoing slot/config state
      * - Ensure incoming set directory exists
      * - Detect and handle copied sets
@@ -419,13 +451,9 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
         (*host.shadow_control_ptr)->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
     }
 
-    /* Read tempo from set's Song.abl — involves file I/O but is needed
-     * for sampler quantization. TODO: defer to background thread. */
-    sampler_set_tempo = host.read_set_tempo(set_name);
-
     char msg[256];
-    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s tempo=%.1f (deferred to UI)",
-             set_name, uuid ? uuid : "?", sampler_set_tempo);
+    snprintf(msg, sizeof(msg), "Set detected: \"%s\" uuid=%s (deferred all I/O)",
+             set_name, uuid ? uuid : "?");
     host.log(msg);
 }
 
@@ -527,6 +555,15 @@ void shadow_poll_current_set(void)
     snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%u",
              song_index, (unsigned)sampler_pending_set_seq);
     shadow_handle_set_loaded(pending_name, pending_uuid);
+}
+
+/* Background thread wrapper for shadow_poll_current_set.
+ * arg points to a volatile int flag that is cleared when done. */
+void *shadow_poll_current_set_bg(void *arg) {
+    shadow_poll_current_set();
+    volatile int *running = (volatile int *)arg;
+    *running = 0;
+    return NULL;
 }
 
 /* ============================================================================
