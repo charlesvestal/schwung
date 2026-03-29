@@ -135,10 +135,14 @@ globalThis.tick = function() {
         displayEnabled = true;
     }
 
-    // Connect patcher MIDI inputs to system:midi_capture_ext.
-    // Polls every ~5s but only runs jack_connect when ports change (graph reload).
-    if (phase > 440 && phase % 220 === 0) {
-        host_system_cmd('sh -c "' + RNBO_DIR + '/scripts/midi_connect.sh &"');
+    // Connect patcher MIDI inputs to system:midi_capture_ext (Move ch16 sequencer).
+    // Runs once after graph loads, then periodically to catch graph reloads.
+    if (phase === 440 || (phase > 440 && phase % 220 === 0)) {
+        var oscScript = '/data/UserData/schwung/modules/overtake/rnbo-runner/osc_send.py';
+        // Try connecting each possible instance (0-7) — harmless if instance doesn't exist
+        for (var inst = 0; inst < 8; inst++) {
+            host_system_cmd('sh -c "python3 ' + oscScript + ' /rnbo/inst/' + inst + '/jack/connections/midi/sinks/midiin1 system:midi_capture_ext 2>/dev/null &"');
+        }
     }
 
     // Keep clearing so overtake display doesn't override RNBO
