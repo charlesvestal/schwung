@@ -3303,12 +3303,8 @@ function rnboSendOsc(path, value, async) {
  * so all parameter tweaks are captured without manual preset saves.
  * Only writes if RNBO is running and returns valid values. */
 function saveRnboGraphToDir(dir) {
-    if (!dir || typeof host_system_cmd !== "function") {
-        debugLog("saveRnboGraphToDir: skipped (no dir or no host_system_cmd)");
-        return;
-    }
+    if (!dir || typeof host_system_cmd !== "function") return;
     const graphName = rnboGetValue("/rnbo/inst/control/sets/current/name");
-    debugLog("saveRnboGraphToDir: graphName=" + JSON.stringify(graphName));
     if (!graphName || typeof graphName !== "string") return;
     /* Extract UUID from dir path (last path component) */
     const parts = dir.split("/");
