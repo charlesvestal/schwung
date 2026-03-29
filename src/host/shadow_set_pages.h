@@ -92,6 +92,9 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid);
 /* Poll Settings.json for set changes */
 void shadow_poll_current_set(void);
 
+/* Background thread wrapper for set polling (clears running flag when done) */
+void *shadow_poll_current_set_bg(void *arg);
+
 /* Read current page from disk (returns 0 if not found) */
 int set_page_read_persisted(void);
 
