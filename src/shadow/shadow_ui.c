@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sched.h>
 #include <limits.h>
 #include <time.h>
 #include <dirent.h>
@@ -1187,13 +1188,33 @@ static JSValue js_host_system_cmd(JSContext *ctx, JSValueConst this_val,
         return JS_NewInt32(ctx, -1);
     }
 
-    int result = system(cmd);
-    JS_FreeCString(ctx, cmd);
-
-    if (result == -1) {
+    /* Use fork/exec instead of system() to drop inherited FIFO scheduling.
+     * shadow_ui runs at SCHED_FIFO 70 (inherited from MoveOriginal's audio
+     * thread via LD_PRELOAD shim). system() preserves this, so every child
+     * process (RNBO, jack_midi_connect, taskset, etc.) also runs at FIFO 70,
+     * competing with the SPI driver and causing audio glitches. */
+    pid_t pid = fork();
+    if (pid == -1) {
+        JS_FreeCString(ctx, cmd);
         return JS_NewInt32(ctx, -1);
     }
-    return JS_NewInt32(ctx, WEXITSTATUS(result));
+    if (pid == 0) {
+        /* Child: drop to SCHED_OTHER before exec */
+        struct sched_param sp = { .sched_priority = 0 };
+        sched_setscheduler(0, SCHED_OTHER, &sp);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+
+    JS_FreeCString(ctx, cmd);
+
+    /* Wait for child (matches system() behavior) */
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status)) {
+        return JS_NewInt32(ctx, WEXITSTATUS(status));
+    }
+    return JS_NewInt32(ctx, -1);
 }
 
 /* host_remove_dir(path) -> bool */
