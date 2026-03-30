@@ -597,6 +597,11 @@ cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/start.sh ./build/ 2>/dev/null || true
 cp ./src/stop.sh ./build/ 2>/dev/null || true
 
+# Copy post-update script (run by Module Store after host updates)
+mkdir -p ./build/scripts
+cp ./scripts/post-update.sh ./build/scripts/
+chmod +x ./build/scripts/post-update.sh
+
 # Backwards-compat symlinks for 0.7.x → 0.8.x upgrades (Module Store + Shadow UI updater).
 # The old /usr/lib/move-anything-shim.so symlink needs a target to resolve,
 # and the 0.7.x shadow UI updater checks for 'move-anything' binary by name.
