@@ -1196,6 +1196,12 @@ function performCoreUpdate(mod) {
      *  without u+s the linker refuses to load the shim via symlink) */
     host_system_cmd('chmod u+s "' + BASE + '/schwung-shim.so"');
 
+    /* --- Phase 6b: Post-update setup (symlinks, permissions, RNBO integration) --- */
+    setStatus('Configuring...');
+    if (host_file_exists(BASE + '/scripts/post-update.sh')) {
+        host_system_cmd('sh "' + BASE + '/scripts/post-update.sh"');
+    }
+
     /* --- Phase 7: Cleanup --- */
     host_remove_dir(STAGING);
     host_system_cmd('rm -f "' + tarPath + '"');
