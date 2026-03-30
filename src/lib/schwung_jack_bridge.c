@@ -13,6 +13,11 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+/* Double-buffer: snapshot JACK audio in bridge_wake, serve from bridge_read_audio.
+ * Eliminates busy-wait; adds +1 frame latency (~2.9ms). */
+static int16_t s_jack_audio_snapshot[SCHWUNG_JACK_AUDIO_FRAMES * 2];
+static int s_jack_audio_valid = 0;
+
 // ============================================================================
 // Create / Destroy
 // ============================================================================
@@ -81,6 +86,16 @@ void schwung_jack_bridge_wake(SchwungJackShm *shm) {
     if (!jack_is_active(shm)) return;
 
     volatile uint8_t *audio_ready = (volatile uint8_t *)(((uint8_t *)shm) + 3940);
+
+    /* Snapshot previous frame's audio BEFORE clearing.
+     * JACK is blocked on futex (hasn't been woken yet), so audio_out
+     * contains completed data from the previous cycle. Safe to read. */
+    if (*audio_ready) {
+        memcpy(s_jack_audio_snapshot, shm->audio_out,
+               SCHWUNG_JACK_AUDIO_FRAMES * 2 * sizeof(int16_t));
+        s_jack_audio_valid = 1;
+    }
+
     *audio_ready = 0;
     __sync_synchronize();
 
@@ -97,14 +112,9 @@ void schwung_jack_bridge_wake(SchwungJackShm *shm) {
 const int16_t *schwung_jack_bridge_read_audio(SchwungJackShm *shm) {
     if (!shm) return NULL;
     if (!jack_is_active(shm)) return NULL;
+    if (!s_jack_audio_valid) return NULL;
 
-    volatile uint8_t *audio_ready = (volatile uint8_t *)(((uint8_t *)shm) + 3940);
-    int spins = 0;
-    while (!*audio_ready && spins < 2000000) {
-        spins++;
-    }
-
-    return shm->audio_out;
+    return s_jack_audio_snapshot;
 }
 
 // ============================================================================
