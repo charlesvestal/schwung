@@ -131,17 +131,18 @@ globalThis.tick = function() {
         clear_screen();
         print(0, 10, 'RNBO Runner', 2);
         print(0, 35, 'Loading...', 1);
-        host_system_cmd('sh -c "export HOME=/data/UserData LD_LIBRARY_PATH=' + RNBO_DIR + '/lib:$LD_LIBRARY_PATH && nohup ' + CONTROL_BIN + ' -s ' + SHADOW_CONFIG + ' > /data/UserData/schwung/rnbo-runner.log 2>&1 &"');
+        host_system_cmd('sh -c "export HOME=/data/UserData LD_LIBRARY_PATH=' + RNBO_DIR + '/lib:$LD_LIBRARY_PATH && nohup chrt -o 0 taskset 0x7 ' + CONTROL_BIN + ' -s ' + SHADOW_CONFIG + ' > /data/UserData/schwung/rnbo-runner.log 2>&1 &"');
         if (typeof host_write_file === "function") {
             host_write_file(JACK_RUNNING_FLAG, '1');
         }
     }
 
-    // Frame 50: pin JACK/RNBO to cores 2-3, Move stays on 0-1.
-    // Prevents RT scheduling contention between Move firmware and JACK graph.
+    // Frame 50: pin JACK/RNBO to cores 0-2, keeping core 3 free for SPI.
+    // SPI driver runs at FIFO 90 on core 3 — any RNBO threads on core 3
+    // cause cache/memory contention that spikes ioctl latency from 2ms to 7-18ms.
+    // Uses chrt -o 0 to prevent the taskset shell from inheriting FIFO 70.
     if (phase === 50) {
-        host_system_cmd('sh -c "for p in $(pgrep -f jackd) $(pgrep rnbomovecontrol) $(pgrep rnbooscquery); do taskset -p 0xc $p 2>/dev/null; done &"');
-        host_system_cmd('sh -c "taskset -p 0x3 $(pgrep -f MoveOrigi) 2>/dev/null &"');
+        host_system_cmd('sh -c "chrt -o 0 sh -c \\"for p in \\$(pgrep -f jackd) \\$(pgrep rnbomovecontrol) \\$(pgrep rnbooscquery); do taskset -p 0x7 \\$p 2>/dev/null; done\\" &"');
     }
 
     // Frame 100: enable RNBO display
@@ -154,8 +155,10 @@ globalThis.tick = function() {
     // Connect patcher MIDI inputs to system:midi_capture_ext.
     // Polls every ~5s but only runs jack_connect when ports change (graph reload).
     // Only touches midi_capture_ext — never cable 0 (system:midi_capture).
+    // Uses chrt -o 0 to avoid inheriting FIFO 70 from shadow_ui.
+    // Guarded by pidfile to prevent accumulation if jack_midi_connect hangs.
     if (phase > 440 && phase % 220 === 0) {
-        host_system_cmd('sh -c "LD_LIBRARY_PATH=' + RNBO_DIR + '/lib /data/UserData/schwung/bin/jack_midi_connect &"');
+        host_system_cmd('sh -c "[ ! -f /data/UserData/schwung/jack_midi_connect.pid ] && (echo $$ > /data/UserData/schwung/jack_midi_connect.pid && LD_LIBRARY_PATH=' + RNBO_DIR + '/lib chrt -o 0 /data/UserData/schwung/bin/jack_midi_connect; rm -f /data/UserData/schwung/jack_midi_connect.pid) &"');
     }
 
     // Keep clearing so overtake display doesn't override RNBO
