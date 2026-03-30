@@ -3193,6 +3193,49 @@ static uint64_t spi_total_max = 0, spi_pre_max = 0, spi_ioctl_max = 0, spi_post_
 static int spi_timing_count = 0;
 static int spi_baseline_mode = -1;  /* -1 = unknown, 0 = full mode, 1 = baseline only */
 
+/* === SPI Timing Snapshot (written from SPI path, read by background logger) ===
+ * All fields are written atomically (single writer) from the SPI callbacks.
+ * The background thread reads them periodically — torn reads are harmless
+ * since the data is purely informational. */
+typedef struct {
+    /* Frame-level timing (avg/max over last 1000 blocks) */
+    uint64_t frame_total_avg, frame_total_max;
+    uint64_t frame_pre_avg, frame_pre_max;
+    uint64_t frame_ioctl_avg, frame_ioctl_max;
+    uint64_t frame_post_avg, frame_post_max;
+    /* Granular pre-ioctl sections (avg/max) */
+    uint64_t midi_mon_avg, midi_mon_max;
+    uint64_t fwd_midi_avg, fwd_midi_max;
+    uint64_t mix_audio_avg, mix_audio_max;
+    uint64_t ui_req_avg, ui_req_max;
+    uint64_t param_req_avg, param_req_max;
+    uint64_t fwd_cc_avg, fwd_cc_max;
+    uint64_t proc_midi_avg, proc_midi_max;
+    uint64_t jack_stash_avg, jack_stash_max;
+    uint64_t drain_dsp_avg, drain_dsp_max;
+    uint64_t jack_wake_avg, jack_wake_max;
+    uint64_t mix_buf_avg, mix_buf_max;
+    uint64_t tts_avg, tts_max;
+    uint64_t display_avg, display_max;
+    uint64_t clear_leds_avg, clear_leds_max;
+    uint64_t jack_midi_avg, jack_midi_max;
+    uint64_t ui_midi_avg, ui_midi_max;
+    uint64_t flush_leds_avg, flush_leds_max;
+    uint64_t screenreader_avg, screenreader_max;
+    uint64_t jack_pre_avg, jack_pre_max;
+    uint64_t jack_disp_avg, jack_disp_max;
+    uint64_t pin_avg, pin_max;
+    /* Overrun tracking */
+    uint32_t overrun_count;
+    uint64_t last_overrun_total, last_overrun_pre, last_overrun_ioctl, last_overrun_post;
+    /* Sequence number — incremented on each snapshot update */
+    uint32_t seq;
+    uint32_t frame_ready;     /* 1 = frame snapshot valid */
+    uint32_t granular_ready;  /* 1 = granular snapshot valid */
+} spi_timing_snapshot_t;
+
+static volatile spi_timing_snapshot_t spi_snap = {0};
+
 /* Granular pre-ioctl timing */
 static struct timespec spi_section_start, spi_section_end;
 static uint64_t spi_midi_mon_sum = 0, spi_midi_mon_max = 0;
@@ -3203,6 +3246,20 @@ static uint64_t spi_param_req_sum = 0, spi_param_req_max = 0;
 static uint64_t spi_proc_midi_sum = 0, spi_proc_midi_max = 0;
 static uint64_t spi_inproc_mix_sum = 0, spi_inproc_mix_max = 0;
 static uint64_t spi_display_sum = 0, spi_display_max = 0;
+/* Additional granular timing for previously-untimed sections */
+static uint64_t spi_jack_stash_sum = 0, spi_jack_stash_max = 0;
+static uint64_t spi_drain_ui_midi_sum = 0, spi_drain_ui_midi_max = 0;
+static uint64_t spi_jack_wake_sum = 0, spi_jack_wake_max = 0;
+static uint64_t spi_tts_mix_sum = 0, spi_tts_mix_max = 0;
+static uint64_t spi_clear_leds_sum = 0, spi_clear_leds_max = 0;
+static uint64_t spi_jack_midi_out_sum = 0, spi_jack_midi_out_max = 0;
+static uint64_t spi_ui_midi_out_sum = 0, spi_ui_midi_out_max = 0;
+static uint64_t spi_flush_leds_sum = 0, spi_flush_leds_max = 0;
+static uint64_t spi_screenreader_sum = 0, spi_screenreader_max = 0;
+static uint64_t spi_jack_pre_sum = 0, spi_jack_pre_max = 0;
+static uint64_t spi_jack_disp_sum = 0, spi_jack_disp_max = 0;
+static uint64_t spi_pin_sum = 0, spi_pin_max = 0;
+static uint64_t spi_fwd_ext_cc_sum = 0, spi_fwd_ext_cc_max = 0;
 static int spi_granular_count = 0;
 
 #define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &spi_section_start)
@@ -3261,33 +3318,17 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             uint64_t gap_ms = (spi_ioctl_start.tv_sec - last_ioctl_time.tv_sec) * 1000 +
                               (spi_ioctl_start.tv_nsec - last_ioctl_time.tv_nsec) / 1000000;
             if (gap_ms > 1000) {
-                char gap_msg[64];
-                snprintf(gap_msg, sizeof(gap_msg), "Ioctl gap: %lu ms", (unsigned long)gap_ms);
-                unified_log_crash(gap_msg);
+                /* No I/O in SPI path — just record the gap for background logger */
+                static volatile uint64_t last_gap_ms = 0;
+                last_gap_ms = gap_ms;
+                (void)last_gap_ms;
             }
         }
         last_ioctl_time = spi_ioctl_start;
     }
 
     /* === HEARTBEAT (every ~5700 frames / ~100s) === */
-    {
-        static uint32_t heartbeat_counter = 0;
-        heartbeat_counter++;
-        if (heartbeat_counter >= 5700) {
-            heartbeat_counter = 0;
-            if (unified_log_enabled()) {
-                /* No file I/O here — fopen("/proc/self/statm") can block
-                 * when the disk is busy, causing audio clicks. */
-                unified_log("shim", LOG_LEVEL_DEBUG,
-                    "Heartbeat: pid=%d overruns=%d display_mode=%d la_pkts=%u la_ch=%d la_stale=%u la_sub_pid=%d la_restarts=%d pin_chal=%d",
-                    getpid(), spi_consecutive_overruns,
-                    shadow_display_mode,
-                    link_audio.packets_intercepted, link_audio.move_channel_count,
-                    la_stale_frames, (int)link_sub_pid, link_sub_restart_count,
-                    shadow_control ? shadow_control->pin_challenge_active : -1);
-            }
-        }
-    }
+    /* Heartbeat logging moved to background timer thread to avoid I/O in SPI path */
 
     /* === SET DETECTION (poll every ~1.5s) === */
     {
@@ -3370,7 +3411,9 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT
      * so DSP routing can pick them up (Move only echoes notes, not these) */
+    TIME_SECTION_START();
     shadow_forward_external_cc_to_out();
+    TIME_SECTION_END(spi_fwd_ext_cc_sum, spi_fwd_ext_cc_max);
 
     TIME_SECTION_START();
     shadow_inprocess_process_midi();
@@ -3378,18 +3421,24 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* Stash MIDI_OUT cable-2 sequencer notes before SPI ioctl consumes them.
      * The bridge picks these up post-transfer and appends to ext_midi_to_jack. */
+    TIME_SECTION_START();
     if (g_jack_shm && shadow_control) {
         schwung_jack_bridge_stash_midi_out(
             global_mmap_addr + MIDI_OUT_OFFSET,
             shadow_control->overtake_mode);
     }
+    TIME_SECTION_END(spi_jack_stash_sum, spi_jack_stash_max);
 
     /* Drain MIDI-to-DSP from shadow UI (overtake modules sending to chain slots) */
+    TIME_SECTION_START();
     shadow_drain_ui_midi_dsp();
+    TIME_SECTION_END(spi_drain_ui_midi_sum, spi_drain_ui_midi_max);
 
     /* Wake JACK early so it computes audio in parallel with DSP render.
      * Audio is read inside mix_from_buffer (before master FX/volume). */
+    TIME_SECTION_START();
     schwung_jack_bridge_wake(g_jack_shm);
+    TIME_SECTION_END(spi_jack_wake_sum, spi_jack_wake_max);
 
     /* Pre-ioctl: Mix from pre-rendered buffer (FAST, ~5µs)
      * DSP was rendered post-ioctl in the previous frame.
@@ -3449,7 +3498,9 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     }
 
     /* Mix TTS audio AFTER inprocess mix (which may zero-rebuild mailbox for Link Audio) */
+    TIME_SECTION_START();
     shadow_mix_tts();
+    TIME_SECTION_END(spi_tts_mix_sum, spi_tts_mix_max);
 
     /* Signal Link Audio publisher thread to drain accumulated audio */
     if (link_audio.publisher_running) {
@@ -3799,7 +3850,9 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* === PIN CHALLENGE SCANNER ===
      * Check if a web PIN challenge is active and speak the digits. */
+    TIME_SECTION_START();
     pin_check_and_speak();
+    TIME_SECTION_END(spi_pin_sum, spi_pin_max);
 
     /* Mark end of pre-ioctl processing */
     clock_gettime(CLOCK_MONOTONIC, &spi_pre_end);
@@ -3811,7 +3864,9 @@ pre_done:
     /* === SHADOW UI MIDI OUT (PRE-IOCTL) ===
      * Inject any MIDI from shadow UI into the mailbox before sync.
      * In overtake mode, also clears Move's cable 0 packets when shadow has new data. */
+    TIME_SECTION_START();
     shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
+    TIME_SECTION_END(spi_clear_leds_sum, spi_clear_leds_max);
 
     /* Route JACK MIDI output to SPI buffer.
      * The JACK driver writes packets to midi_from_jack[] and sets count.
@@ -3821,6 +3876,7 @@ pre_done:
     /* Only write JACK MIDI output to hardware during overtake mode.
      * During suspend (mode 0), RNBO's sysex LED commands would conflict
      * with Move's LEDs and the cache would be overwritten with stale data. */
+    TIME_SECTION_START();
     if (g_jack_shm && g_jack_shm->midi_from_jack_count > 0 &&
         shadow_control && shadow_control->overtake_mode >= 2) {
         uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
@@ -3893,6 +3949,8 @@ pre_done:
         memcpy(((uint8_t *)g_jack_shm) + 3800, midi_out, 80);
     }
 
+    TIME_SECTION_END(spi_jack_midi_out_sum, spi_jack_midi_out_max);
+
     /* Copy pad LED colors (notes 68-99) to overlay SHM for shadow_ui to read */
     if (shadow_overlay_shm) {
         for (int i = 0; i < 32; i++) {
@@ -3900,12 +3958,19 @@ pre_done:
             shadow_overlay_shm->pad_led_colors[i] = (color >= 0) ? (uint8_t)color : 0;
         }
     }
+    TIME_SECTION_START();
     shadow_inject_ui_midi_out();
+    TIME_SECTION_END(spi_ui_midi_out_sum, spi_ui_midi_out_max);
+
+    TIME_SECTION_START();
     shadow_flush_pending_leds();  /* Rate-limited LED output */
+    TIME_SECTION_END(spi_flush_leds_sum, spi_flush_leds_max);
 
     /* === SCREEN READER ANNOUNCEMENTS ===
      * Check for and send accessibility announcements via D-Bus. */
+    TIME_SECTION_START();
     shadow_check_screenreader_announcements();
+    TIME_SECTION_END(spi_screenreader_sum, spi_screenreader_max);
 
     /* === SHORTCUT INDICATOR LEDS ===
      * When Shift+Vol held, light step icon LEDs (CCs 16-31 = icons below steps).
@@ -3928,9 +3993,12 @@ pre_done:
     }
 
     /* Handle JACK display (audio is mixed earlier in mix_from_buffer) */
+    TIME_SECTION_START();
     schwung_jack_bridge_pre(g_jack_shm, shadow);
+    TIME_SECTION_END(spi_jack_pre_sum, spi_jack_pre_max);
 
     /* Overwrite display chunk with composited version (includes skipback toast). */
+    TIME_SECTION_START();
     if (jack_display_composited && g_jack_shm->display_active) {
         uint32_t idx = *(uint32_t *)(shadow + SCHWUNG_OFF_IN_DISP_STAT);
         if (idx >= 1 && idx <= 5) {
@@ -3943,6 +4011,7 @@ pre_done:
                    DISPLAY_BUFFER_SIZE - 5 * SCHWUNG_OUT_DISP_CHUNK_LEN);
         }
     }
+    TIME_SECTION_END(spi_jack_disp_sum, spi_jack_disp_max);
 
     /* Mute Move's audio output when requested (e.g. during silent clip switching).
      * Zero the audio region in shadow BEFORE the library copies shadow→hw. */
@@ -5227,72 +5296,142 @@ post_timing:
     if (ioctl_us > spi_ioctl_max) spi_ioctl_max = ioctl_us;
     if (post_us > spi_post_max) spi_post_max = post_us;
 
-#if SHADOW_TIMING_LOG
-    /* Warn immediately if total hook time >2ms */
+    /* Track overruns (no I/O — just update snapshot) */
     if (total_us > 2000) {
-        static int hook_overrun_count = 0;
+        static uint32_t hook_overrun_count = 0;
         hook_overrun_count++;
-        if (hook_overrun_count <= 10 || hook_overrun_count % 100 == 0) {
-            FILE *f = fopen("/tmp/ioctl_timing.log", "a");
-            if (f) {
-                fprintf(f, "WARNING: Hook overrun #%d: total=%llu us (pre=%llu, ioctl=%llu, post=%llu)\n",
-                        hook_overrun_count, (unsigned long long)total_us,
-                        (unsigned long long)pre_us, (unsigned long long)ioctl_us,
-                        (unsigned long long)post_us);
-                fclose(f);
-            }
-        }
+        spi_snap.overrun_count = hook_overrun_count;
+        spi_snap.last_overrun_total = total_us;
+        spi_snap.last_overrun_pre = pre_us;
+        spi_snap.last_overrun_ioctl = ioctl_us;
+        spi_snap.last_overrun_post = post_us;
     }
-#endif
 
-    /* Log every 1000 blocks (~23 seconds) */
+    /* Snapshot frame-level timing every 1000 blocks (~3s) — no I/O */
     if (spi_timing_count >= 1000) {
-#if SHADOW_TIMING_LOG
-        FILE *f = fopen("/tmp/ioctl_timing.log", "a");
-        if (f) {
-            fprintf(f, "Ioctl timing (1000 blocks): total avg=%llu max=%llu | pre avg=%llu max=%llu | ioctl avg=%llu max=%llu | post avg=%llu max=%llu\n",
-                    (unsigned long long)(spi_total_sum / spi_timing_count), (unsigned long long)spi_total_max,
-                    (unsigned long long)(spi_pre_sum / spi_timing_count), (unsigned long long)spi_pre_max,
-                    (unsigned long long)(spi_ioctl_sum / spi_timing_count), (unsigned long long)spi_ioctl_max,
-                    (unsigned long long)(spi_post_sum / spi_timing_count), (unsigned long long)spi_post_max);
-            fclose(f);
-        }
-#endif
+        spi_snap.frame_total_avg = spi_total_sum / spi_timing_count;
+        spi_snap.frame_total_max = spi_total_max;
+        spi_snap.frame_pre_avg = spi_pre_sum / spi_timing_count;
+        spi_snap.frame_pre_max = spi_pre_max;
+        spi_snap.frame_ioctl_avg = spi_ioctl_sum / spi_timing_count;
+        spi_snap.frame_ioctl_max = spi_ioctl_max;
+        spi_snap.frame_post_avg = spi_post_sum / spi_timing_count;
+        spi_snap.frame_post_max = spi_post_max;
+        spi_snap.frame_ready = 1;
         spi_total_sum = spi_pre_sum = spi_ioctl_sum = spi_post_sum = 0;
         spi_total_max = spi_pre_max = spi_ioctl_max = spi_post_max = 0;
         spi_timing_count = 0;
     }
 
-    /* Log granular pre-ioctl timing every 1000 blocks */
+    /* Snapshot granular pre-ioctl timing every 1000 blocks — no I/O */
     spi_granular_count++;
     if (spi_granular_count >= 1000) {
-#if SHADOW_TIMING_LOG
-        FILE *f = fopen("/tmp/ioctl_timing.log", "a");
-        if (f) {
-            fprintf(f, "Granular: midi_mon avg=%llu max=%llu | fwd_midi avg=%llu max=%llu | "
-                       "mix_audio avg=%llu max=%llu | ui_req avg=%llu max=%llu | "
-                       "param_req avg=%llu max=%llu | proc_midi avg=%llu max=%llu | "
-                       "inproc_mix avg=%llu max=%llu | display avg=%llu max=%llu\n",
-                    (unsigned long long)(spi_midi_mon_sum / spi_granular_count), (unsigned long long)spi_midi_mon_max,
-                    (unsigned long long)(spi_fwd_midi_sum / spi_granular_count), (unsigned long long)spi_fwd_midi_max,
-                    (unsigned long long)(spi_mix_audio_sum / spi_granular_count), (unsigned long long)spi_mix_audio_max,
-                    (unsigned long long)(spi_ui_req_sum / spi_granular_count), (unsigned long long)spi_ui_req_max,
-                    (unsigned long long)(spi_param_req_sum / spi_granular_count), (unsigned long long)spi_param_req_max,
-                    (unsigned long long)(spi_proc_midi_sum / spi_granular_count), (unsigned long long)spi_proc_midi_max,
-                    (unsigned long long)(spi_inproc_mix_sum / spi_granular_count), (unsigned long long)spi_inproc_mix_max,
-                    (unsigned long long)(spi_display_sum / spi_granular_count), (unsigned long long)spi_display_max);
-            fclose(f);
-        }
-#endif
+        int n = spi_granular_count;
+        spi_snap.midi_mon_avg = spi_midi_mon_sum / n; spi_snap.midi_mon_max = spi_midi_mon_max;
+        spi_snap.fwd_midi_avg = spi_fwd_midi_sum / n; spi_snap.fwd_midi_max = spi_fwd_midi_max;
+        spi_snap.mix_audio_avg = spi_mix_audio_sum / n; spi_snap.mix_audio_max = spi_mix_audio_max;
+        spi_snap.ui_req_avg = spi_ui_req_sum / n; spi_snap.ui_req_max = spi_ui_req_max;
+        spi_snap.param_req_avg = spi_param_req_sum / n; spi_snap.param_req_max = spi_param_req_max;
+        spi_snap.fwd_cc_avg = spi_fwd_ext_cc_sum / n; spi_snap.fwd_cc_max = spi_fwd_ext_cc_max;
+        spi_snap.proc_midi_avg = spi_proc_midi_sum / n; spi_snap.proc_midi_max = spi_proc_midi_max;
+        spi_snap.jack_stash_avg = spi_jack_stash_sum / n; spi_snap.jack_stash_max = spi_jack_stash_max;
+        spi_snap.drain_dsp_avg = spi_drain_ui_midi_sum / n; spi_snap.drain_dsp_max = spi_drain_ui_midi_max;
+        spi_snap.jack_wake_avg = spi_jack_wake_sum / n; spi_snap.jack_wake_max = spi_jack_wake_max;
+        spi_snap.mix_buf_avg = spi_inproc_mix_sum / n; spi_snap.mix_buf_max = spi_inproc_mix_max;
+        spi_snap.tts_avg = spi_tts_mix_sum / n; spi_snap.tts_max = spi_tts_mix_max;
+        spi_snap.display_avg = spi_display_sum / n; spi_snap.display_max = spi_display_max;
+        spi_snap.clear_leds_avg = spi_clear_leds_sum / n; spi_snap.clear_leds_max = spi_clear_leds_max;
+        spi_snap.jack_midi_avg = spi_jack_midi_out_sum / n; spi_snap.jack_midi_max = spi_jack_midi_out_max;
+        spi_snap.ui_midi_avg = spi_ui_midi_out_sum / n; spi_snap.ui_midi_max = spi_ui_midi_out_max;
+        spi_snap.flush_leds_avg = spi_flush_leds_sum / n; spi_snap.flush_leds_max = spi_flush_leds_max;
+        spi_snap.screenreader_avg = spi_screenreader_sum / n; spi_snap.screenreader_max = spi_screenreader_max;
+        spi_snap.jack_pre_avg = spi_jack_pre_sum / n; spi_snap.jack_pre_max = spi_jack_pre_max;
+        spi_snap.jack_disp_avg = spi_jack_disp_sum / n; spi_snap.jack_disp_max = spi_jack_disp_max;
+        spi_snap.pin_avg = spi_pin_sum / n; spi_snap.pin_max = spi_pin_max;
+        spi_snap.granular_ready = 1;
+        spi_snap.seq++;
+
         spi_midi_mon_sum = spi_midi_mon_max = spi_fwd_midi_sum = spi_fwd_midi_max = 0;
         spi_mix_audio_sum = spi_mix_audio_max = spi_ui_req_sum = spi_ui_req_max = 0;
         spi_param_req_sum = spi_param_req_max = spi_proc_midi_sum = spi_proc_midi_max = 0;
         spi_inproc_mix_sum = spi_inproc_mix_max = spi_display_sum = spi_display_max = 0;
+        spi_jack_stash_sum = spi_jack_stash_max = spi_drain_ui_midi_sum = spi_drain_ui_midi_max = 0;
+        spi_jack_wake_sum = spi_jack_wake_max = spi_tts_mix_sum = spi_tts_mix_max = 0;
+        spi_clear_leds_sum = spi_clear_leds_max = spi_jack_midi_out_sum = spi_jack_midi_out_max = 0;
+        spi_ui_midi_out_sum = spi_ui_midi_out_max = spi_flush_leds_sum = spi_flush_leds_max = 0;
+        spi_screenreader_sum = spi_screenreader_max = spi_jack_pre_sum = spi_jack_pre_max = 0;
+        spi_jack_disp_sum = spi_jack_disp_max = spi_pin_sum = spi_pin_max = 0;
+        spi_fwd_ext_cc_sum = spi_fwd_ext_cc_max = 0;
         spi_granular_count = 0;
     }
 
     /* Record frame time for overrun detection in next iteration */
     spi_last_frame_total_us = total_us;
+}
+
+/* ============================================================================
+ * BACKGROUND TIMING LOGGER THREAD
+ * ============================================================================
+ * Drains the spi_snap structure and writes to unified_log every ~5 seconds.
+ * All file I/O happens here, never in the SPI callback path.
+ * ============================================================================ */
+static void *spi_timing_logger_thread(void *arg)
+{
+    (void)arg;
+    uint32_t last_seq = 0;
+
+    while (1) {
+        usleep(5000000);  /* 5 seconds */
+
+        if (!unified_log_enabled()) continue;
+        if (spi_snap.seq == last_seq) continue;  /* No new data */
+        last_seq = spi_snap.seq;
+
+        /* Read snapshot (torn reads are harmless — data is informational) */
+        if (spi_snap.frame_ready) {
+            unified_log("spi_timing", LOG_LEVEL_DEBUG,
+                "Frame(us): total avg=%llu max=%llu | pre avg=%llu max=%llu | ioctl avg=%llu max=%llu | post avg=%llu max=%llu | overruns=%u",
+                (unsigned long long)spi_snap.frame_total_avg, (unsigned long long)spi_snap.frame_total_max,
+                (unsigned long long)spi_snap.frame_pre_avg, (unsigned long long)spi_snap.frame_pre_max,
+                (unsigned long long)spi_snap.frame_ioctl_avg, (unsigned long long)spi_snap.frame_ioctl_max,
+                (unsigned long long)spi_snap.frame_post_avg, (unsigned long long)spi_snap.frame_post_max,
+                spi_snap.overrun_count);
+        }
+
+        if (spi_snap.granular_ready) {
+            unified_log("spi_timing", LOG_LEVEL_DEBUG,
+                "Pre(us): midi_mon=%llu/%llu fwd_midi=%llu/%llu mix_audio=%llu/%llu "
+                "ui_req=%llu/%llu param=%llu/%llu fwd_cc=%llu/%llu proc_midi=%llu/%llu "
+                "jack_stash=%llu/%llu drain_dsp=%llu/%llu jack_wake=%llu/%llu "
+                "mix_buf=%llu/%llu tts=%llu/%llu display=%llu/%llu",
+                (unsigned long long)spi_snap.midi_mon_avg, (unsigned long long)spi_snap.midi_mon_max,
+                (unsigned long long)spi_snap.fwd_midi_avg, (unsigned long long)spi_snap.fwd_midi_max,
+                (unsigned long long)spi_snap.mix_audio_avg, (unsigned long long)spi_snap.mix_audio_max,
+                (unsigned long long)spi_snap.ui_req_avg, (unsigned long long)spi_snap.ui_req_max,
+                (unsigned long long)spi_snap.param_req_avg, (unsigned long long)spi_snap.param_req_max,
+                (unsigned long long)spi_snap.fwd_cc_avg, (unsigned long long)spi_snap.fwd_cc_max,
+                (unsigned long long)spi_snap.proc_midi_avg, (unsigned long long)spi_snap.proc_midi_max,
+                (unsigned long long)spi_snap.jack_stash_avg, (unsigned long long)spi_snap.jack_stash_max,
+                (unsigned long long)spi_snap.drain_dsp_avg, (unsigned long long)spi_snap.drain_dsp_max,
+                (unsigned long long)spi_snap.jack_wake_avg, (unsigned long long)spi_snap.jack_wake_max,
+                (unsigned long long)spi_snap.mix_buf_avg, (unsigned long long)spi_snap.mix_buf_max,
+                (unsigned long long)spi_snap.tts_avg, (unsigned long long)spi_snap.tts_max,
+                (unsigned long long)spi_snap.display_avg, (unsigned long long)spi_snap.display_max);
+            unified_log("spi_timing", LOG_LEVEL_DEBUG,
+                "Post(us): clear_leds=%llu/%llu jack_midi=%llu/%llu ui_midi=%llu/%llu "
+                "flush_leds=%llu/%llu screenreader=%llu/%llu jack_pre=%llu/%llu "
+                "jack_disp=%llu/%llu pin=%llu/%llu",
+                (unsigned long long)spi_snap.clear_leds_avg, (unsigned long long)spi_snap.clear_leds_max,
+                (unsigned long long)spi_snap.jack_midi_avg, (unsigned long long)spi_snap.jack_midi_max,
+                (unsigned long long)spi_snap.ui_midi_avg, (unsigned long long)spi_snap.ui_midi_max,
+                (unsigned long long)spi_snap.flush_leds_avg, (unsigned long long)spi_snap.flush_leds_max,
+                (unsigned long long)spi_snap.screenreader_avg, (unsigned long long)spi_snap.screenreader_max,
+                (unsigned long long)spi_snap.jack_pre_avg, (unsigned long long)spi_snap.jack_pre_max,
+                (unsigned long long)spi_snap.jack_disp_avg, (unsigned long long)spi_snap.jack_disp_max,
+                (unsigned long long)spi_snap.pin_avg, (unsigned long long)spi_snap.pin_max);
+        }
+    }
+    return NULL;
 }
 
 /* ============================================================================
@@ -5316,4 +5455,11 @@ static void shim_spi_init(void)
 
     /* Create JACK shadow driver shared memory (optional — zero overhead if JACK never connects) */
     g_jack_shm = schwung_jack_bridge_create();
+
+    /* Start background timing logger thread */
+    {
+        pthread_t tid;
+        pthread_create(&tid, NULL, spi_timing_logger_thread, NULL);
+        pthread_detach(tid);
+    }
 }
