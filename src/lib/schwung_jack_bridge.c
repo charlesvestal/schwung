@@ -18,6 +18,13 @@
 static int16_t s_jack_audio_snapshot[SCHWUNG_JACK_AUDIO_FRAMES * 2];
 static int s_jack_audio_valid = 0;
 
+/* Counters for monitoring — read by shim timing snapshot */
+static uint32_t s_jack_audio_miss_count = 0;
+static uint32_t s_jack_audio_hit_count = 0;
+
+uint32_t schwung_jack_bridge_get_miss_count(void) { return s_jack_audio_miss_count; }
+uint32_t schwung_jack_bridge_get_hit_count(void) { return s_jack_audio_hit_count; }
+
 // ============================================================================
 // Create / Destroy
 // ============================================================================
@@ -94,6 +101,10 @@ void schwung_jack_bridge_wake(SchwungJackShm *shm) {
         memcpy(s_jack_audio_snapshot, shm->audio_out,
                SCHWUNG_JACK_AUDIO_FRAMES * 2 * sizeof(int16_t));
         s_jack_audio_valid = 1;
+        s_jack_audio_hit_count++;
+    } else if (s_jack_audio_valid) {
+        /* JACK didn't finish in time — serving stale audio (previous frame repeated) */
+        s_jack_audio_miss_count++;
     }
 
     *audio_ready = 0;
@@ -104,9 +115,9 @@ void schwung_jack_bridge_wake(SchwungJackShm *shm) {
 }
 
 // ============================================================================
-// Phase 2: Read JACK audio — called inside mix_from_buffer.  Waits for JACK
-// to finish writing, returns pointer to 128-frame stereo interleaved int16.
-// Returns NULL if JACK is not active.
+// Phase 2: Read JACK audio — called inside mix_from_buffer.  Returns the
+// snapshot taken in bridge_wake (previous frame's audio, no waiting).
+// Returns NULL if JACK is not active or no snapshot available yet.
 // ============================================================================
 
 const int16_t *schwung_jack_bridge_read_audio(SchwungJackShm *shm) {

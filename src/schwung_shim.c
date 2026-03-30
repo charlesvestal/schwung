@@ -3225,6 +3225,9 @@ typedef struct {
     uint64_t jack_pre_avg, jack_pre_max;
     uint64_t jack_disp_avg, jack_disp_max;
     uint64_t pin_avg, pin_max;
+    /* JACK audio double-buffer stats */
+    uint32_t jack_audio_hits;
+    uint32_t jack_audio_misses;
     /* Overrun tracking */
     uint32_t overrun_count;
     uint64_t last_overrun_total, last_overrun_pre, last_overrun_ioctl, last_overrun_post;
@@ -5348,6 +5351,8 @@ post_timing:
         spi_snap.jack_pre_avg = spi_jack_pre_sum / n; spi_snap.jack_pre_max = spi_jack_pre_max;
         spi_snap.jack_disp_avg = spi_jack_disp_sum / n; spi_snap.jack_disp_max = spi_jack_disp_max;
         spi_snap.pin_avg = spi_pin_sum / n; spi_snap.pin_max = spi_pin_max;
+        spi_snap.jack_audio_hits = schwung_jack_bridge_get_hit_count();
+        spi_snap.jack_audio_misses = schwung_jack_bridge_get_miss_count();
         spi_snap.granular_ready = 1;
         spi_snap.seq++;
 
@@ -5429,6 +5434,16 @@ static void *spi_timing_logger_thread(void *arg)
                 (unsigned long long)spi_snap.jack_pre_avg, (unsigned long long)spi_snap.jack_pre_max,
                 (unsigned long long)spi_snap.jack_disp_avg, (unsigned long long)spi_snap.jack_disp_max,
                 (unsigned long long)spi_snap.pin_avg, (unsigned long long)spi_snap.pin_max);
+            if (spi_snap.jack_audio_hits > 0 || spi_snap.jack_audio_misses > 0) {
+                unified_log("spi_timing", LOG_LEVEL_DEBUG,
+                    "JACK audio: hits=%u misses=%u (%.3f%% miss)",
+                    spi_snap.jack_audio_hits,
+                    spi_snap.jack_audio_misses,
+                    spi_snap.jack_audio_hits > 0
+                        ? (100.0 * spi_snap.jack_audio_misses /
+                           (spi_snap.jack_audio_hits + spi_snap.jack_audio_misses))
+                        : 0.0);
+            }
         }
     }
     return NULL;
