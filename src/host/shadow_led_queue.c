@@ -670,16 +670,10 @@ void led_queue_jack_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3
             sysex_buf[1] == 0x00 && sysex_buf[2] == 0x21 &&
             sysex_buf[3] == 0x1D && sysex_buf[4] == 0x01 && sysex_buf[5] == 0x01 &&
             sysex_buf[6] == 0x3B) {
-            /* Log ALL Ableton sysex commands we see, not just the ones we cache */
+            /* Count Ableton sysex commands (no I/O in SPI path) */
             static int ableton_sysex_seen = 0;
             ableton_sysex_seen++;
-            if (ableton_sysex_seen <= 10 || (ableton_sysex_seen % 50) == 0) {
-                unified_log("led_queue", LOG_LEVEL_DEBUG,
-                    "ableton sysex #%d: len=%d raw_count=%d cmd=0x%02X subcmd=0x%02X buf[8]=0x%02X",
-                    ableton_sysex_seen, sysex_buf_len, sysex_raw_count,
-                    sysex_buf[6], sysex_buf_len > 7 ? sysex_buf[7] : 0,
-                    sysex_buf_len > 8 ? sysex_buf[8] : 0);
-            }
+            (void)ableton_sysex_seen;
         }
         if (sysex_active && sysex_buf_len >= 16 &&
             sysex_buf[0] == 0xF0 && sysex_buf[1] == 0x00 && sysex_buf[2] == 0x21 &&
@@ -834,19 +828,7 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
 
         /* Log all knob LED entries (71-78) with full packet dump,
          * plus first 3 entries of each subcmd for general debugging */
-        if (leds_sent < 3 ||
-            (sysex_restore_index >= 71 && sysex_restore_index <= 78)) {
-            unified_log("led_queue", LOG_LEVEL_DEBUG,
-                "sysex restore s%d idx=%d @%d [%02X%02X%02X%02X][%02X%02X%02X%02X]"
-                "[%02X%02X%02X%02X][%02X%02X%02X%02X][%02X%02X%02X%02X][%02X%02X%02X%02X]",
-                sysex_restore_subcmd, sysex_restore_index, block,
-                entry->packets[0][0], entry->packets[0][1], entry->packets[0][2], entry->packets[0][3],
-                entry->packets[1][0], entry->packets[1][1], entry->packets[1][2], entry->packets[1][3],
-                entry->packets[2][0], entry->packets[2][1], entry->packets[2][2], entry->packets[2][3],
-                entry->packets[3][0], entry->packets[3][1], entry->packets[3][2], entry->packets[3][3],
-                entry->packets[4][0], entry->packets[4][1], entry->packets[4][2], entry->packets[4][3],
-                entry->packets[5][0], entry->packets[5][1], entry->packets[5][2], entry->packets[5][3]);
-        }
+        /* No logging here — this runs in the SPI callback path */
 
         sysex_restore_index++;
         leds_sent++;
@@ -858,14 +840,11 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
         if (sysex_restore_pass < SYSEX_RESTORE_PASSES) {
             sysex_restore_subcmd = 0;
             sysex_restore_index = 0;
-            unified_log("led_queue", LOG_LEVEL_DEBUG,
-                "sysex restore pass %d/%d done, starting next",
-                sysex_restore_pass, SYSEX_RESTORE_PASSES);
+            /* No I/O in SPI path */
         } else {
             sysex_restore_pending = 0;
             sysex_cache_frozen = 0;  /* Unfreeze — RNBO's live updates can cache again */
-            unified_log("led_queue", LOG_LEVEL_DEBUG,
-                "sysex restore COMPLETE (%d passes), cache unfrozen", SYSEX_RESTORE_PASSES);
+            /* No I/O in SPI path */
         }
     }
 

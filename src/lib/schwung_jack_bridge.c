@@ -172,20 +172,7 @@ void schwung_jack_bridge_stash_midi_out(const uint8_t *midi_out_buf, int overtak
         jev.timestamp = 0;
         g_midi_out_stash[g_midi_out_stash_count++] = jev;
     }
-    /* Debug: log first few stash events */
-    if (g_midi_out_stash_count > 0 && g_midi_out_stash_log_count < 50) {
-        FILE *f = fopen("/data/UserData/schwung/debug.log", "a");
-        if (f) {
-            fprintf(f, "[DEBUG] [jack_bridge] stash: %d events, first: type=0x%X ch=%d d1=%d d2=%d\n",
-                g_midi_out_stash_count,
-                g_midi_out_stash[0].message.midi.type,
-                g_midi_out_stash[0].message.midi.channel,
-                g_midi_out_stash[0].message.midi.data1,
-                g_midi_out_stash[0].message.midi.data2);
-            fclose(f);
-        }
-        g_midi_out_stash_log_count++;
-    }
+    /* No file I/O here — this runs in the SPI callback path */
 }
 
 // ============================================================================
