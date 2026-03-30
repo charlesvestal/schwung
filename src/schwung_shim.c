@@ -216,6 +216,10 @@ static int shadow_deferred_dsp_valid = 0;
 static int16_t shadow_slot_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
 static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
+/* Deferred FX output: FX runs in post-ioctl, result mixed in pre-ioctl */
+static int16_t shadow_slot_fx_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
+static int shadow_slot_fx_deferred_valid[SHADOW_CHAIN_INSTANCES];
+
 /* ---- Preview player: lightweight WAV playback for file browser ---- */
 #define PREVIEW_CMD_PATH "/data/UserData/schwung/preview_cmd_path.txt"
 #define PREVIEW_WAV_FORMAT_PCM   1
@@ -1248,6 +1252,8 @@ static void shadow_inprocess_render_to_buffer(void) {
     for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
         memset(shadow_slot_deferred[s], 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         shadow_slot_deferred_valid[s] = 0;
+        memset(shadow_slot_fx_deferred[s], 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        shadow_slot_fx_deferred_valid[s] = 0;
     }
 
     /* Same-frame FX: render synth only into per-slot buffers.
@@ -1267,21 +1273,21 @@ static void shadow_inprocess_render_to_buffer(void) {
             }
 
             /* Idle gate: skip render_block if synth output has been silent.
-             * Buffer is already zeroed, so FX chain in mix_from_buffer still runs
-             * on zeros to let reverb/delay tails decay naturally.
+             * Buffer is already zeroed; FX still runs for tail decay.
              * Probe every ~0.5s to detect self-generating audio (LFOs, arps). */
             if (shadow_slot_idle[s]) {
                 shadow_slot_silence_frames[s]++;
                 if (shadow_slot_silence_frames[s] % 172 != 0) {
-                    /* Not a probe frame — skip render, mark valid so FX still runs */
+                    /* Not a probe frame — skip synth render.
+                     * Buffer is zeros; FX below still runs for tail decay. */
                     shadow_slot_deferred_valid[s] = 1;
-                    continue;
+                    goto slot_run_deferred_fx;
                 }
                 /* Probe frame: fall through to render and check output */
             }
 
             if (same_frame_fx) {
-                /* New path: synth only → per-slot buffer. FX in mix_from_buffer. */
+                /* Synth only → per-slot buffer. FX deferred below. */
                 shadow_chain_set_external_fx_mode(shadow_chain_slots[s].instance, 1);
                 shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                                shadow_slot_deferred[s],
@@ -1322,6 +1328,7 @@ static void shadow_inprocess_render_to_buffer(void) {
             }
 
             /* Check if synth render output is silent */
+            {
             int16_t *slot_out = same_frame_fx ? shadow_slot_deferred[s] : shadow_deferred_dsp_buffer;
             int is_silent = 1;
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -1339,6 +1346,43 @@ static void shadow_inprocess_render_to_buffer(void) {
             } else {
                 shadow_slot_silence_frames[s] = 0;
                 shadow_slot_idle[s] = 0;
+            }
+            }
+
+            /* Run per-slot FX in post-ioctl (deferred) when same_frame_fx is active.
+             * Moves ~435µs avg / 3ms max out of the pre-ioctl budget.
+             * When synth is idle, FX still runs on zeros for tail decay.
+             * When both synth AND FX are idle, skip entirely. */
+        slot_run_deferred_fx:
+            if (same_frame_fx && shadow_chain_process_fx) {
+                if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) {
+                    /* Both idle — FX output is silence */
+                    shadow_slot_fx_deferred_valid[s] = 1;
+                } else {
+                    int16_t fx_buf[FRAMES_PER_BLOCK * 2];
+                    memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
+                    shadow_chain_process_fx(shadow_chain_slots[s].instance,
+                                            fx_buf, MOVE_FRAMES_PER_BLOCK);
+                    memcpy(shadow_slot_fx_deferred[s], fx_buf, sizeof(fx_buf));
+                    shadow_slot_fx_deferred_valid[s] = 1;
+
+                    /* Track FX output silence for phase 2 idle */
+                    int fx_silent = 1;
+                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                        if (fx_buf[i] > DSP_SILENCE_LEVEL || fx_buf[i] < -DSP_SILENCE_LEVEL) {
+                            fx_silent = 0;
+                            break;
+                        }
+                    }
+                    if (fx_silent) {
+                        shadow_slot_fx_silence_frames[s]++;
+                        if (shadow_slot_fx_silence_frames[s] >= DSP_IDLE_THRESHOLD)
+                            shadow_slot_fx_idle[s] = 1;
+                    } else {
+                        shadow_slot_fx_silence_frames[s] = 0;
+                        shadow_slot_fx_idle[s] = 0;
+                    }
+                }
             }
         }
     }
@@ -1576,59 +1620,88 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
 
     } else if (shadow_chain_process_fx) {
-        /* Fallback: no Link Audio — just process deferred synth through FX */
+        /* No Link Audio — use deferred FX output from post-ioctl (fast path) */
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-            if (!shadow_slot_deferred_valid[s] || !shadow_chain_slots[s].instance) continue;
+            if (!shadow_chain_slots[s].instance) continue;
 
-            /* Phase 2 idle gate: skip FX when both synth AND FX output are silent */
-            if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) continue;
+            /* Use deferred FX output if available (FX ran in post-ioctl) */
+            if (shadow_slot_fx_deferred_valid[s]) {
+                if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) continue;
 
-            int16_t fx_buf[FRAMES_PER_BLOCK * 2];
-            memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
-            shadow_chain_process_fx(shadow_chain_slots[s].instance,
-                                    fx_buf, MOVE_FRAMES_PER_BLOCK);
+                int16_t *fx_buf = shadow_slot_fx_deferred[s];
 
-            /* Write to publisher shared memory for link_subscriber */
-            if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
-                float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
-                link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
-                uint32_t wp = ps->write_pos;
+                /* Write to publisher shared memory for link_subscriber */
+                if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
+                    float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
+                    uint32_t wp = ps->write_pos;
+                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                        ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] =
+                            (int16_t)lroundf((float)fx_buf[i] * cap_vol);
+                        wp++;
+                    }
+                    __sync_synchronize();
+                    ps->write_pos = wp;
+                }
+
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] =
-                        (int16_t)lroundf((float)fx_buf[i] * cap_vol);
-                    wp++;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float gain = vol;
+                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
+                    if (mixed > 32767) mixed = 32767;
+                    if (mixed < -32768) mixed = -32768;
+                    mailbox_audio[i] = (int16_t)mixed;
+                    me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    if (i & 1) shadow_fade_advance(s);
                 }
-                __sync_synchronize();
-                ps->write_pos = wp;
-            }
+            } else if (shadow_slot_deferred_valid[s]) {
+                /* Fallback: FX not deferred — run inline (legacy path) */
+                if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) continue;
 
-            /* Track FX output silence for phase 2 idle */
-            int fx_silent = 1;
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                if (fx_buf[i] > DSP_SILENCE_LEVEL || fx_buf[i] < -DSP_SILENCE_LEVEL) {
-                    fx_silent = 0;
-                    break;
-                }
-            }
-            if (fx_silent) {
-                shadow_slot_fx_silence_frames[s]++;
-                if (shadow_slot_fx_silence_frames[s] >= DSP_IDLE_THRESHOLD) {
-                    shadow_slot_fx_idle[s] = 1;
-                }
-            } else {
-                shadow_slot_fx_silence_frames[s] = 0;
-                shadow_slot_fx_idle[s] = 0;
-            }
+                int16_t fx_buf[FRAMES_PER_BLOCK * 2];
+                memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
+                shadow_chain_process_fx(shadow_chain_slots[s].instance,
+                                        fx_buf, MOVE_FRAMES_PER_BLOCK);
 
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
-                float gain = vol;
-                int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
-                if (mixed > 32767) mixed = 32767;
-                if (mixed < -32768) mixed = -32768;
-                mailbox_audio[i] = (int16_t)mixed;
-                me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
-                if (i & 1) shadow_fade_advance(s);
+                if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
+                    float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
+                    uint32_t wp = ps->write_pos;
+                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                        ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] =
+                            (int16_t)lroundf((float)fx_buf[i] * cap_vol);
+                        wp++;
+                    }
+                    __sync_synchronize();
+                    ps->write_pos = wp;
+                }
+
+                int fx_silent = 1;
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    if (fx_buf[i] > DSP_SILENCE_LEVEL || fx_buf[i] < -DSP_SILENCE_LEVEL) {
+                        fx_silent = 0;
+                        break;
+                    }
+                }
+                if (fx_silent) {
+                    shadow_slot_fx_silence_frames[s]++;
+                    if (shadow_slot_fx_silence_frames[s] >= DSP_IDLE_THRESHOLD)
+                        shadow_slot_fx_idle[s] = 1;
+                } else {
+                    shadow_slot_fx_silence_frames[s] = 0;
+                    shadow_slot_fx_idle[s] = 0;
+                }
+
+                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float gain = vol;
+                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
+                    if (mixed > 32767) mixed = 32767;
+                    if (mixed < -32768) mixed = -32768;
+                    mailbox_audio[i] = (int16_t)mixed;
+                    me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    if (i & 1) shadow_fade_advance(s);
+                }
             }
         }
     }
@@ -3458,7 +3531,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         struct timespec mix_start, mix_end;
         clock_gettime(CLOCK_MONOTONIC, &mix_start);
 
-        shadow_inprocess_mix_from_buffer();  /* Fast: just memcpy+mix */
+        shadow_inprocess_mix_from_buffer();  /* Fast: memcpy+mix (FX deferred to post-ioctl) */
 
         clock_gettime(CLOCK_MONOTONIC, &mix_end);
         uint64_t mix_us = (mix_end.tv_sec - mix_start.tv_sec) * 1000000 +
