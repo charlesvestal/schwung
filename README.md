@@ -177,6 +177,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Structor](https://github.com/fillioning/move-everything-structor) | Musique concrete sound deconstructor/reconstructor — 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer | fillioning |
 | [Dissolver](https://github.com/fillioning/dissolver-move) | Spectral smearing pad generator — dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction | fillioning |
 | [Spectra](https://github.com/fillioning/spectra-move) | Multiband spectral resonator — pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift | fillioning |
+| [CHOWTape](https://github.com/charlesvestal/schwung-chowtape) | Analog tape model with Jiles-Atherton magnetic hysteresis, loss filter, wow & flutter, chew, and degradation | Jatin Chowdhury (port: charlesvestal) |
 
 ### MIDI FX
 
