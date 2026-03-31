@@ -634,6 +634,17 @@
       "default_branch": "master",
       "asset_name": "spectra-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "chowtape",
+      "name": "CHOWTape",
+      "description": "Analog tape model with Jiles-Atherton magnetic hysteresis, loss filter, wow & flutter, chew, and degradation",
+      "author": "Jatin Chowdhury (port: charlesvestal)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-chowtape",
+      "default_branch": "main",
+      "asset_name": "chowtape-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
