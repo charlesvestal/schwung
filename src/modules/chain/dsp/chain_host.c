@@ -5799,21 +5799,40 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
         if (config_pos) {
             const char *state_pos = strstr(config_pos, "\"state\"");
             if (state_pos) {
-                const char *state_obj = strchr(state_pos, '{');
-                if (state_obj) {
-                    /* Find matching closing brace */
-                    const char *end = state_obj + 1;
-                    int depth = 1;
-                    while (*end && depth > 0) {
-                        if (*end == '{') depth++;
-                        else if (*end == '}') depth--;
-                        if (depth > 0) end++;
-                    }
-                    if (*end && depth == 0) {
-                        int len = end - state_obj + 1;
-                        if (len > 0 && len < MAX_SYNTH_STATE_LEN) {
-                            strncpy(patch->synth_state, state_obj, len);
-                            patch->synth_state[len] = '\0';
+                const char *state_colon = strchr(state_pos, ':');
+                if (state_colon) {
+                    const char *sv = state_colon + 1;
+                    while (*sv == ' ' || *sv == '\t' || *sv == '\n') sv++;
+                    if (*sv == '{') {
+                        /* Extract state as JSON object */
+                        const char *end = sv + 1;
+                        int depth = 1;
+                        while (*end && depth > 0) {
+                            if (*end == '{') depth++;
+                            else if (*end == '}') depth--;
+                            if (depth > 0) end++;
+                        }
+                        if (*end && depth == 0) {
+                            int len = end - sv + 1;
+                            if (len > 0 && len < MAX_SYNTH_STATE_LEN) {
+                                strncpy(patch->synth_state, sv, len);
+                                patch->synth_state[len] = '\0';
+                            }
+                        }
+                    } else if (*sv == '"') {
+                        /* Extract state as opaque string (non-JSON formats) */
+                        const char *str_start = sv + 1;
+                        const char *str_end = str_start;
+                        while (*str_end && *str_end != '"') {
+                            if (*str_end == '\\' && *(str_end + 1)) str_end++;
+                            str_end++;
+                        }
+                        if (*str_end == '"') {
+                            int len = str_end - str_start;
+                            if (len > 0 && len < MAX_SYNTH_STATE_LEN) {
+                                strncpy(patch->synth_state, str_start, len);
+                                patch->synth_state[len] = '\0';
+                            }
                         }
                     }
                 }
@@ -5934,6 +5953,22 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                                             parse_debug_log("[parse] Extracted audio_fx state object");
                                         }
                                     }
+                                } else if (*sv == '"') {
+                                    /* Extract state as opaque string (non-JSON formats like key=val;...) */
+                                    const char *str_start = sv + 1;
+                                    const char *str_end = str_start;
+                                    while (str_end < params_end && *str_end != '"') {
+                                        if (*str_end == '\\' && *(str_end + 1)) str_end++; /* skip escaped chars */
+                                        str_end++;
+                                    }
+                                    if (*str_end == '"') {
+                                        int slen = str_end - str_start;
+                                        if (slen > 0 && slen < MAX_FX_STATE_LEN) {
+                                            strncpy(cfg->state, str_start, slen);
+                                            cfg->state[slen] = '\0';
+                                            parse_debug_log("[parse] Extracted audio_fx state string");
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -5968,6 +6003,15 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
                                             else if (*sv == '}') od--;
                                             sv++;
                                         }
+                                        scan = sv;
+                                    } else if (*sv == '"') {
+                                        /* Skip string value */
+                                        sv++;
+                                        while (sv < params_end && *sv != '"') {
+                                            if (*sv == '\\' && *(sv + 1)) sv++;
+                                            sv++;
+                                        }
+                                        if (*sv == '"') sv++;
                                         scan = sv;
                                     } else {
                                         scan = sv;
