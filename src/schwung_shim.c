@@ -395,6 +395,11 @@ static volatile int shadow_selected_slot = 0;
 /* Extended pads: track which left pad bank is selected (0-15) */
 static int extended_pads_bank = 0;
 
+/* Extended pads echo filter: refcount of injected notes awaiting cable 2 echo.
+ * Incremented when we inject into MIDI_IN, decremented when we see the
+ * echo on MIDI_OUT cable 2 (before dispatching to chain). */
+static uint8_t ext_pads_echo_refcount[128] = {0};
+
 /* Check if extended_pads is active for a given slot */
 static inline int slot_extended_pads(int s) {
     return (s >= 0 && s < SHADOW_CHAIN_INSTANCES)
@@ -934,18 +939,15 @@ static void shadow_inprocess_process_midi(void) {
                 continue;
             }
 
-            /* Suppress cable 2 pad echoes when extended_pads is active.
-             * Both left and right pad notes are dispatched directly from MIDI_IN,
-             * so all cable 2 echoes in the pad range (36-51) must be suppressed.
-             * Zero the packet in the hardware buffer to also prevent physical output. */
-            if ((type == 0x90 || type == 0x80) && p2 >= 36 && p2 <= 51) {
-                int s = shadow_selected_slot;
-                if (s >= 0 && s < SHADOW_CHAIN_INSTANCES &&
-                    slot_extended_pads(s)) {
-                    uint8_t *wpkt = (uint8_t *)(global_mmap_addr + MIDI_OUT_OFFSET) + i;
-                    wpkt[0] = 0; wpkt[1] = 0; wpkt[2] = 0; wpkt[3] = 0;
-                    continue;
-                }
+            /* Extended pads echo filter: suppress cable 2 echoes of notes
+             * we overwrote into MIDI_IN. Sequencer playback has no refcount
+             * and passes through normally. */
+            if ((type == 0x90 || type == 0x80) && p2 < 128 &&
+                ext_pads_echo_refcount[p2] > 0) {
+                ext_pads_echo_refcount[p2]--;
+                uint8_t *wpkt = (uint8_t *)(global_mmap_addr + MIDI_OUT_OFFSET) + i;
+                wpkt[0] = 0; wpkt[1] = 0; wpkt[2] = 0; wpkt[3] = 0;
+                continue;
             }
 
             /* Check if this MIDI_OUT packet is an echo of external USB MIDI.
@@ -4743,7 +4745,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
     }
 
-    /* === EXTENDED PADS: scan MIDI_IN for pad events (always active) === */
+    /* === EXTENDED PADS: scan MIDI_IN for pad events (always active) ===
+     * MIDI_IN = 8-byte events (4 USB-MIDI + 4 timestamp), max 31 events.
+     * Move's scan terminates at first empty event — never create gaps.
+     *
+     * - Left pads: update bank, let Move process normally. Cable 2 echo
+     *   reaches slot via normal dispatch (no direct dispatch, no double-hit).
+     *   Shift+left = bank select only (but don't zero — would create gap).
+     * - Right pads: OVERWRITE in-place with remapped cable 2 note (keeps
+     *   timestamp, no gap). Move records correct note, echoes it. Echo is
+     *   caught by refcount filter. Direct dispatch for immediate playback.
+     * - Sequencer playback: correct remapped notes on cable 2, no refcount. */
     {
         int es = shadow_selected_slot;
         if (es >= 0 && es < SHADOW_CHAIN_INSTANCES &&
@@ -4763,7 +4775,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 }
                 if (!shadow_chain_slots[es].active) goto skip_extended_pads;
             }
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            /* Scan at 8-byte stride matching MIDI_IN event size */
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+                if ((hw_midi[j] & 0xFF) == 0) break;  /* Empty = end of events */
                 uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
                 if (cable != 0) continue;
                 uint8_t cin = hw_midi[j] & 0x0F;
@@ -4774,8 +4788,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 uint8_t d1 = hw_midi[j + 2];
                 uint8_t vel = hw_midi[j + 3];
 
-                /* Left 16 pads: bank select + trigger notes 36-51
-                 * Shift+left pad = bank select only (no note trigger) */
+                /* Left 16 pads: bank select, let Move handle via cable 2.
+                 * Shift+left = bank select only (suppress dispatch in cable 2
+                 * by setting a flag, don't modify the buffer). */
                 if ((d1 >= 68 && d1 <= 71) || (d1 >= 76 && d1 <= 79) ||
                     (d1 >= 84 && d1 <= 87) || (d1 >= 92 && d1 <= 95)) {
                     if (type == 0x90 && vel > 0) {
@@ -4783,17 +4798,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         int col = (d1 - 68) % 8;
                         extended_pads_bank = row * 4 + col;
                     }
-                    if (!shadow_shift_held) {
-                        int row = (d1 - 68) / 8;
-                        int col = (d1 - 68) % 8;
-                        uint8_t left_note = 36 + row * 4 + col;
-                        uint8_t msg[3] = { st, left_note, vel };
-                        shadow_plugin_v2->on_midi(
-                            shadow_chain_slots[es].instance, msg, 3,
-                            MOVE_MIDI_SOURCE_EXTERNAL);
-                    }
                 }
-                /* Right 16 pads: remapped note triggers */
+                /* Right 16 pads: overwrite in-place with remapped cable 2 note */
                 if ((d1 >= 72 && d1 <= 75) || (d1 >= 80 && d1 <= 83) ||
                     (d1 >= 88 && d1 <= 91) || (d1 >= 96 && d1 <= 99)) {
                     int row = (d1 - 68) / 8;
@@ -4801,6 +4807,19 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     int offset = row * 4 + col;
                     int remapped = 36 + extended_pads_bank * 16 + offset;
                     if (remapped > 127) remapped = 127;
+
+                    /* Overwrite in sh_midi: cable 2, same CIN, remapped note.
+                     * Timestamp (bytes 4-7) preserved from original event. */
+                    sh_midi[j]   = cin | 0x20;  /* cable 2 */
+                    sh_midi[j+1] = st;
+                    sh_midi[j+2] = (uint8_t)remapped;
+                    sh_midi[j+3] = vel;
+                    /* Timestamp at j+4..j+7 already copied from hw_midi */
+
+                    /* Track for echo filtering */
+                    ext_pads_echo_refcount[(uint8_t)remapped]++;
+
+                    /* Dispatch directly to slot for immediate playback */
                     uint8_t msg[3] = { st, (uint8_t)remapped, vel };
                     shadow_plugin_v2->on_midi(
                         shadow_chain_slots[es].instance, msg, 3,
