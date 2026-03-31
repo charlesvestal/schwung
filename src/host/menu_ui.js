@@ -183,6 +183,14 @@ function loadModule(mod) {
         return;
     }
 
+    /* Standalone modules: launch binary, kills Move and restarts after */
+    if (mod.standalone) {
+        console.log(`Launching standalone: ${mod.id} at ${mod.standalone_path}`);
+        showStatus(`Launching ${mod.name}...`);
+        host_launch_standalone(mod.standalone_path);
+        return;
+    }
+
     /* Check if module has its own UI */
     if (!mod.has_ui) {
         showStatus("Chain-only module");

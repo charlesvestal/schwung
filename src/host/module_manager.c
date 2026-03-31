@@ -173,6 +173,7 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
     json_get_bool(json, "claims_master_knob", &info->cap_claims_master_knob);
     json_get_bool(json, "raw_midi", &info->cap_raw_midi);
     json_get_bool(json, "raw_ui", &info->cap_raw_ui);
+    json_get_bool(json, "standalone", &info->cap_standalone);
 
     /* Component type for categorization (sound_generator, audio_fx, midi_fx, utility, etc.) */
     json_get_string(json, "component_type", info->component_type, sizeof(info->component_type));
