@@ -10954,6 +10954,11 @@ function handleSelect() {
                 } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
                     debugLog("TOOLS SELECT: entering file browser");
                     enterToolFileBrowser(tool);
+                } else if (tool.standalone) {
+                    debugLog("TOOLS SELECT: launching standalone binary");
+                    announce(`Launching ${tool.name}`);
+                    const binaryPath = tool.path + "/standalone";
+                    host_system_cmd("sh /data/UserData/schwung/launch-standalone.sh " + binaryPath);
                 } else {
                     debugLog("TOOLS SELECT: tool not available");
                     announce("Tool not available");

@@ -12,6 +12,7 @@
 #include <sys/ioctl.h>
 #include <stdint.h>
 #include <dlfcn.h>
+#include <sched.h>
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
@@ -1298,6 +1299,12 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
         /* Check if ui.js exists */
         int has_ui = (info->ui_script[0] && access(info->ui_script, F_OK) == 0) ? 1 : 0;
         JS_SetPropertyStr(ctx, obj, "has_ui", JS_NewBool(ctx, has_ui));
+        JS_SetPropertyStr(ctx, obj, "standalone", JS_NewBool(ctx, info->cap_standalone));
+        if (info->cap_standalone) {
+            char standalone_path[512];
+            snprintf(standalone_path, sizeof(standalone_path), "%s/standalone", info->module_dir);
+            JS_SetPropertyStr(ctx, obj, "standalone_path", JS_NewString(ctx, standalone_path));
+        }
         JS_SetPropertyUint32(ctx, arr, i, obj);
     }
 
@@ -1609,6 +1616,36 @@ static JSValue js_host_get_current_module(JSContext *ctx, JSValueConst this_val,
     JS_SetPropertyStr(ctx, obj, "ui_script", JS_NewString(ctx, info->ui_script));
 
     return obj;
+}
+
+/* host_launch_standalone(path) -> bool */
+static JSValue js_host_launch_standalone(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    if (argc < 1) return JS_FALSE;
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_FALSE;
+
+    /* Safety: only allow paths under schwung modules dir */
+    if (strncmp(path, "/data/UserData/schwung/modules/", 30) != 0) {
+        fprintf(stderr, "host_launch_standalone: path not allowed: %s\n", path);
+        JS_FreeCString(ctx, path);
+        return JS_FALSE;
+    }
+
+    printf("host_launch_standalone: launching %s\n", path);
+    fflush(stdout);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: drop RT scheduling before exec */
+        struct sched_param sp = { .sched_priority = 0 };
+        sched_setscheduler(0, SCHED_OTHER, &sp);
+        execl("/bin/sh", "sh", "/data/UserData/schwung/launch-standalone.sh", path, (char *)NULL);
+        _exit(127);
+    }
+
+    JS_FreeCString(ctx, path);
+    return (pid > 0) ? JS_TRUE : JS_FALSE;
 }
 
 /* host_rescan_modules() -> count */
@@ -2324,6 +2361,9 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     JSValue host_rescan_modules_func = JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", host_rescan_modules_func);
+
+    JSValue host_launch_standalone_func = JS_NewCFunction(ctx, js_host_launch_standalone, "host_launch_standalone", 1);
+    JS_SetPropertyStr(ctx, global_obj, "host_launch_standalone", host_launch_standalone_func);
 
     JSValue host_get_volume_func = JS_NewCFunction(ctx, js_host_get_volume, "host_get_volume", 0);
     JS_SetPropertyStr(ctx, global_obj, "host_get_volume", host_get_volume_func);

@@ -67,14 +67,15 @@ export function scanForToolModules() {
                 const content = std.loadFile(modulePath);
                 if (!content) continue;
                 const json = JSON.parse(content);
-                if (json.component_type === "tool" && json.tool_config && !json.hidden) {
+                if (json.component_type === "tool" && (json.tool_config || json.standalone) && !json.hidden) {
                     debugLog("FOUND tool: " + json.name);
                     result.push({
                         id: json.id || entry,
                         name: json.name || entry,
                         path: dirPath,
                         tool_config: json.tool_config || null,
-                        capabilities: json.capabilities || null
+                        capabilities: json.capabilities || null,
+                        standalone: !!json.standalone
                     });
                 }
             } catch (e) {
