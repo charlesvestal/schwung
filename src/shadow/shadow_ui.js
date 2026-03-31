@@ -1341,6 +1341,7 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
+    { key: "slot:extended_pads", label: "Ext Pads", type: "int", min: 0, max: 1, step: 1 },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
@@ -3532,7 +3533,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 const state = JSON.parse(stateJson);
                 synthConfig = { state: state };
             } catch (e) {
-                /* Keep original params if state parse fails */
+                /* State is not JSON (e.g. key=value pairs) — store as opaque string */
+                synthConfig = { state: stateJson };
             }
         } else if (forAutosave) {
             /* State query timed out - skip autosave to avoid clobbering
@@ -3554,7 +3556,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 const state = JSON.parse(midiFxStateJson);
                 midiFxConfig = { state: state };
             } catch (e) {
-                /* Keep original params if state parse fails */
+                /* State is not JSON — store as opaque string */
+                midiFxConfig = { state: midiFxStateJson };
             }
         } else if (forAutosave) {
             return null;
@@ -3574,7 +3577,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 const state = JSON.parse(fx1StateJson);
                 fx1Config = { state: state };
             } catch (e) {
-                /* Keep original params if state parse fails */
+                /* State is not JSON (e.g. key=value pairs) — store as opaque string */
+                fx1Config = { state: fx1StateJson };
             }
         } else if (forAutosave) {
             return null;
@@ -3593,7 +3597,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 const state = JSON.parse(fx2StateJson);
                 fx2Config = { state: state };
             } catch (e) {
-                /* Keep original params if state parse fails */
+                /* State is not JSON (e.g. key=value pairs) — store as opaque string */
+                fx2Config = { state: fx2StateJson };
             }
         } else if (forAutosave) {
             return null;
@@ -5191,7 +5196,12 @@ function saveMasterFxChainConfig() {
                 try {
                     const stateJson = shadow_get_param(0, `master_fx:${key}:state`);
                     if (stateJson) {
-                        stateObj = JSON.parse(stateJson);
+                        try {
+                            stateObj = JSON.parse(stateJson);
+                        } catch (parseErr) {
+                            /* State is not JSON — store as opaque string */
+                            stateObj = stateJson;
+                        }
                         slotConfig.state = stateObj;
                     }
                 } catch (e) {
@@ -6249,6 +6259,9 @@ function getChainSettingValue(slot, setting) {
         if (ch === -2) return "Thru";
         if (ch === -1) return "Auto";
         return `Ch ${ch + 1}`;  // Internal 0-15 → display 1-16
+    }
+    if (setting.key === "slot:extended_pads") {
+        return parseInt(val) ? "Yes" : "No";
     }
     if (setting.key === "slot:receive_channel") {
         const ch = parseInt(val);
@@ -13140,7 +13153,10 @@ globalThis.tick = function() {
                 if (mfxData) {
                     try {
                         if (mfxDspPath && mfxData.state) {
-                            shadow_set_param(0, `master_fx:fx${mfxi + 1}:state`, JSON.stringify(mfxData.state));
+                            const stateStr = (typeof mfxData.state === "string")
+                                ? mfxData.state
+                                : JSON.stringify(mfxData.state);
+                            shadow_set_param(0, `master_fx:fx${mfxi + 1}:state`, stateStr);
                         }
                         if (mfxDspPath && mfxData.params) {
                             for (const [pk, pv] of Object.entries(mfxData.params)) {
