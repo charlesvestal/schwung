@@ -1341,7 +1341,6 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
-    { key: "slot:extended_pads", label: "Ext Pads", type: "int", min: 0, max: 1, step: 1 },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
@@ -6259,9 +6258,6 @@ function getChainSettingValue(slot, setting) {
         if (ch === -2) return "Thru";
         if (ch === -1) return "Auto";
         return `Ch ${ch + 1}`;  // Internal 0-15 → display 1-16
-    }
-    if (setting.key === "slot:extended_pads") {
-        return parseInt(val) ? "Yes" : "No";
     }
     if (setting.key === "slot:receive_channel") {
         const ch = parseInt(val);
