@@ -389,6 +389,15 @@ static volatile int shadow_held_track = -1;
 /* Selected slot for Shift+Knob routing: 0-3, persists even when shadow UI is off */
 static volatile int shadow_selected_slot = 0;
 
+/* Extended pads: track which left pad bank is selected (0-15) */
+static int extended_pads_bank = 0;
+
+/* Check if extended_pads is active for a given slot */
+static inline int slot_extended_pads(int s) {
+    return (s >= 0 && s < SHADOW_CHAIN_INSTANCES)
+        ? shadow_chain_slots[s].extended_pads : 0;
+}
+
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
 
@@ -877,6 +886,21 @@ static void shadow_inprocess_process_midi(void) {
             if ((type == 0x90 || type == 0x80) && p2 < 10) {
                 continue;
             }
+
+            /* Suppress cable 2 pad echoes when extended_pads is active.
+             * Both left and right pad notes are dispatched directly from MIDI_IN,
+             * so all cable 2 echoes in the pad range (36-51) must be suppressed.
+             * Zero the packet in the hardware buffer to also prevent physical output. */
+            if ((type == 0x90 || type == 0x80) && p2 >= 36 && p2 <= 51) {
+                int s = shadow_selected_slot;
+                if (s >= 0 && s < SHADOW_CHAIN_INSTANCES &&
+                    slot_extended_pads(s)) {
+                    uint8_t *wpkt = (uint8_t *)(global_mmap_addr + MIDI_OUT_OFFSET) + i;
+                    wpkt[0] = 0; wpkt[1] = 0; wpkt[2] = 0; wpkt[3] = 0;
+                    continue;
+                }
+            }
+
             shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
 
             /* Also route to overtake DSP if loaded */
@@ -4346,6 +4370,74 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         /* Not in shadow mode - copy MIDI_IN directly */
         memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
     }
+
+    /* === EXTENDED PADS: scan MIDI_IN for pad events (always active) === */
+    {
+        int es = shadow_selected_slot;
+        if (es >= 0 && es < SHADOW_CHAIN_INSTANCES &&
+            slot_extended_pads(es) &&
+            shadow_plugin_v2 && shadow_plugin_v2->on_midi &&
+            shadow_chain_slots[es].instance) {
+            /* Lazy activation: same as shadow_chain_dispatch_midi_to_slots */
+            if (!shadow_chain_slots[es].active) {
+                char buf[64];
+                int len = shadow_plugin_v2->get_param(
+                    shadow_chain_slots[es].instance, "synth_module", buf, sizeof(buf));
+                if (len > 0) {
+                    if (len < (int)sizeof(buf)) buf[len] = '\0';
+                    else buf[sizeof(buf) - 1] = '\0';
+                    if (buf[0] != '\0')
+                        shadow_chain_slots[es].active = 1;
+                }
+                if (!shadow_chain_slots[es].active) goto skip_extended_pads;
+            }
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+                if (cable != 0) continue;
+                uint8_t cin = hw_midi[j] & 0x0F;
+                if (cin != 0x09 && cin != 0x08) continue;
+                uint8_t st = hw_midi[j + 1];
+                uint8_t type = st & 0xF0;
+                if (type != 0x90 && type != 0x80) continue;
+                uint8_t d1 = hw_midi[j + 2];
+                uint8_t vel = hw_midi[j + 3];
+
+                /* Left 16 pads: bank select + trigger notes 36-51
+                 * Shift+left pad = bank select only (no note trigger) */
+                if ((d1 >= 68 && d1 <= 71) || (d1 >= 76 && d1 <= 79) ||
+                    (d1 >= 84 && d1 <= 87) || (d1 >= 92 && d1 <= 95)) {
+                    if (type == 0x90 && vel > 0) {
+                        int row = (d1 - 68) / 8;
+                        int col = (d1 - 68) % 8;
+                        extended_pads_bank = row * 4 + col;
+                    }
+                    if (!shadow_shift_held) {
+                        int row = (d1 - 68) / 8;
+                        int col = (d1 - 68) % 8;
+                        uint8_t left_note = 36 + row * 4 + col;
+                        uint8_t msg[3] = { st, left_note, vel };
+                        shadow_plugin_v2->on_midi(
+                            shadow_chain_slots[es].instance, msg, 3,
+                            MOVE_MIDI_SOURCE_EXTERNAL);
+                    }
+                }
+                /* Right 16 pads: remapped note triggers */
+                if ((d1 >= 72 && d1 <= 75) || (d1 >= 80 && d1 <= 83) ||
+                    (d1 >= 88 && d1 <= 91) || (d1 >= 96 && d1 <= 99)) {
+                    int row = (d1 - 68) / 8;
+                    int col = (d1 - 68) % 8 - 4;
+                    int offset = row * 4 + col;
+                    int remapped = 36 + extended_pads_bank * 16 + offset;
+                    if (remapped > 127) remapped = 127;
+                    uint8_t msg[3] = { st, (uint8_t)remapped, vel };
+                    shadow_plugin_v2->on_midi(
+                        shadow_chain_slots[es].instance, msg, 3,
+                        MOVE_MIDI_SOURCE_EXTERNAL);
+                }
+            }
+        }
+    }
+    skip_extended_pads: ;
 
     /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
      * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
