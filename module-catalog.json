@@ -550,7 +550,7 @@
     {
       "id": "verglas",
       "name": "Verglas",
-      "description": "Mutable Instruments Clouds granular processor — granular, stretch, looper, and spectral modes with output filters and limiter",
+      "description": "Mutable Instruments Clouds granular processor \u00e2\u20ac\u201d granular, stretch, looper, and spectral modes with output filters and limiter",
       "author": "Emilie Gillet (port: fillioning)",
       "component_type": "audio_fx",
       "github_repo": "fillioning/move-everything-verglas",
@@ -572,7 +572,7 @@
     {
       "id": "dragonfly-hall",
       "name": "Dragonfly Hall",
-      "description": "Dragonfly Hall Reverb — lush hall reverb with 25 presets and full parameter control",
+      "description": "Dragonfly Hall Reverb \u00e2\u20ac\u201d lush hall reverb with 25 presets and full parameter control",
       "author": "bradcoomber",
       "component_type": "audio_fx",
       "github_repo": "wolfrenegade1976/move-anything-dragonfly-hall",
@@ -594,7 +594,7 @@
     {
       "id": "structor",
       "name": "Structor",
-      "description": "Musique concrete sound deconstructor/reconstructor — 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer",
+      "description": "Musique concrete sound deconstructor/reconstructor \u00e2\u20ac\u201d 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer",
       "author": "fillioning",
       "component_type": "audio_fx",
       "github_repo": "fillioning/move-everything-structor",
@@ -605,7 +605,7 @@
     {
       "id": "weird-dreams",
       "name": "Weird Dreams",
-      "description": "8-voice analog drum machine — 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX",
+      "description": "8-voice analog drum machine \u00e2\u20ac\u201d 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX",
       "author": "fillioning (DSP: dfilaretti)",
       "component_type": "sound_generator",
       "github_repo": "fillioning/weird-dreams-move",
@@ -616,7 +616,7 @@
     {
       "id": "dissolver",
       "name": "Dissolver",
-      "description": "Spectral smearing pad generator — dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction",
+      "description": "Spectral smearing pad generator \u00e2\u20ac\u201d dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction",
       "author": "fillioning",
       "component_type": "audio_fx",
       "github_repo": "fillioning/dissolver-move",
@@ -627,7 +627,7 @@
     {
       "id": "spectra",
       "name": "Spectra",
-      "description": "Multiband spectral resonator — pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift",
+      "description": "Multiband spectral resonator \u00e2\u20ac\u201d pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift",
       "author": "fillioning",
       "component_type": "audio_fx",
       "github_repo": "fillioning/spectra-move",
@@ -644,6 +644,17 @@
       "github_repo": "charlesvestal/schwung-chowtape",
       "default_branch": "main",
       "asset_name": "chowtape-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "denis",
+      "name": "Denis",
+      "description": "Monophonic West Coast synthesizer inspired by Serge Modular",
+      "author": "fillioning",
+      "component_type": "sound_generator",
+      "github_repo": "fillioning/denis-move",
+      "default_branch": "main",
+      "asset_name": "denis-module.tar.gz",
       "min_host_version": "0.3.0"
     }
   ]
