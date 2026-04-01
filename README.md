@@ -152,6 +152,8 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
 | [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
 | [Weird Dreams](https://github.com/fillioning/weird-dreams-move) | 8-voice analog drum machine — 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX | fillioning (DSP: dfilaretti) |
+| [Essaim](https://github.com/fillioning/essaim-move) | 32-voice rhythmic oscillator swarm — polyphonic self-triggering voices with envelope→FM, SVF filtering, LFO modulation routing, scale quantization, delay, and saturation | fillioning |
+| [Wurl](https://github.com/fillioning/wurl-move) | Physically-modeled Wurlitzer 200A electric piano (OpenWurli port) | hal0zer0 (port: fillioning) |
 
 ### Audio FX
 
