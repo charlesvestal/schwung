@@ -1045,6 +1045,7 @@ let helpReturnView = null;    /* View to return to from help viewer */
 /* Chain editing state */
 let chainConfigs = [];         // In-memory chain configs per slot
 let selectedChainComponent = 0; // -1=chain, 0-4 (midiFx, synth, fx1, fx2, settings)
+let lastChainComponent = [0, 0, 0, 0]; // Remember last selected component per slot
 let selectingModule = false;   // True when in module selection for a component
 let availableModules = [];     // Modules available for selected component type
 let selectedModuleIndex = 0;   // Index in availableModules
@@ -2052,6 +2053,14 @@ function setupModuleParamShims(slot, componentKey) {
     globalThis.host_module_set_param = function(key, value) {
         return setSlotParam(slot, `${prefix}:${key}`, value);
     };
+
+    globalThis.host_swap_module = function() {
+        const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === componentKey);
+        if (compIndex >= 0) {
+            unloadModuleUi();
+            enterComponentSelect(slot, compIndex);
+        }
+    };
 }
 
 /* Clear the param shims */
@@ -2060,6 +2069,7 @@ function clearModuleParamShims() {
     delete globalThis.host_module_set_param;
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
+    delete globalThis.host_swap_module;
 }
 
 /* Load a module's UI for editing */
@@ -5480,14 +5490,13 @@ function loadMasterFxChainFromConfig() {
 function enterChainEdit(slotIndex) {
     selectedSlot = slotIndex;
     updateFocusedSlot(slotIndex);
-    selectedChainComponent = 0;  // Start at MIDI FX (scroll left for Chain/patch)
+    selectedChainComponent = lastChainComponent[slotIndex] || 0;
     /* Load current chain config from DSP */
     loadChainConfigFromSlot(slotIndex);
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const slotName = slots[selectedSlot]?.name || "Unknown";
     const comp = CHAIN_COMPONENTS[selectedChainComponent];
     const cfg = chainConfigs[selectedSlot];
     const moduleData = cfg && cfg[comp.key];
@@ -5499,7 +5508,7 @@ function enterChainEdit(slotIndex) {
         info = displayName;
     }
 
-    announce(`S${slotIndex + 1} ${slotName}, ${comp.label} ${info}`);
+    announce(`Slot ${slotIndex + 1}, ${comp.label} ${info}`);
 }
 
 /* Scan modules directory for modules of a specific component type */
@@ -9892,6 +9901,7 @@ function handleJog(delta) {
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
             selectedChainComponent = Math.max(-1, Math.min(CHAIN_COMPONENTS.length - 1, selectedChainComponent + delta));
+            lastChainComponent[selectedSlot] = selectedChainComponent;
             /* Announce component */
             if (selectedChainComponent === -1) {
                 announce("Patch Selection");
@@ -11661,10 +11671,11 @@ function refreshPendingKnobOverlay() {
 /* Draw horizontal chain editor with boxed icons */
 function drawChainEdit() {
     clear_screen();
-    /* Slot view: show slot patch name in header */
-    const slotName = slots[selectedSlot]?.name || "Unknown";
     const dirtyMark = slotDirtyCache[selectedSlot] ? "*" : "";
-    const headerText = truncateText(`S${selectedSlot + 1} ${dirtyMark}${slotName}`, 24);
+    const patchName = isExistingPreset(selectedSlot) ? slots[selectedSlot].name : null;
+    const headerText = patchName
+        ? truncateText(`${dirtyMark}${patchName}`, 24)
+        : `${dirtyMark}Slot ${selectedSlot + 1}`;
     drawHeader(headerText);
 
     /* Refresh chain config from DSP each render to ensure display matches actual state.
@@ -11674,14 +11685,29 @@ function drawChainEdit() {
     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
     const chainSelected = selectedChainComponent === -1;
 
-    /* Calculate box layout - 5 components across 128px
-     * Box size: 22px wide, with 2px gaps, centered */
+    /* Calculate box layout - 5 components, offset right to make room for slot indicators */
     const BOX_W = 22;
     const BOX_H = 16;
     const GAP = 2;
     const TOTAL_W = 5 * BOX_W + 4 * GAP;  // 118px
-    const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);  // center it
+    const START_X = 6 + Math.floor((SCREEN_WIDTH - 6 - TOTAL_W) / 2);  // centered right of indicators
     const BOX_Y = 20;  // Below header
+
+    /* Draw slot indicators - 4 marks in left margin, spanning from below header to footer */
+    const INDICATOR_X = 0;
+    const INDICATOR_W = 4;
+    const INDICATOR_GAP = 1;
+    const INDICATOR_START_Y = BOX_Y;  // same margin below title rule as boxes
+    const INDICATOR_END_Y = FOOTER_RULE_Y;  // same margin above footer
+    const INDICATOR_H = Math.floor((INDICATOR_END_Y - INDICATOR_START_Y - 3 * INDICATOR_GAP) / 4);
+    for (let s = 0; s < 4; s++) {
+        const iy = INDICATOR_START_Y + s * (INDICATOR_H + INDICATOR_GAP);
+        if (s === selectedSlot) {
+            fill_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
+        } else {
+            draw_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
+        }
+    }
 
     /* Build map of LFO-targeted component keys → which LFOs (1, 2, or both) */
     const lfoTargets = {};  /* key → {lfo1: bool, lfo2: bool} */
@@ -11722,9 +11748,9 @@ function drawChainEdit() {
             draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
         }
 
-        /* Draw abbreviation centered in box */
+        /* Draw abbreviation centered in box (original tuned formula) */
         const textColor = fillBox ? 0 : 1;
-        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
+        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2);
         const textY = BOX_Y + 5;
         print(textX, textY, abbrev, textColor);
 
