@@ -1851,9 +1851,11 @@ function applyHierarchyVisibilityFilters(levelDef) {
         const visibleKeys = new Set(
             hierEditorParams
                 .map(extractHierarchyParamKey)
-                .filter(Boolean)
+                .filter(k => k && k !== SWAP_MODULE_ACTION)
         );
         if (visibleKeys.size === 0) {
+            /* Root/page-select level: no editable params visible (only nav links)
+             * → keep all knobs so they control the first page's params */
             hierEditorKnobs = [...hierEditorAllKnobs];
         } else {
             hierEditorKnobs = hierEditorAllKnobs.filter(k => visibleKeys.has(k));
