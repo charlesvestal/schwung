@@ -667,6 +667,17 @@
       "default_branch": "master",
       "asset_name": "wurl-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "denis",
+      "name": "Denis",
+      "description": "Monophonic West Coast synthesizer inspired by Serge Modular — bipolar modulation matrix, complex oscillators, stiffness-based geometry, and portamento",
+      "author": "fillioning",
+      "component_type": "sound_generator",
+      "github_repo": "fillioning/denis-move",
+      "default_branch": "main",
+      "asset_name": "denis-module.tar.gz",
+      "min_host_version": "0.5.8"
     }
   ]
 }
