@@ -56,7 +56,7 @@
         {{range .Modules}}{{if isInstalled .ID $.Installed}}
         <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
             <div class="module-card-header">
-                <h3><a href="/modules/{{.ID}}">{{.Name}}</a></h3>
+                <h3><a href="/modules/{{.ID}}">{{.Name}}</a> <span class="module-version-inline">{{(index $.Installed .ID).Version}}</span></h3>
                 <span class="badge badge-installed">Installed</span>
             </div>
             <p class="module-description">{{.Description}}</p>
@@ -65,8 +65,12 @@
                 <span>by {{.Author}}</span>
             </div>
             <div class="module-actions">
-                <a href="/modules/{{.ID}}" class="btn btn-secondary btn-small">Manage</a>
-                <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Update</a>
+                {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
+                <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Update {{.Name}}?')">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button type="submit" class="btn btn-primary btn-small">Update</button>
+                </form>
+                {{end}}
             </div>
         </article>
         {{end}}{{end}}
@@ -78,7 +82,7 @@
         {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
         <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
             <div class="module-card-header">
-                <h3><a href="/modules/{{.ID}}">{{.Name}}</a></h3>
+                <h3><a href="/modules/{{.ID}}">{{.Name}}</a>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <span class="module-version-inline">{{(releaseMeta .ID $.ReleaseMeta).Version}}</span>{{end}}</h3>
             </div>
             <p class="module-description">{{.Description}}</p>
             <div class="module-meta">
@@ -86,7 +90,10 @@
                 <span>by {{.Author}}</span>
             </div>
             <div class="module-actions">
-                <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Install</a>
+                <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Install {{.Name}}?')">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button type="submit" class="btn btn-primary btn-small">Install</button>
+                </form>
             </div>
         </article>
         {{end}}{{end}}
@@ -110,11 +117,16 @@
             <tbody>
                 {{range .Modules}}{{if isInstalled .ID $.Installed}}
                 <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
-                    <td><span class="module-list-name">{{.Name}}</span></td>
+                    <td><span class="module-list-name">{{.Name}}</span> <span class="module-version-inline">{{(index $.Installed .ID).Version}}</span></td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>
-                        <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Update</a>
+                        {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
+                        <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Update {{.Name}}?')">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="btn btn-primary btn-small">Update</button>
+                        </form>
+                        {{end}}
                     </td>
                 </tr>
                 {{end}}{{end}}
@@ -137,11 +149,14 @@
             <tbody>
                 {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
                 <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
-                    <td><span class="module-list-name">{{.Name}}</span></td>
+                    <td><span class="module-list-name">{{.Name}}</span>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <span class="module-version-inline">{{(releaseMeta .ID $.ReleaseMeta).Version}}</span>{{end}}</td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>
-                        <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Install</a>
+                        <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Install {{.Name}}?')">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="btn btn-primary btn-small">Install</button>
+                        </form>
                     </td>
                 </tr>
                 {{end}}{{end}}

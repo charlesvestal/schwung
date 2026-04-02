@@ -904,6 +904,19 @@ h2.section-header + .module-list {
     color: var(--text-muted);
 }
 
+.update-available {
+    color: var(--accent);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    margin-left: var(--space-sm);
+}
+
+.module-version-inline {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    font-family: var(--font-mono);
+}
+
 /* Category badges */
 .badge-sound_generator {
     background: var(--badge-synth);
