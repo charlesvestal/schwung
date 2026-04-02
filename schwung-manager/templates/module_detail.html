@@ -39,22 +39,10 @@
             <dd class="requires-note">
                 {{.ModuleAssets.Description}}
                 {{if .ModuleAssets.Hint}}<br><small class="text-muted">{{.ModuleAssets.Hint}}</small>{{end}}
-                {{if .AssetsDir}}
-                <div style="margin-top: 0.5rem">
-                    <a href="/files?path={{.AssetsDir}}" class="btn btn-secondary btn-small">Browse {{.ModuleAssets.Label}}</a>
-                </div>
-                {{end}}
             </dd>
             {{else if .Module.Requires}}
             <dt>Requires</dt>
-            <dd class="requires-note">
-                {{.Module.Requires}}
-                {{if .ModuleDir}}
-                <div style="margin-top: 0.5rem">
-                    <a href="/files?path={{.ModuleDir}}" class="btn btn-secondary btn-small">Browse Module Files</a>
-                </div>
-                {{end}}
-            </dd>
+            <dd class="requires-note">{{.Module.Requires}}</dd>
             {{end}}
 
             <dt>Status</dt>
@@ -63,12 +51,20 @@
                     {{if isInstalled .Module.ID .Installed}}Installed{{else}}Not Installed{{end}}
                 </span>
             </dd>
+
+            {{if isInstalled .Module.ID .Installed}}
+            {{if .AssetsDir}}
+            <dt>Assets</dt>
+            <dd>
+                <a href="/files?path={{.AssetsDir}}" class="btn btn-secondary btn-small">Manage {{if .ModuleAssets}}{{.ModuleAssets.Label}}{{else}}Assets{{end}}</a>
+            </dd>
+            {{end}}
+            {{end}}
         </dl>
     </div>
 
     <div class="detail-actions">
         {{if isInstalled .Module.ID .Installed}}
-        {{if .AssetsDir}}<a href="/files?path={{.AssetsDir}}" class="btn btn-secondary">Browse {{if .ModuleAssets}}{{.ModuleAssets.Label}}{{else}}Assets{{end}}</a>{{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/update" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-primary">Update</button>

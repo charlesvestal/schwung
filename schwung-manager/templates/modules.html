@@ -55,7 +55,7 @@
 
 <div class="module-grid" id="module-grid">
     {{range .Modules}}
-    <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}">
+    <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
         <div class="module-card-header">
             <h2><a href="/modules/{{.ID}}">{{.Name}}</a></h2>
             <span class="badge {{if isInstalled .ID $.Installed}}badge-installed{{else}}badge-not-installed{{end}}">
@@ -92,10 +92,10 @@
         </thead>
         <tbody>
             {{range .Modules}}
-            <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}">
-                <td><a href="/modules/{{.ID}}">{{.Name}}</a></td>
+            <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
+                <td><span class="module-list-name">{{.Name}}</span></td>
                 <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
-                <td class="text-muted">{{.Author}}</td>
+                <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                 <td>
                     <span class="badge {{if isInstalled .ID $.Installed}}badge-installed{{else}}badge-not-installed{{end}} badge-inline">
                         {{if isInstalled .ID $.Installed}}Installed{{else}}Not Installed{{end}}
@@ -103,10 +103,9 @@
                 </td>
                 <td>
                     {{if isInstalled .ID $.Installed}}
-                    <a href="/modules/{{.ID}}" class="btn btn-secondary btn-small">Manage</a>
-                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Update</a>
+                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Update</a>
                     {{else}}
-                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Install</a>
+                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Install</a>
                     {{end}}
                 </td>
             </tr>
@@ -286,6 +285,21 @@
 
     gridBtn.addEventListener('click', function() { setView(false); });
     listBtn.addEventListener('click', function() { setView(true); });
+
+    // Clickable list rows
+    document.querySelectorAll('.module-row[data-href]').forEach(function(row) {
+        row.addEventListener('click', function() {
+            window.location.href = row.getAttribute('data-href');
+        });
+    });
+
+    // Clickable cards
+    document.querySelectorAll('.module-card[data-href]').forEach(function(card) {
+        card.addEventListener('click', function(e) {
+            if (e.target.closest('a, button')) return; // Don't intercept button/link clicks
+            window.location.href = card.getAttribute('data-href');
+        });
+    });
 
     // Apply initial sort and hide empty categories
     applySort(sortSelect.value);
