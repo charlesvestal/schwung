@@ -791,6 +791,25 @@ tbody tr:hover {
     white-space: nowrap;
 }
 
+/* ---- Section Headers ---- */
+.section-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    padding-bottom: var(--space-xs);
+    margin-top: var(--space-xl);
+    margin-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--border);
+}
+
+.section-header:first-child,
+h2.section-header + .module-grid,
+h2.section-header + .module-list {
+    margin-top: 0;
+}
+
 /* ---- Module Cards ---- */
 .module-grid {
     display: grid;
