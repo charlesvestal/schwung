@@ -62,6 +62,30 @@ fi
 SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
 if [ -x "$SCHWUNG_MGR" ]; then
     "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
+
+    # Redirect incoming port 80 to schwung-manager for Host-based routing.
+    # PREROUTING only intercepts external packets; the reverse proxy's
+    # loopback connections to localhost:80 (stock Move server) are unaffected.
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700 2>/dev/null || true
+        iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700
+    fi
+
+    # Advertise schwung.local via mDNS so users can access the web UI
+    # at http://schwung.local without specifying a port number.
+    if command -v avahi-publish-host-name >/dev/null 2>&1; then
+        pkill -f 'avahi-publish-host-name schwung.local' 2>/dev/null || true
+        DEVICE_IP=$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}')
+        if [ -n "$DEVICE_IP" ]; then
+            avahi-publish-host-name schwung.local "$DEVICE_IP" &
+        fi
+    elif command -v avahi-publish >/dev/null 2>&1; then
+        pkill -f 'avahi-publish.*schwung' 2>/dev/null || true
+        DEVICE_IP=$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}')
+        if [ -n "$DEVICE_IP" ]; then
+            avahi-publish -a schwung.local "$DEVICE_IP" &
+        fi
+    fi
 fi
 
 # Start filebrowser for file management (port 404, no auth) if enabled
