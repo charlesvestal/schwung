@@ -66,24 +66,21 @@ if [ -x "$SCHWUNG_MGR" ]; then
     # Redirect incoming port 80 to schwung-manager for Host-based routing.
     # PREROUTING only intercepts external packets; the reverse proxy's
     # loopback connections to localhost:80 (stock Move server) are unaffected.
-    if command -v iptables >/dev/null 2>&1; then
-        iptables -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700 2>/dev/null || true
-        iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700
+    IPTABLES=/usr/sbin/iptables
+    if [ -x "$IPTABLES" ]; then
+        "$IPTABLES" -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700 2>/dev/null || true
+        "$IPTABLES" -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700
     fi
 
-    # Advertise schwung.local via mDNS so users can access the web UI
-    # at http://schwung.local without specifying a port number.
-    if command -v avahi-publish-host-name >/dev/null 2>&1; then
-        pkill -f 'avahi-publish-host-name schwung.local' 2>/dev/null || true
+    # Advertise schwung.local via mDNS (avahi hosts file).
+    # avahi-daemon watches /etc/avahi/hosts and publishes A records automatically.
+    AVAHI_HOSTS=/etc/avahi/hosts
+    if [ -f "$AVAHI_HOSTS" ]; then
         DEVICE_IP=$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}')
         if [ -n "$DEVICE_IP" ]; then
-            avahi-publish-host-name schwung.local "$DEVICE_IP" &
-        fi
-    elif command -v avahi-publish >/dev/null 2>&1; then
-        pkill -f 'avahi-publish.*schwung' 2>/dev/null || true
-        DEVICE_IP=$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}')
-        if [ -n "$DEVICE_IP" ]; then
-            avahi-publish -a schwung.local "$DEVICE_IP" &
+            # Remove any stale entry, then add current IP
+            sed -i '/schwung\.local/d' "$AVAHI_HOSTS"
+            echo "$DEVICE_IP schwung.local" >> "$AVAHI_HOSTS"
         fi
     fi
 fi
