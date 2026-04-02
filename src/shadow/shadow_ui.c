@@ -1676,6 +1676,18 @@ static JSValue js_display_mirror_set(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* display_mirror_set_shm(enabled) - Write to shared memory ONLY (no file I/O).
+ * Safe to call from tick() for web→device config sync. */
+static JSValue js_display_mirror_set_shm(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->display_mirror = enabled ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
 /* display_mirror_get() -> bool - Read from shared memory */
 static JSValue js_display_mirror_get(JSContext *ctx, JSValueConst this_val,
                                       int argc, JSValueConst *argv) {
@@ -1735,6 +1747,18 @@ static JSValue js_set_pages_set(JSContext *ctx, JSValueConst this_val,
         }
     }
 
+    return JS_UNDEFINED;
+}
+
+/* set_pages_set_shm(enabled) - Write to shared memory ONLY (no file I/O).
+ * Safe to call from tick() for web→device config sync. */
+static JSValue js_set_pages_set_shm(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->set_pages_enabled = enabled ? 1 : 0;
     return JS_UNDEFINED;
 }
 
@@ -2272,10 +2296,12 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register display mirror functions */
     JS_SetPropertyStr(ctx, global_obj, "display_mirror_set", JS_NewCFunction(ctx, js_display_mirror_set, "display_mirror_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "display_mirror_get", JS_NewCFunction(ctx, js_display_mirror_get, "display_mirror_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "display_mirror_set_shm", JS_NewCFunction(ctx, js_display_mirror_set_shm, "display_mirror_set_shm", 1));
 
     /* Register set pages functions */
     JS_SetPropertyStr(ctx, global_obj, "set_pages_set", JS_NewCFunction(ctx, js_set_pages_set, "set_pages_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "set_pages_get", JS_NewCFunction(ctx, js_set_pages_get, "set_pages_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "set_pages_set_shm", JS_NewCFunction(ctx, js_set_pages_set_shm, "set_pages_set_shm", 1));
 
     /* Register skipback shortcut functions */
     JS_SetPropertyStr(ctx, global_obj, "skipback_shortcut_set", JS_NewCFunction(ctx, js_skipback_shortcut_set, "skipback_shortcut_set", 1));
