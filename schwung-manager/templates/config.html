@@ -18,13 +18,13 @@
             {{if eq .Type "bool"}}
             <label for="{{.Key}}">{{.Label}}</label>
             <div class="toggle-wrap">
-                <input type="checkbox" id="{{.Key}}" class="toggle-input" {{if settingChecked .Key $.Values}}checked{{end}} onchange="setSetting('{{.Key}}', this.checked)">
+                <input type="checkbox" id="{{.Key}}" class="toggle-input" data-setting-key="{{.Key}}" {{if settingChecked .Key $.Values}}checked{{end}} onchange="setSetting('{{.Key}}', this.checked)">
                 <label for="{{.Key}}" class="toggle-label"></label>
             </div>
 
             {{else if eq .Type "enum"}}
             <label for="{{.Key}}">{{.Label}}</label>
-            <select id="{{.Key}}" onchange="setSetting('{{.Key}}', this.value)">
+            <select id="{{.Key}}" data-setting-key="{{.Key}}" onchange="setSetting('{{.Key}}', this.value)">
                 {{$key := .Key}}
                 {{$values := $.Values}}
                 {{range enumOptions .}}
@@ -35,7 +35,7 @@
             {{else if or (eq .Type "int") (eq .Type "float")}}
             <label for="{{.Key}}">{{.Label}}</label>
             <div class="number-input-wrap">
-                <input type="number" id="{{.Key}}"
+                <input type="number" id="{{.Key}}" data-setting-key="{{.Key}}"
                        value="{{settingValue .Key $.Values}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}"
                        onchange="setSetting('{{.Key}}', this.value)">
             </div>
@@ -62,5 +62,32 @@ function setSetting(key, value) {
         if (!r.ok) console.error('Setting failed:', key, r.status);
     });
 }
+
+/* Poll for device-side changes every 2 seconds */
+var _pollPaused = false;
+setInterval(function() {
+    if (_pollPaused) return;
+    fetch('/config/values', { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(values) {
+            for (var key in values) {
+                var el = document.querySelector('[data-setting-key="' + key + '"]');
+                if (!el) continue;
+                if (el.type === 'checkbox') {
+                    var checked = !!values[key];
+                    if (el.checked !== checked) el.checked = checked;
+                } else if (el.tagName === 'SELECT' || el.type === 'number') {
+                    var val = String(values[key]);
+                    if (el.value !== val) el.value = val;
+                }
+            }
+        })
+        .catch(function() {});
+}, 2000);
+
+document.querySelectorAll('[data-setting-key]').forEach(function(el) {
+    el.addEventListener('focus', function() { _pollPaused = true; });
+    el.addEventListener('blur', function() { _pollPaused = false; });
+});
 </script>
 {{end}}

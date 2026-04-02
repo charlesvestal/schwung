@@ -34,8 +34,8 @@
                 <option value="updated">Last Updated</option>
             </select>
             <div class="segmented-toggle" role="group" aria-label="View mode">
-                <button class="seg-btn seg-btn-active" id="view-grid-btn" aria-pressed="true" title="Card view">&#9638;</button>
-                <button class="seg-btn" id="view-list-btn" aria-pressed="false" title="List view">&#9776;</button>
+                <button class="seg-btn" id="view-grid-btn" aria-pressed="false" title="Card view">&#9638;</button>
+                <button class="seg-btn seg-btn-active" id="view-list-btn" aria-pressed="true" title="List view">&#9776;</button>
             </div>
             {{if .HasInstalled}}
             <form method="POST" action="/modules/update-all" style="display:inline">
@@ -49,7 +49,7 @@
 </div>
 
 <!-- Card view -->
-<div id="module-grid-wrap">
+<div id="module-grid-wrap" style="display:none">
     {{if .HasInstalled}}
     <h2 class="section-header" id="grid-installed-header">Installed</h2>
     <div class="module-grid" id="module-grid-installed">
@@ -101,7 +101,7 @@
 </div>
 
 <!-- List view -->
-<div id="module-list-wrap" style="display:none">
+<div id="module-list-wrap">
     {{if .HasInstalled}}
     <h2 class="section-header" id="list-installed-header">Installed</h2>
     <div class="module-list">
@@ -204,7 +204,7 @@
     var sortSelect = document.getElementById('sort-select');
     var gridBtn = document.getElementById('view-grid-btn');
     var listBtn = document.getElementById('view-list-btn');
-    var isListView = false;
+    var isListView = true;
     var currentFilter = 'all';
 
     // Section headers

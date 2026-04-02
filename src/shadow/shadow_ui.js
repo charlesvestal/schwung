@@ -5378,6 +5378,82 @@ function saveTextPreviewConfig() {
     } catch (e) {}
 }
 
+/* Periodic sync: re-read shadow_config.json and apply changes made by web UI.
+ * Called from tick() every ~2 seconds. Only updates settings that differ from
+ * cached state to avoid unnecessary writes to shared memory. */
+let _configSyncTickCounter = 0;
+const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
+
+function syncSettingsFromConfigFile() {
+    try {
+        const configPath = "/data/UserData/schwung/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+        const config = JSON.parse(content);
+
+        /* Overlay knobs mode */
+        if (typeof config.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
+            overlay_knobs_set_mode(config.overlay_knobs_mode);
+        }
+        /* Pad typing */
+        if (config.pad_typing !== undefined && config.pad_typing !== padSelectGlobal) {
+            setPadSelectGlobal(config.pad_typing);
+        }
+        /* Text preview */
+        if (config.text_preview !== undefined && config.text_preview !== textPreviewGlobal) {
+            setTextPreviewGlobal(config.text_preview);
+        }
+        /* Browser preview */
+        if (config.browser_preview !== undefined && config.browser_preview !== previewEnabled) {
+            previewEnabled = config.browser_preview;
+        }
+        /* Auto update check */
+        if (config.auto_update_check !== undefined) {
+            autoUpdateCheckEnabled = config.auto_update_check;
+        }
+        /* TTS debounce */
+        if (typeof config.tts_debounce_ms === "number" && typeof tts_set_debounce === "function") {
+            tts_set_debounce(config.tts_debounce_ms);
+        }
+        /* Resample bridge */
+        if (config.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
+            const mode = parseResampleBridgeMode(config.resample_bridge_mode);
+            if (mode !== cachedResampleBridgeMode) {
+                shadow_set_param(0, "master_fx:resample_bridge", String(mode));
+                cachedResampleBridgeMode = mode;
+            }
+        }
+        /* Link audio routing */
+        if (config.link_audio_routing !== undefined && typeof shadow_set_param === "function") {
+            const val = !!config.link_audio_routing;
+            if (val !== cachedLinkAudioRouting) {
+                shadow_set_param(0, "master_fx:link_audio_routing", val ? "1" : "0");
+                cachedLinkAudioRouting = val;
+            }
+        }
+        /* Link audio publish */
+        if (config.link_audio_publish !== undefined && typeof shadow_set_param === "function") {
+            const val = !!config.link_audio_publish;
+            if (val !== cachedLinkAudioPublish) {
+                shadow_set_param(0, "master_fx:link_audio_publish", val ? "1" : "0");
+                cachedLinkAudioPublish = val;
+            }
+        }
+        /* Filebrowser */
+        if (config.filebrowser_enabled !== undefined && config.filebrowser_enabled !== filebrowserEnabled) {
+            filebrowserEnabled = config.filebrowser_enabled;
+            const flagPath = "/data/UserData/schwung/filebrowser_enabled";
+            if (filebrowserEnabled) {
+                host_write_file(flagPath, "1");
+            } else {
+                host_remove_dir(flagPath);
+            }
+        }
+    } catch (e) {
+        /* Ignore errors — file may be mid-write */
+    }
+}
+
 function loadTextPreviewConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -12907,6 +12983,12 @@ globalThis.tick = function() {
             drawSplashScreen();
             return;
         }
+    }
+
+    /* Periodic config sync — pick up changes from schwung-manager web UI */
+    if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
+        _configSyncTickCounter = 0;
+        syncSettingsFromConfigFile();
     }
 
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
