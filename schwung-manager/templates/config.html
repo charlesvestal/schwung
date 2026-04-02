@@ -8,49 +8,59 @@
     <p>Configure Schwung display, audio, and feature settings.</p>
 </div>
 
-<form method="POST" action="/config/save" class="settings-form">
-    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+{{range .Sections}}
+<section class="info-card">
+    <fieldset>
+        <legend><h2>{{.Label}}</h2></legend>
 
-    {{range .Sections}}
-    <section class="info-card">
-        <fieldset>
-            <legend><h2>{{.Label}}</h2></legend>
+        {{range .Items}}
+        <div class="setting-row">
+            {{if eq .Type "bool"}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <div class="toggle-wrap">
+                <input type="checkbox" id="{{.Key}}" class="toggle-input" {{if settingChecked .Key $.Values}}checked{{end}} onchange="setSetting('{{.Key}}', this.checked)">
+                <label for="{{.Key}}" class="toggle-label"></label>
+            </div>
 
-            {{range .Items}}
-            <div class="setting-row">
-                {{if eq .Type "bool"}}
-                <label for="{{.Key}}">{{.Label}}</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="{{.Key}}" value="false">
-                    <input type="checkbox" id="{{.Key}}" name="{{.Key}}" value="true" class="toggle-input" {{if settingChecked .Key $.Values}}checked{{end}}>
-                    <label for="{{.Key}}" class="toggle-label"></label>
-                </div>
-
-                {{else if eq .Type "enum"}}
-                <label for="{{.Key}}">{{.Label}}</label>
-                <select id="{{.Key}}" name="{{.Key}}">
-                    {{$key := .Key}}
-                    {{$values := $.Values}}
-                    {{range enumOptions .}}
-                    <option value="{{.Value}}" {{if settingSelected .Value $key $values}}selected{{end}}>{{.Label}}</option>
-                    {{end}}
-                </select>
-
-                {{else if or (eq .Type "int") (eq .Type "float")}}
-                <label for="{{.Key}}">{{.Label}}</label>
-                <div class="number-input-wrap">
-                    <input type="number" id="{{.Key}}" name="{{.Key}}"
-                           value="{{settingValue .Key $.Values}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}">
-                </div>
+            {{else if eq .Type "enum"}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <select id="{{.Key}}" onchange="setSetting('{{.Key}}', this.value)">
+                {{$key := .Key}}
+                {{$values := $.Values}}
+                {{range enumOptions .}}
+                <option value="{{.Value}}" {{if settingSelected .Value $key $values}}selected{{end}}>{{.Label}}</option>
                 {{end}}
+            </select>
+
+            {{else if or (eq .Type "int") (eq .Type "float")}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <div class="number-input-wrap">
+                <input type="number" id="{{.Key}}"
+                       value="{{settingValue .Key $.Values}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}"
+                       onchange="setSetting('{{.Key}}', this.value)">
             </div>
             {{end}}
-        </fieldset>
-    </section>
-    {{end}}
+        </div>
+        {{end}}
+    </fieldset>
+</section>
+{{end}}
 
-    <div class="form-actions">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-    </div>
-</form>
+<script>
+function setSetting(key, value) {
+    var csrfToken = (document.cookie.match(/(^| )csrf_token=([^;]+)/) || [])[2] || '';
+    var fd = new FormData();
+    fd.append('key', key);
+    fd.append('value', String(value));
+    fd.append('csrf_token', csrfToken);
+    fetch('/config/set', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+        headers: { 'X-CSRF-Token': csrfToken }
+    }).then(function(r) {
+        if (!r.ok) console.error('Setting failed:', key, r.status);
+    });
+}
+</script>
 {{end}}

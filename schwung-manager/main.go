@@ -1329,101 +1329,95 @@ func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	app.render(w, r, "config.html", data)
 }
 
-func (app *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
+func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
+	key := r.FormValue("key")
+	value := r.FormValue("value")
+	if key == "" {
+		http.Error(w, `{"ok":false,"error":"missing key"}`, http.StatusBadRequest)
+		return
+	}
+
 	sections, err := app.loadSettingsSchema()
 	if err != nil {
-		app.logger.Error("failed to load settings schema for save", "err", err)
-		http.Redirect(w, r, "/config?flash=Save+failed:+schema+load+error", http.StatusSeeOther)
+		app.logger.Error("failed to load settings schema for set", "err", err)
+		http.Error(w, `{"ok":false,"error":"schema load error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Find the schema item for this key so we know the type.
+	var item *SettingsItem
+	for _, section := range sections {
+		for i := range section.Items {
+			if section.Items[i].Key == key {
+				item = &section.Items[i]
+				break
+			}
+		}
+		if item != nil {
+			break
+		}
+	}
+	if item == nil {
+		http.Error(w, `{"ok":false,"error":"unknown setting key"}`, http.StatusBadRequest)
 		return
 	}
 
 	shadowPath := filepath.Join(app.basePath, "shadow_config.json")
 	featuresPath := filepath.Join(app.basePath, "config", "features.json")
 
-	// Read existing files to preserve keys we don't edit (e.g. master_fx_chain).
-	sc := readJSONFile(shadowPath)
-	ft := readJSONFile(featuresPath)
-
-	oldFt := make(map[string]any)
-	for k, v := range ft {
-		oldFt[k] = v
-	}
-
-	// Helper: form checkbox uses hidden+checkbox pattern; "true" if checked.
-	formBool := func(key string) bool { return r.FormValue(key) == "true" }
-
-	// Iterate over all schema items and save each value.
-	for _, section := range sections {
-		for _, item := range section.Items {
-			schemaKey := item.Key
-
-			// Determine which config file this key belongs to.
-			if featKey, isFeat := settingsToFeatures[schemaKey]; isFeat {
-				// Feature flag — write to features.json.
-				switch schemaKey {
-				case "skipback_shortcut":
-					// enum with values [0, 1] -> features bool skipback_require_volume
-					val, _ := strconv.Atoi(r.FormValue(schemaKey))
-					ft[featKey] = val != 0
-				default:
-					ft[featKey] = formBool(schemaKey)
-				}
+	if featKey, isFeat := settingsToFeatures[key]; isFeat {
+		// Feature flag — read, update, write features.json.
+		ft := readJSONFile(featuresPath)
+		switch key {
+		case "skipback_shortcut":
+			val, _ := strconv.Atoi(value)
+			ft[featKey] = val != 0
+		default:
+			ft[featKey] = value == "true"
+		}
+		if err := writeJSONFile(featuresPath, ft); err != nil {
+			http.Error(w, `{"ok":false,"error":"write failed"}`, http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Shadow config — read, update, write shadow_config.json.
+		sc := readJSONFile(shadowPath)
+		scKey := key
+		if mapped, ok := settingsToShadowConfig[key]; ok {
+			scKey = mapped
+		}
+		switch item.Type {
+		case "bool":
+			sc[scKey] = value == "true"
+		case "enum":
+			if n, err := strconv.ParseFloat(value, 64); err == nil {
+				sc[scKey] = n
 			} else {
-				// Shadow config — determine the config file key.
-				scKey := schemaKey
-				if mapped, ok := settingsToShadowConfig[schemaKey]; ok {
-					scKey = mapped
-				}
-
-				switch item.Type {
-				case "bool":
-					sc[scKey] = formBool(schemaKey)
-				case "enum":
-					// Store the raw form value, parsed to match the values type.
-					formVal := r.FormValue(schemaKey)
-					// Try to parse as number first (many enums use int values).
-					if n, err := strconv.ParseFloat(formVal, 64); err == nil {
-						sc[scKey] = n
-					} else {
-						sc[scKey] = formVal
-					}
-				case "int":
-					n, _ := strconv.Atoi(r.FormValue(schemaKey))
-					sc[scKey] = n
-				case "float":
-					f, _ := strconv.ParseFloat(r.FormValue(schemaKey), 64)
-					sc[scKey] = f
-				}
+				sc[scKey] = value
 			}
+		case "int":
+			n, _ := strconv.Atoi(value)
+			sc[scKey] = n
+		case "float":
+			f, _ := strconv.ParseFloat(value, 64)
+			sc[scKey] = f
+		}
+		if err := writeJSONFile(shadowPath, sc); err != nil {
+			http.Error(w, `{"ok":false,"error":"write failed"}`, http.StatusInternalServerError)
+			return
 		}
 	}
 
-	// Write both files.
-	if err := writeJSONFile(shadowPath, sc); err != nil {
-		http.Redirect(w, r, "/config?flash=Save+failed:+"+err.Error(), http.StatusSeeOther)
+	app.logger.Info("config setting updated", "key", key, "value", value)
+
+	// JSON response for AJAX callers.
+	if r.Header.Get("X-CSRF-Token") != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
 		return
 	}
-	if err := writeJSONFile(featuresPath, ft); err != nil {
-		http.Redirect(w, r, "/config?flash=Save+failed:+"+err.Error(), http.StatusSeeOther)
-		return
-	}
-
-	app.logger.Info("config saved", "shadow", shadowPath, "features", featuresPath)
-
-	// Check if features.json changed — if so, note restart required.
-	featuresChanged := false
-	for featKey := range settingsToFeatures {
-		fKey := settingsToFeatures[featKey]
-		if fmt.Sprint(oldFt[fKey]) != fmt.Sprint(ft[fKey]) {
-			featuresChanged = true
-			break
-		}
-	}
-	flash := "Settings saved"
-	if featuresChanged {
-		flash = "Settings saved (restart required for feature flag changes)"
-	}
-	http.Redirect(w, r, "/config?flash="+strings.ReplaceAll(flash, " ", "+"), http.StatusSeeOther)
+	// Fallback redirect for non-AJAX.
+	http.Redirect(w, r, "/config", http.StatusSeeOther)
 }
 
 // -- System --
@@ -1612,7 +1606,7 @@ func main() {
 
 	// Config.
 	mux.HandleFunc("GET /config", app.handleConfig)
-	mux.HandleFunc("POST /config/save", app.handleConfigSave)
+	mux.HandleFunc("POST /config/set", app.handleConfigSetSetting)
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)
