@@ -1015,29 +1015,131 @@ h2.section-header + .module-list {
     margin-bottom: var(--space-md);
 }
 
-/* ---- Config ---- */
-.config-display {
-    background: var(--bg-card);
-    padding: var(--space-lg);
-    border-radius: var(--radius);
-    border: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 0.875rem;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
+/* ---- Settings Form ---- */
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+}
+
+.settings-form fieldset {
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
+.settings-form legend h2 {
+    font-size: 1.25rem;
+    margin-bottom: var(--space-md);
+}
+
+.setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.setting-row:last-child {
+    border-bottom: none;
+}
+
+.setting-row > label {
+    font-weight: 500;
     color: var(--text);
 }
 
-.config-actions {
-    margin-top: var(--space-lg);
+.setting-row select {
+    background: var(--bg-card-hover);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-xs) var(--space-sm);
+    font-size: 0.875rem;
 }
 
-.config-editor {
-    font-family: var(--font-mono);
+/* Toggle switch */
+.toggle-wrap {
+    position: relative;
+    display: inline-block;
+}
+
+.toggle-input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+}
+
+.toggle-label {
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    background: var(--bg-card-hover);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.2s ease;
+}
+
+.toggle-label::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.toggle-input:checked + .toggle-label {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.toggle-input:checked + .toggle-label::after {
+    transform: translateX(20px);
+    background: #111;
+}
+
+.toggle-input:focus-visible + .toggle-label {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Number input with suffix */
+.number-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+.number-input-wrap input[type="number"] {
+    background: var(--bg-card-hover);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-xs) var(--space-sm);
     font-size: 0.875rem;
-    resize: vertical;
-    min-height: 300px;
+    width: 80px;
+    text-align: right;
+}
+
+.input-suffix {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+}
+
+.settings-form .form-actions {
+    padding-top: var(--space-md);
+}
+
+.settings-form .form-help {
+    margin-bottom: var(--space-sm);
 }
 
 /* ---- System ---- */

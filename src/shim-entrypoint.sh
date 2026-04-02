@@ -58,6 +58,12 @@ if [ -x "$DISPLAY_SRV" ]; then
     "$DISPLAY_SRV" >/dev/null 2>&1 &
 fi
 
+# Start schwung-manager web UI if present
+SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
+if [ -x "$SCHWUNG_MGR" ]; then
+    "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
+fi
+
 # Start filebrowser for file management (port 404, no auth) if enabled
 FB="$SCHWUNG_DIR/bin/filebrowser"
 FB_FLAG="$SCHWUNG_DIR/filebrowser_enabled"

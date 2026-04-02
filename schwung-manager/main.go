@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -348,7 +349,6 @@ func loadTemplates() (templateMap, error) {
 		"templates/module_detail.html",
 		"templates/files.html",
 		"templates/config.html",
-		"templates/config_edit.html",
 		"templates/system.html",
 		"templates/install.html",
 	}
@@ -1124,58 +1124,154 @@ func (app *App) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 
 // -- Config --
 
-func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
-	configPath := filepath.Join(app.basePath, "features.json")
-	content, err := os.ReadFile(configPath)
+// readJSONFile reads a JSON file into a map, returning an empty map if missing or invalid.
+func readJSONFile(path string) map[string]any {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		content = []byte("{}")
+		return map[string]any{}
 	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+// writeJSONFile writes a map as pretty-printed JSON to path, creating parent dirs.
+func writeJSONFile(path string, m map[string]any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	pretty, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(pretty, '\n'), 0644)
+}
+
+// jsonBool extracts a bool from a map key, with a default.
+func jsonBool(m map[string]any, key string, def bool) bool {
+	v, ok := m[key]
+	if !ok {
+		return def
+	}
+	switch b := v.(type) {
+	case bool:
+		return b
+	default:
+		return def
+	}
+}
+
+// jsonFloat extracts a float64 from a map key, with a default.
+func jsonFloat(m map[string]any, key string, def float64) float64 {
+	v, ok := m[key]
+	if !ok {
+		return def
+	}
+	switch f := v.(type) {
+	case float64:
+		return f
+	default:
+		return def
+	}
+}
+
+func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
+	shadowPath := filepath.Join(app.basePath, "shadow_config.json")
+	featuresPath := filepath.Join(app.basePath, "config", "features.json")
+
+	sc := readJSONFile(shadowPath)
+	ft := readJSONFile(featuresPath)
+
 	data := map[string]any{
-		"Title":   "Configuration",
-		"Config":  string(content),
-		"Path":    configPath,
-		"Flash":   r.URL.Query().Get("flash"),
-		"Active":  "config",
+		"Title":  "Settings",
+		"Flash":  r.URL.Query().Get("flash"),
+		"Active": "config",
+		// shadow_config.json values
+		"OverlayKnobsMode":   int(jsonFloat(sc, "overlay_knobs_mode", 0)),
+		"PadTyping":           jsonBool(sc, "pad_typing", false),
+		"TextPreview":         jsonBool(sc, "text_preview", false),
+		"ResampleBridge":      jsonFloat(sc, "resample_bridge_mode", 0) != 0,
+		"LinkAudioPublish":    jsonBool(sc, "link_audio_publish", false),
+		"BrowserPreview":      jsonBool(sc, "browser_preview", false),
+		"TTSDebounce":         int(jsonFloat(sc, "tts_debounce_ms", 200)),
+		"AutoUpdateCheck":     jsonBool(sc, "auto_update_check", false),
+		"FileBrowserService":  jsonBool(sc, "file_browser_service", false),
+		// features.json values
+		"ShadowUIEnabled":         jsonBool(ft, "shadow_ui_enabled", true),
+		"DisplayMirror":           jsonBool(ft, "display_mirror_enabled", false),
+		"LinkAudio":               jsonBool(ft, "link_audio_enabled", false),
+		"SetPages":                jsonBool(ft, "set_pages_enabled", true),
+		"SkipbackRequiresVolume":  jsonBool(ft, "skipback_require_volume", false),
 	}
 	app.render(w, r, "config.html", data)
 }
 
-func (app *App) handleConfigEdit(w http.ResponseWriter, r *http.Request) {
-	configPath := filepath.Join(app.basePath, "features.json")
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		content = []byte("{}")
-	}
-	data := map[string]any{
-		"Title":   "Edit Configuration",
-		"Config":  string(content),
-		"Path":    configPath,
-		"Active":  "config",
-	}
-	app.render(w, r, "config_edit.html", data)
-}
-
 func (app *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
-	configPath := filepath.Join(app.basePath, "features.json")
-	content := r.FormValue("content")
+	shadowPath := filepath.Join(app.basePath, "shadow_config.json")
+	featuresPath := filepath.Join(app.basePath, "config", "features.json")
 
-	// Validate JSON.
-	var js json.RawMessage
-	if err := json.Unmarshal([]byte(content), &js); err != nil {
-		http.Redirect(w, r, "/config/edit?flash=Invalid+JSON:+"+err.Error(), http.StatusSeeOther)
+	// Read existing files to preserve keys we don't edit (e.g. master_fx_chain).
+	sc := readJSONFile(shadowPath)
+	ft := readJSONFile(featuresPath)
+
+	// Helper: form checkbox uses hidden+checkbox pattern; "true" if checked.
+	formBool := func(key string) bool { return r.FormValue(key) == "true" }
+
+	// shadow_config.json settings
+	overlayMode, _ := strconv.Atoi(r.FormValue("overlay_knobs_mode"))
+	sc["overlay_knobs_mode"] = overlayMode
+	sc["pad_typing"] = formBool("pad_typing")
+	sc["text_preview"] = formBool("text_preview")
+	if formBool("resample_bridge") {
+		sc["resample_bridge_mode"] = 2
+	} else {
+		sc["resample_bridge_mode"] = 0
+	}
+	sc["link_audio_publish"] = formBool("link_audio_publish")
+	sc["browser_preview"] = formBool("browser_preview")
+	ttsDebounce, _ := strconv.Atoi(r.FormValue("tts_debounce_ms"))
+	sc["tts_debounce_ms"] = ttsDebounce
+	sc["auto_update_check"] = formBool("auto_update_check")
+	sc["file_browser_service"] = formBool("file_browser_service")
+
+	// features.json settings
+	oldFt := make(map[string]any)
+	for k, v := range ft {
+		oldFt[k] = v
+	}
+	ft["shadow_ui_enabled"] = formBool("shadow_ui_enabled")
+	ft["display_mirror_enabled"] = formBool("display_mirror_enabled")
+	ft["link_audio_enabled"] = formBool("link_audio_enabled")
+	ft["set_pages_enabled"] = formBool("set_pages_enabled")
+	ft["skipback_require_volume"] = formBool("skipback_require_volume")
+
+	// Write both files.
+	if err := writeJSONFile(shadowPath, sc); err != nil {
+		http.Redirect(w, r, "/config?flash=Save+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	if err := writeJSONFile(featuresPath, ft); err != nil {
+		http.Redirect(w, r, "/config?flash=Save+failed:+"+err.Error(), http.StatusSeeOther)
 		return
 	}
 
-	// Pretty-print.
-	var pretty []byte
-	pretty, _ = json.MarshalIndent(js, "", "  ")
+	app.logger.Info("config saved", "shadow", shadowPath, "features", featuresPath)
 
-	if err := os.WriteFile(configPath, pretty, 0644); err != nil {
-		http.Redirect(w, r, "/config/edit?flash=Save+failed:+"+err.Error(), http.StatusSeeOther)
-		return
+	// Check if features.json changed — if so, note restart required.
+	featuresChanged := false
+	for _, key := range []string{"shadow_ui_enabled", "display_mirror_enabled", "link_audio_enabled", "set_pages_enabled", "skipback_require_volume"} {
+		if fmt.Sprint(oldFt[key]) != fmt.Sprint(ft[key]) {
+			featuresChanged = true
+			break
+		}
 	}
-	app.logger.Info("config saved", "path", configPath)
-	http.Redirect(w, r, "/config?flash=Configuration+saved", http.StatusSeeOther)
+	flash := "Settings saved"
+	if featuresChanged {
+		flash = "Settings saved (restart required for feature flag changes)"
+	}
+	http.Redirect(w, r, "/config?flash="+strings.ReplaceAll(flash, " ", "+"), http.StatusSeeOther)
 }
 
 // -- System --
@@ -1364,7 +1460,6 @@ func main() {
 
 	// Config.
 	mux.HandleFunc("GET /config", app.handleConfig)
-	mux.HandleFunc("GET /config/edit", app.handleConfigEdit)
 	mux.HandleFunc("POST /config/save", app.handleConfigSave)
 
 	// System.
