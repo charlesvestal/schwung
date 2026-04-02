@@ -5428,9 +5428,9 @@ function syncSettingsFromConfigFile() {
         const c = JSON.parse(content);
 
         /* Display mirror */
-        if (c.display_mirror !== undefined && typeof display_mirror_set === "function") {
+        if (c.display_mirror !== undefined && typeof display_mirror_set_shm === "function") {
             const cur = typeof display_mirror_get === "function" ? !!display_mirror_get() : false;
-            if (!!c.display_mirror !== cur) display_mirror_set(c.display_mirror ? 1 : 0);
+            if (!!c.display_mirror !== cur) display_mirror_set_shm(c.display_mirror ? 1 : 0);
         }
         /* Overlay knobs mode */
         if (typeof c.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
@@ -5499,20 +5499,17 @@ function syncSettingsFromConfigFile() {
             tts_set_debounce(c.tts_debounce_ms);
         }
         /* Set pages */
-        if (c.set_pages_enabled !== undefined && typeof set_pages_set === "function") {
+        if (c.set_pages_enabled !== undefined && typeof set_pages_set_shm === "function") {
             const cur = typeof set_pages_get === "function" ? !!set_pages_get() : true;
-            if (!!c.set_pages_enabled !== cur) set_pages_set(c.set_pages_enabled ? 1 : 0);
+            if (!!c.set_pages_enabled !== cur) set_pages_set_shm(c.set_pages_enabled ? 1 : 0);
         }
         /* Auto update check */
         if (c.auto_update_check !== undefined) {
             autoUpdateCheckEnabled = c.auto_update_check;
         }
-        /* Filebrowser */
+        /* Filebrowser — only update JS variable, skip flag file I/O from tick */
         if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
             filebrowserEnabled = c.filebrowser_enabled;
-            const flagPath = "/data/UserData/schwung/filebrowser_enabled";
-            if (filebrowserEnabled) { host_write_file(flagPath, "1"); }
-            else { host_remove_dir(flagPath); }
         }
     } catch (e) {
         /* Ignore errors — file may be mid-write */
@@ -13050,14 +13047,11 @@ globalThis.tick = function() {
         }
     }
 
-    /* Periodic config sync — disabled pending crash investigation.
-     * TODO: re-enable once root cause of Move termination is found. */
-    /* if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
+    /* Periodic config sync from web UI */
+    if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
         _configSyncTickCounter = 0;
-        if (view === VIEWS.GLOBAL_SETTINGS) {
-            syncSettingsFromConfigFile();
-        }
-    } */
+        syncSettingsFromConfigFile();
+    }
 
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
