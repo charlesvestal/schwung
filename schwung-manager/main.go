@@ -1486,6 +1486,15 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		version = strings.TrimSpace(string(verBytes))
 	}
 
+	// Best-effort catalog fetch for update check.
+	var latestVersion string
+	var updateAvailable bool
+	cat, err := app.catalogSvc.Fetch()
+	if err == nil && cat != nil {
+		latestVersion = cat.Host.LatestVersion
+		updateAvailable = latestVersion != "" && latestVersion != version
+	}
+
 	// Disk usage via stat (simplified).
 	var diskTotal, diskFree uint64
 	var stat syscall.Statfs_t
@@ -1495,14 +1504,16 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Title":        "System",
-		"Version":      version,
-		"DiskTotal":    int64(diskTotal),
-		"DiskFree":     int64(diskFree),
-		"DiskUsed":     int64(diskTotal - diskFree),
-		"DiskPercent":  0,
-		"Flash":        r.URL.Query().Get("flash"),
-		"Active":       "system",
+		"Title":          "System",
+		"Version":        version,
+		"LatestVersion":  latestVersion,
+		"UpdateAvailable": updateAvailable,
+		"DiskTotal":      int64(diskTotal),
+		"DiskFree":       int64(diskFree),
+		"DiskUsed":       int64(diskTotal - diskFree),
+		"DiskPercent":    0,
+		"Flash":          r.URL.Query().Get("flash"),
+		"Active":         "system",
 	}
 	if diskTotal > 0 {
 		data["DiskPercent"] = int((diskTotal - diskFree) * 100 / diskTotal)
@@ -1521,7 +1532,137 @@ func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) 
 
 func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 	app.logger.Info("system upgrade requested")
-	http.Redirect(w, r, "/system?flash=Upgrade+started", http.StatusSeeOther)
+
+	// 1. Fetch catalog.
+	cat, err := app.catalogSvc.Fetch()
+	if err != nil {
+		http.Redirect(w, r, "/system?flash=Failed+to+fetch+catalog:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+
+	// 2. Compare versions.
+	verBytes, _ := os.ReadFile(filepath.Join(app.basePath, "host", "version.txt"))
+	installedVersion := strings.TrimSpace(string(verBytes))
+	latestVersion := cat.Host.LatestVersion
+	downloadURL := cat.Host.DownloadURL
+
+	if latestVersion != "" && latestVersion == installedVersion {
+		http.Redirect(w, r, "/system?flash=Already+up+to+date+("+installedVersion+")", http.StatusSeeOther)
+		return
+	}
+
+	if downloadURL == "" {
+		http.Redirect(w, r, "/system?flash=No+download+URL+in+catalog", http.StatusSeeOther)
+		return
+	}
+
+	// 3. Download the tarball.
+	tarPath := filepath.Join(app.basePath, "schwung-upgrade.tar.gz")
+	app.logger.Info("downloading upgrade", "url", downloadURL, "dest", tarPath)
+
+	client := &http.Client{Timeout: 300 * time.Second}
+	dlResp, err := client.Get(downloadURL)
+	if err != nil {
+		http.Redirect(w, r, "/system?flash=Download+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode != http.StatusOK {
+		http.Redirect(w, r, "/system?flash=Download+returned+"+strconv.Itoa(dlResp.StatusCode), http.StatusSeeOther)
+		return
+	}
+
+	tarFile, err := os.Create(tarPath)
+	if err != nil {
+		http.Redirect(w, r, "/system?flash=Failed+to+create+file:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	if _, err := io.Copy(tarFile, dlResp.Body); err != nil {
+		tarFile.Close()
+		os.Remove(tarPath)
+		http.Redirect(w, r, "/system?flash=Download+write+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	tarFile.Close()
+
+	app.logger.Info("download complete, starting upgrade", "version", latestVersion)
+
+	// 4. Kick off upgrade in background goroutine.
+	// Send the restarting page BEFORE the install runs (install will kill this process).
+	go func() {
+		// Wait for HTTP response to be sent.
+		time.Sleep(2 * time.Second)
+
+		// Extract tarball.
+		app.logger.Info("extracting upgrade tarball", "path", tarPath)
+		extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", app.basePath, "--strip-components=1")
+		if output, err := extractCmd.CombinedOutput(); err != nil {
+			app.logger.Error("extract failed", "err", err, "output", string(output))
+			return
+		}
+
+		// Run install script.
+		installScript := filepath.Join(app.basePath, "scripts", "install.sh")
+		app.logger.Info("running install script", "path", installScript)
+		installCmd := exec.Command(installScript, "local", "--skip-modules", "--skip-confirmation")
+		installCmd.Dir = app.basePath
+		if output, err := installCmd.CombinedOutput(); err != nil {
+			app.logger.Error("install script failed", "err", err, "output", string(output))
+			return
+		}
+		// If we get here, the install script didn't restart the service (unlikely).
+		app.logger.Info("upgrade complete")
+		os.Remove(tarPath)
+	}()
+
+	// 5. Return inline HTML restarting page.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Upgrading Schwung...</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         display: flex; justify-content: center; align-items: center; min-height: 100vh;
+         margin: 0; background: #1a1a2e; color: #e0e0e0; }
+  .container { text-align: center; max-width: 480px; padding: 2rem; }
+  h1 { margin-bottom: 0.5rem; }
+  .spinner { display: inline-block; width: 48px; height: 48px; border: 4px solid #444;
+             border-top-color: #6c63ff; border-radius: 50%%;
+             animation: spin 1s linear infinite; margin: 1.5rem 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .status { color: #aaa; font-size: 0.9rem; }
+  #error { display: none; color: #ff6b6b; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Upgrading to %s</h1>
+  <div class="spinner"></div>
+  <p class="status" id="status">Installing update and restarting service...</p>
+  <p id="error">The server did not come back. You may need to check the device manually.</p>
+</div>
+<script>
+(function() {
+  var start = Date.now();
+  var timeout = 120000;
+  function poll() {
+    if (Date.now() - start > timeout) {
+      document.getElementById("error").style.display = "block";
+      document.getElementById("status").textContent = "Timed out waiting for restart.";
+      return;
+    }
+    fetch("/system", {method: "GET", cache: "no-store"})
+      .then(function(r) { if (r.ok) window.location.href = "/system?flash=Upgrade+complete"; else setTimeout(poll, 3000); })
+      .catch(function() { setTimeout(poll, 3000); });
+  }
+  setTimeout(poll, 5000);
+})();
+</script>
+</body>
+</html>`, latestVersion)
 }
 
 func (app *App) handleSystemLogs(w http.ResponseWriter, r *http.Request) {
