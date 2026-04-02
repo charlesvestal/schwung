@@ -13051,10 +13051,13 @@ globalThis.tick = function() {
         }
     }
 
-    /* Periodic config sync from web UI */
+    /* Periodic config sync from web UI — only when in settings view.
+     * Running unconditionally from tick() caused crashes (SIGABRT). */
     if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
         _configSyncTickCounter = 0;
-        syncSettingsFromConfigFile();
+        if (view === VIEWS.GLOBAL_SETTINGS) {
+            syncSettingsFromConfigFile();
+        }
     }
 
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
