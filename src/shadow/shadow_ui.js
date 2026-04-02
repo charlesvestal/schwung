@@ -788,54 +788,21 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
-/* Global Settings — hierarchical sections for Shift+Vol+Step2 menu */
-const GLOBAL_SETTINGS_SECTIONS = [
-    {
-        id: "display", label: "Display",
-        items: [
-            { key: "display_mirror", label: "Mirror Display", type: "bool" },
-            { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
-              options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
-            { key: "pad_typing", label: "Pad Typing", type: "bool" },
-            { key: "text_preview", label: "Text Preview", type: "bool" }
-        ]
-    },
-    {
-        id: "audio", label: "Audio",
-        items: [
-            { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
-            { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
-            { key: "resample_bridge", label: "Sample Src", type: "enum",
-              options: ["Native", "Schwung Mix"], values: [0, 2] },
-            { key: "skipback_shortcut", label: "Skipback", type: "enum",
-              options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
-            { key: "browser_preview", label: "Browser Preview", type: "bool" }
-        ]
-    },
-    {
-        id: "accessibility", label: "Screen Reader",
-        items: [
-            { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
-            { key: "screen_reader_engine", label: "TTS Engine", type: "enum",
-              options: ["eSpeak-NG", "Flite"], values: ["espeak", "flite"] },
-            { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
-            { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
-            { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
-            { key: "screen_reader_debounce", label: "Debounce", type: "int", min: 0, max: 1000, step: 50 }
-        ]
-    },
-    {
-        id: "set_pages", label: "Set Pages",
-        items: [
-            { key: "set_pages_enabled", label: "Set Pages", type: "bool" }
-        ]
-    },
-    {
-        id: "services", label: "Services",
-        items: [
-            { key: "filebrowser_enabled", label: "File Browser", type: "bool" }
-        ]
-    },
+/* Global Settings — hierarchical sections for Shift+Vol+Step2 menu
+ * Base schema loaded from shared/settings-schema.json (single source of truth
+ * shared with schwung-manager web UI). Device-only sections (Updates, Help)
+ * are appended here since they use action types not relevant to the web UI. */
+let GLOBAL_SETTINGS_SECTIONS = [];
+try {
+    const schemaJson = host_read_file("/data/UserData/schwung/shared/settings-schema.json");
+    if (schemaJson) {
+        GLOBAL_SETTINGS_SECTIONS = JSON.parse(schemaJson);
+    }
+} catch (e) {
+    console.log("Failed to load settings schema, using empty");
+}
+/* Append device-only sections (actions that only make sense on hardware) */
+GLOBAL_SETTINGS_SECTIONS.push(
     {
         id: "updates", label: "Updates",
         items: [
@@ -846,7 +813,7 @@ const GLOBAL_SETTINGS_SECTIONS = [
     {
         id: "help", label: "[Help...]", isAction: true
     }
-];
+);
 
 let globalSettingsSectionIndex = 0;
 let globalSettingsInSection = false;
