@@ -104,4 +104,30 @@
         {{end}}
     </div>
 </div>
+
+<div id="action-overlay" class="action-overlay" hidden>
+    <div class="action-overlay-content">
+        <div class="spinner"></div>
+        <p id="action-overlay-text">Installing...</p>
+    </div>
+</div>
+
+<script>
+document.querySelectorAll('.detail-actions form').forEach(function(form) {
+    form.addEventListener('submit', function() {
+        var btn = form.querySelector('button[type="submit"]');
+        var overlay = document.getElementById('action-overlay');
+        var text = document.getElementById('action-overlay-text');
+        if (btn.classList.contains('btn-danger')) {
+            text.textContent = 'Uninstalling...';
+        } else if (btn.textContent.trim().indexOf('Update') === 0) {
+            text.textContent = 'Updating...';
+        } else {
+            text.textContent = 'Installing...';
+        }
+        btn.disabled = true;
+        overlay.hidden = false;
+    });
+});
+</script>
 {{end}}
