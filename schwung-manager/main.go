@@ -1329,6 +1329,33 @@ func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	app.render(w, r, "config.html", data)
 }
 
+func (app *App) handleConfigValues(w http.ResponseWriter, r *http.Request) {
+	sections, _ := app.loadSettingsSchema()
+	shadowConfig := readJSONFile(filepath.Join(app.basePath, "shadow_config.json"))
+	features := readJSONFile(filepath.Join(app.basePath, "config", "features.json"))
+
+	values := make(map[string]any)
+	for _, section := range sections {
+		for _, item := range section.Items {
+			configKey := item.Key
+			if mapped, ok := settingsToShadowConfig[item.Key]; ok {
+				configKey = mapped
+			}
+			if v, ok := shadowConfig[configKey]; ok {
+				values[item.Key] = v
+			}
+			if featKey, ok := settingsToFeatures[item.Key]; ok {
+				if v, ok := features[featKey]; ok {
+					values[item.Key] = v
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(values)
+}
+
 func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 	key := r.FormValue("key")
 	value := r.FormValue("value")
@@ -1606,6 +1633,7 @@ func main() {
 
 	// Config.
 	mux.HandleFunc("GET /config", app.handleConfig)
+	mux.HandleFunc("GET /config/values", app.handleConfigValues)
 	mux.HandleFunc("POST /config/set", app.handleConfigSetSetting)
 
 	// System.
