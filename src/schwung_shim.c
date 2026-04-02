@@ -546,6 +546,9 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 static volatile float shadow_master_volume = 1.0f;
 /* Is volume knob currently being touched? (note 8) */
 static volatile int shadow_volume_knob_touched = 0;
+/* Count of currently-held pads (notes 68-99).  When > 0, volume knob adjusts
+ * pad gain, not master volume, so display-based volume detection is skipped. */
+static volatile int shadow_pads_held = 0;
 /* Is jog encoder currently being touched? (note 9) */
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
@@ -3249,6 +3252,20 @@ void midi_monitor()
             }
         }
 
+        /* Track pad hold state (notes 68-99) for volume detection gating.
+         * When a pad is held and the volume knob is turned, Move shows a
+         * pad-gain overlay, not the master volume overlay.  Without this
+         * guard the pixel-based volume reader can misinterpret the gain
+         * overlay as a very low master volume, muting all audio. */
+        if (midi_1 >= 68 && midi_1 <= 99) {
+            if ((midi_0 & 0xF0) == 0x90 && midi_2 > 0) {
+                shadow_pads_held++;
+            } else if ((midi_0 & 0xF0) == 0x80 ||
+                       ((midi_0 & 0xF0) == 0x90 && midi_2 == 0)) {
+                if (shadow_pads_held > 0) shadow_pads_held--;
+            }
+        }
+
     }
 }
 
@@ -3635,8 +3652,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             pin_accumulate_slice(idx, mem + 84, bytes);
         }
 
-        /* When volume knob touched (and no track held), start capturing */
-        if (shadow_volume_knob_touched && shadow_held_track < 0) {
+        /* When volume knob touched (and no track or pad held), start capturing.
+         * Pad+volume adjusts pad gain and shows a gain overlay, not the
+         * master volume overlay — reading it would set master volume wrong. */
+        if (shadow_volume_knob_touched && shadow_held_track < 0 && shadow_pads_held == 0) {
             if (!volume_capture_active) {
                 volume_capture_active = 1;
                 volume_capture_warmup = 18;  /* Wait ~3 frames (6 slices * 3) for overlay to render */
