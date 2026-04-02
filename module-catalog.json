@@ -636,6 +636,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "essaim",
+      "name": "Essaim",
+      "description": "32-voice rhythmic oscillator swarm — polyphonic self-triggering voices with envelope→FM, SVF filtering, LFO modulation routing, scale quantization, delay, and saturation",
+      "author": "fillioning",
+      "component_type": "sound_generator",
+      "github_repo": "fillioning/essaim-move",
+      "default_branch": "main",
+      "asset_name": "essaim-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "chowtape",
       "name": "CHOWTape",
       "description": "Analog tape model with Jiles-Atherton magnetic hysteresis, loss filter, wow & flutter, chew, and degradation",
@@ -644,6 +655,17 @@
       "github_repo": "charlesvestal/schwung-chowtape",
       "default_branch": "main",
       "asset_name": "chowtape-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "wurl",
+      "name": "Wurl",
+      "description": "Physically-modeled Wurlitzer 200A electric piano (OpenWurli port)",
+      "author": "hal0zer0 (port: fillioning)",
+      "component_type": "sound_generator",
+      "github_repo": "fillioning/wurl-move",
+      "default_branch": "master",
+      "asset_name": "wurl-module.tar.gz",
       "min_host_version": "0.3.0"
     },
     {
