@@ -1421,6 +1421,10 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"ok":false,"error":"write failed"}`, http.StatusInternalServerError)
 			return
 		}
+		// Also write to shadow_config.json for live sync with shadow UI.
+		sc := readJSONFile(shadowPath)
+		sc[key] = value == "true"
+		writeJSONFile(shadowPath, sc)
 	} else {
 		// Shadow config — read, update, write shadow_config.json.
 		sc := readJSONFile(shadowPath)

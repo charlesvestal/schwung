@@ -788,21 +788,57 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
-/* Global Settings — hierarchical sections for Shift+Vol+Step2 menu
- * Base schema loaded from shared/settings-schema.json (single source of truth
- * shared with schwung-manager web UI). Device-only sections (Updates, Help)
- * are appended here since they use action types not relevant to the web UI. */
-let GLOBAL_SETTINGS_SECTIONS = [];
-try {
-    const schemaJson = host_read_file("/data/UserData/schwung/shared/settings-schema.json");
-    if (schemaJson) {
-        GLOBAL_SETTINGS_SECTIONS = JSON.parse(schemaJson);
-    }
-} catch (e) {
-    console.log("Failed to load settings schema, using empty");
-}
-/* Append device-only sections (actions that only make sense on hardware) */
-GLOBAL_SETTINGS_SECTIONS.push(
+/* Global Settings — hierarchical sections for Shift+Vol+Step2 menu.
+ * The canonical schema is also in shared/settings-schema.json for the
+ * schwung-manager web UI. Keep both in sync when adding settings. */
+const GLOBAL_SETTINGS_SECTIONS = [
+    {
+        id: "display", label: "Display",
+        items: [
+            { key: "display_mirror", label: "Mirror Display", type: "bool" },
+            { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
+              options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
+            { key: "pad_typing", label: "Pad Typing", type: "bool" },
+            { key: "text_preview", label: "Text Preview", type: "bool" }
+        ]
+    },
+    {
+        id: "audio", label: "Audio",
+        items: [
+            { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
+            { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
+            { key: "resample_bridge", label: "Sample Src", type: "enum",
+              options: ["Native", "Schwung Mix"], values: [0, 2] },
+            { key: "skipback_shortcut", label: "Skipback", type: "enum",
+              options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
+            { key: "browser_preview", label: "Browser Preview", type: "bool" }
+        ]
+    },
+    {
+        id: "accessibility", label: "Screen Reader",
+        items: [
+            { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
+            { key: "screen_reader_engine", label: "TTS Engine", type: "enum",
+              options: ["eSpeak-NG", "Flite"], values: ["espeak", "flite"] },
+            { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
+            { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
+            { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
+            { key: "screen_reader_debounce", label: "Debounce", type: "int", min: 0, max: 1000, step: 50 }
+        ]
+    },
+    {
+        id: "set_pages", label: "Set Pages",
+        items: [
+            { key: "set_pages_enabled", label: "Set Pages", type: "bool" }
+        ]
+    },
+    {
+        id: "services", label: "Services",
+        items: [
+            { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
+            { key: "auto_update_check", label: "Auto Update Check", type: "bool" }
+        ]
+    },
     {
         id: "updates", label: "Updates",
         items: [
@@ -813,7 +849,7 @@ GLOBAL_SETTINGS_SECTIONS.push(
     {
         id: "help", label: "[Help...]", isAction: true
     }
-);
+];
 
 let globalSettingsSectionIndex = 0;
 let globalSettingsInSection = false;
@@ -5389,65 +5425,94 @@ function syncSettingsFromConfigFile() {
         const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
         if (!content) return;
-        const config = JSON.parse(content);
+        const c = JSON.parse(content);
 
+        /* Display mirror */
+        if (c.display_mirror !== undefined && typeof display_mirror_set === "function") {
+            const cur = typeof display_mirror_get === "function" ? !!display_mirror_get() : false;
+            if (!!c.display_mirror !== cur) display_mirror_set(c.display_mirror ? 1 : 0);
+        }
         /* Overlay knobs mode */
-        if (typeof config.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
-            overlay_knobs_set_mode(config.overlay_knobs_mode);
+        if (typeof c.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
+            overlay_knobs_set_mode(c.overlay_knobs_mode);
         }
         /* Pad typing */
-        if (config.pad_typing !== undefined && config.pad_typing !== padSelectGlobal) {
-            setPadSelectGlobal(config.pad_typing);
+        if (c.pad_typing !== undefined && c.pad_typing !== padSelectGlobal) {
+            setPadSelectGlobal(c.pad_typing);
         }
         /* Text preview */
-        if (config.text_preview !== undefined && config.text_preview !== textPreviewGlobal) {
-            setTextPreviewGlobal(config.text_preview);
+        if (c.text_preview !== undefined && c.text_preview !== textPreviewGlobal) {
+            setTextPreviewGlobal(c.text_preview);
         }
-        /* Browser preview */
-        if (config.browser_preview !== undefined && config.browser_preview !== previewEnabled) {
-            previewEnabled = config.browser_preview;
-        }
-        /* Auto update check */
-        if (config.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = config.auto_update_check;
-        }
-        /* TTS debounce */
-        if (typeof config.tts_debounce_ms === "number" && typeof tts_set_debounce === "function") {
-            tts_set_debounce(config.tts_debounce_ms);
-        }
-        /* Resample bridge */
-        if (config.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
-            const mode = parseResampleBridgeMode(config.resample_bridge_mode);
-            if (mode !== cachedResampleBridgeMode) {
-                shadow_set_param(0, "master_fx:resample_bridge", String(mode));
-                cachedResampleBridgeMode = mode;
-            }
-        }
-        /* Link audio routing */
-        if (config.link_audio_routing !== undefined && typeof shadow_set_param === "function") {
-            const val = !!config.link_audio_routing;
+        /* Link audio routing (Move->Schwung) */
+        if (c.link_audio_routing !== undefined && typeof shadow_set_param === "function") {
+            const val = !!c.link_audio_routing;
             if (val !== cachedLinkAudioRouting) {
                 shadow_set_param(0, "master_fx:link_audio_routing", val ? "1" : "0");
                 cachedLinkAudioRouting = val;
             }
         }
-        /* Link audio publish */
-        if (config.link_audio_publish !== undefined && typeof shadow_set_param === "function") {
-            const val = !!config.link_audio_publish;
+        /* Link audio publish (Schwung->Link) */
+        if (c.link_audio_publish !== undefined && typeof shadow_set_param === "function") {
+            const val = !!c.link_audio_publish;
             if (val !== cachedLinkAudioPublish) {
                 shadow_set_param(0, "master_fx:link_audio_publish", val ? "1" : "0");
                 cachedLinkAudioPublish = val;
             }
         }
-        /* Filebrowser */
-        if (config.filebrowser_enabled !== undefined && config.filebrowser_enabled !== filebrowserEnabled) {
-            filebrowserEnabled = config.filebrowser_enabled;
-            const flagPath = "/data/UserData/schwung/filebrowser_enabled";
-            if (filebrowserEnabled) {
-                host_write_file(flagPath, "1");
-            } else {
-                host_remove_dir(flagPath);
+        /* Resample bridge (Sample Source) */
+        if (c.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
+            const mode = parseResampleBridgeMode(c.resample_bridge_mode);
+            if (mode !== cachedResampleBridgeMode) {
+                shadow_set_param(0, "master_fx:resample_bridge", String(mode));
+                cachedResampleBridgeMode = mode;
             }
+        }
+        /* Browser preview */
+        if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
+            previewEnabled = c.browser_preview;
+        }
+        /* Screen reader enabled */
+        if (c.screen_reader_enabled !== undefined && typeof tts_set_enabled === "function") {
+            const cur = typeof tts_get_enabled === "function" ? !!tts_get_enabled() : false;
+            if (!!c.screen_reader_enabled !== cur) tts_set_enabled(c.screen_reader_enabled ? 1 : 0);
+        }
+        /* Screen reader engine */
+        if (c.screen_reader_engine !== undefined && typeof tts_set_engine === "function") {
+            const cur = typeof tts_get_engine === "function" ? tts_get_engine() : "espeak";
+            if (c.screen_reader_engine !== cur) tts_set_engine(c.screen_reader_engine);
+        }
+        /* Screen reader speed */
+        if (typeof c.screen_reader_speed === "number" && typeof tts_set_speed === "function") {
+            tts_set_speed(c.screen_reader_speed);
+        }
+        /* Screen reader pitch */
+        if (typeof c.screen_reader_pitch === "number" && typeof tts_set_pitch === "function") {
+            tts_set_pitch(c.screen_reader_pitch);
+        }
+        /* Screen reader volume */
+        if (typeof c.screen_reader_volume === "number" && typeof tts_set_volume === "function") {
+            tts_set_volume(Math.round(c.screen_reader_volume));
+        }
+        /* TTS debounce */
+        if (typeof c.tts_debounce_ms === "number" && typeof tts_set_debounce === "function") {
+            tts_set_debounce(c.tts_debounce_ms);
+        }
+        /* Set pages */
+        if (c.set_pages_enabled !== undefined && typeof set_pages_set === "function") {
+            const cur = typeof set_pages_get === "function" ? !!set_pages_get() : true;
+            if (!!c.set_pages_enabled !== cur) set_pages_set(c.set_pages_enabled ? 1 : 0);
+        }
+        /* Auto update check */
+        if (c.auto_update_check !== undefined) {
+            autoUpdateCheckEnabled = c.auto_update_check;
+        }
+        /* Filebrowser */
+        if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
+            filebrowserEnabled = c.filebrowser_enabled;
+            const flagPath = "/data/UserData/schwung/filebrowser_enabled";
+            if (filebrowserEnabled) { host_write_file(flagPath, "1"); }
+            else { host_remove_dir(flagPath); }
         }
     } catch (e) {
         /* Ignore errors — file may be mid-write */
@@ -12985,11 +13050,14 @@ globalThis.tick = function() {
         }
     }
 
-    /* Periodic config sync — pick up changes from schwung-manager web UI */
-    if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
+    /* Periodic config sync — disabled pending crash investigation.
+     * TODO: re-enable once root cause of Move termination is found. */
+    /* if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
         _configSyncTickCounter = 0;
-        syncSettingsFromConfigFile();
-    }
+        if (view === VIEWS.GLOBAL_SETTINGS) {
+            syncSettingsFromConfigFile();
+        }
+    } */
 
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
