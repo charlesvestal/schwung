@@ -75,7 +75,10 @@
             <button type="submit" class="btn btn-danger">Uninstall</button>
         </form>
         {{else}}
-        <a href="/install/{{.Module.ID}}" class="btn btn-primary">Install</a>
+        <form method="POST" action="/modules/{{.Module.ID}}/install" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-primary">Install {{.Module.Name}}</button>
+        </form>
         {{end}}
     </div>
 </div>
