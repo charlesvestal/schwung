@@ -15,10 +15,14 @@
 {{else}}
 <div class="module-toolbar" role="toolbar" aria-label="Module filters and sorting">
     <div class="toolbar-row">
-        <div class="filter-group" role="group" aria-label="Filter by install status">
-            <button class="filter-btn status-btn active" data-status="all" aria-pressed="true">All</button>
-            <button class="filter-btn status-btn" data-status="installed" aria-pressed="false">Installed</button>
-            <button class="filter-btn status-btn" data-status="not-installed" aria-pressed="false">Not Installed</button>
+        <div class="filter-group" id="category-filters" role="group" aria-label="Filter by category">
+            <button class="filter-btn cat-btn active" data-filter="all" aria-pressed="true">All</button>
+            <button class="filter-btn cat-btn" data-filter="sound_generator" aria-pressed="false">Sound Generators</button>
+            <button class="filter-btn cat-btn" data-filter="audio_fx" aria-pressed="false">Audio FX</button>
+            <button class="filter-btn cat-btn" data-filter="midi_fx" aria-pressed="false">MIDI FX</button>
+            <button class="filter-btn cat-btn" data-filter="overtake" aria-pressed="false">Overtake</button>
+            <button class="filter-btn cat-btn" data-filter="tool" aria-pressed="false">Tools</button>
+            <button class="filter-btn cat-btn" data-filter="utility" aria-pressed="false">Utilities</button>
         </div>
         <div class="toolbar-right">
             <label class="sr-only" for="sort-select">Sort modules</label>
@@ -39,79 +43,109 @@
             {{end}}
         </div>
     </div>
-    <div class="toolbar-row">
-        <div class="filter-group" id="category-filters" role="group" aria-label="Filter by category">
-            <button class="filter-btn cat-btn active" data-filter="all" aria-pressed="true">All</button>
-            <button class="filter-btn cat-btn" data-filter="sound_generator" aria-pressed="false">Sound Generators</button>
-            <button class="filter-btn cat-btn" data-filter="audio_fx" aria-pressed="false">Audio FX</button>
-            <button class="filter-btn cat-btn" data-filter="midi_fx" aria-pressed="false">MIDI FX</button>
-            <button class="filter-btn cat-btn" data-filter="overtake" aria-pressed="false">Overtake</button>
-            <button class="filter-btn cat-btn" data-filter="tool" aria-pressed="false">Tools</button>
-            <button class="filter-btn cat-btn" data-filter="utility" aria-pressed="false">Utilities</button>
-        </div>
-        <span class="module-count" aria-live="polite">Showing <span id="visible-count">{{len .Modules}}</span> modules</span>
+    <span class="module-count" aria-live="polite">Showing <span id="visible-count">{{len .Modules}}</span> modules</span>
+</div>
+
+<!-- Card view -->
+<div id="module-grid-wrap">
+    {{if .HasInstalled}}
+    <h2 class="section-header" id="grid-installed-header">Installed</h2>
+    <div class="module-grid" id="module-grid-installed">
+        {{range .Modules}}{{if isInstalled .ID $.Installed}}
+        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-href="/modules/{{.ID}}" style="cursor:pointer">
+            <div class="module-card-header">
+                <h3><a href="/modules/{{.ID}}">{{.Name}}</a></h3>
+                <span class="badge badge-installed">Installed</span>
+            </div>
+            <p class="module-description">{{.Description}}</p>
+            <div class="module-meta">
+                <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
+                <span>by {{.Author}}</span>
+            </div>
+            <div class="module-actions">
+                <a href="/modules/{{.ID}}" class="btn btn-secondary btn-small">Manage</a>
+                <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Update</a>
+            </div>
+        </article>
+        {{end}}{{end}}
+    </div>
+    {{end}}
+
+    <h2 class="section-header" id="grid-available-header">Available</h2>
+    <div class="module-grid" id="module-grid-available">
+        {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
+        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-href="/modules/{{.ID}}" style="cursor:pointer">
+            <div class="module-card-header">
+                <h3><a href="/modules/{{.ID}}">{{.Name}}</a></h3>
+            </div>
+            <p class="module-description">{{.Description}}</p>
+            <div class="module-meta">
+                <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
+                <span>by {{.Author}}</span>
+            </div>
+            <div class="module-actions">
+                <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Install</a>
+            </div>
+        </article>
+        {{end}}{{end}}
     </div>
 </div>
 
-<div class="module-grid" id="module-grid">
-    {{range .Modules}}
-    <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
-        <div class="module-card-header">
-            <h2><a href="/modules/{{.ID}}">{{.Name}}</a></h2>
-            <span class="badge {{if isInstalled .ID $.Installed}}badge-installed{{else}}badge-not-installed{{end}}">
-                {{if isInstalled .ID $.Installed}}Installed{{else}}Not Installed{{end}}
-            </span>
-        </div>
-        <p class="module-description">{{.Description}}</p>
-        <div class="module-meta">
-            <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
-            <span>by {{.Author}}</span>
-        </div>
-        <div class="module-actions">
-            {{if isInstalled .ID $.Installed}}
-            <a href="/modules/{{.ID}}" class="btn btn-secondary btn-small">Manage</a>
-            <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Update</a>
-            {{else}}
-            <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Install</a>
-            {{end}}
-        </div>
-    </article>
+<!-- List view -->
+<div id="module-list-wrap" style="display:none">
+    {{if .HasInstalled}}
+    <h2 class="section-header" id="list-installed-header">Installed</h2>
+    <div class="module-list">
+        <table aria-label="Installed modules">
+            <thead>
+                <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Category</th>
+                    <th scope="col">Author</th>
+                    <th scope="col">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Modules}}{{if isInstalled .ID $.Installed}}
+                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-href="/modules/{{.ID}}" style="cursor:pointer">
+                    <td><span class="module-list-name">{{.Name}}</span></td>
+                    <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
+                    <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
+                    <td>
+                        <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Update</a>
+                    </td>
+                </tr>
+                {{end}}{{end}}
+            </tbody>
+        </table>
+    </div>
     {{end}}
-</div>
 
-<div class="module-list" id="module-list" style="display:none">
-    <table aria-label="Module listing">
-        <thead>
-            <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Category</th>
-                <th scope="col">Author</th>
-                <th scope="col">Status</th>
-                <th scope="col">Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {{range .Modules}}
-            <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
-                <td><span class="module-list-name">{{.Name}}</span></td>
-                <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
-                <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
-                <td>
-                    <span class="badge {{if isInstalled .ID $.Installed}}badge-installed{{else}}badge-not-installed{{end}} badge-inline">
-                        {{if isInstalled .ID $.Installed}}Installed{{else}}Not Installed{{end}}
-                    </span>
-                </td>
-                <td>
-                    {{if isInstalled .ID $.Installed}}
-                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Update</a>
-                    {{else}}
-                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Install</a>
-                    {{end}}
-                </td>
-            </tr>
-            {{end}}
-        </tbody>
-    </table>
+    <h2 class="section-header" id="list-available-header">Available</h2>
+    <div class="module-list">
+        <table aria-label="Available modules">
+            <thead>
+                <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Category</th>
+                    <th scope="col">Author</th>
+                    <th scope="col">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
+                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-href="/modules/{{.ID}}" style="cursor:pointer">
+                    <td><span class="module-list-name">{{.Name}}</span></td>
+                    <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
+                    <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
+                    <td>
+                        <a href="/install/{{.ID}}" class="btn btn-primary btn-small" onclick="event.stopPropagation()">Install</a>
+                    </td>
+                </tr>
+                {{end}}{{end}}
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <details class="custom-install-section">
@@ -144,26 +178,26 @@
 
 <script>
 (function() {
-    var grid = document.getElementById('module-grid');
-    var listView = document.getElementById('module-list');
-    var cards = Array.prototype.slice.call(grid.querySelectorAll('.module-card'));
-    var rows = Array.prototype.slice.call(listView.querySelectorAll('.module-row'));
+    var gridWrap = document.getElementById('module-grid-wrap');
+    var listWrap = document.getElementById('module-list-wrap');
+    var allCards = Array.prototype.slice.call(gridWrap.querySelectorAll('.module-card'));
+    var allRows = Array.prototype.slice.call(listWrap.querySelectorAll('.module-row'));
     var countEl = document.getElementById('visible-count');
     var catBtns = document.querySelectorAll('.cat-btn');
-    var statusBtns = document.querySelectorAll('.status-btn');
     var sortSelect = document.getElementById('sort-select');
     var gridBtn = document.getElementById('view-grid-btn');
     var listBtn = document.getElementById('view-list-btn');
-    var currentFilter = 'all';
-    var currentStatus = 'all';
     var isListView = false;
+    var currentFilter = 'all';
 
-    function getItems() {
-        return isListView ? rows : cards;
-    }
+    // Section headers
+    var gridInstalledHeader = document.getElementById('grid-installed-header');
+    var gridAvailableHeader = document.getElementById('grid-available-header');
+    var listInstalledHeader = document.getElementById('list-installed-header');
+    var listAvailableHeader = document.getElementById('list-available-header');
 
     function updateCount() {
-        var items = getItems();
+        var items = isListView ? allRows : allCards;
         var n = 0;
         for (var i = 0; i < items.length; i++) {
             if (items[i].style.display !== 'none') n++;
@@ -172,73 +206,81 @@
     }
 
     function updateCategoryButtons() {
-        var items = isListView ? rows : cards;
-        // Count visible modules per category given current status filter
+        var items = allCards;
         var catCounts = {};
         for (var i = 0; i < items.length; i++) {
-            var cat = items[i].getAttribute('data-category');
-            var inst = items[i].getAttribute('data-installed');
-            var statusMatch = (currentStatus === 'all' ||
-                (currentStatus === 'installed' && inst === 'yes') ||
-                (currentStatus === 'not-installed' && inst === 'no'));
-            if (statusMatch) {
-                catCounts[cat] = (catCounts[cat] || 0) + 1;
-            }
+            catCounts[items[i].getAttribute('data-category')] = true;
         }
         for (var i = 0; i < catBtns.length; i++) {
             var filter = catBtns[i].getAttribute('data-filter');
             if (filter === 'all') continue;
             catBtns[i].style.display = catCounts[filter] ? '' : 'none';
         }
-        // If active category is now hidden, reset to all
-        var activeBtn = document.querySelector('.cat-btn.active');
-        if (activeBtn && activeBtn.style.display === 'none') {
-            activeBtn.classList.remove('active');
-            activeBtn.setAttribute('aria-pressed', 'false');
-            catBtns[0].classList.add('active');
-            catBtns[0].setAttribute('aria-pressed', 'true');
-            currentFilter = 'all';
-        }
     }
 
     function applyFilters() {
-        var allItems = [cards, rows];
+        var allItems = [allCards, allRows];
         for (var v = 0; v < allItems.length; v++) {
             var items = allItems[v];
             for (var i = 0; i < items.length; i++) {
                 var cat = items[i].getAttribute('data-category');
-                var inst = items[i].getAttribute('data-installed');
-                var catMatch = (currentFilter === 'all' || cat === currentFilter);
-                var statusMatch = (currentStatus === 'all' ||
-                    (currentStatus === 'installed' && inst === 'yes') ||
-                    (currentStatus === 'not-installed' && inst === 'no'));
-                items[i].style.display = (catMatch && statusMatch) ? '' : 'none';
+                items[i].style.display = (currentFilter === 'all' || cat === currentFilter) ? '' : 'none';
             }
         }
-        updateCategoryButtons();
+        // Hide section headers if no visible items in that section
+        function hasVisible(container) {
+            var items = container.querySelectorAll('.module-card, .module-row');
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].style.display !== 'none') return true;
+            }
+            return false;
+        }
+        var gi = document.getElementById('module-grid-installed');
+        var ga = document.getElementById('module-grid-available');
+        if (gridInstalledHeader) gridInstalledHeader.style.display = (gi && hasVisible(gi)) ? '' : 'none';
+        if (gridAvailableHeader) gridAvailableHeader.style.display = hasVisible(ga) ? '' : 'none';
+        if (listInstalledHeader) {
+            var liTbody = listInstalledHeader.nextElementSibling.querySelector('tbody');
+            listInstalledHeader.style.display = hasVisible(liTbody.parentElement) ? '' : 'none';
+            listInstalledHeader.nextElementSibling.style.display = hasVisible(liTbody.parentElement) ? '' : 'none';
+        }
+        if (listAvailableHeader) {
+            var laTbody = listAvailableHeader.nextElementSibling.querySelector('tbody');
+            listAvailableHeader.style.display = hasVisible(laTbody.parentElement) ? '' : 'none';
+            listAvailableHeader.nextElementSibling.style.display = hasVisible(laTbody.parentElement) ? '' : 'none';
+        }
         updateCount();
     }
 
     function applySort(mode) {
         function sorter(a, b) {
-            if (mode === 'az') {
-                return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
-            } else if (mode === 'category') {
+            if (mode === 'az') return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
+            if (mode === 'category') {
                 var ca = a.getAttribute('data-category'), cb = b.getAttribute('data-category');
                 if (ca !== cb) return ca.localeCompare(cb);
                 return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
-            } else if (mode === 'author') {
+            }
+            if (mode === 'author') {
                 var aa = a.getAttribute('data-author'), ab = b.getAttribute('data-author');
                 if (aa !== ab) return aa.localeCompare(ab);
                 return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
             }
             return 0;
         }
-        var sortedCards = cards.slice().sort(sorter);
-        for (var i = 0; i < sortedCards.length; i++) grid.appendChild(sortedCards[i]);
-        var sortedRows = rows.slice().sort(sorter);
-        var tbody = listView.querySelector('tbody');
-        for (var i = 0; i < sortedRows.length; i++) tbody.appendChild(sortedRows[i]);
+        // Sort cards within each grid section
+        ['module-grid-installed', 'module-grid-available'].forEach(function(id) {
+            var container = document.getElementById(id);
+            if (!container) return;
+            var items = Array.prototype.slice.call(container.querySelectorAll('.module-card'));
+            items.sort(sorter);
+            items.forEach(function(item) { container.appendChild(item); });
+        });
+        // Sort rows within each table tbody
+        listWrap.querySelectorAll('tbody').forEach(function(tbody) {
+            var items = Array.prototype.slice.call(tbody.querySelectorAll('.module-row'));
+            items.sort(sorter);
+            items.forEach(function(item) { tbody.appendChild(item); });
+        });
     }
 
     for (var i = 0; i < catBtns.length; i++) {
@@ -254,19 +296,6 @@
         });
     }
 
-    for (var i = 0; i < statusBtns.length; i++) {
-        statusBtns[i].addEventListener('click', function() {
-            for (var j = 0; j < statusBtns.length; j++) {
-                statusBtns[j].classList.remove('active');
-                statusBtns[j].setAttribute('aria-pressed', 'false');
-            }
-            this.classList.add('active');
-            this.setAttribute('aria-pressed', 'true');
-            currentStatus = this.getAttribute('data-status');
-            applyFilters();
-        });
-    }
-
     sortSelect.addEventListener('change', function() {
         applySort(this.value);
         applyFilters();
@@ -274,8 +303,8 @@
 
     function setView(toList) {
         isListView = toList;
-        grid.style.display = isListView ? 'none' : '';
-        listView.style.display = isListView ? '' : 'none';
+        gridWrap.style.display = isListView ? 'none' : '';
+        listWrap.style.display = isListView ? '' : 'none';
         gridBtn.classList.toggle('seg-btn-active', !isListView);
         gridBtn.setAttribute('aria-pressed', !isListView);
         listBtn.classList.toggle('seg-btn-active', isListView);
@@ -286,24 +315,21 @@
     gridBtn.addEventListener('click', function() { setView(false); });
     listBtn.addEventListener('click', function() { setView(true); });
 
-    // Clickable list rows
+    // Clickable rows and cards
     document.querySelectorAll('.module-row[data-href]').forEach(function(row) {
-        row.addEventListener('click', function() {
-            window.location.href = row.getAttribute('data-href');
-        });
+        row.addEventListener('click', function() { window.location.href = row.getAttribute('data-href'); });
     });
-
-    // Clickable cards
     document.querySelectorAll('.module-card[data-href]').forEach(function(card) {
         card.addEventListener('click', function(e) {
-            if (e.target.closest('a, button')) return; // Don't intercept button/link clicks
+            if (e.target.closest('a, button')) return;
             window.location.href = card.getAttribute('data-href');
         });
     });
 
-    // Apply initial sort and hide empty categories
+    // Initial sort and hide empty categories
     applySort(sortSelect.value);
     updateCategoryButtons();
+    applyFilters();
 })();
 </script>
 {{end}}
