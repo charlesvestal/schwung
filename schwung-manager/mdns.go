@@ -4,34 +4,42 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"net"
+	"time"
 )
 
-// startMDNS listens on the mDNS multicast group (224.0.0.251:5353) and responds
-// to A record queries for the given hostname with the device's IP address.
-// This is a minimal mDNS responder — just enough to make "schwung.local" resolve.
+// startMDNS launches a goroutine that listens on the mDNS multicast group
+// (224.0.0.251:5353) and responds to A record queries for the given hostname
+// with the device's current IP address. Retries setup until the network is ready.
 func startMDNS(hostname string, logger *slog.Logger) {
-	ip := getOutboundIP()
-	if ip == nil {
-		logger.Warn("mdns: could not determine outbound IP, skipping")
-		return
-	}
-
-	mdnsAddr := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
-
-	conn, err := net.ListenMulticastUDP("udp4", nil, mdnsAddr)
-	if err != nil {
-		logger.Error("mdns: listen failed", "err", err)
-		return
-	}
-
-	// Encode the question name we're looking for (e.g. "schwung.local.")
 	qname := encodeDNSName(hostname + ".")
-	logger.Info("mdns: advertising", "hostname", hostname, "ip", ip.String())
 
 	go func() {
+		// Retry until network is available and multicast socket is bound.
+		var conn *net.UDPConn
+		for {
+			ip := getOutboundIP()
+			if ip == nil {
+				logger.Info("mdns: waiting for network...")
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			mdnsAddr := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+			var err error
+			conn, err = net.ListenMulticastUDP("udp4", nil, mdnsAddr)
+			if err != nil {
+				logger.Error("mdns: listen failed, retrying", "err", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			logger.Info("mdns: advertising", "hostname", hostname, "ip", ip.String())
+			break
+		}
+
 		buf := make([]byte, 1500)
 		for {
-			n, src, err := conn.ReadFromUDP(buf)
+			n, _, err := conn.ReadFromUDP(buf)
 			if err != nil {
 				continue
 			}
@@ -73,9 +81,13 @@ func startMDNS(hostname string, logger *slog.Logger) {
 				if qtype == 1 && (qclass == 1 || qclass == 0x8001) {
 					nameLen := offset - 4 - nameStart
 					if nameLen == len(qname) && string(buf[nameStart:nameStart+nameLen]) == string(qname) {
-						resp := buildMDNSResponse(buf[:n], qname, ip)
-						conn.WriteToUDP(resp, mdnsAddr)
-						_ = src // response goes to multicast
+						// Get current IP (may change over time)
+						ip := getOutboundIP()
+						if ip != nil {
+							mdnsAddr := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+							resp := buildMDNSResponse(qname, ip)
+							conn.WriteToUDP(resp, mdnsAddr)
+						}
 					}
 				}
 			}
@@ -84,23 +96,23 @@ func startMDNS(hostname string, logger *slog.Logger) {
 }
 
 // buildMDNSResponse builds a minimal DNS response with a single A record.
-func buildMDNSResponse(query []byte, qname []byte, ip net.IP) []byte {
+func buildMDNSResponse(qname []byte, ip net.IP) []byte {
 	resp := make([]byte, 0, 64)
 
 	// Header: ID=0, flags=0x8400 (response, authoritative), 0 questions, 1 answer
-	resp = append(resp, 0, 0) // ID
+	resp = append(resp, 0, 0)       // ID
 	resp = append(resp, 0x84, 0x00) // Flags: response, authoritative
-	resp = append(resp, 0, 0) // QDCOUNT
-	resp = append(resp, 0, 1) // ANCOUNT
-	resp = append(resp, 0, 0) // NSCOUNT
-	resp = append(resp, 0, 0) // ARCOUNT
+	resp = append(resp, 0, 0)       // QDCOUNT
+	resp = append(resp, 0, 1)       // ANCOUNT
+	resp = append(resp, 0, 0)       // NSCOUNT
+	resp = append(resp, 0, 0)       // ARCOUNT
 
 	// Answer: name, type A, class IN (cache-flush), TTL 120, RDLENGTH 4, IP
 	resp = append(resp, qname...)
-	resp = append(resp, 0, 1) // TYPE A
-	resp = append(resp, 0x80, 1) // CLASS IN with cache-flush bit
-	resp = append(resp, 0, 0, 0, 120) // TTL 120 seconds
-	resp = append(resp, 0, 4) // RDLENGTH
+	resp = append(resp, 0, 1)          // TYPE A
+	resp = append(resp, 0x80, 1)       // CLASS IN with cache-flush bit
+	resp = append(resp, 0, 0, 0, 120)  // TTL 120 seconds
+	resp = append(resp, 0, 4)          // RDLENGTH
 	resp = append(resp, ip.To4()...)
 
 	return resp
