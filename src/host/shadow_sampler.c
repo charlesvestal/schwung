@@ -86,6 +86,9 @@ int sampler_fullscreen_active = 0;
 #define SAMPLER_FADE_SAMPLES 128  /* ~3ms at 44.1kHz — short, click-free */
 static int sampler_fade_in_remaining = 0;
 
+/* Preroll-to-recording trim: frames captured during preroll that need trimming */
+static uint32_t sampler_preroll_frames_captured = 0;
+
 /* Recording state */
 static FILE *sampler_wav_file = NULL;
 uint32_t sampler_samples_written = 0;
@@ -340,6 +343,7 @@ void sampler_announce_menu_item(void) {
 void sampler_start_preroll(void) {
     sampler_preroll_clock_count = 0;
     sampler_preroll_fallback_blocks = 0;
+    sampler_preroll_frames_captured = 0;
 
     int bars = sampler_duration_options[sampler_duration_index];
     sampler_preroll_target_pulses = bars * 4 * 24;
@@ -348,6 +352,83 @@ void sampler_start_preroll(void) {
     float bpm = sampler_get_bpm(&src);
     float seconds = bars * 4.0f * 60.0f / bpm;
     sampler_preroll_fallback_target = (int)(seconds * 44100.0f / 128.0f);
+
+    /* Start recording machinery now so we capture audio during preroll.
+     * When preroll completes we trim the preroll frames from the WAV. */
+    if (!sampler_writer_running) {
+        /* Generate date-based save directory and filename */
+        time_t now = time(NULL);
+        struct tm tm_buf;
+        struct tm *tm_info = localtime_r(&now, &tm_buf);
+        if (!tm_info) {
+            s_host.log("Sampler: preroll failed - no local time");
+            s_host.announce("Recording failed");
+            sampler_state = SAMPLER_IDLE;
+            s_host.overlay_sync();
+            return;
+        }
+        char date_subdir[32];
+        strftime(date_subdir, sizeof(date_subdir), "%Y-%m-%d", tm_info);
+        char recording_dir[256];
+        snprintf(recording_dir, sizeof(recording_dir), "%s/%s", SAMPLER_RECORDINGS_DIR, date_subdir);
+        {
+            struct stat st;
+            if (stat(recording_dir, &st) != 0) {
+                const char *mkdir_argv[] = { "mkdir", "-p", recording_dir, NULL };
+                s_host.run_command(mkdir_argv);
+                chown_to_ableton_recursive(recording_dir);
+            }
+        }
+
+        float bpm_for_name = sampler_get_bpm(&src);
+        int bpm_int = (int)(bpm_for_name + 0.5f);
+        snprintf(sampler_current_recording, sizeof(sampler_current_recording),
+                 "%s/sample_%04d%02d%02d_%02d%02d%02d_%dbpm.wav",
+                 recording_dir,
+                 tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+                 tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, bpm_int);
+
+        sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
+        if (!sampler_ring_buffer) {
+            s_host.log("Sampler: preroll failed - ring buffer alloc");
+            s_host.announce("Recording failed");
+            sampler_state = SAMPLER_IDLE;
+            s_host.overlay_sync();
+            return;
+        }
+
+        sampler_wav_file = fopen(sampler_current_recording, "wb");
+        if (!sampler_wav_file) {
+            s_host.log("Sampler: preroll failed - file open");
+            s_host.announce("Recording failed");
+            free(sampler_ring_buffer);
+            sampler_ring_buffer = NULL;
+            sampler_state = SAMPLER_IDLE;
+            s_host.overlay_sync();
+            return;
+        }
+
+        sampler_samples_written = 0;
+        __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
+        sampler_writer_should_exit = 0;
+        sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
+
+        sampler_write_wav_header(sampler_wav_file, 0);
+
+        if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
+            s_host.log("Sampler: preroll failed - writer thread");
+            s_host.announce("Recording failed");
+            fclose(sampler_wav_file);
+            sampler_wav_file = NULL;
+            free(sampler_ring_buffer);
+            sampler_ring_buffer = NULL;
+            sampler_state = SAMPLER_IDLE;
+            s_host.overlay_sync();
+            return;
+        }
+        sampler_writer_running = 1;
+    }
 
     sampler_state = SAMPLER_PREROLL;
     sampler_fullscreen_active = 1;
@@ -364,8 +445,30 @@ void sampler_tick_preroll(void) {
 
     sampler_preroll_fallback_blocks++;
     if (sampler_preroll_fallback_target > 0 && sampler_preroll_fallback_blocks >= sampler_preroll_fallback_target) {
-        s_host.log("Sampler: preroll complete (fallback timer)");
-        sampler_start_recording();
+        char pmsg[128];
+        snprintf(pmsg, sizeof(pmsg), "Sampler: preroll complete (fallback timer, %u preroll frames to trim)",
+                 sampler_preroll_frames_captured);
+        s_host.log(pmsg);
+        /* Recording machinery already running — just flip state */
+        sampler_state = SAMPLER_RECORDING;
+        sampler_clock_count = 0;
+        sampler_bars_completed = 0;
+        sampler_clock_received = 0;
+        sampler_fallback_blocks = 0;
+        int bars = sampler_duration_options[sampler_duration_index];
+        if (bars > 0) {
+            sampler_target_pulses = bars * 4 * 24;
+            tempo_source_t tsrc;
+            float tbpm = sampler_get_bpm(&tsrc);
+            float secs = bars * 4.0f * 60.0f / tbpm;
+            sampler_fallback_target = (int)(secs * 44100.0f / 128.0f);
+        } else {
+            sampler_target_pulses = 0;
+            sampler_fallback_target = 0;
+        }
+        sampler_overlay_active = 1;
+        sampler_overlay_timeout = 0;
+        s_host.overlay_sync();
     }
 }
 
@@ -416,6 +519,7 @@ void sampler_start_recording_to(const char *output_path) {
 
     /* Initialize state — unlimited duration */
     sampler_samples_written = 0;
+    sampler_preroll_frames_captured = 0;
     __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
     sampler_writer_should_exit = 0;
@@ -514,6 +618,7 @@ void sampler_start_recording(void) {
 
     /* Initialize state */
     sampler_samples_written = 0;
+    sampler_preroll_frames_captured = 0;
     __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
     sampler_writer_should_exit = 0;
@@ -592,9 +697,29 @@ void sampler_resume_recording(void) {
 }
 
 void sampler_stop_recording(void) {
-    /* If in preroll, just cancel back to armed (no WAV to finalize) */
+    /* If in preroll, cancel and clean up recording machinery */
     if (sampler_state == SAMPLER_PREROLL) {
         s_host.log("Sampler: preroll cancelled");
+        if (sampler_writer_running) {
+            pthread_mutex_lock(&sampler_ring_mutex);
+            sampler_writer_should_exit = 1;
+            pthread_cond_signal(&sampler_ring_cond);
+            pthread_mutex_unlock(&sampler_ring_mutex);
+            pthread_join(sampler_writer_thread, NULL);
+            sampler_writer_running = 0;
+        }
+        if (sampler_wav_file) {
+            fclose(sampler_wav_file);
+            sampler_wav_file = NULL;
+        }
+        if (sampler_current_recording[0]) {
+            unlink(sampler_current_recording);
+            sampler_current_recording[0] = '\0';
+        }
+        if (sampler_ring_buffer) {
+            free(sampler_ring_buffer);
+            sampler_ring_buffer = NULL;
+        }
         sampler_state = SAMPLER_ARMED;
         s_host.overlay_sync();
         return;
@@ -612,6 +737,56 @@ void sampler_stop_recording(void) {
 
     pthread_join(sampler_writer_thread, NULL);
     sampler_writer_running = 0;
+
+    /* Trim preroll frames from the front of the WAV file.
+     * The file contains [preroll audio | actual recording].
+     * We rewrite it to contain only [actual recording]. */
+    if (sampler_wav_file && sampler_preroll_frames_captured > 0) {
+        uint32_t preroll_bytes = sampler_preroll_frames_captured * SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
+        uint32_t total_bytes = sampler_samples_written * SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
+
+        if (preroll_bytes < total_bytes) {
+            uint32_t keep_bytes = total_bytes - preroll_bytes;
+            uint32_t keep_frames = sampler_samples_written - sampler_preroll_frames_captured;
+
+            /* Read the portion we want to keep into a temp buffer */
+            size_t header_size = sizeof(sampler_wav_header_t);
+            fseek(sampler_wav_file, header_size + preroll_bytes, SEEK_SET);
+
+            /* Process in chunks to limit memory usage */
+            #define TRIM_CHUNK_SIZE (44100 * 2 * 2)  /* ~1 second */
+            int16_t *chunk = malloc(TRIM_CHUNK_SIZE);
+            if (chunk) {
+                uint32_t remaining = keep_bytes;
+                uint32_t read_offset = header_size + preroll_bytes;
+                uint32_t write_offset = header_size;
+
+                while (remaining > 0) {
+                    uint32_t to_copy = remaining < TRIM_CHUNK_SIZE ? remaining : TRIM_CHUNK_SIZE;
+                    fseek(sampler_wav_file, read_offset, SEEK_SET);
+                    size_t got = fread(chunk, 1, to_copy, sampler_wav_file);
+                    if (got == 0) break;
+                    fseek(sampler_wav_file, write_offset, SEEK_SET);
+                    fwrite(chunk, 1, got, sampler_wav_file);
+                    read_offset += got;
+                    write_offset += got;
+                    remaining -= got;
+                }
+                free(chunk);
+
+                /* Truncate the file and update header */
+                ftruncate(fileno(sampler_wav_file), header_size + keep_bytes);
+                sampler_samples_written = keep_frames;
+
+                char tmsg[128];
+                snprintf(tmsg, sizeof(tmsg), "Sampler: trimmed %u preroll frames (%.1fms)",
+                         sampler_preroll_frames_captured,
+                         (float)sampler_preroll_frames_captured / SAMPLER_SAMPLE_RATE * 1000.0f);
+                s_host.log(tmsg);
+            }
+            #undef TRIM_CHUNK_SIZE
+        }
+    }
 
     /* Update WAV header with final size */
     if (sampler_wav_file) {
@@ -646,7 +821,7 @@ void sampler_stop_recording(void) {
 }
 
 void sampler_capture_audio(void) {
-    if (sampler_state != SAMPLER_RECORDING || !sampler_ring_buffer) return;
+    if ((sampler_state != SAMPLER_RECORDING && sampler_state != SAMPLER_PREROLL) || !sampler_ring_buffer) return;
 
     /* Select audio source */
     int16_t *audio = NULL;
@@ -682,9 +857,15 @@ void sampler_capture_audio(void) {
         pthread_mutex_lock(&sampler_ring_mutex);
         pthread_cond_signal(&sampler_ring_cond);
         pthread_mutex_unlock(&sampler_ring_mutex);
+
+        /* Track frames captured during preroll for later trimming */
+        if (sampler_state == SAMPLER_PREROLL) {
+            sampler_preroll_frames_captured += SAMPLER_FRAMES_PER_BLOCK;
+        }
     }
 
-    /* Fallback timeout */
+    /* Fallback timeout (only during actual recording, not preroll) */
+    if (sampler_state != SAMPLER_RECORDING) return;
     if (!sampler_clock_received && sampler_fallback_target > 0) {
         sampler_fallback_blocks++;
         int bars = sampler_duration_options[sampler_duration_index];
@@ -746,8 +927,31 @@ void sampler_on_clock(uint8_t status) {
         if (sampler_state == SAMPLER_PREROLL) {
             sampler_preroll_clock_count++;
             if (sampler_preroll_target_pulses > 0 && sampler_preroll_clock_count >= sampler_preroll_target_pulses) {
-                s_host.log("Sampler: preroll complete via MIDI clock");
-                sampler_start_recording();
+                char pmsg[128];
+                snprintf(pmsg, sizeof(pmsg), "Sampler: preroll complete via MIDI clock (%u preroll frames to trim)",
+                         sampler_preroll_frames_captured);
+                s_host.log(pmsg);
+                /* Recording machinery already running from preroll start —
+                 * just flip state and init recording counters */
+                sampler_state = SAMPLER_RECORDING;
+                sampler_clock_count = 0;
+                sampler_bars_completed = 0;
+                sampler_clock_received = 0;
+                sampler_fallback_blocks = 0;
+                int bars = sampler_duration_options[sampler_duration_index];
+                if (bars > 0) {
+                    sampler_target_pulses = bars * 4 * 24;
+                    tempo_source_t tsrc;
+                    float tbpm = sampler_get_bpm(&tsrc);
+                    float secs = bars * 4.0f * 60.0f / tbpm;
+                    sampler_fallback_target = (int)(secs * 44100.0f / 128.0f);
+                } else {
+                    sampler_target_pulses = 0;
+                    sampler_fallback_target = 0;
+                }
+                sampler_overlay_active = 1;
+                sampler_overlay_timeout = 0;
+                s_host.overlay_sync();
             }
         }
 
@@ -790,6 +994,28 @@ void sampler_on_clock(uint8_t status) {
             }
         } else if (sampler_state == SAMPLER_PREROLL) {
             s_host.log("Sampler: preroll cancelled by MIDI Stop");
+            /* Clean up recording machinery that was started during preroll */
+            if (sampler_writer_running) {
+                pthread_mutex_lock(&sampler_ring_mutex);
+                sampler_writer_should_exit = 1;
+                pthread_cond_signal(&sampler_ring_cond);
+                pthread_mutex_unlock(&sampler_ring_mutex);
+                pthread_join(sampler_writer_thread, NULL);
+                sampler_writer_running = 0;
+            }
+            if (sampler_wav_file) {
+                fclose(sampler_wav_file);
+                sampler_wav_file = NULL;
+            }
+            /* Remove the partial file */
+            if (sampler_current_recording[0]) {
+                unlink(sampler_current_recording);
+                sampler_current_recording[0] = '\0';
+            }
+            if (sampler_ring_buffer) {
+                free(sampler_ring_buffer);
+                sampler_ring_buffer = NULL;
+            }
             sampler_state = SAMPLER_ARMED;
             s_host.overlay_sync();
         }
