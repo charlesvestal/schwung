@@ -154,6 +154,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Weird Dreams](https://github.com/fillioning/weird-dreams-move) | 8-voice analog drum machine — 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX | fillioning (DSP: dfilaretti) |
 | [Essaim](https://github.com/fillioning/essaim-move) | 32-voice rhythmic oscillator swarm — polyphonic self-triggering voices with envelope→FM, SVF filtering, LFO modulation routing, scale quantization, delay, and saturation | fillioning |
 | [Wurl](https://github.com/fillioning/wurl-move) | Physically-modeled Wurlitzer 200A electric piano (OpenWurli port) | hal0zer0 (port: fillioning) |
+| [Denis](https://github.com/fillioning/denis-move) | Monophonic West Coast synthesizer inspired by Serge Modular — bipolar modulation matrix, complex oscillators, stiffness-based geometry, and portamento | fillioning |
 
 ### Audio FX
 
