@@ -19,11 +19,13 @@
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <button type="submit" class="btn btn-secondary">Check for Update</button>
             </form>
+            {{if .UpdateAvailable}}
             <form method="POST" action="/system/upgrade" class="inline-form"
-                  onsubmit="return confirm('Upgrade Schwung host? This will restart the service.')">
+                  onsubmit="return confirm('Upgrade Schwung host to {{.LatestVersion}}? This will restart the service.')">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                <button type="submit" class="btn btn-primary">Upgrade</button>
+                <button type="submit" class="btn btn-primary">Upgrade to {{.LatestVersion}}</button>
             </form>
+            {{end}}
         </div>
     </section>
 
