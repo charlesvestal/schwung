@@ -1050,13 +1050,18 @@ h2.section-header + .module-list {
     color: var(--text);
 }
 
-.setting-row select {
+.setting-row select,
+.setting-row input[type="number"] {
+    width: auto;
+    min-width: 0;
+    max-width: 200px;
     background: var(--bg-card-hover);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     padding: var(--space-xs) var(--space-sm);
     font-size: 0.875rem;
+    min-height: 36px;
 }
 
 /* Toggle switch */
