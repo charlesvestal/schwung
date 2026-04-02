@@ -1794,13 +1794,13 @@ func hostRouter(schwungHost string, schwungHandler http.Handler, moveAddr, displ
 // ---------------------------------------------------------------------------
 
 func main() {
-	port := flag.Int("port", 7700, "HTTP listen port")
+	port := flag.Int("port", 80, "HTTP listen port")
 	roots := flag.String("roots", "/data/UserData/", "Comma-separated allowed filesystem roots")
 	catalogURL := flag.String("catalog-url",
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
 	schwungHost := flag.String("schwung-host", "schwung.local", "Hostname for Schwung Manager")
-	moveBackend := flag.String("move-backend", "127.0.0.1:80", "Address of stock Move web server")
+	moveBackend := flag.String("move-backend", "127.0.0.1:8080", "Address of stock Move web server")
 	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
 	flag.Parse()
 
