@@ -681,44 +681,59 @@ func (app *App) findCatalogModule(id string) *CatalogModule {
 	return nil
 }
 
+// moduleRedirect sends the user back to where they came from (Referer),
+// falling back to the module detail page.
+func (app *App) moduleRedirect(w http.ResponseWriter, r *http.Request, id, flash string) {
+	dest := r.Header.Get("Referer")
+	if dest == "" {
+		dest = "/modules/" + id
+	}
+	// Append flash as query param
+	sep := "?"
+	if strings.Contains(dest, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, dest+sep+"flash="+flash, http.StatusSeeOther)
+}
+
 func (app *App) handleModuleInstall(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	mod := app.findCatalogModule(id)
 	if mod == nil {
-		http.Redirect(w, r, "/modules?flash=Module+not+found:+"+id, http.StatusSeeOther)
+		app.moduleRedirect(w, r, id, "Module+not+found:+"+id)
 		return
 	}
 	if err := app.installModule(mod); err != nil {
 		app.logger.Error("module install failed", "id", id, "err", err)
-		http.Redirect(w, r, "/modules/"+id+"?flash=Install+failed:+"+err.Error(), http.StatusSeeOther)
+		app.moduleRedirect(w, r, id, "Install+failed:+"+err.Error())
 		return
 	}
-	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
+	app.moduleRedirect(w, r, id, mod.Name+"+installed+successfully")
 }
 
 func (app *App) handleModuleUninstall(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := app.uninstallModule(id); err != nil {
 		app.logger.Error("module uninstall failed", "id", id, "err", err)
-		http.Redirect(w, r, "/modules/"+id+"?flash=Uninstall+failed:+"+err.Error(), http.StatusSeeOther)
+		app.moduleRedirect(w, r, id, "Uninstall+failed:+"+err.Error())
 		return
 	}
-	http.Redirect(w, r, "/modules/"+id+"?flash=Module+uninstalled", http.StatusSeeOther)
+	app.moduleRedirect(w, r, id, "Module+uninstalled")
 }
 
 func (app *App) handleModuleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	mod := app.findCatalogModule(id)
 	if mod == nil {
-		http.Redirect(w, r, "/modules?flash=Module+not+found:+"+id, http.StatusSeeOther)
+		app.moduleRedirect(w, r, id, "Module+not+found:+"+id)
 		return
 	}
 	if err := app.installModule(mod); err != nil {
 		app.logger.Error("module update failed", "id", id, "err", err)
-		http.Redirect(w, r, "/modules/"+id+"?flash=Update+failed:+"+err.Error(), http.StatusSeeOther)
+		app.moduleRedirect(w, r, id, "Update+failed:+"+err.Error())
 		return
 	}
-	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+updated+successfully", http.StatusSeeOther)
+	app.moduleRedirect(w, r, id, mod.Name+"+updated+successfully")
 }
 
 func (app *App) handleModuleUpdateAll(w http.ResponseWriter, r *http.Request) {
