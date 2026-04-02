@@ -303,6 +303,15 @@ var funcMap = template.FuncMap{
 	"releaseMeta": func(id string, meta map[string]ReleaseMeta) ReleaseMeta {
 		return meta[id]
 	},
+	"versionStr": func(v string) string {
+		if v == "" {
+			return ""
+		}
+		if !strings.HasPrefix(v, "v") {
+			return "v" + v
+		}
+		return v
+	},
 	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta) bool {
 		inst, ok := installed[id]
 		if !ok {

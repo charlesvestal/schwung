@@ -57,15 +57,15 @@
             <dt>Version</dt>
             <dd>
                 {{if isInstalled .Module.ID .Installed}}
-                    <code>{{(index .Installed .Module.ID).Version}}</code>
+                    <code>{{versionStr (index .Installed .Module.ID).Version}}</code>
                     {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
-                        <span class="update-available">{{(releaseMeta .Module.ID .ReleaseMeta).Version}} available</span>
+                        <span class="update-available">{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}} available</span>
                     {{else}}
                         <span class="text-muted">up to date</span>
                     {{end}}
                 {{else}}
                     {{if (releaseMeta .Module.ID .ReleaseMeta).Version}}
-                        <code>{{(releaseMeta .Module.ID .ReleaseMeta).Version}}</code>
+                        <code>{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</code>
                     {{else}}
                         <span class="text-muted">—</span>
                     {{end}}
@@ -88,7 +88,7 @@
         {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
         <form method="POST" action="/modules/{{.Module.ID}}/update" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <button type="submit" class="btn btn-primary">Update to {{(releaseMeta .Module.ID .ReleaseMeta).Version}}</button>
+            <button type="submit" class="btn btn-primary">Update to {{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</button>
         </form>
         {{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form"
