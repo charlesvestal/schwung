@@ -738,8 +738,22 @@ tbody tr:hover {
     text-decoration: none;
 }
 
-.module-list td:first-child a:hover {
+.module-list td:first-child a:hover,
+.module-list tr:hover .module-list-name {
     color: var(--accent);
+}
+
+.module-list-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.module-list-author {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
 }
 
 .badge-inline {
@@ -1287,3 +1301,4 @@ code {
         background: #fff;
     }
 }
+/* BUILD_MARKER_XYZ_123 */
