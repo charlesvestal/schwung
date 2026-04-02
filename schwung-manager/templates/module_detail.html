@@ -1,0 +1,86 @@
+{{template "base" .}}
+
+{{define "title"}}{{.Module.Name}} - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <nav aria-label="Breadcrumb" class="breadcrumb">
+        <ol>
+            <li><a href="/modules">Modules</a></li>
+            <li aria-current="page">{{.Module.Name}}</li>
+        </ol>
+    </nav>
+    <h1>{{.Module.Name}}</h1>
+</div>
+
+<div class="module-detail">
+    <div class="detail-section">
+        <dl class="detail-list">
+            <dt>ID</dt>
+            <dd><code>{{.Module.ID}}</code></dd>
+
+            <dt>Category</dt>
+            <dd>{{categoryLabel .Module.ComponentType}}</dd>
+
+            <dt>Author</dt>
+            <dd>{{.Module.Author}}</dd>
+
+            <dt>Description</dt>
+            <dd>{{.Module.Description}}</dd>
+
+            <dt>Repository</dt>
+            <dd><a href="https://github.com/{{.Module.GithubRepo}}" rel="noopener noreferrer">{{.Module.GithubRepo}}</a></dd>
+
+            <dt>Min Host Version</dt>
+            <dd>{{.Module.MinHostVer}}</dd>
+
+            {{if .ModuleAssets}}
+            <dt>{{.ModuleAssets.Label}}</dt>
+            <dd class="requires-note">
+                {{.ModuleAssets.Description}}
+                {{if .ModuleAssets.Hint}}<br><small class="text-muted">{{.ModuleAssets.Hint}}</small>{{end}}
+                {{if .AssetsDir}}
+                <div style="margin-top: 0.5rem">
+                    <a href="/files?path={{.AssetsDir}}" class="btn btn-secondary btn-small">Browse {{.ModuleAssets.Label}}</a>
+                </div>
+                {{end}}
+            </dd>
+            {{else if .Module.Requires}}
+            <dt>Requires</dt>
+            <dd class="requires-note">
+                {{.Module.Requires}}
+                {{if .ModuleDir}}
+                <div style="margin-top: 0.5rem">
+                    <a href="/files?path={{.ModuleDir}}" class="btn btn-secondary btn-small">Browse Module Files</a>
+                </div>
+                {{end}}
+            </dd>
+            {{end}}
+
+            <dt>Status</dt>
+            <dd>
+                <span class="badge {{if isInstalled .Module.ID .Installed}}badge-installed{{else}}badge-not-installed{{end}}">
+                    {{if isInstalled .Module.ID .Installed}}Installed{{else}}Not Installed{{end}}
+                </span>
+            </dd>
+        </dl>
+    </div>
+
+    <div class="detail-actions">
+        {{if isInstalled .Module.ID .Installed}}
+        {{if .AssetsDir}}<a href="/files?path={{.AssetsDir}}" class="btn btn-secondary">Browse {{if .ModuleAssets}}{{.ModuleAssets.Label}}{{else}}Assets{{end}}</a>{{end}}
+        <form method="POST" action="/modules/{{.Module.ID}}/update" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-primary">Update</button>
+        </form>
+        <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form"
+              onsubmit="return confirm('Uninstall {{.Module.Name}}?')">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-danger">Uninstall</button>
+        </form>
+        {{else}}
+        <a href="/install/{{.Module.ID}}" class="btn btn-primary">Install</a>
+        {{end}}
+    </div>
+</div>
+{{end}}

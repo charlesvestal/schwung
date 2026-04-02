@@ -1,0 +1,18 @@
+{{define "flash"}}
+<div class="flash flash-{{.Type}}" role="status" aria-live="polite">
+    <span class="flash-message">{{.Message}}</span>
+    <button type="button" class="flash-dismiss" aria-label="Dismiss message" onclick="this.parentElement.remove()">&times;</button>
+</div>
+<script>
+(function() {
+    var el = document.currentScript.previousElementSibling;
+    if (el) {
+        setTimeout(function() {
+            el.style.opacity = '0';
+            el.style.transition = 'opacity 0.3s ease';
+            setTimeout(function() { el.remove(); }, 300);
+        }, 5000);
+    }
+})();
+</script>
+{{end}}

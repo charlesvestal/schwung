@@ -1,0 +1,490 @@
+{{template "base" .}}
+
+{{define "title"}}Files — {{.Dir}} — Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    {{if .Breadcrumbs}}
+    <nav aria-label="Breadcrumb" class="breadcrumb">
+        <ol>
+            {{range .Breadcrumbs}}
+            <li><a href="/files?path={{.Path}}">{{.Name}}</a></li>
+            {{end}}
+        </ol>
+    </nav>
+    {{end}}
+    <h1>Files{{if .ModuleID}} — {{.ModuleID}} Assets{{end}}</h1>
+</div>
+
+<div class="file-browser" id="file-browser">
+    <!-- Action bar: appears when files are selected -->
+    <div class="file-action-bar" id="action-bar" style="display:none" role="toolbar" aria-label="File actions">
+        <span class="selection-count" id="selection-count"></span>
+        <button class="btn btn-secondary btn-small" id="btn-download" title="Download selected">Download</button>
+        <button class="btn btn-secondary btn-small" id="btn-rename" title="Rename selected">Rename</button>
+        <button class="btn btn-secondary btn-small" id="btn-deselect">Deselect All</button>
+        <span style="flex:1"></span>
+        <button class="btn btn-danger btn-small" id="btn-delete" title="Delete selected">Delete</button>
+    </div>
+
+    <!-- Compact toolbar: new folder + upload -->
+    <div class="file-compact-toolbar" id="compact-toolbar">
+        <button class="btn btn-secondary btn-small" id="btn-new-folder">+ New Folder</button>
+        <button class="btn btn-primary btn-small" id="btn-upload-pick">Upload Files</button>
+        <form method="POST" action="{{if .ModuleID}}/modules/{{.ModuleID}}/assets/upload{{else}}/files/upload{{end}}"
+              enctype="multipart/form-data" id="upload-form" style="display:none">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="path" value="{{if .ModDir}}{{.ModDir}}{{else}}{{.Dir}}{{end}}">
+            <input type="file" id="file-input" name="file" multiple aria-label="Choose files to upload">
+        </form>
+    </div>
+
+    <!-- Drop zone overlay -->
+    <div class="file-drop-zone" id="drop-zone" style="display:none" aria-hidden="true">
+        <div class="drop-zone-inner">
+            <p>Drop files or folders here to upload</p>
+        </div>
+    </div>
+
+    <!-- Upload progress -->
+    <div class="upload-progress" id="upload-progress" style="display:none" aria-live="polite">
+        <div class="upload-progress-inner">
+            <span class="upload-status" id="upload-status">Uploading...</span>
+            <span class="upload-detail" id="upload-detail"></span>
+        </div>
+        <div class="upload-bar"><div class="upload-bar-fill" id="upload-bar-fill"></div></div>
+    </div>
+
+    <!-- Inline new folder form (hidden until activated) -->
+    <form method="POST" action="/files/mkdir" id="mkdir-form" style="display:none" class="mkdir-inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="path" value="{{.Dir}}">
+        <span class="file-icon" aria-hidden="true">&#128193;</span>
+        <input type="text" name="name" id="mkdir-name" placeholder="Folder name" required class="mkdir-input" autofocus>
+        <button type="submit" class="btn btn-primary btn-small">Create</button>
+        <button type="button" class="btn btn-secondary btn-small" id="mkdir-cancel">Cancel</button>
+    </form>
+
+    {{if .Entries}}
+    <table class="file-table" id="file-table" aria-label="File listing for {{.Dir}}">
+        <thead>
+            <tr>
+                <th scope="col" class="col-name">Name</th>
+                <th scope="col" class="col-size">Size</th>
+                <th scope="col" class="col-modified">Modified</th>
+            </tr>
+        </thead>
+        <tbody id="file-tbody">
+            {{if .ParentDir}}
+            <tr class="file-row file-row-parent" data-path="{{.ParentDir}}" data-name=".." data-isdir="true" tabindex="0">
+                <td>
+                    <span class="file-icon" aria-hidden="true">&#8617;</span>
+                    <span class="file-name">..</span>
+                </td>
+                <td class="text-muted">—</td>
+                <td class="text-muted">—</td>
+            </tr>
+            {{end}}
+            {{range .Entries}}
+            <tr class="file-row" data-path="{{.Path}}" data-name="{{.Name}}" data-isdir="{{.IsDir}}" tabindex="0">
+                <td>
+                    {{if .IsDir}}
+                    <span class="file-icon" aria-hidden="true">&#128193;</span>
+                    <span class="file-name">{{.Name}}/</span>
+                    {{else}}
+                    <span class="file-icon" aria-hidden="true">&#128196;</span>
+                    <span class="file-name">{{.Name}}</span>
+                    {{end}}
+                </td>
+                <td class="text-muted">{{if .IsDir}}—{{else}}{{formatBytes .Size}}{{end}}</td>
+                <td class="text-muted">{{formatTime .ModTime}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state" id="empty-state">
+        <p>This directory is empty. Drop files here or click "Upload Files" to add content.</p>
+    </div>
+    {{end}}
+
+    <!-- Hidden forms for actions -->
+    <form method="POST" action="/files/delete" id="delete-form" style="display:none">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="path" id="delete-path">
+    </form>
+    <form method="POST" action="/files/rename" id="rename-form" style="display:none">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="path" id="rename-path">
+        <input type="hidden" name="name" id="rename-name">
+    </form>
+</div>
+
+<script>
+(function() {
+    var currentDir = "{{.Dir}}";
+    var csrfToken = (document.cookie.match(/(^| )csrf_token=([^;]+)/) || [])[2] || '';
+    var selected = new Set();
+    var rows = document.querySelectorAll('.file-row');
+    var actionBar = document.getElementById('action-bar');
+    var compactBar = document.getElementById('compact-toolbar');
+    var countEl = document.getElementById('selection-count');
+    var dropZone = document.getElementById('drop-zone');
+    var browser = document.getElementById('file-browser');
+    var lastClickedIndex = -1;
+
+    // Selection
+    function updateSelection() {
+        rows.forEach(function(row) {
+            row.classList.toggle('selected', selected.has(row));
+        });
+        var n = selected.size;
+        if (n > 0) {
+            actionBar.style.display = '';
+            compactBar.style.display = 'none';
+            countEl.textContent = n + ' selected';
+            // Rename only for single selection
+            document.getElementById('btn-rename').style.display = (n === 1) ? '' : 'none';
+            // Download only for files (not dirs)
+            var hasFiles = false;
+            selected.forEach(function(r) { if (r.getAttribute('data-isdir') === 'false') hasFiles = true; });
+            document.getElementById('btn-download').style.display = hasFiles ? '' : 'none';
+        } else {
+            actionBar.style.display = 'none';
+            compactBar.style.display = '';
+        }
+    }
+
+    function getRowIndex(row) {
+        return Array.prototype.indexOf.call(rows, row);
+    }
+
+    rows.forEach(function(row) {
+        var isParent = row.classList.contains('file-row-parent');
+
+        row.addEventListener('click', function(e) {
+            if (isParent) {
+                // Single click on ".." navigates up
+                window.location.href = '/files?path=' + encodeURIComponent(row.getAttribute('data-path'));
+                return;
+            }
+            var idx = getRowIndex(row);
+            if (e.metaKey || e.ctrlKey) {
+                // Toggle this row
+                if (selected.has(row)) selected.delete(row); else selected.add(row);
+            } else if (e.shiftKey && lastClickedIndex >= 0) {
+                // Range select
+                var start = Math.min(lastClickedIndex, idx);
+                var end = Math.max(lastClickedIndex, idx);
+                for (var i = start; i <= end; i++) selected.add(rows[i]);
+            } else {
+                // Single select
+                selected.clear();
+                selected.add(row);
+            }
+            lastClickedIndex = idx;
+            updateSelection();
+        });
+
+        row.addEventListener('dblclick', function() {
+            var isDir = row.getAttribute('data-isdir') === 'true';
+            var path = row.getAttribute('data-path');
+            if (isDir) {
+                window.location.href = '/files?path=' + encodeURIComponent(path);
+            } else {
+                window.location.href = '/files/download?path=' + encodeURIComponent(path);
+            }
+        });
+
+        row.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                row.dispatchEvent(new MouseEvent('dblclick'));
+            }
+        });
+    });
+
+    // Deselect all
+    document.getElementById('btn-deselect').addEventListener('click', function() {
+        selected.clear();
+        updateSelection();
+    });
+
+    // Click outside table deselects
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.file-row') && !e.target.closest('.file-action-bar') && !e.target.closest('.file-compact-toolbar')) {
+            selected.clear();
+            updateSelection();
+        }
+    });
+
+    // Delete (handles multiple selected items)
+    document.getElementById('btn-delete').addEventListener('click', function() {
+        var names = [];
+        var paths = [];
+        selected.forEach(function(r) {
+            names.push(r.getAttribute('data-name'));
+            paths.push(r.getAttribute('data-path'));
+        });
+        if (!confirm('Delete ' + names.join(', ') + '?')) return;
+
+        var idx = 0;
+        function deleteNext() {
+            if (idx >= paths.length) {
+                window.location.reload();
+                return;
+            }
+            var fd = new FormData();
+            fd.append('csrf_token', csrfToken);
+            fd.append('path', paths[idx++]);
+            fetch('/files/delete', {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': csrfToken }
+            }).then(deleteNext).catch(deleteNext);
+        }
+        deleteNext();
+    });
+
+    // Download
+    document.getElementById('btn-download').addEventListener('click', function() {
+        selected.forEach(function(r) {
+            if (r.getAttribute('data-isdir') === 'false') {
+                var a = document.createElement('a');
+                a.href = '/files/download?path=' + encodeURIComponent(r.getAttribute('data-path'));
+                a.download = '';
+                a.click();
+            }
+        });
+    });
+
+    // Rename
+    document.getElementById('btn-rename').addEventListener('click', function() {
+        if (selected.size !== 1) return;
+        var row = selected.values().next().value;
+        var oldName = row.getAttribute('data-name');
+        var newName = prompt('Rename "' + oldName + '" to:', oldName);
+        if (!newName || newName === oldName) return;
+        document.getElementById('rename-path').value = row.getAttribute('data-path');
+        document.getElementById('rename-name').value = newName;
+        document.getElementById('rename-form').submit();
+    });
+
+    // New folder
+    var mkdirForm = document.getElementById('mkdir-form');
+    var mkdirInput = document.getElementById('mkdir-name');
+
+    document.getElementById('btn-new-folder').addEventListener('click', function() {
+        mkdirForm.style.display = '';
+        mkdirInput.focus();
+    });
+
+    document.getElementById('mkdir-cancel').addEventListener('click', function() {
+        mkdirForm.style.display = 'none';
+        mkdirInput.value = '';
+    });
+
+    mkdirInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            mkdirForm.style.display = 'none';
+            mkdirInput.value = '';
+        }
+    });
+
+    // Upload via button
+    var fileInput = document.getElementById('file-input');
+    var uploadForm = document.getElementById('upload-form');
+
+    document.getElementById('btn-upload-pick').addEventListener('click', function() {
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', function() {
+        if (fileInput.files.length > 0) {
+            uploadForm.style.display = '';
+            uploadForm.submit();
+        }
+    });
+
+    // Drag and drop
+    var dragCounter = 0;
+    var uploadUrl = '/files/upload';
+
+    function uploadOneFile(file, destDir) {
+        var fd = new FormData();
+        fd.append('csrf_token', csrfToken);
+        fd.append('path', destDir);
+        fd.append('file', file, file.name);
+        return fetch(uploadUrl, {
+            method: 'POST',
+            body: fd,
+            credentials: 'same-origin',
+            headers: { 'X-CSRF-Token': csrfToken }
+        });
+    }
+
+    function mkdirRemote(dirPath) {
+        var fd = new FormData();
+        fd.append('csrf_token', csrfToken);
+        fd.append('path', currentDir);
+        fd.append('name', dirPath);
+        return fetch('/files/mkdir', {
+            method: 'POST',
+            body: fd,
+            credentials: 'same-origin',
+            headers: { 'X-CSRF-Token': csrfToken }
+        });
+    }
+
+    browser.addEventListener('dragenter', function(e) {
+        e.preventDefault();
+        dragCounter++;
+        dropZone.style.display = '';
+    });
+
+    browser.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) { dragCounter = 0; dropZone.style.display = 'none'; }
+    });
+
+    browser.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+    });
+
+    // Upload progress UI
+    var progressEl = document.getElementById('upload-progress');
+    var statusEl = document.getElementById('upload-status');
+    var detailEl = document.getElementById('upload-detail');
+    var barFill = document.getElementById('upload-bar-fill');
+
+    function showProgress(current, total, filename) {
+        progressEl.style.display = '';
+        statusEl.textContent = 'Uploading ' + current + ' of ' + total + '...';
+        detailEl.textContent = filename;
+        barFill.style.width = Math.round((current / total) * 100) + '%';
+    }
+
+    function hideProgress() {
+        progressEl.style.display = 'none';
+    }
+
+    // Collect all files from a drop (including folder contents via FileSystem API)
+    function collectDroppedFiles(dataTransfer) {
+        var items = dataTransfer.items;
+        if (!items || items.length === 0 || !items[0].webkitGetAsEntry) {
+            // Fallback: plain files (no folder support)
+            var results = [];
+            var files = dataTransfer.files;
+            for (var i = 0; i < files.length; i++) {
+                results.push({ file: files[i], destDir: currentDir });
+            }
+            return Promise.resolve(results);
+        }
+
+        var results = [];
+
+        function readEntryAsync(entry, parentDir, relParent) {
+            if (entry.isFile) {
+                return new Promise(function(resolve) {
+                    entry.file(function(file) {
+                        results.push({ file: file, destDir: parentDir });
+                        resolve();
+                    });
+                });
+            } else if (entry.isDirectory) {
+                var dirPath = parentDir + '/' + entry.name;
+                var relPath = relParent ? relParent + '/' + entry.name : entry.name;
+                results.push({ mkdir: relPath });
+                return readAllEntries(entry, dirPath, relPath);
+            }
+            return Promise.resolve();
+        }
+
+        function readAllEntries(dirEntry, dirPath, relPath) {
+            var reader = dirEntry.createReader();
+            return new Promise(function(resolve) {
+                var allEntries = [];
+                function readBatch() {
+                    reader.readEntries(function(batch) {
+                        if (batch.length === 0) {
+                            var chain = Promise.resolve();
+                            for (var i = 0; i < allEntries.length; i++) {
+                                (function(e) {
+                                    chain = chain.then(function() { return readEntryAsync(e, dirPath, relPath); });
+                                })(allEntries[i]);
+                            }
+                            chain.then(resolve);
+                        } else {
+                            for (var i = 0; i < batch.length; i++) allEntries.push(batch[i]);
+                            readBatch();
+                        }
+                    });
+                }
+                readBatch();
+            });
+        }
+
+        // Process all top-level dropped items
+        var chain = Promise.resolve();
+        for (var i = 0; i < items.length; i++) {
+            var entry = items[i].webkitGetAsEntry();
+            if (entry) {
+                (function(e) {
+                    chain = chain.then(function() { return readEntryAsync(e, currentDir, ''); });
+                })(entry);
+            }
+        }
+        return chain.then(function() { return results; });
+    }
+
+    browser.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dragCounter = 0;
+        dropZone.style.display = 'none';
+
+        collectDroppedFiles(e.dataTransfer).then(function(items) {
+            if (items.length === 0) return;
+
+            // Separate mkdirs and files
+            var mkdirs = items.filter(function(i) { return i.mkdir; });
+            var files = items.filter(function(i) { return i.file; });
+            var total = files.length;
+            var current = 0;
+
+            // Create directories first, then upload files sequentially
+            var mkdirIdx = 0;
+            function nextMkdir() {
+                if (mkdirIdx >= mkdirs.length) {
+                    nextFile();
+                    return;
+                }
+                var item = mkdirs[mkdirIdx++];
+                showProgress(0, total, 'Creating ' + item.mkdir.split('/').pop() + '/');
+                mkdirRemote(item.mkdir.replace(currentDir + '/', '')).then(nextMkdir).catch(nextMkdir);
+            }
+
+            function nextFile() {
+                if (current >= files.length) {
+                    hideProgress();
+                    window.location.reload();
+                    return;
+                }
+                var item = files[current];
+                current++;
+                showProgress(current, total, item.file.name);
+                uploadOneFile(item.file, item.destDir)
+                    .then(nextFile)
+                    .catch(function(err) {
+                        console.error('Upload error:', err, item.file.name);
+                        nextFile();
+                    });
+            }
+
+            nextMkdir();
+        });
+    });
+})();
+</script>
+{{end}}

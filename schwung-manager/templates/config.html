@@ -1,0 +1,17 @@
+{{template "base" .}}
+
+{{define "title"}}Configuration - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>Configuration</h1>
+    <p>Current Schwung feature configuration (<code>{{.Path}}</code>).</p>
+</div>
+
+<div class="config-view">
+    <pre class="config-display"><code>{{.Config}}</code></pre>
+    <div class="config-actions">
+        <a href="/config/edit" class="btn btn-primary">Edit Configuration</a>
+    </div>
+</div>
+{{end}}
