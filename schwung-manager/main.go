@@ -414,12 +414,14 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 	modDir := app.findModuleDir(id)
 
 	// Compute assets directory from installed module.json assets.path field.
-	assetsDir := modDir
+	assetsDir := ""
 	var moduleAssets *ModuleAssets
 	if inst, ok := installed[id]; ok && inst.Assets != nil {
 		moduleAssets = inst.Assets
 		if inst.Assets.Path != "" && inst.Assets.Path != "." {
 			assetsDir = filepath.Join(modDir, inst.Assets.Path)
+		} else {
+			assetsDir = modDir
 		}
 	}
 
