@@ -1,0 +1,63 @@
+{{template "base" .}}
+
+{{define "title"}}System - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>System</h1>
+</div>
+
+<div class="system-info">
+    <section class="info-card">
+        <h2>Schwung Host</h2>
+        <dl class="detail-list">
+            <dt>Version</dt>
+            <dd>{{.Version}}</dd>
+        </dl>
+        <div class="system-actions">
+            <form method="POST" action="/system/check-update" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button type="submit" class="btn btn-secondary">Check for Update</button>
+            </form>
+            <form method="POST" action="/system/upgrade" class="inline-form"
+                  onsubmit="return confirm('Upgrade Schwung host? This will restart the service.')">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button type="submit" class="btn btn-primary">Upgrade</button>
+            </form>
+        </div>
+    </section>
+
+    <section class="info-card">
+        <h2>Disk Usage</h2>
+        <div class="disk-usage">
+            <div class="progress-bar" role="progressbar"
+                 aria-valuenow="{{.DiskPercent}}" aria-valuemin="0" aria-valuemax="100"
+                 aria-label="Disk usage: {{.DiskPercent}}%">
+                <div class="progress-fill{{if gt .DiskPercent 90}} progress-danger{{else if gt .DiskPercent 70}} progress-warning{{end}}"
+                     style="width: {{.DiskPercent}}%">
+                    {{.DiskPercent}}%
+                </div>
+            </div>
+            <p class="disk-stats">
+                {{formatBytes .DiskUsed}} used of {{formatBytes .DiskTotal}}
+                ({{formatBytes .DiskFree}} free)
+            </p>
+        </div>
+    </section>
+
+    <section class="info-card">
+        <h2>Logs</h2>
+        <p>View the Schwung debug log (last 200 lines).</p>
+        <div class="log-actions">
+            <button class="btn btn-secondary"
+                    hx-get="/system/logs"
+                    hx-target="#log-output"
+                    hx-indicator="#log-spinner">
+                Load Logs
+            </button>
+            <span id="log-spinner" class="htmx-indicator" aria-hidden="true">Loading...</span>
+        </div>
+        <pre id="log-output" class="log-display" aria-label="Debug log output" aria-busy="false"></pre>
+    </section>
+</div>
+{{end}}

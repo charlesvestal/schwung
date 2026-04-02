@@ -368,7 +368,7 @@ wait_for_move_shim_mapping() {
 direct_start_move_with_shim() {
   qecho "Init service did not relaunch Move; trying direct launch fallback..."
 
-  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
   ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
   ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
   ssh_root_with_retry "su -s /bin/sh ableton -c 'nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &'" || return 1
@@ -824,7 +824,7 @@ chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrappe
   # Stop and restart Move service
   iecho "Restarting Move..."
   ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
   ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
   ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
   ssh_ableton_with_retry "sleep 2" || true
@@ -1560,7 +1560,7 @@ iecho "Restarting Move..."
 # Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
 # Use retry wrappers because Windows mDNS resolution can be flaky.
 ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
 # Clean up stale shared memory so it's recreated with correct permissions
 ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
 # Free the SPI device if anything still holds it (prevents "communication error" on restart)
@@ -1581,6 +1581,13 @@ fi
 
 # Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
 restart_move_with_fallback "Move started without active shim mapping (LD_PRELOAD env/maps check failed)"
+
+# Start schwung-manager web UI if binary is present
+if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; then
+    qecho "Starting schwung-manager web UI..."
+    ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 7700 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
+    qecho "  Web UI available at http://move.local:7700"
+fi
 
 iecho ""
 iecho "Installation complete!"
@@ -1615,6 +1622,9 @@ else
         echo
     fi
 
+    echo "Web Manager:"
+    echo "  http://move.local:7700"
+    echo
     echo "Logging commands:"
     echo "  Enable:  ssh ableton@move.local 'touch /data/UserData/schwung/debug_log_on'"
     echo "  Disable: ssh ableton@move.local 'rm -f /data/UserData/schwung/debug_log_on'"

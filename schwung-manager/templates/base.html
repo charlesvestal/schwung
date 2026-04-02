@@ -1,0 +1,70 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>{{block "title" .}}Schwung Manager{{end}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <script src="/static/htmx.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            function getCookie(name) {
+                var match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+                return match ? match[2] : '';
+            }
+            document.body.addEventListener('htmx:configRequest', function(event) {
+                var token = getCookie('csrf_token');
+                if (token) {
+                    event.detail.headers['X-CSRF-Token'] = token;
+                }
+            });
+        });
+    </script>
+</head>
+<body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <header>
+        <div class="header-inner">
+            <a href="/modules" class="site-name">Schwung Manager</a>
+            <nav aria-label="Main navigation">
+                <ul>
+                    <li><a href="/modules"{{if eq .Active "modules"}} class="active" aria-current="page"{{end}}>Modules</a></li>
+                    <li><a href="/files"{{if eq .Active "files"}} class="active" aria-current="page"{{end}}>Files</a></li>
+                    <li><a href="/config"{{if eq .Active "config"}} class="active" aria-current="page"{{end}}>Config</a></li>
+                    <li><a href="/system"{{if eq .Active "system"}} class="active" aria-current="page"{{end}}>System</a></li>
+                    <li><a href="http://move.local:7681" target="_blank" rel="noopener">Screen Mirroring</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <main id="main-content">
+        {{if .Flash}}
+        <div id="flash-messages" aria-live="polite">
+            {{template "flash" (dict "Message" .Flash "Type" "info")}}
+        </div>
+        {{end}}
+        {{block "content" .}}{{end}}
+    </main>
+
+    <footer>
+        <p>Schwung Manager{{if .Version}} v{{.Version}}{{end}}</p>
+    </footer>
+
+    <script>
+        document.body.addEventListener('htmx:afterSwap', function(event) {
+            var target = event.detail.target;
+            if (target && target.querySelector) {
+                var heading = target.querySelector('h1, h2, [tabindex="-1"]');
+                if (heading) {
+                    heading.setAttribute('tabindex', '-1');
+                    heading.focus();
+                }
+            }
+        });
+    </script>
+</body>
+</html>{{end}}

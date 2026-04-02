@@ -44,6 +44,11 @@ if [ -f "./display-server" ]; then
     ITEMS="$ITEMS ./display-server"
 fi
 
+# Add schwung-manager if it was built
+if [ -f "./schwung-manager" ]; then
+    ITEMS="$ITEMS ./schwung-manager"
+fi
+
 # Add web shim if it was built (PIN challenge TTS readout for MoveWebService)
 if [ -f "./schwung-web-shim.so" ]; then
     ITEMS="$ITEMS ./schwung-web-shim.so"

@@ -1,0 +1,296 @@
+{{template "base" .}}
+
+{{define "title"}}Modules - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>Modules</h1>
+    <p>Browse and manage Schwung modules from the catalog.</p>
+</div>
+
+{{if not .Modules}}
+<div class="empty-state">
+    <p>Could not load module catalog. Check your network connection.</p>
+</div>
+{{else}}
+<div class="module-toolbar" role="toolbar" aria-label="Module filters and sorting">
+    <div class="toolbar-row">
+        <div class="filter-group" role="group" aria-label="Filter by install status">
+            <button class="filter-btn status-btn active" data-status="all" aria-pressed="true">All</button>
+            <button class="filter-btn status-btn" data-status="installed" aria-pressed="false">Installed</button>
+            <button class="filter-btn status-btn" data-status="not-installed" aria-pressed="false">Not Installed</button>
+        </div>
+        <div class="toolbar-right">
+            <label class="sr-only" for="sort-select">Sort modules</label>
+            <select id="sort-select" class="sort-select" aria-label="Sort modules">
+                <option value="az">A-Z</option>
+                <option value="category">Category</option>
+                <option value="author">Author</option>
+            </select>
+            <div class="segmented-toggle" role="group" aria-label="View mode">
+                <button class="seg-btn seg-btn-active" id="view-grid-btn" aria-pressed="true" title="Card view">&#9638;</button>
+                <button class="seg-btn" id="view-list-btn" aria-pressed="false" title="List view">&#9776;</button>
+            </div>
+            {{if .HasInstalled}}
+            <form method="POST" action="/modules/update-all" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button type="submit" class="btn btn-primary btn-small">Update All</button>
+            </form>
+            {{end}}
+        </div>
+    </div>
+    <div class="toolbar-row">
+        <div class="filter-group" id="category-filters" role="group" aria-label="Filter by category">
+            <button class="filter-btn cat-btn active" data-filter="all" aria-pressed="true">All</button>
+            <button class="filter-btn cat-btn" data-filter="sound_generator" aria-pressed="false">Sound Generators</button>
+            <button class="filter-btn cat-btn" data-filter="audio_fx" aria-pressed="false">Audio FX</button>
+            <button class="filter-btn cat-btn" data-filter="midi_fx" aria-pressed="false">MIDI FX</button>
+            <button class="filter-btn cat-btn" data-filter="overtake" aria-pressed="false">Overtake</button>
+            <button class="filter-btn cat-btn" data-filter="tool" aria-pressed="false">Tools</button>
+            <button class="filter-btn cat-btn" data-filter="utility" aria-pressed="false">Utilities</button>
+        </div>
+        <span class="module-count" aria-live="polite">Showing <span id="visible-count">{{len .Modules}}</span> modules</span>
+    </div>
+</div>
+
+<div class="module-grid" id="module-grid">
+    {{range .Modules}}
+    <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}">
+        <div class="module-card-header">
+            <h2><a href="/modules/{{.ID}}">{{.Name}}</a></h2>
+            <span class="badge {{if isInstalled .ID $.Installed}}badge-installed{{else}}badge-not-installed{{end}}">
+                {{if isInstalled .ID $.Installed}}Installed{{else}}Not Installed{{end}}
+            </span>
+        </div>
+        <p class="module-description">{{.Description}}</p>
+        <div class="module-meta">
+            <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
+            <span>by {{.Author}}</span>
+        </div>
+        <div class="module-actions">
+            {{if isInstalled .ID $.Installed}}
+            <a href="/modules/{{.ID}}" class="btn btn-secondary btn-small">Manage</a>
+            <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Update</a>
+            {{else}}
+            <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Install</a>
+            {{end}}
+        </div>
+    </article>
+    {{end}}
+</div>
+
+<div class="module-list" id="module-list" style="display:none">
+    <table aria-label="Module listing">
+        <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Category</th>
+                <th scope="col">Author</th>
+                <th scope="col">Status</th>
+                <th scope="col">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Modules}}
+            <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="{{if isInstalled .ID $.Installed}}yes{{else}}no{{end}}">
+                <td><a href="/modules/{{.ID}}">{{.Name}}</a></td>
+                <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
+                <td class="text-muted">{{.Author}}</td>
+                <td>
+                    <span class="badge {{if isInstalled .ID $.Installed}}badge-installed{{else}}badge-not-installed{{end}} badge-inline">
+                        {{if isInstalled .ID $.Installed}}Installed{{else}}Not Installed{{end}}
+                    </span>
+                </td>
+                <td>
+                    {{if isInstalled .ID $.Installed}}
+                    <a href="/modules/{{.ID}}" class="btn btn-secondary btn-small">Manage</a>
+                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Update</a>
+                    {{else}}
+                    <a href="/install/{{.ID}}" class="btn btn-primary btn-small">Install</a>
+                    {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<details class="custom-install-section">
+    <summary>Install Custom Module</summary>
+    <div class="custom-install-content">
+        <div class="custom-install-option">
+            <h3>From GitHub URL</h3>
+            <p class="form-help">Enter a GitHub repository URL (e.g., <code>https://github.com/user/schwung-mymodule</code>) or just <code>user/repo</code>.</p>
+            <form method="POST" action="/modules/install-custom" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="source" value="github">
+                <label for="github-url" class="sr-only">GitHub repository URL</label>
+                <input type="text" id="github-url" name="url" placeholder="user/repo or full GitHub URL" required class="input-inline" style="min-width:300px">
+                <button type="submit" class="btn btn-primary">Install from GitHub</button>
+            </form>
+        </div>
+        <div class="custom-install-option">
+            <h3>From Tarball</h3>
+            <p class="form-help">Upload a module tarball (.tar.gz) to install directly.</p>
+            <form method="POST" action="/modules/install-custom" enctype="multipart/form-data" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="source" value="tarball">
+                <label for="tarball-upload" class="sr-only">Module tarball file</label>
+                <input type="file" id="tarball-upload" name="file" accept=".tar.gz,.tgz" required>
+                <button type="submit" class="btn btn-primary">Install from File</button>
+            </form>
+        </div>
+    </div>
+</details>
+
+<script>
+(function() {
+    var grid = document.getElementById('module-grid');
+    var listView = document.getElementById('module-list');
+    var cards = Array.prototype.slice.call(grid.querySelectorAll('.module-card'));
+    var rows = Array.prototype.slice.call(listView.querySelectorAll('.module-row'));
+    var countEl = document.getElementById('visible-count');
+    var catBtns = document.querySelectorAll('.cat-btn');
+    var statusBtns = document.querySelectorAll('.status-btn');
+    var sortSelect = document.getElementById('sort-select');
+    var gridBtn = document.getElementById('view-grid-btn');
+    var listBtn = document.getElementById('view-list-btn');
+    var currentFilter = 'all';
+    var currentStatus = 'all';
+    var isListView = false;
+
+    function getItems() {
+        return isListView ? rows : cards;
+    }
+
+    function updateCount() {
+        var items = getItems();
+        var n = 0;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].style.display !== 'none') n++;
+        }
+        countEl.textContent = n;
+    }
+
+    function updateCategoryButtons() {
+        var items = isListView ? rows : cards;
+        // Count visible modules per category given current status filter
+        var catCounts = {};
+        for (var i = 0; i < items.length; i++) {
+            var cat = items[i].getAttribute('data-category');
+            var inst = items[i].getAttribute('data-installed');
+            var statusMatch = (currentStatus === 'all' ||
+                (currentStatus === 'installed' && inst === 'yes') ||
+                (currentStatus === 'not-installed' && inst === 'no'));
+            if (statusMatch) {
+                catCounts[cat] = (catCounts[cat] || 0) + 1;
+            }
+        }
+        for (var i = 0; i < catBtns.length; i++) {
+            var filter = catBtns[i].getAttribute('data-filter');
+            if (filter === 'all') continue;
+            catBtns[i].style.display = catCounts[filter] ? '' : 'none';
+        }
+        // If active category is now hidden, reset to all
+        var activeBtn = document.querySelector('.cat-btn.active');
+        if (activeBtn && activeBtn.style.display === 'none') {
+            activeBtn.classList.remove('active');
+            activeBtn.setAttribute('aria-pressed', 'false');
+            catBtns[0].classList.add('active');
+            catBtns[0].setAttribute('aria-pressed', 'true');
+            currentFilter = 'all';
+        }
+    }
+
+    function applyFilters() {
+        var allItems = [cards, rows];
+        for (var v = 0; v < allItems.length; v++) {
+            var items = allItems[v];
+            for (var i = 0; i < items.length; i++) {
+                var cat = items[i].getAttribute('data-category');
+                var inst = items[i].getAttribute('data-installed');
+                var catMatch = (currentFilter === 'all' || cat === currentFilter);
+                var statusMatch = (currentStatus === 'all' ||
+                    (currentStatus === 'installed' && inst === 'yes') ||
+                    (currentStatus === 'not-installed' && inst === 'no'));
+                items[i].style.display = (catMatch && statusMatch) ? '' : 'none';
+            }
+        }
+        updateCategoryButtons();
+        updateCount();
+    }
+
+    function applySort(mode) {
+        function sorter(a, b) {
+            if (mode === 'az') {
+                return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
+            } else if (mode === 'category') {
+                var ca = a.getAttribute('data-category'), cb = b.getAttribute('data-category');
+                if (ca !== cb) return ca.localeCompare(cb);
+                return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
+            } else if (mode === 'author') {
+                var aa = a.getAttribute('data-author'), ab = b.getAttribute('data-author');
+                if (aa !== ab) return aa.localeCompare(ab);
+                return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
+            }
+            return 0;
+        }
+        var sortedCards = cards.slice().sort(sorter);
+        for (var i = 0; i < sortedCards.length; i++) grid.appendChild(sortedCards[i]);
+        var sortedRows = rows.slice().sort(sorter);
+        var tbody = listView.querySelector('tbody');
+        for (var i = 0; i < sortedRows.length; i++) tbody.appendChild(sortedRows[i]);
+    }
+
+    for (var i = 0; i < catBtns.length; i++) {
+        catBtns[i].addEventListener('click', function() {
+            for (var j = 0; j < catBtns.length; j++) {
+                catBtns[j].classList.remove('active');
+                catBtns[j].setAttribute('aria-pressed', 'false');
+            }
+            this.classList.add('active');
+            this.setAttribute('aria-pressed', 'true');
+            currentFilter = this.getAttribute('data-filter');
+            applyFilters();
+        });
+    }
+
+    for (var i = 0; i < statusBtns.length; i++) {
+        statusBtns[i].addEventListener('click', function() {
+            for (var j = 0; j < statusBtns.length; j++) {
+                statusBtns[j].classList.remove('active');
+                statusBtns[j].setAttribute('aria-pressed', 'false');
+            }
+            this.classList.add('active');
+            this.setAttribute('aria-pressed', 'true');
+            currentStatus = this.getAttribute('data-status');
+            applyFilters();
+        });
+    }
+
+    sortSelect.addEventListener('change', function() {
+        applySort(this.value);
+        applyFilters();
+    });
+
+    function setView(toList) {
+        isListView = toList;
+        grid.style.display = isListView ? 'none' : '';
+        listView.style.display = isListView ? '' : 'none';
+        gridBtn.classList.toggle('seg-btn-active', !isListView);
+        gridBtn.setAttribute('aria-pressed', !isListView);
+        listBtn.classList.toggle('seg-btn-active', isListView);
+        listBtn.setAttribute('aria-pressed', isListView);
+        updateCount();
+    }
+
+    gridBtn.addEventListener('click', function() { setView(false); });
+    listBtn.addEventListener('click', function() { setView(true); });
+
+    // Apply initial sort and hide empty categories
+    applySort(sortSelect.value);
+    updateCategoryButtons();
+})();
+</script>
+{{end}}
+{{end}}

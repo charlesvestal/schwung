@@ -1,0 +1,54 @@
+{{template "base" .}}
+
+{{define "title"}}Install {{.Module.Name}} - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <nav aria-label="Breadcrumb" class="breadcrumb">
+        <ol>
+            <li><a href="/modules">Modules</a></li>
+            <li><a href="/modules/{{.Module.ID}}">{{.Module.Name}}</a></li>
+            <li aria-current="page">Install</li>
+        </ol>
+    </nav>
+    <h1>Install {{.Module.Name}}</h1>
+</div>
+
+<div class="install-page">
+    <div class="install-summary">
+        <dl class="detail-list">
+            <dt>Module</dt>
+            <dd>{{.Module.Name}}</dd>
+
+            <dt>Category</dt>
+            <dd>{{categoryLabel .Module.ComponentType}}</dd>
+
+            <dt>Author</dt>
+            <dd>{{.Module.Author}}</dd>
+
+            <dt>Description</dt>
+            <dd>{{.Module.Description}}</dd>
+
+            {{if .Module.Requires}}
+            <dt>Requirements</dt>
+            <dd class="requires-note">
+                <strong>Note:</strong> {{.Module.Requires}}
+            </dd>
+            {{end}}
+        </dl>
+    </div>
+
+    <form method="POST" action="/install/{{.Module.ID}}" class="install-form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        {{if isInstalled .Module.ID .Installed}}
+        <p class="already-installed">This module is already installed. Installing again will update it.</p>
+        {{end}}
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">
+                {{if isInstalled .Module.ID .Installed}}Reinstall{{else}}Install{{end}} {{.Module.Name}}
+            </button>
+            <a href="/modules/{{.Module.ID}}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{{end}}
