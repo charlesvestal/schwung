@@ -678,6 +678,17 @@
       "default_branch": "main",
       "asset_name": "denis-module.tar.gz",
       "min_host_version": "0.5.8"
+    },
+    {
+      "id": "genera",
+      "name": "Genera",
+      "description": "Generative note and chord sequencer with 7 generation modes, stutter engine with beat-repeat, 20 scales, chord stacking, capture/loop, and humanize",
+      "author": "Vincent Fillion",
+      "component_type": "midi_fx",
+      "github_repo": "fillioning/genera-move",
+      "default_branch": "master",
+      "asset_name": "genera-module.tar.gz",
+      "min_host_version": "0.5.8"
     }
   ]
 }
