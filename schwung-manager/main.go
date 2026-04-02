@@ -1247,8 +1247,17 @@ func (app *App) handleInstallPage(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) handleInstallAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	app.logger.Info("install action", "id", id)
-	http.Redirect(w, r, "/modules/"+id+"?flash=Installation+started", http.StatusSeeOther)
+	mod := app.findCatalogModule(id)
+	if mod == nil {
+		http.Redirect(w, r, "/modules?flash=Module+not+found:+"+id, http.StatusSeeOther)
+		return
+	}
+	if err := app.installModule(mod); err != nil {
+		app.logger.Error("install failed", "id", id, "err", err)
+		http.Redirect(w, r, "/modules/"+id+"?flash=Install+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
 }
 
 // ---------------------------------------------------------------------------
