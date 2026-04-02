@@ -1,0 +1,49 @@
+[
+  {
+    "id": "display", "label": "Display",
+    "items": [
+      { "key": "display_mirror", "label": "Mirror Display", "type": "bool" },
+      { "key": "overlay_knobs", "label": "Overlay Knobs", "type": "enum",
+        "options": ["+Shift", "+Jog Touch", "Off", "Native"], "values": [0, 1, 2, 3] },
+      { "key": "pad_typing", "label": "Pad Typing", "type": "bool" },
+      { "key": "text_preview", "label": "Text Preview", "type": "bool" }
+    ]
+  },
+  {
+    "id": "audio", "label": "Audio",
+    "items": [
+      { "key": "link_audio_routing", "label": "Move→Schwung", "type": "bool" },
+      { "key": "link_audio_publish", "label": "Schwung→Link", "type": "bool" },
+      { "key": "resample_bridge", "label": "Sample Source", "type": "enum",
+        "options": ["Native", "Schwung Mix"], "values": [0, 2] },
+      { "key": "skipback_shortcut", "label": "Skipback", "type": "enum",
+        "options": ["Shift+Capture", "Shift+Vol+Capture"], "values": [0, 1] },
+      { "key": "browser_preview", "label": "Browser Preview", "type": "bool" }
+    ]
+  },
+  {
+    "id": "accessibility", "label": "Screen Reader",
+    "items": [
+      { "key": "screen_reader_enabled", "label": "Screen Reader", "type": "bool" },
+      { "key": "screen_reader_engine", "label": "TTS Engine", "type": "enum",
+        "options": ["eSpeak-NG", "Flite"], "values": ["espeak", "flite"] },
+      { "key": "screen_reader_speed", "label": "Voice Speed", "type": "float", "min": 0.5, "max": 6.0, "step": 0.1 },
+      { "key": "screen_reader_pitch", "label": "Voice Pitch", "type": "float", "min": 80, "max": 180, "step": 5 },
+      { "key": "screen_reader_volume", "label": "Voice Volume", "type": "int", "min": 0, "max": 100, "step": 5 },
+      { "key": "screen_reader_debounce", "label": "Debounce", "type": "int", "min": 0, "max": 1000, "step": 50 }
+    ]
+  },
+  {
+    "id": "set_pages", "label": "Set Pages",
+    "items": [
+      { "key": "set_pages_enabled", "label": "Set Pages", "type": "bool" }
+    ]
+  },
+  {
+    "id": "services", "label": "Services",
+    "items": [
+      { "key": "filebrowser_enabled", "label": "File Browser", "type": "bool" },
+      { "key": "auto_update_check", "label": "Auto Update Check", "type": "bool" }
+    ]
+  }
+]

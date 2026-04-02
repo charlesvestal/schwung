@@ -11,168 +11,43 @@
 <form method="POST" action="/config/save" class="settings-form">
     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
 
-    {{/* ---- Display Settings ---- */}}
+    {{range .Sections}}
     <section class="info-card">
         <fieldset>
-            <legend><h2>Display Settings</h2></legend>
+            <legend><h2>{{.Label}}</h2></legend>
 
+            {{range .Items}}
             <div class="setting-row">
-                <label for="overlay_knobs_mode">Overlay Knobs Mode</label>
-                <select id="overlay_knobs_mode" name="overlay_knobs_mode">
-                    <option value="0" {{if eq .OverlayKnobsMode 0}}selected{{end}}>With Shift</option>
-                    <option value="1" {{if eq .OverlayKnobsMode 1}}selected{{end}}>With Jog Touch</option>
-                    <option value="2" {{if eq .OverlayKnobsMode 2}}selected{{end}}>Off</option>
-                    <option value="3" {{if eq .OverlayKnobsMode 3}}selected{{end}}>Native</option>
+                {{if eq .Type "bool"}}
+                <label for="{{.Key}}">{{.Label}}</label>
+                <div class="toggle-wrap">
+                    <input type="hidden" name="{{.Key}}" value="false">
+                    <input type="checkbox" id="{{.Key}}" name="{{.Key}}" value="true" class="toggle-input" {{if settingChecked .Key $.Values}}checked{{end}}>
+                    <label for="{{.Key}}" class="toggle-label"></label>
+                </div>
+
+                {{else if eq .Type "enum"}}
+                <label for="{{.Key}}">{{.Label}}</label>
+                <select id="{{.Key}}" name="{{.Key}}">
+                    {{$key := .Key}}
+                    {{$values := $.Values}}
+                    {{range enumOptions .}}
+                    <option value="{{.Value}}" {{if settingSelected .Value $key $values}}selected{{end}}>{{.Label}}</option>
+                    {{end}}
                 </select>
-            </div>
 
-            <div class="setting-row">
-                <label for="pad_typing">Pad Typing</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="pad_typing" value="false">
-                    <input type="checkbox" id="pad_typing" name="pad_typing" value="true" class="toggle-input" {{if .PadTyping}}checked{{end}}>
-                    <label for="pad_typing" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="text_preview">Text Preview</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="text_preview" value="false">
-                    <input type="checkbox" id="text_preview" name="text_preview" value="true" class="toggle-input" {{if .TextPreview}}checked{{end}}>
-                    <label for="text_preview" class="toggle-label"></label>
-                </div>
-            </div>
-        </fieldset>
-    </section>
-
-    {{/* ---- Audio Settings ---- */}}
-    <section class="info-card">
-        <fieldset>
-            <legend><h2>Audio Settings</h2></legend>
-
-            <div class="setting-row">
-                <label for="resample_bridge">Resample Bridge (Move&rarr;Schwung)</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="resample_bridge" value="false">
-                    <input type="checkbox" id="resample_bridge" name="resample_bridge" value="true" class="toggle-input" {{if .ResampleBridge}}checked{{end}}>
-                    <label for="resample_bridge" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="link_audio_publish">Link Audio Publish (Schwung&rarr;Link)</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="link_audio_publish" value="false">
-                    <input type="checkbox" id="link_audio_publish" name="link_audio_publish" value="true" class="toggle-input" {{if .LinkAudioPublish}}checked{{end}}>
-                    <label for="link_audio_publish" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="browser_preview">Browser Preview</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="browser_preview" value="false">
-                    <input type="checkbox" id="browser_preview" name="browser_preview" value="true" class="toggle-input" {{if .BrowserPreview}}checked{{end}}>
-                    <label for="browser_preview" class="toggle-label"></label>
-                </div>
-            </div>
-        </fieldset>
-    </section>
-
-    {{/* ---- Accessibility ---- */}}
-    <section class="info-card">
-        <fieldset>
-            <legend><h2>Accessibility</h2></legend>
-
-            <div class="setting-row">
-                <label for="tts_debounce_ms">TTS Debounce</label>
+                {{else if or (eq .Type "int") (eq .Type "float")}}
+                <label for="{{.Key}}">{{.Label}}</label>
                 <div class="number-input-wrap">
-                    <input type="number" id="tts_debounce_ms" name="tts_debounce_ms"
-                           value="{{.TTSDebounce}}" min="0" max="1000" step="50">
-                    <span class="input-suffix">ms</span>
+                    <input type="number" id="{{.Key}}" name="{{.Key}}"
+                           value="{{settingValue .Key $.Values}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}">
                 </div>
+                {{end}}
             </div>
+            {{end}}
         </fieldset>
     </section>
-
-    {{/* ---- Feature Flags ---- */}}
-    <section class="info-card">
-        <fieldset>
-            <legend><h2>Feature Flags</h2></legend>
-            <p class="form-help">Changes to feature flags require a restart to take effect.</p>
-
-            <div class="setting-row">
-                <label for="shadow_ui_enabled">Shadow UI Enabled</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="shadow_ui_enabled" value="false">
-                    <input type="checkbox" id="shadow_ui_enabled" name="shadow_ui_enabled" value="true" class="toggle-input" {{if .ShadowUIEnabled}}checked{{end}}>
-                    <label for="shadow_ui_enabled" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="display_mirror_enabled">Display Mirror</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="display_mirror_enabled" value="false">
-                    <input type="checkbox" id="display_mirror_enabled" name="display_mirror_enabled" value="true" class="toggle-input" {{if .DisplayMirror}}checked{{end}}>
-                    <label for="display_mirror_enabled" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="link_audio_enabled">Link Audio</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="link_audio_enabled" value="false">
-                    <input type="checkbox" id="link_audio_enabled" name="link_audio_enabled" value="true" class="toggle-input" {{if .LinkAudio}}checked{{end}}>
-                    <label for="link_audio_enabled" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="set_pages_enabled">Set Pages</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="set_pages_enabled" value="false">
-                    <input type="checkbox" id="set_pages_enabled" name="set_pages_enabled" value="true" class="toggle-input" {{if .SetPages}}checked{{end}}>
-                    <label for="set_pages_enabled" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="skipback_require_volume">Skipback Requires Volume</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="skipback_require_volume" value="false">
-                    <input type="checkbox" id="skipback_require_volume" name="skipback_require_volume" value="true" class="toggle-input" {{if .SkipbackRequiresVolume}}checked{{end}}>
-                    <label for="skipback_require_volume" class="toggle-label"></label>
-                </div>
-            </div>
-        </fieldset>
-    </section>
-
-    {{/* ---- Other ---- */}}
-    <section class="info-card">
-        <fieldset>
-            <legend><h2>Other</h2></legend>
-
-            <div class="setting-row">
-                <label for="auto_update_check">Auto Update Check</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="auto_update_check" value="false">
-                    <input type="checkbox" id="auto_update_check" name="auto_update_check" value="true" class="toggle-input" {{if .AutoUpdateCheck}}checked{{end}}>
-                    <label for="auto_update_check" class="toggle-label"></label>
-                </div>
-            </div>
-
-            <div class="setting-row">
-                <label for="file_browser_service">File Browser Service</label>
-                <div class="toggle-wrap">
-                    <input type="hidden" name="file_browser_service" value="false">
-                    <input type="checkbox" id="file_browser_service" name="file_browser_service" value="true" class="toggle-input" {{if .FileBrowserService}}checked{{end}}>
-                    <label for="file_browser_service" class="toggle-label"></label>
-                </div>
-            </div>
-        </fieldset>
-    </section>
+    {{end}}
 
     <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save Settings</button>

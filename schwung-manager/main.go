@@ -89,6 +89,25 @@ type InstalledModule struct {
 	Assets        *ModuleAssets `json:"assets,omitempty"`
 }
 
+// SettingsSection describes a section of settings from settings-schema.json.
+type SettingsSection struct {
+	ID    string         `json:"id"`
+	Label string         `json:"label"`
+	Items []SettingsItem `json:"items"`
+}
+
+// SettingsItem describes a single setting within a section.
+type SettingsItem struct {
+	Key     string  `json:"key"`
+	Label   string  `json:"label"`
+	Type    string  `json:"type"`
+	Options []string `json:"options,omitempty"`
+	Values  []any   `json:"values,omitempty"`
+	Min     float64 `json:"min,omitempty"`
+	Max     float64 `json:"max,omitempty"`
+	Step    float64 `json:"step,omitempty"`
+}
+
 // FileEntry represents a file or directory for the file browser.
 type FileEntry struct {
 	Name    string
@@ -312,6 +331,47 @@ var funcMap = template.FuncMap{
 			return "v" + v
 		}
 		return v
+	},
+	"settingValue": func(key string, values map[string]any) any {
+		if v, ok := values[key]; ok {
+			return v
+		}
+		return ""
+	},
+	"settingChecked": func(key string, values map[string]any) bool {
+		v, ok := values[key]
+		if !ok {
+			return false
+		}
+		switch b := v.(type) {
+		case bool:
+			return b
+		case float64:
+			return b != 0
+		default:
+			return false
+		}
+	},
+	"enumOptions": func(item SettingsItem) []map[string]any {
+		var result []map[string]any
+		for i, opt := range item.Options {
+			var val any
+			if i < len(item.Values) {
+				val = item.Values[i]
+			} else {
+				val = opt
+			}
+			result = append(result, map[string]any{"Label": opt, "Value": val})
+		}
+		return result
+	},
+	"settingSelected": func(optVal any, key string, values map[string]any) bool {
+		cur, ok := values[key]
+		if !ok {
+			return false
+		}
+		// Compare as strings for robustness (JSON numbers are float64).
+		return fmt.Sprint(optVal) == fmt.Sprint(cur)
 	},
 	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta) bool {
 		inst, ok := installed[id]
@@ -1177,38 +1237,106 @@ func jsonFloat(m map[string]any, key string, def float64) float64 {
 	}
 }
 
+// loadSettingsSchema reads and parses the settings-schema.json file.
+func (app *App) loadSettingsSchema() ([]SettingsSection, error) {
+	schemaPath := filepath.Join(app.basePath, "shared", "settings-schema.json")
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading settings schema: %w", err)
+	}
+	var sections []SettingsSection
+	if err := json.Unmarshal(data, &sections); err != nil {
+		return nil, fmt.Errorf("parsing settings schema: %w", err)
+	}
+	return sections, nil
+}
+
+// settingsKeyMapping maps schema keys to their config file keys.
+// Keys not listed here are assumed to match 1:1 with shadow_config.json.
+var settingsToShadowConfig = map[string]string{
+	"overlay_knobs":          "overlay_knobs_mode",
+	"screen_reader_debounce": "tts_debounce_ms",
+	"resample_bridge":        "resample_bridge_mode",
+	"link_audio_publish":     "link_audio_publish",
+	"pad_typing":             "pad_typing",
+	"text_preview":           "text_preview",
+	"browser_preview":        "browser_preview",
+	"auto_update_check":      "auto_update_check",
+	"filebrowser_enabled":    "filebrowser_enabled",
+	"screen_reader_enabled":  "screen_reader_enabled",
+	"screen_reader_engine":   "screen_reader_engine",
+	"screen_reader_speed":    "screen_reader_speed",
+	"screen_reader_pitch":    "screen_reader_pitch",
+	"screen_reader_volume":   "screen_reader_volume",
+}
+
+// settingsToFeatures maps schema keys to features.json keys.
+var settingsToFeatures = map[string]string{
+	"display_mirror":    "display_mirror_enabled",
+	"set_pages_enabled": "set_pages_enabled",
+	"link_audio_routing": "link_audio_enabled",
+	"skipback_shortcut": "skipback_require_volume",
+}
+
 func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
+	sections, err := app.loadSettingsSchema()
+	if err != nil {
+		app.logger.Error("failed to load settings schema", "err", err)
+		http.Error(w, "Failed to load settings schema", http.StatusInternalServerError)
+		return
+	}
+
 	shadowPath := filepath.Join(app.basePath, "shadow_config.json")
 	featuresPath := filepath.Join(app.basePath, "config", "features.json")
 
 	sc := readJSONFile(shadowPath)
 	ft := readJSONFile(featuresPath)
 
+	// Build merged values map using schema keys.
+	values := make(map[string]any)
+
+	// Map features.json into schema keys.
+	for schemaKey, featKey := range settingsToFeatures {
+		if schemaKey == "skipback_shortcut" {
+			// skipback_require_volume (bool) -> skipback_shortcut (0 or 1)
+			if jsonBool(ft, featKey, false) {
+				values[schemaKey] = float64(1)
+			} else {
+				values[schemaKey] = float64(0)
+			}
+		} else if schemaKey == "link_audio_routing" {
+			// link_audio_enabled -> link_audio_routing (bool)
+			values[schemaKey] = jsonBool(ft, featKey, false)
+		} else {
+			values[schemaKey] = jsonBool(ft, featKey, false)
+		}
+	}
+
+	// Map shadow_config.json into schema keys.
+	for schemaKey, scKey := range settingsToShadowConfig {
+		if v, ok := sc[scKey]; ok {
+			values[schemaKey] = v
+		}
+	}
+
 	data := map[string]any{
-		"Title":  "Settings",
-		"Flash":  r.URL.Query().Get("flash"),
-		"Active": "config",
-		// shadow_config.json values
-		"OverlayKnobsMode":   int(jsonFloat(sc, "overlay_knobs_mode", 0)),
-		"PadTyping":           jsonBool(sc, "pad_typing", false),
-		"TextPreview":         jsonBool(sc, "text_preview", false),
-		"ResampleBridge":      jsonFloat(sc, "resample_bridge_mode", 0) != 0,
-		"LinkAudioPublish":    jsonBool(sc, "link_audio_publish", false),
-		"BrowserPreview":      jsonBool(sc, "browser_preview", false),
-		"TTSDebounce":         int(jsonFloat(sc, "tts_debounce_ms", 200)),
-		"AutoUpdateCheck":     jsonBool(sc, "auto_update_check", false),
-		"FileBrowserService":  jsonBool(sc, "file_browser_service", false),
-		// features.json values
-		"ShadowUIEnabled":         jsonBool(ft, "shadow_ui_enabled", true),
-		"DisplayMirror":           jsonBool(ft, "display_mirror_enabled", false),
-		"LinkAudio":               jsonBool(ft, "link_audio_enabled", false),
-		"SetPages":                jsonBool(ft, "set_pages_enabled", true),
-		"SkipbackRequiresVolume":  jsonBool(ft, "skipback_require_volume", false),
+		"Title":    "Settings",
+		"Flash":    r.URL.Query().Get("flash"),
+		"Active":   "config",
+		"Sections": sections,
+		"Values":   values,
 	}
 	app.render(w, r, "config.html", data)
 }
 
 func (app *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
+	sections, err := app.loadSettingsSchema()
+	if err != nil {
+		app.logger.Error("failed to load settings schema for save", "err", err)
+		http.Redirect(w, r, "/config?flash=Save+failed:+schema+load+error", http.StatusSeeOther)
+		return
+	}
+
 	shadowPath := filepath.Join(app.basePath, "shadow_config.json")
 	featuresPath := filepath.Join(app.basePath, "config", "features.json")
 
@@ -1216,36 +1344,59 @@ func (app *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 	sc := readJSONFile(shadowPath)
 	ft := readJSONFile(featuresPath)
 
-	// Helper: form checkbox uses hidden+checkbox pattern; "true" if checked.
-	formBool := func(key string) bool { return r.FormValue(key) == "true" }
-
-	// shadow_config.json settings
-	overlayMode, _ := strconv.Atoi(r.FormValue("overlay_knobs_mode"))
-	sc["overlay_knobs_mode"] = overlayMode
-	sc["pad_typing"] = formBool("pad_typing")
-	sc["text_preview"] = formBool("text_preview")
-	if formBool("resample_bridge") {
-		sc["resample_bridge_mode"] = 2
-	} else {
-		sc["resample_bridge_mode"] = 0
-	}
-	sc["link_audio_publish"] = formBool("link_audio_publish")
-	sc["browser_preview"] = formBool("browser_preview")
-	ttsDebounce, _ := strconv.Atoi(r.FormValue("tts_debounce_ms"))
-	sc["tts_debounce_ms"] = ttsDebounce
-	sc["auto_update_check"] = formBool("auto_update_check")
-	sc["file_browser_service"] = formBool("file_browser_service")
-
-	// features.json settings
 	oldFt := make(map[string]any)
 	for k, v := range ft {
 		oldFt[k] = v
 	}
-	ft["shadow_ui_enabled"] = formBool("shadow_ui_enabled")
-	ft["display_mirror_enabled"] = formBool("display_mirror_enabled")
-	ft["link_audio_enabled"] = formBool("link_audio_enabled")
-	ft["set_pages_enabled"] = formBool("set_pages_enabled")
-	ft["skipback_require_volume"] = formBool("skipback_require_volume")
+
+	// Helper: form checkbox uses hidden+checkbox pattern; "true" if checked.
+	formBool := func(key string) bool { return r.FormValue(key) == "true" }
+
+	// Iterate over all schema items and save each value.
+	for _, section := range sections {
+		for _, item := range section.Items {
+			schemaKey := item.Key
+
+			// Determine which config file this key belongs to.
+			if featKey, isFeat := settingsToFeatures[schemaKey]; isFeat {
+				// Feature flag — write to features.json.
+				switch schemaKey {
+				case "skipback_shortcut":
+					// enum with values [0, 1] -> features bool skipback_require_volume
+					val, _ := strconv.Atoi(r.FormValue(schemaKey))
+					ft[featKey] = val != 0
+				default:
+					ft[featKey] = formBool(schemaKey)
+				}
+			} else {
+				// Shadow config — determine the config file key.
+				scKey := schemaKey
+				if mapped, ok := settingsToShadowConfig[schemaKey]; ok {
+					scKey = mapped
+				}
+
+				switch item.Type {
+				case "bool":
+					sc[scKey] = formBool(schemaKey)
+				case "enum":
+					// Store the raw form value, parsed to match the values type.
+					formVal := r.FormValue(schemaKey)
+					// Try to parse as number first (many enums use int values).
+					if n, err := strconv.ParseFloat(formVal, 64); err == nil {
+						sc[scKey] = n
+					} else {
+						sc[scKey] = formVal
+					}
+				case "int":
+					n, _ := strconv.Atoi(r.FormValue(schemaKey))
+					sc[scKey] = n
+				case "float":
+					f, _ := strconv.ParseFloat(r.FormValue(schemaKey), 64)
+					sc[scKey] = f
+				}
+			}
+		}
+	}
 
 	// Write both files.
 	if err := writeJSONFile(shadowPath, sc); err != nil {
@@ -1261,8 +1412,9 @@ func (app *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 
 	// Check if features.json changed — if so, note restart required.
 	featuresChanged := false
-	for _, key := range []string{"shadow_ui_enabled", "display_mirror_enabled", "link_audio_enabled", "set_pages_enabled", "skipback_require_volume"} {
-		if fmt.Sprint(oldFt[key]) != fmt.Sprint(ft[key]) {
+	for featKey := range settingsToFeatures {
+		fKey := settingsToFeatures[featKey]
+		if fmt.Sprint(oldFt[fKey]) != fmt.Sprint(ft[fKey]) {
 			featuresChanged = true
 			break
 		}
