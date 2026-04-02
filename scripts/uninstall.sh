@@ -103,8 +103,7 @@ main() {
 
     backup_set_pages
 
-    log "Removing schwung.local iptables redirect and mDNS..."
-    ssh_with_retry "root" '/usr/sbin/iptables -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700 2>/dev/null' || true
+    log "Removing schwung.local mDNS entry..."
     ssh_with_retry "root" 'sed -i "/schwung\.local/d" /etc/avahi/hosts 2>/dev/null' || true
 
     log "Removing shim and files..."

@@ -61,16 +61,7 @@ fi
 # Start schwung-manager web UI if present
 SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
 if [ -x "$SCHWUNG_MGR" ]; then
-    "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
-
-    # Redirect incoming port 80 to schwung-manager for Host-based routing.
-    # PREROUTING only intercepts external packets; the reverse proxy's
-    # loopback connections to localhost:80 (stock Move server) are unaffected.
-    IPTABLES=/usr/sbin/iptables
-    if [ -x "$IPTABLES" ]; then
-        "$IPTABLES" -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700 2>/dev/null || true
-        "$IPTABLES" -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 7700
-    fi
+    "$SCHWUNG_MGR" -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
 
     # Advertise schwung.local via mDNS (avahi hosts file).
     # avahi-daemon watches /etc/avahi/hosts and publishes A records automatically.

@@ -814,7 +814,7 @@ if [ "$use_reenable" = true ]; then
 #!/bin/sh
 export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
 export LD_PRELOAD=/usr/lib/schwung-web-shim.so
-exec ${web_svc_path}Original \"\$@\"
+exec ${web_svc_path}Original --http-server-port 8080 \"\$@\"
 WEOF
 chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
       fi
@@ -995,7 +995,7 @@ if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null
 #!/bin/sh
 export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
 export LD_PRELOAD=/usr/lib/schwung-web-shim.so
-exec ${web_svc_path}Original \"\$@\"
+exec ${web_svc_path}Original --http-server-port 8080 \"\$@\"
 WEOF
 chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
     fi
