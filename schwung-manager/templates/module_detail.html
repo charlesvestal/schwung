@@ -20,7 +20,7 @@
             <dd><code>{{.Module.ID}}</code></dd>
 
             <dt>Category</dt>
-            <dd>{{categoryLabel .Module.ComponentType}}</dd>
+            <dd><span class="badge badge-{{.Module.ComponentType}}">{{categoryLabel .Module.ComponentType}}</span></dd>
 
             <dt>Author</dt>
             <dd>{{.Module.Author}}</dd>
@@ -47,9 +47,29 @@
 
             <dt>Status</dt>
             <dd>
-                <span class="badge {{if isInstalled .Module.ID .Installed}}badge-installed{{else}}badge-not-installed{{end}}">
-                    {{if isInstalled .Module.ID .Installed}}Installed{{else}}Not Installed{{end}}
-                </span>
+                {{if isInstalled .Module.ID .Installed}}
+                <span class="badge badge-installed">Installed</span>
+                {{else}}
+                <span class="badge badge-not-installed">Not Installed</span>
+                {{end}}
+            </dd>
+
+            <dt>Version</dt>
+            <dd>
+                {{if isInstalled .Module.ID .Installed}}
+                    <code>{{(index .Installed .Module.ID).Version}}</code>
+                    {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
+                        <span class="update-available">{{(releaseMeta .Module.ID .ReleaseMeta).Version}} available</span>
+                    {{else}}
+                        <span class="text-muted">up to date</span>
+                    {{end}}
+                {{else}}
+                    {{if (releaseMeta .Module.ID .ReleaseMeta).Version}}
+                        <code>{{(releaseMeta .Module.ID .ReleaseMeta).Version}}</code>
+                    {{else}}
+                        <span class="text-muted">—</span>
+                    {{end}}
+                {{end}}
             </dd>
 
             {{if isInstalled .Module.ID .Installed}}
@@ -65,10 +85,12 @@
 
     <div class="detail-actions">
         {{if isInstalled .Module.ID .Installed}}
+        {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
         <form method="POST" action="/modules/{{.Module.ID}}/update" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <button type="submit" class="btn btn-primary">Update</button>
+            <button type="submit" class="btn btn-primary">Update to {{(releaseMeta .Module.ID .ReleaseMeta).Version}}</button>
         </form>
+        {{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form"
               onsubmit="return confirm('Uninstall {{.Module.Name}}?')">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">

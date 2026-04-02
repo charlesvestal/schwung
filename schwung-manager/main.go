@@ -303,6 +303,20 @@ var funcMap = template.FuncMap{
 	"releaseMeta": func(id string, meta map[string]ReleaseMeta) ReleaseMeta {
 		return meta[id]
 	},
+	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta) bool {
+		inst, ok := installed[id]
+		if !ok {
+			return false
+		}
+		rm, ok := meta[id]
+		if !ok || rm.Version == "" {
+			return true // Can't tell, show update button
+		}
+		// Strip "v" prefix for comparison.
+		latest := strings.TrimPrefix(rm.Version, "v")
+		current := strings.TrimPrefix(inst.Version, "v")
+		return latest != current
+	},
 }
 
 // templateMap maps page template names to their parsed template sets.
@@ -467,6 +481,7 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"ModuleDir":    modDir,
 		"AssetsDir":    assetsDir,
 		"ModuleAssets": moduleAssets,
+		"ReleaseMeta":  app.catalogSvc.GetReleaseMeta(),
 		"Active":       "modules",
 	}
 	app.render(w, r, "module_detail.html", data)
