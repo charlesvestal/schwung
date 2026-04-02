@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -471,37 +472,298 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 	app.render(w, r, "module_detail.html", data)
 }
 
+// getInstallSubdir maps component_type to the install subdirectory name.
+func getInstallSubdir(componentType string) string {
+	switch componentType {
+	case "sound_generator":
+		return "sound_generators"
+	case "audio_fx":
+		return "audio_fx"
+	case "midi_fx":
+		return "midi_fx"
+	case "utility":
+		return "utilities"
+	case "overtake":
+		return "overtake"
+	case "tool":
+		return "tools"
+	default:
+		return "other"
+	}
+}
+
+// ReleaseJSON is the structure of a module's release.json file.
+type ReleaseJSON struct {
+	Version     string `json:"version"`
+	DownloadURL string `json:"download_url"`
+}
+
+// installModule downloads and extracts a module from its GitHub release.
+func (app *App) installModule(mod *CatalogModule) error {
+	client := &http.Client{Timeout: 120 * time.Second}
+
+	// 1. Fetch release.json to get download URL.
+	releaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json",
+		mod.GithubRepo, mod.DefaultBranch)
+	app.logger.Info("fetching release.json", "url", releaseURL)
+
+	resp, err := client.Get(releaseURL)
+	if err != nil {
+		return fmt.Errorf("fetching release.json: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// Fall back to latest release download URL.
+		app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
+	}
+
+	var downloadURL string
+	if resp.StatusCode == http.StatusOK {
+		var rel ReleaseJSON
+		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+			return fmt.Errorf("decoding release.json: %w", err)
+		}
+		downloadURL = rel.DownloadURL
+	}
+	if downloadURL == "" {
+		// Fallback: use GitHub releases latest download.
+		downloadURL = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s",
+			mod.GithubRepo, mod.AssetName)
+	}
+
+	// 2. Download the tarball.
+	app.logger.Info("downloading module", "id", mod.ID, "url", downloadURL)
+	dlResp, err := client.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("downloading tarball: %w", err)
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned %d", dlResp.StatusCode)
+	}
+
+	// Save to temp file in /data/UserData/ (not /tmp which is on rootfs).
+	tmpPath := filepath.Join(app.basePath, ".tmp-module-download.tar.gz")
+	tmpFile, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("saving tarball: %w", err)
+	}
+	tmpFile.Close()
+
+	// 3. Extract to the correct category directory.
+	categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(mod.ComponentType))
+	if err := os.MkdirAll(categoryDir, 0755); err != nil {
+		return fmt.Errorf("creating category dir: %w", err)
+	}
+
+	// Extract using tar command (busybox tar on Move).
+	app.logger.Info("extracting module", "id", mod.ID, "dest", categoryDir)
+	cmd := exec.Command("tar", "-xzf", tmpPath, "-C", categoryDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extracting tarball: %w\noutput: %s", err, output)
+	}
+
+	app.logger.Info("module installed", "id", mod.ID, "path", categoryDir)
+	return nil
+}
+
+// uninstallModule removes a module from disk.
+func (app *App) uninstallModule(id string) error {
+	modDir := app.findModuleDir(id)
+	if modDir == "" {
+		return fmt.Errorf("module %q not found on disk", id)
+	}
+	app.logger.Info("uninstalling module", "id", id, "path", modDir)
+	return os.RemoveAll(modDir)
+}
+
+// findCatalogModule looks up a module by ID in the catalog.
+func (app *App) findCatalogModule(id string) *CatalogModule {
+	cat, _ := app.catalogSvc.Fetch()
+	if cat == nil {
+		return nil
+	}
+	for i := range cat.Modules {
+		if cat.Modules[i].ID == id {
+			return &cat.Modules[i]
+		}
+	}
+	return nil
+}
+
 func (app *App) handleModuleInstall(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	app.logger.Info("module install requested", "id", id)
-	// Placeholder: real implementation would download and extract the module.
-	http.Redirect(w, r, "/modules/"+id+"?flash=Install+started+for+"+id, http.StatusSeeOther)
+	mod := app.findCatalogModule(id)
+	if mod == nil {
+		http.Redirect(w, r, "/modules?flash=Module+not+found:+"+id, http.StatusSeeOther)
+		return
+	}
+	if err := app.installModule(mod); err != nil {
+		app.logger.Error("module install failed", "id", id, "err", err)
+		http.Redirect(w, r, "/modules/"+id+"?flash=Install+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
 }
 
 func (app *App) handleModuleUninstall(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	app.logger.Info("module uninstall requested", "id", id)
-	http.Redirect(w, r, "/modules/"+id+"?flash=Uninstall+started+for+"+id, http.StatusSeeOther)
+	if err := app.uninstallModule(id); err != nil {
+		app.logger.Error("module uninstall failed", "id", id, "err", err)
+		http.Redirect(w, r, "/modules/"+id+"?flash=Uninstall+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/modules/"+id+"?flash=Module+uninstalled", http.StatusSeeOther)
 }
 
 func (app *App) handleModuleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	app.logger.Info("module update requested", "id", id)
-	http.Redirect(w, r, "/modules/"+id+"?flash=Update+started+for+"+id, http.StatusSeeOther)
+	mod := app.findCatalogModule(id)
+	if mod == nil {
+		http.Redirect(w, r, "/modules?flash=Module+not+found:+"+id, http.StatusSeeOther)
+		return
+	}
+	if err := app.installModule(mod); err != nil {
+		app.logger.Error("module update failed", "id", id, "err", err)
+		http.Redirect(w, r, "/modules/"+id+"?flash=Update+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+updated+successfully", http.StatusSeeOther)
 }
 
 func (app *App) handleModuleUpdateAll(w http.ResponseWriter, r *http.Request) {
-	app.logger.Info("module update-all requested")
-	http.Redirect(w, r, "/modules?flash=Update+all+modules+started", http.StatusSeeOther)
+	installed := discoverInstalledModules(app.basePath)
+	var updated, failed int
+	for id := range installed {
+		mod := app.findCatalogModule(id)
+		if mod == nil {
+			continue
+		}
+		if err := app.installModule(mod); err != nil {
+			app.logger.Error("update failed", "id", id, "err", err)
+			failed++
+		} else {
+			updated++
+		}
+	}
+	msg := fmt.Sprintf("Updated+%d+modules", updated)
+	if failed > 0 {
+		msg += fmt.Sprintf(",+%d+failed", failed)
+	}
+	http.Redirect(w, r, "/modules?flash="+msg, http.StatusSeeOther)
 }
 
 func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 	source := r.FormValue("source")
 	switch source {
 	case "github":
-		url := r.FormValue("url")
-		app.logger.Info("custom install from github", "url", url)
-		http.Redirect(w, r, "/modules?flash=Install+from+GitHub+started+for+"+url, http.StatusSeeOther)
+		repoInput := r.FormValue("url")
+		// Normalize: strip https://github.com/ prefix if present.
+		repo := strings.TrimPrefix(repoInput, "https://github.com/")
+		repo = strings.TrimPrefix(repo, "http://github.com/")
+		repo = strings.TrimSuffix(repo, "/")
+		repo = strings.TrimSuffix(repo, ".git")
+
+		if repo == "" || !strings.Contains(repo, "/") {
+			http.Redirect(w, r, "/modules?flash=Invalid+GitHub+URL", http.StatusSeeOther)
+			return
+		}
+
+		// Fetch release.json from the repo (try main, then master).
+		client := &http.Client{Timeout: 30 * time.Second}
+		var rel ReleaseJSON
+		var found bool
+		for _, branch := range []string{"main", "master"} {
+			u := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json", repo, branch)
+			resp, err := client.Get(u)
+			if err != nil {
+				continue
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				if json.NewDecoder(resp.Body).Decode(&rel) == nil && rel.DownloadURL != "" {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			http.Redirect(w, r, "/modules?flash=Could+not+find+release.json+in+"+repo, http.StatusSeeOther)
+			return
+		}
+
+		// Download and extract.
+		app.logger.Info("custom install from github", "repo", repo, "url", rel.DownloadURL)
+		dlResp, err := client.Get(rel.DownloadURL)
+		if err != nil || dlResp.StatusCode != http.StatusOK {
+			http.Redirect(w, r, "/modules?flash=Download+failed+for+"+repo, http.StatusSeeOther)
+			return
+		}
+		defer dlResp.Body.Close()
+
+		// Save and extract (we don't know the component_type, extract to a temp location,
+		// then read module.json to determine the correct category).
+		tmpPath := filepath.Join(app.basePath, ".tmp-custom-download.tar.gz")
+		tmpFile, _ := os.Create(tmpPath)
+		io.Copy(tmpFile, dlResp.Body)
+		tmpFile.Close()
+		defer os.Remove(tmpPath)
+
+		// Extract to a temp dir first to read module.json.
+		tmpDir := filepath.Join(app.basePath, ".tmp-custom-extract")
+		os.MkdirAll(tmpDir, 0755)
+		defer os.RemoveAll(tmpDir)
+
+		cmd := exec.Command("tar", "-xzf", tmpPath, "-C", tmpDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			http.Redirect(w, r, "/modules?flash=Extract+failed:+"+string(output), http.StatusSeeOther)
+			return
+		}
+
+		// Find module.json in the extracted directory.
+		entries, _ := os.ReadDir(tmpDir)
+		if len(entries) == 0 {
+			http.Redirect(w, r, "/modules?flash=Tarball+is+empty", http.StatusSeeOther)
+			return
+		}
+		moduleDir := filepath.Join(tmpDir, entries[0].Name())
+		mjData, err := os.ReadFile(filepath.Join(moduleDir, "module.json"))
+		if err != nil {
+			http.Redirect(w, r, "/modules?flash=No+module.json+found+in+tarball", http.StatusSeeOther)
+			return
+		}
+		var mj struct {
+			ID           string `json:"id"`
+			Capabilities struct {
+				ComponentType string `json:"component_type"`
+			} `json:"capabilities"`
+		}
+		json.Unmarshal(mjData, &mj)
+
+		componentType := mj.Capabilities.ComponentType
+		if componentType == "" {
+			componentType = "other"
+		}
+
+		// Move to the correct category directory.
+		categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(componentType))
+		os.MkdirAll(categoryDir, 0755)
+		destDir := filepath.Join(categoryDir, entries[0].Name())
+		os.RemoveAll(destDir) // Remove old version if exists.
+		if err := os.Rename(moduleDir, destDir); err != nil {
+			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
+			return
+		}
+
+		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
+		http.Redirect(w, r, "/modules?flash=Installed+"+entries[0].Name()+"+from+GitHub", http.StatusSeeOther)
+
 	case "tarball":
 		file, header, err := r.FormFile("file")
 		if err != nil {
@@ -509,8 +771,65 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		app.logger.Info("custom install from tarball", "filename", header.Filename)
-		http.Redirect(w, r, "/modules?flash=Install+from+tarball+started+for+"+header.Filename, http.StatusSeeOther)
+
+		// Save uploaded tarball.
+		tmpPath := filepath.Join(app.basePath, ".tmp-upload-"+header.Filename)
+		tmpFile, err := os.Create(tmpPath)
+		if err != nil {
+			http.Redirect(w, r, "/modules?flash=Failed+to+save+upload", http.StatusSeeOther)
+			return
+		}
+		io.Copy(tmpFile, file)
+		tmpFile.Close()
+		defer os.Remove(tmpPath)
+
+		// Extract to temp dir to read module.json.
+		tmpDir := filepath.Join(app.basePath, ".tmp-tarball-extract")
+		os.MkdirAll(tmpDir, 0755)
+		defer os.RemoveAll(tmpDir)
+
+		cmd := exec.Command("tar", "-xzf", tmpPath, "-C", tmpDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			http.Redirect(w, r, "/modules?flash=Extract+failed:+"+string(output), http.StatusSeeOther)
+			return
+		}
+
+		entries, _ := os.ReadDir(tmpDir)
+		if len(entries) == 0 {
+			http.Redirect(w, r, "/modules?flash=Tarball+is+empty", http.StatusSeeOther)
+			return
+		}
+		moduleDir := filepath.Join(tmpDir, entries[0].Name())
+		mjData, err := os.ReadFile(filepath.Join(moduleDir, "module.json"))
+		if err != nil {
+			http.Redirect(w, r, "/modules?flash=No+module.json+found+in+tarball", http.StatusSeeOther)
+			return
+		}
+		var mj struct {
+			ID           string `json:"id"`
+			Capabilities struct {
+				ComponentType string `json:"component_type"`
+			} `json:"capabilities"`
+		}
+		json.Unmarshal(mjData, &mj)
+
+		componentType := mj.Capabilities.ComponentType
+		if componentType == "" {
+			componentType = "other"
+		}
+
+		categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(componentType))
+		os.MkdirAll(categoryDir, 0755)
+		destDir := filepath.Join(categoryDir, entries[0].Name())
+		os.RemoveAll(destDir)
+		if err := os.Rename(moduleDir, destDir); err != nil {
+			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
+			return
+		}
+
+		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
+		http.Redirect(w, r, "/modules?flash=Installed+"+entries[0].Name()+"+from+tarball", http.StatusSeeOther)
+
 	default:
 		http.Redirect(w, r, "/modules?flash=Unknown+install+source", http.StatusSeeOther)
 	}
