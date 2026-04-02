@@ -10,7 +10,9 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1723,6 +1725,70 @@ func (app *App) handleInstallAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
 }
 
+// hostRouter routes requests based on the Host header.
+// schwungHost requests go to schwungHandler (with /mirror proxied to displayAddr).
+// All other hosts are reverse-proxied to moveAddr (stock Move server).
+func hostRouter(schwungHost string, schwungHandler http.Handler, moveAddr, displayAddr string, logger *slog.Logger) http.Handler {
+	moveProxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = moveAddr
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			logger.Error("move proxy error", "err", err, "path", r.URL.Path)
+			http.Error(w, "Stock Move server unavailable", http.StatusBadGateway)
+		},
+	}
+
+	displayProxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = displayAddr
+			// Strip /mirror prefix for proxied requests
+			if strings.HasPrefix(req.URL.Path, "/mirror") {
+				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/mirror")
+				if req.URL.Path == "" {
+					req.URL.Path = "/"
+				}
+			}
+			// /stream-auto passes through as-is (no prefix to strip)
+		},
+		// SSE streams require immediate flushing
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			logger.Error("display proxy error", "err", err, "path", r.URL.Path)
+			http.Error(w, "Display server unavailable", http.StatusBadGateway)
+		},
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+
+		if host == schwungHost {
+			// /mirror → display server (HTML page and sub-resources)
+			if r.URL.Path == "/mirror" || strings.HasPrefix(r.URL.Path, "/mirror/") {
+				displayProxy.ServeHTTP(w, r)
+				return
+			}
+			// /stream-auto → display server SSE stream
+			// (the display server HTML page uses EventSource('/stream-auto'),
+			//  so the browser requests this at the root path)
+			if r.URL.Path == "/stream-auto" {
+				displayProxy.ServeHTTP(w, r)
+				return
+			}
+			schwungHandler.ServeHTTP(w, r)
+			return
+		}
+
+		// Everything else → stock Move server
+		moveProxy.ServeHTTP(w, r)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1733,6 +1799,9 @@ func main() {
 	catalogURL := flag.String("catalog-url",
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
+	schwungHost := flag.String("schwung-host", "schwung.local", "Hostname for Schwung Manager")
+	moveBackend := flag.String("move-backend", "127.0.0.1:80", "Address of stock Move web server")
+	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -1820,6 +1889,7 @@ func main() {
 	var handler http.Handler = mux
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
 	handler = middleware.CSRFProtection(handler)
+	handler = hostRouter(*schwungHost, handler, *moveBackend, *displayBackend, logger)
 
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{
