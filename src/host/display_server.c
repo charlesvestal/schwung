@@ -81,6 +81,7 @@ typedef enum {
 typedef struct {
     int fd;
     stream_mode_t stream_mode;
+    int needs_initial_frame;
     char buf[CLIENT_BUF_SIZE];
     int buf_len;
 } client_t;
@@ -277,6 +278,7 @@ static void handle_http(int idx) {
             "\r\n";
         if (write(clients[idx].fd, sse_header, strlen(sse_header)) > 0) {
             clients[idx].stream_mode = STREAM_MODE_AUTO;
+            clients[idx].needs_initial_frame = 1;
             LOG_INFO(DISPLAY_LOG_SOURCE, "auto SSE client connected (slot %d)", idx);
         } else {
             client_remove(idx);
@@ -292,6 +294,7 @@ static void handle_http(int idx) {
             "\r\n";
         if (write(clients[idx].fd, sse_header, strlen(sse_header)) > 0) {
             clients[idx].stream_mode = STREAM_MODE_LEGACY;
+            clients[idx].needs_initial_frame = 1;
             LOG_INFO(DISPLAY_LOG_SOURCE, "legacy SSE client connected (slot %d)", idx);
         } else {
             client_remove(idx);
@@ -471,6 +474,55 @@ int main(int argc, char *argv[]) {
                 auto_source_t auto_source = AUTO_SOURCE_NONE;
 
                 last_push = now;
+
+                /* Send initial frame to newly connected clients */
+                for (int i = 0; i < MAX_CLIENTS; i++) {
+                    if (clients[i].fd < 0 || !clients[i].needs_initial_frame) continue;
+                    clients[i].needs_initial_frame = 0;
+
+                    if (clients[i].stream_mode == STREAM_MODE_LEGACY) {
+                        /* Send cached mono display if available */
+                        if (shm_ptr) {
+                            int sse_len;
+                            (void)base64_encode(shm_ptr, DISPLAY_SIZE, b64_buf);
+                            sse_len = snprintf(sse_buf, sizeof(sse_buf), "data: %s\n\n", b64_buf);
+                            if (write(clients[i].fd, sse_buf, sse_len) <= 0)
+                                client_remove(i);
+                        }
+                    } else if (clients[i].stream_mode == STREAM_MODE_AUTO) {
+                        /* Send cached auto frame (norns or move) */
+                        if (last_auto_size > 0) {
+                            int sse_len;
+                            const char *fmt = (last_auto_source == AUTO_SOURCE_NORNS)
+                                ? NORNS_DISPLAY_FORMAT : "mono1_packed";
+                            const char *src = (last_auto_source == AUTO_SOURCE_NORNS)
+                                ? "norns 4-bit" : "move 1-bit";
+                            (void)base64_encode(last_auto_frame, (int)last_auto_size, b64_buf);
+                            sse_len = snprintf(sse_buf, sizeof(sse_buf),
+                                "data: {\"format\":\"%s\",\"encoding\":\"base64\","
+                                "\"width\":128,\"height\":64,\"source\":\"%s\","
+                                "\"data\":\"%s\"}\n\n",
+                                fmt, src, b64_buf);
+                            if (sse_len < (int)sizeof(sse_buf)) {
+                                if (write(clients[i].fd, sse_buf, sse_len) <= 0)
+                                    client_remove(i);
+                            }
+                        } else if (shm_ptr) {
+                            /* No auto frame cached yet, fall back to mono */
+                            int sse_len;
+                            (void)base64_encode(shm_ptr, DISPLAY_SIZE, b64_buf);
+                            sse_len = snprintf(sse_buf, sizeof(sse_buf),
+                                "data: {\"format\":\"mono1_packed\",\"encoding\":\"base64\","
+                                "\"width\":128,\"height\":64,\"source\":\"move 1-bit\","
+                                "\"data\":\"%s\"}\n\n",
+                                b64_buf);
+                            if (sse_len < (int)sizeof(sse_buf)) {
+                                if (write(clients[i].fd, sse_buf, sse_len) <= 0)
+                                    client_remove(i);
+                            }
+                        }
+                    }
+                }
 
                 if (shm_ptr && memcmp(shm_ptr, last_display, DISPLAY_SIZE) != 0) {
                     memcpy(last_display, shm_ptr, DISPLAY_SIZE);
