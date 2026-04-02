@@ -51,6 +51,30 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
         "$IMAGE_NAME"
 
+    # Build schwung-manager (Go, cross-compiles natively — no Docker needed)
+    if command -v go &>/dev/null && [ -d "$REPO_ROOT/schwung-manager" ]; then
+        echo ""
+        echo "=== Building schwung-manager (Go) ==="
+        cd "$REPO_ROOT/schwung-manager"
+        GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .
+        echo "Built: schwung-manager ($(wc -c < "$REPO_ROOT/build/schwung-manager" | tr -d ' ') bytes)"
+        cd "$REPO_ROOT"
+        # Inject into existing tarball (append the file with the schwung/ prefix)
+        if [ -f "$REPO_ROOT/schwung.tar.gz" ]; then
+            cd build
+            # gunzip, append, re-gzip (tar -r doesn't work on .gz)
+            gunzip -k "$REPO_ROOT/schwung.tar.gz" -f
+            if tar --version 2>/dev/null | grep -q GNU; then
+                tar --format=posix -rf "$REPO_ROOT/schwung.tar" --transform 's,^\.,schwung,' ./schwung-manager
+            else
+                tar -rf "$REPO_ROOT/schwung.tar" -s ',^\.,schwung,' ./schwung-manager
+            fi
+            gzip -f "$REPO_ROOT/schwung.tar"
+            cd "$REPO_ROOT"
+            echo "Injected schwung-manager into tarball"
+        fi
+    fi
+
     echo ""
     echo "=== Done ==="
     echo "Output: $REPO_ROOT/schwung.tar.gz"
