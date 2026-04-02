@@ -143,13 +143,23 @@ func (s *FileService) ListDir(dir string) ([]FileEntry, error) {
 	return result, nil
 }
 
+// ReleaseMeta holds release dates for a module.
+type ReleaseMeta struct {
+	FirstRelease string `json:"first_release"`
+	LastUpdated  string `json:"last_updated"`
+	Version      string `json:"version"`
+}
+
 // CatalogService fetches and caches the remote module catalog.
 type CatalogService struct {
-	URL     string
-	catalog *Catalog
-	fetched time.Time
-	client  *http.Client
+	URL          string
+	catalog      *Catalog
+	releaseMeta  map[string]ReleaseMeta
+	fetched      time.Time
+	client       *http.Client
 }
+
+const releaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
 
 func NewCatalogService(url string) *CatalogService {
 	return &CatalogService{
@@ -177,7 +187,27 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 	}
 	cs.catalog = &cat
 	cs.fetched = time.Now()
+
+	// Fetch release metadata (best-effort, don't fail if unavailable).
+	if metaResp, err := cs.client.Get(releaseMetaURL); err == nil {
+		defer metaResp.Body.Close()
+		if metaResp.StatusCode == http.StatusOK {
+			var meta map[string]ReleaseMeta
+			if json.NewDecoder(metaResp.Body).Decode(&meta) == nil {
+				cs.releaseMeta = meta
+			}
+		}
+	}
+
 	return cs.catalog, nil
+}
+
+// GetReleaseMeta returns cached release metadata.
+func (cs *CatalogService) GetReleaseMeta() map[string]ReleaseMeta {
+	if cs.releaseMeta == nil {
+		return map[string]ReleaseMeta{}
+	}
+	return cs.releaseMeta
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +298,9 @@ var funcMap = template.FuncMap{
 	"isInstalled": func(id string, installed map[string]InstalledModule) bool {
 		_, ok := installed[id]
 		return ok
+	},
+	"releaseMeta": func(id string, meta map[string]ReleaseMeta) ReleaseMeta {
+		return meta[id]
 	},
 }
 
@@ -375,6 +408,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		"Modules":      modules,
 		"Installed":    installed,
 		"HasInstalled": len(installed) > 0,
+		"ReleaseMeta":  app.catalogSvc.GetReleaseMeta(),
 		"Active":       "modules",
 	}
 	app.render(w, r, "modules.html", data)

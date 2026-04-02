@@ -30,6 +30,8 @@
                 <option value="az">A-Z</option>
                 <option value="category">Category</option>
                 <option value="author">Author</option>
+                <option value="newest">Newest</option>
+                <option value="updated">Last Updated</option>
             </select>
             <div class="segmented-toggle" role="group" aria-label="View mode">
                 <button class="seg-btn seg-btn-active" id="view-grid-btn" aria-pressed="true" title="Card view">&#9638;</button>
@@ -52,7 +54,7 @@
     <h2 class="section-header" id="grid-installed-header">Installed</h2>
     <div class="module-grid" id="module-grid-installed">
         {{range .Modules}}{{if isInstalled .ID $.Installed}}
-        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-href="/modules/{{.ID}}" style="cursor:pointer">
+        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
             <div class="module-card-header">
                 <h3><a href="/modules/{{.ID}}">{{.Name}}</a></h3>
                 <span class="badge badge-installed">Installed</span>
@@ -74,7 +76,7 @@
     <h2 class="section-header" id="grid-available-header">Available</h2>
     <div class="module-grid" id="module-grid-available">
         {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
-        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-href="/modules/{{.ID}}" style="cursor:pointer">
+        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
             <div class="module-card-header">
                 <h3><a href="/modules/{{.ID}}">{{.Name}}</a></h3>
             </div>
@@ -107,7 +109,7 @@
             </thead>
             <tbody>
                 {{range .Modules}}{{if isInstalled .ID $.Installed}}
-                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-href="/modules/{{.ID}}" style="cursor:pointer">
+                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
                     <td><span class="module-list-name">{{.Name}}</span></td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
@@ -134,7 +136,7 @@
             </thead>
             <tbody>
                 {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
-                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-href="/modules/{{.ID}}" style="cursor:pointer">
+                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
                     <td><span class="module-list-name">{{.Name}}</span></td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
@@ -264,6 +266,14 @@
                 var aa = a.getAttribute('data-author'), ab = b.getAttribute('data-author');
                 if (aa !== ab) return aa.localeCompare(ab);
                 return a.getAttribute('data-name').localeCompare(b.getAttribute('data-name'));
+            }
+            if (mode === 'newest') {
+                var da = a.getAttribute('data-released') || '0000', db = b.getAttribute('data-released') || '0000';
+                return db.localeCompare(da);
+            }
+            if (mode === 'updated') {
+                var ua = a.getAttribute('data-updated') || '0000', ub = b.getAttribute('data-updated') || '0000';
+                return ub.localeCompare(ua);
             }
             return 0;
         }
