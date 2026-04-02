@@ -1452,6 +1452,16 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"ok":false,"error":"write failed"}`, http.StatusInternalServerError)
 			return
 		}
+
+		// Sync filebrowser flag file (checked by shim-entrypoint.sh at boot).
+		if key == "filebrowser_enabled" {
+			flagPath := filepath.Join(app.basePath, "filebrowser_enabled")
+			if value == "true" {
+				os.WriteFile(flagPath, []byte("1"), 0644)
+			} else {
+				os.Remove(flagPath)
+			}
+		}
 	}
 
 	app.logger.Info("config setting updated", "key", key, "value", value)

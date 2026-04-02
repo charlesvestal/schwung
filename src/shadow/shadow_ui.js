@@ -5416,7 +5416,11 @@ function saveTextPreviewConfig() {
 
 /* Periodic sync: re-read shadow_config.json and apply changes made by web UI.
  * Called from tick() every ~2 seconds. Only updates settings that differ from
- * cached state to avoid unnecessary writes to shared memory. */
+ * cached state to avoid unnecessary writes to shared memory.
+ *
+ * Note: host_read_file() does fopen/fread on the UI thread, which is safe.
+ * The SIGABRT was from display_mirror_set/set_pages_set which did fopen+fwrite
+ * to features.json — we now use _shm variants that only write shared memory. */
 let _configSyncTickCounter = 0;
 const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
 
