@@ -36,8 +36,7 @@
             <label for="{{.Key}}">{{.Label}}</label>
             <div class="number-input-wrap">
                 <input type="number" id="{{.Key}}" data-setting-key="{{.Key}}"
-                       value="{{settingValue .Key $.Values}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}"
-                       onchange="setSetting('{{.Key}}', this.value)">
+                       value="{{settingValue .Key $.Values}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}">
             </div>
             {{end}}
         </div>
@@ -88,6 +87,16 @@ setInterval(function() {
 document.querySelectorAll('[data-setting-key]').forEach(function(el) {
     el.addEventListener('focus', function() { _pollPaused = true; });
     el.addEventListener('blur', function() { _pollPaused = false; });
+});
+
+/* Number inputs: save on blur or Enter, not on every keystroke */
+document.querySelectorAll('input[type="number"][data-setting-key]').forEach(function(el) {
+    el.addEventListener('blur', function() {
+        setSetting(el.dataset.settingKey, el.value);
+    });
+    el.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') el.blur();
+    });
 });
 </script>
 {{end}}
