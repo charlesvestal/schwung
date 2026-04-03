@@ -1664,12 +1664,13 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 	app.logger.Info("download complete, starting upgrade", "version", latestVersion)
 
 	// 4. Kick off upgrade in background goroutine.
-	// Send the restarting page BEFORE the install runs (install will kill this process).
+	// Follows the same flow as the on-device Module Store:
+	// extract tarball → chmod u+s shim → run post-update.sh → restart Move.
 	go func() {
 		// Wait for HTTP response to be sent.
 		time.Sleep(2 * time.Second)
 
-		// Extract tarball.
+		// Extract tarball (same --strip-components=1 as Module Store).
 		app.logger.Info("extracting upgrade tarball", "path", tarPath)
 		extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", app.basePath, "--strip-components=1")
 		if output, err := extractCmd.CombinedOutput(); err != nil {
@@ -1677,18 +1678,32 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Run install script.
-		installScript := filepath.Join(app.basePath, "scripts", "install.sh")
-		app.logger.Info("running install script", "path", installScript)
-		installCmd := exec.Command(installScript, "local", "--skip-modules", "--skip-confirmation")
-		installCmd.Dir = app.basePath
-		if output, err := installCmd.CombinedOutput(); err != nil {
-			app.logger.Error("install script failed", "err", err, "output", string(output))
-			return
+		// Restore setuid bit on shim (required for LD_PRELOAD under AT_SECURE).
+		shimPath := filepath.Join(app.basePath, "schwung-shim.so")
+		app.logger.Info("restoring shim setuid bit")
+		exec.Command("chmod", "u+s", shimPath).Run()
+
+		// Run post-update.sh (symlinks, permissions, entrypoint update).
+		postUpdate := filepath.Join(app.basePath, "scripts", "post-update.sh")
+		app.logger.Info("running post-update.sh", "path", postUpdate)
+		postCmd := exec.Command("sh", postUpdate)
+		postCmd.Dir = app.basePath
+		if output, err := postCmd.CombinedOutput(); err != nil {
+			app.logger.Error("post-update failed", "err", err, "output", string(output))
 		}
-		// If we get here, the install script didn't restart the service (unlikely).
-		app.logger.Info("upgrade complete")
+
+		// Clean up tarball.
 		os.Remove(tarPath)
+
+		// Restart Move to pick up new binaries.
+		app.logger.Info("restarting Move")
+		restartScript := filepath.Join(app.basePath, "restart-move.sh")
+		if _, err := os.Stat(restartScript); err == nil {
+			exec.Command("sh", restartScript).Run()
+		} else {
+			// Fallback: kill Move processes so init restarts them.
+			exec.Command("killall", "MoveOriginal", "MoveLauncher").Run()
+		}
 	}()
 
 	// 5. Return inline HTML restarting page.
