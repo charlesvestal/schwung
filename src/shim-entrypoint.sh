@@ -62,7 +62,17 @@ fi
 SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
 if [ -x "$SCHWUNG_MGR" ]; then
     "$SCHWUNG_MGR" -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
-    # schwung-manager handles mDNS for schwung.local internally
+
+    # Register schwung.local via avahi hosts file and restart avahi-daemon.
+    AVAHI_HOSTS=/etc/avahi/hosts
+    if [ -f "$AVAHI_HOSTS" ]; then
+        DEVICE_IP=$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}')
+        if [ -n "$DEVICE_IP" ]; then
+            sed -i '/schwung\.local/d' "$AVAHI_HOSTS"
+            echo "$DEVICE_IP schwung.local" >> "$AVAHI_HOSTS"
+            /etc/init.d/avahi-daemon restart >/dev/null 2>&1 &
+        fi
+    fi
 fi
 
 # Start filebrowser for file management (port 404, no auth) if enabled

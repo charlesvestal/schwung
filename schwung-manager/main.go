@@ -1986,9 +1986,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Start mDNS responder for schwung.local.
-	startMDNS(*schwungHost, logger)
-
 	go func() {
 		for {
 			logger.Info("starting schwung-manager", "addr", addr)
