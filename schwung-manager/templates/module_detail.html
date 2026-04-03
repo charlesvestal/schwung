@@ -114,7 +114,8 @@
 
 <script>
 document.querySelectorAll('.detail-actions form').forEach(function(form) {
-    form.addEventListener('submit', function() {
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
         var btn = form.querySelector('button[type="submit"]');
         var overlay = document.getElementById('action-overlay');
         var text = document.getElementById('action-overlay-text');
@@ -127,6 +128,8 @@ document.querySelectorAll('.detail-actions form').forEach(function(form) {
         }
         btn.disabled = true;
         overlay.hidden = false;
+        /* Minimum 1.5s spinner so the user sees feedback */
+        setTimeout(function() { form.submit(); }, 1500);
     });
 });
 </script>
