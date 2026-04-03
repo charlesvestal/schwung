@@ -13051,14 +13051,15 @@ globalThis.tick = function() {
         }
     }
 
-    /* Periodic config sync from web UI — only when in settings view.
-     * Running unconditionally from tick() caused crashes (SIGABRT). */
-    if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
+    /* Periodic config sync from web UI — DISABLED.
+     * syncSettingsFromConfigFile() causes SIGABRT even with _shm variants
+     * and view guard. Root cause unknown — possibly host_read_file() or
+     * other C calls are unsafe from tick(). Web→device sync is device→web
+     * only for now (web polls /config/values every 2s). */
+    /* if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
         _configSyncTickCounter = 0;
-        if (view === VIEWS.GLOBAL_SETTINGS) {
-            syncSettingsFromConfigFile();
-        }
-    }
+        syncSettingsFromConfigFile();
+    } */
 
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
