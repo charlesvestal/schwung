@@ -1908,10 +1908,25 @@ func main() {
 	startMDNS(*schwungHost, logger)
 
 	go func() {
-		logger.Info("starting schwung-manager", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "err", err)
-			os.Exit(1)
+		for {
+			logger.Info("starting schwung-manager", "addr", addr)
+			err := srv.ListenAndServe()
+			if err == http.ErrServerClosed {
+				return
+			}
+			if err != nil {
+				logger.Error("server bind failed, retrying in 3s", "err", err)
+				time.Sleep(3 * time.Second)
+				// Recreate server since ListenAndServe may leave it in a bad state.
+				srv = &http.Server{
+					Addr:         addr,
+					Handler:      handler,
+					ReadTimeout:  30 * time.Second,
+					WriteTimeout: 60 * time.Second,
+					IdleTimeout:  120 * time.Second,
+				}
+				continue
+			}
 		}
 	}()
 
