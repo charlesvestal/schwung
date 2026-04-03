@@ -5423,6 +5423,7 @@ function saveTextPreviewConfig() {
  * to features.json — we now use _shm variants that only write shared memory. */
 let _configSyncTickCounter = 0;
 const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
+let _upgradeOverlayText = null; /* Web-initiated upgrade status for OLED display */
 
 function syncSettingsFromConfigFile() {
     try {
@@ -13088,6 +13089,26 @@ globalThis.tick = function() {
     if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
         _configSyncTickCounter = 0;
         syncJsOnlySettings();
+
+        /* Check for web-initiated upgrade status and show OLED overlay */
+        try {
+            const status = host_read_file("/data/UserData/schwung/upgrade_status");
+            if (status && status.trim()) {
+                _upgradeOverlayText = status.trim();
+            } else if (_upgradeOverlayText) {
+                _upgradeOverlayText = null;
+            }
+        } catch (e) {
+            _upgradeOverlayText = null;
+        }
+    }
+
+    /* Draw upgrade overlay if active (takes priority over normal UI) */
+    if (_upgradeOverlayText) {
+        clear_screen();
+        drawStatusOverlay("Upgrading", _upgradeOverlayText);
+        host_flush_display();
+        return;
     }
 
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */

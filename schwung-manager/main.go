@@ -439,12 +439,13 @@ func loadTemplates() (templateMap, error) {
 // ---------------------------------------------------------------------------
 
 type App struct {
-	tmpl       templateMap
-	fileSvc    *FileService
-	catalogSvc *CatalogService
-	basePath   string // e.g. /data/UserData/schwung
-	logger     *slog.Logger
-	shm        *ShmConfig // shared memory for live config sync (nil if not on device)
+	tmpl          templateMap
+	fileSvc       *FileService
+	catalogSvc    *CatalogService
+	basePath      string // e.g. /data/UserData/schwung
+	logger        *slog.Logger
+	shm           *ShmConfig // shared memory for live config sync (nil if not on device)
+	upgradeStatus string     // current upgrade step (empty = not upgrading)
 }
 
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -1606,6 +1607,23 @@ func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/system?flash=Latest+version:+"+cat.Host.LatestVersion, http.StatusSeeOther)
 }
 
+func (app *App) setUpgradeStatus(status string) {
+	app.upgradeStatus = status
+	// Write to file for shadow UI to display on OLED.
+	statusPath := filepath.Join(app.basePath, "upgrade_status")
+	if status == "" {
+		os.Remove(statusPath)
+	} else {
+		os.WriteFile(statusPath, []byte(status), 0644)
+	}
+	app.logger.Info("upgrade status", "step", status)
+}
+
+func (app *App) handleUpgradeStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": app.upgradeStatus})
+}
+
 func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 	app.logger.Info("system upgrade requested")
 
@@ -1670,38 +1688,41 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		// Wait for HTTP response to be sent.
 		time.Sleep(2 * time.Second)
 
+		app.setUpgradeStatus("Extracting update...")
+
 		// Extract tarball (same --strip-components=1 as Module Store).
-		app.logger.Info("extracting upgrade tarball", "path", tarPath)
 		extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", app.basePath, "--strip-components=1")
 		if output, err := extractCmd.CombinedOutput(); err != nil {
+			app.setUpgradeStatus("Extract failed")
 			app.logger.Error("extract failed", "err", err, "output", string(output))
 			return
 		}
 
+		app.setUpgradeStatus("Configuring...")
+
 		// Restore setuid bit on shim (required for LD_PRELOAD under AT_SECURE).
 		shimPath := filepath.Join(app.basePath, "schwung-shim.so")
-		app.logger.Info("restoring shim setuid bit")
 		exec.Command("chmod", "u+s", shimPath).Run()
 
 		// Run post-update.sh (symlinks, permissions, entrypoint update).
 		postUpdate := filepath.Join(app.basePath, "scripts", "post-update.sh")
-		app.logger.Info("running post-update.sh", "path", postUpdate)
 		postCmd := exec.Command("sh", postUpdate)
 		postCmd.Dir = app.basePath
 		if output, err := postCmd.CombinedOutput(); err != nil {
+			app.setUpgradeStatus("Post-update failed")
 			app.logger.Error("post-update failed", "err", err, "output", string(output))
 		}
 
 		// Clean up tarball.
 		os.Remove(tarPath)
 
+		app.setUpgradeStatus("Restarting...")
+
 		// Restart Move to pick up new binaries.
-		app.logger.Info("restarting Move")
 		restartScript := filepath.Join(app.basePath, "restart-move.sh")
 		if _, err := os.Stat(restartScript); err == nil {
 			exec.Command("sh", restartScript).Run()
 		} else {
-			// Fallback: kill Move processes so init restarts them.
 			exec.Command("killall", "MoveOriginal", "MoveLauncher").Run()
 		}
 	}()
@@ -1709,6 +1730,8 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 	// 5. Return inline HTML restarting page.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	app.setUpgradeStatus("Downloading...")
+
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1725,6 +1748,13 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
              animation: spin 1s linear infinite; margin: 1.5rem 0; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .status { color: #aaa; font-size: 0.9rem; }
+  .steps { list-style: none; padding: 0; margin: 1rem 0; text-align: left; display: inline-block; }
+  .steps li { padding: 0.25rem 0; color: #666; }
+  .steps li.done { color: #4caf50; }
+  .steps li.done::before { content: "\2713 "; }
+  .steps li.active { color: #e0e0e0; }
+  .steps li.active::before { content: "\25B6 "; color: #6c63ff; }
+  .steps li.pending::before { content: "\25CB "; }
   #error { display: none; color: #ff6b6b; margin-top: 1rem; }
 </style>
 </head>
@@ -1732,24 +1762,68 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 <div class="container">
   <h1>Upgrading to %s</h1>
   <div class="spinner"></div>
-  <p class="status" id="status">Installing update and restarting service...</p>
+  <ul class="steps">
+    <li id="s-download" class="active">Downloading update...</li>
+    <li id="s-extract" class="pending">Extracting files</li>
+    <li id="s-configure" class="pending">Configuring</li>
+    <li id="s-restart" class="pending">Restarting</li>
+  </ul>
   <p id="error">The server did not come back. You may need to check the device manually.</p>
 </div>
 <script>
 (function() {
   var start = Date.now();
-  var timeout = 120000;
-  function poll() {
+  var timeout = 180000;
+  var steps = {
+    "Downloading...": "s-download",
+    "Extracting update...": "s-extract",
+    "Configuring...": "s-configure",
+    "Restarting...": "s-restart"
+  };
+  var order = ["s-download", "s-extract", "s-configure", "s-restart"];
+  var serverDown = false;
+
+  function setStep(id) {
+    var idx = order.indexOf(id);
+    for (var i = 0; i < order.length; i++) {
+      var el = document.getElementById(order[i]);
+      if (i < idx) el.className = "done";
+      else if (i === idx) el.className = "active";
+      else el.className = "pending";
+    }
+  }
+
+  function pollStatus() {
+    fetch("/system/upgrade-status", {cache: "no-store"})
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status && steps[data.status]) {
+          setStep(steps[data.status]);
+        }
+      })
+      .catch(function() {
+        // Server went down — it's restarting
+        if (!serverDown) {
+          serverDown = true;
+          for (var i = 0; i < order.length; i++) {
+            document.getElementById(order[i]).className = "done";
+          }
+        }
+      });
+  }
+
+  function pollReady() {
     if (Date.now() - start > timeout) {
       document.getElementById("error").style.display = "block";
-      document.getElementById("status").textContent = "Timed out waiting for restart.";
       return;
     }
     fetch("/system", {method: "GET", cache: "no-store"})
-      .then(function(r) { if (r.ok) window.location.href = "/system?flash=Upgrade+complete"; else setTimeout(poll, 3000); })
-      .catch(function() { setTimeout(poll, 3000); });
+      .then(function(r) { if (r.ok) window.location.href = "/system?flash=Upgrade+complete"; else setTimeout(pollReady, 2000); })
+      .catch(function() { setTimeout(pollReady, 2000); });
   }
-  setTimeout(poll, 5000);
+
+  setInterval(pollStatus, 1000);
+  setTimeout(pollReady, 8000);
 })();
 </script>
 </body>
@@ -1976,6 +2050,7 @@ func main() {
 	mux.HandleFunc("GET /system", app.handleSystem)
 	mux.HandleFunc("POST /system/check-update", app.handleSystemCheckUpdate)
 	mux.HandleFunc("POST /system/upgrade", app.handleSystemUpgrade)
+	mux.HandleFunc("GET /system/upgrade-status", app.handleUpgradeStatus)
 	mux.HandleFunc("GET /system/logs", app.handleSystemLogs)
 
 	// Install.
