@@ -444,6 +444,7 @@ type App struct {
 	catalogSvc *CatalogService
 	basePath   string // e.g. /data/UserData/schwung
 	logger     *slog.Logger
+	shm        *ShmConfig // shared memory for live config sync (nil if not on device)
 }
 
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -1369,8 +1370,33 @@ func (app *App) handleConfigValues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Overlay with live values from shared memory (source of truth for device state).
+	if app.shm != nil {
+		values["display_mirror"] = app.shm.DisplayMirror()
+		values["overlay_knobs"] = float64(app.shm.OverlayKnobsMode())
+		values["screen_reader_enabled"] = app.shm.TTSEnabled()
+		if app.shm.TTSEngine() == 1 {
+			values["screen_reader_engine"] = "flite"
+		} else {
+			values["screen_reader_engine"] = "espeak"
+		}
+		values["screen_reader_speed"] = float64(app.shm.TTSSpeed())
+		values["screen_reader_pitch"] = float64(app.shm.TTSPitch())
+		values["screen_reader_volume"] = float64(app.shm.TTSVolume())
+		values["screen_reader_debounce"] = float64(app.shm.TTSDebounce())
+		values["set_pages_enabled"] = app.shm.SetPagesEnabled()
+		values["skipback_shortcut"] = float64(boolToInt(app.shm.SkipbackRequireVolume()))
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(values)
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
@@ -1468,6 +1494,9 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 
 	app.logger.Info("config setting updated", "key", key, "value", value)
 
+	// Apply to shared memory for instant effect (no JS tick() involvement).
+	app.applyShmSetting(key, value)
+
 	// JSON response for AJAX callers.
 	if r.Header.Get("X-CSRF-Token") != "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -1476,6 +1505,51 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	// Fallback redirect for non-AJAX.
 	http.Redirect(w, r, "/config", http.StatusSeeOther)
+}
+
+// applyShmSetting writes a config setting directly to shared memory for
+// instant effect. This bypasses the JS tick() path entirely, avoiding the
+// SIGABRT that occurred when syncSettingsFromConfigFile() was called from tick().
+func (app *App) applyShmSetting(key, value string) {
+	if app.shm == nil {
+		return
+	}
+	switch key {
+	case "display_mirror":
+		app.shm.SetDisplayMirror(value == "true")
+	case "overlay_knobs":
+		if v, err := strconv.Atoi(value); err == nil {
+			app.shm.SetOverlayKnobsMode(uint8(v))
+		}
+	case "screen_reader_enabled":
+		app.shm.SetTTSEnabled(value == "true")
+	case "screen_reader_engine":
+		if value == "flite" {
+			app.shm.SetTTSEngine(1)
+		} else {
+			app.shm.SetTTSEngine(0)
+		}
+	case "screen_reader_speed":
+		if v, err := strconv.ParseFloat(value, 32); err == nil {
+			app.shm.SetTTSSpeed(float32(v))
+		}
+	case "screen_reader_pitch":
+		if v, err := strconv.Atoi(value); err == nil {
+			app.shm.SetTTSPitch(uint16(v))
+		}
+	case "screen_reader_volume":
+		if v, err := strconv.Atoi(value); err == nil {
+			app.shm.SetTTSVolume(uint8(v))
+		}
+	case "screen_reader_debounce":
+		if v, err := strconv.Atoi(value); err == nil {
+			app.shm.SetTTSDebounce(uint16(v))
+		}
+	case "set_pages_enabled":
+		app.shm.SetSetPagesEnabled(value == "true")
+	case "skipback_shortcut":
+		app.shm.SetSkipbackRequireVolume(value != "0" && value != "false")
+	}
 }
 
 // -- System --
@@ -1828,12 +1902,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	shm := OpenShmConfig()
+	if shm != nil {
+		logger.Info("shared memory config: connected")
+	} else {
+		logger.Info("shared memory config: not available (not on device)")
+	}
+
 	app := &App{
 		tmpl:       tmpl,
 		fileSvc:    &FileService{AllowedRoots: allowedRoots},
 		catalogSvc: NewCatalogService(*catalogURL),
 		basePath:   basePath,
 		logger:     logger,
+		shm:        shm,
 	}
 
 	mux := http.NewServeMux()
