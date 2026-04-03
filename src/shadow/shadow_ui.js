@@ -5520,6 +5520,36 @@ function syncSettingsFromConfigFile() {
     }
 }
 
+/* Sync JS-only variables from shadow_config.json. Called from tick() every ~2s.
+ * IMPORTANT: No C function calls here — only pure JS variable updates.
+ * Shared-memory settings are handled by the Go web server via mmap. */
+function syncJsOnlySettings() {
+    try {
+        const configPath = "/data/UserData/schwung/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+        const c = JSON.parse(content);
+
+        if (c.pad_typing !== undefined && c.pad_typing !== padSelectGlobal) {
+            setPadSelectGlobal(c.pad_typing);
+        }
+        if (c.text_preview !== undefined && c.text_preview !== textPreviewGlobal) {
+            setTextPreviewGlobal(c.text_preview);
+        }
+        if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
+            previewEnabled = c.browser_preview;
+        }
+        if (c.auto_update_check !== undefined) {
+            autoUpdateCheckEnabled = c.auto_update_check;
+        }
+        if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
+            filebrowserEnabled = c.filebrowser_enabled;
+        }
+    } catch (e) {
+        /* Ignore errors — file may be mid-write */
+    }
+}
+
 function loadTextPreviewConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -13051,15 +13081,14 @@ globalThis.tick = function() {
         }
     }
 
-    /* Periodic config sync from web UI — DISABLED.
-     * syncSettingsFromConfigFile() causes SIGABRT even with _shm variants
-     * and view guard. Root cause unknown — possibly host_read_file() or
-     * other C calls are unsafe from tick(). Web→device sync is device→web
-     * only for now (web polls /config/values every 2s). */
-    /* if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
+    /* Periodic config sync for JS-only variables from web UI.
+     * Shared-memory settings (display_mirror, TTS, etc.) are handled
+     * directly by the Go web server via mmap. This only syncs JS variables
+     * that have no shared memory representation. No C calls here. */
+    if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
         _configSyncTickCounter = 0;
-        syncSettingsFromConfigFile();
-    } */
+        syncJsOnlySettings();
+    }
 
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
