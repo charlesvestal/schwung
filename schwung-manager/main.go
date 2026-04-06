@@ -2264,7 +2264,13 @@ func main() {
 	// Start mDNS responder for schwung.local.
 	startMDNS(*schwungHost, logger)
 
+	fallbackAddr := ":7700"
 	go func() {
+		// Try the preferred port (80) for up to 30 seconds.
+		// If it's unavailable (MoveWebService holding it), fall back to 7700.
+		// This ensures schwung-manager is always reachable and never blocks move.local.
+		attempts := 0
+		maxAttempts := 10 // 10 * 3s = 30s
 		for {
 			logger.Info("starting schwung-manager", "addr", addr)
 			err := srv.ListenAndServe()
@@ -2272,9 +2278,21 @@ func main() {
 				return
 			}
 			if err != nil {
+				attempts++
+				if attempts >= maxAttempts && addr != fallbackAddr {
+					logger.Warn("port 80 unavailable after 30s, falling back to 7700")
+					addr = fallbackAddr
+					srv = &http.Server{
+						Addr:         addr,
+						Handler:      handler,
+						ReadTimeout:  30 * time.Second,
+						WriteTimeout: 60 * time.Second,
+						IdleTimeout:  120 * time.Second,
+					}
+					continue
+				}
 				logger.Error("server bind failed, retrying in 3s", "err", err)
 				time.Sleep(3 * time.Second)
-				// Recreate server since ListenAndServe may leave it in a bad state.
 				srv = &http.Server{
 					Addr:         addr,
 					Handler:      handler,
