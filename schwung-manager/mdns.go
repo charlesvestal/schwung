@@ -58,6 +58,27 @@ func startMDNS(hostname string, logger *slog.Logger) {
 			break
 		}
 
+		// Send unsolicited announcement so clients learn about us immediately.
+		// macOS mDNSResponder needs to see an announcement, not just query responses.
+		mdnsAddr := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+		announcement := buildMDNSResponse(qname, getOutboundIP())
+		conn.WriteToUDP(announcement, mdnsAddr)
+		// Send twice per RFC 6762 (with 1s gap)
+		time.Sleep(1 * time.Second)
+		conn.WriteToUDP(announcement, mdnsAddr)
+
+		// Re-announce periodically to refresh caches (every 60s).
+		go func() {
+			for {
+				time.Sleep(60 * time.Second)
+				ip := getOutboundIP()
+				if ip != nil {
+					resp := buildMDNSResponse(qname, ip)
+					conn.WriteToUDP(resp, mdnsAddr)
+				}
+			}
+		}()
+
 		buf := make([]byte, 1500)
 		for {
 			n, _, err := conn.ReadFromUDP(buf)
