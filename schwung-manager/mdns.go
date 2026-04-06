@@ -25,15 +25,36 @@ func startMDNS(hostname string, logger *slog.Logger) {
 			}
 
 			mdnsAddr := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+
+			// Find the network interface for our outbound IP.
+			var iface *net.Interface
+			ifaces, _ := net.Interfaces()
+			for i := range ifaces {
+				addrs, _ := ifaces[i].Addrs()
+				for _, a := range addrs {
+					if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.Equal(ip) {
+						iface = &ifaces[i]
+						break
+					}
+				}
+				if iface != nil {
+					break
+				}
+			}
+
 			var err error
-			conn, err = net.ListenMulticastUDP("udp4", nil, mdnsAddr)
+			conn, err = net.ListenMulticastUDP("udp4", iface, mdnsAddr)
 			if err != nil {
-				logger.Error("mdns: listen failed, retrying", "err", err)
+				logger.Error("mdns: listen failed, retrying", "err", err, "iface", iface)
 				time.Sleep(5 * time.Second)
 				continue
 			}
 
-			logger.Info("mdns: advertising", "hostname", hostname, "ip", ip.String())
+			ifName := "any"
+			if iface != nil {
+				ifName = iface.Name
+			}
+			logger.Info("mdns: advertising", "hostname", hostname, "ip", ip.String(), "iface", ifName)
 			break
 		}
 
