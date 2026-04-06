@@ -1366,64 +1366,62 @@ code {
 
 /* ---- Help ---- */
 .help-section {
-    margin-bottom: 1rem;
+    margin-bottom: 1.5rem;
 }
 
-.help-section-title {
-    cursor: pointer;
-    user-select: none;
+.help-topics {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.collapse-icon::after {
-    content: "\25B2";
-    font-size: 0.7rem;
-    color: var(--text-muted);
-}
-
-.collapsed .collapse-icon::after {
-    content: "\25BC";
-}
-
-.collapsed > .help-section-body,
-.collapsed > .help-topic-body {
-    display: none;
+    flex-direction: column;
+    gap: 0.25rem;
 }
 
 .help-topic {
-    padding: 0.25rem 0 0.25rem 1rem;
-    border-left: 2px solid var(--border);
-    margin: 0.5rem 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
 }
 
-.help-topic-title {
-    font-size: 0.95rem;
-    font-weight: 600;
+.help-topic summary {
+    padding: 0.75rem 1rem;
     cursor: pointer;
-    user-select: none;
+    font-weight: 600;
+    font-size: 0.95rem;
+    list-style: none;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin: 0;
 }
 
-.help-topic-body {
-    margin: 0.5rem 0;
-    font-family: var(--font-mono, monospace);
-    font-size: 0.85rem;
-    line-height: 1.5;
+.help-topic summary::after {
+    content: "\25B6";
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+}
+
+.help-topic[open] summary::after {
+    transform: rotate(90deg);
+}
+
+.help-topic summary:hover {
+    background: var(--surface-hover, rgba(255,255,255,0.05));
+}
+
+.help-body {
+    padding: 0 1rem 0.75rem;
+    font-size: 0.9rem;
+    line-height: 1.6;
     color: var(--text-muted);
 }
 
-.help-line {
-    display: block;
-    white-space: pre-wrap;
+.help-body p {
+    margin: 0.5rem 0;
 }
 
-.help-topic-children {
-    margin-left: 0.5rem;
+.help-subtopics {
+    padding: 0 0.5rem 0.75rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
 }
 
 /* ---- Custom Install ---- */
