@@ -544,13 +544,35 @@ Step LEDs: green = has content, red = now playing, white = selected. Pad LEDs hi
 
 ---
 
+## Schwung Manager (Web)
+
+Schwung Manager is a web interface for managing your Move from any device on the same network. Access it at `http://schwung.local` — no port number needed.
+
+### Features
+
+- **Modules**: Browse, install, uninstall, and update modules from the catalog. Install custom modules from a GitHub URL or tarball upload.
+- **Files**: Browse, upload, download, rename, and delete files on the device. Useful for managing module assets (soundfonts, patches, ROMs).
+- **Config**: Adjust display, audio, screen reader, and feature settings. Changes take effect instantly on the device.
+- **System**: Check version, view debug logs, and upgrade Schwung.
+- **Help**: Browse on-device help for Schwung and installed modules.
+- **Screen Mirroring**: Quick access at `schwung.local/mirror` — streams Move's OLED display to your browser.
+
+### Notes
+
+- `schwung.local` is advertised via mDNS and works on any device on the same WiFi network
+- `move.local` continues to work for the stock Move manager (proxied through Schwung Manager)
+- Settings changed on the web UI sync to the device in real time (and vice versa)
+- No authentication is required — anyone on the network can access it
+
+---
+
 ## File Browser (Web)
 
-Schwung includes a web-based file browser for managing files on your Move from any device on the same network.
+Schwung also includes a standalone file browser (powered by filebrowser) for more advanced file management.
 
 ### Setup
 
-1. Open **Global Settings > Services** (**Shift+Vol + Step 2**)
+1. Open **Global Settings > Services** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
 2. Toggle **File Browser** to **On**
 3. Open `http://move.local:404` in a browser
 
@@ -559,10 +581,8 @@ The file browser serves the `/data/UserData` directory, giving you access to sam
 ### Notes
 
 - File Browser is **off by default** and must be enabled via the settings toggle
-- Starts immediately when enabled (no restart required)
-- The setting persists across reboots
+- The built-in file manager in Schwung Manager (`schwung.local/files`) is available without enabling this
 - No authentication is required — anyone on the network can access it
-- Shell command execution is disabled for safety
 
 ---
 
@@ -588,18 +608,16 @@ Stream Move's 128x64 OLED display to any browser on your network in real time. U
 
 ### Setup
 
-1. Open **Global Settings > Display** (**Shift+Vol + Step 2**)
+1. Open **Global Settings > Display** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
 2. Toggle **Mirror Display** to **On**
-3. Open `http://move.local:7681` in a browser
+3. Open `http://schwung.local/mirror` in a browser (or `http://move.local:7681`)
 
-The display updates at ~30 fps and shows whatever is on screen - both normal Move UI and Shadow UI.
+The display updates at ~30 fps and shows whatever is on screen — both normal Move UI and Shadow UI.
 
 ### Notes
 
 - Mirror Display is **off by default** and must be enabled via the settings toggle
 - The setting persists across reboots
-- The display server runs on port 7681 and starts automatically at boot
-- When mirroring is off, the server is running but idle (no overhead from the shim)
 - Multiple browsers can connect simultaneously (up to 8 clients)
 
 ---
