@@ -110,6 +110,18 @@ type SettingsItem struct {
 	Step    float64 `json:"step,omitempty"`
 }
 
+// HelpNode represents a node in the help content tree.
+type HelpNode struct {
+	Title    string     `json:"title"`
+	Lines    []string   `json:"lines,omitempty"`
+	Children []HelpNode `json:"children,omitempty"`
+}
+
+// HelpContent is the top-level structure of help_content.json.
+type HelpContent struct {
+	Sections []HelpNode `json:"sections"`
+}
+
 // FileEntry represents a file or directory for the file browser.
 type FileEntry struct {
 	Name    string
@@ -1845,6 +1857,71 @@ func (app *App) handleSystemLogs(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, strings.Join(lines, "\n"))
 }
 
+// -- Help --
+
+func (app *App) handleHelp(w http.ResponseWriter, r *http.Request) {
+	var sections []HelpNode
+
+	// Load main help_content.json (Schwung help).
+	helpPath := filepath.Join(app.basePath, "shared", "help_content.json")
+	if data, err := os.ReadFile(helpPath); err == nil {
+		var hc HelpContent
+		if json.Unmarshal(data, &hc) == nil {
+			for _, s := range hc.Sections {
+				// Skip "Move Manual" and "Notice" — only include Schwung help
+				if s.Title == "Move Manual" || s.Title == "Notice" {
+					continue
+				}
+				sections = append(sections, s)
+			}
+		}
+	}
+
+	// Scan installed modules for help.json files.
+	installed := discoverInstalledModules(app.basePath)
+	// Collect module help in a "Modules" section.
+	var moduleHelp []HelpNode
+	// Sort module IDs for stable ordering.
+	ids := make([]string, 0, len(installed))
+	for id := range installed {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		mod := installed[id]
+		modDir := app.findModuleDir(id)
+		if modDir == "" {
+			continue
+		}
+		helpFile := filepath.Join(modDir, "help.json")
+		data, err := os.ReadFile(helpFile)
+		if err != nil {
+			continue
+		}
+		var node HelpNode
+		if json.Unmarshal(data, &node) == nil {
+			// Use the module's display name if the help title matches
+			if node.Title == "" {
+				node.Title = mod.Name
+			}
+			moduleHelp = append(moduleHelp, node)
+		}
+	}
+	if len(moduleHelp) > 0 {
+		sections = append(sections, HelpNode{
+			Title:    "Modules",
+			Children: moduleHelp,
+		})
+	}
+
+	data := map[string]any{
+		"Title":    "Help",
+		"Sections": sections,
+		"Active":   "help",
+	}
+	app.render(w, r, "help.html", data)
+}
+
 // -- Install --
 
 func (app *App) handleInstallPage(w http.ResponseWriter, r *http.Request) {
@@ -2052,6 +2129,9 @@ func main() {
 	mux.HandleFunc("POST /system/upgrade", app.handleSystemUpgrade)
 	mux.HandleFunc("GET /system/upgrade-status", app.handleUpgradeStatus)
 	mux.HandleFunc("GET /system/logs", app.handleSystemLogs)
+
+	// Help.
+	mux.HandleFunc("GET /help", app.handleHelp)
 
 	// Install.
 	mux.HandleFunc("GET /install/{id}", app.handleInstallPage)

@@ -1364,6 +1364,68 @@ code {
     to { transform: rotate(360deg); }
 }
 
+/* ---- Help ---- */
+.help-section {
+    margin-bottom: 1rem;
+}
+
+.help-section-title {
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.collapse-icon::after {
+    content: "\25B2";
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.collapsed .collapse-icon::after {
+    content: "\25BC";
+}
+
+.collapsed > .help-section-body,
+.collapsed > .help-topic-body {
+    display: none;
+}
+
+.help-topic {
+    padding: 0.25rem 0 0.25rem 1rem;
+    border-left: 2px solid var(--border);
+    margin: 0.5rem 0;
+}
+
+.help-topic-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0;
+}
+
+.help-topic-body {
+    margin: 0.5rem 0;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+}
+
+.help-line {
+    display: block;
+    white-space: pre-wrap;
+}
+
+.help-topic-children {
+    margin-left: 0.5rem;
+}
+
 /* ---- Custom Install ---- */
 .custom-install-section {
     margin-top: var(--space-xl);
