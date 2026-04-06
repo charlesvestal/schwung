@@ -530,6 +530,36 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		modules = cat.Modules
 	}
 
+	// Build catalog ID set and add built-in modules as synthetic catalog entries.
+	catalogIDs := make(map[string]bool)
+	for _, m := range modules {
+		catalogIDs[m.ID] = true
+	}
+
+	// Hidden test/infrastructure modules.
+	hiddenIDs := map[string]bool{
+		"splash-test":        true,
+		"standalone-example": true,
+		"text-test":          true,
+	}
+
+	// Add built-in installed modules to the catalog list so they appear
+	// alongside external modules. They won't have install/uninstall/update buttons.
+	for id, mod := range installed {
+		if catalogIDs[id] || hiddenIDs[id] {
+			continue
+		}
+		modules = append(modules, CatalogModule{
+			ID:            id,
+			Name:          mod.Name,
+			Description:   mod.Description,
+			Author:        "Schwung",
+			ComponentType: mod.ComponentType,
+			GithubRepo:    "charlesvestal/schwung",
+			MinHostVer:    "0.1.0",
+		})
+	}
+
 	data := map[string]any{
 		"Title":        "Modules",
 		"Modules":      modules,
@@ -567,6 +597,22 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// If not in catalog, check if it's a built-in installed module.
+	builtIn := false
+	if mod == nil {
+		if inst, ok := installed[id]; ok {
+			mod = &CatalogModule{
+				ID:            id,
+				Name:          inst.Name,
+				Description:   inst.Description,
+				Author:        "Schwung",
+				ComponentType: inst.ComponentType,
+				GithubRepo:    "charlesvestal/schwung",
+				MinHostVer:    "0.1.0",
+			}
+			builtIn = true
+		}
+	}
 	if mod == nil {
 		http.NotFound(w, r)
 		return
@@ -593,6 +639,7 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"ModuleDir":    modDir,
 		"AssetsDir":    assetsDir,
 		"ModuleAssets": moduleAssets,
+		"BuiltIn":      builtIn,
 		"ReleaseMeta":  app.catalogSvc.GetReleaseMeta(),
 		"Active":       "modules",
 	}

@@ -83,6 +83,7 @@
         </dl>
     </div>
 
+    {{if not .BuiltIn}}
     <div class="detail-actions">
         {{if isInstalled .Module.ID .Installed}}
         {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
@@ -103,6 +104,9 @@
         </form>
         {{end}}
     </div>
+    {{else}}
+    <p class="text-muted">Built-in module — included with Schwung.</p>
+    {{end}}
 </div>
 
 <div id="action-overlay" class="action-overlay" hidden>
