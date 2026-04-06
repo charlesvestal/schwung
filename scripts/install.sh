@@ -1582,11 +1582,16 @@ fi
 # Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
 restart_move_with_fallback "Move started without active shim mapping (LD_PRELOAD env/maps check failed)"
 
-# Start schwung-manager web UI if binary is present
+# Start schwung-manager web UI if not already running.
+# Don't restart if already running — killing it breaks mDNS (macOS caches
+# negative results for minutes). The new binary takes effect on next reboot.
 if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; then
-    qecho "Starting schwung-manager web UI..."
-    ssh_root_with_retry "killall schwung-manager 2>/dev/null; sleep 1; start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
-    # schwung-manager handles mDNS for schwung.local via embedded responder
+    if ssh_root_with_retry "pidof schwung-manager >/dev/null 2>&1" 2>/dev/null; then
+        qecho "  schwung-manager already running (new binary applies on reboot)"
+    else
+        qecho "Starting schwung-manager web UI..."
+        ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
+    fi
     qecho "  Web UI available at http://schwung.local"
 fi
 
