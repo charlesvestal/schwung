@@ -276,6 +276,17 @@ func discoverInstalledModules(base string) map[string]InstalledModule {
 			}
 			var m InstalledModule
 			if json.Unmarshal(data, &m) == nil && m.ID != "" {
+				// Fall back to capabilities.component_type if top-level is empty.
+				if m.ComponentType == "" {
+					var raw map[string]any
+					if json.Unmarshal(data, &raw) == nil {
+						if caps, ok := raw["capabilities"].(map[string]any); ok {
+							if ct, ok := caps["component_type"].(string); ok {
+								m.ComponentType = ct
+							}
+						}
+					}
+				}
 				installed[m.ID] = m
 			}
 		}
