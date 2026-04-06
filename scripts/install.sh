@@ -814,7 +814,7 @@ if [ "$use_reenable" = true ]; then
 #!/bin/sh
 export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
 export LD_PRELOAD=/usr/lib/schwung-web-shim.so
-exec ${web_svc_path}Original --http-server-port 8080 \"\$@\"
+exec ${web_svc_path}Original \"\$@\"
 WEOF
 chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
       fi
@@ -995,7 +995,7 @@ if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null
 #!/bin/sh
 export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
 export LD_PRELOAD=/usr/lib/schwung-web-shim.so
-exec ${web_svc_path}Original --http-server-port 8080 \"\$@\"
+exec ${web_svc_path}Original \"\$@\"
 WEOF
 chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
     fi
@@ -1586,13 +1586,9 @@ restart_move_with_fallback "Move started without active shim mapping (LD_PRELOAD
 # Don't restart if already running — killing it breaks mDNS (macOS caches
 # negative results for minutes). The new binary takes effect on next reboot.
 if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; then
-    if ssh_root_with_retry "pidof schwung-manager >/dev/null 2>&1" 2>/dev/null; then
-        qecho "  schwung-manager already running (new binary applies on reboot)"
-    else
-        qecho "Starting schwung-manager web UI..."
-        ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
-    fi
-    qecho "  Web UI available at http://schwung.local"
+    qecho "Starting schwung-manager web UI..."
+    ssh_root_with_retry "killall schwung-manager 2>/dev/null; sleep 1; start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 7700 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
+    qecho "  Web UI available at http://move.local:7700"
 fi
 
 iecho ""
