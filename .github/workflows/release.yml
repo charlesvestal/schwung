@@ -45,12 +45,12 @@ jobs:
       - name: Build schwung-manager (Go)
         run: |
           cd schwung-manager
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../build/schwung-manager -ldflags="-s -w" .
-          echo "Built: schwung-manager ($(wc -c < ../build/schwung-manager | tr -d ' ') bytes)"
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/schwung-manager -ldflags="-s -w" .
+          echo "Built: schwung-manager ($(wc -c < /tmp/schwung-manager | tr -d ' ') bytes)"
           cd ..
-          # Inject into tarball
+          # Inject into tarball (build/ is root-owned from Docker, so use /tmp)
           gunzip -f schwung.tar.gz
-          cp build/schwung-manager ./schwung-manager-bin
+          cp /tmp/schwung-manager ./schwung-manager-bin
           tar --transform 's,^schwung-manager-bin,schwung/schwung-manager,' -rf schwung.tar schwung-manager-bin
           gzip -f schwung.tar
           rm schwung-manager-bin
