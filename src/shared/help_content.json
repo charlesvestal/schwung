@@ -262,7 +262,7 @@
           "title": "Schwung Manager",
           "lines": [
             "Web interface at:",
-            " move.local:7700",
+            " schwung.local",
             "",
             "Manage modules,",
             "files, settings,",
@@ -270,7 +270,7 @@
             "from any browser.",
             "",
             "Screen mirroring:",
-            " move.local:7700/mirror",
+            " schwung.local/mirror",
             "",
             "move.local still",
             "reaches the stock",
@@ -291,7 +291,7 @@
             "> Mirror Display.",
             "",
             "Then open:",
-            " move.local:7700/mirror",
+            " schwung.local/mirror",
             "",
             "~30 fps, supports",
             "up to 8 clients.",
@@ -343,7 +343,7 @@
             "Schwung Manager has",
             "a built-in file",
             "manager at:",
-            " move.local:7700/files",
+            " schwung.local/files",
             "",
             "A standalone file",
             "browser is also",
@@ -353,7 +353,7 @@
             "Enable in Settings",
             "> Services > File",
             "Browser, or via",
-            "move.local:7700/config."
+            "schwung.local/config."
           ]
         }
       ]

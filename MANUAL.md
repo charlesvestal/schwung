@@ -546,7 +546,7 @@ Step LEDs: green = has content, red = now playing, white = selected. Pad LEDs hi
 
 ## Schwung Manager (Web)
 
-Schwung Manager is a web interface for managing your Move from any device on the same network. Access it at `http://move.local:7700`.
+Schwung Manager is a web interface for managing your Move from any device on the same network. Access it at `http://schwung.local` — no port number needed.
 
 ### Features
 
@@ -555,10 +555,12 @@ Schwung Manager is a web interface for managing your Move from any device on the
 - **Config**: Adjust display, audio, screen reader, and feature settings. Changes take effect instantly on the device.
 - **System**: Check version, view debug logs, and upgrade Schwung.
 - **Help**: Browse on-device help for Schwung and installed modules.
-- **Screen Mirroring**: Quick access at `move.local:7700/mirror` — streams Move's OLED display to your browser.
+- **Screen Mirroring**: Quick access at `schwung.local/mirror` — streams Move's OLED display to your browser.
 
 ### Notes
 
+- `schwung.local` is advertised via mDNS and works on any device on the same WiFi network
+- `move.local` continues to work for the stock Move manager (proxied through Schwung Manager)
 - Settings changed on the web UI sync to the device in real time (and vice versa)
 - No authentication is required — anyone on the network can access it
 
@@ -570,7 +572,7 @@ Schwung also includes a standalone file browser (powered by filebrowser) for mor
 
 ### Setup
 
-1. Open **Global Settings > Services** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `move.local:7700/config`
+1. Open **Global Settings > Services** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
 2. Toggle **File Browser** to **On**
 3. Open `http://move.local:404` in a browser
 
@@ -579,7 +581,7 @@ The file browser serves the `/data/UserData` directory, giving you access to sam
 ### Notes
 
 - File Browser is **off by default** and must be enabled via the settings toggle
-- The built-in file manager in Schwung Manager (`move.local:7700/files`) is available without enabling this
+- The built-in file manager in Schwung Manager (`schwung.local/files`) is available without enabling this
 - No authentication is required — anyone on the network can access it
 
 ---
@@ -606,9 +608,9 @@ Stream Move's 128x64 OLED display to any browser on your network in real time. U
 
 ### Setup
 
-1. Open **Global Settings > Display** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `move.local:7700/config`
+1. Open **Global Settings > Display** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
 2. Toggle **Mirror Display** to **On**
-3. Open `http://move.local:7700/mirror` in a browser (or `http://move.local:7681`)
+3. Open `http://schwung.local/mirror` in a browser (or `http://move.local:7681`)
 
 The display updates at ~30 fps and shows whatever is on screen — both normal Move UI and Shadow UI.
 

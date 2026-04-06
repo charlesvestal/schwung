@@ -90,7 +90,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uni
 - **Quantized Sampler**: Shift+Sample opens a sampler that records to `Samples/Schwung/Resampler/YYYY-MM-DD/`. Choose resample (including Schwung synths) or Move Input, set duration in bars, and recording starts on a note event or pressing play.
 - **Skipback**: Shift+Capture writes the last 30 seconds of audio to `Samples/Schwung/Skipback/YYYY-MM-DD/`.
 - **Screen Reader**: Optional TTS announcements for accessibility. Toggle via Shadow UI settings, or Shift+Menu when Shadow UI is disabled.
-- **Schwung Manager**: Web interface at `move.local:7700` for managing modules, files, settings, and system updates from any browser. Screen mirroring at `move.local:7700/mirror`.
+- **Schwung Manager**: Web interface at `schwung.local` for managing modules, files, settings, and system updates from any browser. Screen mirroring at `schwung.local/mirror`.
 
 In **Global Settings > Display > Overlay Knobs**, you can change the knob overlay trigger between `+Shift` (default), `+Jog Touch`, or `Off`. If `Shift+Knob` interferes with native Move actions (like fine control), use `+Jog Touch` or `Off`.
 

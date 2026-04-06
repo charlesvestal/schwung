@@ -47,6 +47,27 @@ if [ -f /opt/move/MoveOriginal ] && [ -f "$BASE/shim-entrypoint.sh" ]; then
     cp "$BASE/shim-entrypoint.sh" /opt/move/Move
 fi
 
+# --- MoveWebService wrapper (port 8080 so schwung-manager can take port 80) ---
+
+# Find MoveWebService path from init script
+WEB_SVC_PATH=$(grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]')
+if [ -n "$WEB_SVC_PATH" ]; then
+    # Backup original only once
+    if [ ! -f "${WEB_SVC_PATH}Original" ] && [ -f "$WEB_SVC_PATH" ]; then
+        mv "$WEB_SVC_PATH" "${WEB_SVC_PATH}Original"
+    fi
+    # Create wrapper that redirects to port 8080
+    if [ -f "${WEB_SVC_PATH}Original" ]; then
+        cat > "$WEB_SVC_PATH" << WEOF
+#!/bin/sh
+export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
+export LD_PRELOAD=/usr/lib/schwung-web-shim.so
+exec ${WEB_SVC_PATH}Original --http-server-port 8080 "\$@"
+WEOF
+        chmod +x "$WEB_SVC_PATH"
+    fi
+fi
+
 # --- Executables ---
 
 chmod +x "$BASE/schwung" 2>/dev/null
