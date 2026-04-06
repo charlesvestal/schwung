@@ -420,7 +420,7 @@ var funcMap = template.FuncMap{
 		}
 		rm, ok := meta[id]
 		if !ok || rm.Version == "" {
-			return true // Can't tell, show update button
+			return false // Can't tell — don't show update button
 		}
 		// Strip "v" prefix for comparison.
 		latest := strings.TrimPrefix(rm.Version, "v")
@@ -560,12 +560,28 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	releaseMeta := app.catalogSvc.GetReleaseMeta()
+
+	// Check if any installed module has an update available.
+	hasAnyUpdate := false
+	for id, inst := range installed {
+		rm, ok := releaseMeta[id]
+		if !ok || rm.Version == "" {
+			continue
+		}
+		if strings.TrimPrefix(rm.Version, "v") != strings.TrimPrefix(inst.Version, "v") {
+			hasAnyUpdate = true
+			break
+		}
+	}
+
 	data := map[string]any{
 		"Title":        "Modules",
 		"Modules":      modules,
 		"Installed":    installed,
 		"HasInstalled": len(installed) > 0,
-		"ReleaseMeta":  app.catalogSvc.GetReleaseMeta(),
+		"HasAnyUpdate": hasAnyUpdate,
+		"ReleaseMeta":  releaseMeta,
 		"Active":       "modules",
 	}
 	app.render(w, r, "modules.html", data)

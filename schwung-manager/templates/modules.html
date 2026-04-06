@@ -37,7 +37,7 @@
                 <button class="seg-btn" id="view-grid-btn" aria-pressed="false" title="Card view">&#9638;</button>
                 <button class="seg-btn seg-btn-active" id="view-list-btn" aria-pressed="true" title="List view">&#9776;</button>
             </div>
-            {{if .HasInstalled}}
+            {{if .HasAnyUpdate}}
             <form method="POST" action="/modules/update-all" style="display:inline">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <button type="submit" class="btn btn-primary btn-small">Update All</button>
