@@ -425,6 +425,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/config.html",
 		"templates/system.html",
 		"templates/install.html",
+		"templates/help.html",
 	}
 
 	m := make(templateMap, len(pages))
