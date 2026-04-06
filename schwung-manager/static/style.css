@@ -1037,12 +1037,14 @@ h2.section-header + .module-list {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-md) 0;
+    padding: 0.75rem var(--space-md);
     border-bottom: 1px solid var(--border);
+    min-height: 3rem;
 }
 
 .setting-row:last-child {
     border-bottom: none;
+    padding-bottom: 0;
 }
 
 .setting-row > label {
