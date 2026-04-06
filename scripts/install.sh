@@ -1586,8 +1586,7 @@ restart_move_with_fallback "Move started without active shim mapping (LD_PRELOAD
 if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; then
     qecho "Starting schwung-manager web UI..."
     ssh_root_with_retry "killall schwung-manager 2>/dev/null; sleep 1; start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
-    # Register schwung.local via avahi and restart daemon
-    ssh_root_with_retry 'DEVICE_IP=$(ip -4 route get 1 2>/dev/null | awk "{print \$7; exit}"); if [ -n "$DEVICE_IP" ] && [ -f /etc/avahi/hosts ]; then sed -i "/schwung\.local/d" /etc/avahi/hosts; echo "$DEVICE_IP schwung.local" >> /etc/avahi/hosts; /etc/init.d/avahi-daemon restart >/dev/null 2>&1; fi' || true
+    # schwung-manager handles mDNS for schwung.local via embedded responder
     qecho "  Web UI available at http://schwung.local"
 fi
 
