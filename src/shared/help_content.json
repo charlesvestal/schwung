@@ -259,6 +259,28 @@
           ]
         },
         {
+          "title": "Schwung Manager",
+          "lines": [
+            "Web interface at:",
+            " schwung.local",
+            "",
+            "Manage modules,",
+            "files, settings,",
+            "and system updates",
+            "from any browser.",
+            "",
+            "Screen mirroring:",
+            " schwung.local/mirror",
+            "",
+            "move.local still",
+            "reaches the stock",
+            "Move manager.",
+            "",
+            "Settings sync both",
+            "ways in real time."
+          ]
+        },
+        {
           "title": "Display Mirror",
           "lines": [
             "Stream the OLED to",
@@ -269,7 +291,7 @@
             "> Mirror Display.",
             "",
             "Then open:",
-            " move.local:7681",
+            " schwung.local/mirror",
             "",
             "~30 fps, supports",
             "up to 8 clients.",
@@ -318,24 +340,20 @@
         {
           "title": "File Browser (Web)",
           "lines": [
-            "Web-based file",
-            "manager for Move.",
+            "Schwung Manager has",
+            "a built-in file",
+            "manager at:",
+            " schwung.local/files",
+            "",
+            "A standalone file",
+            "browser is also",
+            "available at:",
+            " move.local:404",
             "",
             "Enable in Settings",
             "> Services > File",
-            "Browser.",
-            "",
-            "Access at:",
-            " move.local:404",
-            "",
-            "Upload, download,",
-            "rename, move, and",
-            "delete files from",
-            "any device on your",
-            "network.",
-            "",
-            "Off by default.",
-            "No auth required."
+            "Browser, or via",
+            "schwung.local/config."
           ]
         }
       ]

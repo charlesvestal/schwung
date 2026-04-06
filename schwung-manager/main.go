@@ -509,6 +509,10 @@ func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data
 	if cookie, err := r.Cookie("csrf_token"); err == nil {
 		data["CSRFToken"] = cookie.Value
 	}
+	// Inject mirror enabled state for nav bar.
+	if app.shm != nil {
+		data["MirrorEnabled"] = app.shm.DisplayMirror()
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// ParseFS names templates by the base filename, not the full path.
 	if err := t.ExecuteTemplate(w, name, data); err != nil {
