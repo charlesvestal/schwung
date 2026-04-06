@@ -387,6 +387,32 @@ var funcMap = template.FuncMap{
 		// Compare as strings for robustness (JSON numbers are float64).
 		return fmt.Sprint(optVal) == fmt.Sprint(cur)
 	},
+	"joinHelpLines": func(lines []string) template.HTML {
+		// Join OLED-width lines into paragraphs for web display.
+		// Blank lines become paragraph breaks.
+		var paragraphs []string
+		var current []string
+		for _, line := range lines {
+			if line == "" {
+				if len(current) > 0 {
+					paragraphs = append(paragraphs, strings.Join(current, " "))
+					current = nil
+				}
+			} else {
+				current = append(current, strings.TrimRight(line, " "))
+			}
+		}
+		if len(current) > 0 {
+			paragraphs = append(paragraphs, strings.Join(current, " "))
+		}
+		var sb strings.Builder
+		for _, p := range paragraphs {
+			sb.WriteString("<p>")
+			sb.WriteString(template.HTMLEscapeString(p))
+			sb.WriteString("</p>\n")
+		}
+		return template.HTML(sb.String())
+	},
 	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta) bool {
 		inst, ok := installed[id]
 		if !ok {

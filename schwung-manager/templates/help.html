@@ -9,43 +9,35 @@
 
 {{range .Sections}}
 <section class="info-card help-section">
-    <h2 class="help-section-title" onclick="this.parentElement.classList.toggle('collapsed')">
-        {{.Title}}
-        <span class="collapse-icon"></span>
-    </h2>
-    <div class="help-section-body">
+    <h2>{{.Title}}</h2>
+    {{if .Children}}
+    <div class="help-topics">
         {{template "helpChildren" .Children}}
     </div>
+    {{end}}
+    {{if .Lines}}
+    <div class="help-body">
+        {{joinHelpLines .Lines}}
+    </div>
+    {{end}}
 </section>
 {{end}}
-
-<script>
-document.querySelectorAll('.help-topic-title').forEach(function(el) {
-    el.addEventListener('click', function() {
-        this.parentElement.classList.toggle('collapsed');
-    });
-});
-</script>
 {{end}}
 
 {{define "helpChildren"}}
 {{range .}}
-<div class="help-topic{{if .Children}} help-branch{{end}}{{if .Lines}} collapsed{{end}}">
-    <h3 class="help-topic-title" onclick="this.parentElement.classList.toggle('collapsed')">
-        {{.Title}}
-        {{if .Lines}}<span class="collapse-icon"></span>{{end}}
-    </h3>
+<details class="help-topic">
+    <summary>{{.Title}}</summary>
     {{if .Lines}}
-    <div class="help-topic-body">
-        {{range .Lines}}{{if eq . ""}}<br>{{else}}<span class="help-line">{{.}}</span>{{end}}
-        {{end}}
+    <div class="help-body">
+        {{joinHelpLines .Lines}}
     </div>
     {{end}}
     {{if .Children}}
-    <div class="help-topic-children">
+    <div class="help-subtopics">
         {{template "helpChildren" .Children}}
     </div>
     {{end}}
-</div>
+</details>
 {{end}}
 {{end}}
