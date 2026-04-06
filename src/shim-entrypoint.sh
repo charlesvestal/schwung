@@ -61,8 +61,7 @@ fi
 # Start schwung-manager web UI if present
 SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
 if [ -x "$SCHWUNG_MGR" ]; then
-    "$SCHWUNG_MGR" -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
-    # schwung-manager handles mDNS for schwung.local via embedded responder
+    "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
 fi
 
 # Start filebrowser for file management (port 404, no auth) if enabled

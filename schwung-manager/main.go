@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -508,10 +507,6 @@ func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data
 	// Inject CSRF token from cookie so forms work without JS.
 	if cookie, err := r.Cookie("csrf_token"); err == nil {
 		data["CSRFToken"] = cookie.Value
-	}
-	// Inject mirror enabled state for nav bar.
-	if app.shm != nil {
-		data["MirrorEnabled"] = app.shm.DisplayMirror()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// ParseFS names templates by the base filename, not the full path.
@@ -2070,82 +2065,17 @@ func (app *App) handleInstallAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
 }
 
-// hostRouter routes requests based on the Host header.
-// schwungHost requests go to schwungHandler (with /mirror proxied to displayAddr).
-// All other hosts are reverse-proxied to moveAddr (stock Move server).
-func hostRouter(schwungHost string, schwungHandler http.Handler, moveAddr, displayAddr string, logger *slog.Logger) http.Handler {
-	moveProxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = "http"
-			req.URL.Host = moveAddr
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Error("move proxy error", "err", err, "path", r.URL.Path)
-			http.Error(w, "Stock Move server unavailable", http.StatusBadGateway)
-		},
-	}
-
-	displayProxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = "http"
-			req.URL.Host = displayAddr
-			// Strip /mirror prefix for proxied requests
-			if strings.HasPrefix(req.URL.Path, "/mirror") {
-				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/mirror")
-				if req.URL.Path == "" {
-					req.URL.Path = "/"
-				}
-			}
-			// /stream-auto passes through as-is (no prefix to strip)
-		},
-		// SSE streams require immediate flushing
-		FlushInterval: -1,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Error("display proxy error", "err", err, "path", r.URL.Path)
-			http.Error(w, "Display server unavailable", http.StatusBadGateway)
-		},
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-
-		if host == schwungHost {
-			// /mirror → display server (HTML page and sub-resources)
-			if r.URL.Path == "/mirror" || strings.HasPrefix(r.URL.Path, "/mirror/") {
-				displayProxy.ServeHTTP(w, r)
-				return
-			}
-			// /stream-auto → display server SSE stream
-			// (the display server HTML page uses EventSource('/stream-auto'),
-			//  so the browser requests this at the root path)
-			if r.URL.Path == "/stream-auto" {
-				displayProxy.ServeHTTP(w, r)
-				return
-			}
-			schwungHandler.ServeHTTP(w, r)
-			return
-		}
-
-		// Everything else → stock Move server
-		moveProxy.ServeHTTP(w, r)
-	})
-}
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 func main() {
-	port := flag.Int("port", 80, "HTTP listen port")
+	port := flag.Int("port", 7700, "HTTP listen port")
 	roots := flag.String("roots", "/data/UserData/", "Comma-separated allowed filesystem roots")
 	catalogURL := flag.String("catalog-url",
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
-	schwungHost := flag.String("schwung-host", "schwung.local", "Hostname for Schwung Manager")
-	moveBackend := flag.String("move-backend", "127.0.0.1:8080", "Address of stock Move web server")
 	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
 	flag.Parse()
 
@@ -2246,7 +2176,31 @@ func main() {
 	var handler http.Handler = mux
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
 	handler = middleware.CSRFProtection(handler)
-	handler = hostRouter(*schwungHost, handler, *moveBackend, *displayBackend, logger)
+	// /mirror route — reverse proxy to display server.
+	displayProxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = *displayBackend
+			req.URL.Path = strings.TrimPrefix(req.URL.Path, "/mirror")
+			if req.URL.Path == "" {
+				req.URL.Path = "/"
+			}
+		},
+		FlushInterval: -1, // SSE streams need immediate flushing
+	}
+	mux.HandleFunc("GET /mirror", func(w http.ResponseWriter, r *http.Request) {
+		displayProxy.ServeHTTP(w, r)
+	})
+	mux.HandleFunc("GET /mirror/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		displayProxy.ServeHTTP(w, r)
+	})
+	// /stream-auto is requested by the display server's HTML page
+	mux.HandleFunc("GET /stream-auto", func(w http.ResponseWriter, r *http.Request) {
+		displayProxy.ServeHTTP(w, r)
+	})
+
+	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
+	handler = middleware.CSRFProtection(handler)
 
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{
@@ -2261,47 +2215,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Start mDNS responder for schwung.local.
-	startMDNS(*schwungHost, logger)
-
-	fallbackAddr := ":7700"
 	go func() {
-		// Try the preferred port (80) for up to 30 seconds.
-		// If it's unavailable (MoveWebService holding it), fall back to 7700.
-		// This ensures schwung-manager is always reachable and never blocks move.local.
-		attempts := 0
-		maxAttempts := 10 // 10 * 3s = 30s
-		for {
-			logger.Info("starting schwung-manager", "addr", addr)
-			err := srv.ListenAndServe()
-			if err == http.ErrServerClosed {
-				return
-			}
-			if err != nil {
-				attempts++
-				if attempts >= maxAttempts && addr != fallbackAddr {
-					logger.Warn("port 80 unavailable after 30s, falling back to 7700")
-					addr = fallbackAddr
-					srv = &http.Server{
-						Addr:         addr,
-						Handler:      handler,
-						ReadTimeout:  30 * time.Second,
-						WriteTimeout: 60 * time.Second,
-						IdleTimeout:  120 * time.Second,
-					}
-					continue
-				}
-				logger.Error("server bind failed, retrying in 3s", "err", err)
-				time.Sleep(3 * time.Second)
-				srv = &http.Server{
-					Addr:         addr,
-					Handler:      handler,
-					ReadTimeout:  30 * time.Second,
-					WriteTimeout: 60 * time.Second,
-					IdleTimeout:  120 * time.Second,
-				}
-				continue
-			}
+		logger.Info("starting schwung-manager", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
