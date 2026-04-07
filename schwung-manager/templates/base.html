@@ -135,6 +135,21 @@
                 confirmLabel: (opts && opts.confirmLabel) });
         };
     })();
+
+    /* Global: intercept any form with data-confirm and show modal first */
+    document.addEventListener('submit', function(e) {
+        var form = e.target;
+        if (!form.matches || !form.matches('form[data-confirm]')) return;
+        if (form._confirmPassed) { form._confirmPassed = false; return; }
+        e.preventDefault();
+        schwungConfirm(form.getAttribute('data-confirm'), {
+            title: form.getAttribute('data-confirm-title') || 'Confirm',
+            confirmLabel: form.getAttribute('data-confirm-label') || 'OK',
+            danger: form.getAttribute('data-confirm-danger') === 'true'
+        }).then(function(ok) {
+            if (ok) { form._confirmPassed = true; form.submit(); }
+        });
+    }, true);
     </script>
 
     <script>
