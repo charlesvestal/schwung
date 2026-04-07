@@ -9,7 +9,7 @@
     --bg-card: #1a1a1a;
     --bg-card-hover: #222222;
     --text: #e0e0e0;
-    --text-muted: #888888;
+    --text-muted: #aaaaaa;
     --accent: #e8a84c;
     --accent-dim: #b87a30;
     --border: #333333;
@@ -521,7 +521,7 @@ tbody tr:hover {
 
 .file-row:focus-visible {
     outline: var(--focus-ring);
-    outline-offset: -2px;
+    outline-offset: 2px;
 }
 
 .file-name {
@@ -1028,8 +1028,10 @@ h2.section-header + .module-list {
     margin: 0;
 }
 
-.settings-form legend h2 {
+.settings-form legend h2,
+.legend-heading {
     font-size: 1.25rem;
+    font-weight: 700;
     margin-bottom: var(--space-md);
 }
 
@@ -1422,6 +1424,13 @@ code {
 
 .help-topic[open] summary::after {
     transform: rotate(90deg);
+}
+
+.help-topic summary h3 {
+    font-size: inherit;
+    font-weight: inherit;
+    margin: 0;
+    display: inline;
 }
 
 .help-topic summary:hover {
