@@ -225,7 +225,8 @@
             names.push(r.getAttribute('data-name'));
             paths.push(r.getAttribute('data-path'));
         });
-        if (!confirm('Delete ' + names.join(', ') + '?')) return;
+        schwungConfirm('Delete ' + names.join(', ') + '?', {title:'Delete Files', confirmLabel:'Delete', danger:true}).then(function(ok) {
+        if (!ok) return;
 
         var idx = 0;
         function deleteNext() {
@@ -244,6 +245,7 @@
             }).then(deleteNext).catch(deleteNext);
         }
         deleteNext();
+        }); /* schwungConfirm .then */
     });
 
     // Download
@@ -263,11 +265,12 @@
         if (selected.size !== 1) return;
         var row = selected.values().next().value;
         var oldName = row.getAttribute('data-name');
-        var newName = prompt('Rename "' + oldName + '" to:', oldName);
-        if (!newName || newName === oldName) return;
-        document.getElementById('rename-path').value = row.getAttribute('data-path');
-        document.getElementById('rename-name').value = newName;
-        document.getElementById('rename-form').submit();
+        schwungPrompt('Rename "' + oldName + '" to:', oldName, {title:'Rename'}).then(function(newName) {
+            if (!newName || newName === oldName) return;
+            document.getElementById('rename-path').value = row.getAttribute('data-path');
+            document.getElementById('rename-name').value = newName;
+            document.getElementById('rename-form').submit();
+        });
     });
 
     // New folder
