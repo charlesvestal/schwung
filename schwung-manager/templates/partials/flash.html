@@ -1,5 +1,5 @@
 {{define "flash"}}
-<div class="flash flash-{{.Type}}" role="status" aria-live="polite">
+<div class="flash flash-{{.Type}}" role="status" aria-live="assertive">
     <span class="flash-message">{{.Message}}</span>
     <button type="button" class="flash-dismiss" aria-label="Dismiss message" onclick="this.parentElement.remove()">&times;</button>
 </div>
