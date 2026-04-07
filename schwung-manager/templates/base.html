@@ -55,6 +55,88 @@
         <p>Schwung Manager{{if .Version}} v{{.Version}}{{end}}</p>
     </footer>
 
+    <!-- Accessible modal dialog -->
+    <dialog id="schwung-modal" class="schwung-modal" aria-labelledby="modal-title">
+        <div class="modal-content">
+            <h2 id="modal-title" class="modal-title"></h2>
+            <p id="modal-message" class="modal-message"></p>
+            <div id="modal-input-wrap" class="modal-input-wrap" hidden>
+                <label for="modal-input" id="modal-input-label" class="sr-only"></label>
+                <input type="text" id="modal-input" class="modal-input">
+            </div>
+            <div class="modal-actions">
+                <button id="modal-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="modal-confirm" class="btn btn-primary">OK</button>
+            </div>
+        </div>
+    </dialog>
+
+    <script>
+    /* Accessible modal for confirm and prompt dialogs */
+    (function() {
+        var modal = document.getElementById('schwung-modal');
+        var titleEl = document.getElementById('modal-title');
+        var messageEl = document.getElementById('modal-message');
+        var inputWrap = document.getElementById('modal-input-wrap');
+        var inputEl = document.getElementById('modal-input');
+        var inputLabel = document.getElementById('modal-input-label');
+        var confirmBtn = document.getElementById('modal-confirm');
+        var cancelBtn = document.getElementById('modal-cancel');
+        var resolvePromise = null;
+
+        function showModal(opts) {
+            titleEl.textContent = opts.title || 'Confirm';
+            messageEl.textContent = opts.message || '';
+            if (opts.confirmLabel) confirmBtn.textContent = opts.confirmLabel;
+            else confirmBtn.textContent = 'OK';
+            if (opts.danger) { confirmBtn.className = 'btn btn-danger'; }
+            else { confirmBtn.className = 'btn btn-primary'; }
+            if (opts.input) {
+                inputWrap.hidden = false;
+                inputEl.value = opts.inputValue || '';
+                inputLabel.textContent = opts.inputLabel || 'Value';
+            } else {
+                inputWrap.hidden = true;
+            }
+            modal.showModal();
+            if (opts.input) inputEl.focus();
+            else confirmBtn.focus();
+            return new Promise(function(resolve) { resolvePromise = resolve; });
+        }
+
+        confirmBtn.addEventListener('click', function() {
+            modal.close();
+            if (resolvePromise) resolvePromise(inputWrap.hidden ? true : inputEl.value);
+            resolvePromise = null;
+        });
+        cancelBtn.addEventListener('click', function() {
+            modal.close();
+            if (resolvePromise) resolvePromise(inputWrap.hidden ? false : null);
+            resolvePromise = null;
+        });
+        modal.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                modal.close();
+                if (resolvePromise) resolvePromise(inputWrap.hidden ? false : null);
+                resolvePromise = null;
+            }
+        });
+        inputEl.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { confirmBtn.click(); }
+        });
+
+        window.schwungConfirm = function(message, opts) {
+            return showModal({ title: (opts && opts.title) || 'Confirm', message: message,
+                confirmLabel: (opts && opts.confirmLabel), danger: opts && opts.danger });
+        };
+        window.schwungPrompt = function(message, defaultValue, opts) {
+            return showModal({ title: (opts && opts.title) || 'Input', message: message,
+                input: true, inputValue: defaultValue, inputLabel: message,
+                confirmLabel: (opts && opts.confirmLabel) });
+        };
+    })();
+    </script>
+
     <script>
         document.body.addEventListener('htmx:afterSwap', function(event) {
             var target = event.detail.target;

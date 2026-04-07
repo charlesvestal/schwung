@@ -61,7 +61,7 @@
             </div>
             <div class="module-actions">
                 {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
-                <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Update {{.Name}}?')">
+                <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" onsubmit="event.preventDefault(); var f=this; schwungConfirm('Update {{.Name}}?', {title:'Update Module', confirmLabel:'Update'}).then(function(ok){if(ok)f.submit()})">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <button type="submit" class="btn btn-primary btn-small">Update</button>
                 </form>
@@ -85,7 +85,7 @@
                 <span>by {{.Author}}</span>
             </div>
             <div class="module-actions">
-                <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Install {{.Name}}?')">
+                <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" onsubmit="event.preventDefault(); var f=this; schwungConfirm('Install {{.Name}}?', {title:'Install Module', confirmLabel:'Install'}).then(function(ok){if(ok)f.submit()})">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <button type="submit" class="btn btn-primary btn-small">Install</button>
                 </form>
@@ -117,7 +117,7 @@
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>
                         {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
-                        <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Update {{.Name}}?')">
+                        <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" onsubmit="event.preventDefault(); var f=this; schwungConfirm('Update {{.Name}}?', {title:'Update Module', confirmLabel:'Update'}).then(function(ok){if(ok)f.submit()})">
                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                             <button type="submit" class="btn btn-primary btn-small">Update</button>
                         </form>
@@ -148,7 +148,7 @@
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>
-                        <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" onsubmit="return confirm('Install {{.Name}}?')">
+                        <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" onsubmit="event.preventDefault(); var f=this; schwungConfirm('Install {{.Name}}?', {title:'Install Module', confirmLabel:'Install'}).then(function(ok){if(ok)f.submit()})">
                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                             <button type="submit" class="btn btn-primary btn-small">Install</button>
                         </form>

@@ -1368,6 +1368,61 @@ code {
     to { transform: rotate(360deg); }
 }
 
+/* ---- Accessible Modal Dialog ---- */
+.schwung-modal {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    padding: 0;
+    max-width: 420px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.schwung-modal::backdrop {
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+    padding: var(--space-lg);
+}
+
+.modal-title {
+    font-size: 1.1rem;
+    margin: 0 0 var(--space-sm) 0;
+}
+
+.modal-message {
+    color: var(--text-muted);
+    margin: 0 0 var(--space-md) 0;
+}
+
+.modal-input-wrap {
+    margin-bottom: var(--space-md);
+}
+
+.modal-input {
+    width: 100%;
+    padding: 0.5rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.95rem;
+}
+
+.modal-input:focus {
+    outline: var(--focus-ring);
+    outline-offset: 2px;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+}
+
 /* ---- Help ---- */
 .help-nav {
     display: flex;

@@ -21,7 +21,7 @@
             </form>
             {{if .UpdateAvailable}}
             <form method="POST" action="/system/upgrade" class="inline-form"
-                  onsubmit="return confirm('Upgrade Schwung host to {{.LatestVersion}}? This will restart the service.')">
+                  onsubmit="event.preventDefault(); var f=this; schwungConfirm('Upgrade to {{.LatestVersion}}? This will restart the service.', {title:'Upgrade Schwung', confirmLabel:'Upgrade'}).then(function(ok){if(ok)f.submit()})">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <button type="submit" class="btn btn-primary">Upgrade to {{.LatestVersion}}</button>
             </form>
