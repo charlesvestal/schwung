@@ -44,7 +44,7 @@
 </div>
 
 <!-- Card view -->
-<div id="module-grid-wrap" style="display:none">
+<div id="module-grid-wrap" style="display:none" inert>
     {{if .HasInstalled}}
     <h2 class="section-header" id="grid-installed-header">Installed</h2>
     <div class="module-grid" id="module-grid-installed">
@@ -325,6 +325,8 @@
         isListView = toList;
         gridWrap.style.display = isListView ? 'none' : '';
         listWrap.style.display = isListView ? '' : 'none';
+        gridWrap.inert = isListView;
+        listWrap.inert = !isListView;
         gridBtn.classList.toggle('seg-btn-active', !isListView);
         gridBtn.setAttribute('aria-pressed', !isListView);
         listBtn.classList.toggle('seg-btn-active', isListView);
