@@ -49,7 +49,7 @@
     <h2 class="section-header" id="grid-installed-header">Installed</h2>
     <div class="module-grid" id="module-grid-installed">
         {{range .Modules}}{{if isInstalled .ID $.Installed}}
-        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
+        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
             <div class="module-card-header">
                 <h3><a href="/modules/{{.ID}}">{{.Name}}</a> <span class="module-version-inline">{{versionStr (index $.Installed .ID).Version}}</span></h3>
                 <span class="badge badge-installed">Installed</span>
@@ -75,7 +75,7 @@
     <h2 class="section-header" id="grid-available-header">Available</h2>
     <div class="module-grid" id="module-grid-available">
         {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
-        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
+        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
             <div class="module-card-header">
                 <h3><a href="/modules/{{.ID}}">{{.Name}}</a>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <span class="module-version-inline">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</span>{{end}}</h3>
             </div>
@@ -111,7 +111,7 @@
             </thead>
             <tbody>
                 {{range .Modules}}{{if isInstalled .ID $.Installed}}
-                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
+                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
                     <td><span class="module-list-name">{{.Name}}</span> <span class="module-version-inline">{{versionStr (index $.Installed .ID).Version}}</span></td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
@@ -143,7 +143,7 @@
             </thead>
             <tbody>
                 {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
-                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" style="cursor:pointer">
+                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
                     <td><span class="module-list-name">{{.Name}}</span>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <span class="module-version-inline">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</span>{{end}}</td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
