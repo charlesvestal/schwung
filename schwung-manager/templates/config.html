@@ -11,14 +11,14 @@
 {{range .Sections}}
 <section class="info-card">
     <fieldset>
-        <legend><h2>{{.Label}}</h2></legend>
+        <legend class="legend-heading">{{.Label}}</legend>
 
         {{range .Items}}
         <div class="setting-row">
             {{if eq .Type "bool"}}
             <label for="{{.Key}}">{{.Label}}</label>
             <div class="toggle-wrap">
-                <input type="checkbox" id="{{.Key}}" class="toggle-input" data-setting-key="{{.Key}}" {{if settingChecked .Key $.Values}}checked{{end}} onchange="setSetting('{{.Key}}', this.checked)">
+                <input type="checkbox" id="{{.Key}}" class="toggle-input" role="switch" data-setting-key="{{.Key}}" {{if settingChecked .Key $.Values}}checked{{end}} onchange="setSetting('{{.Key}}', this.checked)">
                 <label for="{{.Key}}" class="toggle-label"></label>
             </div>
 

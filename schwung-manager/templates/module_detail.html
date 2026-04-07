@@ -84,7 +84,7 @@
     </div>
 
     {{if not .BuiltIn}}
-    <div class="detail-actions">
+    <div class="detail-actions" aria-label="Module actions" role="group">
         {{if isInstalled .Module.ID .Installed}}
         {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
         <form method="POST" action="/modules/{{.Module.ID}}/update" class="inline-form">
