@@ -93,7 +93,7 @@
         </form>
         {{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form"
-              onsubmit="return confirm('Uninstall {{.Module.Name}}?')">
+              onsubmit="event.preventDefault(); var f=this; schwungConfirm('Uninstall {{.Module.Name}}?', {title:'Uninstall', confirmLabel:'Uninstall', danger:true}).then(function(ok){if(ok)f.submit()})">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-danger">Uninstall</button>
         </form>
