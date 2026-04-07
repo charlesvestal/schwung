@@ -92,8 +92,7 @@
             <button type="submit" class="btn btn-primary">Update to {{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</button>
         </form>
         {{end}}
-        <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form"
-              onsubmit="event.preventDefault(); var f=this; schwungConfirm('Uninstall {{.Module.Name}}?', {title:'Uninstall', confirmLabel:'Uninstall', danger:true}).then(function(ok){if(ok)f.submit()})">
+        <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form" data-confirm="Uninstall {{.Module.Name}}?" data-confirm-title="Uninstall" data-confirm-label="Uninstall" data-confirm-danger="true">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-danger">Uninstall</button>
         </form>
@@ -123,17 +122,31 @@ document.querySelectorAll('.detail-actions form').forEach(function(form) {
         var btn = form.querySelector('button[type="submit"]');
         var overlay = document.getElementById('action-overlay');
         var text = document.getElementById('action-overlay-text');
-        if (btn.classList.contains('btn-danger')) {
-            text.textContent = 'Uninstalling...';
-        } else if (btn.textContent.trim().indexOf('Update') === 0) {
-            text.textContent = 'Updating...';
-        } else {
-            text.textContent = 'Installing...';
+
+        function doSubmit() {
+            if (btn.classList.contains('btn-danger')) {
+                text.textContent = 'Uninstalling...';
+            } else if (btn.textContent.trim().indexOf('Update') === 0) {
+                text.textContent = 'Updating...';
+            } else {
+                text.textContent = 'Installing...';
+            }
+            btn.disabled = true;
+            overlay.hidden = false;
+            setTimeout(function() { form.submit(); }, 1500);
         }
-        btn.disabled = true;
-        overlay.hidden = false;
-        /* Minimum 1.5s spinner so the user sees feedback */
-        setTimeout(function() { form.submit(); }, 1500);
+
+        /* Show confirm modal if data-confirm is set */
+        var confirmMsg = form.getAttribute('data-confirm');
+        if (confirmMsg) {
+            schwungConfirm(confirmMsg, {
+                title: form.getAttribute('data-confirm-title') || 'Confirm',
+                confirmLabel: form.getAttribute('data-confirm-label') || 'OK',
+                danger: form.getAttribute('data-confirm-danger') === 'true'
+            }).then(function(ok) { if (ok) doSubmit(); });
+        } else {
+            doSubmit();
+        }
     });
 });
 </script>
