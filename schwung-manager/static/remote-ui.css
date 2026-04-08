@@ -1,0 +1,158 @@
+/* ================================================================
+   Remote UI - Shadow Slot Parameter Control
+   ================================================================ */
+
+/* ---- Connection Status ---- */
+.remote-ui-status {
+    display: inline-block;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: var(--space-md);
+}
+
+.remote-ui-status.connected {
+    background: var(--color-success-bg);
+    color: var(--color-success);
+}
+
+.remote-ui-status.disconnected {
+    background: var(--color-error-bg);
+    color: var(--color-error);
+}
+
+/* ---- Tab Bar ---- */
+.remote-ui-tabs {
+    display: flex;
+    gap: var(--space-xs);
+    margin-bottom: var(--space-lg);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--space-xs);
+}
+
+.remote-ui-tab {
+    padding: var(--space-sm) var(--space-md);
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    cursor: pointer;
+    font-family: var(--font-stack);
+    font-size: 0.95rem;
+    min-height: var(--min-touch);
+    transition: color 0.15s, background 0.15s;
+}
+
+.remote-ui-tab:hover {
+    color: var(--text);
+    background: var(--bg-card-hover);
+}
+
+.remote-ui-tab:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
+.remote-ui-tab.active {
+    color: var(--accent);
+    background: var(--bg-card);
+    border-color: var(--border);
+    font-weight: 600;
+}
+
+/* ---- Slot Container ---- */
+.remote-ui-slot {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-lg);
+    min-height: 300px;
+}
+
+/* ---- Slot Header ---- */
+.slot-header {
+    margin-bottom: var(--space-lg);
+}
+
+.slot-header h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: var(--space-xs);
+}
+
+.slot-breadcrumb {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.slot-breadcrumb span {
+    color: var(--text-muted);
+}
+
+.slot-breadcrumb a {
+    color: var(--accent);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.slot-breadcrumb a:hover {
+    text-decoration: underline;
+}
+
+/* ---- Knob Row ---- */
+.knob-row {
+    display: flex;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-lg);
+}
+
+.knob-row:empty {
+    display: none;
+}
+
+/* ---- Param List ---- */
+.param-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.param-list:empty {
+    display: none;
+}
+
+/* ---- Debug / Placeholder ---- */
+.slot-debug {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
+.slot-debug .debug-section {
+    margin-bottom: var(--space-md);
+}
+
+.slot-debug .debug-section h3 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: var(--space-xs);
+}
+
+.slot-debug ul {
+    list-style: none;
+    padding-left: var(--space-md);
+}
+
+.slot-debug li {
+    padding: var(--space-xs) 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.slot-debug li:last-child {
+    border-bottom: none;
+}
