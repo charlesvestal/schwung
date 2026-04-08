@@ -441,6 +441,63 @@ int js_display_text_width(const char *string) {
 }
 
 /* ============================================================================
+ * Font Cache & Switching
+ * ============================================================================ */
+
+#define FONT_CACHE_MAX 16
+
+typedef struct {
+    char path[256];
+    Font *font;
+} FontCacheEntry;
+
+static FontCacheEntry font_cache[FONT_CACHE_MAX];
+static int font_cache_count = 0;
+
+static Font* font_cache_get(const char *path) {
+    for (int i = 0; i < font_cache_count; i++) {
+        if (strcmp(font_cache[i].path, path) == 0) {
+            return font_cache[i].font;
+        }
+    }
+    return NULL;
+}
+
+static void font_cache_put(const char *path, Font *font) {
+    if (font_cache_count < FONT_CACHE_MAX) {
+        strncpy(font_cache[font_cache_count].path, path, 255);
+        font_cache[font_cache_count].path[255] = '\0';
+        font_cache[font_cache_count].font = font;
+        font_cache_count++;
+    }
+}
+
+int js_display_set_font(const char *path) {
+    Font *cached = font_cache_get(path);
+    if (cached) {
+        g_font = cached;
+        return 1;
+    }
+    Font *new_font = js_display_load_font(path, 1);
+    if (!new_font) return 0;
+    font_cache_put(path, new_font);
+    g_font = new_font;
+    return 1;
+}
+
+int js_display_get_font_height(void) {
+    if (!g_font) {
+        g_font = js_display_load_font("/data/UserData/schwung/host/font.png", 1);
+    }
+    if (!g_font) return 0;
+    if (g_font->is_ttf) return g_font->ttf_height;
+    for (int i = 0; i < 256; i++) {
+        if (g_font->charData[i].data) return g_font->charData[i].height;
+    }
+    return 0;
+}
+
+/* ============================================================================
  * QuickJS Bindings
  * ============================================================================ */
 
@@ -543,6 +600,21 @@ JSValue js_display_bind_fill_circle(JSContext *ctx, JSValueConst this_val, int a
     return JS_UNDEFINED;
 }
 
+JSValue js_display_bind_set_font(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NewBool(ctx, 0);
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_NewBool(ctx, 0);
+    int result = js_display_set_font(path);
+    JS_FreeCString(ctx, path);
+    return JS_NewBool(ctx, result);
+}
+
+JSValue js_display_bind_get_font_height(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewInt32(ctx, js_display_get_font_height());
+}
+
 JSValue js_display_bind_draw_image(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 3) return JS_UNDEFINED;
@@ -578,4 +650,8 @@ void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
         JS_NewCFunction(ctx, js_display_bind_fill_circle, "fill_circle", 4));
     JS_SetPropertyStr(ctx, global_obj, "draw_image",
         JS_NewCFunction(ctx, js_display_bind_draw_image, "draw_image", 5));
+    JS_SetPropertyStr(ctx, global_obj, "set_font",
+        JS_NewCFunction(ctx, js_display_bind_set_font, "set_font", 1));
+    JS_SetPropertyStr(ctx, global_obj, "get_font_height",
+        JS_NewCFunction(ctx, js_display_bind_get_font_height, "get_font_height", 0));
 }
