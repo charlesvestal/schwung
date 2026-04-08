@@ -170,10 +170,46 @@ func (ru *RemoteUI) ensureShm() *ShmParams {
 	return ru.shm
 }
 
-// Start launches the background poll loop and notify reader. Call from main before ListenAndServe.
+// Start launches the background poll loop, notify reader, and periodic refresh.
 func (ru *RemoteUI) Start(ctx context.Context) {
 	go ru.pollLoop(ctx)
 	go ru.notifyLoop(ctx)
+	go ru.refreshLoop(ctx)
+}
+
+// refreshLoop periodically re-reads all param values for subscribed slots.
+// Catches any missed values from initial load or state drift. Runs every 5s
+// with batched reads + yields to minimize impact on shadow_ui.js.
+func (ru *RemoteUI) refreshLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		shm := ru.ensureShm()
+		if shm == nil {
+			continue
+		}
+
+		activeSlots, _ := ru.activeSlotsAndMasterFx()
+		for _, slot := range activeSlots {
+			for _, comp := range componentPrefixes {
+				modID, _, err := shm.TryGetParam(slot, comp+"_module")
+				if err != nil || modID == "" {
+					continue
+				}
+				// Send refreshed values to all subscribers
+				for _, c := range ru.subscribedClients(slot) {
+					ru.sendInitialParamValues(ctx, c, slot, comp)
+				}
+			}
+		}
+	}
 }
 
 // ServeHTTP upgrades the request to a WebSocket and handles messages.

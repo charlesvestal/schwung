@@ -270,6 +270,7 @@
     function handleParamUpdate(slot, msg) {
         if (!msg.params) return;
         var s = slots[slot];
+        var count = 0;
         for (var prefixedKey in msg.params) {
             // Route to correct component based on prefix.
             var parts = splitPrefix(prefixedKey);
@@ -277,8 +278,17 @@
             if (comp) {
                 comp.params[prefixedKey] = msg.params[prefixedKey];
             }
+            count++;
         }
-        if (slot === activeSlot) updateParamValues(slot, msg.params);
+        if (slot === activeSlot) {
+            // Large batch (initial load) — full re-render to ensure all values display.
+            // Small batch (live updates) — incremental update for smoothness.
+            if (count > 4) {
+                renderSlot();
+            } else {
+                updateParamValues(slot, msg.params);
+            }
+        }
         // Forward to custom UI iframe if subscribed.
         if (customUISubscribed && customUIIframe && slot === activeSlot) {
             postToIframe({ type: "paramUpdate", params: msg.params });
