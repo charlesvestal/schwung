@@ -38,7 +38,9 @@ type ruClient struct {
 
 // per-slot cached state used by the poll loop.
 type slotCache struct {
-	params map[string]string // key -> last known value
+	params      map[string]string // key -> last known value
+	hierarchies map[string]string // component -> last ui_hierarchy JSON
+	modules     map[string]string // component -> last module ID
 }
 
 // --- Inbound message types (browser -> server) ---
@@ -316,7 +318,11 @@ func (ru *RemoteUI) pollLoop(ctx context.Context) {
 		for _, slot := range activeSlots {
 			cache, ok := caches[slot]
 			if !ok {
-				cache = &slotCache{params: make(map[string]string)}
+				cache = &slotCache{
+					params:      make(map[string]string),
+					hierarchies: make(map[string]string),
+					modules:     make(map[string]string),
+				}
 				caches[slot] = cache
 			}
 			ru.pollSlot(ctx, slot, cache)
@@ -351,14 +357,36 @@ type chainParam struct {
 }
 
 // pollSlot fetches current param values for a slot and broadcasts diffs.
+// Also detects hierarchy/module changes for dynamic modules (e.g. JV-880).
 func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) {
 	changed := make(map[string]string)
 
 	for _, comp := range componentPrefixes {
 		// Check if this component is loaded.
 		modID, _ := ru.shm.GetParam(slot, comp+"_module")
+
+		// Detect module change (loaded/unloaded/swapped).
+		if prev, ok := cache.modules[comp]; !ok || prev != modID {
+			cache.modules[comp] = modID
+			// Module changed — broadcast updated slot_info and hierarchy.
+			ru.broadcastSlotInfo(ctx, slot)
+			if modID != "" {
+				ru.broadcastHierarchy(ctx, slot, comp)
+				ru.broadcastChainParams(ctx, slot, comp)
+			}
+		}
+
 		if modID == "" {
 			continue
+		}
+
+		// Detect hierarchy changes (dynamic modules like JV-880).
+		hierJSON, _ := ru.shm.GetParam(slot, comp+":ui_hierarchy")
+		if hierJSON != "" {
+			if prev, ok := cache.hierarchies[comp]; !ok || prev != hierJSON {
+				cache.hierarchies[comp] = hierJSON
+				ru.broadcastHierarchy(ctx, slot, comp)
+			}
 		}
 
 		// Fetch chain_params to learn which keys exist.
@@ -410,4 +438,41 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 			ru.writeJSON(ctx, c, update)
 		}
 	}
+}
+
+// broadcastSlotInfo sends slot_info to all subscribers of a slot.
+func (ru *RemoteUI) broadcastSlotInfo(ctx context.Context, slot uint8) {
+	for _, c := range ru.subscribedClients(slot) {
+		ru.sendSlotInfo(ctx, c, slot)
+	}
+}
+
+// broadcastHierarchy sends hierarchy for a component to all subscribers of a slot.
+func (ru *RemoteUI) broadcastHierarchy(ctx context.Context, slot uint8, component string) {
+	for _, c := range ru.subscribedClients(slot) {
+		ru.sendHierarchy(ctx, c, slot, component)
+	}
+}
+
+// broadcastChainParams sends chain_params for a component to all subscribers of a slot.
+func (ru *RemoteUI) broadcastChainParams(ctx context.Context, slot uint8, component string) {
+	for _, c := range ru.subscribedClients(slot) {
+		ru.sendChainParams(ctx, c, slot, component)
+	}
+}
+
+// subscribedClients returns all clients subscribed to a given slot.
+func (ru *RemoteUI) subscribedClients(slot uint8) []*ruClient {
+	ru.mu.Lock()
+	defer ru.mu.Unlock()
+	var out []*ruClient
+	for c := range ru.clients {
+		c.mu.Lock()
+		sub := c.subs[slot]
+		c.mu.Unlock()
+		if sub {
+			out = append(out, c)
+		}
+	}
+	return out
 }
