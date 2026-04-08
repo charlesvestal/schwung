@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -20,8 +22,9 @@ import (
 // Each client can subscribe to one or more shadow chain slots; the poll
 // loop fetches parameter values via ShmParams and pushes diffs.
 type RemoteUI struct {
-	shm    *ShmParams
-	logger *slog.Logger
+	shm      *ShmParams
+	basePath string // e.g. /data/UserData/schwung — for locating module web_ui.html
+	logger   *slog.Logger
 
 	mu      sync.Mutex
 	clients map[*ruClient]struct{}
@@ -93,6 +96,13 @@ type wsParamUpdate struct {
 	Params map[string]string `json:"params"`
 }
 
+type wsCustomUI struct {
+	Type      string `json:"type"`
+	Slot      uint8  `json:"slot"`
+	Component string `json:"component"`
+	URL       string `json:"url"`
+}
+
 type wsError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
@@ -105,11 +115,12 @@ var componentPrefixes = []string{"synth", "fx1", "fx2", "midi_fx1"}
 var masterFxSlots = []string{"fx1", "fx2", "fx3", "fx4"}
 
 // NewRemoteUI creates a RemoteUI. shmParams must not be nil.
-func NewRemoteUI(shm *ShmParams, logger *slog.Logger) *RemoteUI {
+func NewRemoteUI(shm *ShmParams, basePath string, logger *slog.Logger) *RemoteUI {
 	return &RemoteUI{
-		shm:     shm,
-		logger:  logger,
-		clients: make(map[*ruClient]struct{}),
+		shm:      shm,
+		basePath: basePath,
+		logger:   logger,
+		clients:  make(map[*ruClient]struct{}),
 	}
 }
 
@@ -198,6 +209,12 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 		if err != nil || modID == "" {
 			continue
 		}
+		// Check for custom web UI (synth component only).
+		if comp == "synth" {
+			if url := ru.findModuleWebUI(modID); url != "" {
+				ru.sendCustomUI(ctx, c, slot, comp, url)
+			}
+		}
 		ru.sendHierarchy(ctx, c, slot, comp)
 		ru.sendChainParams(ctx, c, slot, comp)
 	}
@@ -231,6 +248,11 @@ func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsM
 		modID, err := ru.shm.GetParam(slot, moduleKey)
 		if err != nil || modID == "" {
 			continue
+		}
+		if comp == "synth" {
+			if url := ru.findModuleWebUI(modID); url != "" {
+				ru.sendCustomUI(ctx, c, slot, comp, url)
+			}
 		}
 		ru.sendHierarchy(ctx, c, slot, comp)
 		ru.sendChainParams(ctx, c, slot, comp)
@@ -358,6 +380,29 @@ func (ru *RemoteUI) sendChainParams(ctx context.Context, c *ruClient, slot uint8
 	ru.writeJSON(ctx, c, wsChainParams{Type: "chain_params", Slot: slot, Component: component, Data: js})
 }
 
+// moduleCategoryDirs lists the subdirectories under modules/ to search.
+var moduleCategoryDirs = []string{"", "sound_generators", "audio_fx", "midi_fx", "tools", "overtake"}
+
+// findModuleWebUI checks if a module has a web_ui.html file and returns its
+// URL path (e.g. "/api/remote-ui/module-assets/braids/web_ui.html"), or "".
+func (ru *RemoteUI) findModuleWebUI(moduleID string) string {
+	if ru.basePath == "" || moduleID == "" {
+		return ""
+	}
+	for _, cat := range moduleCategoryDirs {
+		candidate := filepath.Join(ru.basePath, "modules", cat, moduleID, "web_ui.html")
+		if _, err := os.Stat(candidate); err == nil {
+			return "/api/remote-ui/module-assets/" + moduleID + "/web_ui.html"
+		}
+	}
+	return ""
+}
+
+// sendCustomUI notifies a client that a module has a custom web UI.
+func (ru *RemoteUI) sendCustomUI(ctx context.Context, c *ruClient, slot uint8, component, url string) {
+	ru.writeJSON(ctx, c, wsCustomUI{Type: "custom_ui", Slot: slot, Component: component, URL: url})
+}
+
 func (ru *RemoteUI) sendError(ctx context.Context, c *ruClient, message string) {
 	ru.writeJSON(ctx, c, wsError{Type: "error", Message: message})
 }
@@ -465,6 +510,12 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 			// Module changed — broadcast updated slot_info and hierarchy.
 			ru.broadcastSlotInfo(ctx, slot)
 			if modID != "" {
+				// Check for custom web UI on synth component.
+				if comp == "synth" {
+					if url := ru.findModuleWebUI(modID); url != "" {
+						ru.broadcastCustomUI(ctx, slot, comp, url)
+					}
+				}
 				ru.broadcastHierarchy(ctx, slot, comp)
 				ru.broadcastChainParams(ctx, slot, comp)
 			}
@@ -545,6 +596,13 @@ func (ru *RemoteUI) broadcastSlotInfo(ctx context.Context, slot uint8) {
 func (ru *RemoteUI) broadcastHierarchy(ctx context.Context, slot uint8, component string) {
 	for _, c := range ru.subscribedClients(slot) {
 		ru.sendHierarchy(ctx, c, slot, component)
+	}
+}
+
+// broadcastCustomUI sends custom_ui to all subscribers of a slot.
+func (ru *RemoteUI) broadcastCustomUI(ctx context.Context, slot uint8, component, url string) {
+	for _, c := range ru.subscribedClients(slot) {
+		ru.sendCustomUI(ctx, c, slot, component, url)
 	}
 }
 

@@ -419,6 +419,25 @@
     display: none;
 }
 
+/* ---- Custom Module Web UI (iframe) ---- */
+.custom-ui-container {
+    width: 100%;
+    margin-bottom: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--bg-card);
+}
+
+.custom-ui-iframe {
+    display: block;
+    width: 100%;
+    min-height: 400px;
+    height: 60vh;
+    border: none;
+    background: var(--bg);
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 600px) {
     .knob-row {
