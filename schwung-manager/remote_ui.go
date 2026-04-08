@@ -652,9 +652,9 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 	for _, comp := range componentPrefixes {
 		// Check if this component is loaded.
 		// Use TryGetParam so polling never blocks user-initiated set_param.
-		modID, ok, _ := ru.shm.TryGetParam(slot, comp+"_module")
-		if !ok {
-			continue // mutex busy (user action in progress) — skip this tick
+		modID, ok, err := ru.shm.TryGetParam(slot, comp+"_module")
+		if !ok || err != nil {
+			continue // mutex busy or shm error — skip this tick, don't change state
 		}
 
 		// Detect module change (loaded/unloaded/swapped).
