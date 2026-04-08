@@ -2479,10 +2479,21 @@ func main() {
 	mux.HandleFunc("GET /install/{id}", app.handleInstallPage)
 	mux.HandleFunc("POST /install/{id}", app.handleInstallAction)
 
-	// Apply middleware.
+	// Graceful shutdown context — created early so RemoteUI can use it.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Remote UI WebSocket (requires shmParams).
+	if shmParams != nil {
+		remoteUI := NewRemoteUI(shmParams, logger)
+		remoteUI.Start(ctx)
+		mux.Handle("GET /ws/remote-ui", remoteUI)
+	}
+
+	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	var handler http.Handler = mux
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
-	handler = middleware.CSRFProtection(handler)
+	handler = middleware.CSRFProtectionWithExemptions(handler, []string{"/ws/"})
 	handler = hostRouter(*schwungHost, handler, *moveBackend, *displayBackend, logger)
 
 	addr := fmt.Sprintf(":%d", *port)
@@ -2493,10 +2504,6 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-
-	// Graceful shutdown.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	// Start mDNS responder for schwung.local.
 	startMDNS(*schwungHost, logger)

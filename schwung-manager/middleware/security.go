@@ -97,7 +97,22 @@ func generateCSRFToken() string {
 // requests it compares the cookie value against a form field or header named
 // "csrf_token" / "X-CSRF-Token".
 func CSRFProtection(next http.Handler) http.Handler {
+	return CSRFProtectionWithExemptions(next, nil)
+}
+
+// CSRFProtectionWithExemptions works like CSRFProtection but skips enforcement
+// for request paths that begin with any of the given prefixes. This is needed
+// for WebSocket upgrade endpoints which cannot carry CSRF tokens.
+func CSRFProtectionWithExemptions(next http.Handler, exemptPrefixes []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip CSRF entirely for exempt paths (e.g. WebSocket endpoints).
+		for _, prefix := range exemptPrefixes {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
 		cookie, err := r.Cookie("csrf_token")
 		if err != nil || cookie.Value == "" {
 			token := generateCSRFToken()
