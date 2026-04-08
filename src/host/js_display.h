@@ -56,9 +56,11 @@ void js_display_print(int x, int y, const char *string, int color);
 int  js_display_text_width(const char *string);
 void js_display_pack(uint8_t *dest);
 
-/* Font loading */
+/* Font loading and switching */
 Font* js_display_load_font(const char *filename, int charSpacing);
 Font* js_display_load_ttf_font(const char *filename, int pixel_height);
+int js_display_set_font(const char *path);
+int js_display_get_font_height(void);
 
 /* Glyph rendering */
 int js_display_glyph(Font *fnt, char c, int sx, int sy, int color);
@@ -72,6 +74,8 @@ JSValue js_display_bind_draw_line(JSContext *ctx, JSValueConst this_val, int arg
 JSValue js_display_bind_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue js_display_bind_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue js_display_bind_text_width(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
+JSValue js_display_bind_set_font(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
+JSValue js_display_bind_get_font_height(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 
 /* Helper to register all display bindings on a JS global object */
 void js_display_register_bindings(JSContext *ctx, JSValue global_obj);

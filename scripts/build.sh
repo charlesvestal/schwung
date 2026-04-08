@@ -168,6 +168,19 @@ else
     echo "Skipping font generation (up to date)"
 fi
 
+# Generate Tamzen bitmap fonts at multiple sizes
+TAMZEN_SIZES="5x9 6x12 7x13 7x14 8x15 8x16 10x20"
+mkdir -p build/host/fonts
+for size in $TAMZEN_SIZES; do
+    height=$(echo $size | cut -d'x' -f2)
+    bdf="fonts/tamzen/Tamzen${size}r.bdf"
+    out="build/host/fonts/tamzen-${height}.png"
+    if needs_rebuild "$out" "$bdf" scripts/generate_font.py; then
+        echo "Generating Tamzen ${size} font..."
+        python3 scripts/generate_font.py --bdf "$bdf" --deploy-png "$out"
+    fi
+done
+
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
     SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c"
