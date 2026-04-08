@@ -445,17 +445,74 @@
         return val;
     }
 
+    /**
+     * Format a param value for display — matches device overlay logic
+     * (formatParamForOverlay + applyDisplayFormat in shadow_ui.js).
+     */
     function formatValue(val, meta) {
-        if (meta && meta.type === "enum" && meta.options) {
-            var idx = parseInt(val, 10);
-            if (idx >= 0 && idx < meta.options.length) return meta.options[idx];
+        if (val === undefined || val === null) return "-";
+
+        // Enum: show option label or option name
+        if (meta && (meta.type === "enum" || meta.type === "bool")) {
+            if (meta.option_labels) {
+                var label = meta.option_labels[String(val)];
+                if (label !== undefined) return String(label);
+            }
+            if (meta.options) {
+                var idx = parseInt(val, 10);
+                if (idx >= 0 && idx < meta.options.length) return meta.options[idx];
+            }
             return String(val);
         }
-        if (meta && meta.type === "float") {
-            var f = parseFloat(val);
-            if (!isNaN(f)) return f.toFixed(2);
+
+        // Int: round to integer, append unit
+        if (meta && meta.type === "int") {
+            var rounded = Math.round(parseFloat(val));
+            if (isNaN(rounded)) return String(val);
+            if (meta.unit) return rounded + (meta.unit === "%" ? "%" : " " + meta.unit);
+            return String(rounded);
         }
-        return String(val);
+
+        // Float: use display_format if provided
+        var num = parseFloat(val);
+        if (isNaN(num)) return String(val);
+
+        if (meta && meta.display_format) {
+            var formatted = applyDisplayFormat(meta.display_format, num, meta);
+            if (formatted !== null) return formatted;
+        }
+
+        // Default float: 0-1 or 0-N (N<=4) range → percentage
+        var min = (meta && typeof meta.min === "number") ? meta.min : 0;
+        var max = (meta && typeof meta.max === "number") ? meta.max : 1;
+        if (min === 0 && max >= 1 && max <= 4) {
+            return Math.round(num * 100) + "%";
+        }
+
+        // Fallback: 2 decimal places + unit
+        var result = num.toFixed(2);
+        if (meta && meta.unit) return result + (meta.unit === "%" ? "%" : " " + meta.unit);
+        return result;
+    }
+
+    /** Apply printf-style display_format — matches device applyDisplayFormat(). */
+    function applyDisplayFormat(fmt, num, meta) {
+        if (!fmt) return null;
+        var match = fmt.match(/^%?\.?(\d+)(f|%)$/);
+        if (!match) return null;
+        var decimals = parseInt(match[1], 10);
+
+        var displayVal = num;
+        // Scale 0-1 to 0-100 for "%" unit (matching C-side behavior)
+        if (meta && meta.unit === "%" && typeof meta.max === "number" && meta.max <= 1) {
+            displayVal = num * 100.0;
+        }
+        if (match[2] === "%") {
+            return (num * 100).toFixed(decimals) + "%";
+        }
+        var formatted = displayVal.toFixed(decimals);
+        if (meta && meta.unit) return formatted + (meta.unit === "%" ? "%" : " " + meta.unit);
+        return formatted;
     }
 
     // ------------------------------------------------------------------
