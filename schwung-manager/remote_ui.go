@@ -1,0 +1,356 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
+)
+
+// ---------------------------------------------------------------------------
+// RemoteUI — WebSocket bridge between browser clients and ShmParams
+// ---------------------------------------------------------------------------
+
+// RemoteUI manages WebSocket connections for the remote parameter UI.
+// Each client can subscribe to one or more shadow chain slots; the poll
+// loop fetches parameter values via ShmParams and pushes diffs.
+type RemoteUI struct {
+	shm    *ShmParams
+	logger *slog.Logger
+
+	mu      sync.Mutex
+	clients map[*ruClient]struct{}
+}
+
+// ruClient represents a single WebSocket connection.
+type ruClient struct {
+	conn *websocket.Conn
+	mu   sync.Mutex // serialises writes
+
+	// slots this client is subscribed to (slot index -> true)
+	subs map[uint8]bool
+}
+
+// per-slot cached state used by the poll loop.
+type slotCache struct {
+	params map[string]string // key -> last known value
+}
+
+// --- Inbound message types (browser -> server) ---
+
+type wsMessage struct {
+	Type  string `json:"type"`
+	Slot  *uint8 `json:"slot,omitempty"`
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+// --- Outbound message types (server -> browser) ---
+
+type wsHierarchy struct {
+	Type string          `json:"type"`
+	Slot uint8           `json:"slot"`
+	Data json.RawMessage `json:"data"`
+}
+
+type wsChainParams struct {
+	Type string          `json:"type"`
+	Slot uint8           `json:"slot"`
+	Data json.RawMessage `json:"data"`
+}
+
+type wsParamUpdate struct {
+	Type   string            `json:"type"`
+	Slot   uint8             `json:"slot"`
+	Params map[string]string `json:"params"`
+}
+
+type wsError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// NewRemoteUI creates a RemoteUI. shmParams must not be nil.
+func NewRemoteUI(shm *ShmParams, logger *slog.Logger) *RemoteUI {
+	return &RemoteUI{
+		shm:     shm,
+		logger:  logger,
+		clients: make(map[*ruClient]struct{}),
+	}
+}
+
+// Start launches the background poll loop. Call from main before ListenAndServe.
+func (ru *RemoteUI) Start(ctx context.Context) {
+	go ru.pollLoop(ctx)
+}
+
+// ServeHTTP upgrades the request to a WebSocket and handles messages.
+func (ru *RemoteUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// Allow any origin — the server is on a local network device.
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		ru.logger.Error("websocket accept failed", "err", err)
+		return
+	}
+
+	client := &ruClient{
+		conn: conn,
+		subs: make(map[uint8]bool),
+	}
+
+	ru.mu.Lock()
+	ru.clients[client] = struct{}{}
+	ru.mu.Unlock()
+
+	defer func() {
+		ru.mu.Lock()
+		delete(ru.clients, client)
+		ru.mu.Unlock()
+		conn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	ru.readLoop(r.Context(), client)
+}
+
+// readLoop processes inbound messages from a single client.
+func (ru *RemoteUI) readLoop(ctx context.Context, c *ruClient) {
+	for {
+		var msg wsMessage
+		if err := wsjson.Read(ctx, c.conn, &msg); err != nil {
+			// Client disconnected or context cancelled — normal.
+			ru.logger.Debug("ws read done", "err", err)
+			return
+		}
+
+		switch msg.Type {
+		case "subscribe":
+			ru.handleSubscribe(ctx, c, msg)
+		case "unsubscribe":
+			ru.handleUnsubscribe(c, msg)
+		case "set_param":
+			ru.handleSetParam(ctx, c, msg)
+		case "get_hierarchy":
+			ru.handleGetHierarchy(ctx, c, msg)
+		default:
+			ru.sendError(ctx, c, "unknown message type: "+msg.Type)
+		}
+	}
+}
+
+func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMessage) {
+	slot := ru.slotFromMsg(msg)
+
+	c.mu.Lock()
+	c.subs[slot] = true
+	c.mu.Unlock()
+
+	ru.logger.Info("ws subscribe", "slot", slot)
+
+	// Send initial hierarchy and chain_params.
+	ru.sendHierarchy(ctx, c, slot)
+	ru.sendChainParams(ctx, c, slot)
+}
+
+func (ru *RemoteUI) handleUnsubscribe(c *ruClient, msg wsMessage) {
+	slot := ru.slotFromMsg(msg)
+	c.mu.Lock()
+	delete(c.subs, slot)
+	c.mu.Unlock()
+	ru.logger.Info("ws unsubscribe", "slot", slot)
+}
+
+func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessage) {
+	slot := ru.slotFromMsg(msg)
+	if msg.Key == "" {
+		ru.sendError(ctx, c, "set_param requires key")
+		return
+	}
+	if err := ru.shm.SetParam(slot, msg.Key, msg.Value); err != nil {
+		ru.logger.Error("set_param failed", "slot", slot, "key", msg.Key, "err", err)
+		ru.sendError(ctx, c, "set_param failed: "+err.Error())
+	}
+}
+
+func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsMessage) {
+	slot := ru.slotFromMsg(msg)
+	ru.sendHierarchy(ctx, c, slot)
+	ru.sendChainParams(ctx, c, slot)
+}
+
+// slotFromMsg returns the slot number, defaulting to 0.
+func (ru *RemoteUI) slotFromMsg(msg wsMessage) uint8 {
+	if msg.Slot != nil {
+		return *msg.Slot
+	}
+	return 0
+}
+
+// ---------------------------------------------------------------------------
+// Outbound helpers
+// ---------------------------------------------------------------------------
+
+func (ru *RemoteUI) sendHierarchy(ctx context.Context, c *ruClient, slot uint8) {
+	raw, err := ru.shm.GetParam(slot, "synth:ui_hierarchy")
+	if err != nil {
+		ru.logger.Debug("get ui_hierarchy failed", "slot", slot, "err", err)
+		// Send empty object so client knows hierarchy is unavailable.
+		raw = "{}"
+	}
+	// Validate JSON; wrap in object if not valid.
+	var js json.RawMessage
+	if json.Unmarshal([]byte(raw), &js) != nil {
+		js = json.RawMessage(`{}`)
+	} else {
+		js = json.RawMessage(raw)
+	}
+	ru.writeJSON(ctx, c, wsHierarchy{Type: "hierarchy", Slot: slot, Data: js})
+}
+
+func (ru *RemoteUI) sendChainParams(ctx context.Context, c *ruClient, slot uint8) {
+	raw, err := ru.shm.GetParam(slot, "synth:chain_params")
+	if err != nil {
+		ru.logger.Debug("get chain_params failed", "slot", slot, "err", err)
+		raw = "[]"
+	}
+	var js json.RawMessage
+	if json.Unmarshal([]byte(raw), &js) != nil {
+		js = json.RawMessage(`[]`)
+	} else {
+		js = json.RawMessage(raw)
+	}
+	ru.writeJSON(ctx, c, wsChainParams{Type: "chain_params", Slot: slot, Data: js})
+}
+
+func (ru *RemoteUI) sendError(ctx context.Context, c *ruClient, message string) {
+	ru.writeJSON(ctx, c, wsError{Type: "error", Message: message})
+}
+
+func (ru *RemoteUI) writeJSON(ctx context.Context, c *ruClient, v any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := wsjson.Write(ctx, c.conn, v); err != nil {
+		ru.logger.Debug("ws write failed", "err", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Poll loop — fetches params for subscribed slots and pushes diffs
+// ---------------------------------------------------------------------------
+
+func (ru *RemoteUI) pollLoop(ctx context.Context) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	caches := make(map[uint8]*slotCache) // slot -> cache
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		// Determine which slots have at least one subscriber.
+		activeSlots := ru.activeSlots()
+		if len(activeSlots) == 0 {
+			continue
+		}
+
+		for _, slot := range activeSlots {
+			cache, ok := caches[slot]
+			if !ok {
+				cache = &slotCache{params: make(map[string]string)}
+				caches[slot] = cache
+			}
+			ru.pollSlot(ctx, slot, cache)
+		}
+	}
+}
+
+// activeSlots returns a deduplicated list of slots with subscribers.
+func (ru *RemoteUI) activeSlots() []uint8 {
+	ru.mu.Lock()
+	defer ru.mu.Unlock()
+
+	seen := make(map[uint8]bool)
+	for c := range ru.clients {
+		c.mu.Lock()
+		for s := range c.subs {
+			seen[s] = true
+		}
+		c.mu.Unlock()
+	}
+
+	slots := make([]uint8, 0, len(seen))
+	for s := range seen {
+		slots = append(slots, s)
+	}
+	return slots
+}
+
+// chainParam is the minimal structure we parse from chain_params JSON.
+type chainParam struct {
+	Key string `json:"key"`
+}
+
+// pollSlot fetches current param values for a slot and broadcasts diffs.
+func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) {
+	// Fetch chain_params to learn which keys exist.
+	raw, err := ru.shm.GetParam(slot, "synth:chain_params")
+	if err != nil {
+		return
+	}
+
+	var params []chainParam
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		return
+	}
+
+	changed := make(map[string]string)
+	for _, p := range params {
+		if p.Key == "" {
+			continue
+		}
+		fullKey := "synth:" + p.Key
+		val, err := ru.shm.GetParam(slot, fullKey)
+		if err != nil {
+			continue
+		}
+		if prev, ok := cache.params[fullKey]; !ok || prev != val {
+			cache.params[fullKey] = val
+			changed[fullKey] = val
+		}
+	}
+
+	if len(changed) == 0 {
+		return
+	}
+
+	// Broadcast to subscribed clients.
+	update := wsParamUpdate{Type: "param_update", Slot: slot, Params: changed}
+
+	ru.mu.Lock()
+	clients := make([]*ruClient, 0, len(ru.clients))
+	for c := range ru.clients {
+		clients = append(clients, c)
+	}
+	ru.mu.Unlock()
+
+	for _, c := range clients {
+		c.mu.Lock()
+		subscribed := c.subs[slot]
+		c.mu.Unlock()
+		if subscribed {
+			ru.writeJSON(ctx, c, update)
+		}
+	}
+}
