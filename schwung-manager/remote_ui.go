@@ -26,10 +26,11 @@ import (
 // ShmParams may be nil at startup (shared memory not yet created) and will
 // be lazily connected when the first request arrives.
 type RemoteUI struct {
-	shm      *ShmParams
-	setRing  *ShmWebParamSetRing // fast fire-and-forget param writes (~3ms)
-	basePath string              // e.g. /data/UserData/schwung — for locating module web_ui.html
-	logger   *slog.Logger
+	shm        *ShmParams
+	setRing    *ShmWebParamSetRing    // fast fire-and-forget param writes (~3ms)
+	notifyRing *ShmWebParamNotifyRing // push-based param change notifications from shim
+	basePath   string                 // e.g. /data/UserData/schwung — for locating module web_ui.html
+	logger     *slog.Logger
 
 	mu      sync.Mutex
 	clients map[*ruClient]struct{}
@@ -169,9 +170,10 @@ func (ru *RemoteUI) ensureShm() *ShmParams {
 	return ru.shm
 }
 
-// Start launches the background poll loop. Call from main before ListenAndServe.
+// Start launches the background poll loop and notify reader. Call from main before ListenAndServe.
 func (ru *RemoteUI) Start(ctx context.Context) {
 	go ru.pollLoop(ctx)
+	go ru.notifyLoop(ctx)
 }
 
 // ServeHTTP upgrades the request to a WebSocket and handles messages.
@@ -492,6 +494,76 @@ func (ru *RemoteUI) writeJSON(ctx context.Context, c *ruClient, v any) {
 // ---------------------------------------------------------------------------
 // Poll loop — fetches params for subscribed slots and pushes diffs
 // ---------------------------------------------------------------------------
+
+// notifyLoop reads the param change notify ring from the shim and pushes
+// updates to subscribed WebSocket clients. Runs at ~5ms interval for
+// near-instant hardware knob → browser updates.
+func (ru *RemoteUI) notifyLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		ring := ru.ensureNotifyRing()
+		if ring == nil {
+			continue
+		}
+
+		changes := ring.Drain()
+		if len(changes) == 0 {
+			continue
+		}
+
+		// Group changes by slot for efficient broadcasting.
+		slotChanges := make(map[uint8]map[string]string)
+		for _, c := range changes {
+			m, ok := slotChanges[c.Slot]
+			if !ok {
+				m = make(map[string]string)
+				slotChanges[c.Slot] = m
+			}
+			m[c.Key] = c.Value
+		}
+
+		// Broadcast to subscribed clients.
+		ru.mu.Lock()
+		clients := make([]*ruClient, 0, len(ru.clients))
+		for c := range ru.clients {
+			clients = append(clients, c)
+		}
+		ru.mu.Unlock()
+
+		for slot, params := range slotChanges {
+			update := wsParamUpdate{Type: "param_update", Slot: slot, Params: params}
+			for _, c := range clients {
+				c.mu.Lock()
+				subscribed := c.subs[slot]
+				c.mu.Unlock()
+				if subscribed {
+					ru.writeJSON(ctx, c, update)
+				}
+			}
+		}
+	}
+}
+
+// ensureNotifyRing attempts to open the notify ring if not yet connected.
+func (ru *RemoteUI) ensureNotifyRing() *ShmWebParamNotifyRing {
+	if ru.notifyRing != nil {
+		return ru.notifyRing
+	}
+	ring := OpenShmWebParamNotifyRing()
+	if ring != nil {
+		ru.notifyRing = ring
+		ru.logger.Info("web param notify ring: connected (lazy)")
+	}
+	return ru.notifyRing
+}
 
 func (ru *RemoteUI) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(100 * time.Millisecond)

@@ -78,6 +78,11 @@ typedef struct {
 
     /* Tempo query — returns current BPM via sampler_get_bpm() fallback chain. */
     float (*get_bpm)(void);
+
+    /* Web UI notification: called after any param set completes successfully.
+     * Pushes the changed value to the web param notify ring for real-time
+     * browser updates. May be NULL if web ring is not available. */
+    void (*on_param_changed)(uint8_t slot, const char *key, const char *value);
 } chain_mgmt_host_t;
 
 /* ============================================================================

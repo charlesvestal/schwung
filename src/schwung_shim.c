@@ -2980,6 +2980,7 @@ static void shim_init_subsystems(void)
             .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
             .handle_param_special = shim_handle_param_special,
             .get_bpm = shim_get_bpm,
+            .on_param_changed = web_param_notify_push,
         };
         chain_mgmt_init(&cm_host);
     }

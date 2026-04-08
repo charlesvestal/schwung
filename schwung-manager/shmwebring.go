@@ -98,3 +98,96 @@ func (r *ShmWebParamSetRing) SetParam(slot uint8, key, value string) error {
 
 	return nil
 }
+
+// =========================================================================
+// ShmWebParamNotifyRing — reads param change notifications from the shim
+// =========================================================================
+
+// ShmWebParamNotifyRing reads the notify ring that the shim writes to
+// whenever a param changes. Provides push-based updates for the web UI.
+//
+// Layout must match web_param_notify_ring_t in shadow_constants.h.
+type ShmWebParamNotifyRing struct {
+	data      []byte
+	lastReady uint8
+}
+
+const (
+	notifyMaxEntries = 64
+	notifyEntrySize  = webEntrySize // same layout as set entries
+	notifyRingSize   = 4 + notifyMaxEntries*notifyEntrySize
+)
+
+const shmWebParamNotifyPath = "/dev/shm/schwung-web-param-notify"
+
+// ParamChange represents a single param value change from the shim.
+type ParamChange struct {
+	Slot  uint8
+	Key   string
+	Value string
+}
+
+// OpenShmWebParamNotifyRing opens the notify ring. Returns nil if not available.
+func OpenShmWebParamNotifyRing() *ShmWebParamNotifyRing {
+	f, err := os.OpenFile(shmWebParamNotifyPath, os.O_RDWR, 0)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	data, err := syscall.Mmap(int(f.Fd()), 0, notifyRingSize,
+		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		return nil
+	}
+
+	return &ShmWebParamNotifyRing{data: data, lastReady: data[webRingOffReady]}
+}
+
+// Drain reads all pending notifications and resets the ring.
+// Returns nil if no new data. Non-blocking.
+func (r *ShmWebParamNotifyRing) Drain() []ParamChange {
+	ready := r.data[webRingOffReady]
+	if ready == r.lastReady {
+		return nil // no new data
+	}
+	r.lastReady = ready
+
+	count := int(r.data[webRingOffWriteIdx])
+	if count <= 0 || count > notifyMaxEntries {
+		r.data[webRingOffWriteIdx] = 0
+		return nil
+	}
+
+	// Read entries
+	changes := make([]ParamChange, 0, count)
+	for i := 0; i < count; i++ {
+		entryOff := webEntryStart + i*notifyEntrySize
+		slot := r.data[entryOff+webEntrySlot]
+
+		keyOff := entryOff + webEntryKey
+		key := cString(r.data[keyOff : keyOff+webKeyLen])
+
+		valOff := entryOff + webEntryValue
+		value := cString(r.data[valOff : valOff+webValueLen])
+
+		if key != "" {
+			changes = append(changes, ParamChange{Slot: slot, Key: key, Value: value})
+		}
+	}
+
+	// Reset ring
+	r.data[webRingOffWriteIdx] = 0
+
+	return changes
+}
+
+// cString extracts a null-terminated string from a byte slice.
+func cString(b []byte) string {
+	for i, c := range b {
+		if c == 0 {
+			return string(b[:i])
+		}
+	}
+	return string(b)
+}

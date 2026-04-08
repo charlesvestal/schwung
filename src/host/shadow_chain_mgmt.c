@@ -1663,6 +1663,14 @@ int shadow_param_publish_response(uint32_t req_id) {
     if (param->request_id != req_id) {
         return 0;
     }
+
+    /* Notify web UI of param changes (SET requests only, skip web-originated).
+     * Web-originated requests use req_id >= 0xFFFF0000. */
+    if (param->request_type == 1 && host.on_param_changed &&
+        req_id < 0xFFFF0000) {
+        host.on_param_changed(param->slot, param->key, param->value);
+    }
+
     param->response_id = req_id;
     param->response_ready = 1;
     param->request_type = 0;
