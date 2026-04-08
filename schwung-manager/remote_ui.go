@@ -53,15 +53,26 @@ type wsMessage struct {
 // --- Outbound message types (server -> browser) ---
 
 type wsHierarchy struct {
-	Type string          `json:"type"`
-	Slot uint8           `json:"slot"`
-	Data json.RawMessage `json:"data"`
+	Type      string          `json:"type"`
+	Slot      uint8           `json:"slot"`
+	Component string          `json:"component"`
+	Data      json.RawMessage `json:"data"`
 }
 
 type wsChainParams struct {
-	Type string          `json:"type"`
-	Slot uint8           `json:"slot"`
-	Data json.RawMessage `json:"data"`
+	Type      string          `json:"type"`
+	Slot      uint8           `json:"slot"`
+	Component string          `json:"component"`
+	Data      json.RawMessage `json:"data"`
+}
+
+type wsSlotInfo struct {
+	Type    string `json:"type"`
+	Slot    uint8  `json:"slot"`
+	Synth   string `json:"synth"`
+	FX1     string `json:"fx1"`
+	FX2     string `json:"fx2"`
+	MidiFX1 string `json:"midi_fx1"`
 }
 
 type wsParamUpdate struct {
@@ -74,6 +85,9 @@ type wsError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
 }
+
+// componentPrefixes lists all component types in a shadow slot.
+var componentPrefixes = []string{"synth", "fx1", "fx2", "midi_fx1"}
 
 // NewRemoteUI creates a RemoteUI. shmParams must not be nil.
 func NewRemoteUI(shm *ShmParams, logger *slog.Logger) *RemoteUI {
@@ -153,9 +167,19 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 
 	ru.logger.Info("ws subscribe", "slot", slot)
 
-	// Send initial hierarchy and chain_params.
-	ru.sendHierarchy(ctx, c, slot)
-	ru.sendChainParams(ctx, c, slot)
+	// Send slot info (which components are loaded).
+	ru.sendSlotInfo(ctx, c, slot)
+
+	// Send hierarchy and chain_params for all loaded components.
+	for _, comp := range componentPrefixes {
+		moduleKey := comp + "_module"
+		modID, err := ru.shm.GetParam(slot, moduleKey)
+		if err != nil || modID == "" {
+			continue
+		}
+		ru.sendHierarchy(ctx, c, slot, comp)
+		ru.sendChainParams(ctx, c, slot, comp)
+	}
 }
 
 func (ru *RemoteUI) handleUnsubscribe(c *ruClient, msg wsMessage) {
@@ -180,8 +204,16 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 
 func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsMessage) {
 	slot := ru.slotFromMsg(msg)
-	ru.sendHierarchy(ctx, c, slot)
-	ru.sendChainParams(ctx, c, slot)
+	ru.sendSlotInfo(ctx, c, slot)
+	for _, comp := range componentPrefixes {
+		moduleKey := comp + "_module"
+		modID, err := ru.shm.GetParam(slot, moduleKey)
+		if err != nil || modID == "" {
+			continue
+		}
+		ru.sendHierarchy(ctx, c, slot, comp)
+		ru.sendChainParams(ctx, c, slot, comp)
+	}
 }
 
 // slotFromMsg returns the slot number, defaulting to 0.
@@ -196,27 +228,43 @@ func (ru *RemoteUI) slotFromMsg(msg wsMessage) uint8 {
 // Outbound helpers
 // ---------------------------------------------------------------------------
 
-func (ru *RemoteUI) sendHierarchy(ctx context.Context, c *ruClient, slot uint8) {
-	raw, err := ru.shm.GetParam(slot, "synth:ui_hierarchy")
+func (ru *RemoteUI) sendSlotInfo(ctx context.Context, c *ruClient, slot uint8) {
+	info := wsSlotInfo{Type: "slot_info", Slot: slot}
+	for _, comp := range componentPrefixes {
+		modID, _ := ru.shm.GetParam(slot, comp+"_module")
+		switch comp {
+		case "synth":
+			info.Synth = modID
+		case "fx1":
+			info.FX1 = modID
+		case "fx2":
+			info.FX2 = modID
+		case "midi_fx1":
+			info.MidiFX1 = modID
+		}
+	}
+	ru.writeJSON(ctx, c, info)
+}
+
+func (ru *RemoteUI) sendHierarchy(ctx context.Context, c *ruClient, slot uint8, component string) {
+	raw, err := ru.shm.GetParam(slot, component+":ui_hierarchy")
 	if err != nil {
-		ru.logger.Debug("get ui_hierarchy failed", "slot", slot, "err", err)
-		// Send empty object so client knows hierarchy is unavailable.
+		ru.logger.Debug("get ui_hierarchy failed", "slot", slot, "component", component, "err", err)
 		raw = "{}"
 	}
-	// Validate JSON; wrap in object if not valid.
 	var js json.RawMessage
 	if json.Unmarshal([]byte(raw), &js) != nil {
 		js = json.RawMessage(`{}`)
 	} else {
 		js = json.RawMessage(raw)
 	}
-	ru.writeJSON(ctx, c, wsHierarchy{Type: "hierarchy", Slot: slot, Data: js})
+	ru.writeJSON(ctx, c, wsHierarchy{Type: "hierarchy", Slot: slot, Component: component, Data: js})
 }
 
-func (ru *RemoteUI) sendChainParams(ctx context.Context, c *ruClient, slot uint8) {
-	raw, err := ru.shm.GetParam(slot, "synth:chain_params")
+func (ru *RemoteUI) sendChainParams(ctx context.Context, c *ruClient, slot uint8, component string) {
+	raw, err := ru.shm.GetParam(slot, component+":chain_params")
 	if err != nil {
-		ru.logger.Debug("get chain_params failed", "slot", slot, "err", err)
+		ru.logger.Debug("get chain_params failed", "slot", slot, "component", component, "err", err)
 		raw = "[]"
 	}
 	var js json.RawMessage
@@ -225,7 +273,7 @@ func (ru *RemoteUI) sendChainParams(ctx context.Context, c *ruClient, slot uint8
 	} else {
 		js = json.RawMessage(raw)
 	}
-	ru.writeJSON(ctx, c, wsChainParams{Type: "chain_params", Slot: slot, Data: js})
+	ru.writeJSON(ctx, c, wsChainParams{Type: "chain_params", Slot: slot, Component: component, Data: js})
 }
 
 func (ru *RemoteUI) sendError(ctx context.Context, c *ruClient, message string) {
@@ -304,30 +352,39 @@ type chainParam struct {
 
 // pollSlot fetches current param values for a slot and broadcasts diffs.
 func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) {
-	// Fetch chain_params to learn which keys exist.
-	raw, err := ru.shm.GetParam(slot, "synth:chain_params")
-	if err != nil {
-		return
-	}
-
-	var params []chainParam
-	if err := json.Unmarshal([]byte(raw), &params); err != nil {
-		return
-	}
-
 	changed := make(map[string]string)
-	for _, p := range params {
-		if p.Key == "" {
+
+	for _, comp := range componentPrefixes {
+		// Check if this component is loaded.
+		modID, _ := ru.shm.GetParam(slot, comp+"_module")
+		if modID == "" {
 			continue
 		}
-		fullKey := "synth:" + p.Key
-		val, err := ru.shm.GetParam(slot, fullKey)
+
+		// Fetch chain_params to learn which keys exist.
+		raw, err := ru.shm.GetParam(slot, comp+":chain_params")
 		if err != nil {
 			continue
 		}
-		if prev, ok := cache.params[fullKey]; !ok || prev != val {
-			cache.params[fullKey] = val
-			changed[fullKey] = val
+
+		var params []chainParam
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			continue
+		}
+
+		for _, p := range params {
+			if p.Key == "" {
+				continue
+			}
+			fullKey := comp + ":" + p.Key
+			val, err := ru.shm.GetParam(slot, fullKey)
+			if err != nil {
+				continue
+			}
+			if prev, ok := cache.params[fullKey]; !ok || prev != val {
+				cache.params[fullKey] = val
+				changed[fullKey] = val
+			}
 		}
 	}
 

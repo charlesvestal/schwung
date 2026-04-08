@@ -5,29 +5,47 @@
 (function () {
     "use strict";
 
+    var COMPONENT_KEYS = ["synth", "fx1", "fx2", "midi_fx1"];
+    var COMPONENT_LABELS = {
+        synth: "Synth",
+        fx1: "Audio FX 1",
+        fx2: "Audio FX 2",
+        midi_fx1: "MIDI FX"
+    };
+
+    function makeComponent() {
+        return { hierarchy: null, chainParams: null, params: {}, navStack: ["root"], module: "" };
+    }
+
+    function makeSlot() {
+        return {
+            components: {
+                synth: makeComponent(),
+                fx1: makeComponent(),
+                fx2: makeComponent(),
+                midi_fx1: makeComponent()
+            },
+            // Track which component sections are collapsed (true = collapsed).
+            collapsed: { synth: false, fx1: true, fx2: true, midi_fx1: true }
+        };
+    }
+
     // Per-slot cached state.
-    var slots = [
-        { hierarchy: null, chainParams: null, params: {}, navStack: ["root"] },
-        { hierarchy: null, chainParams: null, params: {}, navStack: ["root"] },
-        { hierarchy: null, chainParams: null, params: {}, navStack: ["root"] },
-        { hierarchy: null, chainParams: null, params: {}, navStack: ["root"] }
-    ];
+    var slots = [makeSlot(), makeSlot(), makeSlot(), makeSlot()];
 
     var activeSlot = 0;
     var ws = null;
     var reconnectTimer = null;
 
     // Knob drag state.
-    var dragging = null; // { key, startY, startValue, min, max, step, type }
+    var dragging = null; // { component, key, startY, startValue, min, max, step, type, slot }
     var sendThrottleTimer = null;
     var SEND_INTERVAL = 33; // ~30Hz
 
     // DOM references.
     var statusEl = document.getElementById("remote-ui-status");
     var slotTitleEl = document.getElementById("slot-title");
-    var breadcrumbEl = document.getElementById("slot-breadcrumb");
-    var knobRowEl = document.getElementById("knob-row");
-    var paramListEl = document.getElementById("param-list");
+    var slotContentEl = document.getElementById("slot-content");
     var debugEl = document.getElementById("slot-debug");
     var tabButtons = document.querySelectorAll(".remote-ui-tab");
 
@@ -96,30 +114,76 @@
         if (slot < 0 || slot > 3) return;
 
         switch (msg.type) {
+            case "slot_info":
+                handleSlotInfo(slot, msg);
+                break;
+
             case "hierarchy":
-                slots[slot].hierarchy = msg.data;
-                slots[slot].navStack = ["root"];
-                if (slot === activeSlot) renderSlot();
+                handleHierarchy(slot, msg);
                 break;
 
             case "chain_params":
-                slots[slot].chainParams = msg.data;
-                if (slot === activeSlot) renderSlot();
+                handleChainParamsMsg(slot, msg);
                 break;
 
             case "param_update":
-                if (msg.params) {
-                    var p = slots[slot].params;
-                    for (var key in msg.params) {
-                        p[key] = msg.params[key];
-                    }
-                }
-                if (slot === activeSlot) updateParamValues(slot, msg.params);
+                handleParamUpdate(slot, msg);
                 break;
 
             default:
                 break;
         }
+    }
+
+    function handleSlotInfo(slot, msg) {
+        var s = slots[slot];
+        s.components.synth.module = msg.synth || "";
+        s.components.fx1.module = msg.fx1 || "";
+        s.components.fx2.module = msg.fx2 || "";
+        s.components.midi_fx1.module = msg.midi_fx1 || "";
+        if (slot === activeSlot) renderSlot();
+    }
+
+    function handleHierarchy(slot, msg) {
+        var comp = msg.component || "synth";
+        var c = slots[slot].components[comp];
+        if (!c) return;
+        c.hierarchy = msg.data;
+        c.navStack = ["root"];
+        if (slot === activeSlot) renderSlot();
+    }
+
+    function handleChainParamsMsg(slot, msg) {
+        var comp = msg.component || "synth";
+        var c = slots[slot].components[comp];
+        if (!c) return;
+        c.chainParams = msg.data;
+        if (slot === activeSlot) renderSlot();
+    }
+
+    function handleParamUpdate(slot, msg) {
+        if (!msg.params) return;
+        var s = slots[slot];
+        for (var prefixedKey in msg.params) {
+            // Route to correct component based on prefix.
+            var parts = splitPrefix(prefixedKey);
+            var comp = s.components[parts.comp];
+            if (comp) {
+                comp.params[prefixedKey] = msg.params[prefixedKey];
+            }
+        }
+        if (slot === activeSlot) updateParamValues(slot, msg.params);
+    }
+
+    /** Split "fx1:cutoff" -> { comp: "fx1", key: "cutoff" }. Default comp is "synth". */
+    function splitPrefix(prefixedKey) {
+        for (var i = 0; i < COMPONENT_KEYS.length; i++) {
+            var p = COMPONENT_KEYS[i] + ":";
+            if (prefixedKey.indexOf(p) === 0) {
+                return { comp: COMPONENT_KEYS[i], key: prefixedKey.substring(p.length) };
+            }
+        }
+        return { comp: "synth", key: prefixedKey };
     }
 
     // ------------------------------------------------------------------
@@ -158,9 +222,9 @@
         return div.innerHTML;
     }
 
-    /** Look up chain_params metadata for a param key. */
-    function findParamMeta(slot, key) {
-        var cp = slots[slot].chainParams;
+    /** Look up chain_params metadata for a param key within a component. */
+    function findParamMeta(compState, key) {
+        var cp = compState.chainParams;
         if (!cp) return null;
         for (var i = 0; i < cp.length; i++) {
             if (cp[i].key === key) return cp[i];
@@ -168,35 +232,32 @@
         return null;
     }
 
-    /** Get param value from slot state (with synth: prefix). */
-    function getParamValue(slot, key) {
-        var v = slots[slot].params["synth:" + key];
+    /** Get param value from component state (with prefix). */
+    function getCompParamValue(compState, compPrefix, key) {
+        var v = compState.params[compPrefix + ":" + key];
         if (v !== undefined) return v;
-        return slots[slot].params[key];
+        return compState.params[key];
     }
 
-    /** Get the current hierarchy level object. */
-    function getCurrentLevel(slot) {
-        var s = slots[slot];
-        if (!s.hierarchy || !s.hierarchy.levels) return null;
-        var stack = s.navStack;
+    /** Get the current hierarchy level object for a component. */
+    function getCompCurrentLevel(compState) {
+        if (!compState.hierarchy || !compState.hierarchy.levels) return null;
+        var stack = compState.navStack;
         var levelName = stack[stack.length - 1];
-        return s.hierarchy.levels[levelName] || null;
+        return compState.hierarchy.levels[levelName] || null;
     }
 
     /** Resolve children: if a level has "children", auto-navigate. */
-    function resolveLevel(slot) {
-        var s = slots[slot];
-        if (!s.hierarchy || !s.hierarchy.levels) return;
+    function resolveCompLevel(compState) {
+        if (!compState.hierarchy || !compState.hierarchy.levels) return;
         var maxDepth = 10;
         while (maxDepth-- > 0) {
-            var levelName = s.navStack[s.navStack.length - 1];
-            var level = s.hierarchy.levels[levelName];
+            var levelName = compState.navStack[compState.navStack.length - 1];
+            var level = compState.hierarchy.levels[levelName];
             if (!level || !level.children) break;
-            // Auto-navigate to child
             var child = level.children;
-            if (s.hierarchy.levels[child]) {
-                s.navStack.push(child);
+            if (compState.hierarchy.levels[child]) {
+                compState.navStack.push(child);
             } else {
                 break;
             }
@@ -228,19 +289,18 @@
 
     var KNOB_SIZE = 60;
     var KNOB_RADIUS = 24;
-    var ARC_START_DEG = 225;  // 7 o'clock (bottom-left)
-    var ARC_END_DEG = 135;    // 5 o'clock (bottom-right)
-    var ARC_SWEEP_DEG = 270;  // degrees of rotation from min to max
+    var ARC_START_DEG = 225;
+    var ARC_END_DEG = 135;
+    var ARC_SWEEP_DEG = 270;
 
     function degToRad(d) { return d * Math.PI / 180; }
 
     function polarToXY(cx, cy, r, deg) {
-        var rad = degToRad(deg - 90); // SVG: 0deg = top
+        var rad = degToRad(deg - 90);
         return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
     }
 
     function describeArc(cx, cy, r, startDeg, sweepDeg) {
-        // sweepDeg is the clockwise sweep amount (always positive)
         var endDeg = startDeg + sweepDeg;
         var start = polarToXY(cx, cy, r, startDeg);
         var end = polarToXY(cx, cy, r, endDeg);
@@ -249,7 +309,6 @@
                " A " + r + " " + r + " 0 " + largeArc + " 1 " + end.x + " " + end.y;
     }
 
-    /** Returns the normalized 0..1 position for a value given its metadata. */
     function valueToNorm(val, meta) {
         var min = (meta && meta.min !== undefined) ? meta.min : 0;
         var max = (meta && meta.max !== undefined) ? meta.max : 1;
@@ -258,7 +317,6 @@
         return Math.max(0, Math.min(1, t));
     }
 
-    /** Returns the absolute angle (may be > 360) for an indicator at normalized position t. */
     function normToAngle(t) {
         return ARC_START_DEG + t * ARC_SWEEP_DEG;
     }
@@ -270,13 +328,11 @@
         if (isNaN(numVal)) numVal = meta ? (meta.min || 0) : 0;
 
         var t = valueToNorm(numVal, meta);
-        var indicatorAngle = normToAngle(t); // absolute degrees (may be > 360)
+        var indicatorAngle = normToAngle(t);
         var indicator = polarToXY(cx, cy, KNOB_RADIUS - 4, indicatorAngle);
 
-        // Background arc (full sweep)
         var bgPath = describeArc(cx, cy, KNOB_RADIUS, ARC_START_DEG, ARC_SWEEP_DEG);
 
-        // Value arc - sweep from 0 to current position
         var valSweep = t * ARC_SWEEP_DEG;
         var valPath = "";
         if (valSweep > 1) {
@@ -284,24 +340,20 @@
         }
 
         var svg = '<svg class="knob-svg" width="' + KNOB_SIZE + '" height="' + KNOB_SIZE + '" viewBox="0 0 ' + KNOB_SIZE + ' ' + KNOB_SIZE + '">';
-        // Background arc track
         svg += '<path d="' + bgPath + '" fill="none" stroke="#444" stroke-width="4" stroke-linecap="round"/>';
-        // Value arc
         if (valPath) {
             svg += '<path class="knob-value-arc" d="' + valPath + '" fill="none" stroke="#e8a84c" stroke-width="4" stroke-linecap="round"/>';
         }
-        // Center dot
         svg += '<circle cx="' + cx + '" cy="' + cy + '" r="3" fill="#888"/>';
-        // Indicator line
         svg += '<line class="knob-indicator" x1="' + cx + '" y1="' + cy + '" x2="' + indicator.x + '" y2="' + indicator.y + '" stroke="#e8a84c" stroke-width="2" stroke-linecap="round"/>';
         svg += '</svg>';
         return svg;
     }
 
-    function renderKnob(key, meta, value) {
+    function renderKnob(compPrefix, compState, key, meta, value) {
         var container = document.createElement("div");
         container.className = "knob-container";
-        container.setAttribute("data-param-key", key);
+        container.setAttribute("data-param-key", compPrefix + ":" + key);
 
         var label = (meta && meta.name) ? meta.name : key;
         var displayVal = formatValue(value !== undefined ? value : (meta ? (meta.min || 0) : 0), meta);
@@ -309,16 +361,16 @@
         container.innerHTML =
             createKnobSVG(key, meta, value !== undefined ? value : (meta ? (meta.min || 0) : 0)) +
             '<div class="knob-label">' + escapeHtml(label) + '</div>' +
-            '<div class="knob-value" data-knob-value="' + escapeHtml(key) + '">' + escapeHtml(displayVal) + '</div>';
+            '<div class="knob-value" data-knob-value="' + escapeHtml(compPrefix + ":" + key) + '">' + escapeHtml(displayVal) + '</div>';
 
         // Drag handling
-        var svgEl = container; // drag target is the whole container
         function onPointerDown(e) {
             e.preventDefault();
-            var numVal = parseFloat(getParamValue(activeSlot, key));
+            var numVal = parseFloat(getCompParamValue(compState, compPrefix, key));
             if (isNaN(numVal)) numVal = meta ? (meta.min || 0) : 0;
             var clientY = e.touches ? e.touches[0].clientY : e.clientY;
             dragging = {
+                component: compPrefix,
                 key: key,
                 startY: clientY,
                 startValue: numVal,
@@ -334,8 +386,8 @@
             document.addEventListener("touchend", onPointerUp);
         }
 
-        svgEl.addEventListener("mousedown", onPointerDown);
-        svgEl.addEventListener("touchstart", onPointerDown, { passive: false });
+        container.addEventListener("mousedown", onPointerDown);
+        container.addEventListener("touchstart", onPointerDown, { passive: false });
 
         return container;
     }
@@ -344,40 +396,37 @@
         if (!dragging) return;
         e.preventDefault();
         var clientY = e.touches ? e.touches[0].clientY : e.clientY;
-        var dy = dragging.startY - clientY; // up = positive
+        var dy = dragging.startY - clientY;
         var range = dragging.max - dragging.min;
-        var sensitivity = range / 150; // 150px for full range
+        var sensitivity = range / 150;
         var newVal = dragging.startValue + dy * sensitivity;
 
-        // Snap to step
         if (dragging.step > 0) {
             newVal = Math.round(newVal / dragging.step) * dragging.step;
         }
         newVal = clampValue(newVal, dragging);
         if (dragging.type === "int") newVal = Math.round(newVal);
 
-        // Update local state optimistically
-        var prefixedKey = "synth:" + dragging.key;
-        slots[dragging.slot].params[prefixedKey] = String(newVal);
+        var prefixedKey = dragging.component + ":" + dragging.key;
+        var comp = slots[dragging.slot].components[dragging.component];
+        if (comp) comp.params[prefixedKey] = String(newVal);
 
-        // Update knob visually
-        updateKnobVisual(dragging.key, newVal);
+        updateKnobVisual(prefixedKey, newVal);
 
-        // Throttled send
         if (!sendThrottleTimer) {
             sendThrottleTimer = setTimeout(function () {
                 sendThrottleTimer = null;
             }, SEND_INTERVAL);
-            sendParamValue(dragging.slot, dragging.key, newVal);
+            sendParamValue(dragging.slot, dragging.component, dragging.key, newVal);
         }
     }
 
     function onPointerUp(e) {
         if (!dragging) return;
-        // Send final value
-        var prefixedKey = "synth:" + dragging.key;
-        var finalVal = slots[dragging.slot].params[prefixedKey];
-        sendParamValue(dragging.slot, dragging.key, parseFloat(finalVal));
+        var prefixedKey = dragging.component + ":" + dragging.key;
+        var comp = slots[dragging.slot].components[dragging.component];
+        var finalVal = comp ? comp.params[prefixedKey] : "0";
+        sendParamValue(dragging.slot, dragging.component, dragging.key, parseFloat(finalVal));
         dragging = null;
         document.removeEventListener("mousemove", onPointerMove);
         document.removeEventListener("mouseup", onPointerUp);
@@ -385,18 +434,20 @@
         document.removeEventListener("touchend", onPointerUp);
     }
 
-    function updateKnobVisual(key, value) {
-        var container = knobRowEl.querySelector('[data-param-key="' + key + '"]');
+    function updateKnobVisual(prefixedKey, value) {
+        var container = slotContentEl.querySelector('[data-param-key="' + prefixedKey + '"]');
         if (!container) return;
-        var meta = findParamMeta(activeSlot, key);
+        var parts = splitPrefix(prefixedKey);
+        var compState = slots[activeSlot].components[parts.comp];
+        if (!compState) return;
+        var meta = findParamMeta(compState, parts.key);
         var svgParent = container.querySelector(".knob-svg");
         if (svgParent) {
-            // Replace SVG
             var tempDiv = document.createElement("div");
-            tempDiv.innerHTML = createKnobSVG(key, meta, value);
+            tempDiv.innerHTML = createKnobSVG(parts.key, meta, value);
             container.replaceChild(tempDiv.firstChild, svgParent);
         }
-        var valEl = container.querySelector('[data-knob-value="' + key + '"]');
+        var valEl = container.querySelector('[data-knob-value="' + prefixedKey + '"]');
         if (valEl) {
             valEl.textContent = formatValue(value, meta);
         }
@@ -406,11 +457,11 @@
     // Send param
     // ------------------------------------------------------------------
 
-    function sendParamValue(slot, key, value) {
+    function sendParamValue(slot, compPrefix, key, value) {
         send({
             type: "set_param",
             slot: slot,
-            key: "synth:" + key,
+            key: compPrefix + ":" + key,
             value: String(value)
         });
     }
@@ -419,19 +470,19 @@
     // Preset browser
     // ------------------------------------------------------------------
 
-    function renderPresetBrowser(level, slot) {
+    function renderPresetBrowser(level, compPrefix, compState) {
         if (!level.list_param || !level.count_param) return null;
 
-        var countVal = getParamValue(slot, level.count_param);
-        var currentVal = getParamValue(slot, level.list_param);
-        var nameVal = level.name_param ? getParamValue(slot, level.name_param) : null;
+        var countVal = getCompParamValue(compState, compPrefix, level.count_param);
+        var currentVal = getCompParamValue(compState, compPrefix, level.list_param);
+        var nameVal = level.name_param ? getCompParamValue(compState, compPrefix, level.name_param) : null;
 
         var count = parseInt(countVal, 10) || 0;
         var current = parseInt(currentVal, 10) || 0;
 
         var container = document.createElement("div");
         container.className = "preset-browser";
-        container.setAttribute("data-preset-browser", "true");
+        container.setAttribute("data-preset-browser", compPrefix);
 
         var prevBtn = document.createElement("button");
         prevBtn.className = "preset-nav-btn";
@@ -439,7 +490,7 @@
         prevBtn.disabled = current <= 0;
         prevBtn.onclick = function () {
             if (current > 0) {
-                sendParamValue(slot, level.list_param, current - 1);
+                sendParamValue(activeSlot, compPrefix, level.list_param, current - 1);
             }
         };
 
@@ -449,13 +500,13 @@
         nextBtn.disabled = current >= count - 1;
         nextBtn.onclick = function () {
             if (current < count - 1) {
-                sendParamValue(slot, level.list_param, current + 1);
+                sendParamValue(activeSlot, compPrefix, level.list_param, current + 1);
             }
         };
 
         var nameSpan = document.createElement("span");
         nameSpan.className = "preset-name";
-        nameSpan.setAttribute("data-preset-name", "true");
+        nameSpan.setAttribute("data-preset-name", compPrefix);
         var displayName = nameVal || ("Preset " + current);
         nameSpan.textContent = (current + 1) + "/" + count + "  " + displayName;
 
@@ -469,8 +520,7 @@
     // Param list items
     // ------------------------------------------------------------------
 
-    function renderParamItem(entry, slot) {
-        // Normalize entry
+    function renderParamItem(entry, compPrefix, compState) {
         var key = null;
         var label = null;
         var navLevel = null;
@@ -493,8 +543,8 @@
             row.innerHTML = '<span class="param-nav-label">' + escapeHtml(label) + '</span>' +
                             '<span class="param-nav-arrow">\u203A</span>';
             row.onclick = function () {
-                slots[activeSlot].navStack.push(navLevel);
-                resolveLevel(activeSlot);
+                compState.navStack.push(navLevel);
+                resolveCompLevel(compState);
                 renderSlot();
             };
             return row;
@@ -502,14 +552,14 @@
 
         // Editable param
         if (!key) return null;
-        var meta = findParamMeta(slot, key);
-        var value = getParamValue(slot, key);
+        var meta = findParamMeta(compState, key);
+        var value = getCompParamValue(compState, compPrefix, key);
         if (!label && meta) label = meta.name;
         if (!label) label = key;
 
         var row = document.createElement("div");
         row.className = "param-row";
-        row.setAttribute("data-param-row", key);
+        row.setAttribute("data-param-row", compPrefix + ":" + key);
 
         var labelSpan = document.createElement("span");
         labelSpan.className = "param-label";
@@ -520,17 +570,15 @@
         controlWrap.className = "param-control";
 
         if (!meta) {
-            // No metadata - show value as text
             var valSpan = document.createElement("span");
             valSpan.className = "param-value-text";
-            valSpan.setAttribute("data-param-value", key);
+            valSpan.setAttribute("data-param-value", compPrefix + ":" + key);
             valSpan.textContent = value !== undefined ? String(value) : "?";
             controlWrap.appendChild(valSpan);
         } else if (meta.type === "enum" && meta.options) {
-            // Dropdown
             var select = document.createElement("select");
             select.className = "param-select";
-            select.setAttribute("data-param-input", key);
+            select.setAttribute("data-param-input", compPrefix + ":" + key);
             for (var i = 0; i < meta.options.length; i++) {
                 var opt = document.createElement("option");
                 opt.value = String(i);
@@ -540,16 +588,15 @@
             }
             select.onchange = function () {
                 var v = select.value;
-                slots[slot].params["synth:" + key] = v;
-                sendParamValue(slot, key, parseInt(v, 10));
+                compState.params[compPrefix + ":" + key] = v;
+                sendParamValue(activeSlot, compPrefix, key, parseInt(v, 10));
             };
             controlWrap.appendChild(select);
         } else if (meta.type === "float" || meta.type === "int") {
-            // Slider
             var slider = document.createElement("input");
             slider.type = "range";
             slider.className = "param-slider";
-            slider.setAttribute("data-param-input", key);
+            slider.setAttribute("data-param-input", compPrefix + ":" + key);
             slider.min = meta.min !== undefined ? meta.min : 0;
             slider.max = meta.max !== undefined ? meta.max : (meta.type === "int" ? 127 : 1);
             slider.step = meta.step || (meta.type === "int" ? 1 : 0.01);
@@ -557,33 +604,33 @@
 
             var valDisplay = document.createElement("span");
             valDisplay.className = "param-slider-value";
-            valDisplay.setAttribute("data-param-value", key);
+            valDisplay.setAttribute("data-param-value", compPrefix + ":" + key);
             valDisplay.textContent = formatValue(value !== undefined ? value : slider.min, meta);
 
-            slider.oninput = function () {
-                var v = meta.type === "int" ? parseInt(slider.value, 10) : parseFloat(slider.value);
-                slots[slot].params["synth:" + key] = String(v);
-                valDisplay.textContent = formatValue(v, meta);
-                // Throttled send
-                if (!sendThrottleTimer) {
-                    sendThrottleTimer = setTimeout(function () {
-                        sendThrottleTimer = null;
-                    }, SEND_INTERVAL);
-                    sendParamValue(slot, key, v);
-                }
-            };
-            slider.onchange = function () {
-                var v = meta.type === "int" ? parseInt(slider.value, 10) : parseFloat(slider.value);
-                sendParamValue(slot, key, v);
-            };
+            (function(capturedKey, capturedComp, capturedMeta) {
+                slider.oninput = function () {
+                    var v = capturedMeta.type === "int" ? parseInt(slider.value, 10) : parseFloat(slider.value);
+                    compState.params[capturedComp + ":" + capturedKey] = String(v);
+                    valDisplay.textContent = formatValue(v, capturedMeta);
+                    if (!sendThrottleTimer) {
+                        sendThrottleTimer = setTimeout(function () {
+                            sendThrottleTimer = null;
+                        }, SEND_INTERVAL);
+                        sendParamValue(activeSlot, capturedComp, capturedKey, v);
+                    }
+                };
+                slider.onchange = function () {
+                    var v = capturedMeta.type === "int" ? parseInt(slider.value, 10) : parseFloat(slider.value);
+                    sendParamValue(activeSlot, capturedComp, capturedKey, v);
+                };
+            })(key, compPrefix, meta);
 
             controlWrap.appendChild(slider);
             controlWrap.appendChild(valDisplay);
         } else {
-            // Unknown type
             var valSpan2 = document.createElement("span");
             valSpan2.className = "param-value-text";
-            valSpan2.setAttribute("data-param-value", key);
+            valSpan2.setAttribute("data-param-value", compPrefix + ":" + key);
             valSpan2.textContent = value !== undefined ? String(value) : "?";
             controlWrap.appendChild(valSpan2);
         }
@@ -593,45 +640,42 @@
     }
 
     // ------------------------------------------------------------------
-    // Breadcrumb
+    // Breadcrumb (per-component)
     // ------------------------------------------------------------------
 
-    function renderBreadcrumb(slot) {
-        var s = slots[slot];
-        breadcrumbEl.innerHTML = "";
-        if (!s.hierarchy || !s.hierarchy.levels) return;
+    function renderBreadcrumb(compState, compPrefix, containerEl) {
+        containerEl.innerHTML = "";
+        if (!compState.hierarchy || !compState.hierarchy.levels) return;
 
-        var stack = s.navStack;
+        var stack = compState.navStack;
         for (var i = 0; i < stack.length; i++) {
             if (i > 0) {
                 var sep = document.createElement("span");
                 sep.className = "breadcrumb-sep";
                 sep.textContent = " > ";
-                breadcrumbEl.appendChild(sep);
+                containerEl.appendChild(sep);
             }
 
             var levelName = stack[i];
-            var levelObj = s.hierarchy.levels[levelName];
+            var levelObj = compState.hierarchy.levels[levelName];
             var label = (levelObj && levelObj.label) ? levelObj.label : levelName;
 
             if (i < stack.length - 1) {
-                // Clickable - navigate back
                 var link = document.createElement("a");
                 link.textContent = label;
                 link.setAttribute("data-nav-index", String(i));
-                link.onclick = (function (idx) {
+                link.onclick = (function (idx, cs) {
                     return function () {
-                        slots[activeSlot].navStack = slots[activeSlot].navStack.slice(0, idx + 1);
+                        cs.navStack = cs.navStack.slice(0, idx + 1);
                         renderSlot();
                     };
-                })(i);
-                breadcrumbEl.appendChild(link);
+                })(i, compState);
+                containerEl.appendChild(link);
             } else {
-                // Current level - not clickable
                 var span = document.createElement("span");
                 span.className = "breadcrumb-current";
                 span.textContent = label;
-                breadcrumbEl.appendChild(span);
+                containerEl.appendChild(span);
             }
         }
     }
@@ -648,23 +692,23 @@
 
         for (var prefixedKey in changedParams) {
             var value = changedParams[prefixedKey];
-            // Extract unprefixed key
-            var key = prefixedKey;
-            if (key.indexOf("synth:") === 0) key = key.substring(6);
+            var parts = splitPrefix(prefixedKey);
+            var compState = slots[slot].components[parts.comp];
+            if (!compState) continue;
 
             // Skip if user is dragging this knob
-            if (dragging && dragging.key === key && dragging.slot === slot) continue;
+            if (dragging && dragging.component === parts.comp && dragging.key === parts.key && dragging.slot === slot) continue;
 
             // Try to update knob visual
-            var knobContainer = knobRowEl.querySelector('[data-param-key="' + key + '"]');
+            var knobContainer = slotContentEl.querySelector('[data-param-key="' + prefixedKey + '"]');
             if (knobContainer) {
-                updateKnobVisual(key, parseFloat(value));
+                updateKnobVisual(prefixedKey, parseFloat(value));
             }
 
             // Try to update param row control
-            var paramRow = paramListEl.querySelector('[data-param-row="' + key + '"]');
+            var paramRow = slotContentEl.querySelector('[data-param-row="' + prefixedKey + '"]');
             if (paramRow) {
-                var input = paramRow.querySelector('[data-param-input="' + key + '"]');
+                var input = paramRow.querySelector('[data-param-input="' + prefixedKey + '"]');
                 if (input) {
                     if (input.tagName === "SELECT") {
                         input.value = String(value);
@@ -672,26 +716,126 @@
                         input.value = value;
                     }
                 }
-                var valDisplay = paramRow.querySelector('[data-param-value="' + key + '"]');
+                var valDisplay = paramRow.querySelector('[data-param-value="' + prefixedKey + '"]');
                 if (valDisplay) {
-                    var meta = findParamMeta(slot, key);
+                    var meta = findParamMeta(compState, parts.key);
                     valDisplay.textContent = formatValue(value, meta);
                 }
             }
 
             // Update preset browser if relevant
-            var presetBrowser = paramListEl.parentElement.querySelector('[data-preset-browser]');
+            var presetBrowser = slotContentEl.querySelector('[data-preset-browser="' + parts.comp + '"]');
             if (presetBrowser) {
-                var level = getCurrentLevel(slot);
-                if (level && (prefixedKey === "synth:" + level.list_param ||
-                              prefixedKey === "synth:" + level.name_param ||
-                              prefixedKey === "synth:" + level.count_param)) {
+                var level = getCompCurrentLevel(compState);
+                if (level && (parts.key === level.list_param ||
+                              parts.key === level.name_param ||
+                              parts.key === level.count_param)) {
                     needsFullRender = true;
                 }
             }
         }
 
         if (needsFullRender) renderSlot();
+    }
+
+    // ------------------------------------------------------------------
+    // Render a single component section
+    // ------------------------------------------------------------------
+
+    function renderComponentSection(compKey, compState, isCollapsed) {
+        var section = document.createElement("div");
+        section.className = "component-section";
+        section.setAttribute("data-component", compKey);
+
+        // Header bar
+        var header = document.createElement("div");
+        header.className = "component-header" + (isCollapsed ? " collapsed" : "");
+        var arrow = document.createElement("span");
+        arrow.className = "component-toggle";
+        arrow.textContent = isCollapsed ? "\u25B6" : "\u25BC";
+        var title = document.createElement("span");
+        title.className = "component-title";
+        var displayLabel = COMPONENT_LABELS[compKey] || compKey;
+        var moduleName = compState.module || "";
+        title.textContent = displayLabel + (moduleName ? " - " + moduleName : "");
+        header.appendChild(arrow);
+        header.appendChild(title);
+        header.onclick = function () {
+            slots[activeSlot].collapsed[compKey] = !slots[activeSlot].collapsed[compKey];
+            renderSlot();
+        };
+        section.appendChild(header);
+
+        if (isCollapsed) return section;
+
+        // Body
+        var body = document.createElement("div");
+        body.className = "component-body";
+
+        // Resolve auto-navigation
+        resolveCompLevel(compState);
+
+        // Breadcrumb
+        if (compState.hierarchy && compState.hierarchy.levels && compState.navStack.length > 1) {
+            var bcEl = document.createElement("nav");
+            bcEl.className = "slot-breadcrumb";
+            renderBreadcrumb(compState, compKey, bcEl);
+            body.appendChild(bcEl);
+        }
+
+        var level = getCompCurrentLevel(compState);
+        if (!level) {
+            var noLevel = document.createElement("p");
+            noLevel.className = "text-muted";
+            noLevel.textContent = "No parameters available";
+            body.appendChild(noLevel);
+            section.appendChild(body);
+            return section;
+        }
+
+        // Preset browser
+        if (level.list_param && level.count_param) {
+            var presetEl = renderPresetBrowser(level, compKey, compState);
+            if (presetEl) body.appendChild(presetEl);
+        }
+
+        // Knob row
+        var knobs = level.knobs || [];
+        if (knobs.length > 0) {
+            var knobRow = document.createElement("div");
+            knobRow.className = "knob-row";
+            for (var i = 0; i < knobs.length && i < 8; i++) {
+                var knobKey = knobs[i];
+                var meta = findParamMeta(compState, knobKey);
+                var value = getCompParamValue(compState, compKey, knobKey);
+                var knobEl = renderKnob(compKey, compState, knobKey, meta, value);
+                knobRow.appendChild(knobEl);
+            }
+            body.appendChild(knobRow);
+        }
+
+        // Param list
+        var params = level.params || [];
+        if (params.length > 0) {
+            var paramList = document.createElement("div");
+            paramList.className = "param-list";
+            for (var j = 0; j < params.length; j++) {
+                var item = renderParamItem(params[j], compKey, compState);
+                if (item) paramList.appendChild(item);
+            }
+            body.appendChild(paramList);
+        }
+
+        // Empty state
+        if (knobs.length === 0 && params.length === 0 && !level.list_param) {
+            var empty = document.createElement("p");
+            empty.className = "text-muted";
+            empty.textContent = "No parameters on this level";
+            body.appendChild(empty);
+        }
+
+        section.appendChild(body);
+        return section;
     }
 
     // ------------------------------------------------------------------
@@ -702,71 +846,44 @@
         var s = slots[activeSlot];
         slotTitleEl.textContent = "Slot " + (activeSlot + 1);
 
-        knobRowEl.innerHTML = "";
-        paramListEl.innerHTML = "";
+        slotContentEl.innerHTML = "";
         debugEl.innerHTML = "";
 
-        // No data at all
-        if (!s.hierarchy && !s.chainParams && Object.keys(s.params).length === 0) {
-            debugEl.innerHTML = '<p class="text-muted">Waiting for data...</p>';
-            breadcrumbEl.innerHTML = "";
-            return;
-        }
-
-        // No hierarchy - empty slot
-        if (!s.hierarchy) {
-            breadcrumbEl.innerHTML = "";
-            paramListEl.innerHTML = '<p class="text-muted">No module loaded in this slot</p>';
-            return;
-        }
-
-        // Resolve auto-navigation (children)
-        resolveLevel(activeSlot);
-
-        // Breadcrumb
-        renderBreadcrumb(activeSlot);
-
-        var level = getCurrentLevel(activeSlot);
-        if (!level) {
-            paramListEl.innerHTML = '<p class="text-muted">Unknown hierarchy level</p>';
-            return;
-        }
-
-        // Preset browser
-        if (level.list_param && level.count_param) {
-            var presetEl = renderPresetBrowser(level, activeSlot);
-            if (presetEl) {
-                paramListEl.appendChild(presetEl);
+        // Check if any component has data
+        var hasAnyData = false;
+        var hasAnyModule = false;
+        for (var i = 0; i < COMPONENT_KEYS.length; i++) {
+            var comp = s.components[COMPONENT_KEYS[i]];
+            if (comp.module) hasAnyModule = true;
+            if (comp.hierarchy || comp.chainParams || Object.keys(comp.params).length > 0) {
+                hasAnyData = true;
             }
         }
 
-        // Knob row
-        var knobs = level.knobs || [];
-        for (var i = 0; i < knobs.length && i < 8; i++) {
-            var knobKey = knobs[i];
-            var meta = findParamMeta(activeSlot, knobKey);
-            var value = getParamValue(activeSlot, knobKey);
-            var knobEl = renderKnob(knobKey, meta, value);
-            knobRowEl.appendChild(knobEl);
+        if (!hasAnyData && !hasAnyModule) {
+            debugEl.innerHTML = '<p class="text-muted">Waiting for data...</p>';
+            return;
         }
 
-        // Param list
-        var params = level.params || [];
-        for (var j = 0; j < params.length; j++) {
-            var item = renderParamItem(params[j], activeSlot);
-            if (item) paramListEl.appendChild(item);
+        if (!hasAnyModule) {
+            slotContentEl.innerHTML = '<p class="text-muted">No modules loaded in this slot</p>';
+            return;
         }
 
-        // Empty state messages
-        if (knobs.length === 0 && params.length === 0 && !level.list_param) {
-            paramListEl.innerHTML = '<p class="text-muted">No parameters on this level</p>';
+        // Render component sections for loaded components
+        var renderedCount = 0;
+        for (var k = 0; k < COMPONENT_KEYS.length; k++) {
+            var compKey = COMPONENT_KEYS[k];
+            var compState = s.components[compKey];
+            if (!compState.module) continue;
+
+            var section = renderComponentSection(compKey, compState, s.collapsed[compKey]);
+            slotContentEl.appendChild(section);
+            renderedCount++;
         }
 
-        if (!s.chainParams && knobs.length > 0) {
-            var notice = document.createElement("p");
-            notice.className = "text-muted";
-            notice.textContent = "No param metadata available - controls may not display correctly";
-            paramListEl.insertBefore(notice, paramListEl.firstChild);
+        if (renderedCount === 0) {
+            slotContentEl.innerHTML = '<p class="text-muted">No modules loaded in this slot</p>';
         }
     }
 
