@@ -692,6 +692,9 @@
         var numVal = parseFloat(value);
         if (isNaN(numVal)) numVal = meta ? (meta.min || 0) : 0;
 
+        // Store raw value so animations can read it back without parsing display text
+        svgEl.setAttribute("data-raw-value", numVal);
+
         var t = valueToNorm(numVal, meta);
         var indicatorAngle = normToAngle(t);
         var indicator = polarToXY(cx, cy, KNOB_RADIUS - 4, indicatorAngle);
@@ -746,6 +749,9 @@
         updateKnobVisualDirect(prefixedKey, value);
     }
 
+    // Track last update time per knob to detect rapid streaming
+    var knobLastUpdateTime = {};
+
     /** Animated knob update (used for incoming device changes). */
     function updateKnobVisualAnimated(prefixedKey, targetValue) {
         var container = slotContentEl.querySelector('[data-param-key="' + prefixedKey + '"]');
@@ -754,13 +760,26 @@
         var meta = getKnobMeta(prefixedKey);
         if (!meta) { updateKnobVisualDirect(prefixedKey, targetValue); return; }
 
-        // Get current displayed value
         var svgEl = container.querySelector(".knob-svg");
         if (!svgEl) { updateKnobVisualDirect(prefixedKey, targetValue); return; }
 
-        var valEl = container.querySelector('[data-knob-value="' + prefixedKey + '"]');
-        var currentText = valEl ? valEl.textContent : "0";
-        var currentVal = parseFloat(currentText);
+        // During rapid hardware knob turning (updates < 100ms apart),
+        // skip animation and set directly for instant response.
+        var now = performance.now();
+        var lastTime = knobLastUpdateTime[prefixedKey] || 0;
+        knobLastUpdateTime[prefixedKey] = now;
+        if (now - lastTime < 100) {
+            // Cancel any running animation
+            if (knobAnimations[prefixedKey]) {
+                cancelAnimationFrame(knobAnimations[prefixedKey].raf);
+                delete knobAnimations[prefixedKey];
+            }
+            updateKnobVisualDirect(prefixedKey, targetValue);
+            return;
+        }
+
+        // Get current raw value from SVG data attribute
+        var currentVal = parseFloat(svgEl.getAttribute("data-raw-value") || "0");
         if (isNaN(currentVal)) currentVal = meta.min || 0;
         var targetVal = parseFloat(targetValue);
         if (isNaN(targetVal)) targetVal = meta.min || 0;
