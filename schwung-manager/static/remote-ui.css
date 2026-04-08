@@ -82,13 +82,15 @@
     margin-bottom: var(--space-xs);
 }
 
+/* ---- Breadcrumb ---- */
 .slot-breadcrumb {
     font-size: 0.85rem;
     color: var(--text-muted);
 }
 
-.slot-breadcrumb span {
+.slot-breadcrumb .breadcrumb-sep {
     color: var(--text-muted);
+    margin: 0 2px;
 }
 
 .slot-breadcrumb a {
@@ -101,27 +103,248 @@
     text-decoration: underline;
 }
 
+.slot-breadcrumb .breadcrumb-current {
+    color: var(--text);
+    font-weight: 600;
+}
+
 /* ---- Knob Row ---- */
 .knob-row {
     display: flex;
     gap: var(--space-md);
     flex-wrap: wrap;
     margin-bottom: var(--space-lg);
+    justify-content: flex-start;
 }
 
 .knob-row:empty {
     display: none;
 }
 
+.knob-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 72px;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.knob-container:active {
+    cursor: grabbing;
+}
+
+.knob-svg {
+    display: block;
+}
+
+.knob-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-align: center;
+    margin-top: 4px;
+    line-height: 1.2;
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.knob-value {
+    font-size: 0.75rem;
+    color: var(--text);
+    text-align: center;
+    font-family: var(--font-mono);
+    margin-top: 2px;
+}
+
+/* ---- Preset Browser ---- */
+.preset-browser {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-card-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--space-md);
+}
+
+.preset-nav-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    padding: var(--space-xs) var(--space-sm);
+    cursor: pointer;
+    font-size: 1rem;
+    min-width: var(--min-touch);
+    min-height: var(--min-touch);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.preset-nav-btn:hover:not(:disabled) {
+    background: var(--border);
+    border-color: var(--text-muted);
+}
+
+.preset-nav-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.preset-name {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ---- Param List ---- */
 .param-list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
 }
 
 .param-list:empty {
     display: none;
+}
+
+/* ---- Param Row ---- */
+.param-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-card-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    min-height: var(--min-touch);
+    gap: var(--space-md);
+}
+
+.param-label {
+    font-size: 0.9rem;
+    color: var(--text);
+    white-space: nowrap;
+    min-width: 80px;
+    flex-shrink: 0;
+}
+
+.param-control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex: 1;
+    justify-content: flex-end;
+    min-width: 0;
+}
+
+/* ---- Navigation Link ---- */
+.param-nav-link {
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.param-nav-link:hover {
+    background: var(--border);
+}
+
+.param-nav-label {
+    font-size: 0.9rem;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.param-nav-arrow {
+    font-size: 1.2rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+/* ---- Slider ---- */
+.param-slider {
+    flex: 1;
+    min-width: 100px;
+    max-width: 300px;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--border);
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+}
+
+.param-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg-card);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.param-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg-card);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.param-slider:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
+.param-slider-value {
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    color: var(--text);
+    min-width: 48px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+/* ---- Select / Dropdown ---- */
+.param-select {
+    background: var(--bg-card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-xs) var(--space-sm);
+    font-family: var(--font-stack);
+    font-size: 0.9rem;
+    cursor: pointer;
+    min-width: 100px;
+    max-width: 200px;
+}
+
+.param-select:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
+/* ---- Value Text (no-metadata fallback) ---- */
+.param-value-text {
+    font-size: 0.85rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
 }
 
 /* ---- Debug / Placeholder ---- */
@@ -132,27 +355,36 @@
     line-height: 1.5;
 }
 
-.slot-debug .debug-section {
-    margin-bottom: var(--space-md);
+.slot-debug:empty {
+    display: none;
 }
 
-.slot-debug .debug-section h3 {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: var(--space-xs);
-}
+/* ---- Responsive ---- */
+@media (max-width: 600px) {
+    .knob-row {
+        gap: var(--space-sm);
+        justify-content: center;
+    }
 
-.slot-debug ul {
-    list-style: none;
-    padding-left: var(--space-md);
-}
+    .knob-container {
+        width: 64px;
+    }
 
-.slot-debug li {
-    padding: var(--space-xs) 0;
-    border-bottom: 1px solid var(--border);
-}
+    .param-row {
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+    }
 
-.slot-debug li:last-child {
-    border-bottom: none;
+    .param-control {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .param-slider {
+        max-width: none;
+    }
+
+    .preset-browser {
+        flex-wrap: nowrap;
+    }
 }
