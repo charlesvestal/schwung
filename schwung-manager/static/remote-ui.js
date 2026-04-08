@@ -71,7 +71,7 @@
     // Knob drag state.
     var dragging = null; // { component, key, startY, startValue, min, max, step, type, slot }
     var sendThrottleTimer = null;
-    var SEND_INTERVAL = 33; // ~30Hz
+    var SEND_INTERVAL = 16; // ~60Hz
 
     // DOM references.
     var statusEl = document.getElementById("remote-ui-status");
@@ -607,10 +607,121 @@
         return slots[slot] ? slots[slot].components[compKey] : null;
     }
 
+    /** Update SVG knob in-place by modifying attributes directly (no DOM rebuild). */
+    function updateKnobSVGInPlace(svgEl, value, meta) {
+        var cx = KNOB_SIZE / 2;
+        var cy = KNOB_SIZE / 2;
+        var numVal = parseFloat(value);
+        if (isNaN(numVal)) numVal = meta ? (meta.min || 0) : 0;
+
+        var t = valueToNorm(numVal, meta);
+        var indicatorAngle = normToAngle(t);
+        var indicator = polarToXY(cx, cy, KNOB_RADIUS - 4, indicatorAngle);
+
+        // Update value arc
+        var valArc = svgEl.querySelector(".knob-value-arc");
+        var valSweep = t * ARC_SWEEP_DEG;
+        if (valSweep > 1) {
+            var valPath = describeArc(cx, cy, KNOB_RADIUS, ARC_START_DEG, valSweep);
+            if (valArc) {
+                valArc.setAttribute("d", valPath);
+            } else {
+                // Create value arc if it didn't exist (was at 0)
+                valArc = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                valArc.setAttribute("class", "knob-value-arc");
+                valArc.setAttribute("fill", "none");
+                valArc.setAttribute("stroke", "#e8a84c");
+                valArc.setAttribute("stroke-width", "4");
+                valArc.setAttribute("stroke-linecap", "round");
+                valArc.setAttribute("d", valPath);
+                // Insert after bg arc (first child)
+                var bgArc = svgEl.querySelector("path");
+                if (bgArc && bgArc.nextSibling) {
+                    svgEl.insertBefore(valArc, bgArc.nextSibling);
+                } else {
+                    svgEl.appendChild(valArc);
+                }
+            }
+        } else if (valArc) {
+            valArc.removeAttribute("d");
+        }
+
+        // Update indicator line
+        var line = svgEl.querySelector(".knob-indicator");
+        if (line) {
+            line.setAttribute("x2", indicator.x);
+            line.setAttribute("y2", indicator.y);
+        }
+    }
+
+    // Active knob animations: prefixedKey -> { from, to, start, duration, raf }
+    var knobAnimations = {};
+    var KNOB_ANIM_DURATION = 80; // ms — smooth but fast
+
+    /** Immediate knob update (used during user drag). */
     function updateKnobVisual(prefixedKey, value) {
+        // Cancel any running animation for this knob
+        if (knobAnimations[prefixedKey]) {
+            cancelAnimationFrame(knobAnimations[prefixedKey].raf);
+            delete knobAnimations[prefixedKey];
+        }
+        updateKnobVisualDirect(prefixedKey, value);
+    }
+
+    /** Animated knob update (used for incoming device changes). */
+    function updateKnobVisualAnimated(prefixedKey, targetValue) {
         var container = slotContentEl.querySelector('[data-param-key="' + prefixedKey + '"]');
         if (!container) return;
 
+        var meta = getKnobMeta(prefixedKey);
+        if (!meta) { updateKnobVisualDirect(prefixedKey, targetValue); return; }
+
+        // Get current displayed value
+        var svgEl = container.querySelector(".knob-svg");
+        if (!svgEl) { updateKnobVisualDirect(prefixedKey, targetValue); return; }
+
+        var valEl = container.querySelector('[data-knob-value="' + prefixedKey + '"]');
+        var currentText = valEl ? valEl.textContent : "0";
+        var currentVal = parseFloat(currentText);
+        if (isNaN(currentVal)) currentVal = meta.min || 0;
+        var targetVal = parseFloat(targetValue);
+        if (isNaN(targetVal)) targetVal = meta.min || 0;
+
+        // Skip animation if change is tiny
+        var range = (meta.max || 1) - (meta.min || 0);
+        if (range > 0 && Math.abs(targetVal - currentVal) / range < 0.005) {
+            updateKnobVisualDirect(prefixedKey, targetValue);
+            return;
+        }
+
+        // Cancel existing animation
+        if (knobAnimations[prefixedKey]) {
+            cancelAnimationFrame(knobAnimations[prefixedKey].raf);
+        }
+
+        var anim = { from: currentVal, to: targetVal, start: performance.now(), duration: KNOB_ANIM_DURATION };
+        knobAnimations[prefixedKey] = anim;
+
+        function step(now) {
+            var elapsed = now - anim.start;
+            var t = Math.min(1, elapsed / anim.duration);
+            // Ease out cubic
+            var ease = 1 - Math.pow(1 - t, 3);
+            var val = anim.from + (anim.to - anim.from) * ease;
+
+            updateKnobSVGInPlace(svgEl, val, meta);
+            if (valEl) valEl.textContent = formatValue(val, meta);
+
+            if (t < 1) {
+                anim.raf = requestAnimationFrame(step);
+            } else {
+                delete knobAnimations[prefixedKey];
+            }
+        }
+        anim.raf = requestAnimationFrame(step);
+    }
+
+    function getKnobMeta(prefixedKey) {
         var compState;
         var parts;
         if (activeSlot === "master") {
@@ -621,13 +732,18 @@
             parts = splitPrefix(prefixedKey);
             compState = slots[typeof activeSlot === "number" ? activeSlot : 0].components[parts.comp];
         }
-        if (!compState) return;
-        var meta = findParamMeta(compState, parts.key);
-        var svgParent = container.querySelector(".knob-svg");
-        if (svgParent) {
-            var tempDiv = document.createElement("div");
-            tempDiv.innerHTML = createKnobSVG(parts.key, meta, value);
-            container.replaceChild(tempDiv.firstChild, svgParent);
+        if (!compState || !parts) return null;
+        return findParamMeta(compState, parts.key);
+    }
+
+    function updateKnobVisualDirect(prefixedKey, value) {
+        var container = slotContentEl.querySelector('[data-param-key="' + prefixedKey + '"]');
+        if (!container) return;
+
+        var meta = getKnobMeta(prefixedKey);
+        var svgEl = container.querySelector(".knob-svg");
+        if (svgEl) {
+            updateKnobSVGInPlace(svgEl, value, meta);
         }
         var valEl = container.querySelector('[data-knob-value="' + prefixedKey + '"]');
         if (valEl) {
@@ -889,10 +1005,10 @@
             // Skip if user is dragging this knob
             if (dragging && dragging.component === parts.comp && dragging.key === parts.key && dragging.slot === slot) continue;
 
-            // Try to update knob visual
+            // Try to update knob visual (animated for smooth transitions)
             var knobContainer = slotContentEl.querySelector('[data-param-key="' + prefixedKey + '"]');
             if (knobContainer) {
-                updateKnobVisual(prefixedKey, parseFloat(value));
+                updateKnobVisualAnimated(prefixedKey, parseFloat(value));
             }
 
             // Try to update param row control
@@ -1380,10 +1496,10 @@
             // Skip if user is dragging this knob
             if (dragging && dragging.component === parts.comp && dragging.key === parts.key && dragging.slot === "master") continue;
 
-            // Try to update knob visual
+            // Try to update knob visual (animated for smooth transitions)
             var knobContainer = slotContentEl.querySelector('[data-param-key="' + fullKey + '"]');
             if (knobContainer) {
-                updateKnobVisual(fullKey, parseFloat(value));
+                updateKnobVisualAnimated(fullKey, parseFloat(value));
             }
 
             // Try to update param row control
