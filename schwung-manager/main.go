@@ -628,8 +628,9 @@ type App struct {
 	catalogSvc    *CatalogService
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
-	shm           *ShmConfig // shared memory for live config sync (nil if not on device)
-	upgradeStatus string     // current upgrade step (empty = not upgrading)
+	shm           *ShmConfig  // shared memory for live config sync (nil if not on device)
+	shmParams     *ShmParams  // shared memory for param get/set (nil if not on device)
+	upgradeStatus string      // current upgrade step (empty = not upgrading)
 }
 
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -2406,6 +2407,13 @@ func main() {
 		logger.Info("shared memory config: not available (not on device)")
 	}
 
+	shmParams := OpenShmParams()
+	if shmParams != nil {
+		logger.Info("shared memory params: connected")
+	} else {
+		logger.Info("shared memory params: not available (not on device)")
+	}
+
 	app := &App{
 		tmpl:       tmpl,
 		fileSvc:    &FileService{AllowedRoots: allowedRoots},
@@ -2413,6 +2421,7 @@ func main() {
 		basePath:   basePath,
 		logger:     logger,
 		shm:        shm,
+		shmParams:  shmParams,
 	}
 
 	mux := http.NewServeMux()
