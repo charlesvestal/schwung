@@ -2681,29 +2681,13 @@ static void shadow_drain_web_param_set(void) {
     __sync_synchronize();
     web_param_set_shm->write_idx = 0;
 
-    /* Process each set request using the existing param infrastructure.
-     * We reuse shadow_param temporarily — safe because this runs in the
-     * same ioctl callback as shadow_inprocess_handle_param_request(). */
+    /* Process each set request via direct dispatch — does NOT touch shadow_param,
+     * so it's safe to run while shadow_ui.js has a request in-flight. */
     for (int i = 0; i < count; i++) {
         web_param_set_entry_t *e = &local[i];
         if (e->key[0] == '\0') continue;
 
-        /* Write into shadow_param and invoke the existing handler */
-        shadow_param->request_type = 1; /* set */
-        shadow_param->slot = e->slot;
-        shadow_param->response_ready = 0;
-        shadow_param->error = 0;
-        shadow_param->request_id = 0xFFFF0000 + i; /* distinct from JS requests */
-        strncpy((char *)shadow_param->key, e->key, SHADOW_PARAM_KEY_LEN - 1);
-        shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
-        strncpy((char *)shadow_param->value, e->value, WEB_PARAM_VALUE_LEN);
-        shadow_param->value[WEB_PARAM_VALUE_LEN - 1] = '\0';
-
-        shadow_inprocess_handle_param_request();
-
-        /* Reset for next iteration */
-        shadow_param->request_type = 0;
-        shadow_param->response_ready = 0;
+        shadow_direct_set_param(e->slot, e->key, e->value);
     }
 }
 
