@@ -278,6 +278,38 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 		}
 		ru.sendHierarchy(ctx, c, slot, comp)
 		ru.sendChainParams(ctx, c, slot, comp)
+		// Fetch initial param values (one-time on subscribe).
+		ru.sendInitialParamValues(ctx, c, slot, comp)
+	}
+}
+
+// sendInitialParamValues reads chain_params to discover keys, then fetches
+// each value and sends a single param_update. Only called on subscribe.
+func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slot uint8, comp string) {
+	raw, err := ru.shm.GetParam(slot, comp+":chain_params")
+	if err != nil || raw == "" {
+		return
+	}
+	var params []chainParam
+	if json.Unmarshal([]byte(raw), &params) != nil {
+		return
+	}
+
+	values := make(map[string]string)
+	for _, p := range params {
+		if p.Key == "" {
+			continue
+		}
+		fullKey := comp + ":" + p.Key
+		val, err := ru.shm.GetParam(slot, fullKey)
+		if err != nil {
+			continue
+		}
+		values[fullKey] = val
+	}
+
+	if len(values) > 0 {
+		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: values})
 	}
 }
 
@@ -350,6 +382,7 @@ func (ru *RemoteUI) handleSubscribeMasterFx(ctx context.Context, c *ruClient) {
 		compName := "master_fx:" + fxSlot
 		ru.sendHierarchy(ctx, c, 0, compName)
 		ru.sendChainParams(ctx, c, 0, compName)
+		ru.sendInitialParamValues(ctx, c, 0, compName)
 	}
 }
 
