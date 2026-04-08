@@ -57,6 +57,12 @@
     var activeSlot = 0; // 0-3 for slots, "master" for master FX
     var ws = null;
     var reconnectTimer = null;
+    var reconnectDelay = 1000; // Start at 1s, exponential backoff
+    var reconnectAttempts = 0;
+    var RECONNECT_DELAY_MIN = 1000;
+    var RECONNECT_DELAY_MAX = 10000;
+    var isConnected = false;
+    var waitingForData = false; // True after subscribe, before first data arrives
 
     // Custom module web UI state.
     var customUIIframe = null; // Reference to active custom UI iframe element
@@ -86,7 +92,12 @@
         ws = new WebSocket(proto + "//" + location.host + "/ws/remote-ui");
 
         ws.onopen = function () {
+            reconnectDelay = RECONNECT_DELAY_MIN;
+            reconnectAttempts = 0;
+            isConnected = true;
             setStatus(true);
+            waitingForData = true;
+            renderSlot(); // Show loading state
             subscribe(activeSlot);
         };
 
@@ -97,10 +108,14 @@
             } catch (e) {
                 return;
             }
+            if (waitingForData) {
+                waitingForData = false;
+            }
             dispatch(msg);
         };
 
         ws.onclose = function () {
+            isConnected = false;
             setStatus(false);
             scheduleReconnect();
         };
@@ -110,10 +125,15 @@
 
     function scheduleReconnect() {
         if (reconnectTimer) return;
+        reconnectAttempts++;
         reconnectTimer = setTimeout(function () {
             reconnectTimer = null;
             connect();
-        }, 2000);
+        }, reconnectDelay);
+        // Update status with attempt count
+        setStatus(false);
+        // Exponential backoff: double delay, cap at max
+        reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX);
     }
 
     function send(obj) {
@@ -337,6 +357,7 @@
         if (n === activeSlot) return;
         unsubscribe(activeSlot);
         activeSlot = n;
+        waitingForData = true;
 
         tabButtons.forEach(function (btn) {
             var slotAttr = btn.getAttribute("data-slot");
@@ -1039,12 +1060,16 @@
         }
 
         if (!hasAnyData && !hasAnyModule) {
-            debugEl.innerHTML = '<p class="text-muted">Waiting for data...</p>';
+            if (waitingForData || !isConnected) {
+                debugEl.innerHTML = '<div class="loading-state"><span class="loading-spinner"></span> Loading slot...</div>';
+            } else {
+                debugEl.innerHTML = '<p class="text-muted">No module loaded</p>';
+            }
             return;
         }
 
         if (!hasAnyModule) {
-            slotContentEl.innerHTML = '<p class="text-muted">No modules loaded in this slot</p>';
+            slotContentEl.innerHTML = '<p class="text-muted">No module loaded</p>';
             return;
         }
 
@@ -1203,7 +1228,11 @@
         }
 
         if (!hasAnyData && !hasAnyModule) {
-            debugEl.innerHTML = '<p class="text-muted">Waiting for data...</p>';
+            if (waitingForData || !isConnected) {
+                debugEl.innerHTML = '<div class="loading-state"><span class="loading-spinner"></span> Loading Master FX...</div>';
+            } else {
+                debugEl.innerHTML = '<p class="text-muted">No effects loaded in Master FX</p>';
+            }
             return;
         }
 
@@ -1396,10 +1425,14 @@
 
     function setStatus(connected) {
         if (connected) {
-            statusEl.textContent = "Connected";
+            statusEl.innerHTML = '<span class="status-dot connected"></span> Connected';
             statusEl.className = "remote-ui-status connected";
         } else {
-            statusEl.textContent = "Disconnected";
+            var label = "Reconnecting...";
+            if (reconnectAttempts > 0) {
+                label = "Reconnecting... (attempt " + reconnectAttempts + ")";
+            }
+            statusEl.innerHTML = '<span class="status-dot disconnected"></span> ' + label;
             statusEl.className = "remote-ui-status disconnected";
         }
     }

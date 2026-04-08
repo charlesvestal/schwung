@@ -3,12 +3,11 @@
 {{define "title"}}Remote UI - Schwung Manager{{end}}
 
 {{define "content"}}
-<div class="page-header">
+<div class="page-header" style="position: relative;">
     <h1>Remote UI</h1>
     <p>Control shadow slot parameters in real time.</p>
+    <div id="remote-ui-status" class="remote-ui-status disconnected"><span class="status-dot disconnected"></span> Disconnected</div>
 </div>
-
-<div id="remote-ui-status" class="remote-ui-status disconnected">Disconnected</div>
 
 <div class="remote-ui-tabs" role="tablist" aria-label="Shadow slots">
     <button class="remote-ui-tab active" role="tab" aria-selected="true" data-slot="0" onclick="switchSlot(0)">Slot 1</button>

@@ -4,12 +4,17 @@
 
 /* ---- Connection Status ---- */
 .remote-ui-status {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-sm);
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     font-weight: 600;
     margin-bottom: var(--space-md);
+    position: absolute;
+    top: 0;
+    right: 0;
 }
 
 .remote-ui-status.connected {
@@ -20,6 +25,53 @@
 .remote-ui-status.disconnected {
     background: var(--color-error-bg);
     color: var(--color-error);
+}
+
+.status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.status-dot.connected {
+    background: var(--color-success);
+}
+
+.status-dot.disconnected {
+    background: var(--color-error);
+    animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* ---- Loading State ---- */
+.loading-state {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    padding: var(--space-lg) 0;
+}
+
+.loading-spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
 /* ---- Tab Bar ---- */
@@ -438,20 +490,94 @@
     background: var(--bg);
 }
 
-/* ---- Responsive ---- */
-@media (max-width: 600px) {
+/* ---- Responsive: Tablet (< 768px) ---- */
+@media (max-width: 768px) {
+    .remote-ui-tabs {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        flex-wrap: nowrap;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+
+    .remote-ui-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .remote-ui-tab {
+        flex-shrink: 0;
+        padding: var(--space-sm) var(--space-sm);
+        font-size: 0.85rem;
+    }
+
+    .knob-row {
+        justify-content: center;
+    }
+
+    .knob-container {
+        width: 72px;
+    }
+
+    .param-slider {
+        max-width: none;
+    }
+
+    .param-select {
+        max-width: none;
+        width: 100%;
+    }
+
+    .component-header {
+        min-height: 48px;
+        padding: var(--space-sm) var(--space-md);
+    }
+
+    .remote-ui-slot {
+        padding: var(--space-md);
+    }
+}
+
+/* ---- Responsive: Phone (< 480px) ---- */
+@media (max-width: 480px) {
+    .remote-ui-tab {
+        padding: var(--space-xs) var(--space-sm);
+        font-size: 0.8rem;
+        min-height: 44px;
+    }
+
     .knob-row {
         gap: var(--space-sm);
         justify-content: center;
     }
 
     .knob-container {
-        width: 64px;
+        width: 56px;
+    }
+
+    .knob-svg {
+        width: 48px;
+        height: 48px;
+    }
+
+    .knob-label {
+        font-size: 0.6rem;
+        max-width: 56px;
+    }
+
+    .knob-value {
+        font-size: 0.65rem;
     }
 
     .param-row {
         flex-wrap: wrap;
         gap: var(--space-xs);
+        padding: var(--space-sm);
+    }
+
+    .param-label {
+        min-width: 0;
+        flex-basis: 100%;
+        font-size: 0.85rem;
     }
 
     .param-control {
@@ -461,9 +587,62 @@
 
     .param-slider {
         max-width: none;
+        flex: 1;
+    }
+
+    .param-select {
+        max-width: none;
+        width: 100%;
     }
 
     .preset-browser {
         flex-wrap: nowrap;
+        padding: var(--space-xs) var(--space-sm);
     }
+
+    .preset-name {
+        font-size: 0.85rem;
+    }
+
+    .remote-ui-slot {
+        padding: var(--space-sm);
+        min-height: 200px;
+    }
+
+    .component-body {
+        padding: var(--space-sm);
+    }
+
+    .component-header {
+        min-height: 48px;
+    }
+
+    .remote-ui-status {
+        font-size: 0.7rem;
+    }
+
+    .slot-header h2 {
+        font-size: 1.1rem;
+    }
+}
+
+/* ---- Prevent horizontal overflow ---- */
+.remote-ui-slot,
+.component-body,
+.param-list,
+.knob-row {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+/* ---- Touch-friendly: ensure minimum touch targets ---- */
+.preset-nav-btn,
+.param-nav-link,
+.component-header,
+.remote-ui-tab {
+    min-height: 44px;
+}
+
+.preset-nav-btn {
+    min-width: 44px;
 }
