@@ -534,14 +534,25 @@
             var numVal = parseFloat(getCompParamValue(compState, compPrefix, key));
             if (isNaN(numVal)) numVal = meta ? (meta.min || 0) : 0;
             var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            var dragMin = 0, dragMax = 1, dragStep = 0.01;
+            if (meta) {
+                dragMin = meta.min !== undefined ? meta.min : 0;
+                if (meta.type === "enum" && meta.options) {
+                    dragMax = meta.options.length - 1;
+                    dragStep = 1;
+                } else {
+                    dragMax = meta.max !== undefined ? meta.max : 1;
+                    dragStep = meta.step || (meta.type === "int" ? 1 : 0.01);
+                }
+            }
             dragging = {
                 component: compPrefix,
                 key: key,
                 startY: clientY,
                 startValue: numVal,
-                min: meta ? (meta.min !== undefined ? meta.min : 0) : 0,
-                max: meta ? (meta.max !== undefined ? meta.max : 1) : 1,
-                step: meta ? (meta.step || (meta.type === "int" ? 1 : 0.01)) : 0.01,
+                min: dragMin,
+                max: dragMax,
+                step: dragStep,
                 type: meta ? meta.type : "float",
                 slot: activeSlot
             };
@@ -570,7 +581,7 @@
             newVal = Math.round(newVal / dragging.step) * dragging.step;
         }
         newVal = clampValue(newVal, dragging);
-        if (dragging.type === "int") newVal = Math.round(newVal);
+        if (dragging.type === "int" || dragging.type === "enum") newVal = Math.round(newVal);
 
         var prefixedKey = dragging.component + ":" + dragging.key;
         var comp = getComponentForDrag(dragging.slot, dragging.component);
