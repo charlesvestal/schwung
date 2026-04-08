@@ -433,14 +433,35 @@ var funcMap = template.FuncMap{
 		if !ok || rm.Version == "" {
 			return false // Can't tell — don't show update button
 		}
-		// Strip "v" prefix for comparison.
-		latest := strings.TrimPrefix(rm.Version, "v")
-		current := strings.TrimPrefix(inst.Version, "v")
-		return latest != current
+		return isNewerSemver(rm.Version, inst.Version)
 	},
 }
 
 // templateMap maps page template names to their parsed template sets.
+// isNewerSemver returns true if `latest` is a newer version than `current`.
+// Handles v-prefixed versions. Returns false if versions are equal or
+// latest is older (avoids phantom upgrade prompts from stale metadata).
+func isNewerSemver(latest, current string) bool {
+	latest = strings.TrimPrefix(latest, "v")
+	current = strings.TrimPrefix(current, "v")
+	if latest == current {
+		return false
+	}
+	lp := strings.Split(latest, ".")
+	cp := strings.Split(current, ".")
+	for i := 0; i < len(lp) && i < len(cp); i++ {
+		l, _ := strconv.Atoi(lp[i])
+		c, _ := strconv.Atoi(cp[i])
+		if l > c {
+			return true
+		}
+		if l < c {
+			return false
+		}
+	}
+	return len(lp) > len(cp)
+}
+
 type templateMap map[string]*template.Template
 
 func loadTemplates() (templateMap, error) {
@@ -584,7 +605,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		if !ok || rm.Version == "" {
 			continue
 		}
-		if strings.TrimPrefix(rm.Version, "v") != strings.TrimPrefix(inst.Version, "v") {
+		if isNewerSemver(rm.Version, inst.Version) {
 			hasAnyUpdate = true
 			break
 		}
