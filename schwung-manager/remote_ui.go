@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,9 +22,13 @@ import (
 // RemoteUI manages WebSocket connections for the remote parameter UI.
 // Each client can subscribe to one or more shadow chain slots; the poll
 // loop fetches parameter values via ShmParams and pushes diffs.
+//
+// ShmParams may be nil at startup (shared memory not yet created) and will
+// be lazily connected when the first request arrives.
 type RemoteUI struct {
 	shm      *ShmParams
-	basePath string // e.g. /data/UserData/schwung — for locating module web_ui.html
+	setRing  *ShmWebParamSetRing // fast fire-and-forget param writes (~3ms)
+	basePath string              // e.g. /data/UserData/schwung — for locating module web_ui.html
 	logger   *slog.Logger
 
 	mu      sync.Mutex
@@ -114,14 +119,54 @@ var componentPrefixes = []string{"synth", "fx1", "fx2", "midi_fx1"}
 // masterFxSlots lists the 4 master FX slot identifiers.
 var masterFxSlots = []string{"fx1", "fx2", "fx3", "fx4"}
 
-// NewRemoteUI creates a RemoteUI. shmParams must not be nil.
-func NewRemoteUI(shm *ShmParams, basePath string, logger *slog.Logger) *RemoteUI {
+// NewRemoteUI creates a RemoteUI. shm/setRing may be nil (lazy connect on first use).
+func NewRemoteUI(shm *ShmParams, setRing *ShmWebParamSetRing, basePath string, logger *slog.Logger) *RemoteUI {
 	return &RemoteUI{
 		shm:      shm,
+		setRing:  setRing,
 		basePath: basePath,
 		logger:   logger,
 		clients:  make(map[*ruClient]struct{}),
 	}
+}
+
+// setParam writes a param using the fast ring buffer if available,
+// falling back to the old shared memory path.
+func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
+	if ring := ru.ensureSetRing(); ring != nil {
+		return ring.SetParam(slot, key, value)
+	}
+	if shm := ru.ensureShm(); shm != nil {
+		return shm.SetParamFast(slot, key, value)
+	}
+	return fmt.Errorf("no shared memory available")
+}
+
+// ensureSetRing attempts to open the web param set ring if not yet connected.
+func (ru *RemoteUI) ensureSetRing() *ShmWebParamSetRing {
+	if ru.setRing != nil {
+		return ru.setRing
+	}
+	ring := OpenShmWebParamSetRing()
+	if ring != nil {
+		ru.setRing = ring
+		ru.logger.Info("web param set ring: connected (lazy)")
+	}
+	return ru.setRing
+}
+
+// ensureShm attempts to open shared memory if not yet connected.
+// Returns the ShmParams (possibly nil if still unavailable).
+func (ru *RemoteUI) ensureShm() *ShmParams {
+	if ru.shm != nil {
+		return ru.shm
+	}
+	shm := OpenShmParams()
+	if shm != nil {
+		ru.shm = shm
+		ru.logger.Info("shared memory params: connected (lazy)")
+	}
+	return ru.shm
 }
 
 // Start launches the background poll loop. Call from main before ListenAndServe.
@@ -157,6 +202,16 @@ func (ru *RemoteUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	ru.readLoop(r.Context(), client)
+}
+
+// requireShm tries to connect shared memory and sends an error if unavailable.
+// Returns true if shm is ready.
+func (ru *RemoteUI) requireShm(ctx context.Context, c *ruClient) bool {
+	if ru.ensureShm() != nil {
+		return true
+	}
+	ru.sendError(ctx, c, "shared memory not available (Move may still be starting)")
+	return false
 }
 
 // readLoop processes inbound messages from a single client.
@@ -199,6 +254,10 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 
 	ru.logger.Info("ws subscribe", "slot", slot)
 
+	if !ru.requireShm(ctx, c) {
+		return
+	}
+
 	// Send slot info (which components are loaded).
 	ru.sendSlotInfo(ctx, c, slot)
 
@@ -229,18 +288,24 @@ func (ru *RemoteUI) handleUnsubscribe(c *ruClient, msg wsMessage) {
 }
 
 func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessage) {
+	if !ru.requireShm(ctx, c) {
+		return
+	}
 	slot := ru.slotFromMsg(msg)
 	if msg.Key == "" {
 		ru.sendError(ctx, c, "set_param requires key")
 		return
 	}
-	if err := ru.shm.SetParam(slot, msg.Key, msg.Value); err != nil {
+	if err := ru.setParam(slot, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_param failed", "slot", slot, "key", msg.Key, "err", err)
 		ru.sendError(ctx, c, "set_param failed: "+err.Error())
 	}
 }
 
 func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsMessage) {
+	if !ru.requireShm(ctx, c) {
+		return
+	}
 	slot := ru.slotFromMsg(msg)
 	ru.sendSlotInfo(ctx, c, slot)
 	for _, comp := range componentPrefixes {
@@ -266,6 +331,10 @@ func (ru *RemoteUI) handleSubscribeMasterFx(ctx context.Context, c *ruClient) {
 
 	ru.logger.Info("ws subscribe master_fx")
 
+	if !ru.requireShm(ctx, c) {
+		return
+	}
+
 	// Send master FX info (which modules are loaded).
 	ru.sendMasterFxInfo(ctx, c)
 
@@ -290,12 +359,15 @@ func (ru *RemoteUI) handleUnsubscribeMasterFx(c *ruClient) {
 }
 
 func (ru *RemoteUI) handleSetMasterFxParam(ctx context.Context, c *ruClient, msg wsMessage) {
+	if !ru.requireShm(ctx, c) {
+		return
+	}
 	if msg.Key == "" {
 		ru.sendError(ctx, c, "set_master_fx_param requires key")
 		return
 	}
 	// All master FX params go through slot 0.
-	if err := ru.shm.SetParam(0, msg.Key, msg.Value); err != nil {
+	if err := ru.setParam(0, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_master_fx_param failed", "key", msg.Key, "err", err)
 		ru.sendError(ctx, c, "set_master_fx_param failed: "+err.Error())
 	}
@@ -435,6 +507,11 @@ func (ru *RemoteUI) pollLoop(ctx context.Context) {
 		case <-ticker.C:
 		}
 
+		// Try to connect shared memory if not yet available.
+		if ru.ensureShm() == nil {
+			continue
+		}
+
 		// Determine which slots have at least one subscriber.
 		activeSlots, hasMasterFxSubs := ru.activeSlotsAndMasterFx()
 
@@ -502,7 +579,11 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 
 	for _, comp := range componentPrefixes {
 		// Check if this component is loaded.
-		modID, _ := ru.shm.GetParam(slot, comp+"_module")
+		// Use TryGetParam so polling never blocks user-initiated set_param.
+		modID, ok, _ := ru.shm.TryGetParam(slot, comp+"_module")
+		if !ok {
+			continue // mutex busy (user action in progress) — skip this tick
+		}
 
 		// Detect module change (loaded/unloaded/swapped).
 		if prev, ok := cache.modules[comp]; !ok || prev != modID {
@@ -526,17 +607,17 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 		}
 
 		// Detect hierarchy changes (dynamic modules like JV-880).
-		hierJSON, _ := ru.shm.GetParam(slot, comp+":ui_hierarchy")
-		if hierJSON != "" {
-			if prev, ok := cache.hierarchies[comp]; !ok || prev != hierJSON {
+		hierJSON, ok, _ := ru.shm.TryGetParam(slot, comp+":ui_hierarchy")
+		if ok && hierJSON != "" {
+			if prev, exists := cache.hierarchies[comp]; !exists || prev != hierJSON {
 				cache.hierarchies[comp] = hierJSON
 				ru.broadcastHierarchy(ctx, slot, comp)
 			}
 		}
 
 		// Fetch chain_params to learn which keys exist.
-		raw, err := ru.shm.GetParam(slot, comp+":chain_params")
-		if err != nil {
+		raw, ok, err := ru.shm.TryGetParam(slot, comp+":chain_params")
+		if !ok || err != nil {
 			continue
 		}
 
@@ -550,8 +631,8 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 				continue
 			}
 			fullKey := comp + ":" + p.Key
-			val, err := ru.shm.GetParam(slot, fullKey)
-			if err != nil {
+			val, ok, err := ru.shm.TryGetParam(slot, fullKey)
+			if !ok || err != nil {
 				continue
 			}
 			if prev, ok := cache.params[fullKey]; !ok || prev != val {
@@ -621,10 +702,13 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 		compName := "master_fx:" + fxSlot
 		moduleKey := "master_fx:" + fxSlot + "_module"
 
-		modID, _ := ru.shm.GetParam(0, moduleKey)
+		modID, ok, _ := ru.shm.TryGetParam(0, moduleKey)
+		if !ok {
+			continue
+		}
 
 		// Detect module change.
-		if prev, ok := cache.modules[fxSlot]; !ok || prev != modID {
+		if prev, exists := cache.modules[fxSlot]; !exists || prev != modID {
 			cache.modules[fxSlot] = modID
 			ru.broadcastMasterFxInfo(ctx)
 			if modID != "" {
@@ -638,17 +722,17 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 		}
 
 		// Detect hierarchy changes.
-		hierJSON, _ := ru.shm.GetParam(0, compName+":ui_hierarchy")
-		if hierJSON != "" {
-			if prev, ok := cache.hierarchies[fxSlot]; !ok || prev != hierJSON {
+		hierJSON, ok, _ := ru.shm.TryGetParam(0, compName+":ui_hierarchy")
+		if ok && hierJSON != "" {
+			if prev, exists := cache.hierarchies[fxSlot]; !exists || prev != hierJSON {
 				cache.hierarchies[fxSlot] = hierJSON
 				ru.broadcastMasterFxHierarchy(ctx, compName)
 			}
 		}
 
 		// Fetch chain_params to discover keys.
-		raw, err := ru.shm.GetParam(0, compName+":chain_params")
-		if err != nil {
+		raw, ok, err := ru.shm.TryGetParam(0, compName+":chain_params")
+		if !ok || err != nil {
 			continue
 		}
 
@@ -662,8 +746,8 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 				continue
 			}
 			fullKey := compName + ":" + p.Key
-			val, err := ru.shm.GetParam(0, fullKey)
-			if err != nil {
+			val, ok, err := ru.shm.TryGetParam(0, fullKey)
+			if !ok || err != nil {
 				continue
 			}
 			if prev, ok := cache.params[fullKey]; !ok || prev != val {
