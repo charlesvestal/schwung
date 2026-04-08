@@ -2307,6 +2307,54 @@ func (app *App) handleRemoteUI(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleModuleWebUIAsset serves static files from a module's install directory.
+// Used by custom module web UIs loaded in an iframe on the Remote UI page.
+func (app *App) handleModuleWebUIAsset(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	fp := r.PathValue("filepath")
+
+	// Validate module ID and filepath to prevent directory traversal.
+	if id == "" || fp == "" ||
+		strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") ||
+		strings.Contains(fp, "..") {
+		http.NotFound(w, r)
+		return
+	}
+
+	modDir := app.findModuleDir(id)
+	if modDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	fullPath := filepath.Join(modDir, fp)
+
+	// Ensure resolved path is within the module directory.
+	resolved, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	resolvedDir, err := filepath.EvalSymlinks(modDir)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !strings.HasPrefix(resolved, resolvedDir+string(filepath.Separator)) && resolved != resolvedDir {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Only serve files, not directories.
+	info, err := os.Stat(fullPath)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	http.ServeFile(w, r, fullPath)
+}
+
 // hostRouter routes requests based on the Host header.
 // schwungHost requests go to schwungHandler (with /mirror proxied to displayAddr).
 // All other hosts are reverse-proxied to moveAddr (stock Move server).
@@ -2498,10 +2546,13 @@ func main() {
 
 	// Remote UI WebSocket (requires shmParams).
 	if shmParams != nil {
-		remoteUI := NewRemoteUI(shmParams, logger)
+		remoteUI := NewRemoteUI(shmParams, app.basePath, logger)
 		remoteUI.Start(ctx)
 		mux.Handle("GET /ws/remote-ui", remoteUI)
 	}
+
+	// Module web UI assets (custom web_ui.html and related files).
+	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)
 
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	var handler http.Handler = mux

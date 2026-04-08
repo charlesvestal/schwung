@@ -34,7 +34,9 @@
                 midi_fx1: makeComponent()
             },
             // Track which component sections are collapsed (true = collapsed).
-            collapsed: { synth: false, fx1: true, fx2: true, midi_fx1: true }
+            collapsed: { synth: false, fx1: true, fx2: true, midi_fx1: true },
+            // Custom web UI URL for synth component (null = use auto-generated UI).
+            customUI: null
         };
     }
 
@@ -55,6 +57,10 @@
     var activeSlot = 0; // 0-3 for slots, "master" for master FX
     var ws = null;
     var reconnectTimer = null;
+
+    // Custom module web UI state.
+    var customUIIframe = null; // Reference to active custom UI iframe element
+    var customUISubscribed = false; // Whether the iframe has subscribed to param updates
 
     // Knob drag state.
     var dragging = null; // { component, key, startY, startValue, min, max, step, type, slot }
@@ -182,6 +188,10 @@
                 handleSlotInfo(slot, msg);
                 break;
 
+            case "custom_ui":
+                handleCustomUI(slot, msg);
+                break;
+
             case "hierarchy":
                 handleHierarchy(slot, msg);
                 break;
@@ -201,10 +211,22 @@
 
     function handleSlotInfo(slot, msg) {
         var s = slots[slot];
+        // Clear custom UI if synth module changed.
+        var prevSynth = s.components.synth.module;
         s.components.synth.module = msg.synth || "";
         s.components.fx1.module = msg.fx1 || "";
         s.components.fx2.module = msg.fx2 || "";
         s.components.midi_fx1.module = msg.midi_fx1 || "";
+        if (prevSynth !== s.components.synth.module) {
+            s.customUI = null;
+        }
+        if (slot === activeSlot) renderSlot();
+    }
+
+    function handleCustomUI(slot, msg) {
+        if (slot < 0 || slot > 3) return;
+        var s = slots[slot];
+        s.customUI = { component: msg.component || "synth", url: msg.url || "" };
         if (slot === activeSlot) renderSlot();
     }
 
@@ -237,6 +259,10 @@
             }
         }
         if (slot === activeSlot) updateParamValues(slot, msg.params);
+        // Forward to custom UI iframe if subscribed.
+        if (customUISubscribed && customUIIframe && slot === activeSlot) {
+            postToIframe({ type: "paramUpdate", params: msg.params });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -989,6 +1015,10 @@
         slotContentEl.innerHTML = "";
         debugEl.innerHTML = "";
 
+        // Clear custom UI iframe state on re-render.
+        customUIIframe = null;
+        customUISubscribed = false;
+
         if (activeSlot === "master") {
             renderMasterFx();
             return;
@@ -1018,6 +1048,12 @@
             return;
         }
 
+        // Check for custom web UI on synth component.
+        if (s.customUI && s.customUI.url) {
+            renderCustomUI(s);
+            return;
+        }
+
         // Render component sections for loaded components
         var renderedCount = 0;
         for (var k = 0; k < COMPONENT_KEYS.length; k++) {
@@ -1032,6 +1068,124 @@
 
         if (renderedCount === 0) {
             slotContentEl.innerHTML = '<p class="text-muted">No modules loaded in this slot</p>';
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Custom Module Web UI (iframe)
+    // ------------------------------------------------------------------
+
+    function renderCustomUI(s) {
+        var url = s.customUI.url;
+
+        // Create iframe container.
+        var container = document.createElement("div");
+        container.className = "custom-ui-container";
+
+        var iframe = document.createElement("iframe");
+        iframe.className = "custom-ui-iframe";
+        iframe.src = url;
+        iframe.sandbox = "allow-scripts allow-same-origin";
+        iframe.setAttribute("title", "Custom Module UI");
+
+        container.appendChild(iframe);
+        slotContentEl.appendChild(container);
+
+        // Also render FX sections below the iframe if any are loaded.
+        for (var k = 0; k < COMPONENT_KEYS.length; k++) {
+            var compKey = COMPONENT_KEYS[k];
+            if (compKey === "synth") continue; // synth is replaced by iframe
+            var compState = s.components[compKey];
+            if (!compState.module) continue;
+            var section = renderComponentSection(compKey, compState, s.collapsed[compKey]);
+            slotContentEl.appendChild(section);
+        }
+
+        customUIIframe = iframe;
+        customUISubscribed = false;
+    }
+
+    // Listen for postMessage from custom UI iframes.
+    window.addEventListener("message", function (e) {
+        if (!customUIIframe) return;
+        // Only accept messages from our iframe.
+        if (e.source !== customUIIframe.contentWindow) return;
+
+        var msg = e.data;
+        if (!msg || !msg.type) return;
+
+        switch (msg.type) {
+            case "getParam":
+                handleIframeGetParam(msg);
+                break;
+            case "setParam":
+                handleIframeSetParam(msg);
+                break;
+            case "subscribe":
+                customUISubscribed = true;
+                break;
+            case "getHierarchy":
+                handleIframeGetHierarchy(msg);
+                break;
+            case "getChainParams":
+                handleIframeGetChainParams(msg);
+                break;
+        }
+    });
+
+    function handleIframeGetParam(msg) {
+        if (!msg.key || !msg.id) return;
+        var slot = activeSlot;
+        if (typeof slot !== "number") return;
+
+        // The key is like "synth:cutoff" — send via WebSocket get_param
+        // (not currently supported by the WS protocol, so read from local state).
+        var parts = splitPrefix(msg.key);
+        var compState = slots[slot].components[parts.comp];
+        var value = compState ? (compState.params[msg.key] || "") : "";
+
+        postToIframe({ type: "paramResult", id: msg.id, value: value });
+    }
+
+    function handleIframeSetParam(msg) {
+        if (!msg.key) return;
+        var slot = activeSlot;
+        if (typeof slot !== "number") return;
+
+        var parts = splitPrefix(msg.key);
+        send({
+            type: "set_param",
+            slot: slot,
+            key: msg.key,
+            value: String(msg.value)
+        });
+    }
+
+    function handleIframeGetHierarchy(msg) {
+        var slot = activeSlot;
+        if (typeof slot !== "number") return;
+        var compState = slots[slot].components.synth;
+        postToIframe({
+            type: "hierarchy",
+            id: msg.id || null,
+            data: compState ? compState.hierarchy : null
+        });
+    }
+
+    function handleIframeGetChainParams(msg) {
+        var slot = activeSlot;
+        if (typeof slot !== "number") return;
+        var compState = slots[slot].components.synth;
+        postToIframe({
+            type: "chainParams",
+            id: msg.id || null,
+            data: compState ? compState.chainParams : null
+        });
+    }
+
+    function postToIframe(msg) {
+        if (customUIIframe && customUIIframe.contentWindow) {
+            customUIIframe.contentWindow.postMessage(msg, "*");
         }
     }
 
