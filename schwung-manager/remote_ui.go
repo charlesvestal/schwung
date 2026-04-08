@@ -566,7 +566,9 @@ func (ru *RemoteUI) ensureNotifyRing() *ShmWebParamNotifyRing {
 }
 
 func (ru *RemoteUI) pollLoop(ctx context.Context) {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Slow poll — only checks module/hierarchy changes, NOT individual params.
+	// Param values come via the notify ring (notifyLoop at 5ms).
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	caches := make(map[uint8]*slotCache) // slot -> cache
@@ -644,14 +646,12 @@ type chainParam struct {
 	Key string `json:"key"`
 }
 
-// pollSlot fetches current param values for a slot and broadcasts diffs.
-// Also detects hierarchy/module changes for dynamic modules (e.g. JV-880).
+// pollSlot checks for module/hierarchy changes only (infrequent).
+// Param value updates come via the notify ring — NO per-param polling here,
+// which was starving shadow_ui.js of the shared param channel.
 func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) {
-	changed := make(map[string]string)
-
 	for _, comp := range componentPrefixes {
-		// Check if this component is loaded.
-		// Use TryGetParam so polling never blocks user-initiated set_param.
+		// Check if this component is loaded (1 shm read per component).
 		modID, ok, err := ru.shm.TryGetParam(slot, comp+"_module")
 		if !ok || err != nil {
 			continue // mutex busy or shm error — skip this tick, don't change state
@@ -660,10 +660,8 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 		// Detect module change (loaded/unloaded/swapped).
 		if prev, ok := cache.modules[comp]; !ok || prev != modID {
 			cache.modules[comp] = modID
-			// Module changed — broadcast updated slot_info and hierarchy.
 			ru.broadcastSlotInfo(ctx, slot)
 			if modID != "" {
-				// Check for custom web UI on synth component.
 				if comp == "synth" {
 					if url := ru.findModuleWebUI(modID); url != "" {
 						ru.broadcastCustomUI(ctx, slot, comp, url)
@@ -685,55 +683,6 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 				cache.hierarchies[comp] = hierJSON
 				ru.broadcastHierarchy(ctx, slot, comp)
 			}
-		}
-
-		// Fetch chain_params to learn which keys exist.
-		raw, ok, err := ru.shm.TryGetParam(slot, comp+":chain_params")
-		if !ok || err != nil {
-			continue
-		}
-
-		var params []chainParam
-		if err := json.Unmarshal([]byte(raw), &params); err != nil {
-			continue
-		}
-
-		for _, p := range params {
-			if p.Key == "" {
-				continue
-			}
-			fullKey := comp + ":" + p.Key
-			val, ok, err := ru.shm.TryGetParam(slot, fullKey)
-			if !ok || err != nil {
-				continue
-			}
-			if prev, ok := cache.params[fullKey]; !ok || prev != val {
-				cache.params[fullKey] = val
-				changed[fullKey] = val
-			}
-		}
-	}
-
-	if len(changed) == 0 {
-		return
-	}
-
-	// Broadcast to subscribed clients.
-	update := wsParamUpdate{Type: "param_update", Slot: slot, Params: changed}
-
-	ru.mu.Lock()
-	clients := make([]*ruClient, 0, len(ru.clients))
-	for c := range ru.clients {
-		clients = append(clients, c)
-	}
-	ru.mu.Unlock()
-
-	for _, c := range clients {
-		c.mu.Lock()
-		subscribed := c.subs[slot]
-		c.mu.Unlock()
-		if subscribed {
-			ru.writeJSON(ctx, c, update)
 		}
 	}
 }
@@ -766,10 +715,8 @@ func (ru *RemoteUI) broadcastChainParams(ctx context.Context, slot uint8, compon
 	}
 }
 
-// pollMasterFx fetches current master FX param values and broadcasts diffs.
+// pollMasterFx checks for module/hierarchy changes only (no per-param polling).
 func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
-	changed := make(map[string]string)
-
 	for _, fxSlot := range masterFxSlots {
 		compName := "master_fx:" + fxSlot
 		moduleKey := "master_fx:" + fxSlot + "_module"
@@ -801,41 +748,6 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 				ru.broadcastMasterFxHierarchy(ctx, compName)
 			}
 		}
-
-		// Fetch chain_params to discover keys.
-		raw, ok, err := ru.shm.TryGetParam(0, compName+":chain_params")
-		if !ok || err != nil {
-			continue
-		}
-
-		var params []chainParam
-		if err := json.Unmarshal([]byte(raw), &params); err != nil {
-			continue
-		}
-
-		for _, p := range params {
-			if p.Key == "" {
-				continue
-			}
-			fullKey := compName + ":" + p.Key
-			val, ok, err := ru.shm.TryGetParam(0, fullKey)
-			if !ok || err != nil {
-				continue
-			}
-			if prev, ok := cache.params[fullKey]; !ok || prev != val {
-				cache.params[fullKey] = val
-				changed[fullKey] = val
-			}
-		}
-	}
-
-	if len(changed) == 0 {
-		return
-	}
-
-	update := wsParamUpdate{Type: "param_update", Slot: 0, Params: changed}
-	for _, c := range ru.masterFxSubscribedClients() {
-		ru.writeJSON(ctx, c, update)
 	}
 }
 
