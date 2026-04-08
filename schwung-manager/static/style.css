@@ -1007,6 +1007,106 @@ h2.section-header + .module-list {
     border-left: 3px solid var(--color-warning);
 }
 
+/* Asset validation table */
+.asset-description {
+    margin: 0 0 var(--space-xs) 0;
+}
+.asset-hint {
+    font-size: 0.85rem;
+    margin: 0 0 var(--space-md) 0;
+}
+.asset-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin-top: var(--space-sm);
+}
+.asset-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--border);
+}
+.asset-table td {
+    padding: var(--space-sm);
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+.asset-table tbody tr:last-child td {
+    border-bottom: none;
+}
+.asset-req {
+    width: 1.5rem;
+    text-align: center;
+}
+.asset-filename {
+    font-size: 0.8rem;
+}
+.asset-status {
+    font-weight: 600;
+    white-space: nowrap;
+}
+.asset-missing {
+    color: var(--color-danger);
+}
+.asset-warning {
+    color: var(--color-warning);
+}
+.asset-valid {
+    color: var(--color-success);
+}
+.asset-optional {
+    color: var(--text-muted);
+}
+.asset-actions {
+    white-space: nowrap;
+    display: flex;
+    gap: var(--space-xs);
+    align-items: center;
+}
+.asset-upload-btn {
+    cursor: pointer;
+}
+.asset-upload-btn input[type="file"] {
+    display: none;
+}
+.asset-dropzone {
+    position: relative;
+}
+.asset-dropzone-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(74, 158, 142, 0.15);
+    border: 2px dashed var(--color-success);
+    border-radius: var(--radius);
+    z-index: 10;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 1.1rem;
+    color: var(--color-success);
+    pointer-events: none;
+}
+.asset-dropzone.dragover .asset-dropzone-overlay {
+    display: flex;
+}
+.asset-dropzone.dragover .asset-table {
+    opacity: 0.4;
+}
+.asset-folder-row {
+    margin-top: var(--space-md);
+    padding: var(--space-sm) 0;
+    border-top: 1px solid var(--border);
+}
+.asset-folder-row .btn {
+    margin-left: var(--space-sm);
+}
+
 .already-installed {
     background: var(--color-info-bg);
     padding: var(--space-sm) var(--space-md);
