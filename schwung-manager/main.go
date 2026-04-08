@@ -597,6 +597,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/system.html",
 		"templates/install.html",
 		"templates/help.html",
+		"templates/remote_ui.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -2297,6 +2298,15 @@ func (app *App) handleInstallAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
 }
 
+// -- Remote UI --
+
+func (app *App) handleRemoteUI(w http.ResponseWriter, r *http.Request) {
+	app.render(w, r, "remote_ui.html", map[string]any{
+		"Title":  "Remote UI",
+		"Active": "remote-ui",
+	})
+}
+
 // hostRouter routes requests based on the Host header.
 // schwungHost requests go to schwungHandler (with /mirror proxied to displayAddr).
 // All other hosts are reverse-proxied to moveAddr (stock Move server).
@@ -2474,6 +2484,9 @@ func main() {
 
 	// Help.
 	mux.HandleFunc("GET /help", app.handleHelp)
+
+	// Remote UI.
+	mux.HandleFunc("GET /remote-ui", app.handleRemoteUI)
 
 	// Install.
 	mux.HandleFunc("GET /install/{id}", app.handleInstallPage)
