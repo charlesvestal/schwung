@@ -295,8 +295,16 @@ func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slo
 		return
 	}
 
-	values := make(map[string]string)
-	for _, p := range params {
+	ru.logger.Info("initial params: fetching", "slot", slot, "comp", comp, "count", len(params))
+
+	// Fetch in batches of 8, yielding between batches so shadow_ui.js
+	// gets time on the shared param channel. Send each batch immediately
+	// so the browser populates progressively.
+	const batchSize = 8
+	batch := make(map[string]string, batchSize)
+	fetched := 0
+
+	for i, p := range params {
 		if p.Key == "" {
 			continue
 		}
@@ -305,12 +313,21 @@ func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slo
 		if err != nil {
 			continue
 		}
-		values[fullKey] = val
+		batch[fullKey] = val
+		fetched++
+
+		// Send batch and yield
+		if len(batch) >= batchSize || i == len(params)-1 {
+			if len(batch) > 0 {
+				ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: batch})
+				batch = make(map[string]string, batchSize)
+			}
+			// Yield to let shadow_ui.js use the param channel
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 
-	if len(values) > 0 {
-		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: values})
-	}
+	ru.logger.Info("initial params: done", "slot", slot, "comp", comp, "fetched", fetched)
 }
 
 func (ru *RemoteUI) handleUnsubscribe(c *ruClient, msg wsMessage) {
