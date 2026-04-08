@@ -1,0 +1,12 @@
+{
+    "id": "ui-test",
+    "name": "UI Test",
+    "version": "0.0.1",
+    "description": "Live UI layout prototyping tool",
+    "component_type": "tool",
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true,
+        "overtake": true
+    }
+}
