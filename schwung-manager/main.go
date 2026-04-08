@@ -2472,6 +2472,13 @@ func main() {
 		logger.Info("shared memory params: not available (not on device)")
 	}
 
+	webSetRing := OpenShmWebParamSetRing()
+	if webSetRing != nil {
+		logger.Info("web param set ring: connected")
+	} else {
+		logger.Info("web param set ring: not available (not on device)")
+	}
+
 	app := &App{
 		tmpl:       tmpl,
 		fileSvc:    &FileService{AllowedRoots: allowedRoots},
@@ -2544,12 +2551,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Remote UI WebSocket (requires shmParams).
-	if shmParams != nil {
-		remoteUI := NewRemoteUI(shmParams, app.basePath, logger)
-		remoteUI.Start(ctx)
-		mux.Handle("GET /ws/remote-ui", remoteUI)
-	}
+	// Remote UI WebSocket (shmParams may be nil — lazy connect when Move starts).
+	remoteUI := NewRemoteUI(shmParams, webSetRing, app.basePath, logger)
+	remoteUI.Start(ctx)
+	mux.Handle("GET /ws/remote-ui", remoteUI)
 
 	// Module web UI assets (custom web_ui.html and related files).
 	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)

@@ -31,6 +31,8 @@
 #define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
+#define SHM_WEB_PARAM_SET   "/schwung-web-param-set"   /* Web UI → shim param set ring */
+#define SHM_WEB_PARAM_NOTIFY "/schwung-web-param-notify" /* Shim → web UI param change ring */
 
 /* ============================================================================
  * Audio Constants
@@ -52,6 +54,12 @@
 #define SHADOW_MIDI_INJECT_BUFFER_SIZE 256    /* MIDI inject buffer (64 packets) */
 #define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
 #define SHADOW_OVERLAY_BUFFER_SIZE 256        /* Overlay state buffer */
+
+/* Web UI ring buffer sizes */
+#define WEB_PARAM_KEY_LEN     64
+#define WEB_PARAM_VALUE_LEN   256    /* Most values are short; hierarchy uses the old channel */
+#define WEB_PARAM_SET_ENTRIES 32     /* Max pending set requests */
+#define WEB_PARAM_NOTIFY_ENTRIES 64  /* Max pending change notifications */
 
 /* ============================================================================
  * Slot Configuration
@@ -203,6 +211,43 @@ typedef struct shadow_midi_inject_t {
     volatile uint8_t reserved[2];
     uint8_t buffer[SHADOW_MIDI_INJECT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_inject_t;
+
+/*
+ * Web UI param set ring — web server writes, shim drains each audio block.
+ * Fire-and-forget: no response needed. ~3ms latency (one audio block).
+ * Uses linear buffer with toggle-ready pattern (same as MIDI inject).
+ */
+typedef struct web_param_set_entry_t {
+    uint8_t slot;
+    uint8_t reserved[3];
+    char key[WEB_PARAM_KEY_LEN];
+    char value[WEB_PARAM_VALUE_LEN];
+} web_param_set_entry_t;
+
+typedef struct web_param_set_ring_t {
+    volatile uint8_t write_idx;    /* Web server increments after writing */
+    volatile uint8_t ready;        /* Toggle to signal new data */
+    volatile uint8_t reserved[2];
+    web_param_set_entry_t entries[WEB_PARAM_SET_ENTRIES];
+} web_param_set_ring_t;
+
+/*
+ * Web UI param notify ring — shim writes when params change, web server reads.
+ * Pushes changed values to browser via WebSocket without polling.
+ */
+typedef struct web_param_notify_entry_t {
+    uint8_t slot;
+    uint8_t reserved[3];
+    char key[WEB_PARAM_KEY_LEN];
+    char value[WEB_PARAM_VALUE_LEN];
+} web_param_notify_entry_t;
+
+typedef struct web_param_notify_ring_t {
+    volatile uint8_t write_idx;    /* Shim increments after writing */
+    volatile uint8_t ready;        /* Toggle to signal new data */
+    volatile uint8_t reserved[2];
+    web_param_notify_entry_t entries[WEB_PARAM_NOTIFY_ENTRIES];
+} web_param_notify_ring_t;
 
 /*
  * Screen reader message structure.

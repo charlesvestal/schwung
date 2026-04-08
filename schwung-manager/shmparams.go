@@ -51,9 +51,10 @@ const (
 	// SHADOW_PARAM_BUFFER_SIZE from shadow_constants.h
 	shmParamSize = 65664
 
-	// Timeouts
-	paramIdleTimeout     = 2 * time.Second
-	paramResponseTimeout = 5 * time.Second
+	// Timeouts — kept short to avoid blocking the poll loop when
+	// contending with shadow_ui.js for the single param channel.
+	paramIdleTimeout     = 200 * time.Millisecond
+	paramResponseTimeout = 500 * time.Millisecond
 	paramPollInterval    = 500 * time.Microsecond
 )
 
@@ -75,6 +76,100 @@ func OpenShmParams() *ShmParams {
 	}
 
 	return &ShmParams{data: data}
+}
+
+// TryGetParam is like GetParam but returns immediately if the mutex is held
+// (e.g., by a concurrent SetParam from user interaction). Used by the poll loop
+// so background polling never blocks user-initiated param changes.
+func (s *ShmParams) TryGetParam(slot uint8, key string) (string, bool, error) {
+	if !s.mu.TryLock() {
+		return "", false, nil // busy, skip
+	}
+	defer s.mu.Unlock()
+
+	if len(key) >= paramKeyLen {
+		return "", true, fmt.Errorf("key too long (%d >= %d)", len(key), paramKeyLen)
+	}
+
+	if err := s.waitIdle(); err != nil {
+		return "", true, err
+	}
+
+	reqID := s.nextReqID.Add(1)
+
+	s.data[paramOffSlot] = slot
+	s.data[paramOffResponseReady] = 0
+	s.data[paramOffError] = 0
+	binary.LittleEndian.PutUint32(s.data[paramOffRequestID:], reqID)
+
+	copy(s.data[paramOffKey:paramOffKey+paramKeyLen], make([]byte, paramKeyLen))
+	copy(s.data[paramOffKey:], key)
+
+	s.data[paramOffRequestType] = 2
+
+	if err := s.waitResponse(reqID); err != nil {
+		s.data[paramOffRequestType] = 0
+		return "", true, err
+	}
+
+	if s.data[paramOffError] != 0 {
+		s.data[paramOffRequestType] = 0
+		return "", true, fmt.Errorf("param get error (slot=%d key=%q)", slot, key)
+	}
+
+	resultLen := int32(binary.LittleEndian.Uint32(s.data[paramOffResultLen:]))
+	if resultLen < 0 {
+		s.data[paramOffRequestType] = 0
+		return "", true, fmt.Errorf("param get failed (result_len=%d)", resultLen)
+	}
+	if int(resultLen) > paramValueLen {
+		resultLen = int32(paramValueLen)
+	}
+
+	value := string(s.data[paramOffValue : paramOffValue+int(resultLen)])
+	s.data[paramOffRequestType] = 0
+	return value, true, nil
+}
+
+// SetParamFast writes a param without waiting for the shim's response.
+// Latency: ~5ms idle wait + ~3ms shim processing = ~8ms total.
+// Safe for knob dragging where the next value overwrites the previous.
+func (s *ShmParams) SetParamFast(slot uint8, key, value string) error {
+	if len(key) >= paramKeyLen {
+		return fmt.Errorf("key too long (%d >= %d)", len(key), paramKeyLen)
+	}
+	if len(value) >= paramValueLen {
+		return fmt.Errorf("value too long (%d >= %d)", len(value), paramValueLen)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Short idle wait — if shadow_ui.js is mid-request, bail quickly.
+	deadline := time.Now().Add(10 * time.Millisecond)
+	for s.data[paramOffRequestType] != 0 {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("param channel busy")
+		}
+		time.Sleep(paramPollInterval)
+	}
+
+	reqID := s.nextReqID.Add(1)
+
+	s.data[paramOffSlot] = slot
+	s.data[paramOffResponseReady] = 0
+	s.data[paramOffError] = 0
+	binary.LittleEndian.PutUint32(s.data[paramOffRequestID:], reqID)
+
+	copy(s.data[paramOffKey:paramOffKey+paramKeyLen], make([]byte, paramKeyLen))
+	copy(s.data[paramOffKey:], key)
+
+	copy(s.data[paramOffValue:paramOffValue+len(value)], value)
+	s.data[paramOffValue+len(value)] = 0
+
+	// Fire and forget — shim processes on next audio block (~3ms).
+	s.data[paramOffRequestType] = 1
+	return nil
 }
 
 // GetParam reads a parameter from the given chain slot.
