@@ -347,6 +347,66 @@
     color: var(--text-muted);
 }
 
+/* ---- Component Sections ---- */
+.component-section {
+    margin-bottom: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.component-section:last-child {
+    margin-bottom: 0;
+}
+
+.component-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-card-hover);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    min-height: var(--min-touch);
+    transition: background 0.15s;
+}
+
+.component-header:hover {
+    background: var(--border);
+}
+
+.component-toggle {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    width: 1em;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.component-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.component-body {
+    padding: var(--space-md);
+}
+
+.component-body .slot-breadcrumb {
+    margin-bottom: var(--space-md);
+}
+
+.component-body .knob-row {
+    margin-bottom: var(--space-md);
+}
+
+.component-body .knob-row:empty {
+    display: none;
+    margin-bottom: 0;
+}
+
 /* ---- Debug / Placeholder ---- */
 .slot-debug {
     font-family: var(--font-mono);
