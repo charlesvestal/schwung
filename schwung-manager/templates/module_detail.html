@@ -53,7 +53,7 @@
                     </thead>
                     <tbody>
                         {{range .FileStatuses}}
-                        <tr class="asset-row">
+                        <tr class="asset-row" data-slot="{{.Filename}}" data-label="{{.Label}}">
                             <td class="asset-req">{{if .Required}}<span title="Required">&#9679;</span>{{else}}<span class="text-muted" title="Optional">&#9675;</span>{{end}}</td>
                             <td>
                                 <strong>{{.Label}}</strong><br>
@@ -251,13 +251,19 @@ document.querySelectorAll('.asset-upload-form input[type="file"]').forEach(funct
     var dzOverlay = document.getElementById('asset-dropzone-overlay');
     if (!dropzone) return;
 
-    /* Build a map of expected filename -> upload URL from the forms */
+    /* Build maps: slot filename -> upload URL, and alias (original name from label) -> upload URL */
     var slotMap = {};
-    dropzone.querySelectorAll('.asset-upload-form').forEach(function(form) {
+    var aliasMap = {};
+    dropzone.querySelectorAll('.asset-row').forEach(function(row) {
+        var form = row.querySelector('.asset-upload-form');
+        if (!form) return;
         var action = form.getAttribute('action');
-        var parts = action.split('/');
-        var filename = decodeURIComponent(parts[parts.length - 1]);
-        slotMap[filename] = action;
+        var slot = row.getAttribute('data-slot');
+        var label = row.getAttribute('data-label') || '';
+        if (slot) slotMap[slot] = action;
+        /* Extract original filename from parenthetical in label, e.g. "Virus B firmware (access_virus_b_am29f040b_4v9.BIN)" */
+        var match = label.match(/\((.+)\)\s*$/);
+        if (match) aliasMap[match[1]] = action;
     });
 
     var dragCounter = 0;
@@ -285,13 +291,16 @@ document.querySelectorAll('.asset-upload-form input[type="file"]').forEach(funct
         var files = Array.from(e.dataTransfer.files);
         if (files.length === 0) return;
 
-        /* Match dropped files to slots by filename */
+        /* Match dropped files to slots by slot filename or original name alias */
         var matched = [];
         var unmatched = [];
+        var usedUrls = {};
         files.forEach(function(file) {
-            if (slotMap[file.name]) {
-                matched.push({ file: file, url: slotMap[file.name] });
-            } else {
+            var url = slotMap[file.name] || aliasMap[file.name];
+            if (url && !usedUrls[url]) {
+                matched.push({ file: file, url: url });
+                usedUrls[url] = true;
+            } else if (!url) {
                 unmatched.push(file.name);
             }
         });
