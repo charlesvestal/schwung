@@ -13,6 +13,14 @@
         midi_fx1: "MIDI FX"
     };
 
+    var MASTER_FX_KEYS = ["master_fx:fx1", "master_fx:fx2", "master_fx:fx3", "master_fx:fx4"];
+    var MASTER_FX_LABELS = {
+        "master_fx:fx1": "Master FX 1",
+        "master_fx:fx2": "Master FX 2",
+        "master_fx:fx3": "Master FX 3",
+        "master_fx:fx4": "Master FX 4"
+    };
+
     function makeComponent() {
         return { hierarchy: null, chainParams: null, params: {}, navStack: ["root"], module: "" };
     }
@@ -33,7 +41,18 @@
     // Per-slot cached state.
     var slots = [makeSlot(), makeSlot(), makeSlot(), makeSlot()];
 
-    var activeSlot = 0;
+    // Master FX state.
+    var masterFx = {
+        components: {
+            "master_fx:fx1": makeComponent(),
+            "master_fx:fx2": makeComponent(),
+            "master_fx:fx3": makeComponent(),
+            "master_fx:fx4": makeComponent()
+        },
+        collapsed: { "master_fx:fx1": false, "master_fx:fx2": true, "master_fx:fx3": true, "master_fx:fx4": true }
+    };
+
+    var activeSlot = 0; // 0-3 for slots, "master" for master FX
     var ws = null;
     var reconnectTimer = null;
 
@@ -98,11 +117,19 @@
     }
 
     function subscribe(slot) {
-        send({ type: "subscribe", slot: slot });
+        if (slot === "master") {
+            send({ type: "subscribe_master_fx" });
+        } else {
+            send({ type: "subscribe", slot: slot });
+        }
     }
 
     function unsubscribe(slot) {
-        send({ type: "unsubscribe", slot: slot });
+        if (slot === "master") {
+            send({ type: "unsubscribe_master_fx" });
+        } else {
+            send({ type: "unsubscribe", slot: slot });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -110,7 +137,44 @@
     // ------------------------------------------------------------------
 
     function dispatch(msg) {
+        switch (msg.type) {
+            case "master_fx_info":
+                handleMasterFxInfo(msg);
+                return;
+            default:
+                break;
+        }
+
         var slot = msg.slot;
+
+        // Check if this is a master FX message (slot 0 with master_fx: component prefix).
+        var comp = msg.component || "";
+        if (comp.indexOf("master_fx:") === 0) {
+            switch (msg.type) {
+                case "hierarchy":
+                    handleMasterFxHierarchy(comp, msg);
+                    break;
+                case "chain_params":
+                    handleMasterFxChainParams(comp, msg);
+                    break;
+            }
+            return;
+        }
+
+        // Check if this is a param_update with master_fx keys.
+        if (msg.type === "param_update" && msg.params) {
+            var hasMasterFx = false;
+            var hasSlot = false;
+            for (var k in msg.params) {
+                if (k.indexOf("master_fx:") === 0) hasMasterFx = true;
+                else hasSlot = true;
+            }
+            if (hasMasterFx) {
+                handleMasterFxParamUpdate(msg);
+            }
+            if (!hasSlot) return;
+        }
+
         if (slot < 0 || slot > 3) return;
 
         switch (msg.type) {
@@ -175,6 +239,59 @@
         if (slot === activeSlot) updateParamValues(slot, msg.params);
     }
 
+    // ------------------------------------------------------------------
+    // Master FX message handlers
+    // ------------------------------------------------------------------
+
+    function handleMasterFxInfo(msg) {
+        masterFx.components["master_fx:fx1"].module = msg.fx1 || "";
+        masterFx.components["master_fx:fx2"].module = msg.fx2 || "";
+        masterFx.components["master_fx:fx3"].module = msg.fx3 || "";
+        masterFx.components["master_fx:fx4"].module = msg.fx4 || "";
+        if (activeSlot === "master") renderSlot();
+    }
+
+    function handleMasterFxHierarchy(comp, msg) {
+        var c = masterFx.components[comp];
+        if (!c) return;
+        c.hierarchy = msg.data;
+        c.navStack = ["root"];
+        if (activeSlot === "master") renderSlot();
+    }
+
+    function handleMasterFxChainParams(comp, msg) {
+        var c = masterFx.components[comp];
+        if (!c) return;
+        c.chainParams = msg.data;
+        if (activeSlot === "master") renderSlot();
+    }
+
+    function handleMasterFxParamUpdate(msg) {
+        if (!msg.params) return;
+        for (var fullKey in msg.params) {
+            // fullKey is like "master_fx:fx1:cutoff"
+            var parts = splitMasterFxPrefix(fullKey);
+            if (parts) {
+                var comp = masterFx.components[parts.comp];
+                if (comp) {
+                    comp.params[fullKey] = msg.params[fullKey];
+                }
+            }
+        }
+        if (activeSlot === "master") updateMasterFxParamValues(msg.params);
+    }
+
+    /** Split "master_fx:fx1:cutoff" -> { comp: "master_fx:fx1", key: "cutoff" }. */
+    function splitMasterFxPrefix(fullKey) {
+        for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
+            var p = MASTER_FX_KEYS[i] + ":";
+            if (fullKey.indexOf(p) === 0) {
+                return { comp: MASTER_FX_KEYS[i], key: fullKey.substring(p.length) };
+            }
+        }
+        return null;
+    }
+
     /** Split "fx1:cutoff" -> { comp: "fx1", key: "cutoff" }. Default comp is "synth". */
     function splitPrefix(prefixedKey) {
         for (var i = 0; i < COMPONENT_KEYS.length; i++) {
@@ -196,8 +313,9 @@
         activeSlot = n;
 
         tabButtons.forEach(function (btn) {
-            var s = parseInt(btn.getAttribute("data-slot"), 10);
-            if (s === n) {
+            var slotAttr = btn.getAttribute("data-slot");
+            var match = (slotAttr === "master") ? (n === "master") : (parseInt(slotAttr, 10) === n);
+            if (match) {
                 btn.classList.add("active");
                 btn.setAttribute("aria-selected", "true");
             } else {
@@ -408,7 +526,7 @@
         if (dragging.type === "int") newVal = Math.round(newVal);
 
         var prefixedKey = dragging.component + ":" + dragging.key;
-        var comp = slots[dragging.slot].components[dragging.component];
+        var comp = getComponentForDrag(dragging.slot, dragging.component);
         if (comp) comp.params[prefixedKey] = String(newVal);
 
         updateKnobVisual(prefixedKey, newVal);
@@ -424,7 +542,7 @@
     function onPointerUp(e) {
         if (!dragging) return;
         var prefixedKey = dragging.component + ":" + dragging.key;
-        var comp = slots[dragging.slot].components[dragging.component];
+        var comp = getComponentForDrag(dragging.slot, dragging.component);
         var finalVal = comp ? comp.params[prefixedKey] : "0";
         sendParamValue(dragging.slot, dragging.component, dragging.key, parseFloat(finalVal));
         dragging = null;
@@ -434,11 +552,28 @@
         document.removeEventListener("touchend", onPointerUp);
     }
 
+    /** Helper to get component state for a given slot and component key. */
+    function getComponentForDrag(slot, compKey) {
+        if (slot === "master") {
+            return masterFx.components[compKey] || null;
+        }
+        return slots[slot] ? slots[slot].components[compKey] : null;
+    }
+
     function updateKnobVisual(prefixedKey, value) {
         var container = slotContentEl.querySelector('[data-param-key="' + prefixedKey + '"]');
         if (!container) return;
-        var parts = splitPrefix(prefixedKey);
-        var compState = slots[activeSlot].components[parts.comp];
+
+        var compState;
+        var parts;
+        if (activeSlot === "master") {
+            parts = splitMasterFxPrefix(prefixedKey);
+            if (parts) compState = masterFx.components[parts.comp];
+        }
+        if (!compState) {
+            parts = splitPrefix(prefixedKey);
+            compState = slots[typeof activeSlot === "number" ? activeSlot : 0].components[parts.comp];
+        }
         if (!compState) return;
         var meta = findParamMeta(compState, parts.key);
         var svgParent = container.querySelector(".knob-svg");
@@ -458,12 +593,20 @@
     // ------------------------------------------------------------------
 
     function sendParamValue(slot, compPrefix, key, value) {
-        send({
-            type: "set_param",
-            slot: slot,
-            key: compPrefix + ":" + key,
-            value: String(value)
-        });
+        if (slot === "master") {
+            send({
+                type: "set_master_fx_param",
+                key: compPrefix + ":" + key,
+                value: String(value)
+            });
+        } else {
+            send({
+                type: "set_param",
+                slot: slot,
+                key: compPrefix + ":" + key,
+                value: String(value)
+            });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -843,11 +986,16 @@
     // ------------------------------------------------------------------
 
     function renderSlot() {
-        var s = slots[activeSlot];
-        slotTitleEl.textContent = "Slot " + (activeSlot + 1);
-
         slotContentEl.innerHTML = "";
         debugEl.innerHTML = "";
+
+        if (activeSlot === "master") {
+            renderMasterFx();
+            return;
+        }
+
+        var s = slots[activeSlot];
+        slotTitleEl.textContent = "Slot " + (activeSlot + 1);
 
         // Check if any component has data
         var hasAnyData = false;
@@ -885,6 +1033,207 @@
         if (renderedCount === 0) {
             slotContentEl.innerHTML = '<p class="text-muted">No modules loaded in this slot</p>';
         }
+    }
+
+    function renderMasterFx() {
+        slotTitleEl.textContent = "Master FX";
+
+        var hasAnyModule = false;
+        var hasAnyData = false;
+        for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
+            var comp = masterFx.components[MASTER_FX_KEYS[i]];
+            if (comp.module) hasAnyModule = true;
+            if (comp.hierarchy || comp.chainParams || Object.keys(comp.params).length > 0) {
+                hasAnyData = true;
+            }
+        }
+
+        if (!hasAnyData && !hasAnyModule) {
+            debugEl.innerHTML = '<p class="text-muted">Waiting for data...</p>';
+            return;
+        }
+
+        if (!hasAnyModule) {
+            slotContentEl.innerHTML = '<p class="text-muted">No effects loaded in Master FX</p>';
+            return;
+        }
+
+        var renderedCount = 0;
+        for (var k = 0; k < MASTER_FX_KEYS.length; k++) {
+            var compKey = MASTER_FX_KEYS[k];
+            var compState = masterFx.components[compKey];
+            if (!compState.module) continue;
+
+            var section = renderMasterFxSection(compKey, compState, masterFx.collapsed[compKey]);
+            slotContentEl.appendChild(section);
+            renderedCount++;
+        }
+
+        if (renderedCount === 0) {
+            slotContentEl.innerHTML = '<p class="text-muted">No effects loaded in Master FX</p>';
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Master FX section rendering
+    // ------------------------------------------------------------------
+
+    function renderMasterFxSection(compKey, compState, isCollapsed) {
+        var section = document.createElement("div");
+        section.className = "component-section";
+        section.setAttribute("data-component", compKey);
+
+        // Header bar
+        var header = document.createElement("div");
+        header.className = "component-header" + (isCollapsed ? " collapsed" : "");
+        var arrow = document.createElement("span");
+        arrow.className = "component-toggle";
+        arrow.textContent = isCollapsed ? "\u25B6" : "\u25BC";
+        var title = document.createElement("span");
+        title.className = "component-title";
+        var displayLabel = MASTER_FX_LABELS[compKey] || compKey;
+        var moduleName = compState.module || "";
+        title.textContent = displayLabel + (moduleName ? " - " + moduleName : "");
+        header.appendChild(arrow);
+        header.appendChild(title);
+        header.onclick = function () {
+            masterFx.collapsed[compKey] = !masterFx.collapsed[compKey];
+            renderSlot();
+        };
+        section.appendChild(header);
+
+        if (isCollapsed) return section;
+
+        // Body
+        var body = document.createElement("div");
+        body.className = "component-body";
+
+        // Resolve auto-navigation
+        resolveCompLevel(compState);
+
+        // Breadcrumb
+        if (compState.hierarchy && compState.hierarchy.levels && compState.navStack.length > 1) {
+            var bcEl = document.createElement("nav");
+            bcEl.className = "slot-breadcrumb";
+            renderBreadcrumb(compState, compKey, bcEl);
+            body.appendChild(bcEl);
+        }
+
+        var level = getCompCurrentLevel(compState);
+        if (!level) {
+            var noLevel = document.createElement("p");
+            noLevel.className = "text-muted";
+            noLevel.textContent = "No parameters available";
+            body.appendChild(noLevel);
+            section.appendChild(body);
+            return section;
+        }
+
+        // Preset browser
+        if (level.list_param && level.count_param) {
+            var presetEl = renderPresetBrowser(level, compKey, compState);
+            if (presetEl) body.appendChild(presetEl);
+        }
+
+        // Knob row
+        var knobs = level.knobs || [];
+        if (knobs.length > 0) {
+            var knobRow = document.createElement("div");
+            knobRow.className = "knob-row";
+            for (var i = 0; i < knobs.length && i < 8; i++) {
+                var knobKey = knobs[i];
+                var meta = findParamMeta(compState, knobKey);
+                var value = getMasterFxParamValue(compState, compKey, knobKey);
+                var knobEl = renderKnob(compKey, compState, knobKey, meta, value);
+                knobRow.appendChild(knobEl);
+            }
+            body.appendChild(knobRow);
+        }
+
+        // Param list
+        var params = level.params || [];
+        if (params.length > 0) {
+            var paramList = document.createElement("div");
+            paramList.className = "param-list";
+            for (var j = 0; j < params.length; j++) {
+                var item = renderParamItem(params[j], compKey, compState);
+                if (item) paramList.appendChild(item);
+            }
+            body.appendChild(paramList);
+        }
+
+        // Empty state
+        if (knobs.length === 0 && params.length === 0 && !level.list_param) {
+            var empty = document.createElement("p");
+            empty.className = "text-muted";
+            empty.textContent = "No parameters on this level";
+            body.appendChild(empty);
+        }
+
+        section.appendChild(body);
+        return section;
+    }
+
+    /** Get param value from master FX component state. */
+    function getMasterFxParamValue(compState, compPrefix, key) {
+        var v = compState.params[compPrefix + ":" + key];
+        if (v !== undefined) return v;
+        return compState.params[key];
+    }
+
+    function updateMasterFxParamValues(changedParams) {
+        if (activeSlot !== "master") return;
+        if (!changedParams) { renderSlot(); return; }
+
+        var needsFullRender = false;
+
+        for (var fullKey in changedParams) {
+            var value = changedParams[fullKey];
+            var parts = splitMasterFxPrefix(fullKey);
+            if (!parts) continue;
+            var compState = masterFx.components[parts.comp];
+            if (!compState) continue;
+
+            // Skip if user is dragging this knob
+            if (dragging && dragging.component === parts.comp && dragging.key === parts.key && dragging.slot === "master") continue;
+
+            // Try to update knob visual
+            var knobContainer = slotContentEl.querySelector('[data-param-key="' + fullKey + '"]');
+            if (knobContainer) {
+                updateKnobVisual(fullKey, parseFloat(value));
+            }
+
+            // Try to update param row control
+            var paramRow = slotContentEl.querySelector('[data-param-row="' + fullKey + '"]');
+            if (paramRow) {
+                var input = paramRow.querySelector('[data-param-input="' + fullKey + '"]');
+                if (input) {
+                    if (input.tagName === "SELECT") {
+                        input.value = String(value);
+                    } else if (input.type === "range") {
+                        input.value = value;
+                    }
+                }
+                var valDisplay = paramRow.querySelector('[data-param-value="' + fullKey + '"]');
+                if (valDisplay) {
+                    var meta = findParamMeta(compState, parts.key);
+                    valDisplay.textContent = formatValue(value, meta);
+                }
+            }
+
+            // Update preset browser if relevant
+            var presetBrowser = slotContentEl.querySelector('[data-preset-browser="' + parts.comp + '"]');
+            if (presetBrowser) {
+                var level = getCompCurrentLevel(compState);
+                if (level && (parts.key === level.list_param ||
+                              parts.key === level.name_param ||
+                              parts.key === level.count_param)) {
+                    needsFullRender = true;
+                }
+            }
+        }
+
+        if (needsFullRender) renderSlot();
     }
 
     // ------------------------------------------------------------------
