@@ -34,7 +34,87 @@
             <dt>Min Host Version</dt>
             <dd>{{.Module.MinHostVer}}</dd>
 
-            {{if .ModuleAssets}}
+            {{if .FileStatuses}}
+            <dt>{{.ModuleAssets.Label}}</dt>
+            <dd>
+                <p class="asset-description">{{.ModuleAssets.Description}}</p>
+                {{if .ModuleAssets.Hint}}<p class="text-muted asset-hint">{{.ModuleAssets.Hint}}</p>{{end}}
+                <div class="asset-dropzone" id="asset-dropzone">
+                <div class="asset-dropzone-overlay" id="asset-dropzone-overlay">Drop files to upload</div>
+                <table class="asset-table" role="table">
+                    <thead>
+                        <tr>
+                            <th></th>
+                            <th>File</th>
+                            <th>Expected</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .FileStatuses}}
+                        <tr class="asset-row">
+                            <td class="asset-req">{{if .Required}}<span title="Required">&#9679;</span>{{else}}<span class="text-muted" title="Optional">&#9675;</span>{{end}}</td>
+                            <td>
+                                <strong>{{.Label}}</strong><br>
+                                <code class="asset-filename">{{.Filename}}</code>
+                            </td>
+                            <td class="text-muted">{{if .Size}}{{humanSize .Size}}{{else}}&mdash;{{end}}</td>
+                            <td>
+                                {{if not .Present}}
+                                    {{if .Required}}<span class="asset-status asset-missing" title="Missing - required">&#10007; Missing</span>
+                                    {{else}}<span class="asset-status asset-optional" title="Not uploaded">&mdash; Not uploaded</span>{{end}}
+                                {{else if not .SizeMatch}}
+                                    <span class="asset-status asset-warning" title="Wrong size: got {{humanSize .ActualSize}}">&#9888; Wrong size</span>
+                                {{else if and .CRCMatch (not (derefBool .CRCMatch))}}
+                                    <span class="asset-status asset-warning" title="CRC mismatch: got {{.ActualCRC}}">&#9888; CRC mismatch</span>
+                                {{else}}
+                                    <span class="asset-status asset-valid" title="Valid">&#10003; Valid</span>
+                                {{end}}
+                            </td>
+                            <td class="asset-actions">
+                                {{if .Present}}
+                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/upload/{{.Filename}}" enctype="multipart/form-data" class="inline-form asset-upload-form">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <label class="btn btn-secondary btn-small asset-upload-btn">
+                                        Replace <input type="file" name="file" hidden>
+                                    </label>
+                                </form>
+                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/delete/{{.Filename}}" class="inline-form" data-confirm="Delete {{.Filename}}?" data-confirm-title="Delete Asset" data-confirm-label="Delete" data-confirm-danger="true">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <button type="submit" class="btn btn-danger btn-small">Delete</button>
+                                </form>
+                                {{else}}
+                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/upload/{{.Filename}}" enctype="multipart/form-data" class="inline-form asset-upload-form">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <label class="btn btn-primary btn-small asset-upload-btn">
+                                        Upload <input type="file" name="file" hidden>
+                                    </label>
+                                </form>
+                                {{end}}
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+
+                </div>
+                {{range .FolderStatuses}}
+                <div class="asset-folder-row">
+                    <strong>{{.Label}}</strong>{{if .Description}} &mdash; <span class="text-muted">{{.Description}}</span>{{end}}
+                    {{if not .Required}}<span class="text-muted">(optional)</span>{{end}}
+                    <br>
+                    {{if .Exists}}
+                        <span class="text-muted">{{.FileCount}} file{{if ne .FileCount 1}}s{{end}} installed</span>
+                        <a href="/files?path={{$.AssetsDir}}/{{.Path}}" class="btn btn-secondary btn-small">Manage</a>
+                    {{else}}
+                        <span class="text-muted">Not created</span>
+                    {{end}}
+                </div>
+                {{end}}
+            </dd>
+
+            {{else if .ModuleAssets}}
             <dt>{{.ModuleAssets.Label}}</dt>
             <dd class="requires-note">
                 {{.ModuleAssets.Description}}
@@ -43,6 +123,17 @@
             {{else if .Module.Requires}}
             <dt>Requires</dt>
             <dd class="requires-note">{{.Module.Requires}}</dd>
+            {{end}}
+
+            {{if isInstalled .Module.ID .Installed}}
+            {{if .AssetsDir}}
+            {{if not .FileStatuses}}
+            <dt>Assets</dt>
+            <dd>
+                <a href="/files?path={{.AssetsDir}}" class="btn btn-secondary btn-small">Manage {{if .ModuleAssets}}{{.ModuleAssets.Label}}{{else}}Assets{{end}}</a>
+            </dd>
+            {{end}}
+            {{end}}
             {{end}}
 
             <dt>Status</dt>
@@ -72,14 +163,6 @@
                 {{end}}
             </dd>
 
-            {{if isInstalled .Module.ID .Installed}}
-            {{if .AssetsDir}}
-            <dt>Assets</dt>
-            <dd>
-                <a href="/files?path={{.AssetsDir}}" class="btn btn-secondary btn-small">Manage {{if .ModuleAssets}}{{.ModuleAssets.Label}}{{else}}Assets{{end}}</a>
-            </dd>
-            {{end}}
-            {{end}}
         </dl>
     </div>
 
@@ -149,5 +232,104 @@ document.querySelectorAll('.detail-actions form').forEach(function(form) {
         }
     });
 });
+
+document.querySelectorAll('.asset-upload-form input[type="file"]').forEach(function(input) {
+    input.addEventListener('change', function() {
+        if (this.files.length > 0) {
+            var overlay = document.getElementById('action-overlay');
+            var text = document.getElementById('action-overlay-text');
+            text.textContent = 'Uploading...';
+            overlay.hidden = false;
+            this.closest('form').submit();
+        }
+    });
+});
+
+/* Drag-and-drop multi-file upload */
+(function() {
+    var dropzone = document.getElementById('asset-dropzone');
+    var dzOverlay = document.getElementById('asset-dropzone-overlay');
+    if (!dropzone) return;
+
+    /* Build a map of expected filename -> upload URL from the forms */
+    var slotMap = {};
+    dropzone.querySelectorAll('.asset-upload-form').forEach(function(form) {
+        var action = form.getAttribute('action');
+        var parts = action.split('/');
+        var filename = decodeURIComponent(parts[parts.length - 1]);
+        slotMap[filename] = action;
+    });
+
+    var dragCounter = 0;
+    dropzone.addEventListener('dragenter', function(e) {
+        e.preventDefault();
+        dragCounter++;
+        dropzone.classList.add('dragover');
+    });
+    dropzone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) {
+            dragCounter = 0;
+            dropzone.classList.remove('dragover');
+        }
+    });
+    dropzone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+    });
+    dropzone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dragCounter = 0;
+        dropzone.classList.remove('dragover');
+
+        var files = Array.from(e.dataTransfer.files);
+        if (files.length === 0) return;
+
+        /* Match dropped files to slots by filename */
+        var matched = [];
+        var unmatched = [];
+        files.forEach(function(file) {
+            if (slotMap[file.name]) {
+                matched.push({ file: file, url: slotMap[file.name] });
+            } else {
+                unmatched.push(file.name);
+            }
+        });
+
+        if (matched.length === 0) {
+            alert('No dropped files matched expected asset filenames:\n' + Object.keys(slotMap).join('\n'));
+            return;
+        }
+
+        var overlay = document.getElementById('action-overlay');
+        var text = document.getElementById('action-overlay-text');
+        var csrfToken = document.querySelector('input[name="csrf_token"]').value;
+
+        var idx = 0;
+        function uploadNext() {
+            if (idx >= matched.length) {
+                if (unmatched.length > 0) {
+                    text.textContent = 'Skipped: ' + unmatched.join(', ');
+                    setTimeout(function() { location.reload(); }, 1500);
+                } else {
+                    location.reload();
+                }
+                return;
+            }
+            var m = matched[idx];
+            text.textContent = 'Uploading ' + m.file.name + ' (' + (idx + 1) + '/' + matched.length + ')...';
+            overlay.hidden = false;
+
+            var formData = new FormData();
+            formData.append('file', m.file);
+            formData.append('csrf_token', csrfToken);
+
+            fetch(m.url, { method: 'POST', body: formData, redirect: 'manual' })
+                .then(function() { idx++; uploadNext(); })
+                .catch(function() { idx++; uploadNext(); });
+        }
+        uploadNext();
+    });
+})();
 </script>
 {{end}}

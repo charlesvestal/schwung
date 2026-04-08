@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/crc32"
 	"html/template"
 	"io"
 	"io/fs"
@@ -73,12 +74,52 @@ type Catalog struct {
 
 // ModuleAssets describes user-uploadable assets for a module.
 type ModuleAssets struct {
+	Path         string        `json:"path"`
+	Label        string        `json:"label"`
+	Extensions   []string      `json:"extensions"`
+	Description  string        `json:"description"`
+	Hint         string        `json:"hint"`
+	HintURL      string        `json:"hint_url,omitempty"`
+	HintURLLabel string        `json:"hint_url_label,omitempty"`
+	Optional     bool          `json:"optional"`
+	AllowFolders bool          `json:"allowFolders,omitempty"`
+	Files        []AssetFile   `json:"files,omitempty"`
+	Folders      []AssetFolder `json:"folders,omitempty"`
+}
+
+// AssetFile describes a specific expected file within a module's assets.
+type AssetFile struct {
+	Filename string `json:"filename"`
+	Label    string `json:"label"`
+	Size     int64  `json:"size"`
+	Required bool   `json:"required"`
+	CRC32    string `json:"crc32,omitempty"`
+}
+
+// AssetFolder describes an expected folder within a module's assets.
+type AssetFolder struct {
 	Path        string   `json:"path"`
 	Label       string   `json:"label"`
-	Extensions  []string `json:"extensions"`
 	Description string   `json:"description"`
-	Hint        string   `json:"hint"`
-	Optional    bool     `json:"optional"`
+	Extensions  []string `json:"extensions"`
+	Required    bool     `json:"required"`
+}
+
+// AssetFileStatus is the validation result for a single asset file.
+type AssetFileStatus struct {
+	AssetFile
+	Present    bool
+	SizeMatch  bool
+	CRCMatch   *bool
+	ActualSize int64
+	ActualCRC  string
+}
+
+// AssetFolderStatus is the validation result for a single asset folder.
+type AssetFolderStatus struct {
+	AssetFolder
+	Exists    bool
+	FileCount int
 }
 
 // InstalledModule is read from a module.json on disk.
@@ -435,6 +476,78 @@ var funcMap = template.FuncMap{
 		}
 		return isNewerSemver(rm.Version, inst.Version)
 	},
+	"humanSize": func(b int64) string {
+		const unit = 1024
+		if b < unit {
+			return fmt.Sprintf("%d B", b)
+		}
+		div, exp := int64(unit), 0
+		for n := b / unit; n >= unit; n /= unit {
+			div *= unit
+			exp++
+		}
+		return fmt.Sprintf("%.0f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+	},
+	"derefBool": func(b *bool) bool {
+		if b == nil {
+			return true
+		}
+		return *b
+	},
+}
+
+// validateAssets checks the presence and integrity of declared asset files and folders.
+func validateAssets(assetsDir string, assets *ModuleAssets) ([]AssetFileStatus, []AssetFolderStatus) {
+	var fileStatuses []AssetFileStatus
+	for _, f := range assets.Files {
+		status := AssetFileStatus{AssetFile: f}
+		path := filepath.Join(assetsDir, f.Filename)
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			status.Present = true
+			status.ActualSize = info.Size()
+			status.SizeMatch = (f.Size == 0 || info.Size() == f.Size)
+			if f.CRC32 != "" {
+				data, err := os.ReadFile(path)
+				if err == nil {
+					actual := fmt.Sprintf("%08X", crc32.ChecksumIEEE(data))
+					status.ActualCRC = actual
+					match := strings.EqualFold(actual, f.CRC32)
+					status.CRCMatch = &match
+				}
+			}
+		}
+		fileStatuses = append(fileStatuses, status)
+	}
+
+	var folderStatuses []AssetFolderStatus
+	for _, f := range assets.Folders {
+		status := AssetFolderStatus{AssetFolder: f}
+		dir := filepath.Join(assetsDir, f.Path)
+		entries, err := os.ReadDir(dir)
+		if err == nil {
+			status.Exists = true
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				if len(f.Extensions) == 0 {
+					status.FileCount++
+					continue
+				}
+				ext := strings.ToLower(filepath.Ext(e.Name()))
+				for _, allowed := range f.Extensions {
+					if strings.EqualFold(ext, allowed) {
+						status.FileCount++
+						break
+					}
+				}
+			}
+		}
+		folderStatuses = append(folderStatuses, status)
+	}
+
+	return fileStatuses, folderStatuses
 }
 
 // templateMap maps page template names to their parsed template sets.
@@ -684,16 +797,24 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var fileStatuses []AssetFileStatus
+	var folderStatuses []AssetFolderStatus
+	if moduleAssets != nil && len(moduleAssets.Files) > 0 && assetsDir != "" {
+		fileStatuses, folderStatuses = validateAssets(assetsDir, moduleAssets)
+	}
+
 	data := map[string]any{
-		"Title":        mod.Name,
-		"Module":       mod,
-		"Installed":    installed,
-		"ModuleDir":    modDir,
-		"AssetsDir":    assetsDir,
-		"ModuleAssets": moduleAssets,
-		"BuiltIn":      builtIn,
-		"ReleaseMeta":  app.catalogSvc.GetReleaseMeta(),
-		"Active":       "modules",
+		"Title":          mod.Name,
+		"Module":         mod,
+		"Installed":      installed,
+		"ModuleDir":      modDir,
+		"AssetsDir":      assetsDir,
+		"ModuleAssets":   moduleAssets,
+		"FileStatuses":   fileStatuses,
+		"FolderStatuses": folderStatuses,
+		"BuiltIn":        builtIn,
+		"ReleaseMeta":    app.catalogSvc.GetReleaseMeta(),
+		"Active":         "modules",
 	}
 	app.render(w, r, "module_detail.html", data)
 }
@@ -1160,6 +1281,90 @@ func (app *App) handleModuleAssetUpload(w http.ResponseWriter, r *http.Request) 
 
 	app.logger.Info("asset uploaded", "module", id, "file", target)
 	http.Redirect(w, r, fmt.Sprintf("/modules/%s/assets?flash=Uploaded+%s", id, header.Filename), http.StatusSeeOther)
+}
+
+func (app *App) handleModuleAssetUploadSlot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	targetFilename := r.PathValue("filename")
+	modDir := app.findModuleDir(id)
+	if modDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	installed := discoverInstalledModules(app.basePath)
+	inst, ok := installed[id]
+	if !ok || inst.Assets == nil {
+		http.Error(w, "module has no asset configuration", http.StatusBadRequest)
+		return
+	}
+
+	assetsDir := modDir
+	if inst.Assets.Path != "" && inst.Assets.Path != "." {
+		assetsDir = filepath.Join(modDir, inst.Assets.Path)
+	}
+
+	os.MkdirAll(assetsDir, 0755)
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "missing file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	target := filepath.Join(assetsDir, targetFilename)
+	if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(assetsDir)) {
+		http.Error(w, "invalid filename", http.StatusForbidden)
+		return
+	}
+
+	out, err := os.Create(target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer out.Close()
+	io.Copy(out, file)
+
+	app.logger.Info("asset slot upload", "module", id, "file", target)
+	http.Redirect(w, r, fmt.Sprintf("/modules/%s?flash=Uploaded+%s", id, targetFilename), http.StatusSeeOther)
+}
+
+func (app *App) handleModuleAssetDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	targetFilename := r.PathValue("filename")
+	modDir := app.findModuleDir(id)
+	if modDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	installed := discoverInstalledModules(app.basePath)
+	inst, ok := installed[id]
+	if !ok || inst.Assets == nil {
+		http.Error(w, "module has no asset configuration", http.StatusBadRequest)
+		return
+	}
+
+	assetsDir := modDir
+	if inst.Assets.Path != "" && inst.Assets.Path != "." {
+		assetsDir = filepath.Join(modDir, inst.Assets.Path)
+	}
+
+	target := filepath.Join(assetsDir, targetFilename)
+	if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(assetsDir)) {
+		http.Error(w, "invalid filename", http.StatusForbidden)
+		return
+	}
+
+	if err := os.Remove(target); err != nil {
+		app.logger.Error("asset delete failed", "module", id, "file", target, "err", err)
+	} else {
+		app.logger.Info("asset deleted", "module", id, "file", target)
+	}
+
+	http.Redirect(w, r, fmt.Sprintf("/modules/%s?flash=Deleted+%s", id, targetFilename), http.StatusSeeOther)
 }
 
 // -- Files --
@@ -2231,6 +2436,8 @@ func main() {
 	// Module assets.
 	mux.HandleFunc("GET /modules/{id}/assets", app.handleModuleAssets)
 	mux.HandleFunc("POST /modules/{id}/assets/upload", app.handleModuleAssetUpload)
+	mux.HandleFunc("POST /modules/{id}/assets/upload/{filename}", app.handleModuleAssetUploadSlot)
+	mux.HandleFunc("POST /modules/{id}/assets/delete/{filename}", app.handleModuleAssetDelete)
 
 	// API (JSON).
 	mux.HandleFunc("GET /api/modules", app.handleAPIModules)
