@@ -647,10 +647,12 @@ func loadTemplates() (templateMap, error) {
 // ---------------------------------------------------------------------------
 
 type downloadJob struct {
-	ID    string `json:"job_id"`
-	State string `json:"state"`          // "downloading", "done", "error"
-	Path  string `json:"path,omitempty"`
-	Error string `json:"error,omitempty"`
+	ID       string `json:"job_id"`
+	State    string `json:"state"`            // "downloading", "done", "error"
+	Message  string `json:"message,omitempty"` // progress detail
+	Title    string `json:"title,omitempty"`   // resolved title
+	Path     string `json:"path,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 type App struct {
@@ -2506,6 +2508,26 @@ func (app *App) runDownload(job *downloadJob, url, title string) {
 		return
 	}
 
+	// If no title provided, resolve it via yt-dlp --get-title.
+	if title == "" {
+		app.downloadMu.Lock()
+		job.Message = "Resolving title..."
+		app.downloadMu.Unlock()
+
+		ytdlpBin := filepath.Join(webstreamBinDir, "yt-dlp")
+		titleCtx, titleCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer titleCancel()
+		titleCmd := exec.CommandContext(titleCtx, ytdlpBin, "--no-playlist", "--get-title", url)
+		if out, err := titleCmd.Output(); err == nil {
+			title = strings.TrimSpace(string(out))
+		}
+	}
+	if title != "" {
+		app.downloadMu.Lock()
+		job.Title = title
+		app.downloadMu.Unlock()
+	}
+
 	name := sanitizeFilename(title)
 
 	// Deduplicate.
@@ -2530,6 +2552,10 @@ func (app *App) runDownload(job *downloadJob, url, title string) {
 	ytdlp := filepath.Join(webstreamBinDir, "yt-dlp")
 	ffmpeg := filepath.Join(webstreamBinDir, "ffmpeg")
 
+	app.downloadMu.Lock()
+	job.Message = "Downloading and converting to WAV..."
+	app.downloadMu.Unlock()
+
 	cmdStr := fmt.Sprintf(
 		`%q --no-playlist -f "bestaudio[ext=m4a]/bestaudio" -o - %q 2>/dev/null | %q -hide_banner -loglevel warning -i pipe:0 -vn -sn -dn -af "aresample=44100" -ac 2 -ar 44100 %q -y 2>/dev/null`,
 		ytdlp, url, ffmpeg, outPath,
@@ -2546,6 +2572,10 @@ func (app *App) runDownload(job *downloadJob, url, title string) {
 		return
 	}
 
+	app.downloadMu.Lock()
+	job.Message = "Verifying output..."
+	app.downloadMu.Unlock()
+
 	// Verify output.
 	info, err := os.Stat(outPath)
 	if err != nil || info.Size() <= 44 {
@@ -2559,6 +2589,7 @@ func (app *App) runDownload(job *downloadJob, url, title string) {
 	app.downloadMu.Lock()
 	job.State = "done"
 	job.Path = outPath
+	job.Message = "Saved: " + filepath.Base(outPath)
 	app.downloadMu.Unlock()
 }
 

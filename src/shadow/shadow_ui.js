@@ -13517,7 +13517,18 @@ globalThis.tick = function() {
                     const cmd = JSON.parse(cmdJson);
                     if (cmd.file_path && cmd.tool_id) {
                         debugLog("open_tool_cmd: opening " + cmd.file_path + " in " + cmd.tool_id);
-                        host_open_file_in_tool(cmd.file_path, cmd.tool_id);
+                        /* host_open_file_in_tool is only defined inside setupModuleParamShims,
+                         * so we replicate its logic here using the global functions directly. */
+                        if (!toolModules || !toolModules.length) {
+                            toolModules = scanForToolModules();
+                        }
+                        const tool = toolModules.find(t => t.id === cmd.tool_id);
+                        if (tool) {
+                            unloadModuleUi();
+                            startInteractiveTool(tool, cmd.file_path);
+                        } else {
+                            debugLog("open_tool_cmd: tool not found: " + cmd.tool_id);
+                        }
                     }
                 } catch (e) {
                     debugLog("open_tool_cmd: JSON parse error: " + e);

@@ -3690,6 +3690,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         shadow_inject_knob_release = 1;  /* Inject note-offs when exiting shadow mode */
     }
 
+    /* Check if web UI wants to open a tool — activate shadow display so JS can render */
+    if (shadow_control && shadow_control->open_tool_cmd && !shadow_display_mode) {
+        shadow_display_mode = 1;
+        shadow_control->display_mode = 1;
+    }
+
     /* NOTE: MIDI filtering moved to AFTER ioctl - see post-ioctl section below */
 
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
