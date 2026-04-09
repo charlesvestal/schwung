@@ -130,6 +130,7 @@ type InstalledModule struct {
 	Version       string         `json:"version"`
 	ComponentType string         `json:"component_type"`
 	Description   string         `json:"description"`
+	Author        string         `json:"author"`
 	Assets        []ModuleAssets `json:"-"` // custom unmarshal: single object or array
 	RawAssets     json.RawMessage `json:"assets,omitempty"`
 }
@@ -798,20 +799,28 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// If not in catalog, check if it's a built-in installed module.
+	// If not in catalog, check if it's an installed module (built-in or custom).
 	builtIn := false
 	if mod == nil {
 		if inst, ok := installed[id]; ok {
+			author := "Unknown"
+			if inst.Author != "" {
+				author = inst.Author
+			}
 			mod = &CatalogModule{
 				ID:            id,
 				Name:          inst.Name,
 				Description:   inst.Description,
-				Author:        "Schwung",
+				Author:        author,
 				ComponentType: inst.ComponentType,
-				GithubRepo:    "charlesvestal/schwung",
 				MinHostVer:    "0.1.0",
 			}
-			builtIn = true
+			// Only mark as built-in if it lives at the root modules/ level (not in a category subdir).
+			modDir := app.findModuleDir(id)
+			if modDir != "" {
+				rel, _ := filepath.Rel(filepath.Join(app.basePath, "modules"), modDir)
+				builtIn = !strings.Contains(rel, string(filepath.Separator))
+			}
 		}
 	}
 	if mod == nil {
@@ -978,6 +987,13 @@ func (app *App) installModule(mod *CatalogModule) error {
 	cmd := exec.Command("tar", "-xzf", tmpPath, "-C", categoryDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extracting tarball: %w\noutput: %s", err, output)
+	}
+
+	// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
+	modDir := filepath.Join(categoryDir, mod.ID)
+	chown := exec.Command("chown", "-R", "ableton:users", modDir)
+	if out, err := chown.CombinedOutput(); err != nil {
+		app.logger.Warn("chown failed (non-fatal)", "id", mod.ID, "err", err, "output", string(out))
 	}
 
 	app.logger.Info("module installed", "id", mod.ID, "path", categoryDir)
@@ -1187,6 +1203,12 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
+		chown := exec.Command("chown", "-R", "ableton:users", destDir)
+		if out, err := chown.CombinedOutput(); err != nil {
+			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
+		}
+
 		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
 		http.Redirect(w, r, "/modules?flash=Installed+"+entries[0].Name()+"+from+GitHub", http.StatusSeeOther)
 
@@ -1251,6 +1273,12 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		if err := os.Rename(moduleDir, destDir); err != nil {
 			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
 			return
+		}
+
+		// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
+		chown := exec.Command("chown", "-R", "ableton:users", destDir)
+		if out, err := chown.CombinedOutput(); err != nil {
+			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
 		}
 
 		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
@@ -2741,7 +2769,40 @@ func hostRouter(schwungHost string, schwungHandler http.Handler, moveAddr, displ
 			host = h
 		}
 
-		if host == schwungHost {
+		// Cookie-based UI switching for IP-based access (e.g. Windows without mDNS).
+		// Visit http://<ip>/?schwung to set cookie and use Schwung Manager.
+		// Visit http://<ip>/?move to clear cookie and use stock Move UI.
+		if r.URL.Query().Has("schwung") {
+			http.SetCookie(w, &http.Cookie{
+				Name:  "schwung_ui",
+				Value: "1",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		if r.URL.Query().Has("move") {
+			http.SetCookie(w, &http.Cookie{
+				Name:   "schwung_ui",
+				Value:  "",
+				Path:   "/",
+				MaxAge: -1,
+			})
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+
+		// Determine if this request should go to Schwung Manager:
+		// 1. Host-based: schwung.local always goes to Schwung
+		// 2. Cookie-based: schwung_ui cookie set via ?schwung query param
+		useSchwung := host == schwungHost
+		if !useSchwung {
+			if c, err := r.Cookie("schwung_ui"); err == nil && c.Value == "1" {
+				useSchwung = true
+			}
+		}
+
+		if useSchwung {
 			// /mirror → display server (HTML page and sub-resources)
 			if r.URL.Path == "/mirror" || strings.HasPrefix(r.URL.Path, "/mirror/") {
 				displayProxy.ServeHTTP(w, r)
