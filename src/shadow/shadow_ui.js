@@ -1702,11 +1702,21 @@ function normalizeExpandedParamMeta(key, meta) {
 
 function formatMetaOptionValue(meta, rawValue) {
     if (!meta) return rawValue;
-    if (!meta.option_labels || typeof meta.option_labels !== "object") return rawValue;
-    const lookup = String(rawValue);
-    return Object.prototype.hasOwnProperty.call(meta.option_labels, lookup)
-        ? meta.option_labels[lookup]
-        : rawValue;
+    /* Try option_labels map first (key → display label) */
+    if (meta.option_labels && typeof meta.option_labels === "object") {
+        const lookup = String(rawValue);
+        if (Object.prototype.hasOwnProperty.call(meta.option_labels, lookup)) {
+            return meta.option_labels[lookup];
+        }
+    }
+    /* Fall back to options array by index (plugin returned numeric index like "0") */
+    if (Array.isArray(meta.options)) {
+        const idx = parseInt(rawValue, 10);
+        if (!isNaN(idx) && idx >= 0 && idx < meta.options.length) {
+            return meta.options[idx];
+        }
+    }
+    return rawValue;
 }
 
 function formatWavPositionDisplayValue(rawValue, meta) {
@@ -7183,6 +7193,11 @@ function enterHierarchyEditor(slotIndex, componentKey) {
 
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
+    debugLog(`enterHierarchyEditor: slot=${slotIndex} comp=${componentKey} chainParams=${hierEditorChainParams ? hierEditorChainParams.length : 0}`);
+    if (hierEditorChainParams && hierEditorChainParams.length > 0) {
+        const enumParams = hierEditorChainParams.filter(p => p.type === "enum" && p.options && p.options.length > 0);
+        debugLog(`enterHierarchyEditor: ${enumParams.length} enum params with options, first few: ${enumParams.slice(0, 3).map(p => p.key + "(" + p.options.length + ")").join(", ")}`);
+    }
 
     /* Set up param shims for this component */
     setupModuleParamShims(slotIndex, componentKey);
@@ -7764,14 +7779,21 @@ function adjustHierSelectedParam(delta) {
 
     /* Handle enum type - cycle through options */
     if (meta && meta.type === "enum" && meta.options && meta.options.length > 0) {
-        const currentIndex = meta.options.indexOf(currentVal);
+        /* Plugin may return option string ("Sine") or numeric index ("0") */
+        let currentIndex = meta.options.indexOf(currentVal);
+        const pluginUsesIndex = (currentIndex < 0);
+        if (pluginUsesIndex) {
+            const parsed = parseInt(currentVal, 10);
+            currentIndex = (!isNaN(parsed) && parsed >= 0 && parsed < meta.options.length) ? parsed : 0;
+        }
         let newIndex = currentIndex + delta;
         if (newIndex < 0) newIndex = meta.options.length - 1;
         if (newIndex >= meta.options.length) newIndex = 0;
         const newVal = meta.options[newIndex];
-        setSlotParam(hierEditorSlot, fullKey, newVal);
+        /* Send in the format the plugin expects */
+        setSlotParam(hierEditorSlot, fullKey, pluginUsesIndex ? String(newIndex) : newVal);
         if (usingStableEditVal) {
-            hierEditorEditValue = newVal;
+            hierEditorEditValue = pluginUsesIndex ? String(newIndex) : newVal;
         }
         if (shouldRefreshDynamicRateMeta(key)) {
             refreshHierarchyChainParams();
@@ -8278,13 +8300,27 @@ function processPendingHierKnob() {
             return;
         }
 
-        const currentIndex = ctx.meta.options.indexOf(currentVal);
+        /* Find current index — plugin may return the option string ("Sine")
+         * or the numeric index ("0"). Handle both. */
+        let currentIndex = ctx.meta.options.indexOf(currentVal);
+        if (currentIndex < 0) {
+            /* Not a string match — try as numeric index */
+            const parsed = parseInt(currentVal, 10);
+            if (!isNaN(parsed) && parsed >= 0 && parsed < ctx.meta.options.length) {
+                currentIndex = parsed;
+            } else {
+                currentIndex = 0;
+            }
+        }
         let newIndex = currentIndex + (delta > 0 ? 1 : -1);
         if (newIndex < 0) newIndex = 0;
         if (newIndex >= ctx.meta.options.length) newIndex = ctx.meta.options.length - 1;
         const newVal = ctx.meta.options[newIndex];
-        knobValueCache[knobIndex] = newVal;  /* Update cache locally */
-        setSlotParam(ctx.slot, ctx.fullKey, newVal);
+        /* Cache the value in the same format the plugin returned (string or index) */
+        const pluginUsesIndex = (ctx.meta.options.indexOf(currentVal) < 0);
+        knobValueCache[knobIndex] = pluginUsesIndex ? String(newIndex) : newVal;
+        /* Send in the format the plugin expects */
+        setSlotParam(ctx.slot, ctx.fullKey, pluginUsesIndex ? String(newIndex) : newVal);
         if (shouldRefreshDynamicRateMeta(ctx.key)) {
             refreshHierarchyChainParams();
         }
@@ -8351,7 +8387,17 @@ function formatHierDisplayValue(key, val) {
         if (meta.picker_type && (val === "" || val === null || val === undefined)) {
             return meta.none_label || "(none)";
         }
-        return formatMetaOptionValue(meta, val);
+        const formatted = formatMetaOptionValue(meta, val);
+        if (formatted === val && val !== null && val !== undefined) {
+            /* No mapping found — log to diagnose */
+            debugLog(`formatHierDisplayValue: enum key=${key} val=${val} options=${meta.options ? meta.options.length : 0} option_labels=${meta.option_labels ? Object.keys(meta.option_labels).length : 0} formatted=${formatted}`);
+        }
+        return formatted;
+    }
+
+    if (!meta) {
+        /* No metadata at all — might be missing from chain_params */
+        debugLog(`formatHierDisplayValue: NO META for key=${key} val=${val} chainParams=${hierEditorChainParams ? hierEditorChainParams.length : 0}`);
     }
 
     if (meta && meta.type === "filepath") {
@@ -9471,6 +9517,13 @@ function drawFilepathBrowser() {
 /* Draw the hierarchy-based parameter editor */
 function drawHierarchyEditor() {
     clear_screen();
+
+    /* Re-fetch chain_params if empty — module may have still been loading
+     * when we entered the hierarchy editor (e.g., Virus ROM loading) */
+    if (!hierEditorChainParams || hierEditorChainParams.length === 0) {
+        refreshHierarchyChainParams();
+        debugLog(`drawHierarchyEditor: chain_params was empty, refetched: ${hierEditorChainParams ? hierEditorChainParams.length : 0} params`);
+    }
 
     /* Get plugin info */
     const prefix = getComponentParamPrefix(hierEditorComponent);

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -317,6 +318,47 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 		// Fetch initial param values (one-time on subscribe).
 		ru.sendInitialParamValues(ctx, c, slot, comp)
 	}
+
+	// Send slot-level settings and knob mappings.
+	ru.sendSlotSettings(ctx, c, slot)
+}
+
+// slotSettingKeys are the slot-level params to send to the web UI.
+var slotSettingKeys = []string{
+	"slot:volume", "slot:muted", "slot:soloed",
+	"slot:receive_channel", "slot:forward_channel",
+	"lfo1:enabled", "lfo1:shape_name", "lfo1:rate_hz", "lfo1:rate_div",
+	"lfo1:sync", "lfo1:depth", "lfo1:polarity", "lfo1:target", "lfo1:target_param",
+	"lfo2:enabled", "lfo2:shape_name", "lfo2:rate_hz", "lfo2:rate_div",
+	"lfo2:sync", "lfo2:depth", "lfo2:polarity", "lfo2:target", "lfo2:target_param",
+}
+
+func (ru *RemoteUI) sendSlotSettings(ctx context.Context, c *ruClient, slot uint8) {
+	params := make(map[string]string)
+
+	// Slot settings
+	for _, key := range slotSettingKeys {
+		val, err := ru.shm.GetParam(slot, key)
+		if err == nil && val != "" {
+			params[key] = val
+		}
+	}
+
+	// Knob mappings (knob_1_name..knob_8_name, knob_1_value..knob_8_value)
+	for i := 1; i <= 8; i++ {
+		nameKey := fmt.Sprintf("knob_%d_name", i)
+		valKey := fmt.Sprintf("knob_%d_value", i)
+		if name, err := ru.shm.GetParam(slot, nameKey); err == nil && name != "" {
+			params[nameKey] = name
+		}
+		if val, err := ru.shm.GetParam(slot, valKey); err == nil && val != "" {
+			params[valKey] = val
+		}
+	}
+
+	if len(params) > 0 {
+		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: params})
+	}
 }
 
 // sendInitialParamValues reads chain_params to discover keys, then fetches
@@ -364,6 +406,49 @@ func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slo
 	}
 
 	ru.logger.Info("initial params: done", "slot", slot, "comp", comp, "fetched", fetched)
+
+	// Also fetch hierarchy-level params (preset count, index, name) that
+	// aren't in chain_params but are needed by the preset browser.
+	ru.sendHierarchyParams(ctx, c, slot, comp)
+}
+
+// sendHierarchyParams extracts preset-browser params (count_param, list_param,
+// name_param) from the ui_hierarchy and fetches their values.
+func (ru *RemoteUI) sendHierarchyParams(ctx context.Context, c *ruClient, slot uint8, comp string) {
+	raw, err := ru.shm.GetParam(slot, comp+":ui_hierarchy")
+	if err != nil || raw == "" {
+		return
+	}
+
+	// Parse just enough to extract level params
+	var hier struct {
+		Levels map[string]struct {
+			ListParam  string `json:"list_param"`
+			CountParam string `json:"count_param"`
+			NameParam  string `json:"name_param"`
+		} `json:"levels"`
+	}
+	if json.Unmarshal([]byte(raw), &hier) != nil {
+		return
+	}
+
+	params := make(map[string]string)
+	seen := make(map[string]bool)
+	for _, level := range hier.Levels {
+		for _, key := range []string{level.ListParam, level.CountParam, level.NameParam} {
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			fullKey := comp + ":" + key
+			if val, err := ru.shm.GetParam(slot, fullKey); err == nil && val != "" {
+				params[fullKey] = val
+			}
+		}
+	}
+	if len(params) > 0 {
+		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: params})
+	}
 }
 
 func (ru *RemoteUI) handleUnsubscribe(c *ruClient, msg wsMessage) {
@@ -386,6 +471,25 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 	if err := ru.setParam(slot, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_param failed", "slot", slot, "key", msg.Key, "err", err)
 		ru.sendError(ctx, c, "set_param failed: "+err.Error())
+		return
+	}
+
+	// After setting a preset-related param, re-read dependent values
+	// (preset name, count) and push to all subscribers so the browser
+	// preset browser updates immediately.
+	parts := strings.SplitN(msg.Key, ":", 2)
+	if len(parts) == 2 {
+		comp := parts[0]
+		paramKey := parts[1]
+		// Check if this looks like a preset/list param change
+		if paramKey == "preset" || paramKey == "preset_index" || strings.HasSuffix(paramKey, "_index") {
+			go func() {
+				time.Sleep(50 * time.Millisecond) // Let the plugin process the change
+				for _, sub := range ru.subscribedClients(slot) {
+					ru.sendHierarchyParams(ctx, sub, slot, comp)
+				}
+			}()
+		}
 	}
 }
 
@@ -511,9 +615,8 @@ func (ru *RemoteUI) sendMasterFxInfo(ctx context.Context, c *ruClient) {
 }
 
 func (ru *RemoteUI) sendHierarchy(ctx context.Context, c *ruClient, slot uint8, component string) {
-	raw, err := ru.shm.GetParam(slot, component+":ui_hierarchy")
-	if err != nil {
-		ru.logger.Debug("get ui_hierarchy failed", "slot", slot, "component", component, "err", err)
+	raw := ru.getParamWithRetry(slot, component+":ui_hierarchy", 3)
+	if raw == "" {
 		raw = "{}"
 	}
 	var js json.RawMessage
@@ -526,9 +629,8 @@ func (ru *RemoteUI) sendHierarchy(ctx context.Context, c *ruClient, slot uint8, 
 }
 
 func (ru *RemoteUI) sendChainParams(ctx context.Context, c *ruClient, slot uint8, component string) {
-	raw, err := ru.shm.GetParam(slot, component+":chain_params")
-	if err != nil {
-		ru.logger.Debug("get chain_params failed", "slot", slot, "component", component, "err", err)
+	raw := ru.getParamWithRetry(slot, component+":chain_params", 3)
+	if raw == "" {
 		raw = "[]"
 	}
 	var js json.RawMessage
@@ -538,6 +640,23 @@ func (ru *RemoteUI) sendChainParams(ctx context.Context, c *ruClient, slot uint8
 		js = json.RawMessage(raw)
 	}
 	ru.writeJSON(ctx, c, wsChainParams{Type: "chain_params", Slot: slot, Component: component, Data: js})
+}
+
+// getParamWithRetry retries GetParam up to maxRetries times with a short delay.
+// Handles large responses (chain_params, ui_hierarchy) that may timeout on first attempt.
+func (ru *RemoteUI) getParamWithRetry(slot uint8, key string, maxRetries int) string {
+	for i := 0; i < maxRetries; i++ {
+		raw, err := ru.shm.GetParam(slot, key)
+		if err == nil && raw != "" {
+			return raw
+		}
+		if i < maxRetries-1 {
+			ru.logger.Debug("getParam retry", "slot", slot, "key", key, "attempt", i+1, "err", err)
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	ru.logger.Debug("getParam failed after retries", "slot", slot, "key", key)
+	return ""
 }
 
 // moduleCategoryDirs lists the subdirectories under modules/ to search.

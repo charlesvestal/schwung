@@ -646,3 +646,158 @@
 .preset-nav-btn {
     min-width: 44px;
 }
+
+/* Mapped Knobs */
+.mapped-knobs-section .component-header {
+    cursor: default;
+}
+
+.mapped-knob-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-xs) var(--space-md);
+    border-bottom: 1px solid var(--border);
+}
+
+.mapped-knob-item:last-child {
+    border-bottom: none;
+}
+
+.mapped-knob-item .knob-label {
+    font-size: 0.85rem;
+    color: var(--text);
+}
+
+.mapped-knob-item .knob-value {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Slot Settings */
+.slot-settings-section .component-header {
+    cursor: default;
+}
+
+.slot-settings-section .param-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-md);
+    border-bottom: 1px solid var(--border);
+}
+
+.slot-settings-section .param-row:last-child {
+    border-bottom: none;
+}
+
+.slot-settings-section .param-label {
+    flex: 1;
+    font-size: 0.85rem;
+    color: var(--text);
+}
+
+.slot-settings-section .param-value {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 3em;
+    text-align: right;
+}
+
+.slot-settings-section input[type="range"] {
+    flex: 1;
+    max-width: 150px;
+}
+
+.setting-toggle {
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+    min-width: 3em;
+    text-align: center;
+}
+
+.setting-toggle.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.setting-step-btn {
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.9rem;
+    min-width: 2em;
+    text-align: center;
+}
+
+.setting-step-btn:hover {
+    background: var(--bg-card-hover);
+}
+
+.settings-divider {
+    padding: var(--space-sm) var(--space-md);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-top: 1px solid var(--border);
+    margin-top: var(--space-xs);
+}
+
+/* Collapsible LFO sections */
+.lfo-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-top: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.lfo-header:hover {
+    background: var(--bg-card-hover);
+}
+
+.lfo-status {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+
+.lfo-status.active {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.lfo-param-row {
+    padding-left: calc(var(--space-md) + 1.2em);
+}
+
+.lfo-select {
+    flex: 1;
+    max-width: 200px;
+    padding: var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 0.85rem;
+}
