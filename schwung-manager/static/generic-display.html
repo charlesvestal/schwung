@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Generic Display</title>
+<style>
+  body {
+    background: #000; margin: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; height: 100vh;
+    height: 100dvh; touch-action: none;
+    user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none; overflow: hidden;
+  }
+  canvas {
+    image-rendering: pixelated; image-rendering: crisp-edges;
+    max-width: 100vw; max-height: 90vh;
+    border: 2px solid #333; cursor: crosshair;
+  }
+  body.fs canvas { border: none; max-height: 100vh; }
+  body.fs #status { display: none; }
+  #status { color: #888; font: 12px monospace; margin-top: 8px; }
+  #status.connected { color: #4a4; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="status">connecting... (tap canvas to fullscreen)</div>
+<script src="/static/generic-display.js"></script>
+</body>
+</html>

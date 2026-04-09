@@ -31,6 +31,7 @@
 #define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
+#define SHM_DISPLAY_GENERIC "/schwung-display-generic" /* Generic app display */
 #define SHM_WEB_PARAM_SET   "/schwung-web-param-set"   /* Web UI → shim param set ring */
 #define SHM_WEB_PARAM_NOTIFY "/schwung-web-param-notify" /* Shim → web UI param change ring */
 

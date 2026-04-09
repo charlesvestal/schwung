@@ -2699,6 +2699,75 @@ func (app *App) handleModuleWebUIAsset(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, fullPath)
 }
 
+// wsProxyHandler does a raw TCP proxy for WebSocket upgrade requests.
+// It connects to the backend, hijacks the client connection, forwards
+// the original HTTP upgrade request, then does bidirectional io.Copy.
+func wsProxyHandler(backendAddr string, w http.ResponseWriter, r *http.Request, logger *slog.Logger) {
+	backend, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
+	if err != nil {
+		logger.Error("ws proxy: backend connect failed", "err", err)
+		http.Error(w, "Display server unavailable", http.StatusBadGateway)
+		return
+	}
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		backend.Close()
+		http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
+		return
+	}
+	client, bufReader, err := hj.Hijack()
+	if err != nil {
+		backend.Close()
+		logger.Error("ws proxy: hijack failed", "err", err)
+		return
+	}
+
+	// Manually reconstruct the HTTP request for the backend.
+	// Go's HTTP server strips hop-by-hop headers (Connection, Upgrade) from
+	// r.Header, so we must add them back explicitly for the WebSocket upgrade.
+	var reqBuf strings.Builder
+	reqBuf.WriteString(r.Method + " " + r.URL.RequestURI() + " HTTP/1.1\r\n")
+	reqBuf.WriteString("Host: " + backendAddr + "\r\n")
+	reqBuf.WriteString("Connection: Upgrade\r\n")
+	reqBuf.WriteString("Upgrade: websocket\r\n")
+	for key, vals := range r.Header {
+		// Skip headers we already wrote explicitly
+		lk := strings.ToLower(key)
+		if lk == "connection" || lk == "upgrade" || lk == "host" {
+			continue
+		}
+		for _, val := range vals {
+			reqBuf.WriteString(key + ": " + val + "\r\n")
+		}
+	}
+	reqBuf.WriteString("\r\n")
+	_, _ = backend.Write([]byte(reqBuf.String()))
+
+	// Flush any buffered data from the hijacked connection
+	if bufReader != nil && bufReader.Reader.Buffered() > 0 {
+		buffered := make([]byte, bufReader.Reader.Buffered())
+		n, _ := bufReader.Read(buffered)
+		if n > 0 {
+			_, _ = backend.Write(buffered[:n])
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(client, backend)
+		client.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		io.Copy(backend, client)
+		backend.Close()
+	}()
+	wg.Wait()
+}
+
 // hostRouter routes requests based on the Host header.
 // schwungHost requests go to schwungHandler (with /mirror proxied to displayAddr).
 // All other hosts are reverse-proxied to moveAddr (stock Move server).
@@ -2742,6 +2811,12 @@ func hostRouter(schwungHost string, schwungHandler http.Handler, moveAddr, displ
 		}
 
 		if host == schwungHost {
+			// /ws-generic → display server WebSocket (raw TCP proxy for upgrade)
+			if r.URL.Path == "/ws-generic" {
+				wsProxyHandler(displayAddr, w, r, logger)
+				return
+			}
+
 			// /mirror → display server (HTML page and sub-resources)
 			if r.URL.Path == "/mirror" || strings.HasPrefix(r.URL.Path, "/mirror/") {
 				displayProxy.ServeHTTP(w, r)
@@ -2891,6 +2966,11 @@ func main() {
 
 	// Remote UI.
 	mux.HandleFunc("GET /remote-ui", app.handleRemoteUI)
+
+	// Generic display viewer.
+	mux.HandleFunc("GET /generic-display", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, staticFS, "static/generic-display.html")
+	})
 
 	// Install.
 	mux.HandleFunc("GET /install/{id}", app.handleInstallPage)

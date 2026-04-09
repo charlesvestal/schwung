@@ -470,6 +470,7 @@ Key shared memory segments:
 - `/schwung-control` - Control flags and state (shadow_control_t)
 - `/schwung-param` - Parameter get/set requests (shadow_param_t)
 - `/schwung-ui` - UI state for slot info (shadow_ui_state_t)
+- `/schwung-display-generic` - Generic display framebuffer (generic_display_shm_t, see below)
 
 ### Shadow UI Flags
 
@@ -564,6 +565,35 @@ If your overtake module communicates with an external USB device that expects an
 - Send your identification/init message in `init()` immediately
 - Optionally retry periodically in `tick()` until connection is confirmed
 - Detect connection from any valid response (not just the specific handshake message)
+
+## Generic Display
+
+Streams arbitrary full-color framebuffers from standalone applications on Move to a remote browser viewer via WebSocket, with touch/click back-channel.
+
+### Architecture
+
+```
+Standalone App → SHM (/dev/shm/schwung-display-generic) → display_server → WebSocket → Browser
+Browser touch events → WebSocket → display_server → SHM touch fields → App polls
+```
+
+### Key Files
+
+- `src/host/generic_display_shm.h` - SHM header struct (96 bytes + frame data)
+- `src/host/display_server.c` - WebSocket streaming + touch receive
+- `schwung-manager/main.go` - WebSocket proxy (`/ws-generic`)
+- `schwung-manager/static/generic-display.{html,js}` - Browser viewer
+- `tools/generic-display-test.c` - Test producer
+
+### SHM Protocol
+
+The producer creates `/dev/shm/schwung-display-generic`, writes a 96-byte `generic_display_shm_t` header followed by raw pixel data. Supported formats: `rgb888` (3 bpp), `rgba8888` (4 bpp), `gray8` (1 bpp). Touch events are written back into the header by the display server.
+
+The display server auto-discovers the SHM, detects staleness (>3s), and remaps when the producer restarts.
+
+### Browser Endpoint
+
+`http://schwung.local/generic-display` — WebSocket binary frames with 16-byte header (width, height, bpp, counter as LE u32) followed by raw pixels.
 
 ## Module Store
 
@@ -717,6 +747,7 @@ Detailed documentation is in the `docs/` directory:
 - `docs/API.md` - Full JS API reference (display, MIDI, host functions, LED colors)
 - `docs/MODULES.md` - Module development guide (module.json, capabilities, tool_config, DSP plugin API, Signal Chain integration)
 - `docs/LOGGING.md` - Unified logging guide (enable/disable, JS and C APIs, log format)
+- `docs/DISPLAY.md` - Generic Display protocol (SHM format, WebSocket wire format, touch back-channel)
 - `MANUAL.md` - User-facing manual (shortcuts, slots, recording, tools, modules)
 - `BUILDING.md` - Build system and cross-compilation
 
