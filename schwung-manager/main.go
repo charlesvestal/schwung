@@ -2454,16 +2454,9 @@ func (app *App) handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
 }
 
-func (app *App) runDownload(job *downloadJob, url, title string) {
-	if err := os.MkdirAll(downloadOutDir, 0755); err != nil {
-		app.downloadMu.Lock()
-		job.State = "error"
-		job.Error = "mkdir: " + err.Error()
-		app.downloadMu.Unlock()
-		return
-	}
-
-	// Sanitize filename.
+// sanitizeFilename returns a safe filename derived from title, replacing
+// dangerous characters and falling back to "download" if the result is empty.
+func sanitizeFilename(title string) string {
 	name := title
 	if name == "" {
 		name = "download"
@@ -2475,6 +2468,45 @@ func (app *App) runDownload(job *downloadJob, url, title string) {
 	if name == "" {
 		name = "download"
 	}
+	return name
+}
+
+func (app *App) runDownload(job *downloadJob, url, title string) {
+	// Schedule cleanup of the job entry after it reaches a terminal state.
+	defer func() {
+		go func() {
+			time.Sleep(10 * time.Minute)
+			app.downloadMu.Lock()
+			delete(app.downloadJobs, job.ID)
+			app.downloadMu.Unlock()
+		}()
+	}()
+
+	// Validate URL scheme and reject shell-injection characters.
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		app.downloadMu.Lock()
+		job.State = "error"
+		job.Error = "Invalid URL scheme"
+		app.downloadMu.Unlock()
+		return
+	}
+	if strings.ContainsAny(url, "`\x00\n\r") || strings.Contains(url, "$(") {
+		app.downloadMu.Lock()
+		job.State = "error"
+		job.Error = "Invalid URL characters"
+		app.downloadMu.Unlock()
+		return
+	}
+
+	if err := os.MkdirAll(downloadOutDir, 0755); err != nil {
+		app.downloadMu.Lock()
+		job.State = "error"
+		job.Error = "mkdir: " + err.Error()
+		app.downloadMu.Unlock()
+		return
+	}
+
+	name := sanitizeFilename(title)
 
 	// Deduplicate.
 	outPath := filepath.Join(downloadOutDir, name+".wav")
@@ -2487,6 +2519,13 @@ func (app *App) runDownload(job *downloadJob, url, title string) {
 			}
 		}
 	}
+	if _, err := os.Stat(outPath); err == nil {
+		app.downloadMu.Lock()
+		job.State = "error"
+		job.Error = "Too many files with same name"
+		app.downloadMu.Unlock()
+		return
+	}
 
 	ytdlp := filepath.Join(webstreamBinDir, "yt-dlp")
 	ffmpeg := filepath.Join(webstreamBinDir, "ffmpeg")
@@ -2496,7 +2535,9 @@ func (app *App) runDownload(job *downloadJob, url, title string) {
 		ytdlp, url, ffmpeg, outPath,
 	)
 
-	cmd := exec.Command("sh", "-c", cmdStr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	if err := cmd.Run(); err != nil {
 		app.downloadMu.Lock()
 		job.State = "error"
@@ -2545,6 +2586,10 @@ func (app *App) handleAPIOpenInTool(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.FilePath == "" || req.ToolID == "" {
 		http.Error(w, "missing file_path or tool_id", http.StatusBadRequest)
+		return
+	}
+	if !strings.HasPrefix(req.FilePath, "/data/UserData/") {
+		http.Error(w, `{"error":"invalid file path"}`, http.StatusBadRequest)
 		return
 	}
 
