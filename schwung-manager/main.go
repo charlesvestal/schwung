@@ -2586,6 +2586,10 @@ func main() {
 		shmParams:  shmParams,
 	}
 
+	// Clear any stale upgrade_status from a previous upgrade that
+	// didn't clean up (e.g., the old manager was killed mid-upgrade).
+	app.setUpgradeStatus("")
+
 	mux := http.NewServeMux()
 
 	// Static files.
