@@ -5,6 +5,9 @@
  * Reads /dev/shm/schwung-display-live (1024 bytes, written by the shim)
  * and pushes base64-encoded frames to connected browser clients at ~30 Hz.
  *
+ * Also supports WebSocket streaming of generic display frames (arbitrary
+ * resolution, full-color) from shared memory, with touch back-channel.
+ *
  * Usage: display-server [port]   (default port 7681)
  */
 
@@ -16,15 +19,88 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "generic_display_shm.h"
 #include "norns_display_shm.h"
 #include "unified_log.h"
+
+/* ------------------------------------------------------------------ */
+/* Minimal SHA-1 implementation (public domain, RFC 3174)              */
+/* Required for WebSocket handshake (Sec-WebSocket-Accept).            */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    uint32_t state[5];
+    uint64_t count;
+    uint8_t  buffer[64];
+} sha1_ctx;
+
+static void sha1_init(sha1_ctx *c) {
+    c->state[0] = 0x67452301; c->state[1] = 0xEFCDAB89;
+    c->state[2] = 0x98BADCFE; c->state[3] = 0x10325476;
+    c->state[4] = 0xC3D2E1F0; c->count = 0;
+}
+
+#define SHA1_ROL(v,b) (((v)<<(b))|((v)>>(32-(b))))
+#define SHA1_BLK(i) (block[i&15] = SHA1_ROL(block[(i+13)&15]^block[(i+8)&15]^block[(i+2)&15]^block[i&15],1))
+
+static void sha1_transform(uint32_t state[5], const uint8_t buf[64]) {
+    uint32_t a,b,c,d,e, block[16];
+    for (int i=0;i<16;i++)
+        block[i]=(uint32_t)buf[i*4]<<24|(uint32_t)buf[i*4+1]<<16|
+                 (uint32_t)buf[i*4+2]<<8|(uint32_t)buf[i*4+3];
+    a=state[0]; b=state[1]; c=state[2]; d=state[3]; e=state[4];
+    for (int i=0;i<80;i++) {
+        uint32_t f,k,w=(i<16)?block[i]:SHA1_BLK(i);
+        if      (i<20) { f=(b&c)|((~b)&d);       k=0x5A827999; }
+        else if (i<40) { f=b^c^d;                 k=0x6ED9EBA1; }
+        else if (i<60) { f=(b&c)|(b&d)|(c&d);     k=0x8F1BBCDC; }
+        else           { f=b^c^d;                 k=0xCA62C1D6; }
+        uint32_t t=SHA1_ROL(a,5)+f+e+k+w;
+        e=d; d=c; c=SHA1_ROL(b,30); b=a; a=t;
+    }
+    state[0]+=a; state[1]+=b; state[2]+=c; state[3]+=d; state[4]+=e;
+}
+
+static void sha1_update(sha1_ctx *c, const uint8_t *data, size_t len) {
+    size_t idx = (size_t)(c->count & 63);
+    c->count += len;
+    for (size_t i=0; i<len; i++) {
+        c->buffer[idx++] = data[i];
+        if (idx==64) { sha1_transform(c->state, c->buffer); idx=0; }
+    }
+}
+
+static void sha1_final(sha1_ctx *c, uint8_t digest[20]) {
+    size_t idx = (size_t)(c->count & 63);
+    c->buffer[idx++] = 0x80;
+    if (idx>56) { while(idx<64) c->buffer[idx++]=0; sha1_transform(c->state,c->buffer); idx=0; memset(c->buffer,0,64); }
+    while(idx<56) c->buffer[idx++]=0;
+    uint64_t bits=c->count*8;
+    for (int i=7;i>=0;i--) c->buffer[56+(7-i)]=(uint8_t)(bits>>(i*8));
+    sha1_transform(c->state,c->buffer);
+    for (int i=0;i<5;i++) {
+        digest[i*4]=(uint8_t)(c->state[i]>>24); digest[i*4+1]=(uint8_t)(c->state[i]>>16);
+        digest[i*4+2]=(uint8_t)(c->state[i]>>8); digest[i*4+3]=(uint8_t)(c->state[i]);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* WebSocket constants                                                 */
+/* ------------------------------------------------------------------ */
+#define WS_GUID    "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define WS_OP_TEXT   0x01
+#define WS_OP_BINARY 0x02
+#define WS_OP_CLOSE  0x08
+#define WS_OP_PING   0x09
+#define WS_OP_PONG   0x0A
 
 #define DEFAULT_PORT       7681
 #define SHM_PATH           "/dev/shm/schwung-display-live"
@@ -70,6 +146,7 @@ typedef enum {
     STREAM_MODE_NONE = 0,
     STREAM_MODE_LEGACY = 1,
     STREAM_MODE_AUTO = 2,
+    STREAM_MODE_WS_GENERIC = 3,
 } stream_mode_t;
 
 typedef enum {
@@ -84,6 +161,9 @@ typedef struct {
     int needs_initial_frame;
     char buf[CLIENT_BUF_SIZE];
     int buf_len;
+    /* WebSocket receive state */
+    uint8_t ws_buf[8192];
+    int ws_buf_len;
 } client_t;
 
 static client_t clients[MAX_CLIENTS];
@@ -233,16 +313,162 @@ static int norns_frame_is_live(const norns_display_shm_t *shm, long long now) {
     return age_ms >= 0 && age_ms <= NORNS_STALE_MS;
 }
 
+/* ------------------------------------------------------------------ */
+/* WebSocket helpers                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Perform WebSocket handshake: read Sec-WebSocket-Key from the already-
+   buffered HTTP request, compute SHA-1 + base64 accept value, send 101. */
+/* Case-insensitive substring search */
+static char *strcasestr_local(const char *haystack, const char *needle) {
+    size_t nlen = strlen(needle);
+    for (; *haystack; haystack++) {
+        if (strncasecmp(haystack, needle, nlen) == 0)
+            return (char *)haystack;
+    }
+    return NULL;
+}
+
+static int ws_handshake(int idx) {
+    char *key_start = strcasestr_local(clients[idx].buf, "Sec-WebSocket-Key:");
+    if (!key_start) return -1;
+    key_start += 18; /* skip header name + colon */
+    while (*key_start == ' ') key_start++;
+    char *key_end = strstr(key_start, "\r\n");
+    if (!key_end) return -1;
+    int key_len = (int)(key_end - key_start);
+    if (key_len <= 0 || key_len > 64) return -1;
+
+    /* Concatenate key + GUID */
+    char concat[128];
+    memcpy(concat, key_start, key_len);
+    memcpy(concat + key_len, WS_GUID, 36);
+    int concat_len = key_len + 36;
+
+    /* SHA-1 hash */
+    sha1_ctx ctx;
+    sha1_init(&ctx);
+    sha1_update(&ctx, (const uint8_t *)concat, concat_len);
+    uint8_t digest[20];
+    sha1_final(&ctx, digest);
+
+    /* Base64 encode the digest */
+    char accept_b64[32];
+    base64_encode(digest, 20, accept_b64);
+
+    /* Send 101 Switching Protocols */
+    char resp[512];
+    int resp_len = snprintf(resp, sizeof(resp),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n"
+        "\r\n", accept_b64);
+    if (write(clients[idx].fd, resp, resp_len) <= 0) return -1;
+    return 0;
+}
+
+/* Send a binary WebSocket frame (server -> client, unmasked).
+   Supports payloads up to 2MB (uses 64-bit extended length for >65535). */
+static int ws_send_binary(int fd, const uint8_t *data, size_t len) {
+    uint8_t hdr[10];
+    int hdr_len;
+    hdr[0] = 0x80 | WS_OP_BINARY; /* FIN + binary opcode */
+    if (len < 126) {
+        hdr[1] = (uint8_t)len;
+        hdr_len = 2;
+    } else if (len <= 65535) {
+        hdr[1] = 126;
+        hdr[2] = (uint8_t)(len >> 8);
+        hdr[3] = (uint8_t)(len & 0xFF);
+        hdr_len = 4;
+    } else {
+        hdr[1] = 127;
+        hdr[2] = 0; hdr[3] = 0; hdr[4] = 0; hdr[5] = 0;
+        hdr[6] = (uint8_t)(len >> 24);
+        hdr[7] = (uint8_t)(len >> 16);
+        hdr[8] = (uint8_t)(len >> 8);
+        hdr[9] = (uint8_t)(len);
+        hdr_len = 10;
+    }
+    struct iovec iov[2];
+    iov[0].iov_base = hdr;
+    iov[0].iov_len = hdr_len;
+    iov[1].iov_base = (void *)data;
+    iov[1].iov_len = len;
+    ssize_t sent = writev(fd, iov, 2);
+    return (sent == (ssize_t)(hdr_len + len)) ? 0 : -1;
+}
+
+/* Receive and unmask a WebSocket frame from the client's ws_buf.
+   Returns the opcode on success, -1 if not enough data yet, -2 on error.
+   Consumed bytes are removed from ws_buf. */
+static int ws_recv_frame(client_t *c, uint8_t *payload, int *payload_len, int max_len) {
+    if (c->ws_buf_len < 2) return -1;
+    int offset = 0;
+    uint8_t b0 = c->ws_buf[0], b1 = c->ws_buf[1];
+    int opcode = b0 & 0x0F;
+    int masked = (b1 >> 7) & 1;
+    uint64_t plen = b1 & 0x7F;
+    offset = 2;
+    if (plen == 126) {
+        if (c->ws_buf_len < 4) return -1;
+        plen = ((uint64_t)c->ws_buf[2] << 8) | c->ws_buf[3];
+        offset = 4;
+    } else if (plen == 127) {
+        if (c->ws_buf_len < 10) return -1;
+        plen = 0;
+        for (int i = 0; i < 8; i++)
+            plen = (plen << 8) | c->ws_buf[2 + i];
+        offset = 10;
+    }
+    int mask_offset = offset;
+    if (masked) offset += 4;
+    if ((uint64_t)c->ws_buf_len < offset + plen) return -1;
+    if (plen > (uint64_t)max_len) return -2; /* frame too large */
+
+    /* Unmask */
+    uint8_t *src = c->ws_buf + offset;
+    if (masked) {
+        uint8_t *mask = c->ws_buf + mask_offset;
+        for (uint64_t i = 0; i < plen; i++)
+            payload[i] = src[i] ^ mask[i & 3];
+    } else {
+        memcpy(payload, src, (size_t)plen);
+    }
+    *payload_len = (int)plen;
+
+    /* Remove consumed bytes */
+    int consumed = offset + (int)plen;
+    c->ws_buf_len -= consumed;
+    if (c->ws_buf_len > 0)
+        memmove(c->ws_buf, c->ws_buf + consumed, c->ws_buf_len);
+    return opcode;
+}
+
+/* Send a WebSocket pong frame with the given payload */
+static void ws_send_pong(int fd, const uint8_t *data, int len) {
+    uint8_t hdr[2];
+    hdr[0] = 0x80 | WS_OP_PONG;
+    hdr[1] = (len < 126) ? (uint8_t)len : 0;
+    (void)write(fd, hdr, 2);
+    if (len > 0 && len < 126)
+        (void)write(fd, data, len);
+}
+
 /* Close and clear a client slot */
 static void client_remove(int idx) {
     if (clients[idx].fd >= 0) {
-        if (clients[idx].stream_mode != STREAM_MODE_NONE)
+        if (clients[idx].stream_mode == STREAM_MODE_WS_GENERIC)
+            LOG_INFO(DISPLAY_LOG_SOURCE, "WS client disconnected (slot %d)", idx);
+        else if (clients[idx].stream_mode != STREAM_MODE_NONE)
             LOG_INFO(DISPLAY_LOG_SOURCE, "SSE client disconnected (slot %d)", idx);
         close(clients[idx].fd);
     }
     clients[idx].fd = -1;
     clients[idx].stream_mode = STREAM_MODE_NONE;
     clients[idx].buf_len = 0;
+    clients[idx].ws_buf_len = 0;
 }
 
 /* Send a complete HTTP response and close */
@@ -268,7 +494,16 @@ static void send_response(int idx, int code, const char *ctype,
 static void handle_http(int idx) {
     clients[idx].buf[clients[idx].buf_len] = '\0';
 
-    if (strncmp(clients[idx].buf, "GET /stream-auto", 16) == 0) {
+    if (strncmp(clients[idx].buf, "GET /ws-generic", 15) == 0) {
+        /* WebSocket upgrade for generic display */
+        if (ws_handshake(idx) == 0) {
+            clients[idx].stream_mode = STREAM_MODE_WS_GENERIC;
+            clients[idx].ws_buf_len = 0;
+            LOG_INFO(DISPLAY_LOG_SOURCE, "WS generic client connected (slot %d)", idx);
+        } else {
+            send_response(idx, 400, "text/plain", "Bad Request", 11);
+        }
+    } else if (strncmp(clients[idx].buf, "GET /stream-auto", 16) == 0) {
         const char *sse_header =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream\r\n"
@@ -332,6 +567,21 @@ int main(int argc, char *argv[]) {
     norns_display_shm_t *norns_shm_ptr = NULL;
     int norns_shm_fd = -1;
     long long last_norns_shm_attempt = 0;
+
+    /* Generic display SHM */
+    generic_display_shm_t *generic_shm_ptr = NULL;
+    int generic_shm_fd = -1;
+    size_t generic_shm_size = 0;
+    long long last_generic_shm_attempt = 0;
+    uint32_t last_generic_frame_counter = 0;
+
+    /* Scratch buffer for WS frame assembly (up to 2MB) */
+    uint8_t *ws_scratch = malloc(2 * 1024 * 1024);
+    if (!ws_scratch) {
+        LOG_ERROR(DISPLAY_LOG_SOURCE, "failed to allocate WS scratch buffer");
+        unified_log_shutdown();
+        return 1;
+    }
 
     /* Listen socket */
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -407,6 +657,47 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+        /* Try to open generic display SHM (O_RDWR for touch back-channel) */
+        if (!generic_shm_ptr) {
+            long long now = now_ms();
+            if (now - last_generic_shm_attempt >= SHM_RETRY_MS) {
+                last_generic_shm_attempt = now;
+                generic_shm_fd = open(GENERIC_DISPLAY_SHM_PATH, O_RDWR);
+                if (generic_shm_fd >= 0) {
+                    /* First map just the header to read dimensions */
+                    generic_display_shm_t *hdr = mmap(NULL, GENERIC_DISPLAY_HEADER_SIZE,
+                                                       PROT_READ | PROT_WRITE, MAP_SHARED,
+                                                       generic_shm_fd, 0);
+                    if (hdr == MAP_FAILED) {
+                        close(generic_shm_fd);
+                        generic_shm_fd = -1;
+                    } else if (memcmp(hdr->magic, GENERIC_DISPLAY_MAGIC, 8) != 0 ||
+                               hdr->version != 1 || hdr->bytes_per_frame == 0) {
+                        munmap(hdr, GENERIC_DISPLAY_HEADER_SIZE);
+                        close(generic_shm_fd);
+                        generic_shm_fd = -1;
+                    } else {
+                        /* Remap with full size (header + frame data) */
+                        size_t total = GENERIC_DISPLAY_HEADER_SIZE + hdr->bytes_per_frame;
+                        munmap(hdr, GENERIC_DISPLAY_HEADER_SIZE);
+                        generic_shm_ptr = mmap(NULL, total, PROT_READ | PROT_WRITE,
+                                               MAP_SHARED, generic_shm_fd, 0);
+                        if (generic_shm_ptr == MAP_FAILED) {
+                            generic_shm_ptr = NULL;
+                            close(generic_shm_fd);
+                            generic_shm_fd = -1;
+                        } else {
+                            generic_shm_size = total;
+                            last_generic_frame_counter = generic_shm_ptr->frame_counter;
+                            LOG_INFO(DISPLAY_LOG_SOURCE, "opened %s (%ux%u, %u bpp)",
+                                     GENERIC_DISPLAY_SHM_PATH,
+                                     generic_shm_ptr->width, generic_shm_ptr->height,
+                                     generic_shm_ptr->bytes_per_pixel);
+                        }
+                    }
+                }
+            }
+        }
 
         /* Build fd_set for select */
         fd_set rfds;
@@ -415,7 +706,9 @@ int main(int argc, char *argv[]) {
         int maxfd = srv;
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].fd >= 0 && clients[i].stream_mode == STREAM_MODE_NONE) {
+            if (clients[i].fd >= 0 &&
+                (clients[i].stream_mode == STREAM_MODE_NONE ||
+                 clients[i].stream_mode == STREAM_MODE_WS_GENERIC)) {
                 FD_SET(clients[i].fd, &rfds);
                 if (clients[i].fd > maxfd) maxfd = clients[i].fd;
             }
@@ -445,7 +738,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* Read from non-streaming clients */
+        /* Read from non-streaming clients (HTTP) */
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_NONE) continue;
             if (nready > 0 && FD_ISSET(clients[i].fd, &rfds)) {
@@ -458,6 +751,52 @@ int main(int argc, char *argv[]) {
                 clients[i].buf[clients[i].buf_len] = '\0';
                 if (strstr(clients[i].buf, "\r\n\r\n")) {
                     handle_http(i);
+                }
+            }
+        }
+
+        /* Read from WebSocket clients (touch events, ping/pong, close) */
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_WS_GENERIC) continue;
+            if (nready > 0 && FD_ISSET(clients[i].fd, &rfds)) {
+                int space = (int)sizeof(clients[i].ws_buf) - clients[i].ws_buf_len;
+                if (space <= 0) { client_remove(i); continue; }
+                int n = read(clients[i].fd, clients[i].ws_buf + clients[i].ws_buf_len, space);
+                if (n == 0) { client_remove(i); continue; }  /* EOF */
+                if (n < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) continue; /* no data yet */
+                    client_remove(i); continue;  /* real error */
+                }
+                clients[i].ws_buf_len += n;
+
+                /* Process all complete frames in buffer */
+                uint8_t ws_payload[1024];
+                int ws_plen;
+                int opcode;
+                while ((opcode = ws_recv_frame(&clients[i], ws_payload, &ws_plen, (int)sizeof(ws_payload))) >= 0) {
+                    if (opcode == WS_OP_CLOSE) {
+                        client_remove(i);
+                        break;
+                    } else if (opcode == WS_OP_PING) {
+                        ws_send_pong(clients[i].fd, ws_payload, ws_plen);
+                    } else if (opcode == WS_OP_TEXT && generic_shm_ptr) {
+                        /* Parse touch JSON: {"x":N,"y":N,"state":N} */
+                        ws_payload[ws_plen] = '\0';
+                        char *px = strstr((char *)ws_payload, "\"x\":");
+                        char *py = strstr((char *)ws_payload, "\"y\":");
+                        char *ps = strstr((char *)ws_payload, "\"state\":");
+                        if (px && py && ps) {
+                            uint32_t tx = (uint32_t)atoi(px + 4);
+                            uint32_t ty = (uint32_t)atoi(py + 4);
+                            uint32_t ts = (uint32_t)atoi(ps + 8);
+                            generic_shm_ptr->touch_x = tx;
+                            generic_shm_ptr->touch_y = ty;
+                            generic_shm_ptr->touch_state = ts;
+                            __sync_synchronize();
+                            generic_shm_ptr->touch_counter++;
+                            __sync_synchronize();
+                        }
+                    }
                 }
             }
         }
@@ -593,6 +932,72 @@ int main(int argc, char *argv[]) {
                         }
                     }
                 }
+
+                /* Detect stale generic SHM and remap if producer restarted */
+                if (generic_shm_ptr) {
+                    long long stale_age = now - (long long)generic_shm_ptr->last_update_ms;
+                    if (stale_age > GENERIC_STALE_MS * 2 ||
+                        !generic_shm_ptr->active ||
+                        memcmp(generic_shm_ptr->magic, GENERIC_DISPLAY_MAGIC, 8) != 0) {
+                        LOG_INFO(DISPLAY_LOG_SOURCE, "generic SHM stale, unmapping for re-discovery");
+                        munmap(generic_shm_ptr, generic_shm_size);
+                        generic_shm_ptr = NULL;
+                        if (generic_shm_fd >= 0) { close(generic_shm_fd); generic_shm_fd = -1; }
+                        last_generic_shm_attempt = 0; /* retry immediately */
+                    }
+                }
+
+                /* Push generic display frames via WebSocket */
+                if (generic_shm_ptr &&
+                    generic_shm_ptr->active &&
+                    memcmp(generic_shm_ptr->magic, GENERIC_DISPLAY_MAGIC, 8) == 0) {
+                    /* Check staleness */
+                    long long age = now - (long long)generic_shm_ptr->last_update_ms;
+                    if (age >= 0 && age <= GENERIC_STALE_MS &&
+                        generic_shm_ptr->frame_counter != last_generic_frame_counter) {
+                        uint32_t w = generic_shm_ptr->width;
+                        uint32_t h = generic_shm_ptr->height;
+                        uint32_t bpp = generic_shm_ptr->bytes_per_pixel;
+                        uint32_t fc = generic_shm_ptr->frame_counter;
+                        uint32_t frame_bytes = generic_shm_ptr->bytes_per_frame;
+
+                        /* Sanity check: frame must fit in scratch buffer */
+                        size_t total_ws = 16 + frame_bytes; /* 16-byte header + pixels */
+                        if (total_ws <= 2 * 1024 * 1024 && frame_bytes > 0) {
+                            /* Build 16-byte binary header (all LE) */
+                            ws_scratch[0]  = (uint8_t)(w);
+                            ws_scratch[1]  = (uint8_t)(w >> 8);
+                            ws_scratch[2]  = (uint8_t)(w >> 16);
+                            ws_scratch[3]  = (uint8_t)(w >> 24);
+                            ws_scratch[4]  = (uint8_t)(h);
+                            ws_scratch[5]  = (uint8_t)(h >> 8);
+                            ws_scratch[6]  = (uint8_t)(h >> 16);
+                            ws_scratch[7]  = (uint8_t)(h >> 24);
+                            ws_scratch[8]  = (uint8_t)(bpp);
+                            ws_scratch[9]  = (uint8_t)(bpp >> 8);
+                            ws_scratch[10] = (uint8_t)(bpp >> 16);
+                            ws_scratch[11] = (uint8_t)(bpp >> 24);
+                            ws_scratch[12] = (uint8_t)(fc);
+                            ws_scratch[13] = (uint8_t)(fc >> 8);
+                            ws_scratch[14] = (uint8_t)(fc >> 16);
+                            ws_scratch[15] = (uint8_t)(fc >> 24);
+
+                            /* Copy frame pixels */
+                            const uint8_t *frame_data =
+                                (const uint8_t *)generic_shm_ptr + GENERIC_DISPLAY_HEADER_SIZE;
+                            memcpy(ws_scratch + 16, frame_data, frame_bytes);
+
+                            /* Send to all WS_GENERIC clients */
+                            for (int i = 0; i < MAX_CLIENTS; i++) {
+                                if (clients[i].fd < 0 ||
+                                    clients[i].stream_mode != STREAM_MODE_WS_GENERIC) continue;
+                                if (ws_send_binary(clients[i].fd, ws_scratch, total_ws) != 0)
+                                    client_remove(i);
+                            }
+                            last_generic_frame_counter = fc;
+                        }
+                    }
+                }
             }
         }
     }
@@ -606,6 +1011,9 @@ int main(int argc, char *argv[]) {
     if (shm_fd >= 0) close(shm_fd);
     if (norns_shm_ptr) munmap(norns_shm_ptr, sizeof(norns_display_shm_t));
     if (norns_shm_fd >= 0) close(norns_shm_fd);
+    if (generic_shm_ptr) munmap(generic_shm_ptr, generic_shm_size);
+    if (generic_shm_fd >= 0) close(generic_shm_fd);
+    free(ws_scratch);
     unified_log_shutdown();
     return 0;
 }

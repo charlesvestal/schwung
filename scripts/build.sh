@@ -572,6 +572,19 @@ else
     echo "Skipping display server (up to date)"
 fi
 
+# Build generic display test tool
+if needs_rebuild build/generic-display-test \
+    tools/generic-display-test.c src/host/generic_display_shm.h; then
+    echo "Building generic display test..."
+    "${CROSS_PREFIX}gcc" -g -O2 \
+        tools/generic-display-test.c \
+        -o build/generic-display-test \
+        -Isrc/host \
+        -lrt
+else
+    echo "Skipping generic display test (up to date)"
+fi
+
 # Build JACK shadow driver (loaded by jackd when RNBO/JACK is used)
 if needs_rebuild build/lib/jack/jack_shadow.so \
     src/lib/jack2/shadow/JackShadowDriver.cpp \

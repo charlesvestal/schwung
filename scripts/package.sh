@@ -44,6 +44,11 @@ if [ -f "./display-server" ]; then
     ITEMS="$ITEMS ./display-server"
 fi
 
+# Add generic-display-test if it was built
+if [ -f "./generic-display-test" ]; then
+    ITEMS="$ITEMS ./generic-display-test"
+fi
+
 # Add schwung-manager if it was built
 if [ -f "./schwung-manager" ]; then
     ITEMS="$ITEMS ./schwung-manager"
