@@ -34,13 +34,15 @@
             <dt>Min Host Version</dt>
             <dd>{{.Module.MinHostVer}}</dd>
 
+            {{range $grp := .AssetGroups}}
             {{if .FileStatuses}}
-            <dt>{{.ModuleAssets.Label}}</dt>
+            <dt>{{.Assets.Label}}</dt>
             <dd>
-                <p class="asset-description">{{.ModuleAssets.Description}}</p>
-                {{if .ModuleAssets.Hint}}<p class="text-muted asset-hint">{{.ModuleAssets.Hint}}</p>{{end}}
-                <div class="asset-dropzone" id="asset-dropzone">
-                <div class="asset-dropzone-overlay" id="asset-dropzone-overlay">Drop files to upload</div>
+                <p class="asset-description">{{.Assets.Description}}</p>
+                {{if .Assets.Hint}}<p class="text-muted asset-hint">{{.Assets.Hint}}</p>{{end}}
+                {{if .Assets.HintURL}}<p class="text-muted asset-hint"><a href="{{.Assets.HintURL}}" target="_blank" rel="noopener">{{if .Assets.HintURLLabel}}{{.Assets.HintURLLabel}}{{else}}More info{{end}}</a></p>{{end}}
+                <div class="asset-dropzone" data-asset-path="{{.Assets.Path}}">
+                <div class="asset-dropzone-overlay">Drop files to upload</div>
                 <table class="asset-table" role="table">
                     <thead>
                         <tr>
@@ -74,18 +76,18 @@
                             </td>
                             <td class="asset-actions">
                                 {{if .Present}}
-                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/upload/{{.Filename}}" enctype="multipart/form-data" class="inline-form asset-upload-form">
+                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/upload/{{.Filename}}?assetPath={{$grp.Assets.Path}}" enctype="multipart/form-data" class="inline-form asset-upload-form">
                                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                                     <label class="btn btn-secondary btn-small asset-upload-btn">
                                         Replace <input type="file" name="file" hidden>
                                     </label>
                                 </form>
-                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/delete/{{.Filename}}" class="inline-form" data-confirm="Delete {{.Filename}}?" data-confirm-title="Delete Asset" data-confirm-label="Delete" data-confirm-danger="true">
+                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/delete/{{.Filename}}?assetPath={{$grp.Assets.Path}}" class="inline-form" data-confirm="Delete {{.Filename}}?" data-confirm-title="Delete Asset" data-confirm-label="Delete" data-confirm-danger="true">
                                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                                     <button type="submit" class="btn btn-danger btn-small">Delete</button>
                                 </form>
                                 {{else}}
-                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/upload/{{.Filename}}" enctype="multipart/form-data" class="inline-form asset-upload-form">
+                                <form method="POST" action="/modules/{{$.Module.ID}}/assets/upload/{{.Filename}}?assetPath={{$grp.Assets.Path}}" enctype="multipart/form-data" class="inline-form asset-upload-form">
                                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                                     <label class="btn btn-primary btn-small asset-upload-btn">
                                         Upload <input type="file" name="file" hidden>
@@ -106,7 +108,7 @@
                     <br>
                     {{if .Exists}}
                         <span class="text-muted">{{.FileCount}} file{{if ne .FileCount 1}}s{{end}} installed</span>
-                        <a href="/files?path={{$.AssetsDir}}/{{.Path}}" class="btn btn-secondary btn-small">Manage</a>
+                        <a href="/files?path={{$grp.AssetsDir}}/{{.Path}}" class="btn btn-secondary btn-small">Manage</a>
                     {{else}}
                         <span class="text-muted">Not created</span>
                     {{end}}
@@ -114,13 +116,18 @@
                 {{end}}
             </dd>
 
-            {{else if .ModuleAssets}}
-            <dt>{{.ModuleAssets.Label}}</dt>
-            <dd class="requires-note">
-                {{.ModuleAssets.Description}}
-                {{if .ModuleAssets.Hint}}<br><small class="text-muted">{{.ModuleAssets.Hint}}</small>{{end}}
+            {{else}}
+            <dt>{{.Assets.Label}}</dt>
+            <dd>
+                {{if .Assets.Description}}<p class="asset-description">{{.Assets.Description}}</p>{{end}}
+                {{if .Assets.Hint}}<p class="text-muted asset-hint">{{.Assets.Hint}}</p>{{end}}
+                {{if .AssetsDir}}
+                <a href="/files?path={{.AssetsDir}}" class="btn btn-secondary btn-small">Manage {{.Assets.Label}}</a>
+                {{end}}
             </dd>
-            {{else if .Module.Requires}}
+            {{end}}
+            {{end}}
+            {{if and (not .AssetGroups) .Module.Requires}}
             <dt>Requires</dt>
             <dd class="requires-note">{{.Module.Requires}}</dd>
             {{end}}
@@ -245,99 +252,95 @@ document.querySelectorAll('.asset-upload-form input[type="file"]').forEach(funct
     });
 });
 
-/* Drag-and-drop multi-file upload */
+/* Drag-and-drop multi-file upload — supports multiple asset dropzones */
 (function() {
-    var dropzone = document.getElementById('asset-dropzone');
-    var dzOverlay = document.getElementById('asset-dropzone-overlay');
-    if (!dropzone) return;
+    var dropzones = document.querySelectorAll('.asset-dropzone');
+    if (!dropzones.length) return;
 
-    /* Build maps: slot filename -> upload URL, and alias (original name from label) -> upload URL */
+    /* Build global maps across all dropzones */
     var slotMap = {};
     var aliasMap = {};
-    dropzone.querySelectorAll('.asset-row').forEach(function(row) {
-        var form = row.querySelector('.asset-upload-form');
-        if (!form) return;
-        var action = form.getAttribute('action');
-        var slot = row.getAttribute('data-slot');
-        var label = row.getAttribute('data-label') || '';
-        if (slot) slotMap[slot] = action;
-        /* Extract original filename from parenthetical in label, e.g. "Virus B firmware (access_virus_b_am29f040b_4v9.BIN)" */
-        var match = label.match(/\((.+)\)\s*$/);
-        if (match) aliasMap[match[1]] = action;
+    dropzones.forEach(function(dz) {
+        dz.querySelectorAll('.asset-row').forEach(function(row) {
+            var form = row.querySelector('.asset-upload-form');
+            if (!form) return;
+            var action = form.getAttribute('action');
+            var slot = row.getAttribute('data-slot');
+            var label = row.getAttribute('data-label') || '';
+            if (slot) slotMap[slot] = action;
+            var match = label.match(/\((.+)\)\s*$/);
+            if (match) aliasMap[match[1]] = action;
+        });
     });
 
-    var dragCounter = 0;
-    dropzone.addEventListener('dragenter', function(e) {
-        e.preventDefault();
-        dragCounter++;
-        dropzone.classList.add('dragover');
-    });
-    dropzone.addEventListener('dragleave', function(e) {
-        e.preventDefault();
-        dragCounter--;
-        if (dragCounter <= 0) {
+    dropzones.forEach(function(dropzone) {
+        var dragCounter = 0;
+        dropzone.addEventListener('dragenter', function(e) {
+            e.preventDefault();
+            dragCounter++;
+            dropzone.classList.add('dragover');
+        });
+        dropzone.addEventListener('dragleave', function(e) {
+            e.preventDefault();
+            dragCounter--;
+            if (dragCounter <= 0) { dragCounter = 0; dropzone.classList.remove('dragover'); }
+        });
+        dropzone.addEventListener('dragover', function(e) { e.preventDefault(); });
+        dropzone.addEventListener('drop', function(e) {
+            e.preventDefault();
             dragCounter = 0;
             dropzone.classList.remove('dragover');
-        }
-    });
-    dropzone.addEventListener('dragover', function(e) {
-        e.preventDefault();
-    });
-    dropzone.addEventListener('drop', function(e) {
-        e.preventDefault();
-        dragCounter = 0;
-        dropzone.classList.remove('dragover');
 
-        var files = Array.from(e.dataTransfer.files);
-        if (files.length === 0) return;
+            var files = Array.from(e.dataTransfer.files);
+            if (files.length === 0) return;
 
-        /* Match dropped files to slots by slot filename or original name alias */
-        var matched = [];
-        var unmatched = [];
-        var usedUrls = {};
-        files.forEach(function(file) {
-            var url = slotMap[file.name] || aliasMap[file.name];
-            if (url && !usedUrls[url]) {
-                matched.push({ file: file, url: url });
-                usedUrls[url] = true;
-            } else if (!url) {
-                unmatched.push(file.name);
-            }
-        });
-
-        if (matched.length === 0) {
-            alert('No dropped files matched expected asset filenames:\n' + Object.keys(slotMap).join('\n'));
-            return;
-        }
-
-        var overlay = document.getElementById('action-overlay');
-        var text = document.getElementById('action-overlay-text');
-        var csrfToken = document.querySelector('input[name="csrf_token"]').value;
-
-        var idx = 0;
-        function uploadNext() {
-            if (idx >= matched.length) {
-                if (unmatched.length > 0) {
-                    text.textContent = 'Skipped: ' + unmatched.join(', ');
-                    setTimeout(function() { location.reload(); }, 1500);
-                } else {
-                    location.reload();
+            var matched = [];
+            var unmatched = [];
+            var usedUrls = {};
+            files.forEach(function(file) {
+                var url = slotMap[file.name] || aliasMap[file.name];
+                if (url && !usedUrls[url]) {
+                    matched.push({ file: file, url: url });
+                    usedUrls[url] = true;
+                } else if (!url) {
+                    unmatched.push(file.name);
                 }
+            });
+
+            if (matched.length === 0) {
+                alert('No dropped files matched expected asset filenames:\n' + Object.keys(slotMap).join('\n'));
                 return;
             }
-            var m = matched[idx];
-            text.textContent = 'Uploading ' + m.file.name + ' (' + (idx + 1) + '/' + matched.length + ')...';
-            overlay.hidden = false;
 
-            var formData = new FormData();
-            formData.append('file', m.file);
-            formData.append('csrf_token', csrfToken);
+            var overlay = document.getElementById('action-overlay');
+            var text = document.getElementById('action-overlay-text');
+            var csrfToken = document.querySelector('input[name="csrf_token"]').value;
 
-            fetch(m.url, { method: 'POST', body: formData, redirect: 'manual' })
-                .then(function() { idx++; uploadNext(); })
-                .catch(function() { idx++; uploadNext(); });
-        }
-        uploadNext();
+            var idx = 0;
+            function uploadNext() {
+                if (idx >= matched.length) {
+                    if (unmatched.length > 0) {
+                        text.textContent = 'Skipped: ' + unmatched.join(', ');
+                        setTimeout(function() { location.reload(); }, 1500);
+                    } else {
+                        location.reload();
+                    }
+                    return;
+                }
+                var m = matched[idx];
+                text.textContent = 'Uploading ' + m.file.name + ' (' + (idx + 1) + '/' + matched.length + ')...';
+                overlay.hidden = false;
+
+                var formData = new FormData();
+                formData.append('file', m.file);
+                formData.append('csrf_token', csrfToken);
+
+                fetch(m.url, { method: 'POST', body: formData, redirect: 'manual' })
+                    .then(function() { idx++; uploadNext(); })
+                    .catch(function() { idx++; uploadNext(); });
+            }
+            uploadNext();
+        });
     });
 })();
 </script>

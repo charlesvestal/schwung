@@ -124,12 +124,32 @@ type AssetFolderStatus struct {
 
 // InstalledModule is read from a module.json on disk.
 type InstalledModule struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Version       string        `json:"version"`
-	ComponentType string        `json:"component_type"`
-	Description   string        `json:"description"`
-	Assets        *ModuleAssets `json:"assets,omitempty"`
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	Version       string         `json:"version"`
+	ComponentType string         `json:"component_type"`
+	Description   string         `json:"description"`
+	Assets        []ModuleAssets `json:"-"` // custom unmarshal: single object or array
+	RawAssets     json.RawMessage `json:"assets,omitempty"`
+}
+
+// UnmarshalAssets parses the raw assets field into the Assets slice.
+// Supports both a single object (backward compat) and an array.
+func (m *InstalledModule) UnmarshalAssets() {
+	if len(m.RawAssets) == 0 {
+		return
+	}
+	// Try array first
+	var arr []ModuleAssets
+	if json.Unmarshal(m.RawAssets, &arr) == nil {
+		m.Assets = arr
+		return
+	}
+	// Fall back to single object
+	var single ModuleAssets
+	if json.Unmarshal(m.RawAssets, &single) == nil {
+		m.Assets = []ModuleAssets{single}
+	}
 }
 
 // SettingsSection describes a section of settings from settings-schema.json.
@@ -317,6 +337,7 @@ func discoverInstalledModules(base string) map[string]InstalledModule {
 			}
 			var m InstalledModule
 			if json.Unmarshal(data, &m) == nil && m.ID != "" {
+				m.UnmarshalAssets()
 				// Fall back to capabilities.component_type if top-level is empty.
 				if m.ComponentType == "" {
 					var raw map[string]any
@@ -787,22 +808,49 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 
 	modDir := app.findModuleDir(id)
 
-	// Compute assets directory from installed module.json assets.path field.
+	// Build asset groups from installed module.json assets field.
+	type AssetGroup struct {
+		Assets        ModuleAssets
+		AssetsDir     string
+		FileStatuses  []AssetFileStatus
+		FolderStatuses []AssetFolderStatus
+	}
+	var assetGroups []AssetGroup
+
+	// Legacy single-assets compat: also populate top-level fields for templates
+	// that haven't been updated to use AssetGroups yet.
 	assetsDir := ""
 	var moduleAssets *ModuleAssets
-	if inst, ok := installed[id]; ok && inst.Assets != nil {
-		moduleAssets = inst.Assets
-		if inst.Assets.Path != "" && inst.Assets.Path != "." {
-			assetsDir = filepath.Join(modDir, inst.Assets.Path)
-		} else {
-			assetsDir = modDir
+
+	if inst, ok := installed[id]; ok && len(inst.Assets) > 0 {
+		for _, a := range inst.Assets {
+			aDir := modDir
+			if a.Path != "" && a.Path != "." {
+				aDir = filepath.Join(modDir, a.Path)
+			}
+			var fs []AssetFileStatus
+			var fds []AssetFolderStatus
+			if len(a.Files) > 0 && aDir != "" {
+				fs, fds = validateAssets(aDir, &a)
+			}
+			assetGroups = append(assetGroups, AssetGroup{
+				Assets:         a,
+				AssetsDir:      aDir,
+				FileStatuses:   fs,
+				FolderStatuses: fds,
+			})
 		}
+		// Legacy compat: use first group
+		moduleAssets = &assetGroups[0].Assets
+		assetsDir = assetGroups[0].AssetsDir
 	}
 
+	// Legacy compat
 	var fileStatuses []AssetFileStatus
 	var folderStatuses []AssetFolderStatus
-	if moduleAssets != nil && len(moduleAssets.Files) > 0 && assetsDir != "" {
-		fileStatuses, folderStatuses = validateAssets(assetsDir, moduleAssets)
+	if len(assetGroups) > 0 {
+		fileStatuses = assetGroups[0].FileStatuses
+		folderStatuses = assetGroups[0].FolderStatuses
 	}
 
 	data := map[string]any{
@@ -814,6 +862,7 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"ModuleAssets":   moduleAssets,
 		"FileStatuses":   fileStatuses,
 		"FolderStatuses": folderStatuses,
+		"AssetGroups":    assetGroups,
 		"BuiltIn":        builtIn,
 		"ReleaseMeta":    app.catalogSvc.GetReleaseMeta(),
 		"Active":         "modules",
@@ -1296,14 +1345,46 @@ func (app *App) handleModuleAssetUploadSlot(w http.ResponseWriter, r *http.Reque
 
 	installed := discoverInstalledModules(app.basePath)
 	inst, ok := installed[id]
-	if !ok || inst.Assets == nil {
+	if !ok || len(inst.Assets) == 0 {
 		http.Error(w, "module has no asset configuration", http.StatusBadRequest)
 		return
 	}
 
+	// Find the asset group that contains this filename.
+	// Also accept an assetPath query param to disambiguate.
+	queryAssetPath := r.URL.Query().Get("assetPath")
 	assetsDir := modDir
-	if inst.Assets.Path != "" && inst.Assets.Path != "." {
-		assetsDir = filepath.Join(modDir, inst.Assets.Path)
+	found := false
+	for _, a := range inst.Assets {
+		if queryAssetPath != "" && a.Path != queryAssetPath {
+			continue
+		}
+		for _, f := range a.Files {
+			if f.Filename == targetFilename {
+				if a.Path != "" && a.Path != "." {
+					assetsDir = filepath.Join(modDir, a.Path)
+				}
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		// If no specific file match, use first group with matching path
+		if queryAssetPath != "" && a.Path == queryAssetPath {
+			if a.Path != "" && a.Path != "." {
+				assetsDir = filepath.Join(modDir, a.Path)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		// Fallback: use first asset group
+		if inst.Assets[0].Path != "" && inst.Assets[0].Path != "." {
+			assetsDir = filepath.Join(modDir, inst.Assets[0].Path)
+		}
 	}
 
 	os.MkdirAll(assetsDir, 0755)
@@ -1344,14 +1425,30 @@ func (app *App) handleModuleAssetDelete(w http.ResponseWriter, r *http.Request) 
 
 	installed := discoverInstalledModules(app.basePath)
 	inst, ok := installed[id]
-	if !ok || inst.Assets == nil {
+	if !ok || len(inst.Assets) == 0 {
 		http.Error(w, "module has no asset configuration", http.StatusBadRequest)
 		return
 	}
 
+	// Find which asset group contains this file.
+	queryAssetPath := r.URL.Query().Get("assetPath")
 	assetsDir := modDir
-	if inst.Assets.Path != "" && inst.Assets.Path != "." {
-		assetsDir = filepath.Join(modDir, inst.Assets.Path)
+	for _, a := range inst.Assets {
+		if queryAssetPath != "" && a.Path != queryAssetPath {
+			continue
+		}
+		for _, f := range a.Files {
+			if f.Filename == targetFilename {
+				if a.Path != "" && a.Path != "." {
+					assetsDir = filepath.Join(modDir, a.Path)
+				}
+				break
+			}
+		}
+	}
+	// Fallback: use first asset group
+	if assetsDir == modDir && inst.Assets[0].Path != "" && inst.Assets[0].Path != "." {
+		assetsDir = filepath.Join(modDir, inst.Assets[0].Path)
 	}
 
 	target := filepath.Join(assetsDir, targetFilename)
