@@ -2132,8 +2132,8 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 
 		app.setUpgradeStatus("Extracting update...")
 
-		// Extract tarball (same --strip-components=1 as Module Store).
-		extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", app.basePath, "--strip-components=1")
+		// Extract tarball. Use -o to ignore tarball ownership.
+		extractCmd := exec.Command("tar", "-xzof", tarPath, "-C", app.basePath, "--strip-components=1")
 		if output, err := extractCmd.CombinedOutput(); err != nil {
 			app.setUpgradeStatus("Extract failed")
 			app.logger.Error("extract failed", "err", err, "output", string(output))
