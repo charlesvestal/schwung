@@ -2082,6 +2082,22 @@ function setupModuleParamShims(slot, componentKey) {
             enterComponentSelect(slot, compIndex);
         }
     };
+
+    globalThis.host_open_file_in_tool = function(filePath, toolId) {
+        if (!filePath || !toolId) return false;
+        if (!toolModules || !toolModules.length) {
+            toolModules = scanForToolModules();
+        }
+        const tool = toolModules.find(t => t.id === toolId);
+        if (!tool) {
+            debugLog("host_open_file_in_tool: tool not found: " + toolId);
+            return false;
+        }
+        debugLog("host_open_file_in_tool: opening " + filePath + " in " + toolId);
+        unloadModuleUi();
+        startInteractiveTool(tool, filePath);
+        return true;
+    };
 }
 
 /* Clear the param shims */
@@ -2091,6 +2107,7 @@ function clearModuleParamShims() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
     delete globalThis.host_swap_module;
+    delete globalThis.host_open_file_in_tool;
 }
 
 /* Load a module's UI for editing */
