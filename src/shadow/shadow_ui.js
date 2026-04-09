@@ -7193,11 +7193,6 @@ function enterHierarchyEditor(slotIndex, componentKey) {
 
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
-    debugLog(`enterHierarchyEditor: slot=${slotIndex} comp=${componentKey} chainParams=${hierEditorChainParams ? hierEditorChainParams.length : 0}`);
-    if (hierEditorChainParams && hierEditorChainParams.length > 0) {
-        const enumParams = hierEditorChainParams.filter(p => p.type === "enum" && p.options && p.options.length > 0);
-        debugLog(`enterHierarchyEditor: ${enumParams.length} enum params with options, first few: ${enumParams.slice(0, 3).map(p => p.key + "(" + p.options.length + ")").join(", ")}`);
-    }
 
     /* Set up param shims for this component */
     setupModuleParamShims(slotIndex, componentKey);
@@ -8387,17 +8382,7 @@ function formatHierDisplayValue(key, val) {
         if (meta.picker_type && (val === "" || val === null || val === undefined)) {
             return meta.none_label || "(none)";
         }
-        const formatted = formatMetaOptionValue(meta, val);
-        if (formatted === val && val !== null && val !== undefined) {
-            /* No mapping found — log to diagnose */
-            debugLog(`formatHierDisplayValue: enum key=${key} val=${val} options=${meta.options ? meta.options.length : 0} option_labels=${meta.option_labels ? Object.keys(meta.option_labels).length : 0} formatted=${formatted}`);
-        }
-        return formatted;
-    }
-
-    if (!meta) {
-        /* No metadata at all — might be missing from chain_params */
-        debugLog(`formatHierDisplayValue: NO META for key=${key} val=${val} chainParams=${hierEditorChainParams ? hierEditorChainParams.length : 0}`);
+        return formatMetaOptionValue(meta, val);
     }
 
     if (meta && meta.type === "filepath") {
@@ -9522,7 +9507,6 @@ function drawHierarchyEditor() {
      * when we entered the hierarchy editor (e.g., Virus ROM loading) */
     if (!hierEditorChainParams || hierEditorChainParams.length === 0) {
         refreshHierarchyChainParams();
-        debugLog(`drawHierarchyEditor: chain_params was empty, refetched: ${hierEditorChainParams ? hierEditorChainParams.length : 0} params`);
     }
 
     /* Get plugin info */
