@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <meta name="color-scheme" content="dark">
     <title>{{block "title" .}}Schwung Manager{{end}}</title>
     <link rel="stylesheet" href="/static/style.css">
@@ -36,6 +36,7 @@
                     <li><a href="/config"{{if eq .Active "config"}} class="active" aria-current="page"{{end}}>Config</a></li>
                     <li><a href="/system"{{if eq .Active "system"}} class="active" aria-current="page"{{end}}>System</a></li>
                     <li><a href="/help"{{if eq .Active "help"}} class="active" aria-current="page"{{end}}>Help</a></li>
+                    <li><a href="/remote-ui"{{if eq .Active "remote-ui"}} class="active" aria-current="page"{{end}}>Remote UI</a></li>
                     <li><a href="/mirror" target="_blank" rel="noopener">Screen Mirroring</a></li>
                 </ul>
             </nav>

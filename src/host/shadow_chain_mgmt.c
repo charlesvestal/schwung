@@ -1657,12 +1657,41 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     return -1;
 }
 
+/* Direct set_param without touching shadow_param_t shared memory.
+ * Called from web UI ring buffer drain — safe to call alongside JS requests.
+ * Handles slot-level params (slot:volume, etc.) and plugin params (synth:cutoff). */
+void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
+
+    /* Try slot-level params first */
+    if (shadow_handle_slot_param_set(slot, key, value)) {
+        if (host.on_param_changed) host.on_param_changed(slot, key, value);
+        return;
+    }
+
+    /* Forward to plugin set_param */
+    if (shadow_plugin_v2 && shadow_plugin_v2->set_param &&
+        slot < SHADOW_CHAIN_INSTANCES &&
+        shadow_chain_slots[slot].active &&
+        shadow_chain_slots[slot].instance) {
+        shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, value);
+        if (host.on_param_changed) host.on_param_changed(slot, key, value);
+    }
+}
+
 int shadow_param_publish_response(uint32_t req_id) {
     shadow_param_t *param = host.shadow_param_ptr ? *host.shadow_param_ptr : NULL;
     if (!param) return 0;
     if (param->request_id != req_id) {
         return 0;
     }
+
+    /* Notify web UI of param changes (SET requests only, skip web-originated).
+     * Web-originated requests use req_id >= 0xFFFF0000. */
+    if (param->request_type == 1 && host.on_param_changed &&
+        req_id < 0xFFFF0000) {
+        host.on_param_changed(param->slot, param->key, param->value);
+    }
+
     param->response_id = req_id;
     param->response_ready = 1;
     param->request_type = 0;

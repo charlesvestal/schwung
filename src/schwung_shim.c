@@ -128,6 +128,8 @@ static uint8_t shadow_display_mode = 0;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 
 static shadow_param_t *shadow_param = NULL;
+static web_param_set_ring_t *web_param_set_shm = NULL;       /* Web UI → shim param set ring */
+static web_param_notify_ring_t *web_param_notify_shm = NULL;  /* Shim → web UI param change ring */
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
 
@@ -2202,6 +2204,42 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create param shm\n");
     }
 
+    /* Create/open web param set ring (web UI → shim, fire-and-forget) */
+    {
+        int fd = shm_open(SHM_WEB_PARAM_SET, O_CREAT | O_RDWR, 0666);
+        if (fd >= 0) {
+            ftruncate(fd, sizeof(web_param_set_ring_t));
+            web_param_set_shm = (web_param_set_ring_t *)mmap(NULL, sizeof(web_param_set_ring_t),
+                                                             PROT_READ | PROT_WRITE,
+                                                             MAP_SHARED, fd, 0);
+            if (web_param_set_shm == MAP_FAILED) {
+                web_param_set_shm = NULL;
+                printf("Shadow: Failed to mmap web param set ring\n");
+            } else {
+                memset(web_param_set_shm, 0, sizeof(web_param_set_ring_t));
+            }
+            close(fd);
+        }
+    }
+
+    /* Create/open web param notify ring (shim → web UI, push changes) */
+    {
+        int fd = shm_open(SHM_WEB_PARAM_NOTIFY, O_CREAT | O_RDWR, 0666);
+        if (fd >= 0) {
+            ftruncate(fd, sizeof(web_param_notify_ring_t));
+            web_param_notify_shm = (web_param_notify_ring_t *)mmap(NULL, sizeof(web_param_notify_ring_t),
+                                                                   PROT_READ | PROT_WRITE,
+                                                                   MAP_SHARED, fd, 0);
+            if (web_param_notify_shm == MAP_FAILED) {
+                web_param_notify_shm = NULL;
+                printf("Shadow: Failed to mmap web param notify ring\n");
+            } else {
+                memset(web_param_notify_shm, 0, sizeof(web_param_notify_ring_t));
+            }
+            close(fd);
+        }
+    }
+
     /* Create/open MIDI out shared memory (for shadow UI to send MIDI) */
     shm_midi_out_fd = shm_open(SHM_SHADOW_MIDI_OUT, O_CREAT | O_RDWR, 0666);
     if (shm_midi_out_fd >= 0) {
@@ -2622,6 +2660,57 @@ static float shim_get_bpm(void) {
     return sampler_get_bpm(NULL);
 }
 
+/* =========================================================================
+ * Web UI ring buffer: drain set requests from web server
+ * ========================================================================= */
+static void shadow_drain_web_param_set(void) {
+    if (!web_param_set_shm) return;
+    static uint8_t last_ready = 0;
+    if (web_param_set_shm->ready == last_ready) return;
+    last_ready = web_param_set_shm->ready;
+
+    int count = web_param_set_shm->write_idx;
+    if (count <= 0 || count > WEB_PARAM_SET_ENTRIES) {
+        web_param_set_shm->write_idx = 0;
+        return;
+    }
+
+    /* Snapshot entries, then reset */
+    web_param_set_entry_t local[WEB_PARAM_SET_ENTRIES];
+    memcpy(local, (const void *)web_param_set_shm->entries, count * sizeof(web_param_set_entry_t));
+    __sync_synchronize();
+    web_param_set_shm->write_idx = 0;
+
+    /* Process each set request via direct dispatch — does NOT touch shadow_param,
+     * so it's safe to run while shadow_ui.js has a request in-flight. */
+    for (int i = 0; i < count; i++) {
+        web_param_set_entry_t *e = &local[i];
+        if (e->key[0] == '\0') continue;
+
+        shadow_direct_set_param(e->slot, e->key, e->value);
+    }
+}
+
+/* =========================================================================
+ * Web UI ring buffer: push param change notifications to web server
+ * ========================================================================= */
+void web_param_notify_push(uint8_t slot, const char *key, const char *value) {
+    if (!web_param_notify_shm) return;
+    int idx = web_param_notify_shm->write_idx;
+    if (idx >= WEB_PARAM_NOTIFY_ENTRIES) return; /* buffer full, drop */
+
+    web_param_notify_entry_t *e = &web_param_notify_shm->entries[idx];
+    e->slot = slot;
+    strncpy(e->key, key, WEB_PARAM_KEY_LEN - 1);
+    e->key[WEB_PARAM_KEY_LEN - 1] = '\0';
+    strncpy(e->value, value, WEB_PARAM_VALUE_LEN - 1);
+    e->value[WEB_PARAM_VALUE_LEN - 1] = '\0';
+
+    __sync_synchronize();
+    web_param_notify_shm->write_idx = idx + 1;
+    web_param_notify_shm->ready++;
+}
+
 /* Callback for chain_mgmt: handle shim-specific param prefixes.
  * Reads/writes shadow_param->key/value/error/result_len directly.
  * Returns 1 if handled, 0 if not. */
@@ -2875,6 +2964,7 @@ static void shim_init_subsystems(void)
             .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
             .handle_param_special = shim_handle_param_special,
             .get_bpm = shim_get_bpm,
+            .on_param_changed = web_param_notify_push,
         };
         chain_mgmt_init(&cm_host);
     }
@@ -3383,6 +3473,128 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     (void)ctx;
     (void)size;
 
+    /* SPI buffer snapshot: dump full buffer to file when trigger exists */
+    {
+        static int snap_cooldown = 0;
+        if (snap_cooldown > 0) snap_cooldown--;
+        if (snap_cooldown == 0 &&
+            access("/data/UserData/schwung/spi_snap_trigger", F_OK) == 0) {
+            /* Write both output (0-2047) and input (2048-4095) regions */
+            static int snap_seq = 0;
+            char path[128];
+            snprintf(path, sizeof(path),
+                     "/data/UserData/schwung/spi_snap_%04d.bin", snap_seq++);
+            int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) {
+                write(fd, shadow, 4096);
+                close(fd);
+            }
+            /* Also dump hardware buffer */
+            snprintf(path, sizeof(path),
+                     "/data/UserData/schwung/spi_snap_%04d_hw.bin", snap_seq - 1);
+            unsigned char *hw_buf = schwung_spi_get_hw(g_spi_handle);
+            if (hw_buf) {
+                fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (fd >= 0) {
+                    write(fd, hw_buf, 4096);
+                    close(fd);
+                }
+            }
+            snap_cooldown = 44;  /* ~1 second between snapshots */
+        }
+    }
+
+    /* SPI SysEx injection: send audio source change command to XMOS when trigger exists.
+     * File content is the raw value byte (e.g. "0" or "1"). */
+    {
+        static int inject_cooldown = 0;
+        if (inject_cooldown > 0) inject_cooldown--;
+        if (inject_cooldown == 0 &&
+            access("/data/UserData/schwung/spi_sysex_inject", F_OK) == 0) {
+            /* Read the value from the file */
+            int val_byte = 0;
+            int ffd = open("/data/UserData/schwung/spi_sysex_inject", O_RDONLY);
+            if (ffd >= 0) {
+                char vbuf[8] = {0};
+                read(ffd, vbuf, sizeof(vbuf) - 1);
+                close(ffd);
+                val_byte = atoi(vbuf);
+            }
+            unlink("/data/UserData/schwung/spi_sysex_inject");
+
+            /* Write SysEx as USB-MIDI packets into shadow output MIDI region.
+             * F0 00 21 1D 01 01 37 12 <val> 00 00 00 00 00 00 F7
+             * USB-MIDI: cin=0x04 (SysEx start/continue), cin=0x06 (SysEx end 2 bytes) */
+            uint8_t *out = shadow + MIDI_OUT_OFFSET;
+            /* Packet 1: F0 00 21 */
+            out[0] = 0x04; out[1] = 0xF0; out[2] = 0x00; out[3] = 0x21;
+            /* Packet 2: 1D 01 01 */
+            out[4] = 0x04; out[5] = 0x1D; out[6] = 0x01; out[7] = 0x01;
+            /* Packet 3: 37 12 <val> */
+            out[8] = 0x04; out[9] = 0x37; out[10] = 0x12; out[11] = (uint8_t)val_byte;
+            /* Packet 4: 00 00 00 */
+            out[12] = 0x04; out[13] = 0x00; out[14] = 0x00; out[15] = 0x00;
+            /* Packet 5: 00 00 00 */
+            out[16] = 0x04; out[17] = 0x00; out[18] = 0x00; out[19] = 0x00;
+            /* Packet 6: 00 00 00 */
+            out[20] = 0x04; out[21] = 0x00; out[22] = 0x00; out[23] = 0x00;
+            /* Packet 7: 00 00 00 */
+            out[24] = 0x04; out[25] = 0x00; out[26] = 0x00; out[27] = 0x00;
+            /* Packet 8: 00 F7 (SysEx end) */
+            out[28] = 0x06; out[29] = 0x00; out[30] = 0xF7; out[31] = 0x00;
+
+            inject_cooldown = 44;
+            shadow_log("SPI SysEx inject: audio source change sent");
+        }
+    }
+
+    /* Log any MIDI packets on cable >= 3 in the output buffer (host→XMOS).
+     * These are rare control commands, not normal musical MIDI. */
+    {
+        static int midi_log_fd = -1;
+        static int midi_log_checked = 0;
+        if (midi_log_checked++ % 4400 == 0) {  /* check every ~10s */
+            int want = (access("/data/UserData/schwung/spi_midi_log_on", F_OK) == 0);
+            if (want && midi_log_fd < 0) {
+                midi_log_fd = open("/data/UserData/schwung/spi_midi_log.txt",
+                                   O_WRONLY | O_CREAT | O_APPEND, 0644);
+            } else if (!want && midi_log_fd >= 0) {
+                close(midi_log_fd);
+                midi_log_fd = -1;
+            }
+        }
+        if (midi_log_fd >= 0) {
+            const uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+            for (int i = 0; i < 80; i += 4) {
+                if (midi_out[i] || midi_out[i+1] || midi_out[i+2] || midi_out[i+3]) {
+                    int cable = (midi_out[i] >> 4) & 0xF;
+                    char line[128];
+                    int n = snprintf(line, sizeof(line),
+                        "OUT [%2d] cable=%2d cin=0x%x : %02x %02x %02x %02x\n",
+                        i, cable, midi_out[i] & 0xF,
+                        midi_out[i], midi_out[i+1], midi_out[i+2], midi_out[i+3]);
+                    write(midi_log_fd, line, n);
+                }
+            }
+            /* Also check incoming MIDI from XMOS */
+            unsigned char *hw_buf = schwung_spi_get_hw(g_spi_handle);
+            if (hw_buf) {
+                const uint8_t *midi_in = hw_buf + 2048;
+                for (int i = 0; i < 248; i += 4) {
+                    if (midi_in[i] || midi_in[i+1] || midi_in[i+2] || midi_in[i+3]) {
+                        int cable = (midi_in[i] >> 4) & 0xF;
+                        char line[128];
+                        int n = snprintf(line, sizeof(line),
+                            "IN  [%2d] cable=%2d cin=0x%x : %02x %02x %02x %02x\n",
+                            i, cable, midi_in[i] & 0xF,
+                            midi_in[i], midi_in[i+1], midi_in[i+2], midi_in[i+3]);
+                        write(midi_log_fd, line, n);
+                    }
+                }
+            }
+        }
+    }
+
     /* Ensure subsystems are initialized on first call */
     if (!shim_subsystems_initialized) {
         shim_init_subsystems();
@@ -3500,6 +3712,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     TIME_SECTION_START();
     shadow_inprocess_handle_param_request();
+    shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
     TIME_SECTION_END(spi_param_req_sum, spi_param_req_max);
 
     /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT
