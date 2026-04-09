@@ -1,0 +1,145 @@
+{{template "base" .}}
+
+{{define "title"}}Download - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>Download</h1>
+</div>
+
+<div class="system-info">
+    <section class="info-card">
+        <h2>Download Audio</h2>
+        <form id="download-form" onsubmit="startDownload(event)">
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label for="url-input"><strong>URL</strong></label>
+                <input type="text" id="url-input" name="url" value="{{.URL}}" placeholder="https://..."
+                       style="width: 100%; padding: 0.5rem; box-sizing: border-box; margin-top: 0.25rem;">
+            </div>
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label for="title-input"><strong>Filename</strong></label>
+                <input type="text" id="title-input" name="title" value="{{.FileTitle}}" placeholder="my-audio"
+                       style="width: 100%; padding: 0.5rem; box-sizing: border-box; margin-top: 0.25rem;">
+            </div>
+            <button type="submit" class="btn btn-primary" id="download-btn">Download</button>
+        </form>
+    </section>
+
+    <section class="info-card" id="status-section" style="display: none;">
+        <h2>Status</h2>
+        <div id="status-area">
+            <p id="status-text">Starting download...</p>
+            <div class="progress-bar" role="progressbar" id="progress-bar"
+                 aria-label="Download progress" style="display: none;">
+                <div class="progress-fill" id="progress-fill" style="width: 100%;">
+                    Downloading...
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<script>
+(function() {
+    var autoStart = {{if .AutoStart}}true{{else}}false{{end}};
+    var currentJobId = null;
+    var pollTimer = null;
+    var autoStarted = false;
+
+    function getCsrfToken() {
+        var match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
+        return match ? decodeURIComponent(match[1]) : "";
+    }
+
+    window.startDownload = function(e) {
+        if (e) e.preventDefault();
+        var url = document.getElementById("url-input").value.trim();
+        var title = document.getElementById("title-input").value.trim();
+        if (!url) { alert("Please enter a URL."); return; }
+
+        var btn = document.getElementById("download-btn");
+        btn.disabled = true;
+        btn.textContent = "Downloading...";
+
+        var statusSection = document.getElementById("status-section");
+        statusSection.style.display = "";
+        var statusText = document.getElementById("status-text");
+        statusText.textContent = "Starting download...";
+        var progressBar = document.getElementById("progress-bar");
+        progressBar.style.display = "";
+
+        fetch("/api/download", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-Token": getCsrfToken()
+            },
+            body: JSON.stringify({ url: url, title: title })
+        })
+        .then(function(resp) { return resp.json(); })
+        .then(function(data) {
+            currentJobId = data.job_id;
+            pollStatus();
+        })
+        .catch(function(err) {
+            statusText.textContent = "Error: " + err.message;
+            btn.disabled = false;
+            btn.textContent = "Download";
+        });
+    };
+
+    function pollStatus() {
+        if (!currentJobId) return;
+        fetch("/api/download/status/" + currentJobId)
+        .then(function(resp) { return resp.json(); })
+        .then(function(job) {
+            var statusText = document.getElementById("status-text");
+            var progressFill = document.getElementById("progress-fill");
+            var btn = document.getElementById("download-btn");
+
+            if (job.state === "downloading") {
+                statusText.textContent = "Downloading...";
+                pollTimer = setTimeout(pollStatus, 1000);
+            } else if (job.state === "done") {
+                statusText.textContent = "Done! Saved to: " + job.path;
+                progressFill.textContent = "Complete";
+                progressFill.classList.add("progress-success");
+                btn.disabled = false;
+                btn.textContent = "Download";
+                if (autoStarted) {
+                    openInTool(job.path);
+                }
+            } else if (job.state === "error") {
+                statusText.textContent = "Error: " + (job.error || "unknown error");
+                progressFill.textContent = "Failed";
+                progressFill.classList.add("progress-danger");
+                btn.disabled = false;
+                btn.textContent = "Download";
+            }
+        })
+        .catch(function(err) {
+            document.getElementById("status-text").textContent = "Poll error: " + err.message;
+            pollTimer = setTimeout(pollStatus, 2000);
+        });
+    }
+
+    function openInTool(filePath) {
+        fetch("/api/open-in-tool", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-Token": getCsrfToken()
+            },
+            body: JSON.stringify({ file_path: filePath, tool_id: "waveform-editor" })
+        }).catch(function() {});
+    }
+
+    if (autoStart) {
+        autoStarted = true;
+        window.addEventListener("DOMContentLoaded", function() {
+            startDownload(null);
+        });
+    }
+})();
+</script>
+{{end}}
