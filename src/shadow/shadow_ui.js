@@ -13507,6 +13507,25 @@ globalThis.tick = function() {
         /* SETTINGS and SCREENREADER flags are handled earlier with SLOT/MFX/OVERTAKE */
     }
 
+    /* Check for open-in-tool command from web UI */
+    if (typeof shadow_get_open_tool_cmd === "function") {
+        const toolCmd = shadow_get_open_tool_cmd();
+        if (toolCmd === 1) {
+            const cmdJson = host_read_file("/data/UserData/schwung/open_tool_cmd.json");
+            if (cmdJson) {
+                try {
+                    const cmd = JSON.parse(cmdJson);
+                    if (cmd.file_path && cmd.tool_id) {
+                        debugLog("open_tool_cmd: opening " + cmd.file_path + " in " + cmd.tool_id);
+                        host_open_file_in_tool(cmd.file_path, cmd.tool_id);
+                    }
+                } catch (e) {
+                    debugLog("open_tool_cmd: JSON parse error: " + e);
+                }
+            }
+        }
+    }
+
     if (filepathBrowserState &&
         filepathBrowserState.livePreviewEnabled &&
         filepathBrowserState.previewPendingPath &&

@@ -142,7 +142,8 @@ typedef struct shadow_control_t {
     volatile uint8_t preview_cmd;          /* 0=none, 1=play (path in file), 2=stop */
     volatile uint8_t pad_block;            /* 1=suppress pad notes (68-99) from reaching Move */
     volatile uint8_t suspend_overtake;  /* 1=suspend (skip exit hook), 0=normal exit */
-    volatile uint8_t reserved[8];
+    volatile uint8_t open_tool_cmd;     /* 0=none, 1=open tool (path in /data/UserData/schwung/open_tool_cmd.json) */
+    volatile uint8_t reserved[7];
 } shadow_control_t;
 
 /*

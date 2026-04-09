@@ -54,6 +54,7 @@ const (
 	offSetPages       = 44 // uint8
 	// ... more fields follow but not needed for config
 	offSkipbackReqVol = 52 // uint8
+	offOpenToolCmd    = 56 // uint8 — 0=none, 1=open tool
 	shmControlSize    = 64
 )
 
@@ -145,6 +146,8 @@ func (s *ShmConfig) SetSetPagesEnabled(v bool) { s.setU8(offSetPages, boolU8(v))
 
 func (s *ShmConfig) SkipbackRequireVolume() bool     { return s.getU8(offSkipbackReqVol) != 0 }
 func (s *ShmConfig) SetSkipbackRequireVolume(v bool)  { s.setU8(offSkipbackReqVol, boolU8(v)) }
+
+func (s *ShmConfig) SetOpenToolCmd(v uint8) { s.setU8(offOpenToolCmd, v) }
 
 func boolU8(v bool) uint8 {
 	if v {
