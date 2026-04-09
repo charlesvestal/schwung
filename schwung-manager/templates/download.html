@@ -21,6 +21,9 @@
                 <input type="text" id="title-input" name="title" value="{{.FileTitle}}" placeholder="my-audio"
                        style="width: 100%; padding: 0.5rem; box-sizing: border-box; margin-top: 0.25rem;">
             </div>
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label><input type="checkbox" id="open-in-tool" checked> Open in Wave Edit after download</label>
+            </div>
             <button type="submit" class="btn btn-primary" id="download-btn">Download</button>
         </form>
     </section>
@@ -51,22 +54,57 @@
         return match ? decodeURIComponent(match[1]) : "";
     }
 
+    /* Resolve title from URL via oEmbed (YouTube, SoundCloud) */
+    function resolveTitle(url) {
+        var titleInput = document.getElementById("title-input");
+        if (titleInput.value) return Promise.resolve(); // user already provided one
+
+        var oembedUrl = null;
+        if (/youtube\.com|youtu\.be/.test(url)) {
+            oembedUrl = "https://www.youtube.com/oembed?url=" + encodeURIComponent(url) + "&format=json";
+        } else if (/soundcloud\.com/.test(url)) {
+            oembedUrl = "https://soundcloud.com/oembed?url=" + encodeURIComponent(url) + "&format=json";
+        }
+        if (!oembedUrl) return Promise.resolve();
+
+        titleInput.placeholder = "Resolving title...";
+        return fetch(oembedUrl)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.title && !titleInput.value) {
+                    titleInput.value = data.title;
+                    titleInput.disabled = true;
+                }
+            })
+            .catch(function() { /* ignore — server-side yt-dlp will try */ });
+    }
+
+    /* Resolve on URL input blur too */
+    document.getElementById("url-input").addEventListener("blur", function() {
+        var url = this.value.trim();
+        if (url) resolveTitle(url);
+    });
+
     window.startDownload = function(e) {
         if (e) e.preventDefault();
         var url = document.getElementById("url-input").value.trim();
-        var title = document.getElementById("title-input").value.trim();
         if (!url) { alert("Please enter a URL."); return; }
 
         var btn = document.getElementById("download-btn");
         btn.disabled = true;
-        btn.textContent = "Downloading...";
+        btn.textContent = "Resolving...";
 
         var statusSection = document.getElementById("status-section");
         statusSection.style.display = "";
         var statusText = document.getElementById("status-text");
-        statusText.textContent = "Starting download...";
+        statusText.textContent = "Resolving title...";
         var progressBar = document.getElementById("progress-bar");
         progressBar.style.display = "";
+
+        resolveTitle(url).then(function() {
+        var title = document.getElementById("title-input").value.trim();
+        btn.textContent = "Downloading...";
+        statusText.textContent = "Starting download...";
 
         fetch("/api/download", {
             method: "POST",
@@ -86,6 +124,7 @@
             btn.disabled = false;
             btn.textContent = "Download";
         });
+        }); /* end resolveTitle().then() */
     };
 
     function pollStatus() {
@@ -97,16 +136,24 @@
             var progressFill = document.getElementById("progress-fill");
             var btn = document.getElementById("download-btn");
 
+            if (job.title) {
+                var titleInput = document.getElementById("title-input");
+                if (!titleInput.value) {
+                    titleInput.value = job.title;
+                    titleInput.disabled = true;
+                }
+            }
             if (job.state === "downloading") {
-                statusText.textContent = "Downloading...";
+                statusText.textContent = job.message || "Downloading...";
                 pollTimer = setTimeout(pollStatus, 1000);
             } else if (job.state === "done") {
-                statusText.textContent = "Done! Saved to: " + job.path;
+                statusText.textContent = job.message || ("Saved: " + job.path);
                 progressFill.textContent = "Complete";
                 progressFill.classList.add("progress-success");
                 btn.disabled = false;
                 btn.textContent = "Download";
-                if (autoStarted) {
+                if (document.getElementById("open-in-tool").checked) {
+                    statusText.textContent += " — Opening in Wave Edit...";
                     openInTool(job.path);
                 }
             } else if (job.state === "error") {
@@ -131,14 +178,23 @@
                 "X-CSRF-Token": getCsrfToken()
             },
             body: JSON.stringify({ file_path: filePath, tool_id: "waveform-editor" })
-        }).catch(function() {});
+        })
+        .then(function(resp) {
+            if (!resp.ok) {
+                return resp.text().then(function(t) {
+                    document.getElementById("status-text").textContent += " (open-in-tool failed: " + t + ")";
+                });
+            }
+            document.getElementById("status-text").textContent += " — Sent to device!";
+        })
+        .catch(function(err) {
+            document.getElementById("status-text").textContent += " (open-in-tool error: " + err.message + ")";
+        });
     }
 
     if (autoStart) {
         autoStarted = true;
-        window.addEventListener("DOMContentLoaded", function() {
-            startDownload(null);
-        });
+        startDownload(null);
     }
 })();
 </script>
