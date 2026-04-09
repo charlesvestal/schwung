@@ -597,6 +597,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/system.html",
 		"templates/install.html",
 		"templates/help.html",
+		"templates/remote_ui.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -628,8 +629,9 @@ type App struct {
 	catalogSvc    *CatalogService
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
-	shm           *ShmConfig // shared memory for live config sync (nil if not on device)
-	upgradeStatus string     // current upgrade step (empty = not upgrading)
+	shm           *ShmConfig  // shared memory for live config sync (nil if not on device)
+	shmParams     *ShmParams  // shared memory for param get/set (nil if not on device)
+	upgradeStatus string      // current upgrade step (empty = not upgrading)
 }
 
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -2296,6 +2298,63 @@ func (app *App) handleInstallAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
 }
 
+// -- Remote UI --
+
+func (app *App) handleRemoteUI(w http.ResponseWriter, r *http.Request) {
+	app.render(w, r, "remote_ui.html", map[string]any{
+		"Title":  "Remote UI",
+		"Active": "remote-ui",
+	})
+}
+
+// handleModuleWebUIAsset serves static files from a module's install directory.
+// Used by custom module web UIs loaded in an iframe on the Remote UI page.
+func (app *App) handleModuleWebUIAsset(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	fp := r.PathValue("filepath")
+
+	// Validate module ID and filepath to prevent directory traversal.
+	if id == "" || fp == "" ||
+		strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") ||
+		strings.Contains(fp, "..") {
+		http.NotFound(w, r)
+		return
+	}
+
+	modDir := app.findModuleDir(id)
+	if modDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	fullPath := filepath.Join(modDir, fp)
+
+	// Ensure resolved path is within the module directory.
+	resolved, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	resolvedDir, err := filepath.EvalSymlinks(modDir)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !strings.HasPrefix(resolved, resolvedDir+string(filepath.Separator)) && resolved != resolvedDir {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Only serve files, not directories.
+	info, err := os.Stat(fullPath)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	http.ServeFile(w, r, fullPath)
+}
+
 // hostRouter routes requests based on the Host header.
 // schwungHost requests go to schwungHandler (with /mirror proxied to displayAddr).
 // All other hosts are reverse-proxied to moveAddr (stock Move server).
@@ -2406,6 +2465,20 @@ func main() {
 		logger.Info("shared memory config: not available (not on device)")
 	}
 
+	shmParams := OpenShmParams()
+	if shmParams != nil {
+		logger.Info("shared memory params: connected")
+	} else {
+		logger.Info("shared memory params: not available (not on device)")
+	}
+
+	webSetRing := OpenShmWebParamSetRing()
+	if webSetRing != nil {
+		logger.Info("web param set ring: connected")
+	} else {
+		logger.Info("web param set ring: not available (not on device)")
+	}
+
 	app := &App{
 		tmpl:       tmpl,
 		fileSvc:    &FileService{AllowedRoots: allowedRoots},
@@ -2413,6 +2486,7 @@ func main() {
 		basePath:   basePath,
 		logger:     logger,
 		shm:        shm,
+		shmParams:  shmParams,
 	}
 
 	mux := http.NewServeMux()
@@ -2466,14 +2540,29 @@ func main() {
 	// Help.
 	mux.HandleFunc("GET /help", app.handleHelp)
 
+	// Remote UI.
+	mux.HandleFunc("GET /remote-ui", app.handleRemoteUI)
+
 	// Install.
 	mux.HandleFunc("GET /install/{id}", app.handleInstallPage)
 	mux.HandleFunc("POST /install/{id}", app.handleInstallAction)
 
-	// Apply middleware.
+	// Graceful shutdown context — created early so RemoteUI can use it.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Remote UI WebSocket (shmParams may be nil — lazy connect when Move starts).
+	remoteUI := NewRemoteUI(shmParams, webSetRing, app.basePath, logger)
+	remoteUI.Start(ctx)
+	mux.Handle("GET /ws/remote-ui", remoteUI)
+
+	// Module web UI assets (custom web_ui.html and related files).
+	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)
+
+	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	var handler http.Handler = mux
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
-	handler = middleware.CSRFProtection(handler)
+	handler = middleware.CSRFProtectionWithExemptions(handler, []string{"/ws/"})
 	handler = hostRouter(*schwungHost, handler, *moveBackend, *displayBackend, logger)
 
 	addr := fmt.Sprintf(":%d", *port)
@@ -2484,10 +2573,6 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-
-	// Graceful shutdown.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	// Start mDNS responder for schwung.local.
 	startMDNS(*schwungHost, logger)

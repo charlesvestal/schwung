@@ -622,6 +622,12 @@ let pendingKnobDelta = 0;        // Accumulated delta for global slot knob adjus
 let pendingHierKnobIndex = -1;   // Which knob is being turned (-1 = none)
 let pendingHierKnobDelta = 0;    // Accumulated delta to apply
 
+/* Local knob value cache - avoids blocking getSlotParam during active knob turning.
+ * Value is read once on first touch/turn, then updated locally by JS math.
+ * Only setSlotParam (fire-and-forget write) is done during turning. */
+let knobValueCache = new Array(8).fill(null);  // null = not cached, number = cached value
+let knobValueCacheKey = new Array(8).fill("");  // fullKey that was cached (auto-invalidates on key change)
+
 /* Knob acceleration settings */
 const KNOB_ACCEL_MIN_MULT = 1;     // Multiplier for slow turns
 const KNOB_ACCEL_MAX_MULT = 4;     // Multiplier for fast turns (floats)
@@ -1696,11 +1702,21 @@ function normalizeExpandedParamMeta(key, meta) {
 
 function formatMetaOptionValue(meta, rawValue) {
     if (!meta) return rawValue;
-    if (!meta.option_labels || typeof meta.option_labels !== "object") return rawValue;
-    const lookup = String(rawValue);
-    return Object.prototype.hasOwnProperty.call(meta.option_labels, lookup)
-        ? meta.option_labels[lookup]
-        : rawValue;
+    /* Try option_labels map first (key → display label) */
+    if (meta.option_labels && typeof meta.option_labels === "object") {
+        const lookup = String(rawValue);
+        if (Object.prototype.hasOwnProperty.call(meta.option_labels, lookup)) {
+            return meta.option_labels[lookup];
+        }
+    }
+    /* Fall back to options array by index (plugin returned numeric index like "0") */
+    if (Array.isArray(meta.options)) {
+        const idx = parseInt(rawValue, 10);
+        if (!isNaN(idx) && idx >= 0 && idx < meta.options.length) {
+            return meta.options[idx];
+        }
+    }
+    return rawValue;
 }
 
 function formatWavPositionDisplayValue(rawValue, meta) {
@@ -7758,14 +7774,21 @@ function adjustHierSelectedParam(delta) {
 
     /* Handle enum type - cycle through options */
     if (meta && meta.type === "enum" && meta.options && meta.options.length > 0) {
-        const currentIndex = meta.options.indexOf(currentVal);
+        /* Plugin may return option string ("Sine") or numeric index ("0") */
+        let currentIndex = meta.options.indexOf(currentVal);
+        const pluginUsesIndex = (currentIndex < 0);
+        if (pluginUsesIndex) {
+            const parsed = parseInt(currentVal, 10);
+            currentIndex = (!isNaN(parsed) && parsed >= 0 && parsed < meta.options.length) ? parsed : 0;
+        }
         let newIndex = currentIndex + delta;
         if (newIndex < 0) newIndex = meta.options.length - 1;
         if (newIndex >= meta.options.length) newIndex = 0;
         const newVal = meta.options[newIndex];
-        setSlotParam(hierEditorSlot, fullKey, newVal);
+        /* Send in the format the plugin expects */
+        setSlotParam(hierEditorSlot, fullKey, pluginUsesIndex ? String(newIndex) : newVal);
         if (usingStableEditVal) {
-            hierEditorEditValue = newVal;
+            hierEditorEditValue = pluginUsesIndex ? String(newIndex) : newVal;
         }
         if (shouldRefreshDynamicRateMeta(key)) {
             refreshHierarchyChainParams();
@@ -7807,6 +7830,9 @@ function invalidateKnobContextCache() {
     cachedKnobContextsComp = -1;
     cachedKnobContextsLevel = "";
     cachedKnobContextsChildIndex = -1;
+    /* NOTE: do NOT invalidate knob value cache here — this gets called on
+     * every knob turn via refreshHierarchyVisibility. Value cache is invalidated
+     * separately on actual slot/view/level changes. */
 }
 
 /*
@@ -8171,35 +8197,74 @@ function adjustKnobAndShow(knobIndex, delta) {
 }
 
 /*
- * Process pending hierarchy knob adjustment - called once per tick
- * This does the actual get/set/overlay work, throttled to avoid IPC overload
+ * Get cached knob value, or read from plugin if not yet cached.
+ * Auto-invalidates if the knob's fullKey has changed (navigation, slot switch, etc).
+ * For floats/ints, caches parsed number. For enums, caches string.
+ */
+function getKnobCachedValue(knobIndex, ctx) {
+    if (!ctx || !ctx.fullKey) return null;
+
+    /* Auto-invalidate if key changed (slot switch, navigation, etc) */
+    if (knobValueCacheKey[knobIndex] !== ctx.fullKey) {
+        knobValueCache[knobIndex] = null;
+        knobValueCacheKey[knobIndex] = ctx.fullKey;
+    }
+
+    /* Return cached value if available */
+    if (knobValueCache[knobIndex] !== null) {
+        return knobValueCache[knobIndex];
+    }
+
+    /* First access: do a blocking read (one-time cost) */
+    const baseVal = getSlotParam(ctx.slot, `${ctx.fullKey}:base`);
+    const raw = (baseVal !== null) ? baseVal : getSlotParam(ctx.slot, ctx.fullKey);
+    if (raw === null) return null;
+
+    /* Cache as string for enums, number for float/int */
+    const isEnum = ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool");
+    if (isEnum) {
+        knobValueCache[knobIndex] = raw;
+    } else {
+        const num = parseFloat(raw);
+        knobValueCache[knobIndex] = isNaN(num) ? null : num;
+    }
+    return knobValueCache[knobIndex];
+}
+
+/* Invalidate the knob value cache */
+function invalidateKnobValueCache() {
+    knobValueCache.fill(null);
+    knobValueCacheKey.fill("");
+}
+
+/*
+ * Process pending hierarchy knob adjustment - called once per tick.
+ * Uses local value cache to avoid blocking IPC reads during active turning.
+ * Only setSlotParam (write) is done per tick — zero reads during active turning.
  */
 function processPendingHierKnob() {
-    /* Only log when there's actual work to do - reduces spam */
-    if (pendingHierKnobIndex >= 0 && pendingHierKnobDelta !== 0) {
-        debugLog(`processPendingHierKnob: index=${pendingHierKnobIndex}, delta=${pendingHierKnobDelta}`);
-    }
     if (pendingHierKnobIndex < 0 || pendingHierKnobDelta === 0) {
-        /* No pending adjustment, but still show overlay if knob active */
+        /* No pending adjustment, but still show overlay if knob active.
+         * Use cached value — no IPC reads during active knob holding. */
         if (pendingHierKnobIndex >= 0) {
             const ctx = getKnobContext(pendingHierKnobIndex);
             if (ctx && ctx.fullKey) {
-                const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
-                if (currentVal !== null) {
-                    /* For enums, pass string directly; for numbers, parse */
+                const cached = getKnobCachedValue(pendingHierKnobIndex, ctx);
+                if (cached !== null) {
                     if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
                         if (isTriggerEnumMeta(ctx.meta)) {
                             showOverlay(ctx.title, getTriggerEnumOverlayValue(pendingHierKnobIndex));
                         } else {
-                            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, currentVal));
+                            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, cached));
                         }
                     } else if (ctx.meta && ctx.meta.type === "canvas") {
-                        showOverlay(ctx.title, formatCanvasDisplayValue(currentVal || "", ctx.meta));
+                        showOverlay(ctx.title, formatCanvasDisplayValue(String(cached), ctx.meta));
                     } else if (ctx.meta && ctx.meta.type === "string") {
-                        showOverlay(ctx.title, String(currentVal || ""));
+                        showOverlay(ctx.title, String(cached || ""));
                     } else {
-                        showKnobOverlay(pendingHierKnobIndex, parseFloat(currentVal));
+                        showOverlay(ctx.title, formatParamForOverlay(cached, ctx.meta));
                     }
+                    needsRedraw = true;
                 }
             }
         }
@@ -8211,14 +8276,10 @@ function processPendingHierKnob() {
     pendingHierKnobDelta = 0;  /* Clear accumulated delta */
 
     const ctx = getKnobContext(knobIndex);
-    debugLog(`processPendingHierKnob: ctx=${ctx ? JSON.stringify({slot: ctx.slot, key: ctx.key, fullKey: ctx.fullKey, noMapping: ctx.noMapping, meta: ctx.meta ? 'present' : 'null'}) : 'null'}`);
     if (!ctx || ctx.noMapping || !ctx.fullKey) return;
 
-    /* Use stable base value when modulation is active, matching jog edit mode.
-     * Fallback to live value when no base value is available. */
-    const baseVal = getSlotParam(ctx.slot, `${ctx.fullKey}:base`);
-    const currentVal = (baseVal !== null) ? baseVal : getSlotParam(ctx.slot, ctx.fullKey);
-    debugLog(`processPendingHierKnob: currentVal=${currentVal}`);
+    /* Get current value from cache (one-time IPC read, then local) */
+    const currentVal = getKnobCachedValue(knobIndex, ctx);
     if (currentVal === null) return;
 
     /* Handle enum type - cycle through options (clamp at ends, don't wrap) */
@@ -8234,13 +8295,27 @@ function processPendingHierKnob() {
             return;
         }
 
-        const currentIndex = ctx.meta.options.indexOf(currentVal);
+        /* Find current index — plugin may return the option string ("Sine")
+         * or the numeric index ("0"). Handle both. */
+        let currentIndex = ctx.meta.options.indexOf(currentVal);
+        if (currentIndex < 0) {
+            /* Not a string match — try as numeric index */
+            const parsed = parseInt(currentVal, 10);
+            if (!isNaN(parsed) && parsed >= 0 && parsed < ctx.meta.options.length) {
+                currentIndex = parsed;
+            } else {
+                currentIndex = 0;
+            }
+        }
         let newIndex = currentIndex + (delta > 0 ? 1 : -1);
-        /* Clamp at ends instead of wrapping */
         if (newIndex < 0) newIndex = 0;
         if (newIndex >= ctx.meta.options.length) newIndex = ctx.meta.options.length - 1;
         const newVal = ctx.meta.options[newIndex];
-        setSlotParam(ctx.slot, ctx.fullKey, newVal);
+        /* Cache the value in the same format the plugin returned (string or index) */
+        const pluginUsesIndex = (ctx.meta.options.indexOf(currentVal) < 0);
+        knobValueCache[knobIndex] = pluginUsesIndex ? String(newIndex) : newVal;
+        /* Send in the format the plugin expects */
+        setSlotParam(ctx.slot, ctx.fullKey, pluginUsesIndex ? String(newIndex) : newVal);
         if (shouldRefreshDynamicRateMeta(ctx.key)) {
             refreshHierarchyChainParams();
         }
@@ -8250,18 +8325,16 @@ function processPendingHierKnob() {
     }
 
     if (ctx.meta && ctx.meta.type === "canvas") {
-        const existing = getSlotParam(ctx.slot, ctx.fullKey);
-        showOverlay(ctx.title, formatCanvasDisplayValue(existing || "", ctx.meta));
+        showOverlay(ctx.title, formatCanvasDisplayValue(String(currentVal), ctx.meta));
         return;
     }
 
     if (ctx.meta && ctx.meta.type === "string") {
-        const existing = getSlotParam(ctx.slot, ctx.fullKey);
-        showOverlay(ctx.title, String(existing || ""));
+        showOverlay(ctx.title, String(currentVal || ""));
         return;
     }
 
-    const num = parseFloat(currentVal);
+    const num = (typeof currentVal === "number") ? currentVal : parseFloat(currentVal);
     if (isNaN(num)) return;
 
     /* Calculate step and bounds from metadata */
@@ -8282,12 +8355,22 @@ function processPendingHierKnob() {
         : (baseStep * accel);
     const newVal = Math.max(min, Math.min(max, num + delta * step));
 
-    /* Set the new value */
-    setSlotParam(ctx.slot, ctx.fullKey, formatParamForSet(newVal, ctx.meta));
-    refreshHierarchyVisibility();
+    /* Update local cache — no IPC read needed on next turn */
+    knobValueCache[knobIndex] = newVal;
 
-    /* Show overlay with new value */
-    showKnobOverlay(knobIndex, newVal);
+    /* Set the new value (fire-and-forget write, no blocking read) */
+    setSlotParam(ctx.slot, ctx.fullKey, formatParamForSet(newVal, ctx.meta));
+
+    /* Skip refreshHierarchyVisibility for float/int turns — it does IPC
+     * (evaluateVisibilityCondition) and invalidates the context cache
+     * (triggering 16+ IPC reads to rebuild). Only enum changes can affect
+     * visibility; float/int knob turns never change which params are shown. */
+
+    /* Show overlay directly — avoid showKnobOverlay which calls
+     * isHierarchyParamModulated (1-3 blocking IPC reads). */
+    const displayVal = formatParamForOverlay(newVal, ctx.meta);
+    showOverlay(ctx.title, displayVal);
+    needsRedraw = true;
 }
 
 /* Format a value for display in hierarchy editor */
@@ -9419,6 +9502,12 @@ function drawFilepathBrowser() {
 /* Draw the hierarchy-based parameter editor */
 function drawHierarchyEditor() {
     clear_screen();
+
+    /* Re-fetch chain_params if empty — module may have still been loading
+     * when we entered the hierarchy editor (e.g., Virus ROM loading) */
+    if (!hierEditorChainParams || hierEditorChainParams.length === 0) {
+        refreshHierarchyChainParams();
+    }
 
     /* Get plugin info */
     const prefix = getComponentParamPrefix(hierEditorComponent);

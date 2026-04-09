@@ -136,8 +136,8 @@ typedef struct {
 } knob_mapping_t;
 
 /* Chain parameter info from module.json */
-#define MAX_CHAIN_PARAMS 32
-#define MAX_ENUM_OPTIONS 64
+#define MAX_CHAIN_PARAMS 256
+#define MAX_ENUM_OPTIONS 128
 typedef struct {
     char key[32];           /* Parameter key (e.g., "preset", "decay") */
     char name[64];          /* Display name */
@@ -7422,7 +7422,7 @@ static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, 
 static int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
     if (!inst || !target) return -1;
 
-    char buf[8192];
+    char buf[32768];
     int result = -1;
     chain_param_info_t parsed[MAX_CHAIN_PARAMS];
     int parsed_count = -1;
