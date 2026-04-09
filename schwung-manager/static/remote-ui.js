@@ -54,7 +54,14 @@
         collapsed: { "master_fx:fx1": false, "master_fx:fx2": true, "master_fx:fx3": true, "master_fx:fx4": true }
     };
 
-    var activeSlot = 0; // 0-3 for slots, "master" for master FX
+    // Read initial slot from URL hash (#slot1, #slot2, #slot3, #slot4, #master-fx)
+    var initialSlot = 0;
+    (function() {
+        var h = location.hash.replace("#", "");
+        if (h === "master-fx") initialSlot = "master";
+        else if (/^slot[1-4]$/.test(h)) initialSlot = parseInt(h.charAt(4), 10) - 1;
+    })();
+    var activeSlot = initialSlot;
     var ws = null;
     var reconnectTimer = null;
     var reconnectDelay = 1000; // Start at 1s, exponential backoff
@@ -368,6 +375,8 @@
         unsubscribe(activeSlot);
         activeSlot = n;
         waitingForData = true;
+        // Persist tab in URL hash
+        history.replaceState(null, "", "#" + (n === "master" ? "master-fx" : "slot" + (n + 1)));
 
         tabButtons.forEach(function (btn) {
             var slotAttr = btn.getAttribute("data-slot");
@@ -386,6 +395,19 @@
     }
 
     window.switchSlot = switchSlot;
+
+    // Set initial tab button active state from URL hash
+    tabButtons.forEach(function (btn) {
+        var slotAttr = btn.getAttribute("data-slot");
+        var match = (slotAttr === "master") ? (activeSlot === "master") : (parseInt(slotAttr, 10) === activeSlot);
+        if (match) {
+            btn.classList.add("active");
+            btn.setAttribute("aria-selected", "true");
+        } else {
+            btn.classList.remove("active");
+            btn.setAttribute("aria-selected", "false");
+        }
+    });
 
     // ------------------------------------------------------------------
     // Helpers
@@ -1136,6 +1158,34 @@
                     needsFullRender = true;
                 }
             }
+
+            // Update mapped knob values
+            var knobMatch = prefixedKey.match(/knob_(\d+)_value$/);
+            if (knobMatch) {
+                var knobValEl = slotContentEl.querySelector('[data-mapped-knob-value="' + knobMatch[1] + '"]');
+                if (knobValEl) knobValEl.textContent = value || "-";
+            }
+
+            // Update slot settings inline
+            var settingRow = slotContentEl.querySelector('[data-setting-row="' + prefixedKey + '"]');
+            if (settingRow) {
+                var sInput = settingRow.querySelector('[data-setting-input="' + prefixedKey + '"]');
+                if (sInput) sInput.value = value;
+                var sVal = settingRow.querySelector('[data-setting-value="' + prefixedKey + '"]');
+                if (sVal) {
+                    var sMeta = SLOT_SETTINGS.find(function(s) { return s.key === prefixedKey; });
+                    if (sMeta && sMeta.format) sVal.textContent = sMeta.format(value);
+                    else if (sMeta && sMeta.type === "float") sVal.textContent = Math.round(parseFloat(value) * 100) + "%";
+                    else sVal.textContent = value;
+                }
+                var sToggle = settingRow.querySelector('.setting-toggle');
+                if (sToggle) {
+                    sToggle.textContent = value === "1" ? "On" : "Off";
+                    sToggle.className = "setting-toggle" + (value === "1" ? " active" : "");
+                }
+                var sHidden = settingRow.querySelector('[data-setting-input-hidden="' + prefixedKey + '"]');
+                if (sHidden) sHidden.value = value;
+            }
         }
 
         if (needsFullRender) renderSlot();
@@ -1292,21 +1342,416 @@
             return;
         }
 
-        // Render component sections for loaded components
+        // Render mapped knobs at the top (hardware knob assignments)
+        var knobSection = renderMappedKnobs(s);
+        if (knobSection) slotContentEl.appendChild(knobSection);
+
+        // Render component sections in order: midi_fx, synth, fx1, fx2
+        var compOrder = ["midi_fx1", "synth", "fx1", "fx2"];
         var renderedCount = 0;
-        for (var k = 0; k < COMPONENT_KEYS.length; k++) {
-            var compKey = COMPONENT_KEYS[k];
+        for (var k = 0; k < compOrder.length; k++) {
+            var compKey = compOrder[k];
             var compState = s.components[compKey];
-            if (!compState.module) continue;
+            if (!compState || !compState.module) continue;
 
             var section = renderComponentSection(compKey, compState, s.collapsed[compKey]);
             slotContentEl.appendChild(section);
             renderedCount++;
         }
 
-        if (renderedCount === 0) {
+        if (renderedCount === 0 && !knobSection) {
             slotContentEl.innerHTML = '<p class="text-muted">No modules loaded in this slot</p>';
         }
+
+        // Render slot settings (including LFO) at the bottom
+        var settingsSection = renderSlotSettings(s);
+        if (settingsSection) slotContentEl.appendChild(settingsSection);
+    }
+
+    // ------------------------------------------------------------------
+    // Mapped Knobs section
+    // ------------------------------------------------------------------
+
+    function renderMappedKnobs(s) {
+        // Collect knob data from synth component params (knob_N_name/value are slot-level)
+        var knobs = [];
+        var synthParams = s.components.synth.params;
+        for (var i = 1; i <= 8; i++) {
+            var name = synthParams["synth:knob_" + i + "_name"] || synthParams["knob_" + i + "_name"] || "";
+            var value = synthParams["synth:knob_" + i + "_value"] || synthParams["knob_" + i + "_value"] || "";
+            if (name) knobs.push({ index: i, name: name, value: value });
+        }
+        if (knobs.length === 0) return null;
+
+        var section = document.createElement("div");
+        section.className = "mapped-knobs-section";
+
+        var grid = document.createElement("div");
+        grid.className = "knob-grid";
+        for (var k = 0; k < knobs.length; k++) {
+            var knob = knobs[k];
+
+            // Parse the display value to get a normalized position for the knob arc.
+            // knob_N_value is a display string like "45%", "0.50", "LP", "127", etc.
+            var numVal = parseFloat(knob.value);
+            var norm = 0.5; // default to midpoint for non-numeric
+            if (!isNaN(numVal)) {
+                // If it looks like a percentage, normalize 0-100 → 0-1
+                if (knob.value.indexOf("%") >= 0) {
+                    norm = Math.max(0, Math.min(1, numVal / 100));
+                } else if (numVal >= 0 && numVal <= 1) {
+                    norm = numVal;
+                } else if (numVal >= 0 && numVal <= 127) {
+                    norm = numVal / 127;
+                } else {
+                    norm = 0.5;
+                }
+            }
+
+            // Build a simple meta for the SVG rendering
+            var fakeMeta = { min: 0, max: 1, type: "float" };
+
+            var container = document.createElement("div");
+            container.className = "knob-container";
+            container.setAttribute("data-mapped-knob", knob.index);
+
+            container.innerHTML =
+                createKnobSVG("mapped_" + knob.index, fakeMeta, norm) +
+                '<div class="knob-label">' + escapeHtml(knob.name) + '</div>' +
+                '<div class="knob-value" data-mapped-knob-value="' + knob.index + '">' + escapeHtml(knob.value || "-") + '</div>';
+
+            grid.appendChild(container);
+        }
+        section.appendChild(grid);
+        return section;
+    }
+
+    // ------------------------------------------------------------------
+    // Slot Settings section
+    // ------------------------------------------------------------------
+
+    var SLOT_SETTINGS = [
+        { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
+        { key: "slot:muted", label: "Muted", type: "bool" },
+        { key: "slot:soloed", label: "Soloed", type: "bool" },
+        { key: "slot:receive_channel", label: "Receive Channel", type: "int", min: 0, max: 16, step: 1,
+          format: function(v) { var n = parseInt(v); return n === 0 ? "All" : String(n); } },
+        { key: "slot:forward_channel", label: "Forward Channel", type: "int", min: -2, max: 15, step: 1,
+          format: function(v) {
+              var n = parseInt(v);
+              if (n === -2) return "THRU";
+              if (n === -1) return "Auto";
+              return String(n + 1);
+          }
+        }
+    ];
+
+    var LFO_SETTINGS = [
+        { id: "lfo1", label: "LFO 1", enableKey: "lfo1:enabled", params: [
+            { key: "lfo1:shape_name", label: "Shape", type: "readonly" },
+            { key: "lfo1:depth", label: "Depth", type: "float", min: 0, max: 1, step: 0.01 },
+            { key: "lfo1:rate_hz", label: "Rate (Hz)", type: "readonly" },
+            { key: "lfo1:sync", label: "Sync", type: "readonly" },
+            { key: "lfo1:rate_div", label: "Rate (Sync)", type: "readonly" },
+            { key: "lfo1:target", label: "Target", type: "lfo_target" },
+            { key: "lfo1:target_param", label: "Param", type: "lfo_target_param", targetKey: "lfo1:target" }
+        ]},
+        { id: "lfo2", label: "LFO 2", enableKey: "lfo2:enabled", params: [
+            { key: "lfo2:shape_name", label: "Shape", type: "readonly" },
+            { key: "lfo2:depth", label: "Depth", type: "float", min: 0, max: 1, step: 0.01 },
+            { key: "lfo2:rate_hz", label: "Rate (Hz)", type: "readonly" },
+            { key: "lfo2:sync", label: "Sync", type: "readonly" },
+            { key: "lfo2:rate_div", label: "Rate (Sync)", type: "readonly" },
+            { key: "lfo2:target", label: "Target", type: "lfo_target" },
+            { key: "lfo2:target_param", label: "Param", type: "lfo_target_param", targetKey: "lfo2:target" }
+        ]}
+    ];
+
+    var lfoCollapsed = { lfo1: true, lfo2: true };
+
+    function renderSlotSettings(s) {
+        var section = document.createElement("div");
+        section.className = "component-section slot-settings-section";
+
+        var header = document.createElement("div");
+        header.className = "component-header";
+        header.innerHTML = '<span class="component-title">Slot Settings</span>';
+        section.appendChild(header);
+
+        var synthParams = s.components.synth.params;
+
+        for (var i = 0; i < SLOT_SETTINGS.length; i++) {
+            var setting = SLOT_SETTINGS[i];
+
+            if (setting.type === "divider") {
+                var divider = document.createElement("div");
+                divider.className = "settings-divider";
+                divider.textContent = setting.label;
+                section.appendChild(divider);
+                continue;
+            }
+
+            var rawVal = synthParams["synth:" + setting.key] || synthParams[setting.key] || "";
+            var row = document.createElement("div");
+            row.className = "param-row";
+            row.setAttribute("data-setting-row", setting.key);
+
+            var label = document.createElement("span");
+            label.className = "param-label";
+            label.textContent = setting.label;
+            row.appendChild(label);
+
+            if (setting.type === "readonly") {
+                var roSpan = document.createElement("span");
+                roSpan.className = "param-value";
+                roSpan.setAttribute("data-setting-value", setting.key);
+                roSpan.textContent = rawVal || "-";
+                row.appendChild(roSpan);
+            } else if (setting.type === "bool") {
+                var btn = document.createElement("button");
+                btn.className = "setting-toggle" + (rawVal === "1" ? " active" : "");
+                btn.textContent = rawVal === "1" ? "On" : "Off";
+                btn.setAttribute("data-setting-key", setting.key);
+                btn.onclick = (function(key, currentVal) {
+                    return function() {
+                        var newVal = currentVal === "1" ? "0" : "1";
+                        send({ type: "set_param", slot: activeSlot, key: key, value: newVal });
+                    };
+                })(setting.key, rawVal);
+                row.appendChild(btn);
+            } else if (setting.type === "float") {
+                var input = document.createElement("input");
+                input.type = "range";
+                input.min = setting.min;
+                input.max = setting.max;
+                input.step = setting.step;
+                input.value = rawVal || setting.min;
+                input.setAttribute("data-setting-input", setting.key);
+                input.oninput = (function(key) {
+                    return function(e) {
+                        send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                        var disp = e.target.parentElement.querySelector('[data-setting-value]');
+                        if (disp) disp.textContent = Math.round(parseFloat(e.target.value) * 100) + "%";
+                    };
+                })(setting.key);
+                row.appendChild(input);
+
+                var valDisp = document.createElement("span");
+                valDisp.className = "param-value";
+                valDisp.setAttribute("data-setting-value", setting.key);
+                var displayVal = rawVal ? Math.round(parseFloat(rawVal) * 100) + "%" : "100%";
+                valDisp.textContent = displayVal;
+                row.appendChild(valDisp);
+            } else {
+                // Int with optional format
+                var valSpan = document.createElement("span");
+                valSpan.className = "param-value";
+                valSpan.setAttribute("data-setting-value", setting.key);
+                var formatted = setting.format ? setting.format(rawVal) : rawVal;
+                valSpan.textContent = formatted || "-";
+                row.appendChild(valSpan);
+
+                var minusBtn = document.createElement("button");
+                minusBtn.className = "setting-step-btn";
+                minusBtn.textContent = "-";
+                minusBtn.onclick = (function(key, min) {
+                    return function() {
+                        var el = document.querySelector('[data-setting-input-hidden="' + key + '"]');
+                        var cur = el ? parseInt(el.value) : 0;
+                        var newVal = Math.max(min, cur - 1);
+                        send({ type: "set_param", slot: activeSlot, key: key, value: String(newVal) });
+                    };
+                })(setting.key, setting.min);
+
+                var plusBtn = document.createElement("button");
+                plusBtn.className = "setting-step-btn";
+                plusBtn.textContent = "+";
+                plusBtn.onclick = (function(key, max) {
+                    return function() {
+                        var el = document.querySelector('[data-setting-input-hidden="' + key + '"]');
+                        var cur = el ? parseInt(el.value) : 0;
+                        var newVal = Math.min(max, cur + 1);
+                        send({ type: "set_param", slot: activeSlot, key: key, value: String(newVal) });
+                    };
+                })(setting.key, setting.max);
+
+                var hidden = document.createElement("input");
+                hidden.type = "hidden";
+                hidden.value = rawVal || "0";
+                hidden.setAttribute("data-setting-input-hidden", setting.key);
+
+                row.appendChild(minusBtn);
+                row.appendChild(plusBtn);
+                row.appendChild(hidden);
+            }
+
+            section.appendChild(row);
+        }
+
+        // Collapsible LFO sections
+        for (var li = 0; li < LFO_SETTINGS.length; li++) {
+            var lfo = LFO_SETTINGS[li];
+            var enableVal = synthParams["synth:" + lfo.enableKey] || synthParams[lfo.enableKey] || "0";
+            var isEnabled = (enableVal === "1");
+            var isOpen = !lfoCollapsed[lfo.id];
+
+            var lfoHeader = document.createElement("div");
+            lfoHeader.className = "lfo-header";
+            lfoHeader.setAttribute("data-lfo-id", lfo.id);
+
+            var toggle = document.createElement("span");
+            toggle.className = "component-toggle";
+            toggle.textContent = isOpen ? "\u25BC" : "\u25B6";
+
+            var lfoTitle = document.createElement("span");
+            lfoTitle.className = "component-title";
+            lfoTitle.textContent = lfo.label;
+
+            var lfoStatus = document.createElement("span");
+            lfoStatus.className = "lfo-status" + (isEnabled ? " active" : "");
+            lfoStatus.textContent = isEnabled ? "On" : "Off";
+
+            lfoHeader.appendChild(toggle);
+            lfoHeader.appendChild(lfoTitle);
+            lfoHeader.appendChild(lfoStatus);
+            lfoHeader.onclick = (function(id) {
+                return function() {
+                    lfoCollapsed[id] = !lfoCollapsed[id];
+                    renderSlot();
+                };
+            })(lfo.id);
+            section.appendChild(lfoHeader);
+
+            if (isOpen) {
+                // Enable toggle row
+                var enableRow = document.createElement("div");
+                enableRow.className = "param-row lfo-param-row";
+                enableRow.setAttribute("data-setting-row", lfo.enableKey);
+                var enableLabel = document.createElement("span");
+                enableLabel.className = "param-label";
+                enableLabel.textContent = "Enabled";
+                var enableBtn = document.createElement("button");
+                enableBtn.className = "setting-toggle" + (isEnabled ? " active" : "");
+                enableBtn.textContent = isEnabled ? "On" : "Off";
+                enableBtn.onclick = (function(key, cur) {
+                    return function(e) {
+                        e.stopPropagation();
+                        send({ type: "set_param", slot: activeSlot, key: key, value: cur === "1" ? "0" : "1" });
+                    };
+                })(lfo.enableKey, enableVal);
+                enableRow.appendChild(enableLabel);
+                enableRow.appendChild(enableBtn);
+                section.appendChild(enableRow);
+
+                // LFO param rows
+                for (var pi = 0; pi < lfo.params.length; pi++) {
+                    var lp = lfo.params[pi];
+                    var lpVal = synthParams["synth:" + lp.key] || synthParams[lp.key] || "";
+                    var lpRow = document.createElement("div");
+                    lpRow.className = "param-row lfo-param-row";
+                    lpRow.setAttribute("data-setting-row", lp.key);
+
+                    var lpLabel = document.createElement("span");
+                    lpLabel.className = "param-label";
+                    lpLabel.textContent = lp.label;
+                    lpRow.appendChild(lpLabel);
+
+                    if (lp.type === "float") {
+                        var lpInput = document.createElement("input");
+                        lpInput.type = "range";
+                        lpInput.min = lp.min;
+                        lpInput.max = lp.max;
+                        lpInput.step = lp.step;
+                        lpInput.value = lpVal || lp.min;
+                        lpInput.setAttribute("data-setting-input", lp.key);
+                        lpInput.oninput = (function(key) {
+                            return function(e) {
+                                send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                                var d = e.target.parentElement.querySelector('[data-setting-value]');
+                                if (d) d.textContent = Math.round(parseFloat(e.target.value) * 100) + "%";
+                            };
+                        })(lp.key);
+                        lpRow.appendChild(lpInput);
+                        var lpDisp = document.createElement("span");
+                        lpDisp.className = "param-value";
+                        lpDisp.setAttribute("data-setting-value", lp.key);
+                        lpDisp.textContent = lpVal ? Math.round(parseFloat(lpVal) * 100) + "%" : "0%";
+                        lpRow.appendChild(lpDisp);
+                    } else if (lp.type === "lfo_target") {
+                        // Dropdown of loaded components
+                        var tgtSelect = document.createElement("select");
+                        tgtSelect.className = "lfo-select";
+                        tgtSelect.setAttribute("data-setting-input", lp.key);
+                        var tgtOpts = [{ val: "", label: "(none)" }];
+                        for (var ci = 0; ci < COMPONENT_KEYS.length; ci++) {
+                            var ck = COMPONENT_KEYS[ci];
+                            if (s.components[ck] && s.components[ck].module) {
+                                tgtOpts.push({ val: ck, label: ck + " (" + s.components[ck].module + ")" });
+                            }
+                        }
+                        for (var oi = 0; oi < tgtOpts.length; oi++) {
+                            var opt = document.createElement("option");
+                            opt.value = tgtOpts[oi].val;
+                            opt.textContent = tgtOpts[oi].label;
+                            if (tgtOpts[oi].val === lpVal) opt.selected = true;
+                            tgtSelect.appendChild(opt);
+                        }
+                        tgtSelect.onchange = (function(key) {
+                            return function(e) {
+                                send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                                // Clear target_param when target changes
+                                var paramKey = key.replace(":target", ":target_param");
+                                send({ type: "set_param", slot: activeSlot, key: paramKey, value: "" });
+                                setTimeout(function() { renderSlot(); }, 100);
+                            };
+                        })(lp.key);
+                        lpRow.appendChild(tgtSelect);
+                    } else if (lp.type === "lfo_target_param") {
+                        // Dropdown of numeric params from the target component
+                        var targetComp = synthParams["synth:" + lp.targetKey] || synthParams[lp.targetKey] || "";
+                        var paramSelect = document.createElement("select");
+                        paramSelect.className = "lfo-select";
+                        paramSelect.setAttribute("data-setting-input", lp.key);
+                        var noneOpt = document.createElement("option");
+                        noneOpt.value = "";
+                        noneOpt.textContent = "(none)";
+                        paramSelect.appendChild(noneOpt);
+                        if (targetComp && s.components[targetComp] && s.components[targetComp].chainParams) {
+                            var cp = s.components[targetComp].chainParams;
+                            for (var cpi = 0; cpi < cp.length; cpi++) {
+                                var cpItem = cp[cpi];
+                                if (!cpItem || !cpItem.key) continue;
+                                var cpType = (cpItem.type || "").toLowerCase();
+                                // Only numeric params are valid LFO targets
+                                if (cpType === "float" || cpType === "int" || cpType === "" ||
+                                    (cpItem.min !== undefined && cpItem.max !== undefined)) {
+                                    var pOpt = document.createElement("option");
+                                    pOpt.value = cpItem.key;
+                                    pOpt.textContent = cpItem.name || cpItem.key;
+                                    if (cpItem.key === lpVal) pOpt.selected = true;
+                                    paramSelect.appendChild(pOpt);
+                                }
+                            }
+                        }
+                        paramSelect.onchange = (function(key) {
+                            return function(e) {
+                                send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                            };
+                        })(lp.key);
+                        lpRow.appendChild(paramSelect);
+                    } else {
+                        var lpSpan = document.createElement("span");
+                        lpSpan.className = "param-value";
+                        lpSpan.setAttribute("data-setting-value", lp.key);
+                        lpSpan.textContent = lpVal || "-";
+                        lpRow.appendChild(lpSpan);
+                    }
+                    section.appendChild(lpRow);
+                }
+            }
+        }
+
+        return section;
     }
 
     // ------------------------------------------------------------------
