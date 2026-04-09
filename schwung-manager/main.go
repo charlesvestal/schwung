@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -619,6 +620,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/install.html",
 		"templates/help.html",
 		"templates/remote_ui.html",
+		"templates/download.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -644,6 +646,13 @@ func loadTemplates() (templateMap, error) {
 // App holds shared dependencies.
 // ---------------------------------------------------------------------------
 
+type downloadJob struct {
+	ID    string `json:"job_id"`
+	State string `json:"state"`          // "downloading", "done", "error"
+	Path  string `json:"path,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
 type App struct {
 	tmpl          templateMap
 	fileSvc       *FileService
@@ -653,6 +662,8 @@ type App struct {
 	shm           *ShmConfig  // shared memory for live config sync (nil if not on device)
 	shmParams     *ShmParams  // shared memory for param get/set (nil if not on device)
 	upgradeStatus string      // current upgrade step (empty = not upgrading)
+	downloadJobs  map[string]*downloadJob
+	downloadMu    sync.Mutex
 }
 
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -2395,6 +2406,166 @@ func (app *App) handleInstallAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/modules/"+id+"?flash="+mod.Name+"+installed+successfully", http.StatusSeeOther)
 }
 
+// -- Download --
+
+const (
+	webstreamBinDir = "/data/UserData/schwung/modules/sound_generators/webstream/bin"
+	downloadOutDir  = "/data/UserData/UserLibrary/Samples/Schwung/Webstream"
+)
+
+func (app *App) handleDownloadPage(w http.ResponseWriter, r *http.Request) {
+	urlParam := r.URL.Query().Get("url")
+	titleParam := r.URL.Query().Get("title")
+	data := map[string]any{
+		"Title":     "Download",
+		"Active":    "download",
+		"URL":       urlParam,
+		"FileTitle": titleParam,
+		"AutoStart": urlParam != "",
+	}
+	app.render(w, r, "download.html", data)
+}
+
+func (app *App) handleAPIDownload(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if req.URL == "" {
+		http.Error(w, "missing url", http.StatusBadRequest)
+		return
+	}
+
+	job := &downloadJob{
+		ID:    fmt.Sprintf("%d", time.Now().UnixNano()),
+		State: "downloading",
+	}
+	app.downloadMu.Lock()
+	app.downloadJobs[job.ID] = job
+	app.downloadMu.Unlock()
+
+	go app.runDownload(job, req.URL, req.Title)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
+}
+
+func (app *App) runDownload(job *downloadJob, url, title string) {
+	if err := os.MkdirAll(downloadOutDir, 0755); err != nil {
+		app.downloadMu.Lock()
+		job.State = "error"
+		job.Error = "mkdir: " + err.Error()
+		app.downloadMu.Unlock()
+		return
+	}
+
+	// Sanitize filename.
+	name := title
+	if name == "" {
+		name = "download"
+	}
+	for _, ch := range []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"} {
+		name = strings.ReplaceAll(name, ch, "_")
+	}
+	name = strings.TrimRight(name, " .")
+	if name == "" {
+		name = "download"
+	}
+
+	// Deduplicate.
+	outPath := filepath.Join(downloadOutDir, name+".wav")
+	if _, err := os.Stat(outPath); err == nil {
+		for i := 2; i <= 99; i++ {
+			candidate := filepath.Join(downloadOutDir, fmt.Sprintf("%s (%d).wav", name, i))
+			if _, err := os.Stat(candidate); os.IsNotExist(err) {
+				outPath = candidate
+				break
+			}
+		}
+	}
+
+	ytdlp := filepath.Join(webstreamBinDir, "yt-dlp")
+	ffmpeg := filepath.Join(webstreamBinDir, "ffmpeg")
+
+	cmdStr := fmt.Sprintf(
+		`%q --no-playlist -f "bestaudio[ext=m4a]/bestaudio" -o - %q 2>/dev/null | %q -hide_banner -loglevel warning -i pipe:0 -vn -sn -dn -af "aresample=44100" -ac 2 -ar 44100 %q -y 2>/dev/null`,
+		ytdlp, url, ffmpeg, outPath,
+	)
+
+	cmd := exec.Command("sh", "-c", cmdStr)
+	if err := cmd.Run(); err != nil {
+		app.downloadMu.Lock()
+		job.State = "error"
+		job.Error = "download failed: " + err.Error()
+		app.downloadMu.Unlock()
+		return
+	}
+
+	// Verify output.
+	info, err := os.Stat(outPath)
+	if err != nil || info.Size() <= 44 {
+		app.downloadMu.Lock()
+		job.State = "error"
+		job.Error = "output file missing or too small"
+		app.downloadMu.Unlock()
+		return
+	}
+
+	app.downloadMu.Lock()
+	job.State = "done"
+	job.Path = outPath
+	app.downloadMu.Unlock()
+}
+
+func (app *App) handleAPIDownloadStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	app.downloadMu.Lock()
+	job, ok := app.downloadJobs[id]
+	app.downloadMu.Unlock()
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
+}
+
+func (app *App) handleAPIOpenInTool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FilePath string `json:"file_path"`
+		ToolID   string `json:"tool_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if req.FilePath == "" || req.ToolID == "" {
+		http.Error(w, "missing file_path or tool_id", http.StatusBadRequest)
+		return
+	}
+
+	cmdPath := filepath.Join(app.basePath, "open_tool_cmd.json")
+	payload, _ := json.Marshal(map[string]string{
+		"file_path": req.FilePath,
+		"tool_id":   req.ToolID,
+	})
+	if err := os.WriteFile(cmdPath, payload, 0644); err != nil {
+		http.Error(w, "write failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if app.shm != nil {
+		app.shm.SetOpenToolCmd(1)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 // -- Remote UI --
 
 func (app *App) handleRemoteUI(w http.ResponseWriter, r *http.Request) {
@@ -2577,13 +2748,14 @@ func main() {
 	}
 
 	app := &App{
-		tmpl:       tmpl,
-		fileSvc:    &FileService{AllowedRoots: allowedRoots},
-		catalogSvc: NewCatalogService(*catalogURL),
-		basePath:   basePath,
-		logger:     logger,
-		shm:        shm,
-		shmParams:  shmParams,
+		tmpl:         tmpl,
+		fileSvc:      &FileService{AllowedRoots: allowedRoots},
+		catalogSvc:   NewCatalogService(*catalogURL),
+		basePath:     basePath,
+		logger:       logger,
+		shm:          shm,
+		shmParams:    shmParams,
+		downloadJobs: make(map[string]*downloadJob),
 	}
 
 	// Clear any stale upgrade_status from a previous upgrade that
@@ -2647,6 +2819,12 @@ func main() {
 	// Install.
 	mux.HandleFunc("GET /install/{id}", app.handleInstallPage)
 	mux.HandleFunc("POST /install/{id}", app.handleInstallAction)
+
+	// Download.
+	mux.HandleFunc("GET /download", app.handleDownloadPage)
+	mux.HandleFunc("POST /api/download", app.handleAPIDownload)
+	mux.HandleFunc("GET /api/download/status/{id}", app.handleAPIDownloadStatus)
+	mux.HandleFunc("POST /api/open-in-tool", app.handleAPIOpenInTool)
 
 	// Graceful shutdown context — created early so RemoteUI can use it.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
