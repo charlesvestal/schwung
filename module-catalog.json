@@ -689,6 +689,17 @@
       "default_branch": "master",
       "asset_name": "genera-module.tar.gz",
       "min_host_version": "0.5.8"
+    },
+    {
+      "id": "branchage",
+      "name": "Branchage",
+      "description": "Grids drum maps with per-lane Branches-style note branching",
+      "author": "Mutable Instruments ideas / port for Schwung Move",
+      "component_type": "midi_fx",
+      "github_repo": "broduoliviercontact-web/Schwung-Midi-Fx-branchages-Multi-Random-generator",
+      "default_branch": "main",
+      "asset_name": "branchage-module.tar.gz",
+      "min_host_version": "0.1.0"
     }
   ]
 }
