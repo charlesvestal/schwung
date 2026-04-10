@@ -101,6 +101,23 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 
 **Tip:** You can access slots directly from normal Move mode - you don't need to be in shadow mode first.
 
+### Long-Press Shortcuts (Optional)
+
+If you prefer not to use the Shift+Vol combo, you can enable **Long Press** mode in **Global Settings > Shortcuts**. This adds alternative shortcuts that don't require touching the volume knob:
+
+| Shortcut | Action |
+|----------|--------|
+| **Hold Track 1-4** (500ms) | Open that slot's editor |
+| **Hold Note/Session** (500ms) | Open Master FX |
+| **Shift + hold Step 2** (500ms) | Open Global Settings |
+| **Shift + Step 13** | Open Tools Menu (immediate) |
+| **Tap Track** (while shadow UI is shown) | Dismiss shadow UI |
+| **Tap Note/Session** (while shadow UI is shown) | Dismiss shadow UI |
+
+When enabled, holding Shift also lights the Step 2 and Step 13 LEDs as a reminder.
+
+The original Shift+Vol shortcuts continue to work regardless of this setting.
+
 ### Overlay Knob Shortcut
 
 The knob parameter overlay shown in native Move mode has a separate trigger setting:
