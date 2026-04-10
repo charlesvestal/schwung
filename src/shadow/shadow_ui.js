@@ -839,6 +839,12 @@ const GLOBAL_SETTINGS_SECTIONS = [
         ]
     },
     {
+        id: "shortcuts", label: "Shortcuts",
+        items: [
+            { key: "long_press_shadow", label: "Long Press", type: "bool" }
+        ]
+    },
+    {
         id: "services", label: "Services",
         items: [
             { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
@@ -3476,19 +3482,33 @@ function refreshSlots() {
     }
     /* Always load config to get authoritative slot names */
     const configSlots = loadSlotsFromConfig();
+    let newSlots;
     if (Array.isArray(hostSlots) && hostSlots.length) {
-        slots = hostSlots.map((slot, idx) => ({
+        newSlots = hostSlots.map((slot, idx) => ({
             channel: (typeof slot.channel === "number") ? slot.channel : (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].channel : 1 + idx),
             /* Prefer config name (set by save), fall back to shim name, then default */
             name: (configSlots[idx] && configSlots[idx].name) || slot.name || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].name : "Unknown Patch")
         }));
     } else {
-        slots = configSlots;
+        newSlots = configSlots;
     }
+    /* Only redraw if slot data actually changed */
+    let changed = (newSlots.length !== slots.length);
+    if (!changed) {
+        for (let i = 0; i < newSlots.length; i++) {
+            if (newSlots[i].name !== slots[i].name || newSlots[i].channel !== slots[i].channel) {
+                changed = true;
+                break;
+            }
+        }
+    }
+    slots = newSlots;
     if (selectedSlot >= slots.length) {
         selectedSlot = Math.max(0, slots.length - 1);
     }
-    needsRedraw = true;
+    if (changed) {
+        needsRedraw = true;
+    }
 }
 
 /* parsePatchName, loadPatchList, findPatchIndexByName,
@@ -5540,6 +5560,11 @@ function syncSettingsFromConfigFile() {
         if (c.set_pages_enabled !== undefined && typeof set_pages_set_shm === "function") {
             const cur = typeof set_pages_get === "function" ? !!set_pages_get() : true;
             if (!!c.set_pages_enabled !== cur) set_pages_set_shm(c.set_pages_enabled ? 1 : 0);
+        }
+        /* Long-press shadow shortcuts */
+        if (c.long_press_shadow !== undefined && typeof long_press_shadow_set_shm === "function") {
+            const cur = typeof long_press_shadow_get === "function" ? !!long_press_shadow_get() : false;
+            if (!!c.long_press_shadow !== cur) long_press_shadow_set_shm(c.long_press_shadow ? 1 : 0);
         }
         /* Auto update check */
         if (c.auto_update_check !== undefined) {
@@ -9830,6 +9855,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "set_pages_enabled") {
         return (typeof set_pages_get === "function" && set_pages_get()) ? "On" : "Off";
     }
+    if (setting.key === "long_press_shadow") {
+        return (typeof long_press_shadow_get === "function" && long_press_shadow_get()) ? "On" : "Off";
+    }
     if (setting.key === "skipback_shortcut") {
         const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
         return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
@@ -9969,6 +9997,12 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "set_pages_enabled" && typeof set_pages_set === "function") {
         const current = typeof set_pages_get === "function" ? set_pages_get() : true;
         set_pages_set(!current ? 1 : 0);
+        return;
+    }
+
+    if (setting.key === "long_press_shadow" && typeof long_press_shadow_set === "function") {
+        const current = typeof long_press_shadow_get === "function" ? long_press_shadow_get() : false;
+        long_press_shadow_set(!current ? 1 : 0);
         return;
     }
 

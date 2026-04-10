@@ -101,6 +101,23 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 
 **Tip:** You can access slots directly from normal Move mode - you don't need to be in shadow mode first.
 
+### Long-Press Shortcuts (Optional)
+
+If you prefer not to use the Shift+Vol combo, you can enable **Long Press** mode in **Global Settings > Shortcuts**. This adds alternative shortcuts that don't require touching the volume knob:
+
+| Shortcut | Action |
+|----------|--------|
+| **Hold Track 1-4** (500ms) | Open that slot's editor |
+| **Hold Note/Session** (500ms) | Open Master FX |
+| **Shift + hold Step 2** (500ms) | Open Global Settings |
+| **Shift + Step 13** | Open Tools Menu (immediate) |
+| **Tap Track** (while shadow UI is shown) | Dismiss shadow UI |
+| **Tap Note/Session** (while shadow UI is shown) | Dismiss shadow UI |
+
+When enabled, holding Shift also lights the Step 2 and Step 13 LEDs as a reminder.
+
+The original Shift+Vol shortcuts continue to work regardless of this setting.
+
 ### Overlay Knob Shortcut
 
 The knob parameter overlay shown in native Move mode has a separate trigger setting:
@@ -546,7 +563,7 @@ Step LEDs: green = has content, red = now playing, white = selected. Pad LEDs hi
 
 ## Schwung Manager (Web)
 
-Schwung Manager is a web interface for managing your Move from any device on the same network. Access it at `http://schwung.local` — no port number needed.
+Schwung Manager is a web interface for managing your Move from any device on the same network. Access it at `http://move.local:7700`.
 
 ### Features
 
@@ -555,12 +572,12 @@ Schwung Manager is a web interface for managing your Move from any device on the
 - **Config**: Adjust display, audio, screen reader, and feature settings. Changes take effect instantly on the device.
 - **System**: Check version, view debug logs, and upgrade Schwung.
 - **Help**: Browse on-device help for Schwung and installed modules.
-- **Screen Mirroring**: Quick access at `schwung.local/mirror` — streams Move's OLED display to your browser.
+- **Screen Mirroring**: Quick access at `move.local:7700/mirror` — streams Move's OLED display to your browser.
 
 ### Notes
 
-- `schwung.local` is advertised via mDNS and works on any device on the same WiFi network
-- `move.local` continues to work for the stock Move manager (proxied through Schwung Manager)
+- `move.local` is advertised by Move's built-in avahi — works on Mac, Linux, and Windows with Bonjour
+- `move.local:80` remains the stock Move manager, completely untouched by Schwung
 - Settings changed on the web UI sync to the device in real time (and vice versa)
 - No authentication is required — anyone on the network can access it
 
@@ -572,7 +589,7 @@ Schwung also includes a standalone file browser (powered by filebrowser) for mor
 
 ### Setup
 
-1. Open **Global Settings > Services** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
+1. Open **Global Settings > Services** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `move.local:7700/config`
 2. Toggle **File Browser** to **On**
 3. Open `http://move.local:404` in a browser
 
@@ -608,9 +625,9 @@ Stream Move's 128x64 OLED display to any browser on your network in real time. U
 
 ### Setup
 
-1. Open **Global Settings > Display** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
+1. Open **Global Settings > Display** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `move.local:7700/config`
 2. Toggle **Mirror Display** to **On**
-3. Open `http://schwung.local/mirror` in a browser (or `http://move.local:7681`)
+3. Open `http://move.local:7700/mirror` in a browser (or `http://move.local:7681`)
 
 The display updates at ~30 fps and shows whatever is on screen — both normal Move UI and Shadow UI.
 
@@ -648,3 +665,17 @@ Muted slots are silenced but continue processing MIDI. Solo isolates a single sl
 - Each Move Set has its own slot configurations — switch Sets to switch between different instrument setups
 - Use Set Pages to organize sets by project or performance — Shift+Vol+Left/Right to switch
 - If something goes wrong, use Move's DFU restore mode to reset
+
+## Troubleshooting
+
+### Schwung Manager not accessible
+
+If `http://move.local:7700` isn't working, schwung-manager may not be running. This can happen if you upgraded Schwung on-device (via the Module Store) from an older version.
+
+**Fix (run once from a terminal):**
+
+```
+ssh root@move.local "sh /data/UserData/schwung/scripts/post-update.sh && reboot"
+```
+
+Move will reboot and Schwung Manager should be available at `http://move.local:7700`.

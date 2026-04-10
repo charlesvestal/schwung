@@ -11,7 +11,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -130,6 +129,7 @@ type InstalledModule struct {
 	Version       string         `json:"version"`
 	ComponentType string         `json:"component_type"`
 	Description   string         `json:"description"`
+	Author        string         `json:"author"`
 	Assets        []ModuleAssets `json:"-"` // custom unmarshal: single object or array
 	RawAssets     json.RawMessage `json:"assets,omitempty"`
 }
@@ -798,20 +798,28 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// If not in catalog, check if it's a built-in installed module.
+	// If not in catalog, check if it's an installed module (built-in or custom).
 	builtIn := false
 	if mod == nil {
 		if inst, ok := installed[id]; ok {
+			author := "Unknown"
+			if inst.Author != "" {
+				author = inst.Author
+			}
 			mod = &CatalogModule{
 				ID:            id,
 				Name:          inst.Name,
 				Description:   inst.Description,
-				Author:        "Schwung",
+				Author:        author,
 				ComponentType: inst.ComponentType,
-				GithubRepo:    "charlesvestal/schwung",
 				MinHostVer:    "0.1.0",
 			}
-			builtIn = true
+			// Only mark as built-in if it lives at the root modules/ level (not in a category subdir).
+			modDir := app.findModuleDir(id)
+			if modDir != "" {
+				rel, _ := filepath.Rel(filepath.Join(app.basePath, "modules"), modDir)
+				builtIn = !strings.Contains(rel, string(filepath.Separator))
+			}
 		}
 	}
 	if mod == nil {
@@ -978,6 +986,13 @@ func (app *App) installModule(mod *CatalogModule) error {
 	cmd := exec.Command("tar", "-xzf", tmpPath, "-C", categoryDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extracting tarball: %w\noutput: %s", err, output)
+	}
+
+	// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
+	modDir := filepath.Join(categoryDir, mod.ID)
+	chown := exec.Command("chown", "-R", "ableton:users", modDir)
+	if out, err := chown.CombinedOutput(); err != nil {
+		app.logger.Warn("chown failed (non-fatal)", "id", mod.ID, "err", err, "output", string(out))
 	}
 
 	app.logger.Info("module installed", "id", mod.ID, "path", categoryDir)
@@ -1187,6 +1202,12 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
+		chown := exec.Command("chown", "-R", "ableton:users", destDir)
+		if out, err := chown.CombinedOutput(); err != nil {
+			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
+		}
+
 		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
 		http.Redirect(w, r, "/modules?flash=Installed+"+entries[0].Name()+"+from+GitHub", http.StatusSeeOther)
 
@@ -1251,6 +1272,12 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		if err := os.Rename(moduleDir, destDir); err != nil {
 			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
 			return
+		}
+
+		// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
+		chown := exec.Command("chown", "-R", "ableton:users", destDir)
+		if out, err := chown.CombinedOutput(); err != nil {
+			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
 		}
 
 		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
@@ -2843,14 +2870,15 @@ func hostRouter(schwungHost string, schwungHandler http.Handler, moveAddr, displ
 // ---------------------------------------------------------------------------
 
 func main() {
-	port := flag.Int("port", 80, "HTTP listen port")
+	port := flag.Int("port", 7700, "HTTP listen port")
 	roots := flag.String("roots", "/data/UserData/", "Comma-separated allowed filesystem roots")
 	catalogURL := flag.String("catalog-url",
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
-	schwungHost := flag.String("schwung-host", "schwung.local", "Hostname for Schwung Manager")
-	moveBackend := flag.String("move-backend", "127.0.0.1:8080", "Address of stock Move web server")
 	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
+	// Deprecated flags — accepted but ignored for backwards compatibility with old entrypoints.
+	flag.String("move-backend", "", "(deprecated, ignored)")
+	flag.String("schwung-host", "", "(deprecated, ignored)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -2994,11 +3022,39 @@ func main() {
 	// Module web UI assets (custom web_ui.html and related files).
 	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)
 
+	// Display server proxy (/mirror and /stream-auto).
+	displayProxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = *displayBackend
+			if strings.HasPrefix(req.URL.Path, "/mirror") {
+				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/mirror")
+				if req.URL.Path == "" {
+					req.URL.Path = "/"
+				}
+			}
+		},
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			logger.Error("display proxy error", "err", err, "path", r.URL.Path)
+			http.Error(w, "Display server unavailable", http.StatusBadGateway)
+		},
+	}
+	mux.Handle("GET /mirror", displayProxy)
+	mux.Handle("GET /mirror/", displayProxy)
+	mux.Handle("GET /stream-auto", displayProxy)
+
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	var handler http.Handler = mux
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
 	handler = middleware.CSRFProtectionWithExemptions(handler, []string{"/ws/"})
-	handler = hostRouter(*schwungHost, handler, *moveBackend, *displayBackend, logger)
+
+	// Never bind port 80 — old entrypoints may pass -port 80 but we must not
+	// interfere with stock MoveWebService.
+	if *port == 80 {
+		logger.Warn("port 80 requested (old entrypoint), overriding to 7700")
+		*port = 7700
+	}
 
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{
@@ -3009,16 +3065,7 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Start mDNS responder for schwung.local.
-	startMDNS(*schwungHost, logger)
-
-	fallbackAddr := ":7700"
 	go func() {
-		// Try the preferred port (80) for up to 30 seconds.
-		// If it's unavailable (MoveWebService holding it), fall back to 7700.
-		// This ensures schwung-manager is always reachable and never blocks move.local.
-		attempts := 0
-		maxAttempts := 10 // 10 * 3s = 30s
 		for {
 			logger.Info("starting schwung-manager", "addr", addr)
 			err := srv.ListenAndServe()
@@ -3026,19 +3073,6 @@ func main() {
 				return
 			}
 			if err != nil {
-				attempts++
-				if attempts >= maxAttempts && addr != fallbackAddr {
-					logger.Warn("port 80 unavailable after 30s, falling back to 7700")
-					addr = fallbackAddr
-					srv = &http.Server{
-						Addr:         addr,
-						Handler:      handler,
-						ReadTimeout:  30 * time.Second,
-						WriteTimeout: 60 * time.Second,
-						IdleTimeout:  120 * time.Second,
-					}
-					continue
-				}
 				logger.Error("server bind failed, retrying in 3s", "err", err)
 				time.Sleep(3 * time.Second)
 				srv = &http.Server{
