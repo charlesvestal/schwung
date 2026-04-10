@@ -3476,19 +3476,33 @@ function refreshSlots() {
     }
     /* Always load config to get authoritative slot names */
     const configSlots = loadSlotsFromConfig();
+    let newSlots;
     if (Array.isArray(hostSlots) && hostSlots.length) {
-        slots = hostSlots.map((slot, idx) => ({
+        newSlots = hostSlots.map((slot, idx) => ({
             channel: (typeof slot.channel === "number") ? slot.channel : (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].channel : 1 + idx),
             /* Prefer config name (set by save), fall back to shim name, then default */
             name: (configSlots[idx] && configSlots[idx].name) || slot.name || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].name : "Unknown Patch")
         }));
     } else {
-        slots = configSlots;
+        newSlots = configSlots;
     }
+    /* Only redraw if slot data actually changed */
+    let changed = (newSlots.length !== slots.length);
+    if (!changed) {
+        for (let i = 0; i < newSlots.length; i++) {
+            if (newSlots[i].name !== slots[i].name || newSlots[i].channel !== slots[i].channel) {
+                changed = true;
+                break;
+            }
+        }
+    }
+    slots = newSlots;
     if (selectedSlot >= slots.length) {
         selectedSlot = Math.max(0, slots.length - 1);
     }
-    needsRedraw = true;
+    if (changed) {
+        needsRedraw = true;
+    }
 }
 
 /* parsePatchName, loadPatchList, findPatchIndexByName,
