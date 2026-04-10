@@ -152,6 +152,7 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
+static bool long_press_shadow_enabled = false; /* Long-press Track/Menu/Step2 shortcuts */
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
@@ -540,6 +541,33 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
     }
 }
 
+/* Long-press detection state.
+ * long_press_shadow_enabled is the startup value from features.json.
+ * At runtime, the JS UI can toggle shadow_control->long_press_shadow directly.
+ * Use LONG_PRESS_ACTIVE() to check the live value. */
+#define LONG_PRESS_ACTIVE() (shadow_control ? shadow_control->long_press_shadow : long_press_shadow_enabled)
+#define LONG_PRESS_MS 500
+
+static struct timespec track_press_time[4];
+static uint8_t track_longpress_pending[4];
+static uint8_t track_longpress_fired[4];
+
+static struct timespec menu_press_time;
+static uint8_t menu_longpress_pending;
+static uint8_t menu_longpress_fired;
+
+static struct timespec step2_press_time;
+static uint8_t step2_longpress_pending;
+static uint8_t step2_longpress_fired;
+
+static inline int long_press_elapsed(const struct timespec *start) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int ms = (int)((now.tv_sec - start->tv_sec) * 1000 +
+                    (now.tv_nsec - start->tv_nsec) / 1000000);
+    return ms >= LONG_PRESS_MS;
+}
+
 /* ==========================================================================
  * Master Volume Sync - Read from display buffer when volume overlay shown
  * ========================================================================== */
@@ -699,14 +727,28 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse long_press_shadow (defaults to false) */
+    const char *long_press_key = strstr(config_buf, "\"long_press_shadow\"");
+    if (long_press_key) {
+        const char *colon = strchr(long_press_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                long_press_shadow_enabled = true;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s, long_press=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
-             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
+             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture",
+             long_press_shadow_enabled ? "enabled" : "disabled");
     shadow_log(log_msg);
 }
 
@@ -3003,6 +3045,7 @@ static void shim_init_subsystems(void)
         shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
         shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
         shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
+        shadow_control->long_press_shadow = long_press_shadow_enabled ? 1 : 0;
     }
     /* Initialize process management subsystem */
     {
@@ -4288,16 +4331,80 @@ pre_done:
 
     /* === SHORTCUT INDICATOR LEDS ===
      * When Shift+Vol held, light step icon LEDs (CCs 16-31 = icons below steps).
+     * When long_press enabled and Shift held (without Vol), light Step 2 and Step 13.
      * Uses shadow_queue_led which gets flushed by shadow_flush_pending_leds above. */
     {
         static int shortcut_leds_on = 0;
-        int want_on = shadow_shift_held && shadow_volume_knob_touched;
-        if (want_on && !shortcut_leds_on) {
+        static int longpress_leds_on = 0;
+
+        int want_shiftvol = shadow_shift_held && shadow_volume_knob_touched;
+        int want_longpress = LONG_PRESS_ACTIVE() && shadow_shift_held && !shadow_volume_knob_touched;
+
+        if (want_shiftvol && !shortcut_leds_on) {
             shadow_queue_led(0x0B, 0xB0, 28, 118);  /* Step 13 icon = LightGrey (Tools) */
             shortcut_leds_on = 1;
-        } else if (!want_on && shortcut_leds_on) {
-            shadow_queue_led(0x0B, 0xB0, 28, 0);    /* Step 13 icon = off */
+        } else if (!want_shiftvol && shortcut_leds_on) {
+            shadow_queue_led(0x0B, 0xB0, 28, 0);
             shortcut_leds_on = 0;
+        }
+
+        if (want_longpress && !longpress_leds_on) {
+            shadow_queue_led(0x0B, 0xB0, 17, 118);  /* Step 2 icon = LightGrey (Settings) */
+            shadow_queue_led(0x0B, 0xB0, 28, 118);  /* Step 13 icon = LightGrey (Tools) */
+            longpress_leds_on = 1;
+        } else if (!want_longpress && longpress_leds_on) {
+            shadow_queue_led(0x0B, 0xB0, 17, 0);
+            if (!shortcut_leds_on) {
+                shadow_queue_led(0x0B, 0xB0, 28, 0);
+            }
+            longpress_leds_on = 0;
+        }
+    }
+
+    /* Long-press threshold checks */
+    if (LONG_PRESS_ACTIVE() && shadow_ui_enabled && shadow_control) {
+        /* Track buttons */
+        for (int i = 0; i < 4; i++) {
+            if (track_longpress_pending[i] && !track_longpress_fired[i] &&
+                !shadow_shift_held && !shadow_volume_knob_touched &&
+                long_press_elapsed(&track_press_time[i])) {
+                track_longpress_fired[i] = 1;
+                track_longpress_pending[i] = 0;
+                shadow_control->ui_slot = (uint8_t)i;
+                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
+                if (!shadow_display_mode) {
+                    shadow_display_mode = 1;
+                    shadow_control->display_mode = 1;
+                    launch_shadow_ui();
+                }
+                shadow_log("Track long-press: opening slot settings");
+            }
+        }
+        /* Menu button */
+        if (menu_longpress_pending && !menu_longpress_fired &&
+            !shadow_shift_held && !shadow_volume_knob_touched &&
+            long_press_elapsed(&menu_press_time)) {
+            menu_longpress_fired = 1;
+            menu_longpress_pending = 0;
+            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
+            if (!shadow_display_mode) {
+                shadow_display_mode = 1;
+                shadow_control->display_mode = 1;
+                launch_shadow_ui();
+            }
+            shadow_log("Menu long-press: opening master FX");
+        }
+        /* Shift + Step 2 */
+        if (step2_longpress_pending && !step2_longpress_fired &&
+            shadow_shift_held && !shadow_volume_knob_touched &&
+            long_press_elapsed(&step2_press_time)) {
+            step2_longpress_fired = 1;
+            step2_longpress_pending = 0;
+            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SETTINGS;
+            shadow_display_mode = 1;
+            shadow_control->display_mode = 1;
+            launch_shadow_ui();
+            shadow_log("Shift+Step2 long-press: opening global settings");
         }
     }
 
@@ -4534,7 +4641,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 } else {
                     /* CC messages: filter jog/back controls (let up/down through for octave) */
                     if (cin == 0x0B && type == 0xB0) {
-                        if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK || d1 == CC_MENU) {
+                        if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
+                            filter = 1;
+                        }
+                        /* Filter Menu unless long-press mode dismisses shadow on tap */
+                        if (d1 == CC_MENU && !LONG_PRESS_ACTIVE()) {
                             filter = 1;
                         }
                         /* Filter knob CCs when shift held */
@@ -4845,11 +4956,49 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_log("Shift+Track: dismissing shadow UI");
                         }
                     }
+
+                    /* Long-press detection for Track buttons */
+                    if (LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
+                        int lp_slot = 43 - d1;
+                        if (pressed) {
+                            /* Start long-press timer */
+                            clock_gettime(CLOCK_MONOTONIC, &track_press_time[lp_slot]);
+                            track_longpress_pending[lp_slot] = 1;
+                            track_longpress_fired[lp_slot] = 0;
+                        } else {
+                            /* Released before threshold — if shadow UI displayed, dismiss it */
+                            if (track_longpress_pending[lp_slot] && !track_longpress_fired[lp_slot] &&
+                                shadow_display_mode && shadow_control) {
+                                shadow_display_mode = 0;
+                                shadow_control->display_mode = 0;
+                                shadow_log("Track tap: dismissing shadow UI");
+                            }
+                            track_longpress_pending[lp_slot] = 0;
+                        }
+                    }
                 }
 
                 /* Mute button (CC 88): track held state */
                 if (d1 == CC_MUTE) {
                     shadow_mute_held = (d2 > 0) ? 1 : 0;
+                }
+
+                /* Menu button long-press detection */
+                if (d1 == CC_MENU && LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
+                    if (d2 > 0) {
+                        clock_gettime(CLOCK_MONOTONIC, &menu_press_time);
+                        menu_longpress_pending = 1;
+                        menu_longpress_fired = 0;
+                    } else {
+                        /* Released before threshold — if shadow UI displayed, dismiss it */
+                        if (menu_longpress_pending && !menu_longpress_fired &&
+                            shadow_display_mode && shadow_control) {
+                            shadow_display_mode = 0;
+                            shadow_control->display_mode = 0;
+                            shadow_log("Menu tap: dismissing shadow UI");
+                        }
+                        menu_longpress_pending = 0;
+                    }
                 }
 
                 /* Shift + Volume + Back = suspend overtake (JACK keeps running) */
@@ -5028,6 +5177,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_jog_touched = touched;
                 }
 
+                /* Step 2 (note 17) long-press detection (Shift held, without Vol) */
+                if (d1 == 17 && type == 0x90 && LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
+                    if (d2 > 0 && shadow_shift_held && !shadow_volume_knob_touched) {
+                        clock_gettime(CLOCK_MONOTONIC, &step2_press_time);
+                        step2_longpress_pending = 1;
+                        step2_longpress_fired = 0;
+                    }
+                }
+                if (d1 == 17 && (type == 0x80 || (type == 0x90 && d2 == 0))) {
+                    step2_longpress_pending = 0;
+                }
+
                 /* Shift + Volume + Step 2 (note 17) = jump to Global Settings */
                 if (d1 == 17 && type == 0x90 && d2 > 0) {
                     if (shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
@@ -5057,19 +5218,35 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         uint8_t *sh = shadow + MIDI_IN_OFFSET;
                         sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    } else if (LONG_PRESS_ACTIVE() && shadow_shift_held &&
+                               !shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                        /* Shift+Step13 without Vol — immediate tools shortcut */
+                        shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_TOOLS;
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui();
+                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
+                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        shadow_log("Shift+Step13: opening tools");
                     }
                 }
 
                 /* Shift + Step button while shadow UI is displayed = dismiss shadow UI
                  * (user is loading a native Move component to edit).
-                 * Skip in overtake mode — the overtake module owns step buttons. */
+                 * Skip in overtake mode — the overtake module owns step buttons.
+                 * Skip Step 2 (17) and Step 13 (28) when long-press mode is active
+                 * — those are used for settings/tools shortcuts. */
                 if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
                     type == 0x90 && d2 > 0 &&
                     d1 >= CC_STEP_UI_FIRST && d1 <= CC_STEP_UI_LAST &&
                     shadow_control && shadow_control->overtake_mode == 0) {
-                    shadow_display_mode = 0;
-                    shadow_control->display_mode = 0;
-                    shadow_log("Shift+Step: dismissing shadow UI");
+                    int skip_dismiss = LONG_PRESS_ACTIVE() && (d1 == 17 || d1 == 28);
+                    if (!skip_dismiss) {
+                        shadow_display_mode = 0;
+                        shadow_control->display_mode = 0;
+                        shadow_log("Shift+Step: dismissing shadow UI");
+                    }
                 }
 
                 /* Pad note-on while sampler armed = trigger recording (or preroll) */
