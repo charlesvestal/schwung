@@ -648,3 +648,24 @@ Muted slots are silenced but continue processing MIDI. Solo isolates a single sl
 - Each Move Set has its own slot configurations — switch Sets to switch between different instrument setups
 - Use Set Pages to organize sets by project or performance — Shift+Vol+Left/Right to switch
 - If something goes wrong, use Move's DFU restore mode to reset
+
+## Troubleshooting
+
+### schwung.local or Schwung Manager not working
+
+If `schwung.local` doesn't resolve or the Schwung Manager web UI isn't accessible, schwung-manager may not be running. This can happen if you upgraded Schwung on-device (via the Module Store) rather than using the desktop installer.
+
+**Fix (run once from a terminal):**
+
+```
+ssh root@move.local "killall MoveWebService 2>/dev/null; sleep 1; sh /data/UserData/schwung/scripts/post-update.sh && reboot"
+```
+
+Move will reboot and schwung.local should work afterward.
+
+**Alternative access while schwung-manager is not running:**
+
+- Try `http://move.local/?schwung` in your browser
+- Or find Move's IP address (`ssh ableton@move.local "hostname -I"`) and visit `http://<IP>/?schwung`
+
+**Windows users:** Windows may not resolve `.local` hostnames reliably. If `schwung.local` doesn't work even after the fix above, use `move.local/?schwung` or the IP address instead.
