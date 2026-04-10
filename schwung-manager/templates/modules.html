@@ -63,7 +63,7 @@
                 {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
                 <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" data-confirm="Update {{.Name}}?" data-confirm-title="Update Module" data-confirm-label="Update">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <button type="submit" class="btn btn-primary btn-small">Update</button>
+                    <button type="submit" class="btn btn-secondary btn-small">Update</button>
                 </form>
                 {{end}}
             </div>
@@ -119,7 +119,7 @@
                         {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
                         <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" data-confirm="Update {{.Name}}?" data-confirm-title="Update Module" data-confirm-label="Update">
                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                            <button type="submit" class="btn btn-primary btn-small">Update</button>
+                            <button type="submit" class="btn btn-secondary btn-small">Update</button>
                         </form>
                         {{end}}
                     </td>
@@ -336,6 +336,9 @@
 
     gridBtn.addEventListener('click', function() { setView(false); });
     listBtn.addEventListener('click', function() { setView(true); });
+
+    /* Default to grid view on mobile */
+    if (window.innerWidth <= 768) { setView(false); }
 
     // Clickable rows and cards
     document.querySelectorAll('.module-row[data-href]').forEach(function(row) {
