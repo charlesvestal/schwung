@@ -144,7 +144,8 @@ typedef struct shadow_control_t {
     volatile uint8_t pad_block;            /* 1=suppress pad notes (68-99) from reaching Move */
     volatile uint8_t suspend_overtake;  /* 1=suspend (skip exit hook), 0=normal exit */
     volatile uint8_t open_tool_cmd;     /* 0=none, 1=open tool (path in /data/UserData/schwung/open_tool_cmd.json) */
-    volatile uint8_t reserved[7];
+    volatile uint8_t long_press_shadow; /* 1=enable long-press Track/Menu/Step2 shortcuts */
+    volatile uint8_t reserved[6];
 } shadow_control_t;
 
 /*
