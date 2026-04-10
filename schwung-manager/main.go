@@ -2738,6 +2738,9 @@ func main() {
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
 	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
+	// Deprecated flags — accepted but ignored for backwards compatibility with old entrypoints.
+	flag.String("move-backend", "", "(deprecated, ignored)")
+	flag.String("schwung-host", "", "(deprecated, ignored)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -2903,6 +2906,13 @@ func main() {
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
 	handler = middleware.CSRFProtectionWithExemptions(handler, []string{"/ws/"})
 
+	// Never bind port 80 — old entrypoints may pass -port 80 but we must not
+	// interfere with stock MoveWebService.
+	if *port == 80 {
+		logger.Warn("port 80 requested (old entrypoint), overriding to 7700")
+		*port = 7700
+	}
+
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{
 		Addr:         addr,
@@ -2913,8 +2923,8 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("starting schwung-manager", "addr", addr)
 		for {
+			logger.Info("starting schwung-manager", "addr", addr)
 			err := srv.ListenAndServe()
 			if err == http.ErrServerClosed {
 				return
