@@ -17,11 +17,8 @@ cp "$BASE/schwung-shim.so" /usr/lib/schwung-shim.so 2>/dev/null || \
 chmod u+s /usr/lib/schwung-shim.so
 chmod u+s "$BASE/schwung-shim.so"
 
-# Web shim symlink (for MoveWebService PIN readout)
-if [ -f "$BASE/schwung-web-shim.so" ]; then
-    rm -f /usr/lib/schwung-web-shim.so
-    ln -sf "$BASE/schwung-web-shim.so" /usr/lib/schwung-web-shim.so
-fi
+# Remove web shim symlink (no longer used as of 0.9.2)
+rm -f /usr/lib/schwung-web-shim.so
 
 # TTS library symlinks
 if [ -d "$BASE/lib" ]; then
@@ -49,31 +46,15 @@ if [ -f /opt/move/MoveOriginal ] && [ -f "$BASE/shim-entrypoint.sh" ]; then
     echo "post-update: entrypoint installed"
 fi
 
-# --- MoveWebService wrapper (port 8080 so schwung-manager can take port 80) ---
+# --- Restore stock MoveWebService if previously wrapped (pre-0.9.2 cleanup) ---
 
-# Find MoveWebService path from init script
 WEB_SVC_PATH=$(grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]')
-if [ -n "$WEB_SVC_PATH" ]; then
-    # Backup original only once
-    if [ ! -f "${WEB_SVC_PATH}Original" ] && [ -f "$WEB_SVC_PATH" ]; then
-        killall MoveWebService MoveWebServiceOriginal 2>/dev/null
-        sleep 1
-        mv "$WEB_SVC_PATH" "${WEB_SVC_PATH}Original"
-    fi
-    # Create wrapper that redirects to port 8080
-    if [ -f "${WEB_SVC_PATH}Original" ]; then
-        # Kill MoveWebService if running (can't overwrite a running binary)
-        killall MoveWebService MoveWebServiceOriginal 2>/dev/null
-        sleep 1
-        cat > "$WEB_SVC_PATH" << WEOF
-#!/bin/sh
-export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
-export LD_PRELOAD=/usr/lib/schwung-web-shim.so
-exec ${WEB_SVC_PATH}Original --http-server-port 8080 "\$@"
-WEOF
-        chmod +x "$WEB_SVC_PATH"
-        echo "post-update: MoveWebService wrapper installed (port 8080)"
-    fi
+if [ -n "$WEB_SVC_PATH" ] && [ -f "${WEB_SVC_PATH}Original" ]; then
+    killall MoveWebService MoveWebServiceOriginal 2>/dev/null
+    sleep 1
+    cp "${WEB_SVC_PATH}Original" "$WEB_SVC_PATH"
+    chmod +x "$WEB_SVC_PATH"
+    echo "post-update: MoveWebService restored to stock"
 fi
 
 # --- Executables ---

@@ -777,11 +777,8 @@ if [ "$use_reenable" = true ]; then
   ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
   ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing"
 
-  # Web shim symlink if present
-  if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
-    qecho "Restoring web shim symlink..."
-    ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so && ln -s /data/UserData/schwung/schwung-web-shim.so /usr/lib/schwung-web-shim.so" || echo "Warning: Failed to restore web shim"
-  fi
+  # Remove web shim symlink (no longer used as of 0.9.2)
+  ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so" || true
 
   # TTS library symlinks if present
   if $ssh_ableton "test -d /data/UserData/schwung/lib" 2>/dev/null; then
@@ -802,23 +799,11 @@ if [ "$use_reenable" = true ]; then
   # Install shimmed entrypoint
   ssh_root_with_retry "cp /data/UserData/schwung/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
-  # MoveWebService wrapper if web shim present
-  if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
-    web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
-    if [ -n "$web_svc_path" ]; then
-      if ! $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
-        ssh_root_with_retry "mv $web_svc_path ${web_svc_path}Original" || echo "Warning: Failed to backup MoveWebService"
-      fi
-      if $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
-        ssh_root_with_retry "cat > $web_svc_path << 'WEOF'
-#!/bin/sh
-export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
-export LD_PRELOAD=/usr/lib/schwung-web-shim.so
-exec ${web_svc_path}Original --http-server-port 8080 \"\$@\"
-WEOF
-chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
-      fi
-    fi
+  # Restore stock MoveWebService if previously wrapped
+  web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+  if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+    qecho "Restoring stock MoveWebService..."
+    ssh_root_with_retry "killall MoveWebService MoveWebServiceOriginal 2>/dev/null; sleep 1; cp ${web_svc_path}Original $web_svc_path && chmod +x $web_svc_path" || echo "Warning: Failed to restore MoveWebService"
   fi
 
   # Stop and restart Move service
@@ -828,14 +813,6 @@ chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrappe
   ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
   ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
   ssh_ableton_with_retry "sleep 2" || true
-
-  # Restart MoveWebService if wrapped
-  if $ssh_root "test -f /etc/init.d/move-web-service" 2>/dev/null; then
-    web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
-    if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
-      ssh_root_with_retry "killall MoveWebServiceOriginal MoveWebService 2>/dev/null; sleep 1; /etc/init.d/move-web-service start >/dev/null 2>&1 || true" || true
-    fi
-  fi
 
   restart_move_with_fallback "Move started without active shim (LD_PRELOAD check failed)"
 
@@ -934,11 +911,8 @@ ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && ln -s /data/UserData/schw
 ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
 ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing after install"
 
-# Symlink web shim to /usr/lib/ (for MoveWebService PIN challenge detection)
-if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
-  qecho "Installing web shim for PIN readout..."
-  ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so && ln -s /data/UserData/schwung/schwung-web-shim.so /usr/lib/schwung-web-shim.so" || echo "Warning: Failed to install web shim"
-fi
+# Remove web shim symlink (no longer used as of 0.9.2)
+ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so" || true
 
 # Deploy TTS libraries (eSpeak-NG + Flite) from /data to /usr/lib via symlink.
 # Root partition is nearly full, so symlink libraries instead of copying.
@@ -978,31 +952,15 @@ fi
 # Install the shimmed Move entrypoint
 ssh_root_with_retry "cp /data/UserData/schwung/shim-entrypoint.sh /opt/move/Move" || fail "Failed to install shim entrypoint"
 
-# Wrap MoveWebService with web shim (same pattern as Move → MoveOriginal + shim-entrypoint)
-# This enables PIN TTS readout when a browser connects to move.local
-if $ssh_ableton "test -f /data/UserData/schwung/schwung-web-shim.so" 2>/dev/null; then
-  qecho "Installing web shim for PIN readout..."
-  # Find the MoveWebService binary path from init script (may be in a variable assignment or inline)
-  web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
-  if [ -n "$web_svc_path" ]; then
-    # Backup original only once (skip if already backed up)
-    if ! $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
-      ssh_root_with_retry "mv $web_svc_path ${web_svc_path}Original" || echo "Warning: Failed to backup MoveWebService"
-    fi
-    # Create wrapper script that loads the web shim
-    if $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
-      ssh_root_with_retry "cat > $web_svc_path << 'WEOF'
-#!/bin/sh
-export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
-export LD_PRELOAD=/usr/lib/schwung-web-shim.so
-exec ${web_svc_path}Original --http-server-port 8080 \"\$@\"
-WEOF
-chmod +x $web_svc_path" || echo "Warning: Failed to create MoveWebService wrapper"
-    fi
-  else
-    echo "Warning: Could not find MoveWebService path, skipping web shim wrapper"
-  fi
+# Restore stock MoveWebService if previously wrapped (pre-0.9.2 cleanup)
+web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
+if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
+  qecho "Restoring stock MoveWebService..."
+  ssh_root_with_retry "killall MoveWebService MoveWebServiceOriginal 2>/dev/null; sleep 1; cp ${web_svc_path}Original $web_svc_path && chmod +x $web_svc_path" || echo "Warning: Failed to restore MoveWebService"
 fi
+
+# Remove web shim symlink (no longer used)
+ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so" || true
 
 # Create feature configuration file
 qecho ""
@@ -1571,16 +1529,6 @@ ssh_ableton_with_retry "sleep 2" || true
 
 ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
 
-# Restart MoveWebService to pick up web shim wrapper
-if $ssh_root "test -f /etc/init.d/move-web-service" 2>/dev/null; then
-    web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
-    if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
-        qecho "Restarting MoveWebService with PIN readout shim..."
-        # Kill both wrapper name and original binary name (init script stop only matches MoveWebService)
-        ssh_root_with_retry "killall MoveWebServiceOriginal MoveWebService 2>/dev/null; sleep 1; /etc/init.d/move-web-service start >/dev/null 2>&1 || true" || true
-    fi
-fi
-
 # Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
 restart_move_with_fallback "Move started without active shim mapping (LD_PRELOAD env/maps check failed)"
 
@@ -1594,8 +1542,8 @@ if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; th
     else
         qecho "Starting schwung-manager web UI..."
     fi
-    ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
-    qecho "  Web UI available at http://schwung.local"
+    ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 7700 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
+    qecho "  Web UI available at http://move.local:7700"
 fi
 
 iecho ""
