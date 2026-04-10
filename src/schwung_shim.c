@@ -882,7 +882,7 @@ static void shadow_inprocess_process_midi(void) {
             if ((type == 0x90 || type == 0x80) && p2 < 10) {
                 continue;
             }
-            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, 1);
+            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
 
             /* Also route to overtake DSP if loaded */
             if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
@@ -1069,7 +1069,7 @@ static int overtake_midi_send_internal(const uint8_t *msg, int len) {
     uint8_t pkt[4] = { cin, msg[1], msg[2], msg[3] };
     static int midi_log_count = 0;
     int log_on = shadow_midi_out_log_enabled();
-    shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, 0);
+    shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
     return len;
 }
 
@@ -3390,7 +3390,6 @@ typedef struct {
     uint64_t ui_req_avg, ui_req_max;
     uint64_t param_req_avg, param_req_max;
     uint64_t fwd_cc_avg, fwd_cc_max;
-    uint64_t direct_midi_avg, direct_midi_max;
     uint64_t proc_midi_avg, proc_midi_max;
     uint64_t jack_stash_avg, jack_stash_max;
     uint64_t drain_dsp_avg, drain_dsp_max;
@@ -3444,7 +3443,6 @@ static uint64_t spi_jack_pre_sum = 0, spi_jack_pre_max = 0;
 static uint64_t spi_jack_disp_sum = 0, spi_jack_disp_max = 0;
 static uint64_t spi_pin_sum = 0, spi_pin_max = 0;
 static uint64_t spi_fwd_ext_cc_sum = 0, spi_fwd_ext_cc_max = 0;
-static uint64_t spi_direct_midi_sum = 0, spi_direct_midi_max = 0;
 static int spi_granular_count = 0;
 
 #define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &spi_section_start)
@@ -3728,13 +3726,6 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     TIME_SECTION_START();
     shadow_forward_external_cc_to_out();
     TIME_SECTION_END(spi_fwd_ext_cc_sum, spi_fwd_ext_cc_max);
-
-    /* Direct MIDI dispatch for MPE passthrough slots (receive=All, forward=THRU).
-     * Reads MIDI_IN cable 2 and dispatches all message types directly to these
-     * slots, bypassing Move's MIDI_OUT channel remapping. */
-    TIME_SECTION_START();
-    shadow_dispatch_direct_external_midi();
-    TIME_SECTION_END(spi_direct_midi_sum, spi_direct_midi_max);
 
     TIME_SECTION_START();
     shadow_inprocess_process_midi();
@@ -5656,7 +5647,6 @@ post_timing:
         spi_snap.ui_req_avg = spi_ui_req_sum / n; spi_snap.ui_req_max = spi_ui_req_max;
         spi_snap.param_req_avg = spi_param_req_sum / n; spi_snap.param_req_max = spi_param_req_max;
         spi_snap.fwd_cc_avg = spi_fwd_ext_cc_sum / n; spi_snap.fwd_cc_max = spi_fwd_ext_cc_max;
-        spi_snap.direct_midi_avg = spi_direct_midi_sum / n; spi_snap.direct_midi_max = spi_direct_midi_max;
         spi_snap.proc_midi_avg = spi_proc_midi_sum / n; spi_snap.proc_midi_max = spi_proc_midi_max;
         spi_snap.jack_stash_avg = spi_jack_stash_sum / n; spi_snap.jack_stash_max = spi_jack_stash_max;
         spi_snap.drain_dsp_avg = spi_drain_ui_midi_sum / n; spi_snap.drain_dsp_max = spi_drain_ui_midi_max;
@@ -5688,7 +5678,6 @@ post_timing:
         spi_screenreader_sum = spi_screenreader_max = spi_jack_pre_sum = spi_jack_pre_max = 0;
         spi_jack_disp_sum = spi_jack_disp_max = spi_pin_sum = spi_pin_max = 0;
         spi_fwd_ext_cc_sum = spi_fwd_ext_cc_max = 0;
-        spi_direct_midi_sum = spi_direct_midi_max = 0;
         spi_granular_count = 0;
     }
 
@@ -5728,7 +5717,7 @@ static void *spi_timing_logger_thread(void *arg)
         if (spi_snap.granular_ready) {
             unified_log("spi_timing", LOG_LEVEL_DEBUG,
                 "Pre(us): midi_mon=%llu/%llu fwd_midi=%llu/%llu mix_audio=%llu/%llu "
-                "ui_req=%llu/%llu param=%llu/%llu fwd_cc=%llu/%llu direct_midi=%llu/%llu proc_midi=%llu/%llu "
+                "ui_req=%llu/%llu param=%llu/%llu fwd_cc=%llu/%llu proc_midi=%llu/%llu "
                 "jack_stash=%llu/%llu drain_dsp=%llu/%llu jack_wake=%llu/%llu "
                 "mix_buf=%llu/%llu tts=%llu/%llu display=%llu/%llu",
                 (unsigned long long)spi_snap.midi_mon_avg, (unsigned long long)spi_snap.midi_mon_max,
@@ -5737,7 +5726,6 @@ static void *spi_timing_logger_thread(void *arg)
                 (unsigned long long)spi_snap.ui_req_avg, (unsigned long long)spi_snap.ui_req_max,
                 (unsigned long long)spi_snap.param_req_avg, (unsigned long long)spi_snap.param_req_max,
                 (unsigned long long)spi_snap.fwd_cc_avg, (unsigned long long)spi_snap.fwd_cc_max,
-                (unsigned long long)spi_snap.direct_midi_avg, (unsigned long long)spi_snap.direct_midi_max,
                 (unsigned long long)spi_snap.proc_midi_avg, (unsigned long long)spi_snap.proc_midi_max,
                 (unsigned long long)spi_snap.jack_stash_avg, (unsigned long long)spi_snap.jack_stash_max,
                 (unsigned long long)spi_snap.drain_dsp_avg, (unsigned long long)spi_snap.drain_dsp_max,

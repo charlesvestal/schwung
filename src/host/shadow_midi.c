@@ -102,10 +102,8 @@ uint8_t shadow_chain_remap_channel(int slot, uint8_t status)
  * MIDI dispatch to chain slots
  * ============================================================================ */
 
-/* Dispatch MIDI to all matching slots (supports recv=All broadcasting).
- * When skip_direct is 1, slots with receive=All and forward=THRU are skipped
- * because they receive MIDI via the direct MIDI_IN path instead. */
-void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct)
+/* Dispatch MIDI to all matching slots (supports recv=All broadcasting) */
+void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count)
 {
     const plugin_api_v2_t *pv2 = *host_plugin_v2;
     uint8_t status_usb = pkt[1];
@@ -115,14 +113,6 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
     int dispatched = 0;
 
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
-        /* Skip direct-dispatch slots when processing MIDI_OUT.
-         * These slots get MIDI from MIDI_IN directly to preserve
-         * original channels for MPE. */
-        if (skip_direct &&
-            host_chain_slots[i].channel == -1 &&
-            host_chain_slots[i].forward_channel == -2)
-            continue;
-
         /* Check channel match: slot receives this channel, or slot is set to All (-1) */
         if (host_chain_slots[i].channel != (int)midi_ch && host_chain_slots[i].channel != -1)
             continue;
@@ -408,117 +398,7 @@ void shadow_drain_ui_midi_dsp(void)
         uint8_t cin = (status >> 4) & 0x0F;
         uint8_t pkt[4] = { cin, status, d1, d2 };
 
-        shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, 0);
-    }
-}
-
-/* ============================================================================
- * Direct external MIDI dispatch (MPE passthrough)
- * ============================================================================ */
-
-/* Dispatch external MIDI from MIDI_IN cable 2 directly to slots configured
- * for passthrough (receive=All, forward=THRU).  This bypasses Move's MIDI_OUT
- * so that notes and per-note expression data (pitch bend, CC, aftertouch)
- * arrive on their original channels — required for MPE controllers. */
-void shadow_dispatch_direct_external_midi(void)
-{
-    if (!*host_shadow_inprocess_ready || !*host_global_mmap_addr) return;
-
-    const plugin_api_v2_t *pv2 = *host_plugin_v2;
-    if (!pv2 || !pv2->on_midi) return;
-
-    /* Check whether any slot qualifies for direct dispatch. */
-    int has_direct = 0;
-    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
-        if (host_chain_slots[i].channel == -1 &&
-            host_chain_slots[i].forward_channel == -2) {
-            has_direct = 1;
-            break;
-        }
-    }
-    if (!has_direct) return;
-
-    uint8_t *in_src = *host_global_mmap_addr + MIDI_IN_OFFSET;
-
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        uint8_t cin = in_src[i] & 0x0F;
-        uint8_t cable = (in_src[i] >> 4) & 0x0F;
-
-        /* Only external USB MIDI (cable 2) */
-        if (cable != 0x02) continue;
-        if (cin < 0x08 || cin > 0x0E) continue;
-
-        uint8_t status = in_src[i + 1];
-        uint8_t type = status & 0xF0;
-        uint8_t d1 = in_src[i + 2];
-        uint8_t d2 = in_src[i + 3];
-
-        /* Valid channel voice messages only (0x80-0xE0) */
-        if (type < 0x80 || type > 0xE0) continue;
-
-        /* CIN must match status type */
-        if (cin != (type >> 4)) continue;
-
-        /* Data bytes must be 0-127 */
-        if ((d1 & 0x80) || (d2 & 0x80)) continue;
-
-        /* Filter knob touch notes (0-9) from internal MIDI */
-        if ((type == 0x90 || type == 0x80) && d1 < 10) continue;
-
-        /* Dispatch to qualifying slots: receive=All, forward=THRU */
-        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-            if (host_chain_slots[s].channel != -1 ||
-                host_chain_slots[s].forward_channel != -2)
-                continue;
-
-            /* Lazy activation (same logic as main dispatch) */
-            if (!host_chain_slots[s].active) {
-                if (host_chain_slots[s].instance) {
-                    char buf[64];
-                    int len = pv2->get_param(host_chain_slots[s].instance,
-                                              "synth_module", buf, sizeof(buf));
-                    if (len > 0) {
-                        if (len < (int)sizeof(buf)) buf[len] = '\0';
-                        else buf[sizeof(buf) - 1] = '\0';
-                        if (buf[0] != '\0') {
-                            host_chain_slots[s].active = 1;
-                            if (host_ui_state_update_slot)
-                                host_ui_state_update_slot(s);
-                        }
-                    }
-                }
-                if (!host_chain_slots[s].active) continue;
-            }
-
-            /* Wake from idle */
-            if (host_slot_idle[s] || host_slot_fx_idle[s]) {
-                host_slot_idle[s] = 0;
-                host_slot_silence_frames[s] = 0;
-                host_slot_fx_idle[s] = 0;
-                host_slot_fx_silence_frames[s] = 0;
-            }
-
-            /* Send with original channel preserved (THRU mode) */
-            uint8_t msg[3] = { status, d1, d2 };
-            pv2->on_midi(host_chain_slots[s].instance, msg, 3,
-                         MOVE_MIDI_SOURCE_EXTERNAL);
-        }
-
-        /* Broadcast to audio FX on all active slots */
-        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-            if (!host_chain_slots[s].active || !host_chain_slots[s].instance)
-                continue;
-            uint8_t msg[3] = { status, d1, d2 };
-            pv2->on_midi(host_chain_slots[s].instance, msg, 3,
-                         MOVE_MIDI_SOURCE_FX_BROADCAST);
-        }
-
-        /* Forward to master FX */
-        {
-            uint8_t msg[3] = { status, d1, d2 };
-            if (host_master_fx_forward_midi)
-                host_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
-        }
+        shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
     }
 }
 
