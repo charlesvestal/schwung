@@ -58,10 +58,22 @@ if [ -x "$DISPLAY_SRV" ]; then
     "$DISPLAY_SRV" >/dev/null 2>&1 &
 fi
 
+# Restore stock MoveWebService if it was previously wrapped (pre-0.9.2 cleanup)
+WEB_SVC_PATH=$(grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]')
+if [ -n "$WEB_SVC_PATH" ] && [ -f "${WEB_SVC_PATH}Original" ]; then
+    killall MoveWebService MoveWebServiceOriginal 2>/dev/null
+    sleep 1
+    cp "${WEB_SVC_PATH}Original" "$WEB_SVC_PATH"
+    chmod +x "$WEB_SVC_PATH"
+fi
+
+# Remove web shim symlink if present (no longer used)
+rm -f /usr/lib/schwung-web-shim.so
+
 # Start schwung-manager web UI if present
 SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
 if [ -x "$SCHWUNG_MGR" ]; then
-    "$SCHWUNG_MGR" -port 80 -move-backend 127.0.0.1:8080 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
+    "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
     # schwung-manager handles mDNS for schwung.local via embedded responder
 fi
 

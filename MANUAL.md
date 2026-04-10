@@ -563,7 +563,7 @@ Step LEDs: green = has content, red = now playing, white = selected. Pad LEDs hi
 
 ## Schwung Manager (Web)
 
-Schwung Manager is a web interface for managing your Move from any device on the same network. Access it at `http://schwung.local` — no port number needed.
+Schwung Manager is a web interface for managing your Move from any device on the same network. Access it at `http://move.local:7700`.
 
 ### Features
 
@@ -572,12 +572,12 @@ Schwung Manager is a web interface for managing your Move from any device on the
 - **Config**: Adjust display, audio, screen reader, and feature settings. Changes take effect instantly on the device.
 - **System**: Check version, view debug logs, and upgrade Schwung.
 - **Help**: Browse on-device help for Schwung and installed modules.
-- **Screen Mirroring**: Quick access at `schwung.local/mirror` — streams Move's OLED display to your browser.
+- **Screen Mirroring**: Quick access at `move.local:7700/mirror` — streams Move's OLED display to your browser.
 
 ### Notes
 
-- `schwung.local` is advertised via mDNS and works on any device on the same WiFi network
-- `move.local` continues to work for the stock Move manager (proxied through Schwung Manager)
+- `move.local` is advertised by Move's built-in avahi — works on Mac, Linux, and Windows with Bonjour
+- `move.local:80` remains the stock Move manager, completely untouched by Schwung
 - Settings changed on the web UI sync to the device in real time (and vice versa)
 - No authentication is required — anyone on the network can access it
 
@@ -589,7 +589,7 @@ Schwung also includes a standalone file browser (powered by filebrowser) for mor
 
 ### Setup
 
-1. Open **Global Settings > Services** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
+1. Open **Global Settings > Services** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `move.local:7700/config`
 2. Toggle **File Browser** to **On**
 3. Open `http://move.local:404` in a browser
 
@@ -625,9 +625,9 @@ Stream Move's 128x64 OLED display to any browser on your network in real time. U
 
 ### Setup
 
-1. Open **Global Settings > Display** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `schwung.local/config`
+1. Open **Global Settings > Display** (**Shift+Vol + Step 2**), or toggle in Schwung Manager at `move.local:7700/config`
 2. Toggle **Mirror Display** to **On**
-3. Open `http://schwung.local/mirror` in a browser (or `http://move.local:7681`)
+3. Open `http://move.local:7700/mirror` in a browser (or `http://move.local:7681`)
 
 The display updates at ~30 fps and shows whatever is on screen — both normal Move UI and Shadow UI.
 
@@ -668,21 +668,14 @@ Muted slots are silenced but continue processing MIDI. Solo isolates a single sl
 
 ## Troubleshooting
 
-### schwung.local or Schwung Manager not working
+### Schwung Manager not accessible
 
-If `schwung.local` doesn't resolve or the Schwung Manager web UI isn't accessible, schwung-manager may not be running. This can happen if you upgraded Schwung on-device (via the Module Store) rather than using the desktop installer.
+If `http://move.local:7700` isn't working, schwung-manager may not be running. This can happen if you upgraded Schwung on-device (via the Module Store) from an older version.
 
 **Fix (run once from a terminal):**
 
 ```
-ssh root@move.local "killall MoveWebService 2>/dev/null; sleep 1; sh /data/UserData/schwung/scripts/post-update.sh && reboot"
+ssh root@move.local "sh /data/UserData/schwung/scripts/post-update.sh && reboot"
 ```
 
-Move will reboot and schwung.local should work afterward.
-
-**Alternative access while schwung-manager is not running:**
-
-- Try `http://move.local/?schwung` in your browser
-- Or find Move's IP address (`ssh ableton@move.local "hostname -I"`) and visit `http://<IP>/?schwung`
-
-**Windows users:** Windows may not resolve `.local` hostnames reliably. If `schwung.local` doesn't work even after the fix above, use `move.local/?schwung` or the IP address instead.
+Move will reboot and Schwung Manager should be available at `http://move.local:7700`.

@@ -260,19 +260,7 @@ else
     echo "Skipping shim (up to date)"
 fi
 
-# Build web shim (tiny LD_PRELOAD for MoveWebService PIN challenge detection)
-if needs_rebuild build/schwung-web-shim.so \
-    src/host/web_shim.c src/host/unified_log.c src/host/unified_log.h; then
-    echo "Building web shim..."
-    "${CROSS_PREFIX}gcc" -g -shared -fPIC \
-        -o build/schwung-web-shim.so \
-        src/host/web_shim.c \
-        src/host/unified_log.c \
-        -Isrc -Isrc/host \
-        -ldl -lrt
-else
-    echo "Skipping web shim (up to date)"
-fi
+# Web shim removed in 0.9.2 — MoveWebService is no longer wrapped.
 
 if needs_rebuild build/unified-log \
     src/host/unified_log_cli.c src/host/unified_log.c src/host/unified_log.h; then
