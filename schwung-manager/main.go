@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -3043,11 +3044,14 @@ func main() {
 	mux.Handle("GET /mirror", displayProxy)
 	mux.Handle("GET /mirror/", displayProxy)
 	mux.Handle("GET /stream-auto", displayProxy)
+	mux.HandleFunc("GET /ws-generic", func(w http.ResponseWriter, r *http.Request) {
+		wsProxyHandler(*displayBackend, w, r, logger)
+	})
 
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	var handler http.Handler = mux
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
-	handler = middleware.CSRFProtectionWithExemptions(handler, []string{"/ws/"})
+	handler = middleware.CSRFProtectionWithExemptions(handler, []string{"/ws/", "/ws-generic"})
 
 	// Never bind port 80 — old entrypoints may pass -port 80 but we must not
 	// interfere with stock MoveWebService.
