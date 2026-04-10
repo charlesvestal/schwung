@@ -54,6 +54,7 @@ if [ -n "$WEB_SVC_PATH" ] && [ -f "${WEB_SVC_PATH}Original" ]; then
     sleep 1
     cp "${WEB_SVC_PATH}Original" "$WEB_SVC_PATH"
     chmod +x "$WEB_SVC_PATH"
+    /etc/init.d/move-web-service start >/dev/null 2>&1 || true
     echo "post-update: MoveWebService restored to stock"
 fi
 

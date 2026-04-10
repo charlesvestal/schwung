@@ -803,7 +803,7 @@ if [ "$use_reenable" = true ]; then
   web_svc_path=$($ssh_root "grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | head -n 1 | sed 's/.*service_path=//' | tr -d '[:space:]'" 2>/dev/null || echo "")
   if [ -n "$web_svc_path" ] && $ssh_root "test -f ${web_svc_path}Original" 2>/dev/null; then
     qecho "Restoring stock MoveWebService..."
-    ssh_root_with_retry "killall MoveWebService MoveWebServiceOriginal 2>/dev/null; sleep 1; cp ${web_svc_path}Original $web_svc_path && chmod +x $web_svc_path" || echo "Warning: Failed to restore MoveWebService"
+    ssh_root_with_retry "killall MoveWebService MoveWebServiceOriginal 2>/dev/null; sleep 1; cp ${web_svc_path}Original $web_svc_path && chmod +x $web_svc_path && /etc/init.d/move-web-service start >/dev/null 2>&1" || echo "Warning: Failed to restore MoveWebService"
   fi
 
   # Stop and restart Move service
