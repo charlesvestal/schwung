@@ -2661,8 +2661,18 @@ func (app *App) handleAPIOpenInTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Lazy-connect to SHM if it wasn't available at startup (shim may
+	// have started after schwung-manager).
+	if app.shm == nil {
+		if s := OpenShmConfig(); s != nil {
+			app.shm = s
+			app.logger.Info("shared memory config: connected (lazy)")
+		}
+	}
 	if app.shm != nil {
 		app.shm.SetOpenToolCmd(1)
+	} else {
+		app.logger.Warn("open-in-tool: shared memory not available, tool command may not be delivered")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
