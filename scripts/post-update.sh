@@ -45,6 +45,8 @@ fi
 # Install shimmed entrypoint
 if [ -f /opt/move/MoveOriginal ] && [ -f "$BASE/shim-entrypoint.sh" ]; then
     cp "$BASE/shim-entrypoint.sh" /opt/move/Move
+    chmod +x /opt/move/Move
+    echo "post-update: entrypoint installed"
 fi
 
 # --- MoveWebService wrapper (port 8080 so schwung-manager can take port 80) ---
@@ -54,10 +56,15 @@ WEB_SVC_PATH=$(grep 'service_path=' /etc/init.d/move-web-service 2>/dev/null | h
 if [ -n "$WEB_SVC_PATH" ]; then
     # Backup original only once
     if [ ! -f "${WEB_SVC_PATH}Original" ] && [ -f "$WEB_SVC_PATH" ]; then
+        killall MoveWebService MoveWebServiceOriginal 2>/dev/null
+        sleep 1
         mv "$WEB_SVC_PATH" "${WEB_SVC_PATH}Original"
     fi
     # Create wrapper that redirects to port 8080
     if [ -f "${WEB_SVC_PATH}Original" ]; then
+        # Kill MoveWebService if running (can't overwrite a running binary)
+        killall MoveWebService MoveWebServiceOriginal 2>/dev/null
+        sleep 1
         cat > "$WEB_SVC_PATH" << WEOF
 #!/bin/sh
 export LD_LIBRARY_PATH=/data/UserData/schwung/lib:\$LD_LIBRARY_PATH
@@ -65,6 +72,7 @@ export LD_PRELOAD=/usr/lib/schwung-web-shim.so
 exec ${WEB_SVC_PATH}Original --http-server-port 8080 "\$@"
 WEOF
         chmod +x "$WEB_SVC_PATH"
+        echo "post-update: MoveWebService wrapper installed (port 8080)"
     fi
 fi
 
@@ -101,6 +109,6 @@ if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; th
 fi
 
 # Write breadcrumb so we can verify the script ran
-echo "$(date '+%Y-%m-%d %H:%M:%S')" > "$BASE/post-update-ran"
+echo "$(date '+%Y-%m-%d %H:%M:%S') uid=$(id -u)" > "$BASE/post-update-ran"
 
 echo "post-update: done"
