@@ -107,8 +107,16 @@ void midi_routing_init(const midi_host_t *host);
 /* Remap MIDI channel for a specific slot based on forward_channel config. */
 uint8_t shadow_chain_remap_channel(int slot, uint8_t status);
 
-/* Dispatch a USB-MIDI packet to matching chain slots (by channel). */
-void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count);
+/* Dispatch a USB-MIDI packet to matching chain slots (by channel).
+ * When skip_direct is 1, slots with receive=All and forward=THRU are skipped
+ * (they receive MIDI via the direct MIDI_IN path instead). */
+void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct);
+
+/* Dispatch external MIDI from MIDI_IN cable 2 directly to slots configured
+ * for passthrough (receive=All, forward=THRU).  Bypasses Move's MIDI_OUT
+ * channel remapping so that MPE per-note expression data stays on the
+ * correct channels. */
+void shadow_dispatch_direct_external_midi(void);
 
 /* Forward CC/pitch bend/aftertouch from external MIDI (cable 2) into MIDI_OUT. */
 void shadow_forward_external_cc_to_out(void);
