@@ -839,6 +839,12 @@ const GLOBAL_SETTINGS_SECTIONS = [
         ]
     },
     {
+        id: "shortcuts", label: "Shortcuts",
+        items: [
+            { key: "long_press_shadow", label: "Long Press", type: "bool" }
+        ]
+    },
+    {
         id: "services", label: "Services",
         items: [
             { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
@@ -5555,6 +5561,11 @@ function syncSettingsFromConfigFile() {
             const cur = typeof set_pages_get === "function" ? !!set_pages_get() : true;
             if (!!c.set_pages_enabled !== cur) set_pages_set_shm(c.set_pages_enabled ? 1 : 0);
         }
+        /* Long-press shadow shortcuts */
+        if (c.long_press_shadow !== undefined && typeof long_press_shadow_set_shm === "function") {
+            const cur = typeof long_press_shadow_get === "function" ? !!long_press_shadow_get() : false;
+            if (!!c.long_press_shadow !== cur) long_press_shadow_set_shm(c.long_press_shadow ? 1 : 0);
+        }
         /* Auto update check */
         if (c.auto_update_check !== undefined) {
             autoUpdateCheckEnabled = c.auto_update_check;
@@ -9844,6 +9855,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "set_pages_enabled") {
         return (typeof set_pages_get === "function" && set_pages_get()) ? "On" : "Off";
     }
+    if (setting.key === "long_press_shadow") {
+        return (typeof long_press_shadow_get === "function" && long_press_shadow_get()) ? "On" : "Off";
+    }
     if (setting.key === "skipback_shortcut") {
         const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
         return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
@@ -9983,6 +9997,12 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "set_pages_enabled" && typeof set_pages_set === "function") {
         const current = typeof set_pages_get === "function" ? set_pages_get() : true;
         set_pages_set(!current ? 1 : 0);
+        return;
+    }
+
+    if (setting.key === "long_press_shadow" && typeof long_press_shadow_set === "function") {
+        const current = typeof long_press_shadow_get === "function" ? long_press_shadow_get() : false;
+        long_press_shadow_set(!current ? 1 : 0);
         return;
     }
 

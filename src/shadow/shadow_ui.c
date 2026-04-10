@@ -1779,6 +1779,80 @@ static JSValue js_set_pages_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->set_pages_enabled != 0);
 }
 
+/* long_press_shadow_set(enabled) - Write to shared memory + persist to features.json */
+static JSValue js_long_press_shadow_set(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->long_press_shadow = enabled ? 1 : 0;
+
+    /* Persist to features.json */
+    const char *config_path = "/data/UserData/schwung/config/features.json";
+    char buf[512];
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        len = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    buf[len] = '\0';
+
+    char *key = strstr(buf, "\"long_press_shadow\"");
+    if (key) {
+        char *colon = strchr(key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            char newbuf[512];
+            int prefix_len = (int)(colon - buf);
+            int suffix_start = (int)(val_end - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
+                     prefix_len, buf,
+                     enabled ? "true" : "false",
+                     buf + suffix_start);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else if (len > 0) {
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            char newbuf[512];
+            int prefix_len = (int)(brace - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"long_press_shadow\": %s\n}",
+                     prefix_len, buf, enabled ? "true" : "false");
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* long_press_shadow_set_shm(enabled) - Write to shared memory ONLY (no file I/O).
+ * Safe to call from tick() for web→device config sync. */
+static JSValue js_long_press_shadow_set_shm(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->long_press_shadow = enabled ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
+/* long_press_shadow_get() -> bool - Read from shared memory */
+static JSValue js_long_press_shadow_get(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 0);
+    return JS_NewBool(ctx, shadow_control->long_press_shadow != 0);
+}
+
 /* skipback_shortcut_set(require_volume) - Write to shared memory + persist to features.json */
 static JSValue js_skipback_shortcut_set(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv) {
@@ -2313,6 +2387,11 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "set_pages_set", JS_NewCFunction(ctx, js_set_pages_set, "set_pages_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "set_pages_get", JS_NewCFunction(ctx, js_set_pages_get, "set_pages_get", 0));
     JS_SetPropertyStr(ctx, global_obj, "set_pages_set_shm", JS_NewCFunction(ctx, js_set_pages_set_shm, "set_pages_set_shm", 1));
+
+    /* Register long-press shadow shortcut functions */
+    JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_set", JS_NewCFunction(ctx, js_long_press_shadow_set, "long_press_shadow_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_get", JS_NewCFunction(ctx, js_long_press_shadow_get, "long_press_shadow_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_set_shm", JS_NewCFunction(ctx, js_long_press_shadow_set_shm, "long_press_shadow_set_shm", 1));
 
     /* Register skipback shortcut functions */
     JS_SetPropertyStr(ctx, global_obj, "skipback_shortcut_set", JS_NewCFunction(ctx, js_skipback_shortcut_set, "skipback_shortcut_set", 1));
