@@ -81,7 +81,7 @@
     var SEND_INTERVAL = 16; // ~60Hz
 
     // DOM references.
-    var statusEl = null; /* status managed by global header */
+    var statusEl = document.getElementById("remote-ui-status");
     var slotTitleEl = document.getElementById("slot-title");
     var slotContentEl = document.getElementById("slot-content");
     var debugEl = document.getElementById("slot-debug");
@@ -2082,8 +2082,17 @@
     // ------------------------------------------------------------------
 
     function setStatus(connected) {
-        if (window._schwungGlobalStatus) {
-            window._schwungGlobalStatus(connected);
+        if (!statusEl) return;
+        if (connected) {
+            statusEl.innerHTML = '<span class="status-dot connected"></span> Connected';
+            statusEl.className = "remote-ui-status connected";
+        } else {
+            var label = "Reconnecting...";
+            if (reconnectAttempts > 0) {
+                label = "Reconnecting... (attempt " + reconnectAttempts + ")";
+            }
+            statusEl.innerHTML = '<span class="status-dot disconnected"></span> ' + label;
+            statusEl.className = "remote-ui-status disconnected";
         }
     }
 

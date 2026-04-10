@@ -7,6 +7,8 @@
     <title>{{block "title" .}}Schwung Manager{{end}}</title>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="preload" href="/static/fonts/plus-jakarta-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/static/fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
     <script src="/static/htmx.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -29,7 +31,6 @@
     <header>
         <div class="header-inner">
             <a href="/modules" class="site-name">Schwung Manager</a>
-            <span id="global-status-mobile" class="global-status global-status-mobile" style="display:none"><span class="status-dot"></span> <span class="global-status-text"></span></span>
             <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='false'?'true':'false');this.closest('.header-inner').querySelector('nav').classList.toggle('nav-open')">&#9776;</button>
             <nav aria-label="Main navigation">
                 <ul>
@@ -42,7 +43,6 @@
                     <li><a href="/mirror" target="_blank" rel="noopener">Screen Mirroring</a></li>
                 </ul>
             </nav>
-            <span id="global-status-desktop" class="global-status global-status-desktop" style="display:none"><span class="status-dot"></span> <span class="global-status-text"></span></span>
         </div>
     </header>
 
@@ -154,35 +154,6 @@
             if (ok) { form._confirmPassed = true; form.submit(); }
         });
     }, true);
-    </script>
-
-    <script>
-    /* Global connection status — checks if Schwung host is reachable via WebSocket */
-    (function() {
-        var els = [document.getElementById('global-status-desktop'), document.getElementById('global-status-mobile')];
-        els = els.filter(function(e) { return !!e; });
-        if (!els.length) return;
-
-        function setStatus(connected) {
-            els.forEach(function(el) {
-                el.style.display = '';
-                el.className = el.className.replace(/ connected| disconnected/g, '') + (connected ? ' connected' : ' disconnected');
-                var txt = el.querySelector('.global-status-text');
-                if (txt) txt.textContent = connected ? 'Connected' : 'Disconnected';
-            });
-        }
-
-        function check() {
-            var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            var ws = new WebSocket(proto + '//' + location.host + '/ws/remote-ui');
-            ws.onopen = function() { setStatus(true); ws.close(); };
-            ws.onerror = function() { setStatus(false); };
-        }
-        check();
-        setInterval(check, 15000);
-
-        window._schwungGlobalStatus = setStatus;
-    })();
     </script>
 
     <script>
