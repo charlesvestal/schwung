@@ -26,6 +26,18 @@
     {{end}}
 </section>
 {{end}}
+
+<script>
+/* When a module topic is opened, auto-expand its first subtopic (typically Overview) */
+document.querySelectorAll('.help-topics > .help-topic').forEach(function(topic) {
+    topic.addEventListener('toggle', function() {
+        if (topic.open) {
+            var first = topic.querySelector('.help-subtopics > .help-topic');
+            if (first && !first.open) first.open = true;
+        }
+    });
+});
+</script>
 {{end}}
 
 {{define "helpChildren"}}
