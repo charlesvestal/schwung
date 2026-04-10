@@ -882,7 +882,23 @@ static void shadow_inprocess_process_midi(void) {
             if ((type == 0x90 || type == 0x80) && p2 < 10) {
                 continue;
             }
-            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, 1);
+
+            /* Check if this MIDI_OUT packet is an echo of external USB MIDI.
+             * If the same status+data exists in MIDI_IN cable 2, it's an echo
+             * and direct-dispatch slots already handle it from MIDI_IN.
+             * If not, it's from pads/sequencer and all slots should see it. */
+            int is_external_echo = 0;
+            const uint8_t *in_buf = global_mmap_addr + MIDI_IN_OFFSET;
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                if ((in_buf[j] >> 4) == 2 &&          /* cable 2 */
+                    in_buf[j + 1] == p1 &&             /* same status+channel */
+                    in_buf[j + 2] == p2 &&             /* same data1 */
+                    in_buf[j + 3] == p3) {             /* same data2 */
+                    is_external_echo = 1;
+                    break;
+                }
+            }
+            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, is_external_echo);
 
             /* Also route to overtake DSP if loaded */
             if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
