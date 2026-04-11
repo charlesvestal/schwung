@@ -7,6 +7,8 @@
     <title>{{block "title" .}}Schwung Manager{{end}}</title>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="preload" href="/static/fonts/plus-jakarta-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/static/fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
     <script src="/static/htmx.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -29,6 +31,7 @@
     <header>
         <div class="header-inner">
             <a href="/modules" class="site-name">Schwung Manager</a>
+            <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='false'?'true':'false');this.closest('.header-inner').querySelector('nav').classList.toggle('nav-open')">&#9776;</button>
             <nav aria-label="Main navigation">
                 <ul>
                     <li><a href="/modules"{{if eq .Active "modules"}} class="active" aria-current="page"{{end}}>Modules</a></li>

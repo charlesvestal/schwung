@@ -18,8 +18,8 @@
 }
 
 .remote-ui-status.connected {
-    background: var(--color-success-bg);
-    color: var(--color-success);
+    background: var(--color-secondary-bg);
+    color: var(--accent-secondary);
 }
 
 .remote-ui-status.disconnected {
@@ -36,7 +36,7 @@
 }
 
 .status-dot.connected {
-    background: var(--color-success);
+    background: var(--accent-secondary);
 }
 
 .status-dot.disconnected {
@@ -80,7 +80,7 @@
     gap: var(--space-xs);
     margin-bottom: var(--space-lg);
     border-bottom: 1px solid var(--border);
-    padding-bottom: var(--space-xs);
+    padding-bottom: 0;
 }
 
 .remote-ui-tab {
@@ -208,6 +208,7 @@
     color: var(--text);
     text-align: center;
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     margin-top: 2px;
 }
 
@@ -367,6 +368,7 @@
 .param-slider-value {
     font-size: 0.8rem;
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     color: var(--text);
     min-width: 48px;
     text-align: right;
@@ -534,6 +536,13 @@
 
     .remote-ui-slot {
         padding: var(--space-md);
+    }
+}
+
+/* ---- Responsive: Tablet (hide Remote UI page header) ---- */
+@media (max-width: 768px) {
+    .remote-ui-header {
+        display: none;
     }
 }
 
