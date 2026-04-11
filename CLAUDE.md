@@ -260,17 +260,42 @@ Key CCs: 3 (jog click), 14 (jog turn), 49 (shift), 50 (menu), 51 (back), 71-78 (
 
 Notes 0-9: Capacitive touch from knobs (filter if not needed)
 
-## Audio Mailbox Layout
+## SPI Protocol Summary
+
+The Move communicates via SPI (`/dev/ablspi0.0`). 768-byte transfers at 20 MHz, mmap'd to 4096 bytes.
 
 ```
-AUDIO_OUT_OFFSET = 256
-AUDIO_IN_OFFSET  = 2304
-AUDIO_BYTES_PER_BLOCK = 512
-FRAMES_PER_BLOCK = 128
-SAMPLE_RATE = 44100
+OUTPUT (TX) — offset 0:
+  0     MIDI OUT: 20 × 4-byte USB-MIDI packets = 80 bytes
+  80    Display status (4 bytes) + data (172 bytes)
+  256   Audio OUT: 128 frames × stereo int16 = 512 bytes
+
+INPUT (RX) — offset 2048:
+  2048  MIDI IN: 31 × 8-byte events = 248 bytes
+  2296  Display status (4 bytes)
+  2304  Audio IN: 128 frames × stereo int16 = 512 bytes
 ```
 
-Frame layout: [L0, R0, L1, R1, ..., L127, R127] as int16 little-endian.
+**Critical:** MIDI_IN events are **8 bytes** (4-byte USB-MIDI + 4-byte timestamp), not 4. MIDI_OUT events are 4 bytes. Injecting 4-byte events into MIDI_IN causes misalignment and SIGABRT.
+
+Cable numbers: 0 = internal hardware, 2 = external USB, 14 = system, 15 = SPI protocol.
+
+See `docs/SPI_PROTOCOL.md` for full details.
+
+## Realtime Safety
+
+The SPI callback runs at SCHED_FIFO 90 on core 3. Budget is ~900µs per frame after the ~2ms hardware transfer.
+
+**Never do these in the SPI callback path:**
+- Call `unified_log()`, `fprintf()`, `fopen()`, or any file I/O
+- Allocate memory
+- Take locks that non-realtime threads hold
+
+**FIFO scheduling inheritance:** The shim runs inside MoveOriginal's FIFO 70 threads. Any child process (shadow_ui, host_system_cmd) must reset to SCHED_OTHER before exec. This is handled by `shadow_process.c` and `shadow_ui.c` — don't bypass them.
+
+**CPU pinning:** Keep core 3 free for SPI. Pin compute-heavy processes (RNBO, etc.) to cores 0-2 (`taskset 0x7`).
+
+See `docs/REALTIME_SAFETY.md` for full investigation and root causes.
 
 ## Deployment
 
@@ -717,6 +742,10 @@ Detailed documentation is in the `docs/` directory:
 - `docs/API.md` - Full JS API reference (display, MIDI, host functions, LED colors)
 - `docs/MODULES.md` - Module development guide (module.json, capabilities, tool_config, DSP plugin API, Signal Chain integration)
 - `docs/LOGGING.md` - Unified logging guide (enable/disable, JS and C APIs, log format)
+- `docs/DISPLAY.md` - Generic Display protocol (SHM format, WebSocket wire format, touch back-channel)
+- `docs/SPI_PROTOCOL.md` - Full SPI protocol reference (buffer layout, MIDI event formats, display chunking, ioctl commands)
+- `docs/REALTIME_SAFETY.md` - Realtime safety rules and JACK audio glitch root cause analysis
+- `docs/MIDI_INJECTION.md` - MIDI cable-2 injection, echo filter problem, and approaches tried
 - `MANUAL.md` - User-facing manual (shortcuts, slots, recording, tools, modules)
 - `BUILDING.md` - Build system and cross-compilation
 
