@@ -2082,6 +2082,7 @@
     // ------------------------------------------------------------------
 
     function setStatus(connected) {
+        if (!statusEl) return;
         if (connected) {
             statusEl.innerHTML = '<span class="status-dot connected"></span> Connected';
             statusEl.className = "remote-ui-status connected";
