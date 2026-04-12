@@ -22,3 +22,7 @@ build/cache/
 *.asd
 move_audio_recv
 libs/memfault-firmware-sdk/
+docs/plans/2026-04-08-usb-c-host-mode.md
+docs/plans/2026-04-10-fix-on-device-upgrade-entrypoint.md
+schwung-manager/schwung-manager
+schwung-manager/schwung-manager-arm64
