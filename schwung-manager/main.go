@@ -2742,6 +2742,16 @@ func (app *App) handleModuleWebUIAsset(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func main() {
+	// Move's /tmp is on the root filesystem which is nearly always full.
+	// Go's multipart parser writes temp files to os.TempDir() (/tmp by default),
+	// so large uploads (e.g. soundfonts) fail and surface as "invalid CSRF token".
+	// Redirect temp files to /data/UserData/ which has space.
+	tmpDir := "/data/UserData/schwung/.tmp"
+	if info, err := os.Stat("/data/UserData"); err == nil && info.IsDir() {
+		os.MkdirAll(tmpDir, 0755)
+		os.Setenv("TMPDIR", tmpDir)
+	}
+
 	port := flag.Int("port", 7700, "HTTP listen port")
 	roots := flag.String("roots", "/data/UserData/", "Comma-separated allowed filesystem roots")
 	catalogURL := flag.String("catalog-url",
