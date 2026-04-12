@@ -2748,6 +2748,7 @@ func main() {
 	// Redirect temp files to /data/UserData/ which has space.
 	tmpDir := "/data/UserData/schwung/.tmp"
 	if info, err := os.Stat("/data/UserData"); err == nil && info.IsDir() {
+		os.RemoveAll(tmpDir) // clear stale temp files from previous runs
 		os.MkdirAll(tmpDir, 0755)
 		os.Setenv("TMPDIR", tmpDir)
 	}
