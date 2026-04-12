@@ -924,7 +924,23 @@ static void shadow_inprocess_process_midi(void) {
             if ((type == 0x90 || type == 0x80) && p2 < 10) {
                 continue;
             }
-            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
+
+            /* Check if this MIDI_OUT packet is an echo of external USB MIDI.
+             * If the same status+data exists in MIDI_IN cable 2, it's an echo
+             * and direct-dispatch slots already handle it from MIDI_IN.
+             * If not, it's from pads/sequencer and all slots should see it. */
+            int is_external_echo = 0;
+            const uint8_t *in_buf = global_mmap_addr + MIDI_IN_OFFSET;
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                if ((in_buf[j] >> 4) == 2 &&          /* cable 2 */
+                    in_buf[j + 1] == p1 &&             /* same status+channel */
+                    in_buf[j + 2] == p2 &&             /* same data1 */
+                    in_buf[j + 3] == p3) {             /* same data2 */
+                    is_external_echo = 1;
+                    break;
+                }
+            }
+            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, is_external_echo);
 
             /* Also route to overtake DSP if loaded */
             if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
@@ -1111,7 +1127,7 @@ static int overtake_midi_send_internal(const uint8_t *msg, int len) {
     uint8_t pkt[4] = { cin, msg[1], msg[2], msg[3] };
     static int midi_log_count = 0;
     int log_on = shadow_midi_out_log_enabled();
-    shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count);
+    shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, 0);
     return len;
 }
 
@@ -3486,6 +3502,7 @@ static uint64_t spi_jack_pre_sum = 0, spi_jack_pre_max = 0;
 static uint64_t spi_jack_disp_sum = 0, spi_jack_disp_max = 0;
 static uint64_t spi_pin_sum = 0, spi_pin_max = 0;
 static uint64_t spi_fwd_ext_cc_sum = 0, spi_fwd_ext_cc_max = 0;
+static uint64_t spi_direct_midi_sum = 0, spi_direct_midi_max = 0;
 static int spi_granular_count = 0;
 
 #define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &spi_section_start)
@@ -3769,6 +3786,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     TIME_SECTION_START();
     shadow_forward_external_cc_to_out();
     TIME_SECTION_END(spi_fwd_ext_cc_sum, spi_fwd_ext_cc_max);
+
+    /* Direct MIDI dispatch for MPE passthrough slots (receive=All, forward=THRU).
+     * Reads MIDI_IN cable 2 and dispatches all message types directly to these
+     * slots, bypassing Move's MIDI_OUT channel remapping. */
+    TIME_SECTION_START();
+    shadow_dispatch_direct_external_midi();
+    TIME_SECTION_END(spi_direct_midi_sum, spi_direct_midi_max);
 
     TIME_SECTION_START();
     shadow_inprocess_process_midi();
@@ -5855,6 +5879,7 @@ post_timing:
         spi_screenreader_sum = spi_screenreader_max = spi_jack_pre_sum = spi_jack_pre_max = 0;
         spi_jack_disp_sum = spi_jack_disp_max = spi_pin_sum = spi_pin_max = 0;
         spi_fwd_ext_cc_sum = spi_fwd_ext_cc_max = 0;
+        spi_direct_midi_sum = spi_direct_midi_max = 0;
         spi_granular_count = 0;
     }
 

@@ -31,6 +31,7 @@ export const SLOT_SETTINGS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },
+    { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
 ];
 
 /* ---- Module-local state ------------------------------------------------- */
@@ -40,10 +41,21 @@ let editingSettingValue = false;
 
 /* ---- Helpers ------------------------------------------------------------ */
 
+/* Check if a slot is in MPE mode (Recv=All + Fwd=THRU) */
+function isSlotMpe(slot) {
+    const { getSlotParam } = ctx;
+    const recv = parseInt(getSlotParam(slot, "slot:receive_channel")) || 0;
+    const fwd = parseInt(getSlotParam(slot, "slot:forward_channel"));
+    return recv === 0 && fwd === -2;
+}
+
 export function getSlotSettingValue(slot, setting) {
     const { slots, getSlotParam } = ctx;
     if (setting.key === "patch") {
         return slots[slot]?.name || "Unknown";
+    }
+    if (setting.key === "mpe_mode") {
+        return isSlotMpe(slot) ? "On" : "Off";
     }
     const val = getSlotParam(slot, setting.key);
     if (val === null) return "-";
@@ -72,10 +84,37 @@ export function getSlotSettingValue(slot, setting) {
     return val;
 }
 
+/* State to restore when MPE mode is turned off */
+const preMpeState = [null, null, null, null];
+
 function adjustSlotSetting(slot, setting, delta) {
     if (setting.type === "action") return;
 
     const { getSlotParam, setSlotParam } = ctx;
+
+    /* MPE Mode toggle: sets recv/fwd/synth MPE in one action */
+    if (setting.key === "mpe_mode") {
+        const mpeOn = isSlotMpe(slot);
+        if (delta > 0 && !mpeOn) {
+            /* Save current recv/fwd for restore */
+            preMpeState[slot] = {
+                recv: getSlotParam(slot, "slot:receive_channel"),
+                fwd: getSlotParam(slot, "slot:forward_channel"),
+            };
+            setSlotParam(slot, "slot:receive_channel", "0");    /* All */
+            setSlotParam(slot, "slot:forward_channel", "-2");   /* THRU */
+            setSlotParam(slot, "synth:mpe_enabled", "1");
+        } else if (delta < 0 && mpeOn) {
+            /* Restore previous settings or defaults */
+            const prev = preMpeState[slot];
+            setSlotParam(slot, "slot:receive_channel", prev?.recv || String(slot + 1));
+            setSlotParam(slot, "slot:forward_channel", prev?.fwd || "-1");
+            setSlotParam(slot, "synth:mpe_enabled", "0");
+            preMpeState[slot] = null;
+        }
+        return;
+    }
+
     const current = getSlotParam(slot, setting.key);
     let val;
 
