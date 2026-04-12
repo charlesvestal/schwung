@@ -303,26 +303,55 @@
     });
 
     fileInput.addEventListener('change', function() {
-        if (fileInput.files.length > 0) {
-            uploadForm.style.display = '';
-            uploadForm.submit();
+        if (fileInput.files.length === 0) return;
+        var files = Array.prototype.slice.call(fileInput.files);
+        var total = files.length;
+        var current = 0;
+        function nextFile() {
+            if (current >= total) {
+                statusEl.textContent = 'Done!';
+                detailEl.textContent = '';
+                barFill.style.width = '100%';
+                window.location.reload();
+                return;
+            }
+            var file = files[current];
+            current++;
+            showProgress(current, total, file.name, 0);
+            uploadOneFile(file, currentDir, function(pct) {
+                showProgress(current, total, file.name, pct);
+            }).then(nextFile).catch(function(err) {
+                console.error('Upload error:', err, file.name);
+                nextFile();
+            });
         }
+        nextFile();
     });
 
     // Drag and drop
     var dragCounter = 0;
     var uploadUrl = '/files/upload';
 
-    function uploadOneFile(file, destDir) {
+    function uploadOneFile(file, destDir, onProgress) {
         var fd = new FormData();
         fd.append('csrf_token', csrfToken);
         fd.append('path', destDir);
         fd.append('file', file, file.name);
-        return fetch(uploadUrl, {
-            method: 'POST',
-            body: fd,
-            credentials: 'same-origin',
-            headers: { 'X-CSRF-Token': csrfToken }
+        return new Promise(function(resolve, reject) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', uploadUrl, true);
+            xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+            xhr.withCredentials = true;
+            if (onProgress) {
+                xhr.upload.addEventListener('progress', function(e) {
+                    if (e.lengthComputable) {
+                        onProgress(Math.round((e.loaded / e.total) * 100));
+                    }
+                });
+            }
+            xhr.onload = function() { resolve(xhr); };
+            xhr.onerror = function() { reject(new Error('Upload failed')); };
+            xhr.send(fd);
         });
     }
 
@@ -362,11 +391,21 @@
     var detailEl = document.getElementById('upload-detail');
     var barFill = document.getElementById('upload-bar-fill');
 
-    function showProgress(current, total, filename) {
+    function showProgress(current, total, filename, bytePercent) {
         progressEl.style.display = '';
-        statusEl.textContent = 'Uploading ' + current + ' of ' + total + '...';
+        if (bytePercent === 100) {
+            statusEl.textContent = 'Saving ' + current + ' of ' + total + '...';
+        } else {
+            statusEl.textContent = 'Uploading ' + current + ' of ' + total + '...';
+        }
         detailEl.textContent = filename;
-        barFill.style.width = Math.round((current / total) * 100) + '%';
+        // Combine file-count progress with per-file byte progress
+        var fileBase = (current - 1) / total;
+        var fileSlice = 1 / total;
+        var pct = typeof bytePercent === 'number'
+            ? Math.round((fileBase + fileSlice * (bytePercent / 100)) * 100)
+            : Math.round((current / total) * 100);
+        barFill.style.width = pct + '%';
     }
 
     function hideProgress() {
@@ -470,14 +509,18 @@
 
             function nextFile() {
                 if (current >= files.length) {
-                    hideProgress();
+                    statusEl.textContent = 'Done!';
+                    detailEl.textContent = '';
+                    barFill.style.width = '100%';
                     window.location.reload();
                     return;
                 }
                 var item = files[current];
                 current++;
-                showProgress(current, total, item.file.name);
-                uploadOneFile(item.file, item.destDir)
+                showProgress(current, total, item.file.name, 0);
+                uploadOneFile(item.file, item.destDir, function(pct) {
+                    showProgress(current, total, item.file.name, pct);
+                })
                     .then(nextFile)
                     .catch(function(err) {
                         console.error('Upload error:', err, item.file.name);
