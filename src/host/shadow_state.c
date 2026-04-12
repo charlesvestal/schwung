@@ -202,6 +202,11 @@ void shadow_save_state(void)
             host_chain_slots[1].volume,
             host_chain_slots[2].volume,
             host_chain_slots[3].volume);
+    fprintf(f, "  \"slot_channels\": [%d, %d, %d, %d],\n",
+            host_chain_slots[0].channel,
+            host_chain_slots[1].channel,
+            host_chain_slots[2].channel,
+            host_chain_slots[3].channel);
     fprintf(f, "  \"slot_forward_channels\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].forward_channel,
             host_chain_slots[1].forward_channel,
@@ -221,8 +226,12 @@ void shadow_save_state(void)
     fclose(f);
     chown_to_ableton(SHADOW_CONFIG_PATH);
 
-    char msg[256];
-    snprintf(msg, sizeof(msg), "Saved slots: vol=[%.2f,%.2f,%.2f,%.2f] muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+    char msg[320];
+    snprintf(msg, sizeof(msg), "Saved slots: ch=[%d,%d,%d,%d] fwd=[%d,%d,%d,%d] vol=[%.2f,%.2f,%.2f,%.2f] muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+             host_chain_slots[0].channel, host_chain_slots[1].channel,
+             host_chain_slots[2].channel, host_chain_slots[3].channel,
+             host_chain_slots[0].forward_channel, host_chain_slots[1].forward_channel,
+             host_chain_slots[2].forward_channel, host_chain_slots[3].forward_channel,
              host_chain_slots[0].volume, host_chain_slots[1].volume,
              host_chain_slots[2].volume, host_chain_slots[3].volume,
              host_chain_slots[0].muted, host_chain_slots[1].muted,
@@ -282,6 +291,27 @@ void shadow_load_state(void)
                 char msg[128];
                 snprintf(msg, sizeof(msg), "Loaded slot volumes: [%.2f, %.2f, %.2f, %.2f]",
                          v0, v1, v2, v3);
+                if (host_log) host_log(msg);
+            }
+        }
+    }
+
+    /* Parse slot_channels (receive channel) array */
+    const char *ch_key = "\"slot_channels\":";
+    char *ch_pos = strstr(json, ch_key);
+    if (ch_pos) {
+        ch_pos = strchr(ch_pos, '[');
+        if (ch_pos) {
+            int c0, c1, c2, c3;
+            if (sscanf(ch_pos, "[%d, %d, %d, %d]", &c0, &c1, &c2, &c3) == 4) {
+                host_chain_slots[0].channel = c0;
+                host_chain_slots[1].channel = c1;
+                host_chain_slots[2].channel = c2;
+                host_chain_slots[3].channel = c3;
+
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Loaded slot channels: [%d, %d, %d, %d]",
+                         c0, c1, c2, c3);
                 if (host_log) host_log(msg);
             }
         }
