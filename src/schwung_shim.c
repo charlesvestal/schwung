@@ -420,6 +420,10 @@ static int schwung_pads_led_countdown = 0;
 #define SCHWUNG_PAD_LED_IDLE    118  /* LightGrey */
 #define SCHWUNG_PAD_LED_ACTIVE  120  /* White */
 
+/* Current desired LED state for each pad (index 0-31 = notes 68-99).
+ * Updated on note-on/off, read by pre_transfer to overwrite Move's colors. */
+static uint8_t schwung_pads_led_state[32];
+
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
 
@@ -4504,9 +4508,11 @@ pre_done:
                DISPLAY_OFFSET - AUDIO_OUT_OFFSET);
     }
 
-    /* Block Move's pad LED commands from reaching hardware when Schwung pads is active.
+    /* Schwung pads: overwrite Move's pad LED commands with our desired colors.
      * This runs in pre_transfer so it modifies shadow BEFORE the SPI write.
-     * Move sends note-on (CIN 0x09) on cable 0 for notes 68-99 to set pad colors. */
+     * Instead of trying to distinguish Move's vs our LED commands, we scan
+     * for any cable-0 note-on targeting pads 68-99 and replace the color
+     * with our tracked state (idle or active). */
     {
         int sp_slot = shadow_selected_slot;
         if (sp_slot >= 0 && sp_slot < SHADOW_CHAIN_INSTANCES &&
@@ -4519,8 +4525,8 @@ pre_done:
                 if (cin != 0x09) continue;  /* note-on LED commands */
                 uint8_t note = midi_out[k + 2];
                 if (note >= 68 && note <= 99) {
-                    midi_out[k] = 0; midi_out[k+1] = 0;
-                    midi_out[k+2] = 0; midi_out[k+3] = 0;
+                    /* Replace color with our desired value, keep the packet */
+                    midi_out[k + 3] = schwung_pads_led_state[note - 68];
                 }
             }
         }
@@ -4793,6 +4799,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     int color = led_queue_get_note_led_color(68 + p);
                     schwung_pads_led_cache[es][p] = (color >= 0) ? (uint8_t)color : 0;
                 }
+                /* Initialize LED state to idle */
+                memset(schwung_pads_led_state, SCHWUNG_PAD_LED_IDLE, 32);
                 schwung_pads_led_countdown = SCHWUNG_PADS_LED_REASSERT_FRAMES;
             } else if (!cur && schwung_pads_prev[es]) {
                 /* Just disabled: restore cached pad LED colors */
@@ -4803,13 +4811,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             }
             schwung_pads_prev[es] = cur;
 
-            /* Re-assert white LEDs while countdown is active.
+            /* Re-assert pad LEDs while countdown is active.
              * Move reasserts its own LEDs on track switch, so we
-             * keep overwriting every frame until it settles. */
+             * keep queueing our desired state every frame until it settles. */
             if (schwung_pads_led_countdown > 0) {
                 schwung_pads_led_countdown--;
-                for (int p = 68; p <= 99; p++) {
-                    shadow_queue_led(0x09, 0x90, (uint8_t)p, SCHWUNG_PAD_LED_IDLE);
+                for (int p = 0; p < 32; p++) {
+                    shadow_queue_led(0x09, 0x90, (uint8_t)(68 + p), schwung_pads_led_state[p]);
                 }
             }
         }
@@ -4872,12 +4880,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 sh_midi[j+3] = out_vel;
                 schwung_pads_echo_refcount[remapped]++;
 
-                /* Highlight pad LED: bright on press, idle on release */
-                if (type == 0x90 && vel > 0) {
-                    shadow_queue_led(0x09, 0x90, d1, SCHWUNG_PAD_LED_ACTIVE);
-                } else {
-                    shadow_queue_led(0x09, 0x90, d1, SCHWUNG_PAD_LED_IDLE);
-                }
+                /* Update pad LED state: bright on press, idle on release.
+                 * Pre_transfer reads this state to overwrite Move's LED commands. */
+                schwung_pads_led_state[d1 - 68] =
+                    (type == 0x90 && vel > 0) ? SCHWUNG_PAD_LED_ACTIVE : SCHWUNG_PAD_LED_IDLE;
 
                 /* Dispatch directly to slot for immediate playback.
                  * Apply forward channel remapping to match normal dispatch path. */
@@ -5115,6 +5121,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                     int color = led_queue_get_note_led_color(68 + p);
                                     schwung_pads_led_cache[new_slot][p] = (color >= 0) ? (uint8_t)color : 0;
                                 }
+                                memset(schwung_pads_led_state, SCHWUNG_PAD_LED_IDLE, 32);
                                 schwung_pads_led_countdown = SCHWUNG_PADS_LED_REASSERT_FRAMES;
                             }
                             /* Sync to shared memory for shadow UI and Shift+Knob routing */
