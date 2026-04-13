@@ -411,6 +411,11 @@ static int schwung_pads_prev[SHADOW_CHAIN_INSTANCES] = {0};
 /* Cached pad LED colors for restore when Schwung pads is turned off */
 static uint8_t schwung_pads_led_cache[SHADOW_CHAIN_INSTANCES][32];
 
+/* Countdown: re-assert white pad LEDs for this many frames after activation.
+ * Move reasserts its own LEDs on track switch, so we need to keep overwriting. */
+#define SCHWUNG_PADS_LED_REASSERT_FRAMES 90  /* ~2 seconds at 44.1kHz/128 */
+static int schwung_pads_led_countdown = 0;
+
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
 
@@ -4756,21 +4761,30 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         if (es >= 0 && es < SHADOW_CHAIN_INSTANCES) {
             int cur = slot_schwung_pads(es);
             if (cur && !schwung_pads_prev[es]) {
-                /* Just enabled: cache current pad LED colors, then set white */
+                /* Just enabled: cache current pad LED colors, start reassert countdown */
                 for (int p = 0; p < 32; p++) {
                     int color = led_queue_get_note_led_color(68 + p);
                     schwung_pads_led_cache[es][p] = (color >= 0) ? (uint8_t)color : 0;
                 }
-                for (int p = 68; p <= 99; p++) {
-                    shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
-                }
+                schwung_pads_led_countdown = SCHWUNG_PADS_LED_REASSERT_FRAMES;
             } else if (!cur && schwung_pads_prev[es]) {
                 /* Just disabled: restore cached pad LED colors */
+                schwung_pads_led_countdown = 0;
                 for (int p = 0; p < 32; p++) {
                     shadow_queue_led(0x09, 0x90, (uint8_t)(68 + p), schwung_pads_led_cache[es][p]);
                 }
             }
             schwung_pads_prev[es] = cur;
+
+            /* Re-assert white LEDs while countdown is active.
+             * Move reasserts its own LEDs on track switch, so we
+             * keep overwriting every frame until it settles. */
+            if (schwung_pads_led_countdown > 0) {
+                schwung_pads_led_countdown--;
+                for (int p = 68; p <= 99; p++) {
+                    shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
+                }
+            }
         }
     }
 
@@ -5059,15 +5073,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_selected_slot = new_slot;
                             /* Reset Schwung pads echo refcount on slot change */
                             memset(schwung_pads_echo_refcount, 0, sizeof(schwung_pads_echo_refcount));
-                            /* Cache and set pad LEDs white when switching to a Schwung pads slot */
+                            /* Start LED reassert countdown when switching to a Schwung pads slot.
+                             * Move will reassert its own LEDs on track switch, so the
+                             * per-frame countdown loop overwrites them until it settles. */
                             if (slot_schwung_pads(new_slot)) {
                                 for (int p = 0; p < 32; p++) {
                                     int color = led_queue_get_note_led_color(68 + p);
                                     schwung_pads_led_cache[new_slot][p] = (color >= 0) ? (uint8_t)color : 0;
                                 }
-                                for (int p = 68; p <= 99; p++) {
-                                    shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
-                                }
+                                schwung_pads_led_countdown = SCHWUNG_PADS_LED_REASSERT_FRAMES;
                             }
                             /* Sync to shared memory for shadow UI and Shift+Knob routing */
                             if (shadow_control) {
