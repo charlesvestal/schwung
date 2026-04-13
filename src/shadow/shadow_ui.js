@@ -1351,6 +1351,7 @@ function processAllUpdates() {
 
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
+    { key: "slot:schwung_pads", label: "Schwung Pads", type: "int", min: 0, max: 1, step: 1 },
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
@@ -6485,6 +6486,9 @@ function getChainSettingValue(slot, setting) {
     if (setting.key === "slot:receive_channel") {
         const ch = parseInt(val);
         return ch === 0 ? "All" : `Ch ${val}`;
+    }
+    if (setting.key === "slot:schwung_pads") {
+        return parseInt(val) ? "Yes" : "No";
     }
     return String(val);
 }

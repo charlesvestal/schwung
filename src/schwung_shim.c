@@ -405,6 +405,9 @@ static inline int slot_schwung_pads(int s) {
         ? shadow_chain_slots[s].schwung_pads : 0;
 }
 
+/* Track previous schwung_pads state per slot to detect on/off transitions */
+static int schwung_pads_prev[SHADOW_CHAIN_INSTANCES] = {0};
+
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
 
@@ -4742,6 +4745,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     } else {
         /* Not in shadow mode - copy MIDI_IN directly */
         memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
+    }
+
+    /* === SCHWUNG PADS: detect on/off transition and set LEDs === */
+    {
+        int es = shadow_selected_slot;
+        if (es >= 0 && es < SHADOW_CHAIN_INSTANCES) {
+            int cur = slot_schwung_pads(es);
+            if (cur && !schwung_pads_prev[es]) {
+                /* Just enabled: set all pad LEDs white */
+                for (int p = 68; p <= 99; p++) {
+                    shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
+                }
+            }
+            schwung_pads_prev[es] = cur;
+        }
     }
 
     /* === SCHWUNG PADS: overwrite all 32 pad events to chromatic cable-2 notes ===

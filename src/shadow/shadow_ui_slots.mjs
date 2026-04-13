@@ -22,6 +22,9 @@ import {
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 /* ---- Slot settings definition ------------------------------------------- */
+/* DEPRECATED: This list is used by the legacy SLOT_SETTINGS view.
+ * The active settings UI is CHAIN_SETTINGS_ITEMS in shadow_ui.js.
+ * Keep in sync if modifying slot settings. */
 
 export const SLOT_SETTINGS = [
     { key: "patch", label: "Patch", type: "action" },
