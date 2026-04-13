@@ -212,11 +212,11 @@ void shadow_save_state(void)
             host_chain_slots[1].forward_channel,
             host_chain_slots[2].forward_channel,
             host_chain_slots[3].forward_channel);
-    fprintf(f, "  \"slot_extended_pads\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].extended_pads,
-            host_chain_slots[1].extended_pads,
-            host_chain_slots[2].extended_pads,
-            host_chain_slots[3].extended_pads);
+    fprintf(f, "  \"slot_schwung_pads\": [%d, %d, %d, %d],\n",
+            host_chain_slots[0].schwung_pads,
+            host_chain_slots[1].schwung_pads,
+            host_chain_slots[2].schwung_pads,
+            host_chain_slots[3].schwung_pads);
     fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].muted,
             host_chain_slots[1].muted,
@@ -343,20 +343,20 @@ void shadow_load_state(void)
         }
     }
 
-    /* Parse slot_extended_pads array */
-    const char *ext_key = "\"slot_extended_pads\":";
+    /* Parse slot_schwung_pads array */
+    const char *ext_key = "\"slot_schwung_pads\":";
     char *ext_pos = strstr(json, ext_key);
     if (ext_pos) {
         ext_pos = strchr(ext_pos, '[');
         if (ext_pos) {
             int e0, e1, e2, e3;
             if (sscanf(ext_pos, "[%d, %d, %d, %d]", &e0, &e1, &e2, &e3) == 4) {
-                host_chain_slots[0].extended_pads = e0 ? 1 : 0;
-                host_chain_slots[1].extended_pads = e1 ? 1 : 0;
-                host_chain_slots[2].extended_pads = e2 ? 1 : 0;
-                host_chain_slots[3].extended_pads = e3 ? 1 : 0;
+                host_chain_slots[0].schwung_pads = e0 ? 1 : 0;
+                host_chain_slots[1].schwung_pads = e1 ? 1 : 0;
+                host_chain_slots[2].schwung_pads = e2 ? 1 : 0;
+                host_chain_slots[3].schwung_pads = e3 ? 1 : 0;
                 char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot extended_pads: [%d, %d, %d, %d]",
+                snprintf(msg, sizeof(msg), "Loaded slot schwung_pads: [%d, %d, %d, %d]",
                          e0, e1, e2, e3);
                 if (host_log) host_log(msg);
             }

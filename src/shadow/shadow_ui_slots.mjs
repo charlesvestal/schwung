@@ -32,7 +32,7 @@ export const SLOT_SETTINGS = [
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
-    { key: "slot:extended_pads", label: "Ext Pads", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:schwung_pads", label: "Schwung Pads", type: "int", min: 0, max: 1, step: 1 },
 ];
 
 /* ---- Module-local state ------------------------------------------------- */
@@ -78,7 +78,7 @@ export function getSlotSettingValue(slot, setting) {
         if (ch === -1) return "Auto";
         return `Ch ${ch + 1}`;
     }
-    if (setting.key === "slot:extended_pads") {
+    if (setting.key === "slot:schwung_pads") {
         return parseInt(val) ? "Yes" : "No";
     }
     if (setting.key === "slot:receive_channel") {

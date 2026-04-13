@@ -361,7 +361,7 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
-        shadow_chain_slots[i].extended_pads = 0;
+        shadow_chain_slots[i].schwung_pads = 0;
         capture_clear(&shadow_chain_slots[i].capture);
         shadow_chain_slots[i].fade.gain = 0.0f;
         shadow_chain_slots[i].fade.target = 0.0f;
@@ -468,12 +468,12 @@ void shadow_chain_load_config(void) {
             }
         }
 
-        /* Parse extended_pads (0 or 1) */
-        char *ext_pos = strstr(name_pos, "\"extended_pads\"");
+        /* Parse schwung_pads (0 or 1) */
+        char *ext_pos = strstr(name_pos, "\"schwung_pads\"");
         if (ext_pos) {
             char *ext_colon = strchr(ext_pos, ':');
             if (ext_colon) {
-                shadow_chain_slots[i].extended_pads = atoi(ext_colon + 1) ? 1 : 0;
+                shadow_chain_slots[i].schwung_pads = atoi(ext_colon + 1) ? 1 : 0;
             }
         }
 
@@ -535,7 +535,7 @@ void shadow_ui_state_update_slot(int slot) {
     ui_state->slot_channels[slot] = (ch < 0) ? 0 : (uint8_t)(ch + 1);
     ui_state->slot_volumes[slot] = (uint16_t)(shadow_chain_slots[slot].volume * 100.0f);
     ui_state->slot_forward_ch[slot] = (int8_t)shadow_chain_slots[slot].forward_channel;
-    ui_state->slot_extended_pads[slot] = (uint8_t)shadow_chain_slots[slot].extended_pads;
+    ui_state->slot_schwung_pads[slot] = (uint8_t)shadow_chain_slots[slot].schwung_pads;
     strncpy(ui_state->slot_names[slot],
             shadow_chain_slots[slot].patch_name,
             SHADOW_UI_NAME_LEN - 1);
@@ -1629,8 +1629,8 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_ui_state_update_slot(slot);
         return 1;
     }
-    if (strcmp(key, "slot:extended_pads") == 0) {
-        shadow_chain_slots[slot].extended_pads = atoi(value) ? 1 : 0;
+    if (strcmp(key, "slot:schwung_pads") == 0) {
+        shadow_chain_slots[slot].schwung_pads = atoi(value) ? 1 : 0;
         shadow_ui_state_update_slot(slot);
         return 1;
     }
@@ -1661,8 +1661,8 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     if (strcmp(key, "slot:forward_channel") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].forward_channel);
     }
-    if (strcmp(key, "slot:extended_pads") == 0) {
-        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].extended_pads);
+    if (strcmp(key, "slot:schwung_pads") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].schwung_pads);
     }
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = shadow_chain_slots[slot].channel;

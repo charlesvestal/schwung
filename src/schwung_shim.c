@@ -392,18 +392,18 @@ static volatile int shadow_held_track = -1;
 /* Selected slot for Shift+Knob routing: 0-3, persists even when shadow UI is off */
 static volatile int shadow_selected_slot = 0;
 
-/* Extended pads: per-slot bank selection (0-15) */
-static int extended_pads_bank[SHADOW_CHAIN_INSTANCES] = {0};
+/* Schwung pads: per-slot bank selection (0-15) */
+static int schwung_pads_bank[SHADOW_CHAIN_INSTANCES] = {0};
 
-/* Extended pads echo filter: refcount of injected notes awaiting cable 2 echo.
+/* Schwung pads echo filter: refcount of injected notes awaiting cable 2 echo.
  * Incremented when we inject into MIDI_IN, decremented when we see the
  * echo on MIDI_OUT cable 2 (before dispatching to chain). */
-static uint8_t ext_pads_echo_refcount[256] = {0};
+static uint8_t schwung_pads_echo_refcount[256] = {0};
 
-/* Check if extended_pads is active for a given slot */
-static inline int slot_extended_pads(int s) {
+/* Check if schwung_pads is active for a given slot */
+static inline int slot_schwung_pads(int s) {
     return (s >= 0 && s < SHADOW_CHAIN_INSTANCES)
-        ? shadow_chain_slots[s].extended_pads : 0;
+        ? shadow_chain_slots[s].schwung_pads : 0;
 }
 
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
@@ -939,12 +939,12 @@ static void shadow_inprocess_process_midi(void) {
                 continue;
             }
 
-            /* Extended pads echo filter: suppress cable 2 echoes of notes
+            /* Schwung pads echo filter: suppress cable 2 echoes of notes
              * we overwrote into MIDI_IN. Sequencer playback has no refcount
              * and passes through normally. */
             if ((type == 0x90 || type == 0x80) &&
-                ext_pads_echo_refcount[p2] > 0) {
-                ext_pads_echo_refcount[p2]--;
+                schwung_pads_echo_refcount[p2] > 0) {
+                schwung_pads_echo_refcount[p2]--;
                 uint8_t *wpkt = (uint8_t *)(global_mmap_addr + MIDI_OUT_OFFSET) + i;
                 wpkt[0] = 0; wpkt[1] = 0; wpkt[2] = 0; wpkt[3] = 0;
                 continue;
@@ -4759,7 +4759,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     {
         int es = shadow_selected_slot;
         if (es >= 0 && es < SHADOW_CHAIN_INSTANCES &&
-            slot_extended_pads(es) &&
+            slot_schwung_pads(es) &&
             shadow_plugin_v2 && shadow_plugin_v2->on_midi &&
             shadow_chain_slots[es].instance) {
             /* Lazy activation: same as shadow_chain_dispatch_midi_to_slots */
@@ -4773,7 +4773,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (buf[0] != '\0')
                         shadow_chain_slots[es].active = 1;
                 }
-                if (!shadow_chain_slots[es].active) goto skip_extended_pads;
+                if (!shadow_chain_slots[es].active) goto skip_schwung_pads;
             }
             /* Scan at 8-byte stride matching MIDI_IN event size (31 events max) */
             for (int j = 0; j < 248; j += 8) {
@@ -4795,7 +4795,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     int row = (d1 - 68) / 8;
                     int col = (d1 - 68) % 8;
                     if (type == 0x90 && vel > 0) {
-                        extended_pads_bank[es] = row * 4 + col;
+                        schwung_pads_bank[es] = row * 4 + col;
                     }
                     uint8_t left_note = (uint8_t)(row * 4 + col);  /* 0-15 */
 
@@ -4808,7 +4808,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         sh_midi[j+1] = st;
                         sh_midi[j+2] = left_note;
                         sh_midi[j+3] = vel;
-                        ext_pads_echo_refcount[left_note]++;
+                        schwung_pads_echo_refcount[left_note]++;
 
                         /* Dispatch directly for immediate playback */
                         uint8_t remapped_st = shadow_chain_remap_channel(es, st);
@@ -4824,7 +4824,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     int row = (d1 - 68) / 8;
                     int col = (d1 - 68) % 8 - 4;
                     int offset = row * 4 + col;
-                    int remapped = extended_pads_bank[es] * 16 + offset;
+                    int remapped = schwung_pads_bank[es] * 16 + offset;
 
                     /* Overwrite in sh_midi: cable 2, same CIN, remapped note.
                      * Move records this for sequencer. Echo filtered in MIDI_OUT. */
@@ -4832,7 +4832,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     sh_midi[j+1] = st;
                     sh_midi[j+2] = (uint8_t)remapped;
                     sh_midi[j+3] = vel;
-                    ext_pads_echo_refcount[(uint8_t)remapped]++;
+                    schwung_pads_echo_refcount[(uint8_t)remapped]++;
 
                     /* Dispatch directly to slot for immediate playback.
                      * Apply forward channel remapping to match normal dispatch path. */
@@ -4845,7 +4845,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             }
         }
     }
-    skip_extended_pads: ;
+    skip_schwung_pads: ;
 
     /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
      * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
@@ -5061,8 +5061,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         int new_slot = 43 - d1;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
                         if (new_slot != shadow_selected_slot) {
                             shadow_selected_slot = new_slot;
-                            /* Reset extended pads echo refcount on slot change */
-                            memset(ext_pads_echo_refcount, 0, sizeof(ext_pads_echo_refcount));
+                            /* Reset Schwung pads echo refcount on slot change */
+                            memset(schwung_pads_echo_refcount, 0, sizeof(schwung_pads_echo_refcount));
                             /* Sync to shared memory for shadow UI and Shift+Knob routing */
                             if (shadow_control) {
                                 shadow_control->selected_slot = (uint8_t)new_slot;
