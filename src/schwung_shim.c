@@ -392,8 +392,7 @@ static volatile int shadow_held_track = -1;
 /* Selected slot for Shift+Knob routing: 0-3, persists even when shadow UI is off */
 static volatile int shadow_selected_slot = 0;
 
-/* Schwung pads: per-slot bank selection (0-15) */
-static int schwung_pads_bank[SHADOW_CHAIN_INSTANCES] = {0};
+
 
 /* Schwung pads echo filter: refcount of injected notes awaiting cable 2 echo.
  * Incremented when we inject into MIDI_IN, decremented when we see the
@@ -940,8 +939,8 @@ static void shadow_inprocess_process_midi(void) {
             }
 
             /* Schwung pads echo filter: suppress cable 2 echoes of notes
-             * we overwrote into MIDI_IN. Sequencer playback has no refcount
-             * and passes through normally. */
+             * we overwrote into MIDI_IN (pads 68-99 → notes 36-67).
+             * Sequencer playback has no refcount and passes through normally. */
             if ((type == 0x90 || type == 0x80) &&
                 schwung_pads_echo_refcount[p2] > 0) {
                 schwung_pads_echo_refcount[p2]--;
@@ -4745,17 +4744,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
     }
 
-    /* === EXTENDED PADS: scan MIDI_IN for pad events (always active) ===
-     * MIDI_IN = 8-byte events (4 USB-MIDI + 4 timestamp), max 31 events.
-     * Move's scan terminates at first empty event — never create gaps.
-     *
-     * - Left pads: update bank, let Move process normally. Cable 2 echo
-     *   reaches slot via normal dispatch (no direct dispatch, no double-hit).
-     *   Shift+left = bank select only (but don't zero — would create gap).
-     * - Right pads: OVERWRITE in-place with remapped cable 2 note (keeps
-     *   timestamp, no gap). Move records correct note, echoes it. Echo is
-     *   caught by refcount filter. Direct dispatch for immediate playback.
-     * - Sequencer playback: correct remapped notes on cable 2, no refcount. */
+    /* === SCHWUNG PADS: overwrite all 32 pad events to chromatic cable-2 notes ===
+     * Pads 68-99 → MIDI notes 36-67 (C2 to G4).
+     * Overwrites cable-0 events in-place in sh_midi (shadow's copy of MIDI_IN)
+     * with cable-2 + remapped note. Move records the cable-2 notes to sequencer.
+     * Direct dispatch to Schwung slot for immediate playback.
+     * Echo filter in MIDI_OUT suppresses real-time echoes while letting
+     * sequencer playback (no refcount) pass through. */
     {
         int es = shadow_selected_slot;
         if (es >= 0 && es < SHADOW_CHAIN_INSTANCES &&
@@ -4788,60 +4783,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 uint8_t d1 = hw_midi[j + 2];
                 uint8_t vel = hw_midi[j + 3];
 
-                /* Left 16 pads: bank select + overwrite to base-0 note.
-                 * Shift+left = bank select only (overwrite to suppress note). */
-                if ((d1 >= 68 && d1 <= 71) || (d1 >= 76 && d1 <= 79) ||
-                    (d1 >= 84 && d1 <= 87) || (d1 >= 92 && d1 <= 95)) {
-                    int row = (d1 - 68) / 8;
-                    int col = (d1 - 68) % 8;
-                    if (type == 0x90 && vel > 0) {
-                        schwung_pads_bank[es] = row * 4 + col;
-                    }
-                    uint8_t left_note = (uint8_t)(row * 4 + col);  /* 0-15 */
+                /* Only intercept pad notes (68-99) */
+                if (d1 < 68 || d1 > 99) continue;
 
-                    if (shadow_shift_held) {
-                        /* Shift+left: bank select only, zero the event */
-                        memset(&sh_midi[j], 0, 8);
-                    } else {
-                        /* Overwrite in sh_midi: cable 2, remapped note 0-15 */
-                        sh_midi[j]   = cin | 0x20;  /* cable 2 */
-                        sh_midi[j+1] = st;
-                        sh_midi[j+2] = left_note;
-                        sh_midi[j+3] = vel;
-                        schwung_pads_echo_refcount[left_note]++;
+                /* Map pad 68-99 → MIDI note 36-67 (C2 to G4) */
+                uint8_t remapped = (d1 - 68) + 36;
 
-                        /* Dispatch directly for immediate playback */
-                        uint8_t remapped_st = shadow_chain_remap_channel(es, st);
-                        uint8_t msg[3] = { remapped_st, left_note, vel };
-                        shadow_plugin_v2->on_midi(
-                            shadow_chain_slots[es].instance, msg, 3,
-                            MOVE_MIDI_SOURCE_EXTERNAL);
-                    }
-                }
-                /* Right 16 pads: overwrite in-place with remapped cable 2 note */
-                if ((d1 >= 72 && d1 <= 75) || (d1 >= 80 && d1 <= 83) ||
-                    (d1 >= 88 && d1 <= 91) || (d1 >= 96 && d1 <= 99)) {
-                    int row = (d1 - 68) / 8;
-                    int col = (d1 - 68) % 8 - 4;
-                    int offset = row * 4 + col;
-                    int remapped = schwung_pads_bank[es] * 16 + offset;
+                /* Overwrite in sh_midi: cable 2, remapped note.
+                 * Move records this for sequencer. Echo filtered in MIDI_OUT. */
+                sh_midi[j]   = cin | 0x20;  /* cable 2 */
+                sh_midi[j+1] = st;
+                sh_midi[j+2] = remapped;
+                sh_midi[j+3] = vel;
+                schwung_pads_echo_refcount[remapped]++;
 
-                    /* Overwrite in sh_midi: cable 2, same CIN, remapped note.
-                     * Move records this for sequencer. Echo filtered in MIDI_OUT. */
-                    sh_midi[j]   = cin | 0x20;  /* cable 2 */
-                    sh_midi[j+1] = st;
-                    sh_midi[j+2] = (uint8_t)remapped;
-                    sh_midi[j+3] = vel;
-                    schwung_pads_echo_refcount[(uint8_t)remapped]++;
-
-                    /* Dispatch directly to slot for immediate playback.
-                     * Apply forward channel remapping to match normal dispatch path. */
-                    uint8_t remapped_st = shadow_chain_remap_channel(es, st);
-                    uint8_t msg[3] = { remapped_st, (uint8_t)remapped, vel };
-                    shadow_plugin_v2->on_midi(
-                        shadow_chain_slots[es].instance, msg, 3,
-                        MOVE_MIDI_SOURCE_EXTERNAL);
-                }
+                /* Dispatch directly to slot for immediate playback.
+                 * Apply forward channel remapping to match normal dispatch path. */
+                uint8_t remapped_st = shadow_chain_remap_channel(es, st);
+                uint8_t msg[3] = { remapped_st, remapped, vel };
+                shadow_plugin_v2->on_midi(
+                    shadow_chain_slots[es].instance, msg, 3,
+                    MOVE_MIDI_SOURCE_EXTERNAL);
             }
         }
     }
@@ -5063,6 +5025,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_selected_slot = new_slot;
                             /* Reset Schwung pads echo refcount on slot change */
                             memset(schwung_pads_echo_refcount, 0, sizeof(schwung_pads_echo_refcount));
+                            /* Set pad LEDs white when switching to a Schwung pads slot */
+                            if (slot_schwung_pads(new_slot)) {
+                                for (int p = 68; p <= 99; p++) {
+                                    shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
+                                }
+                            }
                             /* Sync to shared memory for shadow UI and Shift+Knob routing */
                             if (shadow_control) {
                                 shadow_control->selected_slot = (uint8_t)new_slot;
