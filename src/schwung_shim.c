@@ -4503,6 +4503,28 @@ pre_done:
         memset(shadow + AUDIO_OUT_OFFSET, 0,
                DISPLAY_OFFSET - AUDIO_OUT_OFFSET);
     }
+
+    /* Block Move's pad LED commands from reaching hardware when Schwung pads is active.
+     * This runs in pre_transfer so it modifies shadow BEFORE the SPI write.
+     * Move sends note-on (CIN 0x09) on cable 0 for notes 68-99 to set pad colors. */
+    {
+        int sp_slot = shadow_selected_slot;
+        if (sp_slot >= 0 && sp_slot < SHADOW_CHAIN_INSTANCES &&
+            slot_schwung_pads(sp_slot)) {
+            uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+            for (int k = 0; k < 80; k += 4) {  /* Only first 80 bytes = 20 packets */
+                uint8_t cin = midi_out[k] & 0x0F;
+                uint8_t cable = (midi_out[k] >> 4) & 0x0F;
+                if (cable != 0) continue;
+                if (cin != 0x09) continue;  /* note-on LED commands */
+                uint8_t note = midi_out[k + 2];
+                if (note >= 68 && note <= 99) {
+                    midi_out[k] = 0; midi_out[k+1] = 0;
+                    midi_out[k+2] = 0; midi_out[k+3] = 0;
+                }
+            }
+        }
+    }
 }
 
 /* ============================================================================
@@ -4528,32 +4550,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * The output region may have been modified by hardware during ioctl. */
     memcpy(shadow + MIDI_OUT_OFFSET, hw + MIDI_OUT_OFFSET,
            AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
-
-    /* Block Move's pad LED updates from MIDI_OUT when Schwung pads is active.
-     * Move sends note-on (CIN 0x09) on cable 0 for notes 68-99 to set pad colors.
-     * Zero these packets so they don't overwrite our LED state. */
-    {
-        int sp_slot = shadow_selected_slot;
-        if (sp_slot >= 0 && sp_slot < SHADOW_CHAIN_INSTANCES &&
-            slot_schwung_pads(sp_slot)) {
-            uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
-            for (int k = 0; k < MIDI_BUFFER_SIZE; k += 4) {
-                uint8_t cin = midi_out[k] & 0x0F;
-                uint8_t cable = (midi_out[k] >> 4) & 0x0F;
-                if (cable != 0) continue;
-                if (cin != 0x09) continue;  /* note-on only */
-                uint8_t note = midi_out[k + 2];
-                if (note >= 68 && note <= 99) {
-                    midi_out[k] = 0; midi_out[k+1] = 0;
-                    midi_out[k+2] = 0; midi_out[k+3] = 0;
-                    /* Also zero in hw buffer so it doesn't reach hardware */
-                    uint8_t *hw_out = (uint8_t *)hw + MIDI_OUT_OFFSET;
-                    hw_out[k] = 0; hw_out[k+1] = 0;
-                    hw_out[k+2] = 0; hw_out[k+3] = 0;
-                }
-            }
-        }
-    }
 
     /* Skip hw→shadow copy for AUDIO_OUT — prevents stale mixed audio
      * from accumulating when Move firmware doesn't overwrite the region. */
