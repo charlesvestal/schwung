@@ -411,10 +411,14 @@ static int schwung_pads_prev[SHADOW_CHAIN_INSTANCES] = {0};
 /* Cached pad LED colors for restore when Schwung pads is turned off */
 static uint8_t schwung_pads_led_cache[SHADOW_CHAIN_INSTANCES][32];
 
-/* Countdown: re-assert white pad LEDs for this many frames after activation.
+/* Countdown: re-assert pad LEDs for this many frames after activation.
  * Move reasserts its own LEDs on track switch, so we need to keep overwriting. */
 #define SCHWUNG_PADS_LED_REASSERT_FRAMES 90  /* ~2 seconds at 44.1kHz/128 */
 static int schwung_pads_led_countdown = 0;
+
+/* Schwung pad LED colors */
+#define SCHWUNG_PAD_LED_IDLE    118  /* LightGrey */
+#define SCHWUNG_PAD_LED_ACTIVE  120  /* White */
 
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
@@ -4524,6 +4528,33 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * The output region may have been modified by hardware during ioctl. */
     memcpy(shadow + MIDI_OUT_OFFSET, hw + MIDI_OUT_OFFSET,
            AUDIO_OUT_OFFSET - MIDI_OUT_OFFSET);  /* MIDI_OUT: 0-255 */
+
+    /* Block Move's pad LED updates from MIDI_OUT when Schwung pads is active.
+     * Move sends note-on (CIN 0x09) on cable 0 for notes 68-99 to set pad colors.
+     * Zero these packets so they don't overwrite our LED state. */
+    {
+        int sp_slot = shadow_selected_slot;
+        if (sp_slot >= 0 && sp_slot < SHADOW_CHAIN_INSTANCES &&
+            slot_schwung_pads(sp_slot)) {
+            uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+            for (int k = 0; k < MIDI_BUFFER_SIZE; k += 4) {
+                uint8_t cin = midi_out[k] & 0x0F;
+                uint8_t cable = (midi_out[k] >> 4) & 0x0F;
+                if (cable != 0) continue;
+                if (cin != 0x09) continue;  /* note-on only */
+                uint8_t note = midi_out[k + 2];
+                if (note >= 68 && note <= 99) {
+                    midi_out[k] = 0; midi_out[k+1] = 0;
+                    midi_out[k+2] = 0; midi_out[k+3] = 0;
+                    /* Also zero in hw buffer so it doesn't reach hardware */
+                    uint8_t *hw_out = (uint8_t *)hw + MIDI_OUT_OFFSET;
+                    hw_out[k] = 0; hw_out[k+1] = 0;
+                    hw_out[k+2] = 0; hw_out[k+3] = 0;
+                }
+            }
+        }
+    }
+
     /* Skip hw→shadow copy for AUDIO_OUT — prevents stale mixed audio
      * from accumulating when Move firmware doesn't overwrite the region. */
     /* memcpy(shadow + AUDIO_OUT_OFFSET, hw + AUDIO_OUT_OFFSET,
@@ -4782,7 +4813,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             if (schwung_pads_led_countdown > 0) {
                 schwung_pads_led_countdown--;
                 for (int p = 68; p <= 99; p++) {
-                    shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
+                    shadow_queue_led(0x09, 0x90, (uint8_t)p, SCHWUNG_PAD_LED_IDLE);
                 }
             }
         }
@@ -4844,6 +4875,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 sh_midi[j+2] = remapped;
                 sh_midi[j+3] = out_vel;
                 schwung_pads_echo_refcount[remapped]++;
+
+                /* Highlight pad LED: bright on press, idle on release */
+                if (type == 0x90 && vel > 0) {
+                    shadow_queue_led(0x09, 0x90, d1, SCHWUNG_PAD_LED_ACTIVE);
+                } else {
+                    shadow_queue_led(0x09, 0x90, d1, SCHWUNG_PAD_LED_IDLE);
+                }
 
                 /* Dispatch directly to slot for immediate playback.
                  * Apply forward channel remapping to match normal dispatch path. */
