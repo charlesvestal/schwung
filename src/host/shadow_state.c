@@ -217,6 +217,11 @@ void shadow_save_state(void)
             host_chain_slots[1].schwung_pads,
             host_chain_slots[2].schwung_pads,
             host_chain_slots[3].schwung_pads);
+    fprintf(f, "  \"slot_schwung_pads_velocity\": [%d, %d, %d, %d],\n",
+            host_chain_slots[0].schwung_pads_velocity,
+            host_chain_slots[1].schwung_pads_velocity,
+            host_chain_slots[2].schwung_pads_velocity,
+            host_chain_slots[3].schwung_pads_velocity);
     fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].muted,
             host_chain_slots[1].muted,
@@ -358,6 +363,26 @@ void shadow_load_state(void)
                 char msg[128];
                 snprintf(msg, sizeof(msg), "Loaded slot schwung_pads: [%d, %d, %d, %d]",
                          e0, e1, e2, e3);
+                if (host_log) host_log(msg);
+            }
+        }
+    }
+
+    /* Parse slot_schwung_pads_velocity array */
+    const char *vel_key = "\"slot_schwung_pads_velocity\":";
+    char *vel_pos = strstr(json, vel_key);
+    if (vel_pos) {
+        vel_pos = strchr(vel_pos, '[');
+        if (vel_pos) {
+            int v0, v1, v2, v3;
+            if (sscanf(vel_pos, "[%d, %d, %d, %d]", &v0, &v1, &v2, &v3) == 4) {
+                host_chain_slots[0].schwung_pads_velocity = v0 ? 1 : 0;
+                host_chain_slots[1].schwung_pads_velocity = v1 ? 1 : 0;
+                host_chain_slots[2].schwung_pads_velocity = v2 ? 1 : 0;
+                host_chain_slots[3].schwung_pads_velocity = v3 ? 1 : 0;
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Loaded slot schwung_pads_velocity: [%d, %d, %d, %d]",
+                         v0, v1, v2, v3);
                 if (host_log) host_log(msg);
             }
         }

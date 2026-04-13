@@ -1204,25 +1204,42 @@ The `on_midi` callback is optional (can be NULL). Implement it to receive MIDI f
 
 ## MIDI FX Plugin API
 
-MIDI effects transform or generate MIDI messages. They use a separate API defined in `src/host/midi_fx_api_v1.h`:
+MIDI effects transform or generate MIDI messages. They use a separate API defined in `src/host/midi_fx_api_v1.h`.
+
+### Overview
+
+A MIDI FX module is a shared library (`dsp.so`) that exports one symbol:
+
+```c
+midi_fx_api_v1_t* move_midi_fx_init(const host_api_v1_t *host);
+```
+
+Called once at load time. Store the host pointer as a module-level static and return a pointer to your static vtable:
+
+```c
+static const host_api_v1_t *g_host = NULL;
+static midi_fx_api_v1_t g_api = { ... };
+
+midi_fx_api_v1_t* move_midi_fx_init(const host_api_v1_t *host) {
+    g_host = host;
+    return &g_api;
+}
+```
+
+### API Struct
 
 ```c
 typedef struct midi_fx_api_v1 {
-    uint32_t api_version;  /* Must be 1 (MIDI_FX_API_VERSION) */
+    uint32_t api_version;  /* Must be MIDI_FX_API_VERSION (1) */
 
     void* (*create_instance)(const char *module_dir, const char *config_json);
     void (*destroy_instance)(void *instance);
 
-    /* Transform incoming MIDI. Returns number of output messages (0 = swallow, >1 = expand).
-     * out_msgs: array of 3-byte MIDI messages
-     * max_out: maximum output messages (MIDI_FX_MAX_OUT_MSGS = 16) */
     int (*process_midi)(void *instance,
                         const uint8_t *in_msg, int in_len,
                         uint8_t out_msgs[][3], int out_lens[],
                         int max_out);
 
-    /* Time-based generation (e.g., arpeggiator). Called each audio block.
-     * Returns number of output messages to inject. */
     int (*tick)(void *instance,
                 int frames, int sample_rate,
                 uint8_t out_msgs[][3], int out_lens[],
@@ -1231,9 +1248,6 @@ typedef struct midi_fx_api_v1 {
     void (*set_param)(void *instance, const char *key, const char *val);
     int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
 } midi_fx_api_v1_t;
-
-// Entry point
-midi_fx_api_v1_t* move_midi_fx_init(const host_api_v1_t *host);
 ```
 
 **Key differences from sound generators and audio FX:**
@@ -1242,7 +1256,146 @@ midi_fx_api_v1_t* move_midi_fx_init(const host_api_v1_t *host);
 - `tick()` handles time-based generation (e.g., arpeggiator note sequencing) — called every audio block
 - No `render_block()` — MIDI FX don't process audio
 - Maximum 2 native MIDI FX per chain (`MAX_MIDI_FX`)
-- Maximum 16 output messages per `process_midi()` call (`MIDI_FX_MAX_OUT_MSGS`)
+- Maximum 16 output messages per call (`MIDI_FX_MAX_OUT_MSGS`)
+
+### Function Reference
+
+#### `create_instance`
+
+```c
+void* create_instance(const char *module_dir, const char *config_json);
+```
+
+Called once per chain slot insert. Allocate with `calloc(1, sizeof(YourInstance))` and set ALL parameter defaults — do not rely on `set_param` being called at init. Return NULL on failure.
+
+#### `destroy_instance`
+
+```c
+void destroy_instance(void *instance);
+```
+
+Called when the FX is removed from the chain. Free your instance.
+
+#### `process_midi`
+
+```c
+int process_midi(void *instance,
+                 const uint8_t *in_msg, int in_len,
+                 uint8_t out_msgs[][3], int out_lens[],
+                 int max_out);
+```
+
+Called for each incoming MIDI message. Returns the number of output messages written (0 to `max_out`).
+
+Rules:
+- Pass through unrecognized messages by copying them to `out_msgs`
+- Handle velocity-0 note-on as note-off
+- Always check `count < max_out` before writing each output message
+- MIDI transport bytes (`0xFA`/`0xFB`/`0xFC`) are NOT forwarded to plugins — use `get_clock_status()` in `tick()` for transport sync
+
+#### `tick`
+
+```c
+int tick(void *instance, int frames, int sample_rate,
+         uint8_t out_msgs[][3], int out_lens[], int max_out);
+```
+
+Called every audio block (typically 128 frames at 44100 Hz). Returns the number of output messages generated. Use this for time-based MIDI generation (arpeggiator steps, LFO CC output, etc.).
+
+Rules:
+- Use `frames` to advance timing counters
+- Do not allocate memory or block
+- Emit note-offs before note-ons in the same frame to avoid ordering issues
+- For transport-synced modules: call `g_host->get_clock_status()` here
+- For free-running modules: do NOT call `get_clock_status()` or `get_bpm()` — causes SIGSEGV on some firmware if MIDI Clock Out is not enabled in Move settings
+
+#### `set_param`
+
+```c
+void set_param(void *instance, const char *key, const char *val);
+```
+
+`val` is always a string. Move may send params in different formats depending on context:
+- Raw ints: `"7"`, `"-12"`
+- Raw floats: `"7.0000"`, `"64.0000"`
+- Normalized floats: `"0.5000"`
+
+Parse with `atof()`, `atoi()`, or `strcmp()`. Validate and clamp before applying.
+
+The `"state"` key receives a JSON string for state recall (e.g., `{"min":1,"max":127}`). Parse and apply all params from it.
+
+#### `get_param`
+
+```c
+int get_param(void *instance, const char *key, char *buf, int buf_len);
+```
+
+**IMPORTANT:** Must return `snprintf(buf, buf_len, ...)` for known params. Returning 0 silently breaks param display, chain editing, and state recall. Return `-1` for unknown keys.
+
+Special keys the chain host queries:
+
+| Key | Returns |
+|-----|---------|
+| `"state"` | JSON with all params for state persistence |
+| `"chain_params"` | JSON array of parameter metadata (type, min, max, step) |
+| `"ui_hierarchy"` | JSON hierarchy for Shadow UI menu structure |
+
+Example:
+```c
+if (strcmp(key, "min") == 0)
+    return snprintf(buf, buf_len, "%d", inst->vel_min);
+if (strcmp(key, "state") == 0)
+    return snprintf(buf, buf_len, "{\"min\":%d,\"max\":%d}", inst->vel_min, inst->vel_max);
+if (strcmp(key, "chain_params") == 0) {
+    const char *p = "[{\"key\":\"min\",\"name\":\"Min\",\"type\":\"int\",\"min\":1,\"max\":127,\"step\":1}]";
+    return snprintf(buf, buf_len, "%s", p);
+}
+return -1;
+```
+
+### Note Lifecycle Safety
+
+Modules that generate or transform notes must track active notes and clean them up. Always send note-off before:
+- Playing a new note on the same voice (arpeggiator steps)
+- Transport stop
+- Mode changes while notes are sounding
+- State reset
+
+Example pattern from the arpeggiator:
+```c
+/* Note off for previous note before playing next */
+if (inst->last_note >= 0 && count < max_out) {
+    out_msgs[count][0] = 0x80;
+    out_msgs[count][1] = (uint8_t)inst->last_note;
+    out_msgs[count][2] = 0;
+    out_lens[count] = 3;
+    count++;
+    inst->last_note = -1;
+}
+```
+
+For chord generators that expand one note into many, track all generated notes so the corresponding note-offs can be sent when the input note-off arrives.
+
+### Clock Sync Pattern
+
+For modules that optionally sync to Move's transport:
+
+```c
+/* In tick(): */
+if (inst->sync_mode == SYNC_CLOCK && g_host && g_host->get_clock_status) {
+    int status = g_host->get_clock_status();
+    if (status == MOVE_CLOCK_STATUS_RUNNING) {
+        /* Advance sequencer using host BPM */
+        float bpm = g_host->get_bpm ? g_host->get_bpm() : 120.0f;
+        /* ... */
+    }
+    /* UNAVAILABLE and STOPPED both mean: don't advance */
+} else {
+    /* Free-running: use internal BPM, never call get_clock_status() */
+}
+```
+
+`MOVE_CLOCK_STATUS_UNAVAILABLE` means the user has not enabled "MIDI Clock Out" in Move Settings. Treat it the same as `STOPPED`. Consider exposing the clock status as a warning string via `get_param` so the Shadow UI can display it.
 
 ### Building MIDI FX
 
@@ -1254,6 +1407,8 @@ MIDI FX are built identically to other native plugins:
     -o build/modules/midi_fx/your-fx/dsp.so \
     -Isrc
 ```
+
+Install to: `/data/UserData/schwung/modules/midi_fx/<module-id>/`
 
 ### Built-in MIDI FX
 
@@ -1291,6 +1446,8 @@ MIDI FX are built identically to other native plugins:
 }
 ```
 
+Note: MIDI FX modules do not need an `api_version` field in module.json. The `api_version` in the C struct (`MIDI_FX_API_VERSION = 1`) is what the chain host checks at load time.
+
 ## Host API (Passed to Plugins)
 
 All plugin init functions receive a `host_api_v1_t` struct providing access to host services:
@@ -1303,12 +1460,12 @@ typedef struct host_api_v1 {
     int sample_rate;         /* 44100 */
     int frames_per_block;    /* 128 */
 
-    /* Direct mailbox access (use with care) */
+    /* Direct mailbox access (use with care — sound generators only) */
     uint8_t *mapped_memory;
-    int audio_out_offset;    /* Offset to audio output in mailbox */
-    int audio_in_offset;     /* Offset to audio input in mailbox */
+    int audio_out_offset;
+    int audio_in_offset;
 
-    /* Logging */
+    /* Logging (not realtime-safe — do not call from SPI callback) */
     void (*log)(const char *msg);
 
     /* MIDI send functions
@@ -1317,9 +1474,32 @@ typedef struct host_api_v1 {
     int (*midi_send_internal)(const uint8_t *msg, int len);
     int (*midi_send_external)(const uint8_t *msg, int len);
 
-    /* Clock status for sync-aware plugins */
+    /* Clock status for sync-aware plugins.
+     * Returns MOVE_CLOCK_STATUS_UNAVAILABLE (0), _STOPPED (1), or _RUNNING (2).
+     * UNAVAILABLE means MIDI Clock Out is not enabled in Move settings.
+     * WARNING: Do not call from free-running modules — causes SIGSEGV on some firmware. */
     int (*get_clock_status)(void);
+
+    /* Modulation routing (advanced — used by chain host internally).
+     * May be NULL if the host does not support modulation buses. */
+    move_mod_emit_value_fn mod_emit_value;
+    move_mod_clear_source_fn mod_clear_source;
+    void *mod_host_ctx;
+
+    /* Tempo query — returns current BPM.
+     * Uses fallback chain: MIDI clock → set tempo → settings → 120.
+     * May be NULL if host does not support tempo.
+     * Same SIGSEGV caveat as get_clock_status on some firmware. */
+    float (*get_bpm)(void);
 } host_api_v1_t;
+```
+
+### Clock Status Constants
+
+```c
+#define MOVE_CLOCK_STATUS_UNAVAILABLE 0  /* MIDI Clock Out not enabled */
+#define MOVE_CLOCK_STATUS_STOPPED     1  /* Transport stopped */
+#define MOVE_CLOCK_STATUS_RUNNING     2  /* Transport running */
 ```
 
 ## Audio Specifications

@@ -258,7 +258,8 @@ const VIEWS = {
     TOOL_SET_PICKER: "toolsetpicker",         // Browse sets for render tool
     LFO_EDIT: "lfoedit",                      // LFO sub-menu editor
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
-    LFO_TARGET_PARAM: "lfotargetparam"        // LFO target picker step 2: parameter
+    LFO_TARGET_PARAM: "lfotargetparam",        // LFO target picker step 2: parameter
+    SCHWUNG_PADS: "schwungpads"              // Schwung Pads sub-menu
 };
 
 /* Special action key for swap module option */
@@ -442,7 +443,8 @@ const VIEW_NAMES = {
     [VIEWS.TOOL_SET_PICKER]: "Choose Set",
     [VIEWS.LFO_EDIT]: "LFO Editor",
     [VIEWS.LFO_TARGET_COMPONENT]: "LFO Target",
-    [VIEWS.LFO_TARGET_PARAM]: "LFO Parameter"
+    [VIEWS.LFO_TARGET_PARAM]: "LFO Parameter",
+    [VIEWS.SCHWUNG_PADS]: "Schwung Pads"
 };
 
 /* Helper to change view and announce it */
@@ -1351,7 +1353,7 @@ function processAllUpdates() {
 
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
-    { key: "slot:schwung_pads", label: "Schwung Pads", type: "int", min: 0, max: 1, step: 1 },
+    { key: "schwung_pads_menu", label: "Schwung Pads", type: "action" },
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
@@ -1367,6 +1369,14 @@ const CHAIN_SETTINGS_ITEMS = [
 ];
 let selectedChainSetting = 0;
 let editingChainSettingValue = false;
+
+/* Schwung Pads sub-menu items */
+const SCHWUNG_PADS_ITEMS = [
+    { key: "slot:schwung_pads", label: "Replace Pads", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:schwung_pads_velocity", label: "Velocity", type: "int", min: 0, max: 1, step: 1 },
+];
+let selectedSchwungPadsItem = 0;
+let editingSchwungPadsValue = false;
 
 /* LFO editor state — generic context drives slot or MFX LFO */
 let lfoCtx = null;  /* Active LFO context: { lfoIdx, getParam, setParam, getTargetComponents, getTargetParams, title, returnView, returnAnnounce } */
@@ -6487,8 +6497,15 @@ function getChainSettingValue(slot, setting) {
         const ch = parseInt(val);
         return ch === 0 ? "All" : `Ch ${val}`;
     }
+    if (setting.key === "schwung_pads_menu") {
+        const on = getSlotParam(slot, "slot:schwung_pads");
+        return parseInt(on) ? "On" : "Off";
+    }
     if (setting.key === "slot:schwung_pads") {
         return parseInt(val) ? "Yes" : "No";
+    }
+    if (setting.key === "slot:schwung_pads_velocity") {
+        return parseInt(val) ? "Full" : "Normal";
     }
     return String(val);
 }
@@ -10273,6 +10290,20 @@ function handleJog(delta) {
                 announceMenuItem(setting.label, val);
             }
             break;
+        case VIEWS.SCHWUNG_PADS:
+            if (editingSchwungPadsValue) {
+                const setting = SCHWUNG_PADS_ITEMS[selectedSchwungPadsItem];
+                adjustChainSetting(selectedSlot, setting, delta);
+                const newVal = getChainSettingValue(selectedSlot, setting);
+                announceParameter(setting.label, newVal);
+            } else {
+                selectedSchwungPadsItem = Math.max(0, Math.min(SCHWUNG_PADS_ITEMS.length - 1, selectedSchwungPadsItem + delta));
+                const setting = SCHWUNG_PADS_ITEMS[selectedSchwungPadsItem];
+                const val = getChainSettingValue(selectedSlot, setting);
+                announceMenuItem(setting.label, val);
+            }
+            needsRedraw = true;
+            break;
         case VIEWS.COMPONENT_EDIT:
             /* Jog changes preset */
             changeComponentPreset(delta);
@@ -10855,6 +10886,12 @@ function handleSelect() {
                         overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
                         announceSavePreview(pendingSaveName, namePreviewIndex);
                         needsRedraw = true;
+                    } else if (setting.key === "schwung_pads_menu") {
+                        selectedSchwungPadsItem = 0;
+                        editingSchwungPadsValue = false;
+                        setView(VIEWS.SCHWUNG_PADS);
+                        const on = getSlotParam(selectedSlot, "slot:schwung_pads");
+                        announce("Schwung Pads, " + (parseInt(on) ? "On" : "Off"));
                     } else if (setting.key === "lfo1" || setting.key === "lfo2") {
                         const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
                         lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);
@@ -10886,6 +10923,10 @@ function handleSelect() {
                     editingChainSettingValue = !editingChainSettingValue;
                 }
             }
+            break;
+        case VIEWS.SCHWUNG_PADS:
+            editingSchwungPadsValue = !editingSchwungPadsValue;
+            needsRedraw = true;
             break;
         case VIEWS.HIERARCHY_EDITOR:
             /* Check for mode selection (hierEditorLevel is null when modes exist) */
@@ -11582,6 +11623,16 @@ function handleBack() {
             } else {
                 setView(VIEWS.CHAIN_EDIT);
                 announce("Chain Editor");
+                needsRedraw = true;
+            }
+            break;
+        case VIEWS.SCHWUNG_PADS:
+            if (editingSchwungPadsValue) {
+                editingSchwungPadsValue = false;
+                needsRedraw = true;
+            } else {
+                setView(VIEWS.CHAIN_SETTINGS);
+                announce("Chain Settings");
                 needsRedraw = true;
             }
             break;
@@ -12849,6 +12900,47 @@ function drawStorePickerLoading() { _drawStorePickerLoading(); }
 function drawStorePickerResult() { _drawStorePickerResult(); }
 function drawStorePickerDetail() { _drawStorePickerDetail(); }
 function drawChainSettings() { _drawChainSettings(); }
+function drawSchwungPads() {
+    clear_screen();
+    drawHeader("Schwung Pads");
+
+    const listY = LIST_TOP_Y;
+    const lineHeight = LIST_LINE_HEIGHT;
+    const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight));
+    let startIdx = 0;
+    if (selectedSchwungPadsItem > maxVisible - 1) {
+        startIdx = selectedSchwungPadsItem - (maxVisible - 1);
+    }
+    const endIdx = Math.min(startIdx + maxVisible, SCHWUNG_PADS_ITEMS.length);
+
+    for (let i = startIdx; i < endIdx; i++) {
+        const y = listY + (i - startIdx) * lineHeight;
+        const setting = SCHWUNG_PADS_ITEMS[i];
+        const isSelected = i === selectedSchwungPadsItem;
+
+        if (isSelected) {
+            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+
+        const color = isSelected ? 0 : 1;
+        let prefix = "  ";
+        if (isSelected) {
+            prefix = editingSchwungPadsValue ? "* " : "> ";
+        }
+
+        const value = getChainSettingValue(selectedSlot, setting);
+        let valueStr = truncateText(value, 10);
+        if (isSelected && editingSchwungPadsValue && setting.type !== "action") {
+            valueStr = "[" + valueStr + "]";
+        }
+
+        print(LIST_LABEL_X, y, prefix + setting.label + ":", color);
+        print(LIST_VALUE_X - 8, y, valueStr, color);
+    }
+
+    /* Show layout info in footer */
+    drawFooter({left: "Back: settings", right: "Layout: Chromatic"});
+}
 function drawGlobalSettings() { _drawGlobalSettings(); }
 
 /* ============================================================================
@@ -13836,6 +13928,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.CHAIN_SETTINGS:
             drawChainSettings();
+            break;
+        case VIEWS.SCHWUNG_PADS:
+            drawSchwungPads();
             break;
         case VIEWS.COMPONENT_EDIT:
             if (loadedModuleUi && loadedModuleUi.tick) {

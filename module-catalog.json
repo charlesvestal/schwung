@@ -700,6 +700,50 @@
       "default_branch": "main",
       "asset_name": "branchage-module.tar.gz",
       "min_host_version": "0.1.0"
+    },
+    {
+      "id": "talkbox",
+      "name": "Talkbox",
+      "description": "LPC talkbox vocoder using mic/line-in as modulator",
+      "author": "Andre Louis (DSP: Soundpipe/Paul Batchelor, mda Talkbox/Paul Kellett)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-talkbox",
+      "default_branch": "main",
+      "asset_name": "talkbox-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "mverb",
+      "name": "MVerb",
+      "description": "Algorithmic reverb based on Martin Eastwood's MVerb",
+      "author": "Andre Louis (DSP: Martin Eastwood)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-mverb",
+      "default_branch": "main",
+      "asset_name": "mverb-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "signalscope",
+      "name": "SignalScope",
+      "description": "Performance dashboard and WiFi orchestra tool for Ableton Move",
+      "author": "Andre Louis",
+      "component_type": "tool",
+      "github_repo": "charlesvestal/schwung-signalscope",
+      "default_branch": "main",
+      "asset_name": "signalscope-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "wavewarp",
+      "name": "WaveWarp",
+      "description": "Experimental spectral warping wavetable synth derived from GPLv3 Vital source, with bundled CC0 presets",
+      "author": "Andre Louis (DSP: Matt Tytel/Vital)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/schwung-wavewarp",
+      "default_branch": "main",
+      "asset_name": "wavewarp-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }

@@ -408,6 +408,9 @@ static inline int slot_schwung_pads(int s) {
 /* Track previous schwung_pads state per slot to detect on/off transitions */
 static int schwung_pads_prev[SHADOW_CHAIN_INSTANCES] = {0};
 
+/* Cached pad LED colors for restore when Schwung pads is turned off */
+static uint8_t schwung_pads_led_cache[SHADOW_CHAIN_INSTANCES][32];
+
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
 
@@ -4747,15 +4750,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
     }
 
-    /* === SCHWUNG PADS: detect on/off transition and set LEDs === */
+    /* === SCHWUNG PADS: detect on/off transition and set/restore LEDs === */
     {
         int es = shadow_selected_slot;
         if (es >= 0 && es < SHADOW_CHAIN_INSTANCES) {
             int cur = slot_schwung_pads(es);
             if (cur && !schwung_pads_prev[es]) {
-                /* Just enabled: set all pad LEDs white */
+                /* Just enabled: cache current pad LED colors, then set white */
+                for (int p = 0; p < 32; p++) {
+                    int color = led_queue_get_note_led_color(68 + p);
+                    schwung_pads_led_cache[es][p] = (color >= 0) ? (uint8_t)color : 0;
+                }
                 for (int p = 68; p <= 99; p++) {
                     shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
+                }
+            } else if (!cur && schwung_pads_prev[es]) {
+                /* Just disabled: restore cached pad LED colors */
+                for (int p = 0; p < 32; p++) {
+                    shadow_queue_led(0x09, 0x90, (uint8_t)(68 + p), schwung_pads_led_cache[es][p]);
                 }
             }
             schwung_pads_prev[es] = cur;
@@ -4807,18 +4819,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Map pad 68-99 → MIDI note 36-67 (C2 to G4) */
                 uint8_t remapped = (d1 - 68) + 36;
 
+                /* Apply velocity: full mode forces 127, normal passes through */
+                uint8_t out_vel = (shadow_chain_slots[es].schwung_pads_velocity && type == 0x90 && vel > 0)
+                    ? 127 : vel;
+
                 /* Overwrite in sh_midi: cable 2, remapped note.
                  * Move records this for sequencer. Echo filtered in MIDI_OUT. */
                 sh_midi[j]   = cin | 0x20;  /* cable 2 */
                 sh_midi[j+1] = st;
                 sh_midi[j+2] = remapped;
-                sh_midi[j+3] = vel;
+                sh_midi[j+3] = out_vel;
                 schwung_pads_echo_refcount[remapped]++;
 
                 /* Dispatch directly to slot for immediate playback.
                  * Apply forward channel remapping to match normal dispatch path. */
                 uint8_t remapped_st = shadow_chain_remap_channel(es, st);
-                uint8_t msg[3] = { remapped_st, remapped, vel };
+                uint8_t msg[3] = { remapped_st, remapped, out_vel };
                 shadow_plugin_v2->on_midi(
                     shadow_chain_slots[es].instance, msg, 3,
                     MOVE_MIDI_SOURCE_EXTERNAL);
@@ -5043,8 +5059,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_selected_slot = new_slot;
                             /* Reset Schwung pads echo refcount on slot change */
                             memset(schwung_pads_echo_refcount, 0, sizeof(schwung_pads_echo_refcount));
-                            /* Set pad LEDs white when switching to a Schwung pads slot */
+                            /* Cache and set pad LEDs white when switching to a Schwung pads slot */
                             if (slot_schwung_pads(new_slot)) {
+                                for (int p = 0; p < 32; p++) {
+                                    int color = led_queue_get_note_led_color(68 + p);
+                                    schwung_pads_led_cache[new_slot][p] = (color >= 0) ? (uint8_t)color : 0;
+                                }
                                 for (int p = 68; p <= 99; p++) {
                                     shadow_queue_led(0x09, 0x90, (uint8_t)p, 120);
                                 }

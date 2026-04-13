@@ -35,6 +35,7 @@ typedef struct shadow_chain_slot_t {
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     int schwung_pads;       /* 1 = Schwung controls pads: 32 chromatic notes via cable-2 overwrite */
+    int schwung_pads_velocity;  /* 0 = normal velocity, 1 = full velocity (127) */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
     slot_fade_t fade;                /* fade envelope for seamless transitions */

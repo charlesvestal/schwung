@@ -8,6 +8,20 @@
  * - Transform incoming MIDI events (may output 0, 1, or multiple messages)
  * - May generate MIDI events on a timer (arpeggiator)
  * - Maintain state between calls (held notes, sequence position)
+ *
+ * A MIDI FX module exports one symbol:
+ *   midi_fx_api_v1_t *move_midi_fx_init(const host_api_v1_t *host);
+ *
+ * Called once at load time. Returns a pointer to a static vtable.
+ * Store the host pointer as a module-level static for use in tick():
+ *
+ *   static const host_api_v1_t *g_host = NULL;
+ *   midi_fx_api_v1_t *move_midi_fx_init(const host_api_v1_t *host) {
+ *       g_host = host;
+ *       return &g_api;
+ *   }
+ *
+ * Maximum 2 native MIDI FX per chain (MAX_MIDI_FX in chain_host.c).
  */
 
 #ifndef MIDI_FX_API_V1_H
@@ -31,6 +45,10 @@ typedef struct midi_fx_api_v1 {
     /*
      * Create a new instance of this MIDI FX.
      * Called when loading the FX into a chain slot.
+     *
+     * - Allocate with calloc(1, sizeof(YourInstance))
+     * - Set ALL parameter defaults here — do not rely on set_param being called
+     * - Return NULL on allocation failure
      *
      * @param module_dir  Path to the module directory (for loading resources)
      * @param config_json Optional JSON configuration string, or NULL
@@ -63,6 +81,14 @@ typedef struct midi_fx_api_v1 {
      *   - Return 0 (arp will generate notes via tick())
      *   - Store the note internally
      *
+     * Rules:
+     * - Pass through unrecognized messages by copying to out_msgs
+     * - Handle velocity-0 note-on as note-off
+     * - Track active notes so they can be cleaned up (see note lifecycle below)
+     * - Always check count < max_out before writing each output message
+     * - MIDI transport bytes (0xFA/0xFB/0xFC) are NOT forwarded to plugins
+     *   by the chain host — use get_clock_status() in tick() for transport sync
+     *
      * @param instance    Instance pointer
      * @param in_msg      Incoming MIDI message (1-3 bytes)
      * @param in_len      Length of incoming message
@@ -80,6 +106,13 @@ typedef struct midi_fx_api_v1 {
      * Tick function called each audio render block.
      * Used for time-based effects like arpeggiators.
      *
+     * - Use frames to advance timing counters
+     * - For transport-synced modules: call host->get_clock_status() here
+     * - For free-running modules: do NOT call get_clock_status() or get_bpm()
+     *   (causes SIGSEGV on some firmware if MIDI Clock Out is not enabled)
+     * - Do not allocate memory or block in tick
+     * - Emit note-offs before note-ons in the same frame
+     *
      * @param instance    Instance pointer
      * @param frames      Number of audio frames in this block (typically 128)
      * @param sample_rate Audio sample rate (typically 44100)
@@ -96,6 +129,17 @@ typedef struct midi_fx_api_v1 {
     /*
      * Set a parameter value.
      *
+     * val is always a string. Move may send params in different formats
+     * depending on context:
+     *   - Raw ints: "7", "-12"
+     *   - Raw floats: "7.0000", "64.0000"
+     *   - Normalized floats: "0.5000"
+     * Parse with atof(), atoi(), or strcmp() as appropriate.
+     * Validate and clamp before applying.
+     *
+     * The "state" key receives a JSON string for state recall (e.g.,
+     * {"min":1,"max":127}). Parse and apply all params from it.
+     *
      * @param instance  Instance pointer
      * @param key       Parameter name (e.g., "mode", "bpm", "type")
      * @param val       Parameter value as string
@@ -104,6 +148,21 @@ typedef struct midi_fx_api_v1 {
 
     /*
      * Get a parameter value.
+     *
+     * IMPORTANT: Must return snprintf(buf, buf_len, ...) for known params.
+     * Returning 0 silently breaks param display, chain editing, and state
+     * recall. Return -1 for unknown keys.
+     *
+     * Special keys the chain host queries:
+     *   "state"        — return JSON with all params for state persistence
+     *   "chain_params" — return JSON array of parameter metadata for the
+     *                     Shadow UI parameter editor (type, min, max, step)
+     *   "ui_hierarchy" — return JSON hierarchy for Shadow UI menu structure
+     *
+     * Example:
+     *   if (strcmp(key, "min") == 0)
+     *       return snprintf(buf, buf_len, "%d", inst->vel_min);
+     *   return -1;
      *
      * @param instance  Instance pointer
      * @param key       Parameter name
@@ -119,8 +178,8 @@ typedef struct midi_fx_api_v1 {
  * Init function signature.
  * Each MIDI FX module must export this function.
  *
- * @param host  Host API for callbacks (logging, etc.)
- * @return Pointer to the plugin's API struct
+ * @param host  Host API for callbacks (logging, clock, MIDI send, etc.)
+ * @return Pointer to the plugin's API struct (must remain valid until destroy)
  */
 typedef midi_fx_api_v1_t* (*midi_fx_init_fn)(const struct host_api_v1 *host);
 

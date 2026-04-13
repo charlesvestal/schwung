@@ -362,6 +362,7 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
         shadow_chain_slots[i].schwung_pads = 0;
+        shadow_chain_slots[i].schwung_pads_velocity = 0;
         capture_clear(&shadow_chain_slots[i].capture);
         shadow_chain_slots[i].fade.gain = 0.0f;
         shadow_chain_slots[i].fade.target = 0.0f;
@@ -474,6 +475,15 @@ void shadow_chain_load_config(void) {
             char *ext_colon = strchr(ext_pos, ':');
             if (ext_colon) {
                 shadow_chain_slots[i].schwung_pads = atoi(ext_colon + 1) ? 1 : 0;
+            }
+        }
+
+        /* Parse schwung_pads_velocity (0 or 1) */
+        char *vel_pos = strstr(name_pos, "\"schwung_pads_velocity\"");
+        if (vel_pos) {
+            char *vel_colon = strchr(vel_pos, ':');
+            if (vel_colon) {
+                shadow_chain_slots[i].schwung_pads_velocity = atoi(vel_colon + 1) ? 1 : 0;
             }
         }
 
@@ -1634,6 +1644,11 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_ui_state_update_slot(slot);
         return 1;
     }
+    if (strcmp(key, "slot:schwung_pads_velocity") == 0) {
+        shadow_chain_slots[slot].schwung_pads_velocity = atoi(value) ? 1 : 0;
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = atoi(value);
         if (ch == 0) {
@@ -1663,6 +1678,9 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     }
     if (strcmp(key, "slot:schwung_pads") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].schwung_pads);
+    }
+    if (strcmp(key, "slot:schwung_pads_velocity") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].schwung_pads_velocity);
     }
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = shadow_chain_slots[slot].channel;
