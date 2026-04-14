@@ -1538,10 +1538,12 @@ restart_move_with_fallback "Move started without active shim mapping (LD_PRELOAD
 if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; then
     if ssh_root_with_retry "pidof schwung-manager >/dev/null 2>&1" 2>/dev/null; then
         qecho "Restarting schwung-manager with new binary..."
-        ssh_root_with_retry "kill \$(pidof schwung-manager) 2>/dev/null; sleep 1" || true
+        ssh_root_with_retry "killall schwung-manager 2>/dev/null; sleep 1; killall -9 schwung-manager 2>/dev/null" || true
     else
         qecho "Starting schwung-manager web UI..."
     fi
+    # Truncate oversized logs (cleanup for pre-0.9.6 installs with runaway logging)
+    ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/UserData/schwung/debug.log; do if [ -f \"\$f\" ]; then sz=\$(wc -c < \"\$f\" 2>/dev/null || echo 0); if [ \"\$sz\" -gt 102400 ]; then tail -c 102400 \"\$f\" > \"\$f.tmp\" && mv \"\$f.tmp\" \"\$f\"; fi; fi; done" || true
     ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 7700 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
     qecho "  Web UI available at http://move.local:7700"
 fi
