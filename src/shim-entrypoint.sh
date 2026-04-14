@@ -58,11 +58,27 @@ if [ -x "$DISPLAY_SRV" ]; then
     "$DISPLAY_SRV" >/dev/null 2>&1 &
 fi
 
-# Start schwung-manager web UI if present
+# Start schwung-manager web UI if present (skip if already running)
 SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
+SCHWUNG_MGR_LOG="$SCHWUNG_DIR/schwung-manager.log"
+SCHWUNG_MGR_PID="$SCHWUNG_DIR/schwung-manager.pid"
 if [ -x "$SCHWUNG_MGR" ]; then
-    "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_DIR/schwung-manager.log" 2>&1 &
-    # schwung-manager handles mDNS for schwung.local via embedded responder
+    # Skip if already running
+    if [ -f "$SCHWUNG_MGR_PID" ] && kill -0 "$(cat "$SCHWUNG_MGR_PID")" 2>/dev/null; then
+        : # already running
+    else
+        # Rotate log if over 100KB
+        if [ -f "$SCHWUNG_MGR_LOG" ]; then
+            log_size=$(wc -c < "$SCHWUNG_MGR_LOG" 2>/dev/null || echo 0)
+            if [ "$log_size" -gt 102400 ]; then
+                tail -c 102400 "$SCHWUNG_MGR_LOG" > "$SCHWUNG_MGR_LOG.tmp" 2>/dev/null
+                mv "$SCHWUNG_MGR_LOG.tmp" "$SCHWUNG_MGR_LOG"
+            fi
+        fi
+        "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_MGR_LOG" 2>&1 &
+        echo $! > "$SCHWUNG_MGR_PID"
+        # schwung-manager handles mDNS for schwung.local via embedded responder
+    fi
 fi
 
 # Start filebrowser for file management (port 404, no auth) if enabled

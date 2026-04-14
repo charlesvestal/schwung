@@ -11,6 +11,7 @@
 DAEMON=/data/UserData/schwung/schwung-manager
 PIDFILE=/data/UserData/schwung/schwung-manager.pid
 LOGFILE=/data/UserData/schwung/schwung-manager.log
+MAX_LOG_SIZE=102400  # 100 KB
 OPTS="-port 7700 -roots /data/UserData/"
 
 case "$1" in
@@ -18,6 +19,14 @@ case "$1" in
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
       echo "schwung-manager already running (pid $(cat "$PIDFILE"))"
       exit 0
+    fi
+    # Rotate log if it exceeds MAX_LOG_SIZE
+    if [ -f "$LOGFILE" ]; then
+      log_size=$(wc -c < "$LOGFILE" 2>/dev/null || echo 0)
+      if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
+        tail -c "$MAX_LOG_SIZE" "$LOGFILE" > "$LOGFILE.tmp" 2>/dev/null
+        mv "$LOGFILE.tmp" "$LOGFILE"
+      fi
     fi
     echo "Starting schwung-manager..."
     start-stop-daemon --start --background --make-pidfile --pidfile "$PIDFILE" \

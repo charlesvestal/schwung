@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -2934,6 +2935,10 @@ func main() {
 		*port = 7700
 	}
 
+	// Silence Go's default http.Server error logger to avoid log spam from
+	// transient connection errors (broken pipes, TLS probes, etc.).
+	discardLog := log.New(io.Discard, "", 0)
+
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{
 		Addr:         addr,
@@ -2941,17 +2946,23 @@ func main() {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
+		ErrorLog:     discardLog,
 	}
 
 	go func() {
-		for {
+		const maxRetries = 5
+		for attempt := 0; ; attempt++ {
 			logger.Info("starting schwung-manager", "addr", addr)
 			err := srv.ListenAndServe()
 			if err == http.ErrServerClosed {
 				return
 			}
 			if err != nil {
-				logger.Error("server bind failed, retrying in 3s", "err", err)
+				if attempt >= maxRetries {
+					logger.Error("server bind failed, giving up after retries", "err", err, "attempts", attempt+1)
+					os.Exit(1)
+				}
+				logger.Error("server bind failed, retrying in 3s", "err", err, "attempt", attempt+1)
 				time.Sleep(3 * time.Second)
 				srv = &http.Server{
 					Addr:         addr,
@@ -2959,6 +2970,7 @@ func main() {
 					ReadTimeout:  30 * time.Second,
 					WriteTimeout: 60 * time.Second,
 					IdleTimeout:  120 * time.Second,
+					ErrorLog:     discardLog,
 				}
 				continue
 			}
