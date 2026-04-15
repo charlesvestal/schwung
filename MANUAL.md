@@ -668,11 +668,11 @@ Muted slots are silenced but continue processing MIDI. Solo isolates a single sl
 
 ## Analytics
 
-Schwung can send anonymous usage statistics to help prioritize development. Analytics is **off by default** and must be enabled in Settings > Analytics.
+Schwung sends anonymous usage statistics to help prioritize development. On first launch, you'll be asked whether to enable this — the default is **Yes**. You can change this at any time in Settings > Analytics.
 
 ### What is collected
 
-When enabled, three events are sent:
+When enabled, the following events are sent:
 
 | Event | When | Data |
 |-------|------|------|

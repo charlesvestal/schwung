@@ -19,6 +19,7 @@
 #define POSTHOG_ENDPOINT "https://us.i.posthog.com/capture/"
 #define ANONYMOUS_ID_PATH "/data/UserData/schwung/anonymous-id"
 #define OPT_IN_PATH "/data/UserData/schwung/analytics-opt-in"
+#define OPT_OUT_PATH "/data/UserData/schwung/analytics-opt-out"
 #define SNAPSHOT_PATH "/data/UserData/schwung/module-snapshot.txt"
 #define CURL_PATH "/data/UserData/schwung/bin/curl"
 
@@ -90,17 +91,35 @@ void analytics_init(const char *version) {
 
 int analytics_enabled(void) {
     struct stat st;
-    return (stat(OPT_IN_PATH, &st) == 0);
+    int has_opt_out = (stat(OPT_OUT_PATH, &st) == 0);
+    int has_opt_in = (stat(OPT_IN_PATH, &st) == 0);
+
+    /* Conflicting state: clean up everything and let the prompt re-ask */
+    if (has_opt_out && has_opt_in) {
+        unlink(OPT_OUT_PATH);
+        unlink(OPT_IN_PATH);
+        unlink("/data/UserData/schwung/analytics-prompted");
+        return 0;  /* Disabled until re-prompted */
+    }
+
+    if (has_opt_out) return 0;
+
+    /* Not yet prompted: don't send anything until user decides */
+    struct stat prompted_st;
+    if (stat("/data/UserData/schwung/analytics-prompted", &prompted_st) != 0) return 0;
+
+    return 1;
 }
 
 void analytics_set_enabled(int enabled) {
     if (enabled) {
+        unlink(OPT_OUT_PATH);
+        /* Also create legacy opt-in file for backwards compat */
         FILE *f = fopen(OPT_IN_PATH, "w");
-        if (f) {
-            fprintf(f, "1\n");
-            fclose(f);
-        }
+        if (f) { fprintf(f, "1\n"); fclose(f); }
     } else {
+        FILE *f = fopen(OPT_OUT_PATH, "w");
+        if (f) { fprintf(f, "1\n"); fclose(f); }
         unlink(OPT_IN_PATH);
     }
 }
