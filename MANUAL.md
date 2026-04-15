@@ -666,6 +666,40 @@ Muted slots are silenced but continue processing MIDI. Solo isolates a single sl
 - Use Set Pages to organize sets by project or performance — Shift+Vol+Left/Right to switch
 - If something goes wrong, use Move's DFU restore mode to reset
 
+## Analytics
+
+Schwung can send anonymous usage statistics to help prioritize development. Analytics is **off by default** and must be enabled in Settings > Analytics.
+
+### What is collected
+
+When enabled, three events are sent:
+
+| Event | When | Data |
+|-------|------|------|
+| `app_launched` | Schwung starts | Host version |
+| `module_loaded` | A module is loaded | Module ID |
+| `module_installed` | A module is installed from the Store | Module ID, module version |
+
+Every event also includes a randomly generated anonymous ID (UUID v4) stored on the device. This ID has no connection to your identity.
+
+### What is NOT collected
+
+- No IP address (explicitly suppressed in every request)
+- No personal information
+- No audio, MIDI, or performance data
+- No device identifiers or fingerprinting
+- No tracking across devices
+
+### How it works
+
+Events are sent as fire-and-forget HTTP POSTs to [PostHog](https://posthog.com). No third-party SDK is used — just a background curl request that doesn't block or retry. If it fails, the data is simply lost.
+
+The anonymous ID is stored at `/data/UserData/schwung/anonymous-id`. Deleting this file generates a new one on next launch.
+
+### Disabling analytics
+
+Toggle off in **Settings > Analytics**. When disabled, no events are sent and no network requests are made.
+
 ## Troubleshooting
 
 ### Schwung Manager not accessible
