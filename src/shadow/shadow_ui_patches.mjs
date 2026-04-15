@@ -220,6 +220,13 @@ export function applyPatchSelection() {
     fetchPatchDetail(selectedSlot);
     fetchKnobMappings(selectedSlot);
     invalidateKnobContextCache();
+
+    /* Track patch load for analytics */
+    if (typeof globalThis.host_track_event === "function" && !isNewSlot) {
+        const synthId = ctx.getSlotParam(selectedSlot, "synth_module") || "unknown";
+        globalThis.host_track_event('module_loaded', '"module_id":"' + synthId + '","source":"patch"');
+    }
+
     setView(VIEWS.SLOTS);
     ctx.needsRedraw = true;
 }

@@ -257,6 +257,7 @@ const VIEWS = {
     TOOL_STEM_REVIEW: "toolstemreview",       // Review produced stems before saving
     TOOL_SET_PICKER: "toolsetpicker",         // Browse sets for render tool
     LFO_EDIT: "lfoedit",                      // LFO sub-menu editor
+    ANALYTICS_PROMPT: "analyticsprompt",       // First-run analytics opt-out prompt
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
     LFO_TARGET_PARAM: "lfotargetparam"        // LFO target picker step 2: parameter
 };
@@ -464,6 +465,10 @@ let overtakeModulePath = "";      // Path to loaded overtake module
 let overtakeModuleId = "";         // ID of loaded overtake module (for per-module exit hooks)
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
 let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
+
+/* Analytics prompt state */
+const ANALYTICS_PROMPTED_PATH = "/data/UserData/schwung/analytics-prompted";
+let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
 
 /* Auto-update state */
 let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
@@ -2958,6 +2963,11 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                  " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
 
         overtakeModuleLoaded = true;
+
+        /* Track module load for analytics */
+        if (typeof host_track_event === "function" && moduleInfo.id) {
+            host_track_event('module_loaded', '"module_id":"' + moduleInfo.id + '"');
+        }
 
         /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen.
          * Non-overtake tools don't own LEDs, so call init() immediately.
@@ -6421,6 +6431,11 @@ function applyComponentSelection() {
         if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
+        }
+
+        /* Track component selection for analytics */
+        if (moduleId && typeof host_track_event === "function") {
+            host_track_event('module_loaded', '"module_id":"' + moduleId + '","source":"picker","component":"' + comp.key + '"');
         }
     }
 
@@ -12289,6 +12304,24 @@ function drawUpdateRestart() {
     drawFooter("Back: Later");
 }
 
+/* Draw analytics opt-out prompt (shown on first run) */
+function drawAnalyticsPrompt() {
+    clear_screen();
+    drawHeader('Usage Statistics');
+
+    print(2, 14, 'Send anonymous usage', 1);
+    print(2, 24, 'data to help improve', 1);
+    print(2, 34, 'Schwung?', 1);
+
+    /* Yes / No selection */
+    const yesPrefix = analyticsPromptSelection === 0 ? '> ' : '  ';
+    const noPrefix = analyticsPromptSelection === 1 ? '> ' : '  ';
+    print(30, 48, yesPrefix + 'Yes', 1);
+    print(75, 48, noPrefix + 'No', 1);
+
+    drawFooter('Click to confirm');
+}
+
 /* Draw component edit view (presets, params) */
 function drawComponentEdit() {
     clear_screen();
@@ -13274,6 +13307,14 @@ globalThis.init = function() {
                 const snapshot = modules.map(m => `${m.id}=${m.version || 'unknown'}`).join("\n");
                 host_write_file(snapshotPath, snapshot);
             }
+
+            /* Track modules loaded in each slot at startup */
+            for (let i = 0; i < 4; i++) {
+                const synthModule = getSlotParam(i, "synth_module");
+                if (synthModule) {
+                    host_track_event('module_loaded', '"module_id":"' + synthModule + '","source":"startup","slot":' + i);
+                }
+            }
         } catch (e) {
             debugLog("analytics census error: " + e);
         }
@@ -13299,14 +13340,28 @@ globalThis.tick = function() {
         splashTick++;
         if (splashTick >= SPLASH_TOTAL_TICKS) {
             splashActive = false;
-            /* Dismiss shadow display mode — return to Move's native UI */
-            if (typeof shadow_request_exit === "function") {
-                shadow_request_exit();
+            /* Check if we need to show analytics prompt (first run only) */
+            if (!host_file_exists(ANALYTICS_PROMPTED_PATH)) {
+                view = VIEWS.ANALYTICS_PROMPT;
+                analyticsPromptSelection = 0;
+                announce("Usage Statistics, Send anonymous data? Yes");
+                /* Don't dismiss display — keep showing prompt */
+            } else {
+                /* Dismiss shadow display mode — return to Move's native UI */
+                if (typeof shadow_request_exit === "function") {
+                    shadow_request_exit();
+                }
             }
         } else {
             drawSplashScreen();
             return;
         }
+    }
+
+    /* Analytics prompt (first run) */
+    if (view === VIEWS.ANALYTICS_PROMPT) {
+        drawAnalyticsPrompt();
+        return;
     }
 
     /* Periodic config sync for JS-only variables from web UI.
@@ -14110,8 +14165,43 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Skip splash on any button press */
     if (splashActive && d2 > 0) {
         splashActive = false;
-        if (typeof shadow_request_exit === "function") {
-            shadow_request_exit();
+        /* Check if we need to show analytics prompt (first run only) */
+        if (!host_file_exists(ANALYTICS_PROMPTED_PATH)) {
+            view = VIEWS.ANALYTICS_PROMPT;
+            analyticsPromptSelection = 0;
+            announce("Usage Statistics, Send anonymous data? Yes");
+        } else {
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
+        }
+        return;
+    }
+
+    /* Analytics prompt input handling */
+    if (view === VIEWS.ANALYTICS_PROMPT) {
+        if ((status & 0xF0) === 0xB0 && d2 > 0) {
+            if (d1 === 14) {
+                /* Jog turn — toggle selection */
+                analyticsPromptSelection = analyticsPromptSelection === 0 ? 1 : 0;
+                announce(analyticsPromptSelection === 0 ? "Yes" : "No");
+                needsRedraw = true;
+            } else if (d1 === 3) {
+                /* Jog click — confirm */
+                const enabled = (analyticsPromptSelection === 0);
+                if (typeof host_set_analytics_enabled === "function") {
+                    host_set_analytics_enabled(enabled);
+                }
+                /* Mark as prompted so we never show again */
+                host_write_file(ANALYTICS_PROMPTED_PATH, "1");
+                /* Dismiss display */
+                if (typeof shadow_request_exit === "function") {
+                    shadow_request_exit();
+                }
+                view = VIEWS.SLOTS;
+                needsRedraw = true;
+                announce(enabled ? "Analytics enabled" : "Analytics disabled");
+            }
         }
         return;
     }
