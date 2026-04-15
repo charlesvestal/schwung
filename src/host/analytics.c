@@ -213,27 +213,29 @@ static const snapshot_entry_t* find_in_snapshot(const snapshot_entry_t *entries,
 void analytics_diff_modules(const char (*ids)[64], const char (*versions)[32], int count) {
     if (!analytics_enabled()) return;
 
-    /* Load previous snapshot */
+    /* Load previous snapshot (skip diff on first run — no snapshot yet) */
     snapshot_entry_t old_entries[MAX_SNAPSHOT_MODULES];
     int old_count = load_snapshot(old_entries, MAX_SNAPSHOT_MODULES);
 
-    /* Compare current vs old */
-    for (int i = 0; i < count; i++) {
-        const snapshot_entry_t *old = find_in_snapshot(old_entries, old_count, ids[i]);
-        if (!old) {
-            /* New module */
-            char props[256];
-            snprintf(props, sizeof(props),
-                "\"module_id\":\"%s\",\"module_version\":\"%s\"",
-                ids[i], versions[i]);
-            analytics_track("module_added", props);
-        } else if (strcmp(old->version, versions[i]) != 0) {
-            /* Version changed */
-            char props[256];
-            snprintf(props, sizeof(props),
-                "\"module_id\":\"%s\",\"old_version\":\"%s\",\"new_version\":\"%s\"",
-                ids[i], old->version, versions[i]);
-            analytics_track("module_upgraded", props);
+    if (old_count > 0) {
+        /* Compare current vs old */
+        for (int i = 0; i < count; i++) {
+            const snapshot_entry_t *old = find_in_snapshot(old_entries, old_count, ids[i]);
+            if (!old) {
+                /* New module */
+                char props[256];
+                snprintf(props, sizeof(props),
+                    "\"module_id\":\"%s\",\"module_version\":\"%s\"",
+                    ids[i], versions[i]);
+                analytics_track("module_added", props);
+            } else if (strcmp(old->version, versions[i]) != 0) {
+                /* Version changed */
+                char props[256];
+                snprintf(props, sizeof(props),
+                    "\"module_id\":\"%s\",\"old_version\":\"%s\",\"new_version\":\"%s\"",
+                    ids[i], old->version, versions[i]);
+                analytics_track("module_upgraded", props);
+            }
         }
     }
 
