@@ -2221,6 +2221,13 @@ static void init_shadow_shm(void)
             shadow_control->tts_engine = 0;     /* 0=espeak-ng (speak engine) */
             shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
             shadow_control->tts_debounce_ms = 50; /* default debounce ms */
+            /* Clear display overlay state — stale values from previous session
+             * cause ghost overlays (e.g. "1/8" page toast) on soft reboot */
+            shadow_control->display_overlay = 0;
+            shadow_control->overlay_rect_x = 0;
+            shadow_control->overlay_rect_y = 0;
+            shadow_control->overlay_rect_w = 0;
+            shadow_control->overlay_rect_h = 0;
         }
     } else {
         printf("Shadow: Failed to create control shm\n");

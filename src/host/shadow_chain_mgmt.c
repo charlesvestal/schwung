@@ -934,10 +934,9 @@ int shadow_inprocess_load_chain(void) {
         shadow_log(msg);
     }
 
-    /* Show page toast on boot */
-    set_page_overlay_active = 1;
-    set_page_overlay_timeout = SET_PAGE_OVERLAY_FRAMES;
-    if (host.overlay_sync) host.overlay_sync();
+    /* Don't show page toast on boot — it only makes sense when user
+     * switches pages.  Showing it on boot caused ghost overlays on soft
+     * reboot because shadow_ui hasn't started rendering yet. */
 
     /* Run batch migration for per-set state support */
     shadow_batch_migrate_sets();
