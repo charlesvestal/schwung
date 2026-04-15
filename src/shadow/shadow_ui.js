@@ -848,7 +848,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
         id: "services", label: "Services",
         items: [
             { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
-            { key: "auto_update_check", label: "Auto Update Check", type: "bool" }
+            { key: "auto_update_check", label: "Auto Update Check", type: "bool" },
+            { key: "analytics_enabled", label: "Analytics", type: "bool" }
         ]
     },
     {
@@ -9912,6 +9913,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "filebrowser_enabled") {
         return filebrowserEnabled ? "On" : "Off";
     }
+    if (setting.key === "analytics_enabled") {
+        return (typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled()) ? "On" : "Off";
+    }
     return "-";
 }
 
@@ -10099,6 +10103,14 @@ function adjustMasterFxSetting(setting, delta) {
             ? wrapText("On. Access at http://move.local:404", 18)
             : ["Off."];
         warningActive = true;
+        return;
+    }
+
+    if (setting.key === "analytics_enabled") {
+        if (typeof host_set_analytics_enabled === "function") {
+            const current = typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled();
+            host_set_analytics_enabled(current ? 0 : 1);
+        }
         return;
     }
 }
@@ -13226,6 +13238,46 @@ globalThis.init = function() {
         }
     }
     saveSlotsToConfig(slots);
+
+    /* Analytics: send module census and diff against previous snapshot */
+    if (typeof host_track_event === "function" && typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled()) {
+        try {
+            const modules = host_list_modules();
+            if (modules && modules.length > 0) {
+                /* Send census */
+                const ids = modules.map(m => `"${m.id}"`).join(',');
+                host_track_event('module_census',
+                    `"module_count":${modules.length},"modules":[${ids}]`);
+
+                /* Diff against previous snapshot */
+                const snapshotPath = "/data/UserData/schwung/module-snapshot.txt";
+                const oldSnap = {};
+                const oldContent = host_read_file(snapshotPath);
+                if (oldContent) {
+                    for (const line of oldContent.split("\n")) {
+                        const eq = line.indexOf("=");
+                        if (eq > 0) oldSnap[line.substring(0, eq)] = line.substring(eq + 1);
+                    }
+                }
+
+                for (const mod of modules) {
+                    if (!oldSnap[mod.id]) {
+                        host_track_event('module_added',
+                            `"module_id":"${mod.id}","module_version":"${mod.version || 'unknown'}"`);
+                    } else if (oldSnap[mod.id] !== mod.version) {
+                        host_track_event('module_upgraded',
+                            `"module_id":"${mod.id}","old_version":"${oldSnap[mod.id]}","new_version":"${mod.version || 'unknown'}"`);
+                    }
+                }
+
+                /* Save new snapshot */
+                const snapshot = modules.map(m => `${m.id}=${m.version || 'unknown'}`).join("\n");
+                host_write_file(snapshotPath, snapshot);
+            }
+        } catch (e) {
+            debugLog("analytics census error: " + e);
+        }
+    }
 
     /* Announce initial view + selection */
     const slotName = slots[selectedSlot]?.name || "Unknown";
