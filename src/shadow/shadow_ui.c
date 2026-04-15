@@ -28,6 +28,7 @@
 #include "host/js_display.h"
 #include "host/shadow_constants.h"
 #include "../host/unified_log.h"
+#include "../host/analytics.h"
 
 #define SAMPLER_CMD_PATH "/data/UserData/schwung/sampler_cmd_path.txt"
 
@@ -1425,6 +1426,45 @@ static int read_json_string(const char *filepath, const char *key, char *out, si
     return 1;
 }
 
+/* host_track_event(event_name, properties_json) -> void */
+static JSValue js_host_track_event(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_UNDEFINED;
+
+    const char *props = NULL;
+    if (argc >= 2) {
+        props = JS_ToCString(ctx, argv[1]);
+    }
+
+    analytics_track(event, props);
+
+    if (props) JS_FreeCString(ctx, props);
+    JS_FreeCString(ctx, event);
+    return JS_UNDEFINED;
+}
+
+/* host_get_setting / host_set_setting for analytics_enabled */
+static JSValue js_host_get_analytics_enabled(JSContext *ctx, JSValueConst this_val,
+                                              int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewInt32(ctx, analytics_enabled());
+}
+
+static JSValue js_host_set_analytics_enabled(JSContext *ctx, JSValueConst this_val,
+                                              int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    int val;
+    if (!JS_ToInt32(ctx, &val, argv[0])) {
+        analytics_set_enabled(val ? 1 : 0);
+    }
+    return JS_UNDEFINED;
+}
+
 /* host_list_modules() -> [{id, name, version}, ...] */
 static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv) {
@@ -2357,6 +2397,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_list_modules", JS_NewCFunction(ctx, js_host_list_modules, "host_list_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_track_event", JS_NewCFunction(ctx, js_host_track_event, "host_track_event", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_get_analytics_enabled", JS_NewCFunction(ctx, js_host_get_analytics_enabled, "host_get_analytics_enabled", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_set_analytics_enabled", JS_NewCFunction(ctx, js_host_set_analytics_enabled, "host_set_analytics_enabled", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_send_screenreader", JS_NewCFunction(ctx, js_host_send_screenreader, "host_send_screenreader", 1));
 
@@ -2467,6 +2510,21 @@ int main(int argc, char *argv[]) {
     unified_log_init();
     shadow_ui_log_line("shadow_ui: shared memory open");
     shadow_ui_write_pid();
+
+    /* Initialize analytics */
+    {
+        char version[32] = "unknown";
+        FILE *vf = fopen("/data/UserData/schwung/host/version.txt", "r");
+        if (vf) {
+            if (fgets(version, sizeof(version), vf)) {
+                char *nl = strchr(version, '\n');
+                if (nl) *nl = '\0';
+            }
+            fclose(vf);
+        }
+        analytics_init(version);
+        analytics_track("app_launched", NULL);
+    }
 
     JSRuntime *rt = NULL;
     JSContext *ctx = NULL;
