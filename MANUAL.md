@@ -677,6 +677,7 @@ When enabled, three events are sent:
 | Event | When | Data |
 |-------|------|------|
 | `app_launched` | Schwung starts | Host version |
+| `module_census` | Schwung starts | List of installed module IDs, count |
 | `module_loaded` | A module is loaded | Module ID |
 | `module_installed` | A module is installed from the Store | Module ID, module version |
 
