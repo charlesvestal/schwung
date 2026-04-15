@@ -2721,11 +2721,14 @@ int main(int argc, char *argv[])
         analytics_init(version);
         analytics_track("app_launched", NULL);
 
-        /* Send census of installed modules */
+        /* Send census of installed modules and diff against previous snapshot */
         if (analytics_enabled() && g_module_manager.module_count > 0) {
+            int mc = g_module_manager.module_count;
+
+            /* Build census event */
             char modules_list[768] = "";
             int pos = 0;
-            for (int i = 0; i < g_module_manager.module_count && pos < (int)sizeof(modules_list) - 68; i++) {
+            for (int i = 0; i < mc && pos < (int)sizeof(modules_list) - 68; i++) {
                 if (i > 0) modules_list[pos++] = ',';
                 pos += snprintf(modules_list + pos, sizeof(modules_list) - pos,
                     "\"%s\"", g_module_manager.modules[i].id);
@@ -2733,8 +2736,19 @@ int main(int argc, char *argv[])
             char props[1024];
             snprintf(props, sizeof(props),
                 "\"module_count\":%d,\"modules\":[%s]",
-                g_module_manager.module_count, modules_list);
+                mc, modules_list);
             analytics_track("module_census", props);
+
+            /* Diff against previous snapshot — fires module_added/module_upgraded */
+            char ids[MAX_MODULES][64];
+            char versions[MAX_MODULES][32];
+            for (int i = 0; i < mc && i < MAX_MODULES; i++) {
+                strncpy(ids[i], g_module_manager.modules[i].id, 63);
+                ids[i][63] = '\0';
+                strncpy(versions[i], g_module_manager.modules[i].version, 31);
+                versions[i][31] = '\0';
+            }
+            analytics_diff_modules(ids, versions, mc < MAX_MODULES ? mc : MAX_MODULES);
         }
     }
 

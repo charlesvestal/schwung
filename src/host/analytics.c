@@ -19,6 +19,7 @@
 #define POSTHOG_ENDPOINT "https://us.i.posthog.com/capture/"
 #define ANONYMOUS_ID_PATH "/data/UserData/schwung/anonymous-id"
 #define OPT_IN_PATH "/data/UserData/schwung/analytics-opt-in"
+#define SNAPSHOT_PATH "/data/UserData/schwung/module-snapshot.txt"
 #define CURL_PATH "/data/UserData/schwung/bin/curl"
 
 static char g_anonymous_id[64] = "";
@@ -158,4 +159,84 @@ void analytics_track(const char *event, const char *properties_json) {
         _exit(127);
     }
     /* Parent: do NOT waitpid — fire and forget */
+}
+
+/* Max modules we track in the snapshot */
+#define MAX_SNAPSHOT_MODULES 64
+
+typedef struct {
+    char id[64];
+    char version[32];
+} snapshot_entry_t;
+
+/* Load previous module snapshot from disk */
+static int load_snapshot(snapshot_entry_t *entries, int max_entries) {
+    FILE *f = fopen(SNAPSHOT_PATH, "r");
+    if (!f) return 0;
+
+    int count = 0;
+    char line[128];
+    while (fgets(line, sizeof(line), f) && count < max_entries) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        strncpy(entries[count].id, line, sizeof(entries[count].id) - 1);
+        entries[count].id[sizeof(entries[count].id) - 1] = '\0';
+        strncpy(entries[count].version, eq + 1, sizeof(entries[count].version) - 1);
+        entries[count].version[sizeof(entries[count].version) - 1] = '\0';
+        count++;
+    }
+    fclose(f);
+    return count;
+}
+
+/* Save current module snapshot to disk */
+static void save_snapshot(const char (*ids)[64], const char (*versions)[32], int count) {
+    FILE *f = fopen(SNAPSHOT_PATH, "w");
+    if (!f) return;
+    for (int i = 0; i < count; i++) {
+        fprintf(f, "%s=%s\n", ids[i], versions[i]);
+    }
+    fclose(f);
+}
+
+/* Find an entry by ID in a snapshot */
+static const snapshot_entry_t* find_in_snapshot(const snapshot_entry_t *entries, int count, const char *id) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(entries[i].id, id) == 0) return &entries[i];
+    }
+    return NULL;
+}
+
+void analytics_diff_modules(const char (*ids)[64], const char (*versions)[32], int count) {
+    if (!analytics_enabled()) return;
+
+    /* Load previous snapshot */
+    snapshot_entry_t old_entries[MAX_SNAPSHOT_MODULES];
+    int old_count = load_snapshot(old_entries, MAX_SNAPSHOT_MODULES);
+
+    /* Compare current vs old */
+    for (int i = 0; i < count; i++) {
+        const snapshot_entry_t *old = find_in_snapshot(old_entries, old_count, ids[i]);
+        if (!old) {
+            /* New module */
+            char props[256];
+            snprintf(props, sizeof(props),
+                "\"module_id\":\"%s\",\"module_version\":\"%s\"",
+                ids[i], versions[i]);
+            analytics_track("module_added", props);
+        } else if (strcmp(old->version, versions[i]) != 0) {
+            /* Version changed */
+            char props[256];
+            snprintf(props, sizeof(props),
+                "\"module_id\":\"%s\",\"old_version\":\"%s\",\"new_version\":\"%s\"",
+                ids[i], old->version, versions[i]);
+            analytics_track("module_upgraded", props);
+        }
+    }
+
+    /* Save new snapshot */
+    save_snapshot(ids, versions, count);
 }
