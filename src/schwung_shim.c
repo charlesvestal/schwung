@@ -152,7 +152,7 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
-static bool long_press_shadow_enabled = true;  /* Long-press Track/Menu/Step2 shortcuts */
+/* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
@@ -541,11 +541,8 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
     }
 }
 
-/* Long-press detection state.
- * long_press_shadow_enabled is the startup value from features.json.
- * At runtime, the JS UI can toggle shadow_control->long_press_shadow directly.
- * Use LONG_PRESS_ACTIVE() to check the live value. */
-#define LONG_PRESS_ACTIVE() (shadow_control ? shadow_control->long_press_shadow : long_press_shadow_enabled)
+/* Long-press detection — always enabled. */
+#define LONG_PRESS_ACTIVE() 1
 #define LONG_PRESS_MS 500
 
 static struct timespec track_press_time[4];
@@ -727,28 +724,14 @@ static void load_feature_config(void)
         }
     }
 
-    /* Parse long_press_shadow (defaults to true) */
-    const char *long_press_key = strstr(config_buf, "\"long_press_shadow\"");
-    if (long_press_key) {
-        const char *colon = strchr(long_press_key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ' || *colon == '\t') colon++;
-            if (strncmp(colon, "false", 5) == 0) {
-                long_press_shadow_enabled = false;
-            }
-        }
-    }
-
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s, long_press=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
-             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture",
-             long_press_shadow_enabled ? "enabled" : "disabled");
+             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
     shadow_log(log_msg);
 }
 
@@ -3068,7 +3051,7 @@ static void shim_init_subsystems(void)
         shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
         shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
         shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
-        shadow_control->long_press_shadow = long_press_shadow_enabled ? 1 : 0;
+        shadow_control->long_press_shadow = 1; /* always enabled */
     }
     /* Initialize process management subsystem */
     {

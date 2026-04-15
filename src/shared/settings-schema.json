@@ -40,12 +40,6 @@
     ]
   },
   {
-    "id": "shortcuts", "label": "Shortcuts",
-    "items": [
-      { "key": "long_press_shadow", "label": "Long Press", "type": "bool" }
-    ]
-  },
-  {
     "id": "services", "label": "Services",
     "items": [
       { "key": "filebrowser_enabled", "label": "File Browser", "type": "bool" },
