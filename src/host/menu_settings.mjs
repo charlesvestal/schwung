@@ -135,6 +135,12 @@ function getSettingsItems() {
             step: 5,
             fineStep: 1
         }),
+        createToggle('Analytics', {
+            get: () => !!(host_get_setting('analytics_enabled')),
+            set: (v) => {
+                host_set_setting('analytics_enabled', v ? 1 : 0);
+            }
+        }),
         createSubmenu('About', getAboutItems),
         createBack()
     ];

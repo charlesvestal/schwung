@@ -363,6 +363,13 @@ export function installModule(mod, hostVersion, onProgress) {
     globalThis.host_rescan_modules();
 
     console.log(`Installed module: ${mod.id}`);
+
+    /* Track module installation */
+    if (globalThis.host_track_event) {
+        const props = `"module_id":"${mod.id}","module_version":"${mod.latest_version || 'unknown'}"`;
+        globalThis.host_track_event('module_installed', props);
+    }
+
     return { success: true, error: null };
 }
 
