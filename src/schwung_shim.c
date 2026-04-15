@@ -152,7 +152,7 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
-static bool long_press_shadow_enabled = false; /* Long-press Track/Menu/Step2 shortcuts */
+static bool long_press_shadow_enabled = true;  /* Long-press Track/Menu/Step2 shortcuts */
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
@@ -727,15 +727,15 @@ static void load_feature_config(void)
         }
     }
 
-    /* Parse long_press_shadow (defaults to false) */
+    /* Parse long_press_shadow (defaults to true) */
     const char *long_press_key = strstr(config_buf, "\"long_press_shadow\"");
     if (long_press_key) {
         const char *colon = strchr(long_press_key, ':');
         if (colon) {
             colon++;
             while (*colon == ' ' || *colon == '\t') colon++;
-            if (strncmp(colon, "true", 4) == 0) {
-                long_press_shadow_enabled = true;
+            if (strncmp(colon, "false", 5) == 0) {
+                long_press_shadow_enabled = false;
             }
         }
     }
@@ -4997,9 +4997,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             track_longpress_pending[lp_slot] = 1;
                             track_longpress_fired[lp_slot] = 0;
                         } else {
-                            /* Released before threshold — if shadow UI displayed, dismiss it */
+                            /* Released before threshold — if shadow UI displayed, dismiss it.
+                             * Skip if Shift+Vol is held (Shift+Vol+Track opens shadow;
+                             * releasing Track shouldn't immediately dismiss it). */
                             if (track_longpress_pending[lp_slot] && !track_longpress_fired[lp_slot] &&
-                                shadow_display_mode && shadow_control) {
+                                shadow_display_mode && shadow_control &&
+                                !(shadow_shift_held && shadow_volume_knob_touched)) {
                                 shadow_display_mode = 0;
                                 shadow_control->display_mode = 0;
                                 shadow_log("Track tap: dismissing shadow UI");
@@ -5021,9 +5024,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         menu_longpress_pending = 1;
                         menu_longpress_fired = 0;
                     } else {
-                        /* Released before threshold — if shadow UI displayed, dismiss it */
+                        /* Released before threshold — if shadow UI displayed, dismiss it.
+                         * Skip if Shift+Vol is held (Shift+Vol+Menu opens Master FX). */
                         if (menu_longpress_pending && !menu_longpress_fired &&
-                            shadow_display_mode && shadow_control) {
+                            shadow_display_mode && shadow_control &&
+                            !(shadow_shift_held && shadow_volume_knob_touched)) {
                             shadow_display_mode = 0;
                             shadow_control->display_mode = 0;
                             shadow_log("Menu tap: dismissing shadow UI");
