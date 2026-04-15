@@ -13249,28 +13249,28 @@ globalThis.init = function() {
                 host_track_event('module_census',
                     `"module_count":${modules.length},"modules":[${ids}]`);
 
-                /* Diff against previous snapshot */
+                /* Diff against previous snapshot (skip on first run) */
                 const snapshotPath = "/data/UserData/schwung/module-snapshot.txt";
-                const oldSnap = {};
                 const oldContent = host_read_file(snapshotPath);
                 if (oldContent) {
+                    const oldSnap = {};
                     for (const line of oldContent.split("\n")) {
                         const eq = line.indexOf("=");
                         if (eq > 0) oldSnap[line.substring(0, eq)] = line.substring(eq + 1);
                     }
-                }
 
-                for (const mod of modules) {
-                    if (!oldSnap[mod.id]) {
-                        host_track_event('module_added',
-                            `"module_id":"${mod.id}","module_version":"${mod.version || 'unknown'}"`);
-                    } else if (oldSnap[mod.id] !== mod.version) {
-                        host_track_event('module_upgraded',
-                            `"module_id":"${mod.id}","old_version":"${oldSnap[mod.id]}","new_version":"${mod.version || 'unknown'}"`);
+                    for (const mod of modules) {
+                        if (!oldSnap[mod.id]) {
+                            host_track_event('module_added',
+                                `"module_id":"${mod.id}","module_version":"${mod.version || 'unknown'}"`);
+                        } else if (oldSnap[mod.id] !== mod.version) {
+                            host_track_event('module_upgraded',
+                                `"module_id":"${mod.id}","old_version":"${oldSnap[mod.id]}","new_version":"${mod.version || 'unknown'}"`);
+                        }
                     }
                 }
 
-                /* Save new snapshot */
+                /* Save snapshot for next boot */
                 const snapshot = modules.map(m => `${m.id}=${m.version || 'unknown'}`).join("\n");
                 host_write_file(snapshotPath, snapshot);
             }
