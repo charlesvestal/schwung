@@ -678,8 +678,10 @@ When enabled, three events are sent:
 |-------|------|------|
 | `app_launched` | Schwung starts | Host version |
 | `module_census` | Schwung starts | List of installed module IDs, count |
+| `module_added` | New module detected at startup | Module ID, version |
+| `module_upgraded` | Module version changed at startup | Module ID, old version, new version |
 | `module_loaded` | A module is loaded | Module ID |
-| `module_installed` | A module is installed from the Store | Module ID, module version |
+| `module_installed` | A new module is installed from the Store | Module ID, module version |
 
 Every event also includes a randomly generated anonymous ID (UUID v4) stored on the device. This ID has no connection to your identity.
 

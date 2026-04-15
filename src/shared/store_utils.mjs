@@ -323,6 +323,13 @@ export function installModule(mod, hostVersion, onProgress) {
     }
     console.log(`Installing module: ${mod.id}`);
 
+    /* Check if already installed (for analytics: install vs upgrade) */
+    const existingVersion = (() => {
+        const modules = globalThis.host_list_modules ? globalThis.host_list_modules() : [];
+        const existing = modules.find(m => m.id === mod.id);
+        return existing ? existing.version : null;
+    })();
+
     /* Check host version compatibility */
     if (mod.min_host_version && compareVersions(mod.min_host_version, hostVersion) > 0) {
         return { success: false, error: `Requires host v${mod.min_host_version}` };
@@ -366,8 +373,14 @@ export function installModule(mod, hostVersion, onProgress) {
 
     /* Track module installation */
     if (globalThis.host_track_event) {
-        const props = `"module_id":"${mod.id}","module_version":"${mod.latest_version || 'unknown'}"`;
-        globalThis.host_track_event('module_installed', props);
+        const newVersion = mod.latest_version || 'unknown';
+        if (existingVersion) {
+            const props = `"module_id":"${mod.id}","old_version":"${existingVersion}","new_version":"${newVersion}"`;
+            globalThis.host_track_event('module_upgraded', props);
+        } else {
+            const props = `"module_id":"${mod.id}","module_version":"${newVersion}"`;
+            globalThis.host_track_event('module_installed', props);
+        }
     }
 
     return { success: true, error: null };
