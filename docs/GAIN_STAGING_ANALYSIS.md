@@ -81,7 +81,7 @@ Cons:
 - Heuristic thresholds.
 - FX tails/interactions can blur "ME absent" detection.
 
-### Option B (Architectural correction): make Master FX a ME-only bus
+### Option B (Architectural correction): make Master FX a ME-only bus — **IMPLEMENTED 2026-04-17**
 
 Idea:
 - Process Master FX on ME mix only, then sum with Move audio.
@@ -95,6 +95,19 @@ Pros:
 Cons:
 - Behavior change for users relying on Master FX processing native Move audio.
 - Needs a deliberate migration note.
+
+**Implementation notes (2026-04-17):** Shipped as a 10-commit refactor of
+`shadow_inprocess_mix_from_buffer()`. The shim leaves Move's mailbox audio at
+`mv` level unchanged, builds a separate ME bus (slot synths + slot FX + overtake
+DSP) at unity, runs MFX on that bus, then sums `mailbox += me_post_fx × mv` for
+the DAC. Capture consumers (skipback, quantized sampler, native resample bridge)
+read a reconstructed `unity_view` buffer so they remain independent of master
+volume within the calibration limits of the display-bar volume estimator.
+
+Under Link Audio rebuild (`rebuild_from_la`), the mailbox is composed from
+per-track routed audio at unity; MFX runs on that mailbox, then master volume
+is applied at the end. Fixes the +6dB clean-idle distortion reported by users
+and eliminates mailbox round-trip (no more prescale/postscale).
 
 ### Option C (Highest fidelity, highest complexity): dual-bus/dual-state processing
 
