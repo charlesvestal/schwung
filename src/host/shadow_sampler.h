@@ -182,6 +182,11 @@ void sampler_tick_preroll(void);
 /* Capture one audio block during recording */
 void sampler_capture_audio(void);
 
+/* Capture one audio block from a caller-provided buffer (unity-level audio).
+ * Used by the RESAMPLE path so the sampler captures pre-master-volume audio
+ * from the shim's unity_view[] instead of the SPI mailbox. */
+void sampler_capture_audio_from_buffer(const int16_t *src);
+
 /* Process MIDI clock/start/stop messages */
 void sampler_on_clock(uint8_t status);
 

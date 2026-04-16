@@ -1768,9 +1768,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
-    /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
+    /* Capture audio for sampler at unity (Resample source only) — reads from
+     * unity_view[] so it captures pre-master-volume audio. */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
-        sampler_capture_audio();
+        sampler_capture_audio_from_buffer(unity_view);
         sampler_tick_preroll();
         /* Skipback: always capture Resample source into rolling buffer */
         skipback_init();

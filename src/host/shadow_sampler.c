@@ -820,19 +820,8 @@ void sampler_stop_recording(void) {
     s_host.overlay_sync();
 }
 
-void sampler_capture_audio(void) {
+static void sampler_capture_audio_common(const int16_t *audio) {
     if ((sampler_state != SAMPLER_RECORDING && sampler_state != SAMPLER_PREROLL) || !sampler_ring_buffer) return;
-
-    /* Select audio source */
-    int16_t *audio = NULL;
-    uint8_t *gmmap = s_host.global_mmap_addr ? *s_host.global_mmap_addr : NULL;
-    uint8_t *hmmap = s_host.hardware_mmap_addr ? *s_host.hardware_mmap_addr : NULL;
-
-    if (sampler_source == SAMPLER_SOURCE_RESAMPLE && gmmap) {
-        audio = (int16_t *)(gmmap + SAMPLER_AUDIO_OUT_OFFSET);
-    } else if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT && hmmap) {
-        audio = (int16_t *)(hmmap + SAMPLER_AUDIO_IN_OFFSET);
-    }
     if (!audio) return;
 
     size_t samples_to_write = SAMPLER_FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
@@ -880,6 +869,28 @@ void sampler_capture_audio(void) {
             sampler_stop_recording();
         }
     }
+}
+
+void sampler_capture_audio(void) {
+    /* Select audio source from the SPI mailbox. Used by the MOVE_INPUT path
+     * post-ioctl (fresh hardware input). The RESAMPLE path now goes through
+     * sampler_capture_audio_from_buffer() so it captures at unity level. */
+    const int16_t *audio = NULL;
+    uint8_t *gmmap = s_host.global_mmap_addr ? *s_host.global_mmap_addr : NULL;
+    uint8_t *hmmap = s_host.hardware_mmap_addr ? *s_host.hardware_mmap_addr : NULL;
+
+    if (sampler_source == SAMPLER_SOURCE_RESAMPLE && gmmap) {
+        audio = (const int16_t *)(gmmap + SAMPLER_AUDIO_OUT_OFFSET);
+    } else if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT && hmmap) {
+        audio = (const int16_t *)(hmmap + SAMPLER_AUDIO_IN_OFFSET);
+    }
+    sampler_capture_audio_common(audio);
+}
+
+void sampler_capture_audio_from_buffer(const int16_t *src) {
+    /* Capture from caller-provided unity-level buffer (RESAMPLE path). */
+    if (sampler_source != SAMPLER_SOURCE_RESAMPLE) return;
+    sampler_capture_audio_common(src);
 }
 
 void sampler_amend_audio(const int16_t *audio) {
