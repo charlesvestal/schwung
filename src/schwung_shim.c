@@ -5666,32 +5666,43 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
         /* Slot FX aliasing diagnostic (flag-gated, zero cost when inactive).
          * Pattern mirrors /data/UserData/schwung/spi_snap_trigger — touch the
-         * trigger file while the bug is audible to capture ~290ms of slot 0
-         * audio before and after the chain FX pass. See docs/LOGGING.md for
-         * usage. Output files:
-         *   /data/UserData/schwung/slot_pre_fx.pcm   (raw s16le stereo @44.1k)
-         *   /data/UserData/schwung/slot_post_fx.pcm
-         * Both are overwritten each trigger fire. Self-limits to 100 frames. */
+         * trigger file while the bug is audible to capture ~290ms of each
+         * slot's audio before and after the chain FX pass.
+         * See docs/LOGGING.md for usage. Output files (one pair per slot):
+         *   /data/UserData/schwung/slot{N}_pre_fx.pcm   (raw s16le stereo @44.1k)
+         *   /data/UserData/schwung/slot{N}_post_fx.pcm  (N = 0..3)
+         * All are overwritten each trigger fire. Self-limits to 100 frames. */
         {
-            static FILE *slot_pre_f = NULL;
-            static FILE *slot_post_f = NULL;
+            static FILE *slot_pre_f[SHADOW_CHAIN_INSTANCES]  = {0};
+            static FILE *slot_post_f[SHADOW_CHAIN_INSTANCES] = {0};
             static int slot_dump_frames = 0;
             if (slot_dump_frames > 0) {
-                if (slot_pre_f)
-                    fwrite(shadow_slot_deferred[0], sizeof(int16_t),
-                           FRAMES_PER_BLOCK * 2, slot_pre_f);
-                if (slot_post_f)
-                    fwrite(shadow_slot_fx_deferred[0], sizeof(int16_t),
-                           FRAMES_PER_BLOCK * 2, slot_post_f);
+                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                    if (slot_pre_f[s])
+                        fwrite(shadow_slot_deferred[s], sizeof(int16_t),
+                               FRAMES_PER_BLOCK * 2, slot_pre_f[s]);
+                    if (slot_post_f[s])
+                        fwrite(shadow_slot_fx_deferred[s], sizeof(int16_t),
+                               FRAMES_PER_BLOCK * 2, slot_post_f[s]);
+                }
                 slot_dump_frames--;
                 if (slot_dump_frames == 0) {
-                    if (slot_pre_f)  { fclose(slot_pre_f);  slot_pre_f  = NULL; }
-                    if (slot_post_f) { fclose(slot_post_f); slot_post_f = NULL; }
+                    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                        if (slot_pre_f[s])  { fclose(slot_pre_f[s]);  slot_pre_f[s]  = NULL; }
+                        if (slot_post_f[s]) { fclose(slot_post_f[s]); slot_post_f[s] = NULL; }
+                    }
                 }
             } else if (access("/data/UserData/schwung/slot_fx_dump_trigger",
                               F_OK) == 0) {
-                slot_pre_f  = fopen("/data/UserData/schwung/slot_pre_fx.pcm",  "wb");
-                slot_post_f = fopen("/data/UserData/schwung/slot_post_fx.pcm", "wb");
+                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                    char p[96];
+                    snprintf(p, sizeof(p),
+                             "/data/UserData/schwung/slot%d_pre_fx.pcm", s);
+                    slot_pre_f[s] = fopen(p, "wb");
+                    snprintf(p, sizeof(p),
+                             "/data/UserData/schwung/slot%d_post_fx.pcm", s);
+                    slot_post_f[s] = fopen(p, "wb");
+                }
                 slot_dump_frames = 100;  /* ~290ms */
                 unlink("/data/UserData/schwung/slot_fx_dump_trigger");
             }
