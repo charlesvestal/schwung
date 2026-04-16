@@ -174,7 +174,7 @@ int main()
     }
 
     /* Join Link session and enable audio */
-    ableton::LinkAudio link(initial_tempo, "ME");
+    ableton::LinkAudio link(initial_tempo, "Schwung");
     link.enable(true);
     link.enableLinkAudio(true);
 
@@ -195,7 +195,7 @@ int main()
      * mPeerSendHandlers, which is only populated when a PeerAnnouncement
      * with channels is received.  Without this, forPeer() returns nullopt
      * and audio is silently never sent. */
-    ableton::LinkAudioSink dummySink(link, "ME-Ack", 256);
+    ableton::LinkAudioSink dummySink(link, "Schwung-Ack", 256);
     LOG_INFO(LINK_SUB_LOG_SOURCE, "dummy sink created (triggers peer announcement)");
 
     /* Publisher sinks for shadow slots (4 per-track + 1 master) */
@@ -380,9 +380,9 @@ int main()
                 if (is_active && !slots[i].was_active) {
                     char name[32];
                     if (i == LINK_AUDIO_PUB_MASTER_IDX)
-                        snprintf(name, sizeof(name), "ME-Master");
+                        snprintf(name, sizeof(name), "Schwung-Master");
                     else
-                        snprintf(name, sizeof(name), "ME-%d", i + 1);
+                        snprintf(name, sizeof(name), "Schwung-%d", i + 1);
                     try {
                         /* maxNumSamples: 128 frames * 2 channels = 256 samples */
                         slots[i].sink = new ableton::LinkAudioSink(link, name, 256);
@@ -399,9 +399,9 @@ int main()
                         slots[i].sink = nullptr;
                         char name[32];
                         if (i == LINK_AUDIO_PUB_MASTER_IDX)
-                            snprintf(name, sizeof(name), "ME-Master");
+                            snprintf(name, sizeof(name), "Schwung-Master");
                         else
-                            snprintf(name, sizeof(name), "ME-%d", i + 1);
+                            snprintf(name, sizeof(name), "Schwung-%d", i + 1);
                         LOG_INFO(LINK_SUB_LOG_SOURCE, "destroyed sink %s", name);
                     }
                     slots[i].was_active = false;
