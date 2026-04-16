@@ -1665,10 +1665,30 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
+    /* Build unity_view for capture consumers (skipback, native bridge, sampler).
+     * unity_view = Move at unity + ME post-FX at unity. Independent of master volume
+     * so captures are full-gain regardless of the volume knob position. */
+    int16_t unity_view[FRAMES_PER_BLOCK * 2];
+    if (rebuild_from_la) {
+        /* Link Audio rebuild path already composited per-track routed audio into
+         * mailbox; preserve pre-refactor capture behavior by using it as-is. */
+        memcpy(unity_view, mailbox_audio, AUDIO_BUFFER_SIZE);
+    } else {
+        float inv_mv = (mv > 0.001f) ? 1.0f / mv : 1.0f;
+        if (inv_mv > 20.0f) inv_mv = 20.0f;
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            float move_unity = (float)native_bridge_move_component[i] * inv_mv;
+            float summed = move_unity + (float)me_unity_i16[i];
+            if (summed > 32767.0f) summed = 32767.0f;
+            if (summed < -32768.0f) summed = -32768.0f;
+            unity_view[i] = (int16_t)lroundf(summed);
+        }
+    }
+
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
-    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
+    native_capture_total_mix_snapshot_from_buffer(unity_view);
 
     /* Poll sampler commands from shadow UI (via shared memory) */
     if (shadow_control) {
@@ -1748,7 +1768,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
         sampler_tick_preroll();
         /* Skipback: always capture Resample source into rolling buffer */
         skipback_init();
-        skipback_capture(mailbox_audio);
+        skipback_capture(unity_view);
     }
 
 }
