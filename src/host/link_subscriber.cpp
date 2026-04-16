@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -111,6 +112,26 @@ static link_audio_pub_shm_t *open_pub_shm()
     return shm;
 }
 
+/* Create (or open if already existing) the Move->shim audio SHM segment.
+ * Written by the link-subscriber source callback (future Phase 2.x task),
+ * read by the shim to mix Move audio into shadow output. */
+static link_audio_in_shm_t *open_or_create_in_shm()
+{
+    int fd = shm_open(SHM_LINK_AUDIO_IN, O_CREAT | O_RDWR, 0666);
+    if (fd < 0) return nullptr;
+    if (ftruncate(fd, sizeof(link_audio_in_shm_t)) < 0) { close(fd); return nullptr; }
+    auto *shm = (link_audio_in_shm_t *)mmap(nullptr, sizeof(link_audio_in_shm_t),
+        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (shm == MAP_FAILED) return nullptr;
+    if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC) {
+        memset(shm, 0, sizeof(*shm));
+        shm->magic = LINK_AUDIO_IN_SHM_MAGIC;
+        shm->version = LINK_AUDIO_IN_SHM_VERSION;
+    }
+    return shm;
+}
+
 /* Per-slot publisher state */
 struct SlotPublisher {
     ableton::LinkAudioSink *sink = nullptr;
@@ -158,6 +179,16 @@ int main()
     link.enableLinkAudio(true);
 
     printf("link-subscriber: Link session joined\n");
+
+    /* Create Move->shim audio SHM segment. No consumers yet — Phase 2.x will
+     * teach the source callback to write samples into this ring. */
+    link_audio_in_shm_t *in_shm = open_or_create_in_shm();
+    if (in_shm) {
+        LOG_INFO(LINK_SUB_LOG_SOURCE, "in shm opened/created");
+    } else {
+        LOG_ERROR(LINK_SUB_LOG_SOURCE, "failed to open/create in shm: errno=%d", errno);
+    }
+    (void)in_shm; /* Phase 2.x will consume this */
 
     /* Create a dummy sink so that our PeerAnnouncements include at least one
      * channel.  Move's Sink handler looks up ChannelRequest.peerId in
