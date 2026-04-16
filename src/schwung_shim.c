@@ -1674,7 +1674,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
          * mailbox; preserve pre-refactor capture behavior by using it as-is. */
         memcpy(unity_view, mailbox_audio, AUDIO_BUFFER_SIZE);
     } else {
-        float inv_mv = (mv > 0.001f) ? 1.0f / mv : 1.0f;
+        /* Smooth mv for capture only (DAC uses raw mv for instant response).
+         * One-pole lowpass at ~30ms tau to ramp over discrete scan steps and
+         * avoid brief amplitude glitches in captures during volume sweeps. */
+        static float mv_capture_smoothed = 1.0f;
+        const float alpha = 0.1f;  /* dt=2.9ms, tau≈28ms */
+        mv_capture_smoothed += (mv - mv_capture_smoothed) * alpha;
+        float inv_mv = (mv_capture_smoothed > 0.001f) ? 1.0f / mv_capture_smoothed : 1.0f;
         if (inv_mv > 50.0f) inv_mv = 50.0f;
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
             float move_unity = (float)native_bridge_move_component[i] * inv_mv;
