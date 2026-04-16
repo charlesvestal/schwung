@@ -1296,7 +1296,24 @@ static void shadow_inprocess_render_to_buffer(void) {
              * When synth is idle, FX still runs on zeros for tail decay.
              * When both synth AND FX are idle, skip entirely. */
         slot_run_deferred_fx:
-            if (same_frame_fx && shadow_chain_process_fx) {
+            /* When rebuild_from_la is likely active (link audio reception is
+             * live on the sidecar path), skip deferred FX — the main-mix
+             * path will run FX on (synth + move_track) in post-ioctl.
+             * Calling FX here too advances the plugin's internal state a
+             * second time per frame, causing aliasing/comb-filter artifacts.
+             * The deferred output (shadow_slot_fx_deferred) isn't consumed
+             * in rebuild_from_la mode anyway. */
+            int skip_deferred_fx =
+                (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm);
+
+            if (skip_deferred_fx) {
+                /* Mark valid with zeros so downstream non-rebuild path, if
+                 * it ran, would get silence — but in practice main path
+                 * replaces mailbox entirely so this is just for safety. */
+                memset(shadow_slot_fx_deferred[s], 0,
+                       sizeof(shadow_slot_fx_deferred[s]));
+                shadow_slot_fx_deferred_valid[s] = 1;
+            } else if (same_frame_fx && shadow_chain_process_fx) {
                 if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) {
                     /* Both idle — FX output is silence */
                     shadow_slot_fx_deferred_valid[s] = 1;
@@ -1517,9 +1534,59 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     fx_buf[i] = (int16_t)combined;
                 }
 
-                /* Run FX chain */
-                shadow_chain_process_fx(shadow_chain_slots[s].instance,
-                                        fx_buf, MOVE_FRAMES_PER_BLOCK);
+                /* Main-mix dump (rebuild_from_la path). Gated on
+                 * /data/UserData/schwung/main_fx_dump_trigger — touch to arm.
+                 * Dumps slot<s>_main_pre_fx.pcm + slot<s>_main_post_fx.pcm. */
+                {
+                    static FILE *mpre_f[SHADOW_CHAIN_INSTANCES] = {0};
+                    static FILE *mpost_f[SHADOW_CHAIN_INSTANCES] = {0};
+                    static int main_dump_frames = 0;
+                    if (main_dump_frames > 0) {
+                        if (mpre_f[s])
+                            fwrite(fx_buf, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, mpre_f[s]);
+                    }
+                    /* Arm check only on slot==0 to avoid redundant stats. */
+                    if (s == 0 && main_dump_frames == 0 &&
+                        access("/data/UserData/schwung/main_fx_dump_trigger",
+                               F_OK) == 0) {
+                        for (int t = 0; t < SHADOW_CHAIN_INSTANCES; t++) {
+                            char p[96];
+                            snprintf(p, sizeof(p),
+                                "/data/UserData/schwung/slot%d_main_pre_fx.pcm", t);
+                            mpre_f[t] = fopen(p, "wb");
+                            snprintf(p, sizeof(p),
+                                "/data/UserData/schwung/slot%d_main_post_fx.pcm", t);
+                            mpost_f[t] = fopen(p, "wb");
+                        }
+                        main_dump_frames = 100;
+                        unlink("/data/UserData/schwung/main_fx_dump_trigger");
+                        /* Record this frame too */
+                        if (mpre_f[s])
+                            fwrite(fx_buf, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, mpre_f[s]);
+                    }
+
+                    /* Run FX chain */
+                    shadow_chain_process_fx(shadow_chain_slots[s].instance,
+                                            fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                    if (main_dump_frames > 0) {
+                        if (mpost_f[s])
+                            fwrite(fx_buf, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, mpost_f[s]);
+                        /* Decrement once per frame (at slot 0) */
+                        if (s == SHADOW_CHAIN_INSTANCES - 1) {
+                            main_dump_frames--;
+                            if (main_dump_frames == 0) {
+                                for (int t = 0; t < SHADOW_CHAIN_INSTANCES; t++) {
+                                    if (mpre_f[t])  { fclose(mpre_f[t]);  mpre_f[t] = NULL; }
+                                    if (mpost_f[t]) { fclose(mpost_f[t]); mpost_f[t] = NULL; }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 /* Track FX output silence for phase 2 idle */
                 int fx_silent = 1;
