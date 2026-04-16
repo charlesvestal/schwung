@@ -181,3 +181,40 @@ if (unified_log_enabled()) {
     // logging is on
 }
 ```
+
+## Flag-Gated Buffer Dumps
+
+For diagnostics that need raw audio buffer contents (not log text), the shim
+supports trigger-file-gated one-shot dumps. These are zero-cost when inactive
+(a single `access()` syscall per frame).
+
+### SPI buffer snapshots
+
+Capture full SPI shadow+hw mailbox contents to files (useful for investigating
+audio mix stages, MIDI routing, display payloads):
+
+```bash
+ssh ableton@move.local "touch /data/UserData/schwung/spi_snap_trigger"
+# …wait a few seconds…
+ssh ableton@move.local "rm /data/UserData/schwung/spi_snap_trigger"
+ssh ableton@move.local "ls /data/UserData/schwung/spi_snap_*.bin"
+# scp the .bin files to your Mac; each is 4096 bytes of raw mailbox state
+```
+
+### Slot FX pre/post buffer dumps
+
+Captures ~290ms of slot 0's audio BEFORE and AFTER the chain_host FX pass.
+Use this when debugging slot FX processing (e.g. Cloudseed/freeverb wet
+aliasing). Self-limits to 100 frames; trigger is consumed and deleted.
+
+```bash
+# While the issue is audible:
+ssh ableton@move.local "touch /data/UserData/schwung/slot_fx_dump_trigger"
+sleep 1
+scp ableton@move.local:/data/UserData/schwung/slot_pre_fx.pcm .
+scp ableton@move.local:/data/UserData/schwung/slot_post_fx.pcm .
+# Import into Audacity: raw s16le, 44100 Hz, stereo, little-endian
+```
+
+Compare pre vs post to isolate whether aliasing is introduced BY the slot FX
+(post is aliased, pre is clean) or upstream (pre is already aliased).
