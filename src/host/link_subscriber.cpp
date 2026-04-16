@@ -318,10 +318,16 @@ int main()
                                 const uint32_t to_copy =
                                     (uint32_t)(num_frames * num_channels); /* samples */
                                 uint32_t wp = slot->write_pos;
+                                /* Use a volatile pointer + explicit memory fence.
+                                 * The non-volatile ring[] array is otherwise
+                                 * "unobservable" in this TU, so the compiler can
+                                 * (and does, with -O3) elide the stores as dead. */
+                                volatile int16_t *ring = slot->ring;
                                 for (uint32_t i = 0; i < to_copy; ++i) {
-                                    slot->ring[(wp + i) & LINK_AUDIO_IN_RING_MASK] =
+                                    ring[(wp + i) & LINK_AUDIO_IN_RING_MASK] =
                                         samples[i];
                                 }
+                                __sync_synchronize();
                                 __atomic_store_n(&slot->write_pos, wp + to_copy,
                                                  __ATOMIC_RELEASE);
                                 __atomic_store_n(&slot->active, 1,
