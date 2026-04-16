@@ -1675,7 +1675,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
         memcpy(unity_view, mailbox_audio, AUDIO_BUFFER_SIZE);
     } else {
         float inv_mv = (mv > 0.001f) ? 1.0f / mv : 1.0f;
-        if (inv_mv > 20.0f) inv_mv = 20.0f;
+        if (inv_mv > 50.0f) inv_mv = 50.0f;
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
             float move_unity = (float)native_bridge_move_component[i] * inv_mv;
             float summed = move_unity + (float)me_unity_i16[i];
