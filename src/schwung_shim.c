@@ -938,164 +938,6 @@ static void shadow_inprocess_process_midi(void) {
     }
 }
 
-static void shadow_inprocess_mix_audio(void) {
-    if (!shadow_inprocess_ready || !global_mmap_addr) return;
-
-    int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
-    float mv = shadow_master_volume;
-    int mfx_active = shadow_master_fx_chain_active();
-
-    /* When MFX is active, build the mix at unity level so FX see a consistent
-     * signal regardless of master volume.  Apply mv AFTER MFX instead.
-     * When MFX is off, pre-scale ME by master volume (current behavior). */
-    float me_input_scale;
-    float move_prescale;
-    float link_sub_scale;
-    if (mfx_active) {
-        me_input_scale = 1.0f;
-        link_sub_scale = 1.0f;
-        if (mv > 0.001f) {
-            move_prescale = 1.0f / mv;
-            if (move_prescale > 20.0f) move_prescale = 20.0f;
-        } else {
-            move_prescale = 1.0f;
-        }
-    } else {
-        me_input_scale = (mv < 1.0f) ? mv : 1.0f;
-        move_prescale = 1.0f;
-        link_sub_scale = mv;
-    }
-
-    /* Save Move's audio for bridge split component (before mixing ME). */
-    memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
-
-    int32_t mix[FRAMES_PER_BLOCK * 2];
-    int32_t me_full[FRAMES_PER_BLOCK * 2];  /* ME at full gain for bridge */
-    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        mix[i] = (int32_t)lroundf((float)mailbox_audio[i] * move_prescale);
-        me_full[i] = 0;
-    }
-
-    /* Track raw Move audio injected via Link Audio for subtraction */
-    int32_t move_injected[FRAMES_PER_BLOCK * 2];
-    int any_injected = 0;
-    memset(move_injected, 0, sizeof(move_injected));
-
-    if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
-        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-            if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
-
-            /* Inject Move track audio from Link Audio into chain before FX */
-            int16_t move_track[FRAMES_PER_BLOCK * 2];
-            int have_move_track = 0;
-            if (link_audio.enabled && link_audio_routing_enabled &&
-                shadow_chain_set_inject_audio &&
-                s < link_audio.move_channel_count) {
-                have_move_track = link_audio_read_channel(s, move_track, FRAMES_PER_BLOCK);
-                if (have_move_track) {
-                    shadow_chain_set_inject_audio(
-                        shadow_chain_slots[s].instance,
-                        move_track, FRAMES_PER_BLOCK);
-                }
-            }
-
-            int16_t render_buffer[FRAMES_PER_BLOCK * 2];
-            memset(render_buffer, 0, sizeof(render_buffer));
-            shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
-                                           render_buffer,
-                                           MOVE_FRAMES_PER_BLOCK);
-            /* Capture per-slot audio for Link Audio publisher (with slot volume + fade) */
-            if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS) {
-                float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
-                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    shadow_slot_capture[s][i] = (int16_t)lroundf((float)render_buffer[i] * cap_vol);
-                }
-                /* Write to publisher shared memory for link_subscriber */
-                if (shadow_pub_audio_shm) {
-                    link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
-                    uint32_t wp = ps->write_pos;
-                    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                        ps->ring[wp & LINK_AUDIO_PUB_SHM_RING_MASK] = shadow_slot_capture[s][i];
-                        wp++;
-                    }
-                    __sync_synchronize();
-                    ps->write_pos = wp;
-                    ps->active = 1;
-                }
-            }
-
-            /* Accumulate raw Move audio for subtraction from mailbox */
-            if (have_move_track) {
-                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
-                    move_injected[i] += (int32_t)move_track[i];
-                any_injected = 1;
-            }
-
-            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
-                float gain = vol * me_input_scale;
-                mix[i] += (int32_t)lroundf((float)render_buffer[i] * gain);
-                me_full[i] += (int32_t)lroundf((float)render_buffer[i] * vol);
-                if (i & 1) shadow_fade_advance(s);
-            }
-        }
-    }
-
-    /* Subtract Move track audio from mix to avoid doubling.
-     * Link Audio per-track streams are pre-fader; mailbox is post-fader.
-     * When MFX active: mailbox was prescaled to unity, subtract at unity.
-     * Otherwise: scale subtraction by Move's volume so the levels match. */
-    if (any_injected) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
-            mix[i] -= (int32_t)lroundf((float)move_injected[i] * link_sub_scale);
-    }
-
-    /* Save ME full-gain component for bridge split */
-    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        if (me_full[i] > 32767) me_full[i] = 32767;
-        if (me_full[i] < -32768) me_full[i] = -32768;
-        native_bridge_me_component[i] = (int16_t)me_full[i];
-    }
-    native_bridge_capture_mv = mv;
-    native_bridge_split_valid = 1;
-
-    /* Clamp and write to output buffer */
-    int16_t output_buffer[FRAMES_PER_BLOCK * 2];
-    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        if (mix[i] > 32767) mix[i] = 32767;
-        if (mix[i] < -32768) mix[i] = -32768;
-        output_buffer[i] = (int16_t)mix[i];
-    }
-
-    /* Apply master FX chain - process through all 4 slots in series */
-    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
-        master_fx_slot_t *s = &shadow_master_fx_slots[fx];
-        if (s->instance && s->api && s->api->process_block) {
-            s->api->process_block(s->instance, output_buffer, FRAMES_PER_BLOCK);
-        }
-    }
-
-    /* Tick master FX LFOs */
-    shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK);
-
-    /* Capture native bridge source AFTER master FX, BEFORE master volume.
-     * This bakes master FX into native bridge resampling while keeping
-     * capture independent of master-volume attenuation. */
-    native_capture_total_mix_snapshot_from_buffer(output_buffer);
-
-    /* Apply master volume AFTER MFX.  When MFX is active the mix was built
-     * at unity level; scale down now so the DAC output respects master volume.
-     * When MFX is off the mix is already at mv level — no extra scaling. */
-    if (mfx_active && mv < 0.9999f) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            output_buffer[i] = (int16_t)lroundf((float)output_buffer[i] * mv);
-        }
-    }
-
-    /* Write final output to mailbox */
-    memcpy(mailbox_audio, output_buffer, sizeof(output_buffer));
-}
-
 /* === OVERTAKE DSP LOAD/UNLOAD ===
  * Overtake modules can optionally include a dsp.so that runs in the shim's
  * audio thread.  V2-only: supports both generator (plugin_api_v2_t, outputs
@@ -1489,6 +1331,30 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
 
+    /* Fast path: nothing active. Leave Move's mailbox untouched. Snapshot the
+     * Move component so any bridge query sees a coherent state, then return. */
+    int any_slot = 0;
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        if (shadow_chain_slots[s].instance) { any_slot = 1; break; }
+    }
+    int any_mfx = 0;
+    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+        if (shadow_master_fx_slots[fx].instance) { any_mfx = 1; break; }
+    }
+    int any_overtake_dsp = (overtake_dsp_fx && overtake_dsp_fx_inst);
+    int any_la_rebuild = (link_audio.enabled && link_audio_routing_enabled &&
+                         shadow_chain_process_fx && link_audio.move_channel_count >= 4);
+    int any_capture = (sampler_source == SAMPLER_SOURCE_RESAMPLE);
+
+    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture) {
+        int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+        memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
+        memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
+        native_bridge_capture_mv = shadow_master_volume;
+        native_bridge_split_valid = 1;
+        return;
+    }
+
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
     (void)shadow_master_fx_chain_active();  /* MFX slots processed unconditionally below */
@@ -1501,6 +1367,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
     /* Accumulate ME output across slots for bridge split component */
     int32_t me_full[FRAMES_PER_BLOCK * 2];
     memset(me_full, 0, sizeof(me_full));
+    /* ME-only unity bus: sum of slot synths + slot FX + overtake DSP, full-gain,
+     * before Master FX and master volume. Task 3 populates this alongside
+     * me_full without reading it; Task 4 will consume it. */
+    int32_t me_unity[FRAMES_PER_BLOCK * 2];
+    memset(me_unity, 0, sizeof(me_unity));
 
     /* Zero-and-rebuild approach: if Link Audio provides per-track data,
      * zero the mailbox and rebuild from Link Audio, applying FX per-slot.
@@ -1538,18 +1409,6 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 if (mixed < -32768) mixed = -32768;
                 mailbox_audio[i] = (int16_t)mixed;
             }
-        }
-    }
-
-    /* Prescale mailbox (Move + JACK audio, both at mv) to unity. */
-    if (!rebuild_from_la && mv > 0.001f && mv < 0.9999f) {
-        float inv = 1.0f / mv;
-        if (inv > 20.0f) inv = 20.0f;
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            float scaled = (float)mailbox_audio[i] * inv;
-            if (scaled > 32767.0f) scaled = 32767.0f;
-            if (scaled < -32768.0f) scaled = -32768.0f;
-            mailbox_audio[i] = (int16_t)lroundf(scaled);
         }
     }
 
@@ -1640,6 +1499,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     if (i & 1) shadow_fade_advance(s);
                 }
             } else if (have_move_track) {
@@ -1692,12 +1552,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
-                    float gain = vol;
-                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
-                    if (mixed > 32767) mixed = 32767;
-                    if (mixed < -32768) mixed = -32768;
-                    mailbox_audio[i] = (int16_t)mixed;
-                    me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
+                    me_full[i] += contrib;
+                    me_unity[i] += contrib;
                     if (i & 1) shadow_fade_advance(s);
                 }
             } else if (shadow_slot_deferred_valid[s]) {
@@ -1740,25 +1597,29 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
-                    float gain = vol;
-                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
-                    if (mixed > 32767) mixed = 32767;
-                    if (mixed < -32768) mixed = -32768;
-                    mailbox_audio[i] = (int16_t)mixed;
-                    me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
+                    me_full[i] += contrib;
+                    me_unity[i] += contrib;
                     if (i & 1) shadow_fade_advance(s);
                 }
             }
         }
     }
 
-    /* Mix overtake DSP buffer (at unity — master volume applied after capture) */
+    /* Mix overtake DSP buffer into ME bus unconditionally. Under rebuild_from_la,
+     * the mailbox is already the ME reconstruction and also needs overtake DSP;
+     * under non-rebuild, the mailbox is Move-only and overtake DSP stays in ME. */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-        int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)shadow_deferred_dsp_buffer[i];
-        if (mixed > 32767) mixed = 32767;
-        if (mixed < -32768) mixed = -32768;
-        mailbox_audio[i] = (int16_t)mixed;
         me_full[i] += (int32_t)shadow_deferred_dsp_buffer[i];
+        me_unity[i] += (int32_t)shadow_deferred_dsp_buffer[i];
+    }
+    if (rebuild_from_la) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)shadow_deferred_dsp_buffer[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            mailbox_audio[i] = (int16_t)mixed;
+        }
     }
 
     /* Save ME full-gain component for bridge split */
@@ -1782,16 +1643,32 @@ static void shadow_inprocess_mix_from_buffer(void) {
         ps->write_pos = wp;
     }
 
-    /* Overtake DSP FX: process combined Move+shadow audio in-place */
+    /* Build int16 view of me_unity for FX plugins (MFX, overtake DSP FX).
+     * Under rebuild_from_la, mailbox is already the ME reconstruction and FX
+     * run on mailbox directly (preserving existing behavior — Task 8 revisits). */
+    int16_t me_unity_i16[FRAMES_PER_BLOCK * 2];
+    if (!rebuild_from_la) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t v = me_unity[i];
+            if (v > 32767) v = 32767;
+            if (v < -32768) v = -32768;
+            me_unity_i16[i] = (int16_t)v;
+        }
+    }
+    int16_t *fx_target = rebuild_from_la ? mailbox_audio : me_unity_i16;
+
+    /* Overtake DSP FX: process ME bus (non-rebuild) or reconstructed mailbox (rebuild_from_la) */
     if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
-        overtake_dsp_fx->process_block(overtake_dsp_fx_inst, mailbox_audio, FRAMES_PER_BLOCK);
+        overtake_dsp_fx->process_block(overtake_dsp_fx_inst, fx_target, FRAMES_PER_BLOCK);
     }
 
-    /* Apply master FX chain to combined audio - process through all 4 slots in series */
+    /* Apply master FX chain. Under non-rebuild, MFX processes ME only; under
+     * rebuild_from_la, mailbox contains reconstructed ME tracks and MFX
+     * processes mailbox (Task 8 revisits). */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
         if (s->instance && s->api && s->api->process_block) {
-            s->api->process_block(s->instance, mailbox_audio, FRAMES_PER_BLOCK);
+            s->api->process_block(s->instance, fx_target, FRAMES_PER_BLOCK);
         }
     }
 
@@ -1799,10 +1676,62 @@ static void shadow_inprocess_mix_from_buffer(void) {
      * This mirrors the legacy in-process mix path behavior. */
     shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK);
 
+    /* Sum ME bus (after FX) into mailbox at master volume level.
+     * Move's audio in mailbox is already at mv; ME needs mv applied here.
+     * Skipped under rebuild_from_la — that path has already composited into mailbox. */
+    if (!rebuild_from_la) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t scaled_me = (int32_t)lroundf((float)me_unity_i16[i] * mv);
+            int32_t summed = (int32_t)mailbox_audio[i] + scaled_me;
+            if (summed > 32767) summed = 32767;
+            if (summed < -32768) summed = -32768;
+            mailbox_audio[i] = (int16_t)summed;
+        }
+    }
+
+    /* Build unity_view for capture consumers (skipback, native bridge, sampler).
+     * unity_view = Move at unity + ME post-FX at unity. Independent of master volume
+     * so captures are full-gain regardless of the volume knob position. */
+    int16_t unity_view[FRAMES_PER_BLOCK * 2];
+    if (rebuild_from_la) {
+        /* Link Audio rebuild path already composited per-track routed audio into
+         * mailbox at unity. Snapshot unity_view BEFORE applying master volume
+         * (below) so captures stay at unity. */
+        memcpy(unity_view, mailbox_audio, AUDIO_BUFFER_SIZE);
+    } else {
+        /* Smooth mv for capture only (DAC uses raw mv for instant response).
+         * One-pole lowpass at ~30ms tau to ramp over discrete scan steps and
+         * avoid brief amplitude glitches in captures during volume sweeps. */
+        static float mv_capture_smoothed = 1.0f;
+        const float alpha = 0.1f;  /* dt=2.9ms, tau≈28ms */
+        mv_capture_smoothed += (mv - mv_capture_smoothed) * alpha;
+        float inv_mv = (mv_capture_smoothed > 0.001f) ? 1.0f / mv_capture_smoothed : 1.0f;
+        if (inv_mv > 50.0f) inv_mv = 50.0f;
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            float move_unity = (float)native_bridge_move_component[i] * inv_mv;
+            float summed = move_unity + (float)me_unity_i16[i];
+            if (summed > 32767.0f) summed = 32767.0f;
+            if (summed < -32768.0f) summed = -32768.0f;
+            unity_view[i] = (int16_t)lroundf(summed);
+        }
+    }
+
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
-    native_capture_total_mix_snapshot_from_buffer(mailbox_audio);
+    native_capture_total_mix_snapshot_from_buffer(unity_view);
+
+    /* Under rebuild_from_la, the mailbox was built at unity (per-slot vol only,
+     * no master vol). Apply master volume now so DAC output respects the knob.
+     * Non-rebuild path already applied mv in the final ME-sum above. */
+    if (rebuild_from_la && mv < 0.9999f) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            float scaled = (float)mailbox_audio[i] * mv;
+            if (scaled > 32767.0f) scaled = 32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            mailbox_audio[i] = (int16_t)lroundf(scaled);
+        }
+    }
 
     /* Poll sampler commands from shadow UI (via shared memory) */
     if (shadow_control) {
@@ -1876,26 +1805,16 @@ static void shadow_inprocess_mix_from_buffer(void) {
         }
     }
 
-    /* Capture audio for sampler BEFORE master volume scaling (Resample source only) */
+    /* Capture audio for sampler at unity (Resample source only) — reads from
+     * unity_view[] so it captures pre-master-volume audio. */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
-        sampler_capture_audio();
+        sampler_capture_audio_from_buffer(unity_view);
         sampler_tick_preroll();
         /* Skipback: always capture Resample source into rolling buffer */
         skipback_init();
-        skipback_capture(mailbox_audio);
+        skipback_capture(unity_view);
     }
 
-    /* Apply master volume after capture.  The mix is always built at unity
-     * level so that sampler/skipback capture full-gain audio.  Scale down
-     * now so the DAC output respects master volume. */
-    if (mv < 0.9999f) {
-        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            float scaled = (float)mailbox_audio[i] * mv;
-            if (scaled > 32767.0f) scaled = 32767.0f;
-            if (scaled < -32768.0f) scaled = -32768.0f;
-            mailbox_audio[i] = (int16_t)lroundf(scaled);
-        }
-    }
 }
 
 /* Shared memory segment names from shadow_constants.h */

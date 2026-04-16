@@ -448,7 +448,7 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
     }
 
     float inv_mv = 1.0f / mv;
-    float max_makeup = 20.0f;
+    float max_makeup = 50.0f;
 
     if (!shadow_master_fx_chain_active() && native_bridge_split_valid) {
         float native_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
