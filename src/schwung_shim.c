@@ -166,6 +166,33 @@ static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
 static int shadow_in_audio_shm_fd = -1;
 static int try_attach_in_audio_shm(void);
 
+/* Read one Move channel of audio, choosing the new /schwung-link-in SHM path
+ * when link_audio_receive_via_sidecar_flag is on (and the sidecar SHM has
+ * attached), otherwise falling back to the legacy sendto-hook ring buffers.
+ * Returns 1 on full read, 0 on starvation / inactive slot. */
+static inline int shim_read_move_channel(int s, int16_t *out, int frames)
+{
+    if (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm) {
+        return link_audio_read_channel_shm(shadow_in_audio_shm, s, out, frames);
+    }
+    return link_audio_read_channel(s, out, frames);
+}
+
+/* Return the number of active Move channels for runtime routing decisions.
+ * When reading from the sidecar SHM, count `active` slots there; otherwise
+ * use the value the sendto hook has written to link_audio.move_channel_count. */
+static inline int shim_move_channel_count(void)
+{
+    if (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm) {
+        int count = 0;
+        for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; ++i) {
+            if (shadow_in_audio_shm->slots[i].active) ++count;
+        }
+        return count;
+    }
+    return link_audio.move_channel_count;
+}
+
 /* PFX per-track audio shared memory (shim → PFX DSP plugin) */
 
 static void load_feature_config(void);
@@ -1367,7 +1394,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
     }
     int any_overtake_dsp = (overtake_dsp_fx && overtake_dsp_fx_inst);
     int any_la_rebuild = (link_audio.enabled && link_audio_routing_enabled &&
-                         shadow_chain_process_fx && link_audio.move_channel_count >= 4);
+                         shadow_chain_process_fx && shim_move_channel_count() >= 4);
     int any_capture = (sampler_source == SAMPLER_SOURCE_RESAMPLE);
 
     if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture) {
@@ -1417,7 +1444,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
     int rebuild_from_la = (link_audio.enabled && link_audio_routing_enabled &&
                            shadow_chain_process_fx &&
-                           link_audio.move_channel_count >= 4 &&
+                           shim_move_channel_count() >= 4 &&
                            la_receiving);
 
     /* Mix JACK/RNBO audio at mv level to match Move's attenuated audio.
@@ -1446,8 +1473,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
         memset(mailbox_audio, 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
 
         /* Read all Link Audio channels once upfront */
-        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < link_audio.move_channel_count; s++) {
-            la_cache_valid[s] = link_audio_read_channel(s, la_cache[s], FRAMES_PER_BLOCK);
+        int la_channel_count = shim_move_channel_count();
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
+            la_cache_valid[s] = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
         }
 
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
@@ -3804,7 +3832,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             shadow_pub_audio_shm->num_slots = 0;
         } else {
             int la_flowing = (link_audio.packets_intercepted > 0 &&
-                              link_audio.move_channel_count >= 4);
+                              shim_move_channel_count() >= 4);
             for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
                 int is_active = la_flowing ||
                                 (i < SHADOW_CHAIN_INSTANCES &&
