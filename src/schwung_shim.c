@@ -153,7 +153,6 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
-static volatile int link_audio_receive_via_sidecar_flag = 1; /* Read Move audio from /schwung-link-in (sidecar) by default. features.json can set false to fall back to the sendto() hook for debugging. */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
@@ -691,23 +690,6 @@ static void load_feature_config(void)
         }
     }
 
-    /* Parse link_audio_receive_via_sidecar (defaults to true). Read Move audio
-     * from /schwung-link-in (written by the link-subscriber sidecar). Set to
-     * false in features.json to fall back to the legacy sendto() hook path
-     * for A/B debugging. */
-    const char *receive_via_sidecar_key = strstr(config_buf, "\"link_audio_receive_via_sidecar\"");
-    if (receive_via_sidecar_key) {
-        const char *colon = strchr(receive_via_sidecar_key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ' || *colon == '\t') colon++;
-            if (strncmp(colon, "true", 4) == 0) {
-                link_audio_receive_via_sidecar_flag = 1;
-            } else if (strncmp(colon, "false", 5) == 0) {
-                link_audio_receive_via_sidecar_flag = 0;
-            }
-        }
-    }
 
     /* Parse display_mirror_enabled (defaults to false) */
     const char *display_mirror_key = strstr(config_buf, "\"display_mirror_enabled\"");
@@ -750,10 +732,9 @@ static void load_feature_config(void)
 
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, link_audio_rx_sidecar=%s, display_mirror=%s, set_pages=%s, skipback=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
-             link_audio_receive_via_sidecar_flag ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
              skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
@@ -1267,15 +1248,13 @@ static void shadow_inprocess_render_to_buffer(void) {
              * When synth is idle, FX still runs on zeros for tail decay.
              * When both synth AND FX are idle, skip entirely. */
         slot_run_deferred_fx:
-            /* When rebuild_from_la is likely active (link audio reception is
-             * live on the sidecar path), skip deferred FX — the main-mix
-             * path will run FX on (synth + move_track) in post-ioctl.
-             * Calling FX here too advances the plugin's internal state a
-             * second time per frame, causing aliasing/comb-filter artifacts.
-             * The deferred output (shadow_slot_fx_deferred) isn't consumed
-             * in rebuild_from_la mode anyway. */
-            int skip_deferred_fx =
-                (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm);
+            /* When the sidecar SHM is attached, the main-mix path will run
+             * FX on (synth + move_track) in post-ioctl. Calling FX here too
+             * advances the plugin's internal state a second time per frame,
+             * causing aliasing / comb-filter artifacts. The deferred output
+             * (shadow_slot_fx_deferred) isn't consumed in rebuild_from_la
+             * mode anyway, so skip it. */
+            int skip_deferred_fx = (shadow_in_audio_shm != NULL);
 
             if (skip_deferred_fx) {
                 /* Mark valid with zeros so downstream non-rebuild path, if
