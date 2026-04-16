@@ -341,6 +341,55 @@ Under Link Audio rebuild mode (`rebuild_from_la`), the mailbox is composited
 from per-track routed audio at unity via `shadow_chain_process_fx`, MFX runs
 on the mailbox, then master volume is applied for DAC output.
 
+## Link Audio
+
+Move's firmware publishes per-track and master audio over Ableton Link Audio
+(UDP/IPv6, proprietary `chnnlsv` framing). Schwung consumes this so shadow
+FX chains can process Move's tracks before output.
+
+### Architecture (post-migration, 2026-04)
+
+```
+Move firmware audio engine
+          │
+          ▼ (Link Audio source subscription)
+┌──────────────────────────────┐
+│ link-subscriber sidecar      │  src/host/link_subscriber.cpp
+│   subscribes to Move/1-MIDI… │  - C++, links against libs/link
+│   Move/Main via LinkAudio    │  - runs as a separate process
+│   SDK                        │
+│   writes incoming samples    │
+│   into /schwung-link-in      │
+└──────────────────────────────┘
+          │ SHM /schwung-link-in
+          ▼
+┌──────────────────────────────┐
+│ schwung_shim.c (LD_PRELOAD)  │
+│   link_audio_read_channel_shm│
+│   feeds shadow chain mixer   │
+│   shadow_inprocess_mix_from_buffer
+└──────────────────────────────┘
+```
+
+`/schwung-link-in` is a 5-slot SPSC ring (1-MIDI, 2-MIDI, 3-MIDI, 4-MIDI,
+Main). Layout: `link_audio_in_shm_t` in `src/host/link_audio.h`.
+
+The sidecar also writes shadow-slot output back to Live as `ME-N` Link Audio
+channels via `/schwung-pub-audio` → `LinkAudioSink`s.
+
+### Feature flag: `link_audio_receive_via_sidecar`
+
+Defaults **true**. Set to `false` in `/data/UserData/schwung/config/features.json`
+to fall back to the legacy `sendto()`-hook reception path (still present in
+`src/schwung_shim.c` + `src/host/shadow_link_audio.c`) for A/B debugging. The
+legacy path is slated for removal once the new path is crackle-free.
+
+### Known issues
+
+- Audible crackle on the sidecar path due to clock drift between the Link SDK
+  audio thread and Move's SPI callback. See `docs/link-audio-crackle-followup.md`.
+  Likely needs ASRC in the sidecar callback.
+
 ## Signal Chain Module
 
 The `chain` module implements a modular signal chain for combining components:
