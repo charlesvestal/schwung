@@ -320,6 +320,27 @@ External modules are installed to category subdirectories based on their `compon
 
 Original Move preserved as `/opt/move/MoveOriginal`.
 
+## Gain Staging (MFX ME-Only Bus)
+
+Master FX processes only Schwung's internal audio (slot synths, slot FX,
+overtake DSP) — never Move's own audio. The shim builds:
+
+- `mailbox` (DAC output) = Move audio at `mv` + `me_bus × mv`
+- `unity_view` (captures) = Move reconstructed at unity + `me_bus` post-MFX
+
+Skipback, quantized sampler, and the native resample bridge read `unity_view`
+so captures are independent of master volume. Clean-idle (no modules loaded)
+leaves Move's mailbox untouched; no round-trip.
+
+Master volume is estimated from scanning Move's on-screen volume bar
+(`shadow_master_volume` in `schwung_shim.c`). This has ±2 dB calibration error
+at extreme knob positions; capture accuracy degrades below ~15% display
+position as a result (the amplification clamp kicks in at `mv < 0.02`).
+
+Under Link Audio rebuild mode (`rebuild_from_la`), the mailbox is composited
+from per-track routed audio at unity via `shadow_chain_process_fx`, MFX runs
+on the mailbox, then master volume is applied for DAC output.
+
 ## Signal Chain Module
 
 The `chain` module implements a modular signal chain for combining components:
