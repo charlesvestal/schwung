@@ -1440,8 +1440,19 @@ static void shadow_inprocess_mix_from_buffer(void) {
     } else if (la_cur > 0) {
         la_stale_frames++;
     }
-    /* Consider Link Audio active if packets arrived within the last ~290ms */
-    int la_receiving = (la_cur > 0 && la_stale_frames < 100);
+    /* Consider Link Audio active if packets arrived within the last ~290ms.
+     * On the sidecar path, packets_intercepted is no longer load-bearing —
+     * derive liveness from the SHM slots' active flags instead. */
+    int la_receiving;
+    if (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm) {
+        int any_active = 0;
+        for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+            if (shadow_in_audio_shm->slots[i].active) { any_active = 1; break; }
+        }
+        la_receiving = any_active;
+    } else {
+        la_receiving = (la_cur > 0 && la_stale_frames < 100);
+    }
 
     int rebuild_from_la = (link_audio.enabled && link_audio_routing_enabled &&
                            shadow_chain_process_fx &&
