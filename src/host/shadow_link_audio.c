@@ -314,6 +314,38 @@ int link_audio_read_channel(int idx, int16_t *out, int frames) {
     return 1;
 }
 
+/* Read from the new /schwung-link-in SHM (populated by link-subscriber sidecar).
+ * Parallel path to link_audio_read_channel(); callers migrate in Task 3.4.
+ *
+ * Unlike link_audio_read_channel(), this helper does NOT memset the output
+ * buffer on starvation — the caller is expected to zero it (or mix silence)
+ * to avoid double work in hot paths. Returns 1 on full read, 0 otherwise. */
+int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
+                                int16_t *out_lr, int frames) {
+    if (!shm || !out_lr || frames <= 0) return 0;
+    if (slot_idx < 0 || slot_idx >= LINK_AUDIO_IN_SLOT_COUNT) return 0;
+
+    link_audio_in_slot_t *slot = &shm->slots[slot_idx];
+
+    __sync_synchronize();
+    if (!slot->active) return 0;
+
+    uint32_t wp = slot->write_pos;
+    uint32_t rp = slot->read_pos;  /* we are the sole consumer */
+    uint32_t avail = wp - rp;       /* wraps correctly on unsigned overflow */
+    uint32_t need = (uint32_t)(frames * 2);
+
+    if (avail < need) return 0;
+
+    for (uint32_t i = 0; i < need; i++) {
+        out_lr[i] = slot->ring[(rp + i) & LINK_AUDIO_IN_RING_MASK];
+    }
+
+    __sync_synchronize();
+    slot->read_pos = rp + need;
+    return 1;
+}
+
 /* ============================================================================
  * Publisher
  * ============================================================================ */

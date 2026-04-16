@@ -99,6 +99,12 @@ void link_audio_on_sendto(int sockfd, const uint8_t *pkt, size_t len,
  * Returns 1 if data was read, 0 if underrun. */
 int link_audio_read_channel(int idx, int16_t *out, int frames);
 
+/* Read stereo-interleaved audio from the new /schwung-link-in SHM slot.
+ * SPSC consumer helper: does NOT zero out_lr on starvation (caller zeros).
+ * Returns 1 on full read of `frames` stereo frames, 0 on starvation / bad args. */
+int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
+                                int16_t *out_lr, int frames);
+
 /* Reset link audio state (called during link subscriber restart).
  * Clears session, channels, ring buffers, stale tracking. */
 void link_audio_reset_state(void);
