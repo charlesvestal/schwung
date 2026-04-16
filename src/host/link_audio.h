@@ -140,4 +140,39 @@ typedef struct {
     volatile uint32_t overruns;   /* ring buffer overflow (producer too far ahead) */
 } link_audio_state_t;
 
+/* ============================================================================
+ * Move → shim audio shared memory (written by link-subscriber sidecar,
+ * read by shim). Replaces the sendto()-hook + in-process channel rings.
+ * ============================================================================ */
+
+#define SHM_LINK_AUDIO_IN  "/schwung-link-in"
+
+/* Use the same block size as the pub side for symmetry. */
+#define LINK_AUDIO_IN_BLOCK_FRAMES   LINK_AUDIO_PUB_BLOCK_FRAMES
+#define LINK_AUDIO_IN_BLOCK_SAMPLES  LINK_AUDIO_PUB_BLOCK_SAMPLES
+#define LINK_AUDIO_IN_RING_BLOCKS    LINK_AUDIO_PUB_SHM_BLOCKS
+#define LINK_AUDIO_IN_RING_SAMPLES   (LINK_AUDIO_IN_BLOCK_SAMPLES * LINK_AUDIO_IN_RING_BLOCKS)
+#define LINK_AUDIO_IN_RING_MASK      (LINK_AUDIO_IN_RING_SAMPLES - 1)
+
+/* One slot per Move-published channel: 1-MIDI..4-MIDI + Main = 5. */
+#define LINK_AUDIO_IN_SLOT_COUNT   LINK_AUDIO_MOVE_CHANNELS
+#define LINK_AUDIO_IN_MAIN_IDX     (LINK_AUDIO_MOVE_CHANNELS - 1)
+
+typedef struct {
+    int16_t  ring[LINK_AUDIO_IN_RING_SAMPLES];  /* stereo interleaved */
+    volatile uint32_t write_pos;                /* sidecar (producer) */
+    volatile uint32_t read_pos;                 /* shim (consumer) */
+    volatile int      active;                   /* 1 once first packet received */
+    char     name[32];                          /* "1-MIDI", "Main", … */
+} link_audio_in_slot_t;
+
+typedef struct {
+    volatile uint32_t magic;    /* 0x4C41494E = "LAIN" */
+    volatile uint32_t version;  /* 1 */
+    link_audio_in_slot_t slots[LINK_AUDIO_IN_SLOT_COUNT];
+} link_audio_in_shm_t;
+
+#define LINK_AUDIO_IN_SHM_MAGIC   0x4C41494E
+#define LINK_AUDIO_IN_SHM_VERSION 1
+
 #endif /* LINK_AUDIO_H */
