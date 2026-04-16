@@ -289,10 +289,53 @@ int main()
                 }
 
                 try {
-                    sources.emplace_back(link, pc.id,
-                        [](ableton::LinkAudioSource::BufferHandle) {
-                            g_buffers_received.fetch_add(1, std::memory_order_relaxed);
-                        });
+                    if (slot_idx >= 0 && slot_idx < LINK_AUDIO_IN_SLOT_COUNT && in_shm) {
+                        /* Move channel: write received audio into the per-slot
+                         * SPSC ring in /schwung-link-in so the shim (or future
+                         * consumer) can mix it with shadow output.
+                         *
+                         * Callback runs on a Link-managed audio thread.
+                         * MUST be realtime-safe: no logging, no allocation,
+                         * no locks. Only lock-free ring writes + atomics. */
+                        int slot_idx_cap = slot_idx;
+                        link_audio_in_shm_t *in_shm_cap = in_shm;
+                        sources.emplace_back(link, pc.id,
+                            [slot_idx_cap, in_shm_cap](ableton::LinkAudioSource::BufferHandle h) {
+                                g_buffers_received.fetch_add(1, std::memory_order_relaxed);
+
+                                const size_t num_frames   = h.info.numFrames;
+                                const size_t num_channels = h.info.numChannels;
+                                const int16_t *samples    = h.samples;
+
+                                /* Drop non-stereo / empty / null buffers. */
+                                if (num_channels != 2) return;
+                                if (num_frames == 0) return;
+                                if (!samples) return;
+
+                                link_audio_in_slot_t *slot =
+                                    &in_shm_cap->slots[slot_idx_cap];
+
+                                const uint32_t to_copy =
+                                    (uint32_t)(num_frames * num_channels); /* samples */
+                                uint32_t wp = slot->write_pos;
+                                for (uint32_t i = 0; i < to_copy; ++i) {
+                                    slot->ring[(wp + i) & LINK_AUDIO_IN_RING_MASK] =
+                                        samples[i];
+                                }
+                                __atomic_store_n(&slot->write_pos, wp + to_copy,
+                                                 __ATOMIC_RELEASE);
+                                __atomic_store_n(&slot->active, 1,
+                                                 __ATOMIC_RELAXED);
+                            });
+                    } else {
+                        /* Non-Move channel (e.g. ME-Ack loopback) — keep the
+                         * original no-op so we don't regress the session /
+                         * peer-announcement keepalive path. */
+                        sources.emplace_back(link, pc.id,
+                            [](ableton::LinkAudioSource::BufferHandle) {
+                                g_buffers_received.fetch_add(1, std::memory_order_relaxed);
+                            });
+                    }
                     LOG_INFO(LINK_SUB_LOG_SOURCE, "subscription OK");
                 } catch (const std::exception& e) {
                     LOG_ERROR(LINK_SUB_LOG_SOURCE, "subscription failed: %s", e.what());
