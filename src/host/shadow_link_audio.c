@@ -337,6 +337,13 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
 
     if (avail < need) return 0;
 
+    /* Catch-up: if producer got ahead by more than 4 blocks, jump to the most
+     * recent block. Mirrors the legacy link_audio_read_channel() behavior —
+     * prevents unbounded latency drift when producer/consumer clocks differ. */
+    if (avail > need * 4) {
+        rp = wp - need;
+    }
+
     for (uint32_t i = 0; i < need; i++) {
         out_lr[i] = slot->ring[(rp + i) & LINK_AUDIO_IN_RING_MASK];
     }
