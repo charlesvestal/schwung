@@ -1343,6 +1343,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
     /* Accumulate ME output across slots for bridge split component */
     int32_t me_full[FRAMES_PER_BLOCK * 2];
     memset(me_full, 0, sizeof(me_full));
+    /* ME-only unity bus: sum of slot synths + slot FX + overtake DSP, full-gain,
+     * before Master FX and master volume. Task 3 populates this alongside
+     * me_full without reading it; Task 4 will consume it. */
+    int32_t me_unity[FRAMES_PER_BLOCK * 2];
+    memset(me_unity, 0, sizeof(me_unity));
 
     /* Zero-and-rebuild approach: if Link Audio provides per-track data,
      * zero the mailbox and rebuild from Link Audio, applying FX per-slot.
@@ -1482,6 +1487,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     if (i & 1) shadow_fade_advance(s);
                 }
             } else if (have_move_track) {
@@ -1540,6 +1546,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     if (i & 1) shadow_fade_advance(s);
                 }
             } else if (shadow_slot_deferred_valid[s]) {
@@ -1588,6 +1595,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
+                    me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     if (i & 1) shadow_fade_advance(s);
                 }
             }
@@ -1601,7 +1609,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
         me_full[i] += (int32_t)shadow_deferred_dsp_buffer[i];
+        me_unity[i] += (int32_t)shadow_deferred_dsp_buffer[i];
     }
+    (void)me_unity;  /* populated now, consumed in Task 4 */
 
     /* Save ME full-gain component for bridge split */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
