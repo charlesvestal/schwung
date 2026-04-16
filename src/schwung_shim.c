@@ -1695,7 +1695,8 @@ static void shadow_inprocess_mix_from_buffer(void) {
     int16_t unity_view[FRAMES_PER_BLOCK * 2];
     if (rebuild_from_la) {
         /* Link Audio rebuild path already composited per-track routed audio into
-         * mailbox; preserve pre-refactor capture behavior by using it as-is. */
+         * mailbox at unity. Snapshot unity_view BEFORE applying master volume
+         * (below) so captures stay at unity. */
         memcpy(unity_view, mailbox_audio, AUDIO_BUFFER_SIZE);
     } else {
         /* Smooth mv for capture only (DAC uses raw mv for instant response).
@@ -1719,6 +1720,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
     native_capture_total_mix_snapshot_from_buffer(unity_view);
+
+    /* Under rebuild_from_la, the mailbox was built at unity (per-slot vol only,
+     * no master vol). Apply master volume now so DAC output respects the knob.
+     * Non-rebuild path already applied mv in the final ME-sum above. */
+    if (rebuild_from_la && mv < 0.9999f) {
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            float scaled = (float)mailbox_audio[i] * mv;
+            if (scaled > 32767.0f) scaled = 32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            mailbox_audio[i] = (int16_t)lroundf(scaled);
+        }
+    }
 
     /* Poll sampler commands from shadow UI (via shared memory) */
     if (shadow_control) {
