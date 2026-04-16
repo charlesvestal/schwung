@@ -1248,13 +1248,22 @@ static void shadow_inprocess_render_to_buffer(void) {
              * When synth is idle, FX still runs on zeros for tail decay.
              * When both synth AND FX are idle, skip entirely. */
         slot_run_deferred_fx:
-            /* When the sidecar SHM is attached, the main-mix path will run
-             * FX on (synth + move_track) in post-ioctl. Calling FX here too
-             * advances the plugin's internal state a second time per frame,
-             * causing aliasing / comb-filter artifacts. The deferred output
-             * (shadow_slot_fx_deferred) isn't consumed in rebuild_from_la
-             * mode anyway, so skip it. */
-            int skip_deferred_fx = (shadow_in_audio_shm != NULL);
+            /* Skip the deferred FX call ONLY when the main-mix rebuild path
+             * will actually run this frame — otherwise the slot has no FX
+             * output at all (both the deferred and the rebuild paths get
+             * skipped). Mirrors the conditions of `rebuild_from_la` computed
+             * later in shadow_inprocess_mix_from_buffer(). */
+            int la_any_active = 0;
+            if (shadow_in_audio_shm) {
+                for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+                    if (shadow_in_audio_shm->slots[i].active) {
+                        la_any_active = 1; break;
+                    }
+                }
+            }
+            int skip_deferred_fx = (link_audio.enabled &&
+                                    link_audio_routing_enabled &&
+                                    la_any_active);
 
             if (skip_deferred_fx) {
                 /* Mark valid with zeros so downstream non-rebuild path, if
